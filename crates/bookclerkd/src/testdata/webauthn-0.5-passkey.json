@@ -1,0 +1,89 @@
+{
+  "assertion": {
+    "extensions": {
+      "appid": null,
+      "hmac_get_secret": null
+    },
+    "id": "UqIXz8EOnp-SL5IoQzGpu7CrdFPdu8xRh8S-f17NEew",
+    "rawId": "UqIXz8EOnp-SL5IoQzGpu7CrdFPdu8xRh8S-f17NEew",
+    "response": {
+      "authenticatorData": "ertOefHe4aU4deP0cuGlm-XiW5P4QKmJftXkPF3pGtcFAAAAAQ",
+      "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiNG1ON1RWUk5QQTk0enNTN1ZpNUkzRWVnN0tOaFlLRXA2ODUtNjlEODFHdyIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va2NsZXJrLnRlc3QvIiwidG9rZW5CaW5kaW5nIjpudWxsfQ",
+      "signature": "MEUCIQDLTtw9ZdEIw6tnghmdiBCh0zTVTfhcc2QLDtcDhtxxHAIgdIpZZ2ooewBhdaRtPyJjFOfz2Jx_FIeqIfwfK6y3-Og",
+      "userHandle": null
+    },
+    "type": "public-key"
+  },
+  "authentication_state": {
+    "ast": {
+      "allow_backup_eligible_upgrade": true,
+      "appid": null,
+      "challenge": "4mN7TVRNPA94zsS7Vi5I3Eeg7KNhYKEp685-69D81Gw",
+      "credentials": [
+        {
+          "attestation": {
+            "data": "Self_",
+            "metadata": "None"
+          },
+          "attestation_format": "packed",
+          "backup_eligible": false,
+          "backup_state": false,
+          "counter": 0,
+          "cred": {
+            "key": {
+              "EC_EC2": {
+                "curve": "SECP256R1",
+                "x": "XmwHZLzpDhMOtZfLNso_aogrH0KuC-kjKH64E0piUPY",
+                "y": "p86GmQ371VrM6aRqF2WRSK6AdikispuZsBk8PvPgX98"
+              }
+            },
+            "type_": "ES256"
+          },
+          "cred_id": "UqIXz8EOnp-SL5IoQzGpu7CrdFPdu8xRh8S-f17NEew",
+          "extensions": {
+            "appid": "NotRequested",
+            "cred_props": "Ignored",
+            "cred_protect": "Ignored",
+            "hmac_create_secret": "NotRequested"
+          },
+          "registration_policy": "required",
+          "transports": null,
+          "user_verified": true
+        }
+      ],
+      "policy": "required"
+    }
+  },
+  "passkey": {
+    "cred": {
+      "attestation": {
+        "data": "Self_",
+        "metadata": "None"
+      },
+      "attestation_format": "packed",
+      "backup_eligible": false,
+      "backup_state": false,
+      "counter": 0,
+      "cred": {
+        "key": {
+          "EC_EC2": {
+            "curve": "SECP256R1",
+            "x": "XmwHZLzpDhMOtZfLNso_aogrH0KuC-kjKH64E0piUPY",
+            "y": "p86GmQ371VrM6aRqF2WRSK6AdikispuZsBk8PvPgX98"
+          }
+        },
+        "type_": "ES256"
+      },
+      "cred_id": "UqIXz8EOnp-SL5IoQzGpu7CrdFPdu8xRh8S-f17NEew",
+      "extensions": {
+        "appid": "NotRequested",
+        "cred_props": "Ignored",
+        "cred_protect": "Ignored",
+        "hmac_create_secret": "NotRequested"
+      },
+      "registration_policy": "required",
+      "transports": null,
+      "user_verified": true
+    }
+  }
+}

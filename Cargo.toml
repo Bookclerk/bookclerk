@@ -197,7 +197,7 @@ zeroize = { version = "1", features = ["derive"] }
 base64 = "0.23"
 reqwest = { version = "0.13", default-features = true, features = ["json", "form"] }
 url = "2"
-webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
+webauthn-rs = { version = "0.6.2", features = ["danger-allow-state-serialisation"] }
 totp-rs = { version = "6", default-features = false, features = ["std", "otpauth", "gen_secret"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 jsonwebtoken = { version = "11.0", features = ["rust_crypto"] }

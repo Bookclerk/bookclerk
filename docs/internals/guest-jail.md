@@ -82,6 +82,14 @@ assert it in CI: default hosts must link no plugin package and reach no cipher
 crate, and must not grow an in-process `bundled-plugins` path. A shared crate
 that grew an `aes` dependency fails the default-host check.
 
+There is one exception. Passkeys in `bookclerkd` use `webauthn-rs`, whose
+RustCrypto layer (`crypto-glue`) always links the generic `aes`, `cbc` and
+`ctr` crates. The check allows them only when every dependency edge into a
+cipher comes from `crypto-glue` and `webauthn-rs` is its sole user, so a
+second route to the same crate still fails. Those crates carry no content keys,
+CDM or media decrypt, and the binary already holds the same ciphers inside
+aws-lc-rs for TLS. Widevine crates are never allowed.
+
 Users of a store-free build can still add any storefront back as an external
 guest, since discovery is independent of these features. That is a deployment
 choice made by whoever installs the plugin, not by whoever shipped the binary.

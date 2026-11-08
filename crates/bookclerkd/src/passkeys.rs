@@ -983,6 +983,8 @@ fn uuid_for_user(user_id: i64) -> Uuid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use webauthn_authenticator_rs::softpasskey::SoftPasskey;
+    use webauthn_authenticator_rs::WebauthnAuthenticator;
 
     #[test]
     fn user_uuid_is_stable() {
@@ -1014,6 +1016,90 @@ mod tests {
         assert_eq!(normalize_passkey_name(Some("  ")), "Passkey");
         assert_eq!(normalize_passkey_name(Some(" Laptop ")), "Laptop");
         assert_eq!(normalize_passkey_name(Some(&"x".repeat(90))).len(), 80);
+    }
+
+    /// A full passkey ceremony against a software authenticator: register,
+    /// store the credential as JSON the way the handlers do, then sign in
+    /// with it and advance its counter.
+    #[test]
+    fn passkey_registers_and_authenticates_through_stored_json() {
+        let origin = "https://bookclerk.test";
+        let webauthn = build_webauthn(origin).expect("relying party builds");
+        let url = Url::parse(origin).expect("origin parses");
+        let mut authenticator = SoftPasskey::new(true);
+
+        let (creation, registration) = webauthn
+            .start_passkey_registration(uuid_for_user(7), "owner", "Owner", None)
+            .expect("registration starts");
+        let registration: PasskeyRegistration = serde_json::from_str(
+            &serde_json::to_string(&registration).expect("registration state serializes"),
+        )
+        .expect("registration state deserializes");
+        let attestation = authenticator
+            .do_registration(url.clone(), creation)
+            .expect("authenticator registers");
+        let passkey = webauthn
+            .finish_passkey_registration(&attestation, &registration)
+            .expect("registration verifies");
+        let stored = serde_json::to_string(&passkey).expect("passkey serializes");
+        let stored: Passkey = serde_json::from_str(&stored).expect("passkey deserializes");
+        assert_eq!(
+            cred_id_b64(stored.cred_id()),
+            URL_SAFE_NO_PAD.encode(attestation.raw_id.as_ref() as &[u8])
+        );
+
+        let (request, authentication) = webauthn
+            .start_passkey_authentication(std::slice::from_ref(&stored))
+            .expect("authentication starts");
+        let authentication: PasskeyAuthentication = serde_json::from_str(
+            &serde_json::to_string(&authentication).expect("authentication state serializes"),
+        )
+        .expect("authentication state deserializes");
+        let assertion = authenticator
+            .do_authentication(url, request)
+            .expect("authenticator signs");
+        let result = webauthn
+            .finish_passkey_authentication(&assertion, &authentication)
+            .expect("assertion verifies");
+        assert_eq!(cred_id_b64(result.cred_id()), cred_id_b64(stored.cred_id()));
+        let mut stored = stored;
+        assert_eq!(stored.update_credential(&result), Some(true));
+    }
+
+    /// A passkey, an in-flight sign-in challenge and the browser's assertion
+    /// stored by webauthn-rs 0.5 still deserialize and verify, so existing
+    /// passkeys and sign-ins started before an upgrade keep working.
+    #[test]
+    fn passkey_stored_by_webauthn_0_5_still_signs_in() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("testdata/webauthn-0.5-passkey.json"))
+                .expect("fixture parses");
+        let mut passkey: Passkey =
+            serde_json::from_value(fixture["passkey"].clone()).expect("0.5 passkey loads");
+        let authentication: PasskeyAuthentication =
+            serde_json::from_value(fixture["authentication_state"].clone())
+                .expect("0.5 authentication state loads");
+        let assertion: PublicKeyCredential =
+            serde_json::from_value(fixture["assertion"].clone()).expect("0.5 assertion loads");
+
+        let webauthn = build_webauthn("https://bookclerk.test").expect("relying party builds");
+        let result = webauthn
+            .finish_passkey_authentication(&assertion, &authentication)
+            .expect("0.5 assertion verifies");
+        assert_eq!(
+            cred_id_b64(result.cred_id()),
+            cred_id_b64(passkey.cred_id())
+        );
+        assert_eq!(passkey.update_credential(&result), Some(true));
+
+        let restored: Passkey = serde_json::from_str(
+            &serde_json::to_string(&passkey).expect("upgraded passkey serializes"),
+        )
+        .expect("upgraded passkey reloads");
+        assert_eq!(
+            cred_id_b64(restored.cred_id()),
+            cred_id_b64(passkey.cred_id())
+        );
     }
 
     #[test]

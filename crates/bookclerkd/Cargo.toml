@@ -123,6 +123,9 @@ tower = { version = "0.5", features = ["util"] }
 tracing-log = "0.2"
 tracing-subscriber.workspace = true
 wiremock.workspace = true
+# Software authenticator for the passkey ceremony tests; same release line
+# as webauthn-rs.
+webauthn-authenticator-rs = { version = "0.6.2", default-features = false, features = ["softpasskey"] }
 # Checks every example in the OpenAPI document against its schema; no
 # remote references, so no resolver features.
 jsonschema = { version = "0.60.2", default-features = false }
