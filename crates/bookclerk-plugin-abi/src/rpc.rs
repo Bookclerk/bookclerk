@@ -62,16 +62,16 @@ use crate::plugin_capnp::{
     cover_fetcher as cover_fetcher_capnp, database as database_capnp, describe_reply,
     destination as dest_iface, domain_event, empty_reply, entrypoints, entrypoints_reply,
     event_batch_reply, event_consumer as event_consumer_capnp,
-    event_publisher as event_publisher_capnp, event_result as event_result_capnp, get_reply,
-    guest_database as guest_database_capnp, handle_reply, head_reply, health_reply, job_invocation,
-    job_outcome, job_runner as job_runner_capnp, kv_namespace as kv_namespace_capnp, list_reply,
-    metadata_provider as metadata_provider_capnp, object_metadata, oidc as oidc_capnp,
-    oidc_client_template, oidc_clients_reply, open_reply, plugin_cli as plugin_cli_capnp,
-    plugin_describe, plugin_error, plugin_migration, plugin_migration_op, plugin_migrations_ok,
-    plugin_migrations_reply, plugin_worker, progress_sink, pull_reply, put_reply,
-    queue_consumer as queue_consumer_capnp, queue_producer as queue_producer_capnp,
-    remote_library as remote_library_capnp, scheduled_handler as scheduled_handler_capnp,
-    source as source_capnp, write_options,
+    event_publisher as event_publisher_capnp, event_result as event_result_capnp,
+    execute_stream_reply, get_reply, guest_database as guest_database_capnp, handle_reply,
+    head_reply, health_reply, job_invocation, job_outcome, job_runner as job_runner_capnp,
+    kv_namespace as kv_namespace_capnp, list_reply, metadata_provider as metadata_provider_capnp,
+    object_metadata, oidc as oidc_capnp, oidc_client_template, oidc_clients_reply, open_reply,
+    plugin_cli as plugin_cli_capnp, plugin_describe, plugin_error, plugin_migration,
+    plugin_migration_op, plugin_migrations_ok, plugin_migrations_reply, plugin_worker,
+    progress_sink, pull_reply, put_reply, queue_consumer as queue_consumer_capnp,
+    queue_producer as queue_producer_capnp, remote_library as remote_library_capnp,
+    scheduled_handler as scheduled_handler_capnp, source as source_capnp, write_options,
 };
 #[cfg(feature = "host")]
 use crate::plugin_host_capnp::host_adapter_database_session as host_adapter_database_session_capnp;
@@ -818,6 +818,39 @@ fn async_read_from_byte_source(
         pos: 0,
         done: false,
     })
+}
+
+/// Fills an `ExecuteStreamReply` from an adapter's answer: inline frames
+/// travel as `inline`, a reader becomes a `ByteSource` pulled in windows.
+fn write_execute_stream_reply(
+    mut result: execute_stream_reply::Builder<'_>,
+    outcome: Result<crate::db_stream::ExecuteStream>,
+) {
+    match outcome {
+        Ok(stream) => match stream.into_body() {
+            crate::db_stream::ExecuteStreamBody::Inline(bytes) => result.set_inline(&bytes),
+            crate::db_stream::ExecuteStreamBody::Reader(reader) => {
+                result.set_stream(byte_source_from_async_read(reader, MAX_STREAM_WINDOW_BYTES));
+            }
+        },
+        Err(err) => write_error(result.init_err(), &err),
+    }
+}
+
+/// Reads an `ExecuteStreamReply` into an [`crate::db_stream::ExecuteStream`]
+/// (`err` is returned as the adapter's error).
+fn read_execute_stream_reply(
+    result: execute_stream_reply::Reader<'_>,
+) -> Result<crate::db_stream::ExecuteStream> {
+    match result.which().map_err(from_capnp)? {
+        execute_stream_reply::Inline(bytes) => Ok(crate::db_stream::ExecuteStream::inline(
+            bytes.map_err(from_capnp)?.to_vec(),
+        )),
+        execute_stream_reply::Stream(source) => Ok(crate::db_stream::ExecuteStream::reader(
+            async_read_from_byte_source(source.map_err(from_capnp)?, MAX_STREAM_WINDOW_BYTES),
+        )),
+        execute_stream_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
+    }
 }
 
 /// Decode a [`ListPage`] and reject pages larger than `max`.
@@ -2820,6 +2853,26 @@ impl adapter_database_session_capnp::Server for AdapterDatabaseSessionServer {
         Ok(())
     }
 
+    async fn execute_streamed(
+        self: Rc<Self>,
+        params: adapter_database_session_capnp::ExecuteStreamedParams,
+        mut results: adapter_database_session_capnp::ExecuteStreamedResults,
+    ) -> capnp::Result<()> {
+        let request = params
+            .get()?
+            .get_request()
+            .map_err(|err| capnp::Error::failed(err.to_string()))
+            .and_then(|r| {
+                crate::db_rpc::read_adapter_execute_request(r)
+                    .map_err(|err| capnp::Error::failed(err.to_string()))
+            })?;
+        write_execute_stream_reply(
+            results.get().init_result(),
+            self.inner.execute_streamed(request).await,
+        );
+        Ok(())
+    }
+
     async fn close(
         self: Rc<Self>,
         _params: adapter_database_session_capnp::CloseParams,
@@ -3041,6 +3094,26 @@ impl guest_database_capnp::Server for GuestDatabaseServer {
         crate::db_rpc::write_db_capabilities_reply(
             results.get().init_result(),
             self.inner.limits().await,
+        );
+        Ok(())
+    }
+
+    async fn execute_streamed(
+        self: Rc<Self>,
+        params: guest_database_capnp::ExecuteStreamedParams,
+        mut results: guest_database_capnp::ExecuteStreamedResults,
+    ) -> capnp::Result<()> {
+        let request = params
+            .get()?
+            .get_request()
+            .map_err(|err| capnp::Error::failed(err.to_string()))
+            .and_then(|r| {
+                crate::db_rpc::read_execute_request(r)
+                    .map_err(|err| capnp::Error::failed(err.to_string()))
+            })?;
+        write_execute_stream_reply(
+            results.get().init_result(),
+            self.inner.execute_streamed(request).await,
         );
         Ok(())
     }
@@ -4587,6 +4660,30 @@ impl AdapterDatabaseSession for AdapterDatabaseSessionClient {
         )
     }
 
+    async fn execute_streamed(
+        &self,
+        request: crate::host_envelope::AdapterExecuteRequest,
+    ) -> Result<crate::db_stream::ExecuteStream> {
+        let mut req = self.client.execute_streamed_request();
+        crate::db_rpc::write_adapter_execute_request(req.get().init_request(), &request)?;
+        let reply = req.send().promise.await.map_err(|err| {
+            if err.kind == capnp::ErrorKind::Unimplemented {
+                PluginError::unsupported(
+                    "AdapterDatabaseSession.executeStreamed is not implemented by this adapter",
+                )
+            } else {
+                from_capnp(err)
+            }
+        })?;
+        read_execute_stream_reply(
+            reply
+                .get()
+                .map_err(from_capnp)?
+                .get_result()
+                .map_err(from_capnp)?,
+        )
+    }
+
     async fn close(&self) -> Result<()> {
         let req = self.client.close_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
@@ -4735,6 +4832,30 @@ impl GuestDatabase for GuestDatabaseClient {
             }
         })?;
         crate::db_rpc::read_db_capabilities_reply(
+            reply
+                .get()
+                .map_err(from_capnp)?
+                .get_result()
+                .map_err(from_capnp)?,
+        )
+    }
+
+    async fn execute_streamed(
+        &self,
+        request: crate::ExecuteRequest,
+    ) -> Result<crate::db_stream::ExecuteStream> {
+        let mut req = self.client.execute_streamed_request();
+        crate::db_rpc::write_execute_request(req.get().init_request(), &request)?;
+        let reply = req.send().promise.await.map_err(|err| {
+            if err.kind == capnp::ErrorKind::Unimplemented {
+                PluginError::unsupported(
+                    "GuestDatabase.executeStreamed is not implemented by this host",
+                )
+            } else {
+                from_capnp(err)
+            }
+        })?;
+        read_execute_stream_reply(
             reply
                 .get()
                 .map_err(from_capnp)?

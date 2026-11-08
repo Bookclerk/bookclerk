@@ -3004,6 +3004,61 @@ struct ExecuteResultReply {
   }
 }
 
+# First frame of a streamed execute reply: what the reply is about.
+struct ExecuteStreamHead {
+  # Echo of the request `operationId`.
+  operationId @0 :Text;
+  # Number of `statement` frames that follow, one per request statement.
+  statementCount @1 :UInt32;
+}
+
+# Opens one statement result inside a streamed execute reply. Its rows, if
+# any, follow in `rows` frames until the next `statement`, `end` or `err`.
+struct ExecuteStreamStatement {
+  # Request statement index, `0`-based and increasing by one per frame.
+  index @0 :UInt32;
+  # Result column descriptors.
+  columns @1 :List(DbColumn);
+  # Rows changed by a mutation.
+  rowsAffected @2 :UInt64;
+}
+
+# One frame of a streamed execute reply (`executeStreamed`). Frames are
+# consecutive unpacked single-segment Cap'n Proto messages, each at most
+# `maxScalarBytes` unless it carries one row that alone exceeds it. The
+# sequence is `head`, then for each statement `statement` followed by its
+# `rows` frames in order, then `end`; `err` ends the sequence early.
+struct ExecuteStreamFrame {
+  union {
+    # First frame.
+    head @0 :ExecuteStreamHead;
+    # Opens the next statement result.
+    statement @1 :ExecuteStreamStatement;
+    # Rows of the open statement, in order.
+    rows @2 :List(DbRow);
+    # Last frame: the batch committed; engine timing.
+    end @3 :DbTiming;
+    # Last frame: the batch failed; `code` is a `PluginErrorCode` wire string.
+    err @4 :PluginError;
+  }
+}
+
+# Result union of `executeStreamed`. The frames (`ExecuteStreamFrame`) travel
+# inline when they fit one scalar, otherwise as a transferred byte stream in
+# `maxStreamWindowBytes` windows. The adapter counts the reply against
+# `maxStreamedResultBytes` and `maxStreamedResultRows` before it commits, so
+# results still fail closed and are never truncated.
+struct ExecuteStreamReply {
+  union {
+    # Success: every frame, concatenated, at most `maxScalarBytes`.
+    inline @0 :Data;
+    # Success: the frames as a byte stream.
+    stream @1 :ByteSource;
+    # Typed failure before any frame; `code` is a `PluginErrorCode` wire string.
+    err @2 :PluginError;
+  }
+}
+
 # Semantic SQL-contract advertisement. Diagnostic engine identity is not
 # part of the capability plane — see `DbBootstrap`.
 struct DbCapabilities {
@@ -3064,6 +3119,15 @@ struct DbCapabilities {
   # Adapter can destructively replace one logical database unit so an
   # ordinary restore failure does not leave that unit partially replaced.
   atomicUnitRestore @21 :Bool;
+  # Maximum encoded bytes of one `ExecuteReply` answered through
+  # `executeStreamed` (the sum of its frames' statement results). `0` means
+  # the adapter does not stream and callers stay under the inline caps.
+  # When set it is at least `maxAtomicResultBytes`.
+  maxStreamedResultBytes @22 :UInt32;
+  # Maximum rows one statement may return through `executeStreamed`. `0`
+  # means the adapter does not stream. When set it is at least
+  # `maxResultRows`.
+  maxStreamedResultRows @23 :UInt32;
 }
 
 # Result union of `AdapterDatabaseSession.bootstrap`.
@@ -3160,6 +3224,13 @@ interface AdapterDatabaseSession {
   ) -> (result :EmptyReply);
   # Verify constraints hold after restore rows were written.
   assertRestoreConstraints @9 () -> (result :EmptyReply);
+  # `execute` whose reply is framed (`ExecuteStreamFrame`) and counted against
+  # `maxStreamedResultBytes` / `maxStreamedResultRows` instead of the inline
+  # caps. One transaction, one snapshot; `unsupported` when the adapter
+  # advertises no streamed budget.
+  executeStreamed @10 (
+      request :AdapterExecuteRequest  # Proven statements plus isolation and receipt.
+  ) -> (result :ExecuteStreamReply);
 }
 
 # Host-granted SQL for job plugin authors. SDK `DatabaseBinding` mirrors the
@@ -3176,6 +3247,13 @@ interface GuestDatabase {
   # Negotiated limits of this session, so guests size requests and reads
   # before sending instead of discovering caps from errors.
   limits @2 () -> (result :DbCapabilitiesReply);
+  # `execute` whose reply is framed (`ExecuteStreamFrame`) and counted against
+  # the session's `maxStreamedResultBytes` / `maxStreamedResultRows`, so a
+  # result past the inline caps still arrives whole. `unsupported` when the
+  # session advertises no streamed budget.
+  executeStreamed @3 (
+      request :ExecuteRequest  # Statements, binds, and deadline.
+  ) -> (result :ExecuteStreamReply);
 }
 
 # One already-separated BookclerkSQL operation in a plugin-owned migration.

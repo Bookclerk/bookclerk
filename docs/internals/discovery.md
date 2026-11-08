@@ -81,11 +81,12 @@ operator, a household user, or a portal identity) has a **subject key**
    for the person's current seeds (their own, or the household's), and none
    when `discovery.storefront_candidates` is off.
 
-   Both steps stay inside the database plugin's 256 KiB result limit
-   (`maxResultBytes` in the [SQL contract](../plugins/sql-contract/v1.md)).
-   The ranking reads candidates in pages and halves a page when its result
-   would be too large. A stored feed is one cell, and the plugin counts a
-   row as JSON, where each quote or backslash in the feed takes two bytes.
+   Both steps read through the database plugin's streamed result path
+   ([SQL contract](../plugins/sql-contract/v1.md#streamed-results)), so a
+   page of candidates or a stored feed larger than one inline 256 KiB
+   result still arrives whole. A stored feed is one cell, and the plugin
+   counts a row as JSON, where each quote or backslash in the feed takes
+   two bytes.
    So the feed is kept under 192 KiB in that escaped form: if it is larger,
    every shelf is cut to its best items (down to four), then long
    descriptions are shortened, then the last shelves are dropped. Writing a

@@ -8,7 +8,9 @@ use bookclerk_plugin_abi::db::{connect_params_from_bindings, DbConnectParams};
 use bookclerk_plugin_abi::IsolationReq;
 use bookclerk_plugin_abi::{AdapterExecuteRequest, AdapterTransaction, HostAdapterDatabaseSession};
 use bookclerk_plugin_sdk::manifest_capabilities;
-use bookclerk_plugin_sdk::{serve, DbBootstrap, DbCapabilities, ExecuteReply, PluginError};
+use bookclerk_plugin_sdk::{
+    serve, DbBootstrap, DbCapabilities, ExecuteReply, ExecuteStream, PluginError,
+};
 use bookclerk_plugin_sdk::{
     AdapterDatabaseSession, BindingValues, Bindings, Database, Entrypoints, Invocation,
     PluginDescribe, PluginWorker, ScalarLimits, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
@@ -275,6 +277,32 @@ impl AdapterDatabaseSession for D1Session {
             .run_typed_atomic(&request.request, request.guest_receipt, &request.proofs)
             .await
             .map_err(bookclerk_plugin_database_d1::atomic::plugin_error_from_d1)
+    }
+
+    async fn execute_streamed(
+        &self,
+        request: AdapterExecuteRequest,
+    ) -> Result<ExecuteStream, PluginError> {
+        request.require_proofs()?;
+        if !matches!(request.isolation, IsolationReq::AtomicBatch) {
+            return Err(PluginError::unsupported(
+                "D1 supports AtomicBatch isolation only",
+            ));
+        }
+        let caps = DbCapabilities::advertised_d1().streamed().ok_or_else(|| {
+            PluginError::unsupported("this adapter advertises no streamed result budget")
+        })?;
+        let reply = self
+            .proxy()?
+            .run_typed_atomic_with(
+                &request.request,
+                request.guest_receipt,
+                &request.proofs,
+                &caps,
+            )
+            .await
+            .map_err(bookclerk_plugin_database_d1::atomic::plugin_error_from_d1)?;
+        ExecuteStream::from_reply(&reply)
     }
 
     async fn export_identity(

@@ -29,6 +29,7 @@ boundary extends it.
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
 | `https_url_policy` | URLs from untrusted output checked against a host allowlist (no caller since covers moved to the cover service) | `bookclerk-plugin-manifest::https_url_on_hosts` |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec and the database envelope decoders | `bookclerk-plugin-abi` |
+| `db_stream` | `executeStreamed` frames an adapter sends, reassembled by the host and the SDKs under the streamed result budget | `bookclerk-plugin-abi::ExecuteStreamDecoder` |
 | `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
 | `cover_token` | Cover tokens in `/api/covers` and `/api/images` paths, and Gravatar hashes in `/api/avatars` paths: which remote URL a route may fetch | `bookclerk-cover::token` |
@@ -91,6 +92,11 @@ only that. The others check:
   Structured seeds cover the book records, the metadata replies and the
   cover request and reply (`structured_*.bin`), plus the typed
   `limit_exceeded` envelopes (`limit_error_reply.bin`, `caps_reply_*.bin`).
+- **`db_stream`**: decoding a frame stream in one push and in chunks of
+  any size agree (both the same reply, or both refused), an accepted
+  reply has no statement over the row cap, and it re-encodes to frames
+  that decode to the same reply. The shared oracle is
+  `fuzz/oracles/db_stream.rs`, replayed from `bookclerk-plugin-abi`.
 - **`cover_sink_key`**: a key names a slot exactly when it is the
   canonical decimal spelling of an index below the URL count, read digit
   by digit without `str::parse`, so no two keys name one slot. The shared

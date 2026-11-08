@@ -22,8 +22,8 @@ use crate::sql::{
     GuestStatement,
 };
 use bookclerk_plugin_abi::{
-    AdapterExecuteRequest, DbCapabilities, DbIdentityHighWater, ExecuteReply, IsolationReq,
-    PluginError,
+    AdapterExecuteRequest, DbCapabilities, DbIdentityHighWater, ExecuteReply, ExecuteStream,
+    IsolationReq, PluginError,
 };
 use bookclerk_plugin_sdk::database_adapter::plugin_error_from_db_err;
 use bookclerk_plugin_sdk::{QueryPage, MAX_LIST_PAGE, MAX_SCALAR_BYTES};
@@ -615,7 +615,75 @@ pub async fn guest_execute_atomic(
         .map_err(bookclerk_plugin_abi::PluginError::internal)?;
     let deadline =
         (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
-    guest_execute_typed(&conn, envelope, library_typed_session(deadline)).await
+    let caps = bookclerk_db_exec::ExecCaps::from_capabilities(&capabilities_for(&conn));
+    guest_execute_typed(&conn, envelope, library_typed_session(deadline), caps).await
+}
+
+/// [`guest_execute_atomic`] answered as a streamed reply: the batch runs
+/// under the advertised streamed budget and its reply is framed.
+///
+/// # Errors
+///
+/// Returns `unsupported` when this engine advertises no streamed budget, and
+/// otherwise what [`guest_execute_atomic`] returns.
+pub async fn guest_execute_streamed_request(
+    envelope: AdapterExecuteRequest,
+) -> std::result::Result<ExecuteStream, bookclerk_plugin_abi::PluginError> {
+    require_session_isolation(envelope.isolation)?;
+    envelope.require_proofs()?;
+    let gate = txn_gate();
+    let _gate = gate.lock().await;
+    let conn = connection()
+        .await
+        .map_err(bookclerk_plugin_abi::PluginError::internal)?;
+    let caps = streamed_exec_caps(&conn)?;
+    let deadline =
+        (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
+    let reply = guest_execute_typed(&conn, envelope, library_typed_session(deadline), caps).await?;
+    ExecuteStream::from_reply(&reply)
+}
+
+/// [`guest_execute_atomic_on`] answered as a streamed reply (per-binding
+/// sessions).
+///
+/// # Errors
+///
+/// Returns `unsupported` when this engine advertises no streamed budget, and
+/// otherwise what [`guest_execute_atomic_on`] returns.
+pub async fn guest_execute_streamed_request_on(
+    conn: &DatabaseConnection,
+    envelope: AdapterExecuteRequest,
+) -> std::result::Result<ExecuteStream, bookclerk_plugin_abi::PluginError> {
+    require_session_isolation(envelope.isolation)?;
+    envelope.require_proofs()?;
+    let caps = streamed_exec_caps(conn)?;
+    let deadline =
+        (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
+    let reply = guest_execute_typed(
+        conn,
+        envelope,
+        bookclerk_db_exec::AtomicSession::from_deadline(deadline),
+        caps,
+    )
+    .await?;
+    ExecuteStream::from_reply(&reply)
+}
+
+/// The streamed execution caps of `conn`'s engine family.
+///
+/// # Errors
+///
+/// Returns `unsupported` when the advertisement has no streamed budget.
+fn streamed_exec_caps(
+    conn: &DatabaseConnection,
+) -> std::result::Result<bookclerk_db_exec::ExecCaps, bookclerk_plugin_abi::PluginError> {
+    bookclerk_db_exec::ExecCaps::streamed_from_capabilities(&capabilities_for(conn)).ok_or_else(
+        || {
+            bookclerk_plugin_abi::PluginError::unsupported(
+                "this adapter advertises no streamed result budget",
+            )
+        },
+    )
 }
 
 /// Typed `execute` on an explicit connection (per-binding sessions).
@@ -635,10 +703,12 @@ pub async fn guest_execute_atomic_on(
     envelope.require_proofs()?;
     let deadline =
         (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
+    let caps = bookclerk_db_exec::ExecCaps::from_capabilities(&capabilities_for(conn));
     guest_execute_typed(
         conn,
         envelope,
         bookclerk_db_exec::AtomicSession::from_deadline(deadline),
+        caps,
     )
     .await
 }
@@ -679,13 +749,14 @@ fn require_session_isolation(iso: IsolationReq) -> std::result::Result<(), Plugi
     }
 }
 
-/// Runs a typed envelope with the given session (library vs binding type env).
+/// Runs a typed envelope with the given session (library vs binding type env)
+/// under `caps` (inline or streamed result budgets).
 async fn guest_execute_typed(
     conn: &DatabaseConnection,
     envelope: AdapterExecuteRequest,
     session: bookclerk_db_exec::AtomicSession,
+    caps: bookclerk_db_exec::ExecCaps,
 ) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
-    let caps = capabilities_for(conn);
     let timing_source = match conn.get_database_backend() {
         DbBackend::Postgres => "postgres_txn",
         DbBackend::Sqlite => "sqlite_txn",
@@ -696,7 +767,7 @@ async fn guest_execute_typed(
         conn,
         &envelope,
         timing_source,
-        bookclerk_db_exec::ExecCaps::from_capabilities(&caps),
+        caps,
         session,
     )
     .await

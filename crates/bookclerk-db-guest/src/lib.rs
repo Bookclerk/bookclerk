@@ -18,11 +18,11 @@ pub use session::{
     guest_capabilities, guest_commit, guest_drop_user_relations, guest_drop_user_relations_on,
     guest_drop_user_relations_on_txn, guest_execute, guest_execute_atomic, guest_execute_atomic_on,
     guest_execute_atomic_on_txn, guest_execute_request, guest_execute_request_on,
-    guest_export_identity, guest_export_identity_on, guest_export_identity_on_txn,
-    guest_import_identity, guest_import_identity_on, guest_import_identity_on_txn,
-    guest_list_user_relations, guest_list_user_relations_on, guest_list_user_relations_on_txn,
-    guest_ping, guest_prepare_unit_restore, guest_prepare_unit_restore_on,
-    guest_prepare_unit_restore_on_txn, guest_query, guest_query_page, guest_rollback, row_to_dto,
-    set_connection,
+    guest_execute_streamed_request, guest_execute_streamed_request_on, guest_export_identity,
+    guest_export_identity_on, guest_export_identity_on_txn, guest_import_identity,
+    guest_import_identity_on, guest_import_identity_on_txn, guest_list_user_relations,
+    guest_list_user_relations_on, guest_list_user_relations_on_txn, guest_ping,
+    guest_prepare_unit_restore, guest_prepare_unit_restore_on, guest_prepare_unit_restore_on_txn,
+    guest_query, guest_query_page, guest_rollback, row_to_dto, set_connection,
 };
 pub use sql::{guest_sql, GuestStatement};

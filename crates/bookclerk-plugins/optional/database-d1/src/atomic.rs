@@ -134,6 +134,24 @@ impl D1Proxy {
         guest_receipt: bookclerk_plugin_abi::GuestReceiptPersist,
         proofs: &[bookclerk_plugin_abi::ResolvedStatement],
     ) -> std::result::Result<ExecuteReply, DbErr> {
+        self.run_typed_atomic_with(req, guest_receipt, proofs, &DbCapabilities::advertised_d1())
+            .await
+    }
+
+    /// [`Self::run_typed_atomic`] with the result caps the reply is held to:
+    /// the D1 advertisement for `execute`, its streamed budget for
+    /// `executeStreamed`.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::run_typed_atomic`].
+    pub async fn run_typed_atomic_with(
+        &self,
+        req: &ExecuteRequest,
+        guest_receipt: bookclerk_plugin_abi::GuestReceiptPersist,
+        proofs: &[bookclerk_plugin_abi::ResolvedStatement],
+        caps: &DbCapabilities,
+    ) -> std::result::Result<ExecuteReply, DbErr> {
         let started = std::time::Instant::now();
         let deadline = (req.deadline_unix_ms > 0).then_some(req.deadline_unix_ms);
         check_d1_session(
@@ -183,7 +201,7 @@ impl D1Proxy {
         let retry_safe = !guest_receipt.is_absent()
             || typed_is_read_only(&req.statements)
             || typed_is_receipt_gated(&req.statements);
-        let d1_caps = DbCapabilities::advertised_d1();
+        let d1_caps = caps.clone();
         let cap = d1_caps.max_result_rows;
         if proofs.len() != wire_len {
             return Err(DbErr::Custom(
@@ -314,7 +332,7 @@ impl D1Proxy {
                 }
                 Err(err) => return Err(err.into()),
             };
-            match parse_typed_batch(req, &raw, started) {
+            match parse_typed_batch(req, &raw, started, caps) {
                 Ok(mut reply) => {
                     self.normalize_reply_from_declared(req, &mut reply, timeout)
                         .await?;
@@ -393,7 +411,7 @@ impl D1Proxy {
             statements: vec![req.statements[stub_idx].clone()],
             deadline_unix_ms: req.deadline_unix_ms,
         };
-        match parse_typed_batch(&claim_req, &raw, started) {
+        match parse_typed_batch(&claim_req, &raw, started, &DbCapabilities::advertised_d1()) {
             Ok(reply) => {
                 let won = reply
                     .statements
@@ -453,7 +471,7 @@ impl D1Proxy {
             statements: vec![req.statements[peek_idx].clone()],
             deadline_unix_ms: req.deadline_unix_ms,
         };
-        let peek = parse_typed_batch(&peek_req, &raw, started)?;
+        let peek = parse_typed_batch(&peek_req, &raw, started, &DbCapabilities::advertised_d1())?;
         if let Some(prior) = peek.statements.first() {
             if bookclerk_db_exec::prior_receipt_should_resume_guest(
                 prior,
@@ -537,7 +555,8 @@ impl D1Proxy {
             bookclerk_db_exec::AtomicInterruptPhase::AroundCommit,
             deadline,
         )?;
-        let mut reply = parse_typed_batch(&rest_req, &raw, started)?;
+        let mut reply =
+            parse_typed_batch(&rest_req, &raw, started, &DbCapabilities::advertised_d1())?;
         // Applied-mark is adapter-private; unwrap still sees prune + guest + stub.
         let _applied = reply.statements.pop();
         let mut assembled = Vec::with_capacity(req.statements.len());
@@ -1331,6 +1350,7 @@ fn parse_typed_batch(
     req: &ExecuteRequest,
     value: &JsonValue,
     started: std::time::Instant,
+    caps: &DbCapabilities,
 ) -> std::result::Result<ExecuteReply, DbErr> {
     let Some(arr) = value.get("result").and_then(JsonValue::as_array) else {
         return Err(ambiguous_d1("batch response missing result array"));
@@ -1342,7 +1362,6 @@ fn parse_typed_batch(
             arr.len()
         )));
     }
-    let caps = DbCapabilities::advertised_d1();
     let row_cap = usize::try_from(caps.max_result_rows).unwrap_or(1_000);
     let mut statements = Vec::with_capacity(arr.len());
     for (i, entry) in arr.iter().enumerate() {
@@ -1827,7 +1846,8 @@ mod tests {
     fn missing_result_array_is_ambiguous() {
         let req = typed_req("op-1", vec![]);
         let started = std::time::Instant::now();
-        let err = parse_typed_batch(&req, &json!({}), started).unwrap_err();
+        let err = parse_typed_batch(&req, &json!({}), started, &DbCapabilities::advertised_d1())
+            .unwrap_err();
         assert!(is_ambiguous_d1(&err), "{err}");
     }
 
@@ -1844,7 +1864,13 @@ mod tests {
         let value = json!({
             "result": [{ "success": false, "error": "constraint" }]
         });
-        let err = parse_typed_batch(&req, &value, std::time::Instant::now()).unwrap_err();
+        let err = parse_typed_batch(
+            &req,
+            &value,
+            std::time::Instant::now(),
+            &DbCapabilities::advertised_d1(),
+        )
+        .unwrap_err();
         assert!(!is_ambiguous_d1(&err), "{err}");
     }
 
@@ -1859,7 +1885,8 @@ mod tests {
             "result": [{ "success": true, "results": rows, "meta": { "changes": 0 } }]
         });
         let started = std::time::Instant::now();
-        let err = parse_typed_batch(&req, &value, started).unwrap_err();
+        let err =
+            parse_typed_batch(&req, &value, started, &DbCapabilities::advertised_d1()).unwrap_err();
         assert!(
             err.to_string().contains("maxResultRows"),
             "D1 must fail closed on over-cap rows: {err}"
@@ -1871,7 +1898,8 @@ mod tests {
         let at_cap = json!({
             "result": [{ "success": true, "results": rows[..1000].to_vec(), "meta": { "changes": 0 } }]
         });
-        let exec = parse_typed_batch(&req, &at_cap, started).unwrap();
+        let exec =
+            parse_typed_batch(&req, &at_cap, started, &DbCapabilities::advertised_d1()).unwrap();
         assert_eq!(exec.statements[0].rows.len(), 1_000);
     }
 
@@ -1920,7 +1948,13 @@ mod tests {
         let value = json!({
             "result": [{ "success": true, "results": [], "meta": { "changes": 0 } }]
         });
-        let reply = parse_typed_batch(&req, &value, std::time::Instant::now()).unwrap();
+        let reply = parse_typed_batch(
+            &req,
+            &value,
+            std::time::Instant::now(),
+            &DbCapabilities::advertised_d1(),
+        )
+        .unwrap();
         let names: Vec<&str> = reply.statements[0]
             .columns
             .iter()
@@ -1940,7 +1974,13 @@ mod tests {
                 "meta": { "changes": 0 }
             }]
         });
-        let reply = parse_typed_batch(&req, &value, std::time::Instant::now()).unwrap();
+        let reply = parse_typed_batch(
+            &req,
+            &value,
+            std::time::Instant::now(),
+            &DbCapabilities::advertised_d1(),
+        )
+        .unwrap();
         let names: Vec<&str> = reply.statements[0]
             .columns
             .iter()
@@ -1963,7 +2003,13 @@ mod tests {
                 "meta": { "changes": 0 }
             }]
         });
-        let reply = parse_typed_batch(&req, &value, std::time::Instant::now()).unwrap();
+        let reply = parse_typed_batch(
+            &req,
+            &value,
+            std::time::Instant::now(),
+            &DbCapabilities::advertised_d1(),
+        )
+        .unwrap();
         assert_eq!(reply.statements[0].columns.len(), 2);
         assert_eq!(
             reply.statements[0].rows[0].values,
@@ -1985,7 +2031,13 @@ mod tests {
                     "meta": { "changes": 0 }
                 }]
             });
-            let reply = parse_typed_batch(&req, &value, std::time::Instant::now()).unwrap();
+            let reply = parse_typed_batch(
+                &req,
+                &value,
+                std::time::Instant::now(),
+                &DbCapabilities::advertised_d1(),
+            )
+            .unwrap();
             assert_eq!(
                 reply.statements[0].rows[0].values[0],
                 DbValue::Text(note.into()),

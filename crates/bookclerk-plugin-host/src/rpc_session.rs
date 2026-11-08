@@ -269,6 +269,16 @@ enum Work {
         cancel: Arc<AtomicBool>,
         reply: oneshot::Sender<Result<bookclerk_plugin_sdk::ExecuteReply>>,
     },
+    /// Typed `AdapterDatabaseSession.executeStreamed`, collected on the vat
+    /// thread into one reply under `limits`.
+    DbExecuteStreamedRequest {
+        /// Typed atomic request; the adapter answers it as stream frames.
+        request: bookclerk_plugin_abi::AdapterExecuteRequest,
+        /// Streamed result budget the collected frames must stay within.
+        limits: bookclerk_plugin_abi::ExecuteStreamLimits,
+        cancel: Arc<AtomicBool>,
+        reply: oneshot::Sender<Result<bookclerk_plugin_sdk::ExecuteReply>>,
+    },
     DbTxnExecuteRequest {
         request: bookclerk_plugin_abi::AdapterExecuteRequest,
         cancel: Arc<AtomicBool>,
@@ -287,6 +297,18 @@ enum Work {
         /// Binding name previously opened with [`Work::DbOpenBinding`].
         name: String,
         request: bookclerk_plugin_abi::AdapterExecuteRequest,
+        cancel: Arc<AtomicBool>,
+        reply: oneshot::Sender<Result<bookclerk_plugin_sdk::ExecuteReply>>,
+    },
+    /// Typed `AdapterDatabaseSession.executeStreamed` on a named plugin
+    /// database binding session, collected under `limits`.
+    DbExecuteStreamedBindingRequest {
+        /// Binding name previously opened with [`Work::DbOpenBinding`].
+        name: String,
+        /// Typed atomic request; the adapter answers it as stream frames.
+        request: bookclerk_plugin_abi::AdapterExecuteRequest,
+        /// Streamed result budget the collected frames must stay within.
+        limits: bookclerk_plugin_abi::ExecuteStreamLimits,
         cancel: Arc<AtomicBool>,
         reply: oneshot::Sender<Result<bookclerk_plugin_sdk::ExecuteReply>>,
     },
@@ -1607,6 +1629,32 @@ impl PluginSession {
         .await
     }
 
+    /// Typed `AdapterDatabaseSession.executeStreamed` on a named plugin
+    /// database binding, collected into one reply under `limits`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the binding is not open, the adapter rejects
+    /// the call or does not implement streaming, the frames break the budget,
+    /// or `cancel` is set.
+    pub async fn db_execute_streamed_binding_request(
+        &self,
+        name: &str,
+        request: bookclerk_plugin_abi::AdapterExecuteRequest,
+        limits: bookclerk_plugin_abi::ExecuteStreamLimits,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<bookclerk_plugin_sdk::ExecuteReply> {
+        let name = name.to_string();
+        self.call(|reply| Work::DbExecuteStreamedBindingRequest {
+            name,
+            request,
+            limits,
+            cancel,
+            reply,
+        })
+        .await
+    }
+
     /// Host-private envelope execute on a named plugin database binding.
     ///
     /// Forwards [`bookclerk_plugin_abi::AdapterExecuteRequest`] so the adapter
@@ -1662,6 +1710,32 @@ impl PluginSession {
     ) -> Result<bookclerk_plugin_sdk::ExecuteReply> {
         self.call(|reply| Work::DbExecuteRequest {
             request,
+            cancel,
+            reply,
+        })
+        .await
+    }
+
+    /// Typed `AdapterDatabaseSession.executeStreamed`, collected into one
+    /// reply.
+    ///
+    /// The vat thread decodes the adapter's frames as they arrive and stops
+    /// with `limit_exceeded` as soon as the collected rows or bytes pass
+    /// `limits`, so a runaway result never fully lands in host memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the adapter rejects the call or does not
+    /// implement streaming, the frames break the budget, or `cancel` is set.
+    pub async fn db_execute_streamed_request(
+        &self,
+        request: bookclerk_plugin_abi::AdapterExecuteRequest,
+        limits: bookclerk_plugin_abi::ExecuteStreamLimits,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<bookclerk_plugin_sdk::ExecuteReply> {
+        self.call(|reply| Work::DbExecuteStreamedRequest {
+            request,
+            limits,
             cancel,
             reply,
         })
@@ -1916,6 +1990,30 @@ impl Drop for PluginSession {
 fn map_abi(err: bookclerk_plugin_sdk::PluginError) -> PluginError {
     let code = err.wire_str().to_string();
     PluginError::from_abi(Some(&code), err.message)
+}
+
+/// Collects an adapter's streamed reply into one [`ExecuteReply`] under
+/// `limits`, mapping every ABI error to the host error type.
+///
+/// # Arguments
+///
+/// * `opened` - Outcome of `executeStreamed`: the stream handle, or the
+///   adapter's refusal.
+/// * `limits` - Row and byte ceilings the collected frames must respect.
+///
+/// # Errors
+///
+/// Returns the adapter's error, `limit_exceeded` when the frames pass
+/// `limits`, or a decode error for malformed frames.
+async fn collect_streamed(
+    opened: std::result::Result<
+        bookclerk_plugin_abi::ExecuteStream,
+        bookclerk_plugin_sdk::PluginError,
+    >,
+    limits: bookclerk_plugin_abi::ExecuteStreamLimits,
+) -> Result<bookclerk_plugin_sdk::ExecuteReply> {
+    let stream = opened.map_err(map_abi)?;
+    stream.collect(limits).await.map_err(map_abi)
 }
 
 fn host_err_to_abi(err: PluginError) -> bookclerk_plugin_abi::PluginError {
@@ -3550,6 +3648,38 @@ fn vat_thread(
                             };
                             let _ = reply.send(out);
                         }
+                        Work::DbExecuteStreamedRequest {
+                            request,
+                            limits,
+                            cancel,
+                            reply,
+                        } => {
+                            let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
+                                () = wait_flag(Arc::clone(&cancel)) => {
+                                    Err(PluginError::from_abi(Some("cancelled"), "rpc cancelled"))
+                                }
+                                out = async {
+                                    match db_session.as_mut() {
+                                        Some(s) => collect_streamed(
+                                            s.execute_streamed(request).await,
+                                            limits,
+                                        )
+                                        .await,
+                                        None => Err(PluginError::message(
+                                            "database session not open",
+                                        )),
+                                    }
+                                } => out,
+                            };
+                            let _ = reply.send(out);
+                        }
                         Work::DbExecuteEnvelopeRequest {
                             envelope,
                             cancel,
@@ -3650,6 +3780,39 @@ fn vat_thread(
                                 out = async {
                                     match db_bindings.get_mut(&name) {
                                         Some(s) => s.session.execute(request).await.map_err(map_abi),
+                                        None => Err(PluginError::message(format!(
+                                            "database binding `{name}` session not open",
+                                        ))),
+                                    }
+                                } => out,
+                            };
+                            let _ = reply.send(out);
+                        }
+                        Work::DbExecuteStreamedBindingRequest {
+                            name,
+                            request,
+                            limits,
+                            cancel,
+                            reply,
+                        } => {
+                            let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
+                                () = wait_flag(Arc::clone(&cancel)) => {
+                                    Err(PluginError::from_abi(Some("cancelled"), "rpc cancelled"))
+                                }
+                                out = async {
+                                    match db_bindings.get_mut(&name) {
+                                        Some(s) => collect_streamed(
+                                            s.session.execute_streamed(request).await,
+                                            limits,
+                                        )
+                                        .await,
                                         None => Err(PluginError::message(format!(
                                             "database binding `{name}` session not open",
                                         ))),

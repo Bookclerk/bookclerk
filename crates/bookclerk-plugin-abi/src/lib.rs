@@ -68,6 +68,7 @@ pub mod backup_ops;
 pub mod db;
 pub mod db_execute;
 mod db_rpc;
+pub mod db_stream;
 pub mod db_value;
 pub mod error;
 mod features;
@@ -147,12 +148,14 @@ pub use db_execute::{
     DbPlanStatementKind, DbResultSelection, DbRow, DbTiming, ExecuteReply, ExecuteRequest,
     IsolationReq, StatementResult, TypedDbStatement, D1_MAX_BINDS, D1_MAX_FUNCTION_ARGS,
     D1_MAX_PAYLOAD_BYTES, D1_MAX_SCHEMA_COLUMNS, D1_MAX_SQL_STATEMENT_BYTES,
-    FIRST_PARTY_MAX_RESULT_BYTES, FIRST_PARTY_MAX_RESULT_ROWS, FIRST_PARTY_MAX_STATEMENTS,
-    HOST_MIN_BINDS, HOST_MIN_CELL_BYTES, HOST_MIN_FUNCTION_ARGS, HOST_MIN_PATTERN_BYTES,
-    HOST_MIN_PAYLOAD_BYTES, HOST_MIN_RESULT_BYTES, HOST_MIN_RESULT_ROWS, HOST_MIN_SCHEMA_COLUMNS,
-    HOST_MIN_STATEMENTS, POSTGRES_MAX_BINDS, POSTGRES_MAX_FUNCTION_ARGS,
-    POSTGRES_MAX_SCHEMA_COLUMNS, SQLITE_MAX_BINDS, SQLITE_MAX_FUNCTION_ARGS,
-    SQLITE_MAX_PATTERN_BYTES, SQLITE_MAX_SCHEMA_COLUMNS, SQL_CONTRACT_VERSION,
+    D1_MAX_STREAMED_RESULT_BYTES, D1_MAX_STREAMED_RESULT_ROWS, FIRST_PARTY_MAX_RESULT_BYTES,
+    FIRST_PARTY_MAX_RESULT_ROWS, FIRST_PARTY_MAX_STATEMENTS, FIRST_PARTY_MAX_STREAMED_RESULT_BYTES,
+    FIRST_PARTY_MAX_STREAMED_RESULT_ROWS, HOST_MIN_BINDS, HOST_MIN_CELL_BYTES,
+    HOST_MIN_FUNCTION_ARGS, HOST_MIN_PATTERN_BYTES, HOST_MIN_PAYLOAD_BYTES, HOST_MIN_RESULT_BYTES,
+    HOST_MIN_RESULT_ROWS, HOST_MIN_SCHEMA_COLUMNS, HOST_MIN_STATEMENTS, POSTGRES_MAX_BINDS,
+    POSTGRES_MAX_FUNCTION_ARGS, POSTGRES_MAX_SCHEMA_COLUMNS, SQLITE_MAX_BINDS,
+    SQLITE_MAX_FUNCTION_ARGS, SQLITE_MAX_PATTERN_BYTES, SQLITE_MAX_SCHEMA_COLUMNS,
+    SQL_CONTRACT_VERSION,
 };
 pub use db_value::{db_type_from_declared, normalize_db_value_for_column, DbType, DbValue};
 pub use error::{LimitExceeded, PluginError, PluginErrorCode, Result};
@@ -220,9 +223,14 @@ pub use host_rpc::HostAdapterDatabaseSessionClient;
 pub use db_rpc::{
     canonical_execute_request_hash, decode_db_capabilities_reply_bytes, decode_db_value_bytes,
     decode_execute_request_bytes, decode_execute_result_reply_bytes,
-    encoded_db_capabilities_reply_bytes, encoded_db_value_bytes, encoded_execute_reply_bytes,
-    encoded_execute_request_bytes, encoded_execute_result_reply_bytes,
-    encoded_statement_result_bytes,
+    decode_execute_stream_frame_bytes, encoded_db_capabilities_reply_bytes, encoded_db_value_bytes,
+    encoded_execute_reply_bytes, encoded_execute_request_bytes, encoded_execute_result_reply_bytes,
+    encoded_execute_stream_frame_bytes, encoded_statement_result_bytes,
+};
+pub use db_stream::{
+    decode_execute_stream, encode_execute_stream, encode_execute_stream_error, ExecuteStream,
+    ExecuteStreamBody, ExecuteStreamDecoder, ExecuteStreamFrame, ExecuteStreamLimits,
+    STREAM_FRAME_TARGET_BYTES,
 };
 pub use features::{
     negotiate_rpc_features, RpcFeature, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY,

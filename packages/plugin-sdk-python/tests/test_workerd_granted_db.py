@@ -22,6 +22,8 @@ _CAPS = {
     "maxCellBytes": 65_536,
     "maxRequestBytes": 4096,
     "maxAtomicResultBytes": 262_144,
+    "maxStreamedResultBytes": 67_108_864,
+    "maxStreamedResultRows": 250_000,
     "pluginDatabases": True,
     "maxFunctionArgs": 32,
     "maxSchemaColumns": 100,

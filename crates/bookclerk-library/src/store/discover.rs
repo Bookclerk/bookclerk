@@ -233,28 +233,18 @@ impl LibraryStore {
         let key = subject.key();
         let mut out = Vec::new();
         let mut after: i64 = 0;
-        let mut width = DISCOVER_READ_PAGE;
         loop {
-            let rows = loop {
-                let read = discover_candidates::Entity::find()
-                    .filter(discover_candidates::Column::SubjectKey.eq(key.as_str()))
-                    .filter(discover_candidates::Column::Id.gt(after))
-                    .order_by_asc(discover_candidates::Column::Id)
-                    .limit(width)
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm);
-                match read {
-                    Ok(rows) => break rows,
-                    Err(err) if super::books_page::is_result_too_large(&err) && width > 1 => {
-                        width /= 2;
-                    }
-                    Err(err) => return Err(err),
-                }
-            };
+            let rows = discover_candidates::Entity::find()
+                .filter(discover_candidates::Column::SubjectKey.eq(key.as_str()))
+                .filter(discover_candidates::Column::Id.gt(after))
+                .order_by_asc(discover_candidates::Column::Id)
+                .limit(DISCOVER_READ_PAGE)
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
             let Some(last) = rows.last() else { break };
             after = last.id;
-            let full = u64::try_from(rows.len()).is_ok_and(|n| n >= width);
+            let full = u64::try_from(rows.len()).is_ok_and(|n| n >= DISCOVER_READ_PAGE);
             out.extend(rows.into_iter().filter_map(|m| {
                 Some(StoredCandidate {
                     seed_scope: SeedScope::parse(&m.seed_scope)?,
@@ -777,10 +767,10 @@ mod tests {
         assert_eq!(listed.len(), count);
     }
 
-    /// A stored feed too large to read back is still replaced, since the
-    /// write does not load the old row.
+    /// A stored feed larger than one inline result reads back whole and is
+    /// still replaced, since the write does not load the old row.
     #[tokio::test]
-    async fn an_unreadable_feed_is_replaced() {
+    async fn a_large_feed_reads_back_and_is_replaced() {
         let store = store().await;
         let alice = DiscoverSubject::User(1);
         let quoted = "\"".repeat(150_000);
@@ -788,8 +778,8 @@ mod tests {
             .put_discover_feed(&alice, &quoted, SeedScope::Own, None)
             .await
             .unwrap();
-        let err = store.get_discover_feed(&alice).await.unwrap_err();
-        assert!(super::super::books_page::is_result_too_large(&err), "{err}");
+        let feed = store.get_discover_feed(&alice).await.unwrap().unwrap();
+        assert_eq!(feed.feed_json.len(), 150_000);
         store
             .put_discover_feed(&alice, "{}", SeedScope::Own, None)
             .await

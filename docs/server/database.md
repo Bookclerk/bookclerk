@@ -467,6 +467,15 @@ After `openSession` the host calls the typed
   `maxRequestBytes` and `maxAtomicResultBytes`. `0` means unspecified and
   fails closed. Batch request and result caps are at or below the scalar
   limit.
+- Guests that stream results advertise `maxStreamedResultBytes` and
+  `maxStreamedResultRows` (each at least its inline counterpart; `0` on
+  both means no streaming). The host reads every standalone library
+  batch, such as a catalog page or a Discover feed, through
+  `executeStreamed` when the guest streams, so a page of enriched rows
+  arrives whole instead of being re-read in smaller pieces. First-party
+  sqlite and Postgres stream up to 64 MiB and 250 000 rows; D1 up to
+  8 MiB and 50 000 rows. A result past the streamed budget still fails
+  closed with `limit_exceeded`.
 - Guests that omit `returning`, or advertise `0` row, payload or atomic
   caps, aren't loaded.
 

@@ -11,10 +11,11 @@ use bookclerk_db_guest::{
     bootstrap_for, capabilities_for, guest_assert_restore_constraints,
     guest_assert_restore_constraints_on, guest_bootstrap, guest_capabilities,
     guest_drop_user_relations, guest_drop_user_relations_on, guest_execute_request,
-    guest_execute_request_on, guest_export_identity, guest_export_identity_on,
-    guest_import_identity, guest_import_identity_on, guest_list_user_relations,
-    guest_list_user_relations_on, guest_prepare_unit_restore, guest_prepare_unit_restore_on,
-    host_session, host_session_on, set_connection,
+    guest_execute_request_on, guest_execute_streamed_request, guest_execute_streamed_request_on,
+    guest_export_identity, guest_export_identity_on, guest_import_identity,
+    guest_import_identity_on, guest_list_user_relations, guest_list_user_relations_on,
+    guest_prepare_unit_restore, guest_prepare_unit_restore_on, host_session, host_session_on,
+    set_connection,
 };
 use bookclerk_plugin_abi::db::{connect_params_from_bindings, DbConnectParams};
 use bookclerk_plugin_abi::HostAdapterDatabaseSession;
@@ -26,7 +27,7 @@ use bookclerk_plugin_sdk::{
 };
 use bookclerk_plugin_sdk::{
     AdapterExecuteRequest, DbBootstrap, DbCapabilities, DbIdentityHighWater, ExecuteReply,
-    PluginError,
+    ExecuteStream, PluginError,
 };
 use sea_orm::DatabaseConnection;
 
@@ -210,6 +211,13 @@ impl AdapterDatabaseSession for SqliteSession {
         match &self.dedicated {
             Some(conn) => guest_execute_request_on(conn, request).await,
             None => guest_execute_request(request).await,
+        }
+    }
+
+    async fn execute_streamed(&self, request: AdapterExecuteRequest) -> Result<ExecuteStream> {
+        match &self.dedicated {
+            Some(conn) => guest_execute_streamed_request_on(conn, request).await,
+            None => guest_execute_streamed_request(request).await,
         }
     }
 

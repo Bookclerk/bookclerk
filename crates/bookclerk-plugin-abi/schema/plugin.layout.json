@@ -232,6 +232,46 @@
         }
       ]
     },
+    "AdapterDatabaseSession.executeStreamed$Params": {
+      "name": "AdapterDatabaseSession.executeStreamed$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "AdapterExecuteRequest"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "AdapterDatabaseSession.executeStreamed$Results": {
+      "name": "AdapterDatabaseSession.executeStreamed$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "ExecuteStreamReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "AdapterDatabaseSession.exportIdentity$Params": {
       "name": "AdapterDatabaseSession.exportIdentity$Params",
       "file": "plugin.capnp",
@@ -3297,7 +3337,7 @@
     "DbCapabilities": {
       "name": "DbCapabilities",
       "file": "plugin.capnp",
-      "dataWords": 7,
+      "dataWords": 8,
       "pointerCount": 0,
       "discriminantCount": 0,
       "discriminantOffset": 0,
@@ -3499,6 +3539,24 @@
             "kind": "bool"
           },
           "offset": 40
+        },
+        {
+          "name": "maxStreamedResultBytes",
+          "codeOrder": 22,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 14
+        },
+        {
+          "name": "maxStreamedResultRows",
+          "codeOrder": 23,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 15
         }
       ]
     },
@@ -5084,6 +5142,177 @@
         }
       ]
     },
+    "ExecuteStreamFrame": {
+      "name": "ExecuteStreamFrame",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 5,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "head",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "ExecuteStreamHead"
+          },
+          "offset": 0
+        },
+        {
+          "name": "statement",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "ExecuteStreamStatement"
+          },
+          "offset": 0
+        },
+        {
+          "name": "rows",
+          "codeOrder": 2,
+          "discriminantValue": 2,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "DbRow"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "end",
+          "codeOrder": 3,
+          "discriminantValue": 3,
+          "type": {
+            "kind": "struct",
+            "name": "DbTiming"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 4,
+          "discriminantValue": 4,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "ExecuteStreamHead": {
+      "name": "ExecuteStreamHead",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "operationId",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "statementCount",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "ExecuteStreamReply": {
+      "name": "ExecuteStreamReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 3,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "inline",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 0
+        },
+        {
+          "name": "stream",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "interface",
+            "name": "ByteSource"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 2,
+          "discriminantValue": 2,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "ExecuteStreamStatement": {
+      "name": "ExecuteStreamStatement",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "index",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 0
+        },
+        {
+          "name": "columns",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "DbColumn"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "rowsAffected",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        }
+      ]
+    },
     "ExpandCandidatesParams": {
       "name": "ExpandCandidatesParams",
       "file": "plugin.capnp",
@@ -5705,6 +5934,46 @@
           "type": {
             "kind": "struct",
             "name": "ExecuteResultReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "GuestDatabase.executeStreamed$Params": {
+      "name": "GuestDatabase.executeStreamed$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "ExecuteRequest"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "GuestDatabase.executeStreamed$Results": {
+      "name": "GuestDatabase.executeStreamed$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "ExecuteStreamReply"
           },
           "offset": 0
         }
@@ -12337,6 +12606,12 @@
           "ordinal": 9,
           "params": "AdapterDatabaseSession.assertRestoreConstraints$Params",
           "results": "AdapterDatabaseSession.assertRestoreConstraints$Results"
+        },
+        {
+          "name": "executeStreamed",
+          "ordinal": 10,
+          "params": "AdapterDatabaseSession.executeStreamed$Params",
+          "results": "AdapterDatabaseSession.executeStreamed$Results"
         }
       ]
     },
@@ -12649,6 +12924,12 @@
           "ordinal": 2,
           "params": "GuestDatabase.limits$Params",
           "results": "GuestDatabase.limits$Results"
+        },
+        {
+          "name": "executeStreamed",
+          "ordinal": 3,
+          "params": "GuestDatabase.executeStreamed$Params",
+          "results": "GuestDatabase.executeStreamed$Results"
         }
       ]
     },

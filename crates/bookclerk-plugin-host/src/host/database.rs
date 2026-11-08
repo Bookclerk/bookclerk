@@ -19,7 +19,8 @@ use bookclerk_db_exec::db_value_from_sea;
 use bookclerk_plugin_abi::{
     binding_values_from_params, catalog_page_statement, reserved_catalog_relation_missing,
     sql_catalog_page_rows, AdapterExecuteRequest, DbBootstrap, DbCapabilities, DbConnectParams,
-    DbValue, IsolationReq, SqlType, SqlTypeEnv, SQL_CATALOG_TABLE, SQL_SCHEMA_TABLE,
+    DbValue, ExecuteStream, ExecuteStreamLimits, IsolationReq, SqlType, SqlTypeEnv,
+    SQL_CATALOG_TABLE, SQL_SCHEMA_TABLE,
 };
 use bookclerk_plugin_catalog::PluginKey;
 use bookclerk_plugin_sdk::GuestDatabase;
@@ -621,6 +622,63 @@ impl GuestDatabase for BindingGuestDatabase {
             }
         })
         .await
+    }
+
+    async fn execute_streamed(
+        &self,
+        mut request: ExecuteRequest,
+    ) -> std::result::Result<ExecuteStream, AbiPluginError> {
+        let Some(streamed_caps) = self.caps.streamed() else {
+            return Err(AbiPluginError::unsupported(
+                "GuestDatabase.executeStreamed: this adapter advertises no streamed result budget",
+            ));
+        };
+        if self.cancel.load(Ordering::SeqCst) {
+            return Err(AbiPluginError::cancelled("fence lost"));
+        }
+        request.deadline_unix_ms =
+            capped_binding_deadline(request.deadline_unix_ms, self.host_deadline_unix_ms);
+        let observed = load_binding_plugin_history(
+            &self.session,
+            &self.key,
+            &self.cancel,
+            request.deadline_unix_ms,
+        )
+        .await
+        .map_err(host_err_to_abi)?;
+        plugin_history_session_matches(&self.expected_plugin_history_digest, &observed)
+            .map_err(|err| AbiPluginError::internal(err.to_string()))?;
+        let env = load_binding_sql_type_env(
+            &self.session,
+            &self.key,
+            &self.cancel,
+            request.deadline_unix_ms,
+            self.caps.max_result_rows,
+            false,
+        )
+        .await?;
+        let policy = bookclerk_library::GuestSqlPolicy::binding_owned().with_sql_types(env);
+        let cancel = Arc::clone(&self.cancel);
+        let limits = ExecuteStreamLimits::from_capabilities(&self.caps);
+        let reply = bookclerk_library::execute_guest_atomic_with(
+            request,
+            &streamed_caps,
+            &policy,
+            |envelope| {
+                let session = Arc::clone(&self.session);
+                let key = self.key.clone();
+                async move {
+                    session
+                        .db_execute_streamed_binding_request(&key, envelope, limits, cancel)
+                        .await
+                        .map_err(host_err_to_abi)
+                }
+            },
+        )
+        .await?;
+        // The guest reads the collected reply back as frames; a reply that
+        // fit the streamed budget always frames.
+        ExecuteStream::from_reply(&reply)
     }
 
     async fn limits(&self) -> std::result::Result<DbCapabilities, AbiPluginError> {
@@ -1706,6 +1764,10 @@ impl RpcDatabaseProxy {
         let stamped = stamp_adapter_request(req, catalog, isolation)?;
         #[cfg(test)]
         note_outbound_adapter_sql(&stamped);
+        // An open adapter transaction answers inline only; a standalone
+        // batch is read as frames when the adapter streams, which lifts the
+        // result ceiling to the streamed budget.
+        let streamed = (!on_txn).then(|| self.caps.streamed()).flatten();
         let reply = if on_txn {
             if let Some(binding) = self.binding.as_deref() {
                 self.session
@@ -1714,6 +1776,17 @@ impl RpcDatabaseProxy {
             } else {
                 self.session.db_txn_execute_request(stamped, cancel).await
             }
+        } else if streamed.is_some() {
+            let limits = ExecuteStreamLimits::from_capabilities(&self.caps);
+            if let Some(binding) = self.binding.as_deref() {
+                self.session
+                    .db_execute_streamed_binding_request(binding, stamped, limits, cancel)
+                    .await
+            } else {
+                self.session
+                    .db_execute_streamed_request(stamped, limits, cancel)
+                    .await
+            }
         } else if let Some(binding) = self.binding.as_deref() {
             self.session
                 .db_execute_binding_request(binding, stamped, cancel)
@@ -1721,7 +1794,8 @@ impl RpcDatabaseProxy {
         } else {
             self.session.db_execute_request(stamped, cancel).await
         }?;
-        bookclerk_library::validate_execute_reply(&validate_req, &reply, &self.caps)
+        let caps = streamed.as_ref().unwrap_or(&self.caps);
+        bookclerk_library::validate_execute_reply(&validate_req, &reply, caps)
             .map_err(map_reply_validation_err)?;
         Ok(reply)
     }
@@ -2204,12 +2278,26 @@ impl bookclerk_library::TypedAtomicExec for RpcAtomicBackend {
             .admit_proven_execute(&envelope.request, &envelope.proofs)?;
         let validate_req = envelope.request.clone();
         let cancel = Arc::new(AtomicBool::new(false));
-        let reply = self
-            .session
-            .db_execute_request(envelope, cancel)
-            .await
-            .map_err(host_err_to_abi)?;
-        bookclerk_library::validate_execute_reply(&validate_req, &reply, &self.caps)
+        let (reply, caps) = match self.caps.streamed() {
+            Some(streamed) => {
+                let limits = ExecuteStreamLimits::from_capabilities(&self.caps);
+                let reply = self
+                    .session
+                    .db_execute_streamed_request(envelope, limits, cancel)
+                    .await
+                    .map_err(host_err_to_abi)?;
+                (reply, streamed)
+            }
+            None => {
+                let reply = self
+                    .session
+                    .db_execute_request(envelope, cancel)
+                    .await
+                    .map_err(host_err_to_abi)?;
+                (reply, self.caps.clone())
+            }
+        };
+        bookclerk_library::validate_execute_reply(&validate_req, &reply, &caps)
             .map_err(map_reply_validation_abi)?;
         Ok(reply)
     }

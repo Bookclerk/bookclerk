@@ -5019,7 +5019,7 @@ var ExecuteResultReplyCodec = {
   }
 };
 var DbCapabilitiesCodec = {
-  dataWords: 7,
+  dataWords: 8,
   pointerCount: 0,
   write(s, v, caps) {
     void caps;
@@ -5045,6 +5045,8 @@ var DbCapabilitiesCodec = {
     s.setUint32(13, v.maxLoweredStatementBytes ?? 0);
     s.setBool(39, v.consistentBackupRead ?? false);
     s.setBool(40, v.atomicUnitRestore ?? false);
+    s.setUint32(14, v.maxStreamedResultBytes ?? 0);
+    s.setUint32(15, v.maxStreamedResultRows ?? 0);
   },
   read(s, caps) {
     void caps;
@@ -5070,7 +5072,9 @@ var DbCapabilitiesCodec = {
       maxPatternBytes: s.getUint32(12),
       maxLoweredStatementBytes: s.getUint32(13),
       consistentBackupRead: s.getBool(39),
-      atomicUnitRestore: s.getBool(40)
+      atomicUnitRestore: s.getBool(40),
+      maxStreamedResultBytes: s.getUint32(14),
+      maxStreamedResultRows: s.getUint32(15)
     };
   }
 };
@@ -5129,7 +5133,7 @@ var DbCapabilitiesReplyCodec = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          DbCapabilitiesCodec.write(s.initStruct(0, 7, 0), v.value, caps);
+          DbCapabilitiesCodec.write(s.initStruct(0, 8, 0), v.value, caps);
         }
         break;
       case "err":
@@ -5146,7 +5150,7 @@ var DbCapabilitiesReplyCodec = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: DbCapabilitiesCodec.read(s.getStruct(0, 7, 0), caps) };
+        return { kind: "ok", value: DbCapabilitiesCodec.read(s.getStruct(0, 8, 0), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:

@@ -1268,6 +1268,24 @@ export interface AdapterDatabaseSessionAssertRestoreConstraintsResults {
 }
 
 /**
+ * Params envelope of `AdapterDatabaseSession.executeStreamed`.
+ *
+ * @internal
+ */
+export interface AdapterDatabaseSessionExecuteStreamedParams {
+  request: T.AdapterExecuteRequest;
+}
+
+/**
+ * Results envelope of `AdapterDatabaseSession.executeStreamed`.
+ *
+ * @internal
+ */
+export interface AdapterDatabaseSessionExecuteStreamedResults {
+  result: T.ExecuteStreamReply;
+}
+
+/**
  * Params envelope of `GuestDatabase.execute`.
  *
  * @internal
@@ -1317,6 +1335,24 @@ export interface GuestDatabaseLimitsParams {
  */
 export interface GuestDatabaseLimitsResults {
   result: T.DbCapabilitiesReply;
+}
+
+/**
+ * Params envelope of `GuestDatabase.executeStreamed`.
+ *
+ * @internal
+ */
+export interface GuestDatabaseExecuteStreamedParams {
+  request: T.ExecuteRequest;
+}
+
+/**
+ * Results envelope of `GuestDatabase.executeStreamed`.
+ *
+ * @internal
+ */
+export interface GuestDatabaseExecuteStreamedResults {
+  result: T.ExecuteStreamReply;
 }
 
 /**
@@ -7960,12 +7996,174 @@ export const ExecuteResultReplyCodec: StructCodec<T.ExecuteResultReply> = {
 };
 
 /**
- * Wire codec for `DbCapabilities` (7 data words, 0 pointers).
+ * Wire codec for `ExecuteStreamHead` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ExecuteStreamHeadCodec: StructCodec<T.ExecuteStreamHead> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.operationId ?? "");
+    s.setUint32(0, v.statementCount ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      operationId: s.getText(0),
+      statementCount: s.getUint32(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `ExecuteStreamStatement` (2 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ExecuteStreamStatementCodec: StructCodec<T.ExecuteStreamStatement> = {
+  dataWords: 2,
+  pointerCount: 1,
+  write(s, v, caps) {
+    s.setUint32(0, v.index ?? 0);
+    {
+      const list = v.columns ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        DbColumnCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    s.setUint64(1, BigInt(v.rowsAffected ?? 0));
+  },
+  read(s, caps) {
+    return {
+      index: s.getUint32(0),
+      columns: s.getStructList(0, 1, 1).map((item) => DbColumnCodec.read(item, caps)),
+      rowsAffected: Number(s.getUint64(1)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `ExecuteStreamFrame` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ExecuteStreamFrameCodec: StructCodec<T.ExecuteStreamFrame> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "head":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          ExecuteStreamHeadCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
+        break;
+      case "statement":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          ExecuteStreamStatementCodec.write(s.initStruct(0, 2, 1), v.value, caps);
+        }
+        break;
+      case "rows":
+        s.setUint16(0, 2);
+        {
+          const list = v.value ?? [];
+          const items = s.initStructList(0, list.length, 0, 1);
+          for (let i = 0; i < items.length; i++) {
+            DbRowCodec.write(items[i]!, list[i]!, caps);
+          }
+        }
+        break;
+      case "end":
+        s.setUint16(0, 3);
+        if (v.value != null) {
+          DbTimingCodec.write(s.initStruct(0, 2, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 4);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("ExecuteStreamFrame", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "head", value: ExecuteStreamHeadCodec.read(s.getStruct(0, 1, 1), caps) };
+      case 1:
+        return { kind: "statement", value: ExecuteStreamStatementCodec.read(s.getStruct(0, 2, 1), caps) };
+      case 2:
+        return { kind: "rows", value: s.getStructList(0, 0, 1).map((item) => DbRowCodec.read(item, caps)) };
+      case 3:
+        return { kind: "end", value: DbTimingCodec.read(s.getStruct(0, 2, 1), caps) };
+      case 4:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("ExecuteStreamFrame", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `ExecuteStreamReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ExecuteStreamReplyCodec: StructCodec<T.ExecuteStreamReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "inline":
+        s.setUint16(0, 0);
+        s.setData(0, v.value ?? EMPTY_BYTES);
+        break;
+      case "stream":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          s.setCap(0, caps.exportCap(v.value));
+        }
+        break;
+      case "err":
+        s.setUint16(0, 2);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("ExecuteStreamReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "inline", value: s.getData(0) };
+      case 1:
+        return { kind: "stream", value: caps.importCap(s.getCapIndex(0)) as T.ByteSource };
+      case 2:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("ExecuteStreamReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `DbCapabilities` (8 data words, 0 pointers).
  *
  * @internal
  */
 export const DbCapabilitiesCodec: StructCodec<T.DbCapabilities> = {
-  dataWords: 7,
+  dataWords: 8,
   pointerCount: 0,
   write(s, v, caps) {
     void caps;
@@ -7991,6 +8189,8 @@ export const DbCapabilitiesCodec: StructCodec<T.DbCapabilities> = {
     s.setUint32(13, v.maxLoweredStatementBytes ?? 0);
     s.setBool(39, v.consistentBackupRead ?? false);
     s.setBool(40, v.atomicUnitRestore ?? false);
+    s.setUint32(14, v.maxStreamedResultBytes ?? 0);
+    s.setUint32(15, v.maxStreamedResultRows ?? 0);
   },
   read(s, caps) {
     void caps;
@@ -8017,6 +8217,8 @@ export const DbCapabilitiesCodec: StructCodec<T.DbCapabilities> = {
       maxLoweredStatementBytes: s.getUint32(13),
       consistentBackupRead: s.getBool(39),
       atomicUnitRestore: s.getBool(40),
+      maxStreamedResultBytes: s.getUint32(14),
+      maxStreamedResultRows: s.getUint32(15),
     };
   },
 };
@@ -8093,7 +8295,7 @@ export const DbCapabilitiesReplyCodec: StructCodec<T.DbCapabilitiesReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          DbCapabilitiesCodec.write(s.initStruct(0, 7, 0), v.value, caps);
+          DbCapabilitiesCodec.write(s.initStruct(0, 8, 0), v.value, caps);
         }
         break;
       case "err":
@@ -8110,7 +8312,7 @@ export const DbCapabilitiesReplyCodec: StructCodec<T.DbCapabilitiesReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: DbCapabilitiesCodec.read(s.getStruct(0, 7, 0), caps) };
+        return { kind: "ok", value: DbCapabilitiesCodec.read(s.getStruct(0, 8, 0), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -11030,6 +11232,46 @@ export const AdapterDatabaseSessionAssertRestoreConstraintsResultsCodec: StructC
 };
 
 /**
+ * Wire codec for the `AdapterDatabaseSession.executeStreamed` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AdapterDatabaseSessionExecuteStreamedParamsCodec: StructCodec<AdapterDatabaseSessionExecuteStreamedParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      AdapterExecuteRequestCodec.write(s.initStruct(0, 2, 4), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: AdapterExecuteRequestCodec.read(s.getStruct(0, 2, 4), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `AdapterDatabaseSession.executeStreamed` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AdapterDatabaseSessionExecuteStreamedResultsCodec: StructCodec<AdapterDatabaseSessionExecuteStreamedResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      ExecuteStreamReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: ExecuteStreamReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
  * Wire codec for the `GuestDatabase.execute` params envelope (0 data words, 1 pointers).
  *
  * @internal
@@ -11145,6 +11387,46 @@ export const GuestDatabaseLimitsResultsCodec: StructCodec<GuestDatabaseLimitsRes
   read(s, caps) {
     return {
       result: DbCapabilitiesReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `GuestDatabase.executeStreamed` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const GuestDatabaseExecuteStreamedParamsCodec: StructCodec<GuestDatabaseExecuteStreamedParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      ExecuteRequestCodec.write(s.initStruct(0, 1, 3), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: ExecuteRequestCodec.read(s.getStruct(0, 1, 3), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `GuestDatabase.executeStreamed` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const GuestDatabaseExecuteStreamedResultsCodec: StructCodec<GuestDatabaseExecuteStreamedResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      ExecuteStreamReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: ExecuteStreamReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

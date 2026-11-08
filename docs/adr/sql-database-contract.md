@@ -66,7 +66,12 @@ it travels on the separate typed `DbBootstrap` / the host connect path after
 semantic negotiation succeeds. `DbCapabilities` `@15` is `pluginDatabases`,
 not a leftover `sqlFamily` tombstone. `@19` is `maxLoweredStatementBytes`.
 `@20` `consistentBackupRead` and `@21` `atomicUnitRestore` split consistent
-capture from complete per-unit replacement. Backup orchestration must not
+capture from complete per-unit replacement. `@22` `maxStreamedResultBytes`
+and `@23` `maxStreamedResultRows` are the budget of
+`AdapterDatabaseSession.executeStreamed` / `GuestDatabase.executeStreamed`,
+which answer the same atomic batch as single-segment `ExecuteStreamFrame`s
+so a result may exceed the scalar ceiling; `0` on both means the adapter
+does not stream, and when set each is at least its inline counterpart. Backup orchestration must not
 branch on sqlite/postgres/d1 plugin identity. First-party D1 advertises
 neither flag (sequential HTTP is not a consistent image and is not complete
 unit replacement). Native D1

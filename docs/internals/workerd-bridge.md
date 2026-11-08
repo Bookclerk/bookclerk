@@ -160,6 +160,7 @@ unknown, expired, or revoked tokens.
 | `POST /progress` | `allow_progress` | `JobController.progress.report` |
 | `GET /cancel` | `cancel` present | Long poll: `200 {"cancelled":true}` once the host cancellation fires, `204` after the poll window so the isolate re-arms; the adapter turns it into `job.signal` |
 | `POST /db/execute` | `allow_database` | Typed SQL on the granted `GuestDatabase` (Cap'n bytes). A request past the grant's `maxRequestBytes` is `413` whose body is the canonical `limit_exceeded` message (`limit exceeded: maxRequestBytes is <cap>; used <n>`), which the SDKs parse back into `err.limit` |
+| `POST /db/execute-streamed` | `allow_database` | `GuestDatabase.executeStreamed`: the same request bytes as `/db/execute`, answered as consecutive Cap'n `ExecuteStreamFrame`s with a content length. Every outcome is a frame sequence: an authorization failure, a session that does not stream (`unsupported`) or a session error is one `err` frame |
 | `GET /db/limits` | `allow_database` | `GuestDatabase.limits`: the session's `DbCapabilities` as a Cap'n `DbCapabilitiesReply` (`401` when the grant has no database, `500` when the reply cannot be encoded) |
 | `POST /events/publish` | `events` present | `env.EVENTS.publish` |
 

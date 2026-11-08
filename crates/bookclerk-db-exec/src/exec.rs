@@ -215,6 +215,17 @@ impl ExecCaps {
             max_atomic_result_bytes: caps.max_atomic_result_bytes,
         }
     }
+
+    /// The caps an `executeStreamed` batch runs under: the streamed byte and
+    /// row budgets in place of the inline result caps.
+    ///
+    /// # Returns
+    ///
+    /// `None` when `caps` advertises no streamed budget.
+    #[must_use]
+    pub fn streamed_from_capabilities(caps: &DbCapabilities) -> Option<Self> {
+        caps.streamed().map(|caps| Self::from_capabilities(&caps))
+    }
 }
 
 /// Maps a session interrupt onto a guest-classifiable [`DbErr`].
