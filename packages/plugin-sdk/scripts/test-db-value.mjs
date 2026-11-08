@@ -160,7 +160,7 @@ const binding = createDatabaseBinding(
       encodedByBinding = encodeExecuteRequest(req).byteLength;
       return {
         operationId: req.operationId,
-        statements: [],
+        statements: req.statements.map(() => ({ rows: [], columns: [], rowsAffected: 0 })),
         timing: { attemptElapsedUs: 0, dbExecutionUs: 0, dbTimingSource: "test" },
       };
     },

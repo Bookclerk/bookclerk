@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
+from types import SimpleNamespace
+from typing import Any
 
 from bookclerk_plugin_sdk.workerd import granted_databases
 
@@ -34,32 +37,72 @@ _CAPS = {
 }
 
 
+_INLINE_ONLY_CAPS = {**_CAPS, "maxStreamedResultBytes": 0, "maxStreamedResultRows": 0}
+
+
+def _frames(operation_id: str) -> bytes:
+    """One `ExecuteStreamFrame` sequence: `n = 1` for the request's operation id."""
+    from bookclerk_plugin_sdk._wire import _encode_message, _execute_stream_frame_codec
+
+    def frame(kind: str, value) -> bytes:
+        return _encode_message(_execute_stream_frame_codec, {"kind": kind, "value": value})
+
+    return b"".join(
+        [
+            frame("head", {"operationId": operation_id, "statementCount": 1}),
+            frame(
+                "statement",
+                {"index": 0, "columns": [{"name": "n", "dbType": "int64"}], "rowsAffected": 0},
+            ),
+            frame("rows", [{"values": [{"kind": "int64", "value": 1}]}]),
+            frame("end", {"attemptElapsedUs": 0, "dbExecutionUs": 0, "dbTimingSource": "granted"}),
+        ]
+    )
+
+
 class _MockFetcher:
-    def __init__(self, status: int = 200) -> None:
+    def __init__(
+        self,
+        status: int = 200,
+        *,
+        streamed_status: int | None = None,
+        caps: dict | None = None,
+    ) -> None:
         self.calls: list[tuple[str, dict]] = []
         self._status = status
+        self._streamed_status = streamed_status
+        self._caps = _CAPS if caps is None else caps
 
-    async def fetch(self, url: str, **kwargs):
+    async def fetch(self, url: str, **kwargs: Any) -> Any:
         self.calls.append((url, kwargs))
         status = self._status
+        if url.endswith("/db/execute-streamed") and self._streamed_status is not None:
+            status = self._streamed_status
+        caps = self._caps
 
         class _Resp:
-            async def text(self):
+            async def text(self) -> str:
                 if status == 413:
                     return "limit exceeded: maxRequestBytes is 16; used 32"
                 return "nope"
 
-            async def arrayBuffer(self):
+            async def arrayBuffer(self) -> bytes:
                 from bookclerk_plugin_sdk.db_value import (
                     encode_db_capabilities_reply,
                     encode_execute_result_reply,
                 )
 
                 if url.endswith("/db/limits"):
-                    return encode_db_capabilities_reply(_CAPS)
+                    return encode_db_capabilities_reply(caps)
+                if url.endswith("/db/execute-streamed"):
+                    from bookclerk_plugin_sdk.db_value import decode_execute_request
+
+                    return _frames(decode_execute_request(bytes(kwargs["body"]))["operationId"])
+                from bookclerk_plugin_sdk.db_value import decode_execute_request
+
                 return encode_execute_result_reply(
                     {
-                        "operationId": "op",
+                        "operationId": decode_execute_request(bytes(kwargs["body"]))["operationId"],
                         "statements": [
                             {
                                 "rows": [{"values": [{"kind": "int64", "value": 1}]}],
@@ -126,7 +169,7 @@ class WorkerdGrantedDbTests(unittest.IsolatedAsyncioTestCase):
         from bookclerk_plugin_sdk.limits import LimitExceeded
         from bookclerk_plugin_sdk.workerd import PluginError
 
-        async def never(_request):
+        async def never(_request: Any) -> Any:
             raise AssertionError("must not send")
 
         binding = create_database_binding(never)
@@ -145,17 +188,128 @@ class WorkerdGrantedDbTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(limit.used, 16)
 
     async def test_context_database_prepare_first_hits_granted_route(self) -> None:
-        fetcher = _MockFetcher()
+        # A session that does not stream reads inline over `/db/execute`.
+        fetcher = _MockFetcher(caps=_INLINE_ONLY_CAPS)
         databases = granted_databases(fetcher, {"DB": "grant-token"})
         self.assertEqual(sorted(databases), ["DB"])
         row = await databases["DB"].prepare("SELECT 1").first()
-        self.assertEqual(len(fetcher.calls), 1)
-        url, kwargs = fetcher.calls[0]
-        self.assertEqual(url, "http://granted/db/execute")
+        self.assertEqual(
+            [url for url, _ in fetcher.calls],
+            [
+                "http://granted/db/limits",
+                "http://granted/db/execute",
+            ],
+        )
+        url, kwargs = fetcher.calls[1]
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer grant-token")
         self.assertEqual(kwargs["headers"]["content-type"], "application/octet-stream")
         self.assertIsInstance(kwargs["body"], (bytes, bytearray))
         self.assertEqual(row["n"]["value"], 1)
+
+    async def test_streaming_session_reads_over_the_streamed_route(self) -> None:
+        fetcher = _MockFetcher()
+        databases = granted_databases(fetcher, {"DB": "grant-token"})
+        result = await databases["DB"].prepare("SELECT 1").all()
+        self.assertEqual(result["results"][0]["n"]["value"], 1)
+        await databases["DB"].prepare("SELECT 1").all()
+        self.assertEqual(
+            [url for url, _ in fetcher.calls],
+            [
+                "http://granted/db/limits",
+                "http://granted/db/execute-streamed",
+                "http://granted/db/execute-streamed",
+            ],
+        )
+        url, kwargs = fetcher.calls[1]
+        self.assertEqual(kwargs["method"], "POST")
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer grant-token")
+        self.assertEqual(kwargs["headers"]["content-type"], "application/octet-stream")
+        rows = [r async for r in databases["DB"].prepare("SELECT 1").iterate()]
+        self.assertEqual(rows, [{"n": {"kind": "int64", "value": 1}}])
+
+    async def test_host_without_the_streamed_route_falls_back_to_inline(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError
+
+        fetcher = _MockFetcher(streamed_status=404)
+        databases = granted_databases(fetcher, {"DB": "grant-token"})
+        row = await databases["DB"].prepare("SELECT 1").first()
+        self.assertEqual(row["n"]["value"], 1)
+        self.assertEqual(
+            [url for url, _ in fetcher.calls],
+            [
+                "http://granted/db/limits",
+                "http://granted/db/execute-streamed",
+                "http://granted/db/execute",
+            ],
+        )
+        # Any other failure of the streamed route is the caller's.
+        fetcher = _MockFetcher(streamed_status=503)
+        databases = granted_databases(fetcher, {"DB": "grant-token"})
+        with self.assertRaises(PluginError) as ctx:
+            await databases["DB"].prepare("SELECT 1").first()
+        self.assertEqual(ctx.exception.code, "unavailable")
+        self.assertEqual(len(fetcher.calls), 2)
+
+    async def test_signal_rides_every_granted_request(self) -> None:
+        fetcher = _MockFetcher()
+        signal = object()
+        databases = granted_databases(fetcher, {"DB": "grant-token"}, signal=signal)
+        await databases["DB"].prepare("SELECT 1").all()
+        self.assertEqual(
+            [url for url, _ in fetcher.calls],
+            ["http://granted/db/limits", "http://granted/db/execute-streamed"],
+        )
+        for _, kwargs in fetcher.calls:
+            self.assertIs(kwargs["signal"], signal)
+
+    async def test_granted_bodies_are_read_as_streams_whole_or_rejected(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError, _granted_body_chunks
+
+        class _Reader:
+            def __init__(self) -> None:
+                self._chunks = [b"ab", None, b"c"]
+
+            async def read(self) -> Any:
+                if not self._chunks:
+                    return type("Done", (), {"done": True, "value": None})()
+                value = self._chunks.pop(0)
+                return type("Chunk", (), {"done": False, "value": value})()
+
+        class _Stream:
+            def getReader(self) -> _Reader:  # noqa: N802  (Streams API method name)
+                return _Reader()
+
+        class _Streaming:
+            status = 200
+            body = _Stream()
+
+        chunks = [c async for c in _granted_body_chunks(_Streaming(), "executeStreamed")]
+        self.assertEqual(chunks, [b"ab", b"c"])
+
+        async def _whole() -> bytes:
+            return b"whole"
+
+        class _Awaitable:
+            status = 200
+            body = _whole()
+
+        chunks = [c async for c in _granted_body_chunks(_Awaitable(), "executeStreamed")]
+        self.assertEqual(chunks, [b"whole"])
+
+        class _Empty:
+            status = 200
+
+        with self.assertRaises(PluginError) as ctx:
+            [c async for c in _granted_body_chunks(_Empty(), "executeStreamed")]
+        self.assertEqual(ctx.exception.code, "internal")
+        self.assertIn("missing body", str(ctx.exception))
+
+    async def test_guest_database_default_streamed_read_is_unsupported(self) -> None:
+        from bookclerk_plugin_sdk.workerd import GuestDatabase, PluginError
+
+        with self.assertRaises(PluginError) as ctx:
+            await GuestDatabase().execute_streamed({})  # type: ignore[arg-type]
+        self.assertEqual(ctx.exception.code, "unsupported")
 
 
 if __name__ == "__main__":
@@ -167,13 +321,22 @@ class _MockTransport:
 
     def __init__(self) -> None:
         self.requests: list[bytes] = []
+        self.methods: list[tuple[str, bytes | None]] = []
 
-    async def limitsBytes(self):  # noqa: N802  (Workers RPC method name)
+    async def limitsBytes(self) -> bytes:  # noqa: N802  (Workers RPC method name)
         from bookclerk_plugin_sdk.db_value import encode_db_capabilities_reply
 
+        self.methods.append(("limitsBytes", None))
         return encode_db_capabilities_reply(_CAPS)
 
-    async def executeBytes(self, body):  # noqa: N802  (Workers RPC method name)
+    async def executeStreamedBytes(self, body: bytes) -> bytes:  # noqa: N802  (Workers RPC name)
+        from bookclerk_plugin_sdk.db_value import decode_execute_request
+
+        self.requests.append(bytes(body))
+        self.methods.append(("executeStreamedBytes", bytes(body)))
+        return _frames(decode_execute_request(bytes(body))["operationId"])
+
+    async def executeBytes(self, body: bytes) -> bytes:  # noqa: N802  (Workers RPC method name)
         from bookclerk_plugin_sdk.db_value import (
             decode_execute_request,
             encode_execute_result_reply,
@@ -201,14 +364,218 @@ class _MockTransport:
 
 
 class WorkerdTransportDbTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reader_chunks_release_the_reader_when_the_consumer_stops(self) -> None:
+        from bookclerk_plugin_sdk.workerd import _reader_chunks
+
+        class _Reader:
+            def __init__(self, cancel: str) -> None:
+                self.events: list[str] = []
+                self._chunks = [b"ab", b"cd"]
+                self._cancel = cancel
+
+            async def read(self) -> SimpleNamespace:
+                if not self._chunks:
+                    return SimpleNamespace(done=True, value=None)
+                return SimpleNamespace(done=False, value=self._chunks.pop(0))
+
+            def cancel(self) -> object:
+                self.events.append("cancel")
+                if self._cancel == "refused":
+                    raise RuntimeError("body already gone")
+                if self._cancel == "sync":
+                    return None
+
+                async def _done() -> None:
+                    return None
+
+                return _done()
+
+            def releaseLock(self) -> None:  # noqa: N802  (Streams API method name)
+                self.events.append("release")
+
+        class _Stream:
+            def __init__(self, reader: _Reader) -> None:
+                self.reader = reader
+
+            def getReader(self) -> _Reader:  # noqa: N802  (Streams API method name)
+                return self.reader
+
+        # Stopping early cancels the unread body, whether `cancel()` answers
+        # a promise, a plain value or an error, then releases the reader.
+        for mode in ("promise", "sync", "refused"):
+            reader = _Reader(mode)
+            chunks = _reader_chunks(_Stream(reader))
+            self.assertEqual(await chunks.__anext__(), b"ab")
+            self.assertEqual(reader.events, [])
+            await chunks.aclose()
+            self.assertEqual(reader.events, ["cancel", "release"], mode)
+
+        # A drained body is only released.
+        reader = _Reader("promise")
+        self.assertEqual([c async for c in _reader_chunks(_Stream(reader))], [b"ab", b"cd"])
+        self.assertEqual(reader.events, ["release"])
+
+        # A reader without either method (an older transport double) is fine.
+        class _Bare:
+            def __init__(self) -> None:
+                self._chunks = [b"x"]
+
+            async def read(self) -> SimpleNamespace:
+                if not self._chunks:
+                    return SimpleNamespace(done=True, value=None)
+                return SimpleNamespace(done=False, value=self._chunks.pop(0))
+
+        class _BareStream:
+            def getReader(self) -> _Bare:  # noqa: N802
+                return _Bare()
+
+        chunks = _reader_chunks(_BareStream())
+        self.assertEqual(await chunks.__anext__(), b"x")
+        await chunks.aclose()
+
+    async def test_closing_the_granted_iterator_waits_for_the_reader(self) -> None:
+        from bookclerk_plugin_sdk.workerd import _granted_body_chunks
+
+        class _Reader:
+            def __init__(self) -> None:
+                self.events: list[str] = []
+                self._chunks = [b"ab", b"cd"]
+
+            async def read(self) -> SimpleNamespace:
+                if not self._chunks:
+                    return SimpleNamespace(done=True, value=None)
+                return SimpleNamespace(done=False, value=self._chunks.pop(0))
+
+            async def cancel(self) -> None:
+                # A slow cancellation: the body is still being torn down.
+                for _ in range(3):
+                    await asyncio.sleep(0)
+                self.events.append("cancel")
+
+            def releaseLock(self) -> None:  # noqa: N802  (Streams API method name)
+                self.events.append("release")
+
+        class _Streaming:
+            status = 200
+
+            def __init__(self) -> None:
+                self.reader = _Reader()
+                self.body = SimpleNamespace(getReader=lambda: self.reader)
+
+        resp = _Streaming()
+        chunks = _granted_body_chunks(resp, "executeStreamed")
+        self.assertEqual(await chunks.__anext__(), b"ab")
+        await chunks.aclose()
+        # Cancellation and release have happened by the time `aclose()`
+        # returns, not whenever the inner generator is finalized.
+        self.assertEqual(resp.reader.events, ["cancel", "release"])
+
+    async def test_transport_streamed_reply_without_a_body_is_internal(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError, _invocation_env
+
+        class _Silent(_MockTransport):
+            async def executeStreamedBytes(self, body: Any) -> bytes:  # noqa: N802  (Workers RPC method name)
+                self.methods.append(("executeStreamedBytes", bytes(body)))
+                return b""
+
+        env = _invocation_env({}, {"databases": [{"name": "DB", "transport": _Silent()}]})
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.prepare("SELECT 1").all()
+        self.assertEqual(ctx.exception.code, "internal")
+        self.assertIn("missing body", str(ctx.exception))
+
+    async def test_transport_open_streamed_bytes_is_read_chunk_by_chunk(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError, _invocation_env
+
+        class _Reader:
+            def __init__(self, data: bytes, size: int) -> None:
+                self.windows = [data[at : at + size] for at in range(0, len(data), size)]
+                self.reads = 0
+
+            async def read(self) -> SimpleNamespace:
+                self.reads += 1
+                if not self.windows:
+                    return SimpleNamespace(done=True, value=None)
+                return SimpleNamespace(done=False, value=self.windows.pop(0))
+
+        class _Stream:
+            def __init__(self, data: bytes) -> None:
+                self.reader = _Reader(data, 5)
+
+            def getReader(self) -> _Reader:  # noqa: N802  (web ReadableStream method name)
+                return self.reader
+
+        class _Streaming(_MockTransport):
+            def __init__(self) -> None:
+                super().__init__()
+                self.streams: list[_Stream] = []
+
+            async def openStreamedBytes(self, body: Any) -> _Stream:  # noqa: N802  (Workers RPC method name)
+                from bookclerk_plugin_sdk.db_value import decode_execute_request
+
+                self.methods.append(("openStreamedBytes", bytes(body)))
+                stream = _Stream(_frames(decode_execute_request(bytes(body))["operationId"]))
+                self.streams.append(stream)
+                return stream
+
+            async def executeStreamedBytes(self, body: Any) -> bytes:  # noqa: N802
+                raise AssertionError("openStreamedBytes wins when the transport offers it")
+
+        transport = _Streaming()
+        env = _invocation_env({}, {"databases": [{"name": "DB", "transport": transport}]})
+        seen = [row["n"]["value"] async for row in env.DB.prepare("SELECT 1").iterate()]
+        self.assertEqual(seen, [1])
+        self.assertEqual(
+            [name for name, _ in transport.methods], ["limitsBytes", "openStreamedBytes"]
+        )
+        self.assertGreater(transport.streams[0].reader.reads, 2, "frames crossed in windows")
+
+        # A whole-body answer from `openStreamedBytes` is accepted too, and an
+        # empty one is the `internal` error.
+        class _Whole(_MockTransport):
+            async def openStreamedBytes(self, body: Any) -> bytes:  # noqa: N802
+                return await self.executeStreamedBytes(body)
+
+        env = _invocation_env({}, {"databases": [{"name": "DB", "transport": _Whole()}]})
+        self.assertEqual((await env.DB.prepare("SELECT 1").first())["n"]["value"], 1)
+
+        class _Empty(_MockTransport):
+            async def openStreamedBytes(self, body: Any) -> bytes:  # noqa: N802
+                return b""
+
+        env = _invocation_env({}, {"databases": [{"name": "DB", "transport": _Empty()}]})
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.prepare("SELECT 1").all()
+        self.assertEqual(ctx.exception.code, "internal")
+
+    async def test_transport_without_a_streamed_method_reads_inline(self) -> None:
+        from bookclerk_plugin_sdk.workerd import _invocation_env
+
+        class _Legacy:
+            """The mock's inline methods only: no streamed read at all."""
+
+            __init__ = _MockTransport.__init__
+            limitsBytes = _MockTransport.limitsBytes  # noqa: N815  (Workers RPC method name)
+            executeBytes = _MockTransport.executeBytes  # noqa: N815  (Workers RPC method name)
+
+        legacy = _Legacy()
+        env = _invocation_env({}, {"databases": [{"name": "DB", "transport": legacy}]})
+        row = await env.DB.prepare("SELECT 1").first()
+        self.assertEqual(row["n"]["value"], 7)
+        self.assertEqual([name for name, _ in legacy.methods], ["limitsBytes"])
+
     async def test_transport_entry_becomes_env_binding(self) -> None:
         from bookclerk_plugin_sdk.workerd import _invocation_env
 
         transport = _MockTransport()
         env = _invocation_env({}, {"databases": [{"name": "DB", "transport": transport}]})
-        row = await env.DB.prepare("SELECT 7").first()
-        self.assertEqual(row["n"]["value"], 7)
+        # The stub's session streams, so the read crosses `executeStreamedBytes`.
+        row = await env.DB.prepare("SELECT 1").first()
+        self.assertEqual(row["n"]["value"], 1)
         self.assertEqual(len(transport.requests), 1, "one Cap'n request crossed the stub")
+        self.assertEqual(
+            [name for name, _ in transport.methods], ["limitsBytes", "executeStreamedBytes"]
+        )
 
     async def test_transport_limits_decode_the_capabilities_reply(self) -> None:
         from bookclerk_plugin_sdk.workerd import PluginError, _invocation_env
@@ -219,7 +586,7 @@ class WorkerdTransportDbTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caps["maxRequestBytes"], _CAPS["maxRequestBytes"])
 
         class _Empty:
-            async def limitsBytes(self):  # noqa: N802
+            async def limitsBytes(self) -> bytes:  # noqa: N802
                 return b""
 
         env = _invocation_env({}, {"databases": [{"name": "DB", "transport": _Empty()}]})

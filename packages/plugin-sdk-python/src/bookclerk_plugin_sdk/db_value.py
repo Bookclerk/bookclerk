@@ -9,20 +9,46 @@ always uses the domain types.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import math
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
-from ._abi import DB_RESULT_SELECTIONS, DB_STATEMENT_KINDS, DB_TYPES
-from ._capnp import _CapnpMessage, _CapnpReader, _CapnpStruct, _StructReader
-from ._wire import _db_capabilities_reply_codec, _decode_message, _encode_message
+from ._abi import (
+    DB_RESULT_SELECTIONS,
+    DB_STATEMENT_KINDS,
+    DB_TYPES,
+    MAX_SCALAR_BYTES,
+    MAX_STREAM_WINDOW_BYTES,
+)
+from ._capnp import NO_CAPS, _CapnpMessage, _CapnpReader, _CapnpStruct, _StructReader
+from ._wire import (
+    _db_capabilities_reply_codec,
+    _decode_message,
+    _encode_message,
+    _execute_stream_frame_codec,
+)
 from .guest_sql import guest_statement_kind, split_exec_queries
 from .limits import LimitExceeded
 
 if TYPE_CHECKING:
     from .abi import DbCapabilities, DbType
+    from .workerd import PluginError
+
+
+def _plugin_error() -> type[PluginError]:
+    """The SDK's ``PluginError`` class, imported late to avoid an import cycle.
+
+    Returns:
+        ``bookclerk_plugin_sdk.workerd.PluginError``.
+    """
+    from .workerd import PluginError
+
+    return PluginError
+
 
 KINDS = frozenset({"null", "boolean", "int64", "float64", "text", "bytes"})
 TYPES = frozenset(DB_TYPES)
@@ -502,6 +528,7 @@ class DatabaseBinding:
         execute: AtomicTransport,
         *,
         limits: LimitsTransport | None = None,
+        execute_streamed: StreamedTransport | None = None,
         max_request_bytes: int = 0,
         max_result_rows: int = 0,
         operation_id: str | None = None,
@@ -514,6 +541,10 @@ class DatabaseBinding:
             execute: Host session projection.
             limits: ``GuestDatabase.limits`` projection; ``None`` on a host
                 that predates it (:meth:`limits` then raises ``unsupported``).
+            execute_streamed: ``GuestDatabase.executeStreamed`` projection:
+                the same batch answered as ``ExecuteStreamFrame`` bytes. When
+                set and the session advertises a streamed budget, every
+                row-returning read goes through it; ``None`` reads inline.
             max_request_bytes: Negotiated cap (``0`` = unlimited).
             max_result_rows: Default ``maxRows`` for :meth:`PreparedStatement.all`.
             operation_id: Default retry id; omitted calls mint a UUID.
@@ -522,6 +553,8 @@ class DatabaseBinding:
         """
         self._execute = execute
         self._limits = limits
+        self._execute_streamed = execute_streamed
+        self._limits_fetch: asyncio.Future[DbCapabilities | None] | None = None
         self._max_request_bytes = max_request_bytes
         self._max_result_rows = max_result_rows
         self._operation_id = operation_id
@@ -554,12 +587,123 @@ class DatabaseBinding:
                 ``GuestDatabase.limits``.
         """
         if self._limits is None:
-            from bookclerk_plugin_sdk.workerd import PluginError
-
-            raise PluginError.from_wire(
+            raise _plugin_error().from_wire(
                 "unsupported", "GuestDatabase.limits is not available on this host"
             )
-        return await self._limits()
+        caps = await self._session_limits()
+        if caps is None:
+            # The cached fetch failed: let the host's own error surface, and
+            # keep a later success so reads use the session's budget.
+            caps = await self._limits()
+            fetched: asyncio.Future[DbCapabilities | None] = (
+                asyncio.get_running_loop().create_future()
+            )
+            fetched.set_result(caps)
+            self._limits_fetch = fetched
+        return caps
+
+    async def _session_limits(self) -> DbCapabilities | None:
+        """The session's limits, fetched once per binding (one invocation).
+
+        Overlapping first reads share one fetch, so a later failure cannot
+        replace an earlier success. The fetch is shielded from its callers:
+        a cancelled or timed-out read leaves it running for the others, and
+        a fetch that was itself cancelled is forgotten so the next read
+        retries instead of inheriting the cancellation.
+
+        Returns:
+            The capabilities, or ``None`` when the host predates
+            ``GuestDatabase.limits`` or the call failed; the binding then
+            reads inline and :meth:`limits` reports the error itself.
+        """
+        fetch = self._limits_fetch
+        if fetch is None or fetch.cancelled():
+            # A fetch cancelled with no waiter (its loop closed under it) is
+            # replaced rather than awaited, which would raise its cancellation.
+            fetch = self._limits_fetch = asyncio.ensure_future(self._fetch_limits())
+        try:
+            return await asyncio.shield(fetch)
+        except asyncio.CancelledError:
+            if fetch.cancelled() and self._limits_fetch is fetch:
+                self._limits_fetch = None
+            raise
+
+    async def _fetch_limits(self) -> DbCapabilities | None:
+        """One ``GuestDatabase.limits`` call, with any failure read as ``None``."""
+        if self._limits is None:
+            return None
+        try:
+            return await self._limits()
+        except Exception:  # noqa: BLE001  (any failure means "read inline")
+            return None
+
+    def chunk(
+        self,
+        statements: list[PreparedStatement],
+        *,
+        max_statements: int | None = None,
+        max_request_bytes: int | None = None,
+    ) -> AsyncIterator[list[PreparedStatement]]:
+        """Split ``statements`` into batches that each fit one request.
+
+        ``async for b in db.chunk(stmts): await db.batch(b)``. Each batch is
+        atomic; the loop is not. The caps come from the session's limits
+        (``maxStatements``, and the tighter of the session's and the
+        binding's ``maxRequestBytes``) unless given here; zero caps given
+        explicitly mean one batch. A single statement larger than the
+        request cap is yielded alone, so :meth:`batch` reports the typed
+        error. Batches are sized with the UUID-shaped retry id the binding
+        mints; a caller-chosen retry id that is longer leaves that much less
+        room.
+
+        Args:
+            statements: Prepared statements (binds and intent already applied).
+            max_statements: Statements per batch (``0`` = no cap); the
+                session's ``maxStatements`` when ``None``.
+            max_request_bytes: Encoded request bytes per batch (``0`` = no
+                cap); the tighter of the session's and the binding's cap
+                when ``None``.
+
+        Returns:
+            Batches in order, together covering every statement once.
+
+        Raises:
+            PluginError: ``unsupported`` when neither the session's limits nor
+                explicit caps are available.
+        """
+        return self._chunk(statements, max_statements, max_request_bytes)
+
+    async def _chunk(
+        self,
+        statements: list[PreparedStatement],
+        max_statements: int | None,
+        max_request_bytes: int | None,
+    ) -> AsyncIterator[list[PreparedStatement]]:
+        explicit = max_statements is not None and max_request_bytes is not None
+        caps = None if explicit else await self._session_limits()
+        statements_cap = (
+            max_statements
+            if max_statements is not None
+            else (caps["maxStatements"] if caps is not None else 0)
+        )
+        if max_request_bytes is not None:
+            bytes_cap = max_request_bytes
+        else:
+            # The session's request cap and the binding's own both apply to
+            # ``batch()``, so a batch is sized to the tighter one.
+            bytes_cap = _tighter_cap(
+                caps["maxRequestBytes"] if caps is not None else 0, self._max_request_bytes
+            )
+        # Explicit zero caps mean "one batch"; only missing caps are an error.
+        if not explicit and statements_cap <= 0 and bytes_cap <= 0:
+            raise _plugin_error().from_wire(
+                "unsupported",
+                "chunk needs the session limits (GuestDatabase.limits) "
+                "or explicit max_statements / max_request_bytes",
+            )
+        typed = [stmt._as_typed() for stmt in statements]  # noqa: SLF001
+        for indexes in chunk_indexes(typed, statements_cap, bytes_cap):
+            yield [statements[i] for i in indexes]
 
     async def batch(
         self,
@@ -603,12 +747,11 @@ class DatabaseBinding:
         """Internal typed-batch transport. Prefer :meth:`prepare` / :meth:`batch`."""
         return await self._execute_batch(batch, retry=retry)
 
-    async def _execute_batch(
+    async def _request_for(
         self,
         batch: list[TypedDbStatement],
-        *,
-        retry: RetryToken | None = None,
-    ) -> ExecuteReply:
+        retry: RetryToken | None,
+    ) -> ExecuteRequest:
         if not batch:
             raise ValueError("execute statements must be non-empty")
         if retry is not None:
@@ -627,23 +770,238 @@ class DatabaseBinding:
             "deadlineUnixMs": self._deadline_unix_ms,
         }
         encoded = encode_execute_request(request)
-        if self._max_request_bytes and len(encoded) > self._max_request_bytes:
-            from bookclerk_plugin_sdk.workerd import PluginError
-
-            raise PluginError.limit_exceeded(
-                LimitExceeded("maxRequestBytes", self._max_request_bytes, len(encoded))
+        # The tighter of the binding's configured cap and the session's, so
+        # an oversized request fails locally with the typed error the host
+        # would raise (the same cap `chunk()` splits to).
+        caps = await self._session_limits()
+        cap = _tighter_cap(
+            self._max_request_bytes, caps["maxRequestBytes"] if caps is not None else 0
+        )
+        if cap and len(encoded) > cap:
+            raise _plugin_error().limit_exceeded(
+                LimitExceeded("maxRequestBytes", cap, len(encoded))
             )
-        return await self._execute(request)
+        return request
+
+    async def _open_streamed(
+        self, request: ExecuteRequest
+    ) -> tuple[AsyncIterable[bytes], DbCapabilities] | None:
+        """Open the streamed read for ``request`` when the session streams.
+
+        Returns:
+            The frame chunks and the session's capabilities, or ``None`` to
+            read inline: no streamed transport, no (or non-streaming) limits,
+            or an ``unsupported`` answer from an older host.
+        """
+        if self._execute_streamed is None:
+            return None
+        caps = await self._session_limits()
+        if caps is None or not streams_results(caps):
+            return None
+        try:
+            body = await self._execute_streamed(request)
+        except _plugin_error() as err:
+            if err.wire_code == "unsupported":
+                return None
+            raise
+        if isinstance(body, (bytes, bytearray, memoryview)):
+            return _one_chunk(bytes(body)), caps
+        return body, caps
+
+    async def _execute_batch(
+        self,
+        batch: list[TypedDbStatement],
+        *,
+        retry: RetryToken | None = None,
+    ) -> ExecuteReply:
+        request = await self._request_for(batch, retry)
+        streamed = await self._open_streamed(request)
+        if streamed is None:
+            return _reply_for(request, await self._execute(request))
+        chunks, caps = streamed
+        decoder = ExecuteStreamDecoder(execute_stream_limits(caps))
+        try:
+            async for chunk in chunks:
+                decoder.push(bytes(chunk))
+        finally:
+            # A refused frame closes the chunk source, which releases the
+            # unread transport body instead of leaving it parked.
+            await _aclose(chunks)
+        try:
+            reply = decoder.finish()
+        except _plugin_error() as err:
+            if err.wire_code == "unsupported":
+                return _reply_for(request, await self._execute(request))
+            raise
+        return _reply_for(request, reply)
+
+    async def _inline_rows(self, request: ExecuteRequest) -> AsyncIterator[dict[str, Any]]:
+        """Rows of a single-statement request read inline, from one ``execute``."""
+        reply = _reply_for(request, await self._execute(request))
+        if reply["statements"]:
+            result = reply["statements"][0]
+            for row in result.get("rows") or []:
+                yield _row_map(result.get("columns") or [], row)
+
+    async def _iterate_rows(
+        self,
+        batch: list[TypedDbStatement],
+        retry: RetryToken | None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Rows of a single-statement request as they arrive, kept by no one.
+
+        A stream that answers ``unsupported`` before any row arrived falls back
+        to the inline read like ``all()``; once rows were handed out the error
+        is the caller's, since the read cannot restart behind them.
+        """
+        request = await self._request_for(batch, retry)
+        streamed = await self._open_streamed(request)
+        if streamed is None:
+            async for row in self._inline_rows(request):
+                yield row
+            return
+        chunks, caps = streamed
+        decoder = ExecuteStreamDecoder(execute_stream_limits(caps), retain_rows=False)
+
+        def falls_back_inline(err: Any, yielded: bool) -> bool:
+            return not yielded and err.wire_code == "unsupported"
+
+        # One push can complete the statement, its rows and the end frame at
+        # once, so the columns come from the frames rather than the decoder.
+        columns: list[dict[str, Any]] = []
+        yielded = False
+        try:
+            async for chunk in chunks:
+                try:
+                    frames = decoder.push(bytes(chunk))
+                except _plugin_error() as err:
+                    if falls_back_inline(err, yielded):
+                        async for row in self._inline_rows(request):
+                            yield row
+                        return
+                    raise
+                for frame in frames:
+                    if frame["kind"] == "head":
+                        _check_reply_identity(
+                            request,
+                            frame["value"]["operationId"],
+                            frame["value"]["statementCount"],
+                        )
+                    elif frame["kind"] == "statement":
+                        columns = frame["value"]["columns"]
+                    elif frame["kind"] == "rows":
+                        for row in frame["value"]:
+                            yielded = True
+                            yield _row_map(columns, row)
+        finally:
+            # A consumer that stops early (or a refused frame) closes the chunk
+            # source, which releases the unread transport body.
+            await _aclose(chunks)
+        try:
+            decoder.finish()
+        except _plugin_error() as err:
+            if falls_back_inline(err, yielded):
+                async for row in self._inline_rows(request):
+                    yield row
+                return
+            raise
+
+
+async def _aclose(source: AsyncIterable[bytes]) -> None:
+    """Close an async chunk source that offers ``aclose()``; a plain iterable is left alone."""
+    aclose = getattr(source, "aclose", None)
+    if aclose is not None:
+        await aclose()
+
+
+def _tighter_cap(a: int, b: int) -> int:
+    """The smaller of two caps where ``0`` means "no cap"."""
+    if a > 0 and b > 0:
+        return min(a, b)
+    return a if a > 0 else b
+
+
+def _check_reply_identity(request: ExecuteRequest, operation_id: str, statement_count: int) -> None:
+    """Check that a reply answers ``request``: same id, one result per statement.
+
+    A request sent without an id takes the id the host minted.
+
+    Raises:
+        PluginError: ``invalid_params`` when the reply is for another request.
+    """
+    if request["operationId"] and operation_id != request["operationId"]:
+        raise _plugin_error().from_wire(
+            "invalid_params",
+            f"reply answers operation {operation_id}, not {request['operationId']}",
+        )
+    if statement_count != len(request["statements"]):
+        raise _plugin_error().from_wire(
+            "invalid_params",
+            f"reply carries {statement_count} results for {len(request['statements'])} statements",
+        )
+
+
+def _reply_for(request: ExecuteRequest, reply: ExecuteReply) -> ExecuteReply:
+    """``reply`` once it is checked against ``request``.
+
+    Its identity (see :func:`_check_reply_identity`), and no result with more
+    rows than its statement's ``maxRows`` asked for.
+
+    Raises:
+        PluginError: ``invalid_params`` when the reply is for another request
+            or a result carries more rows than its statement allowed.
+    """
+    _check_reply_identity(request, reply["operationId"], len(reply["statements"]))
+    for i, (statement, result) in enumerate(
+        zip(request["statements"], reply["statements"], strict=True)
+    ):
+        max_rows = statement.get("maxRows") or 0
+        rows = len(result.get("rows") or [])
+        if 0 < max_rows < rows:
+            raise _plugin_error().from_wire(
+                "invalid_params",
+                f"reply carries {rows} rows for statement {i}, which asked for at most {max_rows}",
+            )
+    return reply
+
+
+async def _one_chunk(body: bytes) -> AsyncIterator[bytes]:
+    """Yield ``body`` as the single chunk of a stream.
+
+    Args:
+        body: Every frame, concatenated.
+
+    Yields:
+        ``body`` once.
+    """
+    yield body
+
+
+def _row_map(columns: list[dict[str, Any]], row: dict[str, Any]) -> dict[str, Any]:
+    """Pair one row's cells with its column names.
+
+    Args:
+        columns: ``DbColumn`` descriptors of the statement.
+        row: ``DbRow`` (``values`` in column order).
+
+    Returns:
+        Column name → typed cell.
+    """
+    cells = row.get("values") or []
+    return {col["name"]: cell for col, cell in zip(columns, cells, strict=False)}
 
 
 AtomicTransport = Callable[[ExecuteRequest], Awaitable[ExecuteReply]]
 LimitsTransport = Callable[[], Awaitable["DbCapabilities"]]
+StreamedTransport = Callable[[ExecuteRequest], Awaitable["bytes | AsyncIterable[bytes]"]]
+"""``GuestDatabase.executeStreamed`` projection: frame bytes, whole or chunked."""
 
 
 def create_database_binding(
     transport: AtomicTransport,
     *,
     limits: LimitsTransport | None = None,
+    execute_streamed: StreamedTransport | None = None,
     max_request_bytes: int = 0,
     max_result_rows: int = 0,
     operation_id: str | None = None,
@@ -655,6 +1013,9 @@ def create_database_binding(
     Args:
         transport: Host ``execute`` projection.
         limits: Host ``limits`` projection, when the host offers one.
+        execute_streamed: Host ``executeStreamed`` projection, when the host
+            offers one; reads then stream on sessions that advertise a
+            streamed budget.
         max_request_bytes: Negotiated cap (``0`` = unlimited).
         max_result_rows: Default ``maxRows`` for ``all()``.
         operation_id: Default retry id; omitted calls mint a UUID.
@@ -667,6 +1028,7 @@ def create_database_binding(
     return DatabaseBinding(
         transport,
         limits=limits,
+        execute_streamed=execute_streamed,
         max_request_bytes=max_request_bytes,
         max_result_rows=max_result_rows,
         operation_id=operation_id,
@@ -792,6 +1154,25 @@ class PreparedStatement:
         )
         return statement_result_to_d1_result(reply["statements"][0], reply["timing"])
 
+    def iterate(self, *, retry: RetryToken | None = None) -> AsyncIterator[dict[str, Any]]:
+        """Rows one at a time from the same single-snapshot read as :meth:`all`.
+
+        ``async for row in stmt.iterate(): ...`` decodes the streamed reply
+        frame by frame without holding the whole result. The read still fails
+        closed (``limit_exceeded``) past the session's streamed budget. On a
+        session that does not stream the rows come from one inline ``all()``.
+
+        Args:
+            retry: Optional retry token.
+
+        Returns:
+            Column name → typed cell, one mapping per row, in order.
+        """
+        return self._binding._iterate_rows(  # noqa: SLF001
+            [self.as_all()._as_typed()],  # noqa: SLF001
+            retry,
+        )
+
     def _as_typed(self) -> TypedDbStatement:
         result_selection, max_rows = self._intent or ("rows", self._max_result_rows)
         kind: DbStatementKind = (
@@ -806,6 +1187,495 @@ class PreparedStatement:
             "maxRows": max_rows,
             "resultSelection": result_selection,
         }
+
+
+# ---------------------------------------------------------------------------
+# Streamed execute replies (``GuestDatabase.executeStreamed``)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ExecuteStreamLimits:
+    """What a receiver lets a streamed reply grow to.
+
+    Attributes:
+        max_bytes: Encoded reply budget in bytes (``0`` = only the framing slack).
+        bytes_limit: Capability field ``max_bytes`` came from, named by the
+            error it raises (``maxStreamedResultBytes`` or ``maxAtomicResultBytes``).
+        max_rows: Rows one statement may return (``0`` = unlimited).
+        rows_limit: Capability field ``max_rows`` came from
+            (``maxStreamedResultRows`` or ``maxResultRows``).
+    """
+
+    max_bytes: int
+    bytes_limit: str
+    max_rows: int
+    rows_limit: str
+
+
+def streams_results(caps: DbCapabilities) -> bool:
+    """Whether ``caps`` advertises a streamed result budget.
+
+    Args:
+        caps: Session capabilities (``limits()``).
+
+    Returns:
+        True when ``executeStreamed`` is worth calling on this session.
+    """
+    return caps["maxStreamedResultBytes"] > 0 and caps["maxStreamedResultRows"] > 0
+
+
+def execute_stream_limits(caps: DbCapabilities) -> ExecuteStreamLimits:
+    """The streamed budget of ``caps``, or its inline caps when it does not stream.
+
+    Args:
+        caps: Session capabilities (``limits()``).
+
+    Returns:
+        Limits for an :class:`ExecuteStreamDecoder`.
+    """
+    if streams_results(caps):
+        return ExecuteStreamLimits(
+            caps["maxStreamedResultBytes"],
+            "maxStreamedResultBytes",
+            caps["maxStreamedResultRows"],
+            "maxStreamedResultRows",
+        )
+    return ExecuteStreamLimits(
+        caps["maxAtomicResultBytes"],
+        "maxAtomicResultBytes",
+        caps["maxResultRows"],
+        "maxResultRows",
+    )
+
+
+def raw_stream_ceiling(limits: ExecuteStreamLimits) -> int:
+    """Raw frame bytes a receiver accepts before failing closed.
+
+    The reply budget plus one eighth for frame headers and one window of slack.
+
+    Args:
+        limits: Budget.
+
+    Returns:
+        Byte ceiling on the whole frame sequence and on any one frame.
+    """
+    return limits.max_bytes + limits.max_bytes // 8 + MAX_STREAM_WINDOW_BYTES
+
+
+def _validate_cell(cell: dict[str, Any]) -> None:
+    """Check a streamed cell the way the inline reader does.
+
+    Raises:
+        PluginError: ``invalid_params`` for a non-finite ``float64`` or TEXT
+            holding U+0000.
+    """
+    kind = cell["kind"]
+    if kind == "float64" and not math.isfinite(cell["value"]):
+        raise _plugin_error().from_wire(
+            "invalid_params", "streamed reply float64 cell is not finite"
+        )
+    if kind == "text" and "\x00" in cell["value"]:
+        raise _plugin_error().from_wire(
+            "invalid_params", "streamed reply TEXT cell contains U+0000"
+        )
+
+
+_ROWS_FRAME = 2
+"""Discriminant of the ``rows`` variant of ``ExecuteStreamFrame``."""
+
+
+def _decode_frame(data: bytes, ceiling: int, admit_rows: Callable[[int], None]) -> dict[str, Any]:
+    """Decode one frame under the traversal budget its stream negotiated.
+
+    A frame carrying one wide row can be larger than the budget that suits
+    control messages, so the reader's budget follows the frame's own size,
+    clamped to the stream's raw ceiling, as the host's decoder does. A rows
+    frame is announced to ``admit_rows`` by its row count before any cell
+    decodes, so the decoder can refuse it against its row budget first.
+
+    Args:
+        data: One complete single-segment frame.
+        ceiling: Raw byte ceiling of the stream (:func:`raw_stream_ceiling`).
+        admit_rows: Called with the row count of a rows frame before its
+            cells decode; raises to refuse the frame.
+
+    Returns:
+        The ``ExecuteStreamFrame`` dict.
+
+    Raises:
+        PluginError: ``invalid_params`` when the frame does not decode, or
+            whatever ``admit_rows`` raised.
+    """
+    words = min(len(data) // 8 + 16, max(ceiling, MAX_SCALAR_BYTES) // 8)
+    try:
+        reader = _CapnpReader(data, words)
+        codec = _execute_stream_frame_codec
+        root = reader.root(codec.data_words, codec.pointer_count)
+        if root.get_u16(0) == _ROWS_FRAME:
+            admit_rows(root.get_struct_list_length(0))
+        return codec.read(root, NO_CAPS)
+    except _plugin_error():
+        raise
+    except Exception as err:
+        raise _plugin_error().from_wire(
+            "invalid_params", f"streamed reply frame does not decode: {err}"
+        ) from err
+
+
+class ExecuteStreamDecoder:
+    """Sans-IO decoder of a streamed execute reply.
+
+    Feed it bytes in any split with :meth:`push`, then take the reassembled
+    ``ExecuteReply`` with :meth:`finish`. It fails closed on more raw bytes
+    than the budget allows, on a statement with more rows than the row cap,
+    and on any frame out of sequence; fed in any split it yields the same
+    reply as one push.
+    """
+
+    def __init__(self, limits: ExecuteStreamLimits, *, retain_rows: bool = True) -> None:
+        """Create a decoder held to ``limits``.
+
+        Args:
+            limits: Budget the stream is held to.
+            retain_rows: ``False`` counts rows against the budget but drops
+                them from the collected reply (for ``iterate()``).
+        """
+        self._limits = limits
+        self._retain_rows = retain_rows
+        self._buf = bytearray()
+        self._at = 0
+        self._seen = 0
+        self._state = "awaitingHead"
+        self._operation_id = ""
+        self._statement_count = 0
+        self._next_index = 0
+        self._statements: list[StatementResult] = []
+        self._open: StatementResult | None = None
+        self._open_rows = 0
+        self._columns: list[dict[str, Any]] = []
+        self._outcome: ExecuteReply | PluginError | None = None
+
+    @property
+    def finished(self) -> bool:
+        """Whether the final frame (``end`` or ``err``) has been decoded.
+
+        Returns:
+            True once the stream is complete.
+        """
+        return self._state == "finished"
+
+    @property
+    def columns(self) -> list[dict[str, Any]]:
+        """Columns of the statement whose rows are arriving.
+
+        Returns:
+            The open statement's ``DbColumn`` list, empty between statements.
+        """
+        return self._columns
+
+    def push(self, data: bytes) -> list[dict[str, Any]]:
+        """Feed the next bytes of the stream.
+
+        Args:
+            data: Any slice of the frame sequence.
+
+        Returns:
+            The ``ExecuteStreamFrame`` dicts completed by these bytes, in order.
+
+        Raises:
+            PluginError: ``limit_exceeded`` when the stream exceeds the byte
+                or row budget; ``invalid_params`` when a frame is malformed
+                or out of sequence or bytes follow the final frame.
+        """
+        try:
+            return self._push(data)
+        except _plugin_error() as err:
+            # A refused stream stays refused: ``finish()`` after a failed push
+            # reports the failure, never a reply the earlier frames described.
+            self._columns = []
+            self._state = "finished"
+            self._outcome = err
+            raise
+
+    def _push(self, data: bytes) -> list[dict[str, Any]]:
+        """:meth:`push` before its failure is latched."""
+        frames: list[dict[str, Any]] = []
+        if not data:
+            return frames
+        if self.finished:
+            raise self._sequence("carries bytes after its final frame")
+        self._seen += len(data)
+        ceiling = raw_stream_ceiling(self._limits)
+        if self._seen > ceiling:
+            raise self._bytes_exceeded(self._seen)
+        self._buf += data
+        # Completed frames are consumed by offset and the buffer is compacted
+        # once per push, so a reply of many frames is decoded in one pass.
+        buf = self._buf
+        at = self._at
+        while len(buf) - at >= 8:
+            if int.from_bytes(buf[at : at + 4], "little") != 0:
+                raise _plugin_error().from_wire(
+                    "invalid_params",
+                    "streamed reply frame is not a single-segment Cap'n message",
+                )
+            frame_len = int.from_bytes(buf[at + 4 : at + 8], "little") * 8 + 8
+            if frame_len > ceiling:
+                raise self._bytes_exceeded(frame_len)
+            if len(buf) - at < frame_len:
+                break
+            frame = _decode_frame(bytes(buf[at : at + frame_len]), ceiling, self._admit_rows)
+            at += frame_len
+            self._apply(frame)
+            frames.append(frame)
+            if self.finished:
+                if len(buf) > at:
+                    raise self._sequence("carries bytes after its final frame")
+                break
+        if at:
+            del buf[:at]
+        self._at = 0
+        return frames
+
+    def finish(self) -> ExecuteReply:
+        """Take the reassembled reply once the stream has ended.
+
+        Returns:
+            The reply the frames described.
+
+        Raises:
+            PluginError: The adapter's error when the stream ended with
+                ``err``; ``unavailable`` when it ended before its final frame.
+        """
+        if not self.finished:
+            raise _plugin_error().from_wire(
+                "unavailable", "streamed reply ended before its final frame"
+            )
+        outcome = self._outcome
+        if isinstance(outcome, dict):
+            return outcome
+        assert isinstance(outcome, _plugin_error())  # noqa: S101  (finished implies an outcome)
+        raise outcome
+
+    def _bytes_exceeded(self, used: int) -> PluginError:
+        return _plugin_error().limit_exceeded(
+            LimitExceeded(self._limits.bytes_limit, self._limits.max_bytes, used)
+        )
+
+    def _sequence(self, message: str) -> PluginError:
+        return _plugin_error().from_wire("invalid_params", f"streamed reply {message}")
+
+    def _admit_rows(self, count: int) -> None:
+        """Admit a rows frame by its row count before any of its cells decode.
+
+        Raises:
+            PluginError: ``invalid_params`` when no statement is open,
+                ``limit_exceeded`` when the rows would pass the row cap.
+        """
+        if self._open is None:
+            raise self._sequence("carries rows before a statement frame")
+        used = self._open_rows + count
+        if 0 < self._limits.max_rows < used:
+            raise _plugin_error().limit_exceeded(
+                LimitExceeded(self._limits.rows_limit, self._limits.max_rows, used)
+            )
+
+    def _apply(self, frame: dict[str, Any]) -> None:
+        kind = frame["kind"]
+        value = frame["value"]
+        if kind == "err":
+            self._columns = []
+            self._state = "finished"
+            self._outcome = _plugin_error().from_wire(
+                value["code"], value["message"], value["details"]
+            )
+            return
+        if self._state == "awaitingHead":
+            if kind != "head":
+                raise self._sequence(f"opens with a {kind} frame instead of head")
+            self._state = "inReply"
+            self._operation_id = value["operationId"]
+            self._statement_count = value["statementCount"]
+            return
+        if self._state == "finished":
+            raise self._sequence("carries a frame after its final frame")
+        if kind == "head":
+            raise self._sequence("carries a second head frame")
+        if kind == "statement":
+            if value["index"] != self._next_index:
+                raise self._sequence(
+                    f"statement frame {value['index']} arrived where "
+                    f"{self._next_index} was expected"
+                )
+            if self._next_index >= self._statement_count:
+                raise self._sequence("carries more statements than its head announced")
+            if self._open is not None:
+                self._statements.append(self._open)
+            self._open = {
+                "rows": [],
+                "columns": value["columns"],
+                "rowsAffected": value["rowsAffected"],
+            }
+            self._open_rows = 0
+            self._next_index += 1
+            self._columns = value["columns"]
+            return
+        if kind == "rows":
+            if self._open is None:
+                raise self._sequence("carries rows before a statement frame")
+            width = len(self._open["columns"])
+            for row in value:
+                if len(row["values"]) != width:
+                    raise self._sequence(
+                        f"carries a row of {len(row['values'])} cells for {width} columns"
+                    )
+                for cell in row["values"]:
+                    _validate_cell(cell)
+            self._open_rows += len(value)
+            if 0 < self._limits.max_rows < self._open_rows:
+                raise _plugin_error().limit_exceeded(
+                    LimitExceeded(self._limits.rows_limit, self._limits.max_rows, self._open_rows)
+                )
+            if self._retain_rows:
+                self._open["rows"].extend(value)
+            return
+        if kind == "end":
+            if self._open is not None:
+                self._statements.append(self._open)
+                self._open = None
+            if len(self._statements) != self._statement_count:
+                raise self._sequence(
+                    f"ended with {len(self._statements)} statements; "
+                    f"its head announced {self._statement_count}"
+                )
+            self._columns = []
+            self._state = "finished"
+            self._outcome = {
+                "operationId": self._operation_id,
+                "statements": self._statements,
+                "timing": value,
+            }
+            return
+        raise self._sequence(f"carries an unknown {kind} frame")
+
+
+def decode_execute_stream(data: bytes, limits: ExecuteStreamLimits) -> ExecuteReply:
+    """Decode a whole frame sequence under ``limits``.
+
+    Args:
+        data: Every frame, concatenated.
+        limits: Budget the stream is held to.
+
+    Returns:
+        The reassembled reply.
+
+    Raises:
+        PluginError: See :meth:`ExecuteStreamDecoder.push` and
+            :meth:`ExecuteStreamDecoder.finish`.
+    """
+    decoder = ExecuteStreamDecoder(limits)
+    decoder.push(data)
+    return decoder.finish()
+
+
+_PROBE_STATEMENT: TypedDbStatement = {
+    "sql": "",
+    "parameters": [],
+    "kind": "select",
+    "maxRows": 0,
+    "resultSelection": "rows",
+}
+"""The smallest statement a request can carry, used to measure the others."""
+
+_RETRY_ID_PLACEHOLDER = "00000000-0000-4000-8000-000000000000"
+"""A UUID-shaped ``operationId``, the widest the binding mints."""
+
+_RETRY_HASH_PLACEHOLDER = "0" * 64
+"""A SHA-256 hex ``requestHash``, the widest a retry token carries."""
+
+
+def _request_bytes(operation_id: str, request_hash: str, statements: list[TypedDbStatement]) -> int:
+    return len(
+        encode_execute_request(
+            {
+                "operationId": operation_id,
+                "requestHash": request_hash,
+                "statements": statements,
+                "deadlineUnixMs": 0,
+            }
+        )
+    )
+
+
+def chunk_indexes(
+    typed: list[TypedDbStatement],
+    max_statements: int,
+    max_request_bytes: int,
+) -> list[list[int]]:
+    """Greedy split of ``typed`` into index runs that each fit one request.
+
+    Sizes are estimated per statement against one probe statement and each
+    run is verified by one exact encode; a run the estimate let through is
+    halved until it fits, and a lone statement over the cap is yielded on
+    its own.
+
+    Args:
+        typed: Statements to split.
+        max_statements: Statements per request (``0`` = no cap).
+        max_request_bytes: Encoded request bytes per request (``0`` = no cap).
+
+    Returns:
+        Index runs in order, covering every statement once.
+    """
+    if not typed:
+        return []
+    probe_request = _request_bytes("", "", [_PROBE_STATEMENT])
+    probe_statement = _request_bytes("", "", [_PROBE_STATEMENT, _PROBE_STATEMENT]) - probe_request
+    base = (
+        _request_bytes(_RETRY_ID_PLACEHOLDER, _RETRY_HASH_PLACEHOLDER, [_PROBE_STATEMENT])
+        - probe_statement
+    )
+    sizes = [_request_bytes("", "", [_PROBE_STATEMENT, stmt]) - probe_request for stmt in typed]
+
+    def fits(run: list[int]) -> bool:
+        if max_request_bytes <= 0:
+            return True
+        encoded = _request_bytes(
+            _RETRY_ID_PLACEHOLDER, _RETRY_HASH_PLACEHOLDER, [typed[i] for i in run]
+        )
+        return encoded <= max_request_bytes
+
+    out: list[list[int]] = []
+    run: list[int] = []
+    used = base
+    for i, size in enumerate(sizes):
+        over_statements = 0 < max_statements <= len(run)
+        over_bytes = max_request_bytes > 0 and run and used + size > max_request_bytes
+        if over_statements or over_bytes:
+            _split_to_fit(run, fits, out)
+            run = []
+            used = base
+        run.append(i)
+        used += size
+    if run:
+        _split_to_fit(run, fits, out)
+    return out
+
+
+def _split_to_fit(run: list[int], fits: Callable[[list[int]], bool], out: list[list[int]]) -> None:
+    """Append ``run`` to ``out`` as runs that each satisfy ``fits``, in order.
+
+    A run the per-statement estimate let through is halved until ``fits``
+    accepts it; a lone index is appended without asking, since it cannot be
+    split further.
+    """
+    if len(run) <= 1 or fits(run):
+        out.append(run)
+        return
+    half = (len(run) + 1) // 2
+    _split_to_fit(run[:half], fits, out)
+    _split_to_fit(run[half:], fits, out)
 
 
 def canonical_execute_request_hash(request: ExecuteRequest) -> str:

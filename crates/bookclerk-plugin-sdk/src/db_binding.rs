@@ -9,10 +9,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bookclerk_plugin_abi::{
     encoded_execute_request_bytes, guest_statement_kind, DbCapabilities, DbPlanStatementKind,
-    DbResultSelection, DbTiming, DbValue, ExecuteReply, ExecuteRequest, LimitExceeded, PluginError,
-    Result, StatementResult, TypedDbStatement,
+    DbResultSelection, DbTiming, DbValue, ExecuteReply, ExecuteRequest, ExecuteStreamLimits,
+    LimitExceeded, PluginError, PluginErrorCode, Result, StatementResult, TypedDbStatement,
 };
 use bookclerk_plugin_abi::{Bindings, GuestDatabase};
+use tokio::sync::Mutex;
 
 static OP_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -81,11 +82,41 @@ struct TerminalIntent {
     max_rows: u32,
 }
 
+/// Caps [`DatabaseBinding::chunk`] splits a batch by when the session's
+/// limits are not to be used.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChunkCaps {
+    /// Statements per request (`0` = no cap).
+    pub max_statements: u32,
+    /// Encoded request bytes per request (`0` = no cap).
+    pub max_request_bytes: u32,
+}
+
 /// Host-mediated typed SQL surface for plugin guests.
+///
+/// Row-returning reads go through `GuestDatabase.executeStreamed` whenever
+/// the session advertises a streamed budget (`limits()`, fetched once per
+/// binding), so a result past the inline caps still arrives whole; sessions
+/// that do not stream, or answer `unsupported`, are read inline.
 #[derive(Clone)]
 pub struct DatabaseBinding {
     session: Arc<dyn GuestDatabase>,
     options: DatabaseBindingOptions,
+    /// The session's limits, fetched once per binding; the lock is held
+    /// across the fetch so overlapping first reads share it.
+    limits: Arc<Mutex<LimitsCache>>,
+}
+
+/// What the binding knows about the session's limits.
+#[derive(Debug, Clone)]
+enum LimitsCache {
+    /// `GuestDatabase.limits` has not been called yet.
+    Unfetched,
+    /// The call failed or the host predates it: reads go inline until an
+    /// explicit [`DatabaseBinding::limits`] succeeds.
+    Failed,
+    /// The session's advertised capabilities.
+    Ready(DbCapabilities),
 }
 
 impl DatabaseBinding {
@@ -101,7 +132,11 @@ impl DatabaseBinding {
         session: Arc<dyn GuestDatabase>,
         options: DatabaseBindingOptions,
     ) -> Self {
-        Self { session, options }
+        Self {
+            session,
+            options,
+            limits: Arc::new(Mutex::new(LimitsCache::Unfetched)),
+        }
     }
 
     /// Takes the named plugin database binding `name` from the `open`
@@ -129,7 +164,94 @@ impl DatabaseBinding {
     /// Returns `unsupported` when the host session predates
     /// `GuestDatabase.limits`.
     pub async fn limits(&self) -> Result<DbCapabilities> {
-        self.session.limits().await
+        if let Some(caps) = self.session_limits().await {
+            return Ok(caps);
+        }
+        // The cached fetch failed: let the host's own error surface, and
+        // keep a later success so reads use the session's budget.
+        let caps = self.session.limits().await?;
+        *self.limits.lock().await = LimitsCache::Ready(caps.clone());
+        Ok(caps)
+    }
+
+    /// The session's limits, fetched once per binding; `None` when the host
+    /// predates `GuestDatabase.limits` or the call failed (read inline).
+    async fn session_limits(&self) -> Option<DbCapabilities> {
+        let mut cache = self.limits.lock().await;
+        if matches!(*cache, LimitsCache::Unfetched) {
+            *cache = match self.session.limits().await {
+                Ok(caps) => LimitsCache::Ready(caps),
+                Err(_) => LimitsCache::Failed,
+            };
+        }
+        match &*cache {
+            LimitsCache::Ready(caps) => Some(caps.clone()),
+            LimitsCache::Unfetched | LimitsCache::Failed => None,
+        }
+    }
+
+    /// Splits `statements` into batches that each fit one request.
+    ///
+    /// `for batch in db.chunk(stmts, None).await? { db.batch(batch, None).await?; }`.
+    /// Each batch is atomic; the loop is not. The caps come from the
+    /// session's limits (`max_statements`, and the tighter of the session's
+    /// and the binding's `max_request_bytes`) unless `caps` is given; zero
+    /// caps given explicitly mean one batch. A single statement larger than
+    /// the request cap is yielded alone, so [`Self::batch`] reports the
+    /// typed error. Batches are sized with the UUID-shaped retry id the
+    /// binding mints; a caller-chosen retry id that is longer leaves that
+    /// much less room.
+    ///
+    /// # Errors
+    ///
+    /// Returns `unsupported` when neither the session's limits nor `caps`
+    /// are available, and [`PluginError::invalid_params`] when a statement
+    /// is missing terminal intent.
+    pub async fn chunk(
+        &self,
+        statements: Vec<PreparedStatement>,
+        caps: Option<ChunkCaps>,
+    ) -> Result<Vec<Vec<PreparedStatement>>> {
+        let explicit = caps.is_some();
+        let caps = match caps {
+            Some(caps) => caps,
+            // The session's request cap and the binding's own both apply to
+            // `batch()`, so a batch is sized to the tighter one.
+            None => match self.session_limits().await {
+                Some(limits) => ChunkCaps {
+                    max_statements: limits.max_statements,
+                    max_request_bytes: tighter_cap(
+                        limits.max_request_bytes,
+                        self.options.max_request_bytes,
+                    ),
+                },
+                None => ChunkCaps {
+                    max_statements: 0,
+                    max_request_bytes: self.options.max_request_bytes,
+                },
+            },
+        };
+        // Explicit zero caps mean "one batch"; only missing caps are an error.
+        if !explicit && caps.max_statements == 0 && caps.max_request_bytes == 0 {
+            return Err(PluginError::unsupported(
+                "chunk needs the session limits (GuestDatabase.limits) or explicit caps",
+            ));
+        }
+        let mut typed = Vec::with_capacity(statements.len());
+        for stmt in &statements {
+            typed.push(stmt.as_typed()?);
+        }
+        let runs = chunk_indexes(&typed, caps.max_statements, caps.max_request_bytes)?;
+        let mut slots: Vec<Option<PreparedStatement>> = statements.into_iter().map(Some).collect();
+        Ok(runs
+            .into_iter()
+            .map(|run| {
+                run.into_iter()
+                    // Every index is yielded exactly once by `chunk_indexes`.
+                    .filter_map(|i| slots.get_mut(i).and_then(Option::take))
+                    .collect()
+            })
+            .collect())
     }
 
     /// Prepare one canonical-SQL statement (`?` placeholders).
@@ -216,7 +338,16 @@ impl DatabaseBinding {
             deadline_unix_ms: self.options.deadline_unix_ms,
         };
         let encoded = encoded_execute_request_bytes(&request)?;
-        let cap = self.options.max_request_bytes;
+        let session_caps = self.session_limits().await;
+        // The tighter of the binding's configured cap and the session's, so
+        // an oversized request fails locally with the typed error the host
+        // would raise (the same cap `chunk()` splits to).
+        let cap = tighter_cap(
+            self.options.max_request_bytes,
+            session_caps
+                .as_ref()
+                .map_or(0, |caps| caps.max_request_bytes),
+        );
         if cap > 0 && encoded.len() > cap as usize {
             return Err(PluginError::limit_exceeded(LimitExceeded::new(
                 "maxRequestBytes",
@@ -224,7 +355,25 @@ impl DatabaseBinding {
                 u64::try_from(encoded.len()).unwrap_or(u64::MAX),
             )));
         }
-        self.session.execute(request).await
+        let Some(caps) = session_caps.filter(DbCapabilities::streams_results) else {
+            return reply_for(&request, self.session.execute(request.clone()).await?);
+        };
+        // An `unsupported` answer (an older host, or a session that advertised
+        // streaming it cannot serve) falls back to the inline read.
+        let streamed = match self.session.execute_streamed(request.clone()).await {
+            Ok(stream) => {
+                stream
+                    .collect(ExecuteStreamLimits::from_capabilities(&caps))
+                    .await
+            }
+            Err(err) => Err(err),
+        };
+        match streamed {
+            Err(err) if err.code == PluginErrorCode::Unsupported => {
+                reply_for(&request, self.session.execute(request.clone()).await?)
+            }
+            other => reply_for(&request, other?),
+        }
     }
 
     /// # Errors
@@ -397,6 +546,171 @@ impl PreparedStatement {
     }
 }
 
+/// The smallest statement a request can carry, used to measure the others.
+fn probe_statement() -> TypedDbStatement {
+    TypedDbStatement {
+        sql: String::new(),
+        parameters: Vec::new(),
+        kind: DbPlanStatementKind::Select,
+        max_rows: 0,
+        result_selection: DbResultSelection::Rows,
+    }
+}
+
+/// A UUID-shaped `operationId`, the widest the binding mints.
+const RETRY_ID_PLACEHOLDER: &str = "00000000-0000-4000-8000-000000000000";
+
+/// Encoded bytes of a request carrying `statements`.
+///
+/// # Errors
+///
+/// Returns when the request cannot be encoded, such as TEXT holding U+0000.
+fn request_bytes(
+    operation_id: &str,
+    request_hash: &str,
+    statements: &[TypedDbStatement],
+) -> Result<usize> {
+    Ok(encoded_execute_request_bytes(&ExecuteRequest {
+        operation_id: operation_id.to_string(),
+        request_hash: request_hash.to_string(),
+        statements: statements.to_vec(),
+        deadline_unix_ms: 0,
+    })?
+    .len())
+}
+
+/// The smaller of two caps where `0` means "no cap".
+fn tighter_cap(a: u32, b: u32) -> u32 {
+    match (a, b) {
+        (0, b) => b,
+        (a, 0) => a,
+        (a, b) => a.min(b),
+    }
+}
+
+/// `reply` once it is checked to answer `request`: the same operation id
+/// (a request sent without one takes the id the host minted), one result
+/// per statement, and no result with more rows than its statement's
+/// `max_rows` asked for.
+///
+/// # Errors
+///
+/// Returns [`PluginError::invalid_params`] when the reply is for another
+/// request or a result carries more rows than its statement allowed.
+fn reply_for(request: &ExecuteRequest, reply: ExecuteReply) -> Result<ExecuteReply> {
+    if !request.operation_id.is_empty() && reply.operation_id != request.operation_id {
+        return Err(PluginError::invalid_params(format!(
+            "reply answers operation {}, not {}",
+            reply.operation_id, request.operation_id
+        )));
+    }
+    if reply.statements.len() != request.statements.len() {
+        return Err(PluginError::invalid_params(format!(
+            "reply carries {} results for {} statements",
+            reply.statements.len(),
+            request.statements.len()
+        )));
+    }
+    for (i, (statement, result)) in request.statements.iter().zip(&reply.statements).enumerate() {
+        let max_rows = usize::try_from(statement.max_rows).unwrap_or(usize::MAX);
+        if statement.max_rows > 0 && result.rows.len() > max_rows {
+            return Err(PluginError::invalid_params(format!(
+                "reply carries {} rows for statement {i}, which asked for at most {max_rows}",
+                result.rows.len()
+            )));
+        }
+    }
+    Ok(reply)
+}
+
+/// Greedy split of `typed` into index runs that each fit one request.
+///
+/// Sizes are estimated per statement against one probe statement and each
+/// run is verified by one exact encode; a run the estimate let through is
+/// halved until it fits, and a lone statement over the cap is yielded on
+/// its own. `0` lifts a cap.
+///
+/// # Errors
+///
+/// Returns when a statement cannot be encoded (U+0000 in SQL or TEXT).
+pub fn chunk_indexes(
+    typed: &[TypedDbStatement],
+    max_statements: u32,
+    max_request_bytes: u32,
+) -> Result<Vec<Vec<usize>>> {
+    if typed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let probe = probe_statement();
+    let retry_hash = "0".repeat(64);
+    let probe_request = request_bytes("", "", std::slice::from_ref(&probe))?;
+    let probe_statement = request_bytes("", "", &[probe.clone(), probe.clone()])? - probe_request;
+    let base = request_bytes(
+        RETRY_ID_PLACEHOLDER,
+        &retry_hash,
+        std::slice::from_ref(&probe),
+    )? - probe_statement;
+    let mut sizes = Vec::with_capacity(typed.len());
+    for stmt in typed {
+        sizes.push(request_bytes("", "", &[probe.clone(), stmt.clone()])? - probe_request);
+    }
+    let bytes_cap = usize::try_from(max_request_bytes).unwrap_or(usize::MAX);
+    let statements_cap = usize::try_from(max_statements).unwrap_or(usize::MAX);
+    let mut fits = |run: &[usize]| -> Result<bool> {
+        if max_request_bytes == 0 {
+            return Ok(true);
+        }
+        let statements: Vec<TypedDbStatement> = run.iter().map(|&i| typed[i].clone()).collect();
+        Ok(request_bytes(RETRY_ID_PLACEHOLDER, &retry_hash, &statements)? <= bytes_cap)
+    };
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    let mut run: Vec<usize> = Vec::new();
+    let mut used = base;
+    for (i, &size) in sizes.iter().enumerate() {
+        let over_statements = max_statements > 0 && run.len() >= statements_cap;
+        let over_bytes = max_request_bytes > 0 && !run.is_empty() && used + size > bytes_cap;
+        if over_statements || over_bytes {
+            split_to_fit(std::mem::take(&mut run), &mut fits, &mut out)?;
+            used = base;
+        }
+        run.push(i);
+        used += size;
+    }
+    if !run.is_empty() {
+        split_to_fit(run, &mut fits, &mut out)?;
+    }
+    Ok(out)
+}
+
+/// Appends `run` to `out` as runs that each satisfy `fits`, in order.
+///
+/// A run the per-statement estimate let through is halved until `fits`
+/// accepts it; a lone index is appended without asking, since it cannot be
+/// split further.
+///
+/// # Errors
+///
+/// Returns the error `fits` returns, which is an encoding failure.
+fn split_to_fit(
+    run: Vec<usize>,
+    fits: &mut impl FnMut(&[usize]) -> Result<bool>,
+    out: &mut Vec<Vec<usize>>,
+) -> Result<()> {
+    let mut pending = vec![run];
+    while let Some(run) = pending.pop() {
+        if run.len() <= 1 || fits(&run)? {
+            out.push(run);
+            continue;
+        }
+        let half = run.len().div_ceil(2);
+        let (left, right) = run.split_at(half);
+        // Pushed right first so the left half comes out first.
+        pending.push(right.to_vec());
+        pending.push(left.to_vec());
+    }
+    Ok(())
+}
+
 fn default_terminal_intent(options: &DatabaseBindingOptions) -> TerminalIntent {
     TerminalIntent {
         selection: DbResultSelection::Rows,
@@ -515,9 +829,10 @@ mod tests {
     impl GuestDatabase for RecordingSession {
         async fn execute(&self, request: ExecuteRequest) -> Result<ExecuteReply> {
             let n = request.statements.len();
+            let operation_id = request.operation_id.clone();
             *self.last.lock().expect("lock") = Some(request);
             Ok(ExecuteReply {
-                operation_id: "op".into(),
+                operation_id,
                 statements: (0..n)
                     .map(|_| bookclerk_plugin_abi::StatementResult {
                         rows: vec![bookclerk_plugin_abi::DbRow {
@@ -551,6 +866,492 @@ mod tests {
         async fn limits(&self) -> Result<DbCapabilities> {
             Ok(DbCapabilities::advertised_sqlite())
         }
+    }
+
+    /// What a streaming session answers `executeStreamed` with.
+    enum StreamAnswer {
+        /// Frames of a reply with this many rows.
+        Rows(usize),
+        /// A typed error before any frame.
+        Err(PluginErrorCode),
+        /// A stream whose `err` frame is `unsupported`.
+        UnsupportedFrame,
+    }
+
+    /// A session that advertises `caps` and counts every call.
+    struct StreamingSession {
+        caps: DbCapabilities,
+        answer: StreamAnswer,
+        inline: AtomicU64,
+        streamed: AtomicU64,
+        limits: AtomicU64,
+    }
+
+    impl StreamingSession {
+        fn new(caps: DbCapabilities, answer: StreamAnswer) -> Arc<Self> {
+            Arc::new(Self {
+                caps,
+                answer,
+                inline: AtomicU64::new(0),
+                streamed: AtomicU64::new(0),
+                limits: AtomicU64::new(0),
+            })
+        }
+
+        fn counts(&self) -> (u64, u64, u64) {
+            (
+                self.inline.load(Ordering::SeqCst),
+                self.streamed.load(Ordering::SeqCst),
+                self.limits.load(Ordering::SeqCst),
+            )
+        }
+    }
+
+    /// A reply with one result per requested statement: statement `s` has
+    /// `rows` rows whose ids start at `s * 100`, so a dropped or reordered
+    /// result is visible.
+    fn reply_with_rows(request: &ExecuteRequest, rows: usize) -> ExecuteReply {
+        ExecuteReply {
+            operation_id: request.operation_id.clone(),
+            statements: (0..request.statements.len())
+                .map(|s| bookclerk_plugin_abi::StatementResult {
+                    rows: (0..rows)
+                        .map(|i| bookclerk_plugin_abi::DbRow {
+                            values: vec![
+                                DbValue::Int64(i64::try_from(s * 100 + i).expect("small")),
+                                DbValue::Text(format!("Title {i}")),
+                            ],
+                        })
+                        .collect(),
+                    columns: vec![
+                        bookclerk_plugin_abi::DbColumn {
+                            name: "id".into(),
+                            db_type: bookclerk_plugin_abi::DbType::Int64,
+                        },
+                        bookclerk_plugin_abi::DbColumn {
+                            name: "title".into(),
+                            db_type: bookclerk_plugin_abi::DbType::Text,
+                        },
+                    ],
+                    rows_affected: 0,
+                })
+                .collect(),
+            timing: bookclerk_plugin_abi::DbTiming {
+                attempt_elapsed_us: 1,
+                db_execution_us: 1,
+                db_timing_source: "test".into(),
+            },
+        }
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl GuestDatabase for StreamingSession {
+        async fn execute(&self, request: ExecuteRequest) -> Result<ExecuteReply> {
+            self.inline.fetch_add(1, Ordering::SeqCst);
+            Ok(reply_with_rows(&request, 1))
+        }
+
+        async fn limits(&self) -> Result<DbCapabilities> {
+            self.limits.fetch_add(1, Ordering::SeqCst);
+            Ok(self.caps.clone())
+        }
+
+        async fn execute_streamed(
+            &self,
+            request: ExecuteRequest,
+        ) -> Result<bookclerk_plugin_abi::ExecuteStream> {
+            self.streamed.fetch_add(1, Ordering::SeqCst);
+            match &self.answer {
+                StreamAnswer::Rows(rows) => bookclerk_plugin_abi::ExecuteStream::from_reply(
+                    &reply_with_rows(&request, *rows),
+                ),
+                StreamAnswer::Err(code) => Err(PluginError::new(*code, "streamed answer")),
+                StreamAnswer::UnsupportedFrame => {
+                    Ok(bookclerk_plugin_abi::ExecuteStream::from_frames(
+                        bookclerk_plugin_abi::encode_execute_stream_error(
+                            &PluginError::unsupported("no stream"),
+                        )?,
+                    ))
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reads_stream_when_the_session_advertises_a_budget() {
+        let session =
+            StreamingSession::new(DbCapabilities::advertised_sqlite(), StreamAnswer::Rows(7));
+        let binding = DatabaseBinding::from_session(session.clone());
+        let result = binding
+            .prepare("SELECT id, title FROM books")
+            .all(None)
+            .await
+            .expect("streamed read");
+        let rows = result.results.expect("rows");
+        assert_eq!(rows.len(), 7);
+        assert_eq!(rows[6].get("title"), Some(&DbValue::Text("Title 6".into())));
+        binding
+            .prepare("SELECT id, title FROM books")
+            .raw(None)
+            .await
+            .expect("second read");
+        assert_eq!(session.counts(), (0, 2, 1), "limits are fetched once");
+        assert_eq!(
+            binding.limits().await.expect("cached"),
+            DbCapabilities::advertised_sqlite()
+        );
+        assert_eq!(session.counts().2, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn inline_sessions_and_unsupported_answers_read_inline() {
+        let mut inline_only = DbCapabilities::advertised_sqlite();
+        inline_only.max_streamed_result_bytes = 0;
+        inline_only.max_streamed_result_rows = 0;
+        for (caps, answer, expected) in [
+            (inline_only, StreamAnswer::Rows(3), (1, 0, 1)),
+            (
+                DbCapabilities::advertised_sqlite(),
+                StreamAnswer::Err(PluginErrorCode::Unsupported),
+                (1, 1, 1),
+            ),
+            (
+                DbCapabilities::advertised_sqlite(),
+                StreamAnswer::UnsupportedFrame,
+                (1, 1, 1),
+            ),
+        ] {
+            let session = StreamingSession::new(caps, answer);
+            let binding = DatabaseBinding::from_session(session.clone());
+            let result = binding
+                .prepare("SELECT id FROM books")
+                .all(None)
+                .await
+                .expect("inline read");
+            assert_eq!(result.results.expect("rows").len(), 1);
+            assert_eq!(session.counts(), expected);
+        }
+
+        // Every other streamed failure is the caller's.
+        let session = StreamingSession::new(
+            DbCapabilities::advertised_sqlite(),
+            StreamAnswer::Err(PluginErrorCode::Unavailable),
+        );
+        let err = DatabaseBinding::from_session(session.clone())
+            .prepare("SELECT 1")
+            .all(None)
+            .await
+            .expect_err("unavailable surfaces");
+        assert_eq!(err.code, PluginErrorCode::Unavailable);
+        assert_eq!(session.counts().0, 0);
+    }
+
+    /// A rewrite of a reply before it returns to the binding.
+    type Tamper = fn(ExecuteReply) -> ExecuteReply;
+
+    /// A session whose replies are rewritten by `tamper` before they
+    /// return, on every path: inline, streamed, and the inline fallback
+    /// behind an `unsupported` stream.
+    struct TamperingSession {
+        caps: DbCapabilities,
+        stream: bool,
+        tamper: Tamper,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl GuestDatabase for TamperingSession {
+        async fn execute(&self, request: ExecuteRequest) -> Result<ExecuteReply> {
+            Ok((self.tamper)(reply_with_rows(&request, 2)))
+        }
+
+        async fn limits(&self) -> Result<DbCapabilities> {
+            Ok(self.caps.clone())
+        }
+
+        async fn execute_streamed(
+            &self,
+            request: ExecuteRequest,
+        ) -> Result<bookclerk_plugin_abi::ExecuteStream> {
+            if !self.stream {
+                return Err(PluginError::unsupported("no stream"));
+            }
+            bookclerk_plugin_abi::ExecuteStream::from_reply(&(self.tamper)(reply_with_rows(
+                &request, 2,
+            )))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replies_must_answer_the_request_on_every_path() {
+        let mut inline_only = DbCapabilities::advertised_sqlite();
+        inline_only.max_streamed_result_bytes = 0;
+        inline_only.max_streamed_result_rows = 0;
+        let paths: [(DbCapabilities, bool); 3] = [
+            (inline_only, false),
+            (DbCapabilities::advertised_sqlite(), true),
+            (DbCapabilities::advertised_sqlite(), false),
+        ];
+        let tampers: [(&str, Tamper); 4] = [
+            ("another operation", |mut reply| {
+                reply.operation_id = "someone-else".into();
+                reply
+            }),
+            ("a missing result", |mut reply| {
+                reply.statements.pop();
+                reply
+            }),
+            ("an extra result", |mut reply| {
+                let extra = reply.statements[0].clone();
+                reply.statements.push(extra);
+                reply
+            }),
+            ("too many rows for first()", |reply| reply),
+        ];
+        for (caps, stream) in &paths {
+            for (what, tamper) in &tampers {
+                let binding = DatabaseBinding::from_session(Arc::new(TamperingSession {
+                    caps: caps.clone(),
+                    stream: *stream,
+                    tamper: *tamper,
+                }));
+                let outcome = if *what == "too many rows for first()" {
+                    // The session answers two rows where `first()` asked for one.
+                    binding
+                        .prepare("SELECT id FROM books")
+                        .first(None)
+                        .await
+                        .map(|_| ())
+                } else {
+                    binding
+                        .prepare("SELECT id FROM books")
+                        .all(None)
+                        .await
+                        .map(|_| ())
+                };
+                let err = outcome
+                    .err()
+                    .unwrap_or_else(|| panic!("{what} must be refused (stream = {stream})"));
+                assert_eq!(err.code, PluginErrorCode::InvalidParams, "{what}");
+            }
+            // An honest reply passes on the same path.
+            let binding = DatabaseBinding::from_session(Arc::new(TamperingSession {
+                caps: caps.clone(),
+                stream: *stream,
+                tamper: |reply| reply,
+            }));
+            let rows = binding
+                .prepare("SELECT id FROM books")
+                .all(None)
+                .await
+                .expect("honest reply")
+                .results
+                .expect("rows");
+            assert_eq!(rows.len(), 2);
+        }
+
+        // A request sent without an operation id takes the one the host minted.
+        let minted = ExecuteReply {
+            operation_id: "host-minted".into(),
+            statements: Vec::new(),
+            timing: DbTiming {
+                attempt_elapsed_us: 0,
+                db_execution_us: 0,
+                db_timing_source: "test".into(),
+            },
+        };
+        let anonymous = ExecuteRequest {
+            operation_id: String::new(),
+            request_hash: String::new(),
+            statements: Vec::new(),
+            deadline_unix_ms: 0,
+        };
+        assert_eq!(
+            reply_for(&anonymous, minted.clone())
+                .expect("minted id accepted")
+                .operation_id,
+            "host-minted"
+        );
+        let named = ExecuteRequest {
+            operation_id: "mine".into(),
+            ..anonymous
+        };
+        assert!(reply_for(&named, minted).is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_streamed_reply_past_the_budget_fails_closed() {
+        let mut tiny = DbCapabilities::advertised_sqlite();
+        tiny.max_streamed_result_bytes = 4096;
+        tiny.max_streamed_result_rows = 4;
+        let session = StreamingSession::new(tiny, StreamAnswer::Rows(9));
+        let err = DatabaseBinding::from_session(session)
+            .prepare("SELECT id FROM books")
+            .all(None)
+            .await
+            .expect_err("nine rows over a cap of four");
+        assert_eq!(err.code, PluginErrorCode::LimitExceeded);
+        let limit = err.limit().expect("typed limit");
+        assert_eq!(
+            (limit.limit.as_str(), limit.cap),
+            ("maxStreamedResultRows", 4)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chunk_splits_to_the_session_caps_or_explicit_ones() {
+        let mut caps = DbCapabilities::advertised_sqlite();
+        caps.max_statements = 2;
+        let session = StreamingSession::new(caps, StreamAnswer::Rows(0));
+        let binding = DatabaseBinding::from_session(session);
+        let stmts: Vec<PreparedStatement> = (0..5)
+            .map(|i| {
+                binding
+                    .prepare("INSERT INTO t VALUES (?)")
+                    .bind(vec![DbValue::Int64(i)])
+            })
+            .collect();
+        let batches = binding.chunk(stmts.clone(), None).await.expect("chunk");
+        assert_eq!(
+            batches.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![2, 2, 1]
+        );
+        for batch in batches {
+            let n = batch.len();
+            let results = binding.batch(batch, None).await.expect("each batch runs");
+            assert_eq!(results.len(), n, "one result per statement");
+        }
+        // A streamed batch answers each statement in order.
+        let reader = DatabaseBinding::from_session(StreamingSession::new(
+            DbCapabilities::advertised_sqlite(),
+            StreamAnswer::Rows(2),
+        ));
+        let reads = reader
+            .batch(
+                vec![
+                    reader.prepare("SELECT id FROM a"),
+                    reader.prepare("SELECT id FROM b"),
+                ],
+                None,
+            )
+            .await
+            .expect("two reads");
+        assert_eq!(reads.len(), 2);
+        let first = |r: &crate::db_binding::D1Result| {
+            r.results.as_ref().expect("rows")[0].get("id").cloned()
+        };
+        assert_eq!(first(&reads[0]), Some(DbValue::Int64(0)));
+        assert_eq!(first(&reads[1]), Some(DbValue::Int64(100)));
+
+        // Explicit zero caps mean one batch; the binding's own request cap
+        // tightens the session's.
+        let one = binding
+            .chunk(stmts.clone(), Some(ChunkCaps::default()))
+            .await
+            .expect("explicit zero caps");
+        assert_eq!(one.len(), 1);
+        let tight = DatabaseBinding::from_session_with(
+            StreamingSession::new(DbCapabilities::advertised_sqlite(), StreamAnswer::Rows(0)),
+            DatabaseBindingOptions {
+                max_request_bytes: 220,
+                ..DatabaseBindingOptions::default()
+            },
+        );
+        let tightened = tight.chunk(stmts.clone(), None).await.expect("chunk");
+        assert!(tightened.len() > 1, "the binding cap splits the batch");
+        for batch in tightened {
+            tight.batch(batch, None).await.expect("each batch fits");
+        }
+
+        let legacy = DatabaseBinding::from_session(Arc::new(RecordingSession {
+            last: Mutex::new(None),
+        }));
+        let explicit = legacy
+            .chunk(
+                stmts.clone(),
+                Some(ChunkCaps {
+                    max_statements: 3,
+                    max_request_bytes: 0,
+                }),
+            )
+            .await
+            .expect("explicit caps");
+        assert_eq!(
+            explicit.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![3, 2]
+        );
+        let err = match legacy.chunk(stmts, None).await {
+            Ok(_) => panic!("no limits and no caps must fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err.code, PluginErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn chunk_indexes_fit_the_byte_cap_and_cover_every_statement_once() {
+        let stmt = |value: String| TypedDbStatement {
+            sql: "INSERT INTO t (v) VALUES (?)".into(),
+            parameters: vec![DbValue::Text(value)],
+            kind: DbPlanStatementKind::Execute,
+            max_rows: 0,
+            result_selection: DbResultSelection::AffectedRows,
+        };
+        let mut typed: Vec<TypedDbStatement> =
+            (0..30).map(|i| stmt("x".repeat((i * 37) % 200))).collect();
+        typed.insert(10, stmt("y".repeat(2000)));
+        let cap = 600u32;
+        let runs = chunk_indexes(&typed, 0, cap).expect("split");
+        assert_eq!(
+            runs.iter().flatten().copied().collect::<Vec<_>>(),
+            (0..typed.len()).collect::<Vec<_>>()
+        );
+        for run in &runs {
+            if run.len() > 1 {
+                let statements: Vec<_> = run.iter().map(|&i| typed[i].clone()).collect();
+                let bytes = request_bytes(RETRY_ID_PLACEHOLDER, &"0".repeat(64), &statements)
+                    .expect("encode");
+                assert!(bytes <= cap as usize, "run {run:?} encodes to {bytes}");
+            }
+        }
+        assert_eq!(
+            runs.iter().find(|run| run.contains(&10)),
+            Some(&vec![10]),
+            "an oversized statement is yielded alone"
+        );
+        assert!(
+            runs.len() < typed.len(),
+            "runs batch more than one statement"
+        );
+        assert!(chunk_indexes(&[], 5, 100).expect("empty").is_empty());
+        assert_eq!(
+            chunk_indexes(&typed[..3], 0, 0).expect("no caps"),
+            vec![vec![0, 1, 2]]
+        );
+        assert_eq!(
+            chunk_indexes(&typed[..5], 2, 0).expect("statement cap"),
+            vec![vec![0, 1], vec![2, 3], vec![4]]
+        );
+    }
+
+    #[test]
+    fn split_to_fit_halves_a_run_the_estimate_let_through() {
+        // Runs of three or more do not fit, so the eight indexes come out as
+        // ordered pairs and an odd run splits with the larger half first.
+        let mut pairs = |run: &[usize]| Ok(run.len() <= 2);
+        let mut out = Vec::new();
+        split_to_fit((0..8).collect(), &mut pairs, &mut out).expect("split");
+        assert_eq!(out, vec![vec![0, 1], vec![2, 3], vec![4, 5], vec![6, 7]]);
+        let mut out = Vec::new();
+        split_to_fit((0..5).collect(), &mut pairs, &mut out).expect("split");
+        assert_eq!(out, vec![vec![0, 1], vec![2], vec![3, 4]]);
+
+        // A lone index is never asked whether it fits; an encoding failure
+        // from the check surfaces.
+        let mut failing =
+            |_: &[usize]| -> Result<bool> { Err(PluginError::invalid_params("cannot encode")) };
+        let mut out = Vec::new();
+        split_to_fit(vec![7], &mut failing, &mut out).expect("lone index");
+        assert_eq!(out, vec![vec![7]]);
+        assert!(split_to_fit(vec![1, 2], &mut failing, &mut out).is_err());
     }
 
     #[tokio::test(flavor = "current_thread")]

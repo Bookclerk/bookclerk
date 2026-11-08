@@ -189,7 +189,17 @@ export type {
   WorkKind,
 } from "./abi.js";
 export {
+  ExecuteStreamDecoder,
+  collectExecuteStream,
+  decodeExecuteStream,
+  executeStreamLimits,
+  rawStreamCeiling,
+  streamsResults,
+} from "./db-stream.js";
+export type { ExecuteStreamLimits } from "./db-stream.js";
+export {
   canonicalExecuteRequestHash,
+  chunkIndexes,
   createDatabaseBinding,
   decodeExecuteResultReply,
   decodeExecuteRequest,
