@@ -342,6 +342,36 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
         images = await Covers().bookclerkInvoke({}, "fetchCovers", {"urls": ["https://a/"]}, "sink")
         self.assertEqual(images, [{"url": "https://a/", "stored": False, "error": "'sink'"}])
 
+    async def test_execute_streamed_unsupported_by_default(self) -> None:
+        """A session that advertises no streamed budget keeps the default, which is unsupported."""
+        session = AdapterDatabaseSession()
+        request = {
+            "operationId": "op-1",
+            "requestHash": "",
+            "statements": [],
+            "deadlineUnixMs": 0,
+            "isolation": "atomicBatch",
+        }
+        with self.assertRaises(PluginError) as ctx:
+            await session.executeStreamed(request)  # type: ignore[arg-type]
+        self.assertEqual(ctx.exception.code, "unsupported")
+        self.assertIn("executeStreamed", str(ctx.exception))
+
+        class Streaming(AdapterDatabaseSession):
+            async def executeStreamed(self, _request: object) -> bytes:
+                return b"frames"
+
+        class DatabaseAdapter(DatabaseAdapterEntrypoint):
+            async def openSession(self):
+                return Streaming()
+
+        adapter = DatabaseAdapter()
+        session_id = await adapter.bookclerkInvoke({"invocation": {"id": "inv-s"}}, "openSession")
+        frames = await adapter.bookclerkInvoke(
+            {}, "session", session_id, "executeStreamed", request
+        )
+        self.assertEqual(frames, b"frames")
+
     async def test_open_session_unsupported_by_default(self) -> None:
         with self.assertRaises(PluginError) as ctx:
             await DatabaseAdapterEntrypoint().bookclerkInvoke({}, "openSession")

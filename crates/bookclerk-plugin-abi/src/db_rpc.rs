@@ -1466,7 +1466,10 @@ pub(super) fn write_execute_stream_frame(
                 .reborrow()
                 .init_columns(u32::try_from(columns.len()).unwrap_or(u32::MAX));
             for (i, col) in columns.iter().enumerate() {
-                write_column(cols.reborrow().get(i as u32), col);
+                write_column(
+                    cols.reborrow().get(u32::try_from(i).unwrap_or(u32::MAX)),
+                    col,
+                );
             }
         }
         Frame::Rows(rows) => {

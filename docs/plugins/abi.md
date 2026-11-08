@@ -1143,8 +1143,10 @@ See the [SQL contract v1](sql-contract/v1.md).
   binding at `open`, and carries it in the bridge context
   (`databases: { DB: <token> }`). The trusted adapter isolate turns each
   token into a granted-channel transport over `POST /db/execute` (with
-  `POST /db/execute-streamed` for `GuestDatabase.executeStreamed` and
-  `GET /db/limits` for `GuestDatabase.limits`), and installs the resulting
+  `GET /db/limits` for `limits()`; the launcher also serves
+  `POST /db/execute-streamed`, the streamed read the SDK helpers adopt
+  next, see the [SQL contract](sql-contract/v1.md#streamed-results)), and
+  installs the resulting
   `env.DB` on the author's `env` for every call of that `open` (events,
   storefront, jobs, …). It is a full `DatabaseBinding`: `prepare`, `bind`,
   `run`, `all`, `first`, `raw`, `batch` and `limits()`.

@@ -8125,7 +8125,11 @@ var METHODS = {
     })
   },
   AdapterDatabaseSession: {
-    capabilities: session("capabilities", AdapterDatabaseSessionCapabilitiesParamsCodec, AdapterDatabaseSessionCapabilitiesResultsCodec, (value) => okValue(value)),
+    // An isolate adapter's streamed frames travel inside one invoke reply,
+    // so a streamed budget above one scalar could not be delivered; the
+    // advertisement is clamped so the host's budget is one the adapter can
+    // honour before it commits.
+    capabilities: session("capabilities", AdapterDatabaseSessionCapabilitiesParamsCodec, AdapterDatabaseSessionCapabilitiesResultsCodec, (value) => okValue(clampIsolateStreamedCaps(value))),
     execute: session("execute", AdapterDatabaseSessionExecuteParamsCodec, AdapterDatabaseSessionExecuteResultsCodec, (value) => okValue(value)),
     close: session("close", AdapterDatabaseSessionCloseParamsCodec, AdapterDatabaseSessionCloseResultsCodec, okEmpty),
     bootstrap: session("bootstrap", AdapterDatabaseSessionBootstrapParamsCodec, AdapterDatabaseSessionBootstrapResultsCodec, (value) => okValue(value)),
@@ -8189,7 +8193,17 @@ function replyCapTable(caps) {
     }
   };
 }
+function clampIsolateStreamedCaps(caps) {
+  const bytes = caps.maxStreamedResultBytes ?? 0;
+  if (bytes <= MAX_SCALAR_BYTES) {
+    return caps;
+  }
+  return { ...caps, maxStreamedResultBytes: MAX_SCALAR_BYTES };
+}
 function inlineStreamReply(frames) {
+  if (!(frames instanceof Uint8Array)) {
+    throw new InvokeError(500, "internal", "executeStreamed must return a Uint8Array of frames");
+  }
   if (frames.byteLength > MAX_SCALAR_BYTES) {
     return {
       kind: "err",
@@ -8467,7 +8481,9 @@ var AdapterDatabaseSession = class extends RpcTarget {
    * as concatenated `ExecuteStreamFrame` messages counted against the
    * advertised `maxStreamedResultBytes` / `maxStreamedResultRows`; optional.
    * Adapters that advertise `0` for both leave the default, which answers
-   * `unsupported`.
+   * `unsupported`. An isolate adapter's frames travel inside one invoke
+   * reply, so its streamed budget is clamped to `MAX_SCALAR_BYTES` (256 KiB)
+   * and larger frames are a `limit_exceeded` (`maxScalarBytes`) error.
    *
    * @param _request - Proven statements plus isolation and receipt.
    * @returns Every frame of the committed reply, concatenated.

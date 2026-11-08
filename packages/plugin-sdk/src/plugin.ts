@@ -444,7 +444,9 @@ export class AdapterDatabaseSession extends RpcTarget {
    * as concatenated `ExecuteStreamFrame` messages counted against the
    * advertised `maxStreamedResultBytes` / `maxStreamedResultRows`; optional.
    * Adapters that advertise `0` for both leave the default, which answers
-   * `unsupported`.
+   * `unsupported`. An isolate adapter's frames travel inside one invoke
+   * reply, so its streamed budget is clamped to `MAX_SCALAR_BYTES` (256 KiB)
+   * and larger frames are a `limit_exceeded` (`maxScalarBytes`) error.
    *
    * @param _request - Proven statements plus isolation and receipt.
    * @returns Every frame of the committed reply, concatenated.

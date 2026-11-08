@@ -1986,6 +1986,242 @@ mod tests {
         assert_eq!(err.code, PluginErrorCode::InvalidParams);
     }
 
+    /// A grant slot whose database answers streamed reads with `session`.
+    fn grant_streamed_slot(
+        session: Rc<dyn GuestDatabase>,
+        expires: Instant,
+        allow_database: bool,
+    ) -> GrantedTable {
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        table.borrow_mut().insert(
+            "g-db".into(),
+            GrantedSlot {
+                input: None,
+                output: None,
+                progress: None,
+                cancel: None,
+                expires,
+                allow_open: false,
+                allow_put: false,
+                allow_progress: false,
+                database: Some(session),
+                allow_database,
+                sql_policy: GuestSqlPolicy::allow_tables(["t"]),
+                max_request_bytes: 0,
+                events: None,
+                queue: None,
+                kv: None,
+            },
+        );
+        table
+    }
+
+    /// Session whose streamed reply is `bytes` behind a reader, so the relay
+    /// has to count the frames against the raw ceiling as they arrive.
+    struct ReaderSession(usize);
+
+    #[async_trait::async_trait(?Send)]
+    impl GuestDatabase for ReaderSession {
+        async fn execute(
+            &self,
+            _request: bookclerk_plugin_abi::ExecuteRequest,
+        ) -> Result<bookclerk_plugin_abi::ExecuteReply, PluginError> {
+            unreachable!("the streamed route never falls back to execute")
+        }
+
+        async fn execute_streamed(
+            &self,
+            _request: bookclerk_plugin_abi::ExecuteRequest,
+        ) -> Result<bookclerk_plugin_abi::ExecuteStream, PluginError> {
+            Ok(bookclerk_plugin_abi::ExecuteStream::reader(Box::pin(
+                std::io::Cursor::new(vec![0u8; self.0]),
+            )))
+        }
+
+        async fn limits(&self) -> Result<bookclerk_plugin_abi::DbCapabilities, PluginError> {
+            // An inline-only budget: the raw ceiling is one scalar plus an
+            // eighth plus one window, well under the 4 MiB reader below.
+            let mut caps = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
+            caps.max_streamed_result_bytes = 0;
+            caps.max_streamed_result_rows = 0;
+            Ok(caps)
+        }
+    }
+
+    /// The streamed route fails closed on an expired grant and on a grant
+    /// without database access, before any adapter call.
+    #[tokio::test]
+    async fn streamed_dispatch_refuses_expired_and_unpermitted_grants() {
+        let bytes = guest_sql_bytes(
+            "SELECT id FROM t",
+            vec![],
+            bookclerk_plugin_abi::DbPlanStatementKind::Select,
+            bookclerk_plugin_abi::DbResultSelection::Rows,
+            0,
+        );
+        let expired = grant_streamed_slot(
+            Rc::new(ReaderSession(8)),
+            Instant::now() - Duration::from_secs(1),
+            true,
+        );
+        let err = dispatch_execute_streamed(&expired, "g-db".into(), bytes.clone())
+            .await
+            .expect_err("expired grant");
+        assert!(err.contains("expired"), "{err}");
+        assert!(
+            expired.borrow().get("g-db").is_none(),
+            "an expired grant is revoked on use"
+        );
+
+        let unpermitted = grant_streamed_slot(
+            Rc::new(ReaderSession(8)),
+            Instant::now() + Duration::from_secs(60),
+            false,
+        );
+        let err = dispatch_execute_streamed(&unpermitted, "g-db".into(), bytes.clone())
+            .await
+            .expect_err("database not permitted");
+        assert!(err.contains("not permitted"), "{err}");
+
+        let err = dispatch_execute_streamed(&unpermitted, "missing".into(), bytes)
+            .await
+            .expect_err("unknown grant");
+        assert!(err.contains("unknown or revoked"), "{err}");
+    }
+
+    /// Frames past the receiver's raw ceiling become a typed `limit_exceeded`
+    /// error frame instead of an oversized relay.
+    #[tokio::test(flavor = "current_thread")]
+    async fn streamed_frames_past_the_raw_ceiling_are_a_limit_error_frame() {
+        use bookclerk_plugin_abi::{
+            decode_execute_stream, DbCapabilities, ExecuteStreamLimits, PluginErrorCode,
+        };
+        let table = grant_streamed_slot(
+            Rc::new(ReaderSession(4 * 1024 * 1024)),
+            Instant::now() + Duration::from_secs(60),
+            true,
+        );
+        let bytes = guest_sql_bytes(
+            "SELECT id FROM t",
+            vec![],
+            bookclerk_plugin_abi::DbPlanStatementKind::Select,
+            bookclerk_plugin_abi::DbResultSelection::Rows,
+            0,
+        );
+        let frames = dispatch_execute_streamed(&table, "g-db".into(), bytes)
+            .await
+            .expect("an error frame, not a transport failure");
+        let limits = ExecuteStreamLimits::from_capabilities(&DbCapabilities::advertised_sqlite());
+        let err = decode_execute_stream(&frames, limits).expect_err("limit error frame");
+        assert_eq!(err.code, PluginErrorCode::LimitExceeded);
+        let limit = err.limit().expect("typed limit record");
+        assert_eq!(limit.limit, "maxAtomicResultBytes");
+    }
+
+    /// The dispatch loop routes `ExecuteStreamed` commands to the streamed
+    /// dispatcher and answers on the command's reply channel.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_loop_answers_streamed_commands() {
+        use bookclerk_plugin_abi::{
+            decode_execute_stream, DbCapabilities, ExecuteStreamLimits, PluginErrorCode,
+        };
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let table = grant_streamed_slot(
+                    Rc::new(ReaderSession(8)),
+                    Instant::now() + Duration::from_secs(60),
+                    true,
+                );
+                let (cmds_tx, cmds_rx) = mpsc::channel(4);
+                tokio::task::spawn_local(dispatch_granted(cmds_rx, Rc::clone(&table)));
+                let (resp_tx, resp_rx) = oneshot::channel();
+                cmds_tx
+                    .send(GrantedCmd::ExecuteStreamed {
+                        invocation: "g-db".into(),
+                        request_bytes: guest_sql_bytes(
+                            "SELECT id FROM t",
+                            vec![],
+                            bookclerk_plugin_abi::DbPlanStatementKind::Select,
+                            bookclerk_plugin_abi::DbResultSelection::Rows,
+                            0,
+                        ),
+                        resp: resp_tx,
+                    })
+                    .await
+                    .expect("dispatch loop alive");
+                let frames = resp_rx
+                    .await
+                    .expect("reply sent")
+                    .expect("eight zero bytes relay as frames");
+                assert_eq!(frames, vec![0u8; 8]);
+                // The relayed bytes are what the session produced; decoding
+                // them is the host's job, and an empty frame header is a
+                // truncated stream.
+                let limits =
+                    ExecuteStreamLimits::from_capabilities(&DbCapabilities::advertised_sqlite());
+                let err = decode_execute_stream(&frames, limits).expect_err("not a frame");
+                assert_eq!(err.code, PluginErrorCode::Unavailable);
+            })
+            .await;
+    }
+
+    /// `POST /db/execute-streamed` reads the body under the atomic budget and
+    /// relays the dispatcher's frames as one octet-stream reply.
+    #[tokio::test]
+    async fn streamed_route_relays_frames_over_http() {
+        let (cmds_tx, mut cmds_rx) = mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(cmd) = cmds_rx.recv().await {
+                match cmd {
+                    GrantedCmd::AtomicBudget { resp, .. } => {
+                        let _ = resp.send(Ok(4096));
+                    }
+                    GrantedCmd::ExecuteStreamed {
+                        invocation,
+                        request_bytes,
+                        resp,
+                    } => {
+                        assert_eq!(invocation, "grant-1");
+                        assert_eq!(request_bytes, b"request-bytes");
+                        let _ = resp.send(Ok(vec![7, 8, 9]));
+                    }
+                    GrantedCmd::Execute { .. } => {
+                        panic!("the streamed route never dispatches execute")
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let (client, server) = tokio::io::duplex(4096);
+        let serve = tokio::spawn(async move { handle_conn(server, "bridge", cmds_tx).await });
+        let body = "request-bytes";
+        let req = format!(
+            "POST /db/execute-streamed HTTP/1.1\r\nAuthorization: Bearer grant-1\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let (mut reader, mut writer) = tokio::io::split(client);
+        writer
+            .write_all(req.as_bytes())
+            .await
+            .expect("write request");
+        let mut out = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), reader.read_to_end(&mut out))
+            .await
+            .expect("http response")
+            .expect("read response");
+        drop(writer);
+        serve.await.expect("serve task").expect("handled");
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
+        assert!(
+            text.contains("content-type: application/octet-stream\r\n"),
+            "{text}"
+        );
+        assert!(text.contains("content-length: 3\r\n"), "{text}");
+        assert!(out.ends_with(&[7, 8, 9]), "{text}");
+    }
+
     #[test]
     fn declared_content_length_over_cap_is_rejected_before_read() {
         assert!(declared_content_length_over_cap(

@@ -553,7 +553,9 @@ impl D1Proxy {
     /// POSTs a JSON body with the API token; serializes concurrent requests to one database.
     ///
     /// Every D1 JSON body is read incrementally and aborted at
-    /// [`max_d1_http_body_bytes`] (page scalar budget plus a narrow envelope).
+    /// [`max_d1_http_body_bytes`] (page scalar budget plus a narrow envelope);
+    /// a typed batch read under a larger result budget goes through
+    /// [`Self::run_batch_capped`] instead.
     async fn post_json(
         &self,
         url: &str,
@@ -571,6 +573,22 @@ impl D1Proxy {
         url: &str,
         body: JsonValue,
         timeout: Duration,
+    ) -> std::result::Result<JsonValue, D1Error> {
+        self.post_json_capped(url, body, timeout, max_d1_http_body_bytes())
+            .await
+    }
+
+    /// [`Self::post_json_timed`] reading the response under `body_cap` bytes.
+    ///
+    /// The cap comes from [`max_d1_http_body_bytes_for`] with the result
+    /// budget the attempt is held to, so a streamed read is not cut at the
+    /// inline page ceiling.
+    async fn post_json_capped(
+        &self,
+        url: &str,
+        body: JsonValue,
+        timeout: Duration,
+        body_cap: usize,
     ) -> std::result::Result<JsonValue, D1Error> {
         let timeout = timeout.min(D1_REQUEST_TIMEOUT);
         if timeout.is_zero() {
@@ -597,7 +615,7 @@ impl D1Proxy {
                 .send()
                 .await
                 .map_err(|e| D1Error::ambiguous(format!("transport: {e}")))?;
-            parse_d1_response(response).await
+            parse_d1_response(response, body_cap).await
         };
         match tokio::time::timeout(timeout, send).await {
             Ok(result) => result,
@@ -631,6 +649,38 @@ impl D1Proxy {
         statements: &[(String, Vec<JsonValue>)],
         timeout: Duration,
     ) -> std::result::Result<JsonValue, D1Error> {
+        self.run_batch_capped(statements, timeout, max_d1_http_body_bytes())
+            .await
+    }
+
+    /// [`Self::run_batch_with_timeout`] reading the response under the HTTP
+    /// body ceiling for `result_cap_bytes`, the result budget of the attempt
+    /// (`maxAtomicResultBytes`, or the streamed budget of a streamed read).
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::run_batch_with_timeout`].
+    pub(crate) async fn run_batch_for_result_cap(
+        &self,
+        statements: &[(String, Vec<JsonValue>)],
+        timeout: Duration,
+        result_cap_bytes: u32,
+    ) -> std::result::Result<JsonValue, D1Error> {
+        self.run_batch_capped(
+            statements,
+            timeout,
+            max_d1_http_body_bytes_for(result_cap_bytes),
+        )
+        .await
+    }
+
+    /// Runs a batch and reads the JSON response under `body_cap` bytes.
+    async fn run_batch_capped(
+        &self,
+        statements: &[(String, Vec<JsonValue>)],
+        timeout: Duration,
+        body_cap: usize,
+    ) -> std::result::Result<JsonValue, D1Error> {
         if statements.is_empty() {
             return Err(D1Error::Permanent {
                 status: 400,
@@ -643,7 +693,8 @@ impl D1Proxy {
                 .map(|(sql, params)| json!({ "sql": sql, "params": params }))
                 .collect::<Vec<_>>(),
         });
-        self.post_json_timed(&self.query_url(), body, timeout).await
+        self.post_json_capped(&self.query_url(), body, timeout, body_cap)
+            .await
     }
 
     /// Runs one autocommit `{ sql, params }` statement (not an interactive transaction).
@@ -743,12 +794,15 @@ impl ProxyDatabaseTrait for D1Proxy {
 /// Reads a D1 HTTP response; retryable statuses become [`D1Error::Ambiguous`], others permanent.
 ///
 /// The body is pulled in chunks and aborted at byte `max + 1` so a chunked or
-/// lying-small `Content-Length` cannot buffer past the page scalar budget plus
-/// a narrow D1 JSON envelope.
-async fn parse_d1_response(response: Response) -> std::result::Result<JsonValue, D1Error> {
+/// lying-small `Content-Length` cannot buffer past the caller's ceiling: the
+/// page scalar budget plus a narrow D1 JSON envelope, or the ceiling for the
+/// result budget of a typed attempt.
+async fn parse_d1_response(
+    response: Response,
+    max: usize,
+) -> std::result::Result<JsonValue, D1Error> {
     let status = response.status();
     let retry_after = parse_retry_after(&response);
-    let max = max_d1_http_body_bytes();
     let bytes = read_body_capped(response, max).await?;
     let text = String::from_utf8_lossy(&bytes);
     if !status.is_success() {
@@ -992,9 +1046,23 @@ fn sql_is_bookclerk_page(sql: &str) -> bool {
 /// Cloudflare JSON envelope around row payload (`success` / `result` / `meta`).
 const D1_JSON_ENVELOPE_BYTES: usize = 4096;
 
-/// HTTP-body ceiling for every D1 JSON response: one page of scalars plus envelope.
+/// HTTP-body ceiling for a D1 JSON response read without a typed result
+/// budget: one page of scalars plus envelope.
 fn max_d1_http_body_bytes() -> usize {
-    (MAX_SCALAR_BYTES as usize).saturating_add(D1_JSON_ENVELOPE_BYTES)
+    max_d1_http_body_bytes_for(MAX_SCALAR_BYTES)
+}
+
+/// HTTP-body ceiling for a typed attempt held to `result_cap_bytes`.
+///
+/// D1 answers rows as JSON objects, so the body carries each column name
+/// per row and escapes text; twice the result budget covers that encoding
+/// for any result the attempt may accept, plus the envelope. A budget under
+/// one scalar still gets the page ceiling.
+fn max_d1_http_body_bytes_for(result_cap_bytes: u32) -> usize {
+    usize::try_from(result_cap_bytes.max(MAX_SCALAR_BYTES))
+        .unwrap_or(usize::MAX)
+        .saturating_mul(2)
+        .saturating_add(D1_JSON_ENVELOPE_BYTES)
 }
 
 /// UTF-8 / JSON length of one D1 cell, used to accumulate a page budget.
@@ -2025,9 +2093,18 @@ mod tests {
     fn d1_http_body_ceiling_is_page_budget_plus_envelope() {
         assert_eq!(
             max_d1_http_body_bytes(),
-            MAX_SCALAR_BYTES as usize + D1_JSON_ENVELOPE_BYTES
+            2 * MAX_SCALAR_BYTES as usize + D1_JSON_ENVELOPE_BYTES
         );
-        assert!(max_d1_http_body_bytes() < (MAX_SCALAR_BYTES as usize).saturating_mul(2));
+        assert_eq!(max_d1_http_body_bytes_for(1), max_d1_http_body_bytes());
+        let streamed = bookclerk_plugin_abi::DbCapabilities::advertised_d1()
+            .streamed()
+            .expect("D1 streams")
+            .max_atomic_result_bytes;
+        assert_eq!(
+            max_d1_http_body_bytes_for(streamed),
+            2 * streamed as usize + D1_JSON_ENVELOPE_BYTES,
+            "a streamed attempt may read its whole budget as JSON"
+        );
     }
 
     struct ExecutingD1 {

@@ -789,7 +789,7 @@ mod tests {
             .await
             .unwrap();
         let feed = store.get_discover_feed(&alice).await.unwrap().unwrap();
-        assert_eq!(feed.feed_json.len(), 150_000);
+        assert_eq!(feed.feed_json, quoted);
         store
             .put_discover_feed(&alice, "{}", SeedScope::Own, None)
             .await

@@ -16,7 +16,7 @@
 
 use bookclerk_plugin_abi::{
     decode_execute_stream, encode_execute_stream, DbCapabilities, ExecuteStreamDecoder,
-    ExecuteStreamLimits, FIRST_PARTY_MAX_STREAMED_RESULT_BYTES,
+    ExecuteStreamLimits, PluginErrorCode, FIRST_PARTY_MAX_STREAMED_RESULT_BYTES,
 };
 
 /// Largest input worth checking; a frame the wire would carry is far
@@ -53,6 +53,40 @@ pub fn limits_for(selector: u8) -> ExecuteStreamLimits {
             limits
         }
     }
+}
+
+/// Checks that a receiver under `selector`'s budget refuses a stream once
+/// its raw bytes pass the budget's ceiling, whatever the bytes are.
+///
+/// Fuzz inputs are capped at [`MAX_INPUT_BYTES`], below every budget's raw
+/// ceiling (the budget plus a window of slack), so [`check`] cannot reach
+/// this rejection on its own; the corpus replay test calls this once per
+/// budget instead.
+///
+/// # Arguments
+///
+/// * `selector` - Budget byte, as the first input byte of [`check`].
+///
+/// # Panics
+///
+/// When bytes past the ceiling are accepted, or the refusal is not the
+/// budget's typed byte limit.
+pub fn check_raw_ceiling(selector: u8) {
+    let limits = limits_for(selector);
+    let ceiling = usize::try_from(limits.raw_ceiling()).unwrap_or(usize::MAX);
+    let mut decoder = ExecuteStreamDecoder::new(limits);
+    // Under the ceiling, plain zero bytes are an incomplete frame header,
+    // which the decoder holds for more bytes rather than rejecting.
+    decoder
+        .push(&[0u8; 4])
+        .unwrap_or_else(|err| panic!("four bytes under the ceiling: {err}"));
+    let Err(err) = decoder.push(&vec![0u8; ceiling - 4 + 1]) else {
+        panic!("bytes past the raw ceiling must be refused");
+    };
+    assert_eq!(err.code, PluginErrorCode::LimitExceeded, "{err}");
+    let limit = err.limit().unwrap_or_else(|| panic!("typed limit: {err}"));
+    assert_eq!(limit.limit, limits.bytes_limit);
+    assert!(decoder.is_finished(), "the refusal is final");
 }
 
 /// Runs the oracle on one input.

@@ -799,11 +799,15 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
     }),
   },
   AdapterDatabaseSession: {
+    // An isolate adapter's streamed frames travel inside one invoke reply,
+    // so a streamed budget above one scalar could not be delivered; the
+    // advertisement is clamped so the host's budget is one the adapter can
+    // honour before it commits.
     capabilities: session(
       "capabilities",
       W.AdapterDatabaseSessionCapabilitiesParamsCodec,
       W.AdapterDatabaseSessionCapabilitiesResultsCodec,
-      (value) => okValue(value as DbCapabilities),
+      (value) => okValue(clampIsolateStreamedCaps(value as DbCapabilities)),
     ),
     execute: session(
       "execute",
@@ -867,7 +871,7 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       "executeStreamed",
       W.AdapterDatabaseSessionExecuteStreamedParamsCodec,
       W.AdapterDatabaseSessionExecuteStreamedResultsCodec,
-      (value) => inlineStreamReply(value as Uint8Array),
+      (value) => inlineStreamReply(value),
     ),
   },
 };
@@ -929,13 +933,40 @@ function replyCapTable(caps: CapDescriptor[]): CapTable {
 }
 
 /**
+ * Clamps an isolate adapter's streamed result budget to one scalar.
+ *
+ * The frames of an isolate adapter cross the invoke reply as a single
+ * scalar, so a larger advertised budget would only fail after the batch
+ * committed. With the clamp, the adapter's own result cap and the host's
+ * budget agree on what can be delivered.
+ *
+ * @param caps - The adapter's advertised capabilities.
+ * @returns The same capabilities with `maxStreamedResultBytes` at most
+ *   `MAX_SCALAR_BYTES` (a `0`, no streaming, is kept).
+ */
+function clampIsolateStreamedCaps(caps: DbCapabilities): DbCapabilities {
+  const bytes = caps.maxStreamedResultBytes ?? 0;
+  if (bytes <= MAX_SCALAR_BYTES) {
+    return caps;
+  }
+  return { ...caps, maxStreamedResultBytes: MAX_SCALAR_BYTES };
+}
+
+/**
  * Wraps an isolate adapter's streamed frames as the invoke reply's `inline`
  * member, or as a `limit_exceeded` error when they do not fit one scalar.
+ *
+ * Only a real `Uint8Array` is encoded: a look-alike object could report a
+ * small `byteLength` and a huge `length`, and the encoder would size its
+ * buffer from the latter.
  *
  * @param frames - Every `ExecuteStreamFrame` the adapter produced, concatenated.
  * @returns The `ExecuteStreamReply` the launcher relays to the host.
  */
-function inlineStreamReply(frames: Uint8Array): ExecuteStreamReply {
+function inlineStreamReply(frames: unknown): ExecuteStreamReply {
+  if (!(frames instanceof Uint8Array)) {
+    throw new InvokeError(500, "internal", "executeStreamed must return a Uint8Array of frames");
+  }
   if (frames.byteLength > MAX_SCALAR_BYTES) {
     return {
       kind: "err",

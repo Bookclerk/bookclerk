@@ -287,3 +287,84 @@ impl AdapterDatabaseSession for SqliteSession {
         }
     }
 }
+
+#[cfg(all(test, feature = "host-helpers"))]
+mod tests {
+    use super::*;
+    use bookclerk_plugin_abi::{
+        DbPlanStatementKind, DbResultSelection, DbValue, ExecuteRequest, ExecuteStreamLimits,
+        TypedDbStatement,
+    };
+
+    /// Stamps a typed `SELECT` against the host catalog so the guest accepts
+    /// it as a proven request.
+    fn stamped_select(operation_id: &str, sql: &str) -> AdapterExecuteRequest {
+        let req = ExecuteRequest {
+            operation_id: operation_id.into(),
+            request_hash: String::new(),
+            statements: vec![TypedDbStatement {
+                sql: sql.into(),
+                parameters: vec![],
+                kind: DbPlanStatementKind::Select,
+                max_rows: 0,
+                result_selection: DbResultSelection::Rows,
+            }],
+            deadline_unix_ms: 0,
+        };
+        bookclerk_db_exec::stamp_adapter_execute(
+            req,
+            &bookclerk_library::migrations::host_sql_type_env(),
+        )
+        .expect("stamp host proofs")
+    }
+
+    /// A dedicated (binding) session answers `executeStreamed` with the
+    /// framed reply of the same batch `execute` would run.
+    #[tokio::test]
+    async fn dedicated_session_streams_the_reply() {
+        let conn = crate::sqlite::open_memory().await.expect("memory db");
+        let database = SqliteDatabase {
+            dedicated: Some(conn),
+        };
+        let session = database.open_session().await.expect("session");
+        let caps = session.capabilities().await.expect("capabilities");
+        assert!(caps.streams_results(), "first-party sqlite streams results");
+        let reply = session
+            .execute_streamed(stamped_select(
+                "stream-dedicated",
+                "SELECT COUNT(*) AS n FROM bookclerk_slots",
+            ))
+            .await
+            .expect("streamed reply")
+            .collect(ExecuteStreamLimits::from_capabilities(&caps))
+            .await
+            .expect("frames decode");
+        assert_eq!(reply.operation_id, "stream-dedicated");
+        assert_eq!(reply.statements.len(), 1);
+        assert_eq!(reply.statements[0].rows.len(), 1);
+        assert_eq!(reply.statements[0].rows[0].values[0], DbValue::Int64(0));
+    }
+
+    /// The shared library session streams through the process-wide
+    /// connection, as the platform guest does for the host library.
+    #[tokio::test]
+    async fn shared_session_streams_through_the_process_connection() {
+        let conn = crate::sqlite::open_memory().await.expect("memory db");
+        set_connection(conn).await;
+        let database = SqliteDatabase { dedicated: None };
+        let session = database.open_session().await.expect("session");
+        let caps = session.capabilities().await.expect("capabilities");
+        let reply = session
+            .execute_streamed(stamped_select(
+                "stream-shared",
+                "SELECT COUNT(*) AS n FROM bookclerk_slots",
+            ))
+            .await
+            .expect("streamed reply")
+            .collect(ExecuteStreamLimits::from_capabilities(&caps))
+            .await
+            .expect("frames decode");
+        assert_eq!(reply.operation_id, "stream-shared");
+        assert_eq!(reply.statements[0].rows[0].values[0], DbValue::Int64(0));
+    }
+}

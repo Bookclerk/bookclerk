@@ -177,8 +177,8 @@ fn atomic_result_cap_bytes(caps: &DbCapabilities) -> Option<usize> {
 ///
 /// A budget above one RPC scalar can only be the streamed budget, which
 /// [`DbCapabilities::streamed`] copies into `max_atomic_result_bytes`, so
-/// the error names `maxStreamedResultBytes` and no caller retries it in
-/// smaller inline pieces.
+/// the error names `maxStreamedResultBytes` and callers can tell which
+/// budget the reply passed.
 fn whole_reply_limit_name(caps: &DbCapabilities) -> &'static str {
     if caps.max_atomic_result_bytes > bookclerk_plugin_abi::MAX_SCALAR_BYTES {
         "maxStreamedResultBytes"

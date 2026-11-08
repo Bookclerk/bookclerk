@@ -3426,6 +3426,118 @@ mod tests {
         assert_eq!(n, DbValue::Int64(1), "{n:?}");
     }
 
+    /// A named plugin database binding on the real sqlite guest answers
+    /// reads through the streamed path: the SeaORM proxy opened on the
+    /// binding reads as frames, and the binding's `GuestDatabase` answers
+    /// `executeStreamed` collected under the binding's streamed budget.
+    #[tokio::test]
+    async fn binding_reads_stream_through_sqlite_guest() {
+        use crate::host::rpc_proxy_like::{
+            approve_guest, guest_config, missing_guest, stage_first_party_guest,
+        };
+        use sea_orm::ConnectionTrait;
+
+        let _live = crate::authority::test_live_lock();
+        let Some(staged) = stage_first_party_guest("sqlite") else {
+            missing_guest("bookclerk-plugin-database-sqlite");
+            return;
+        };
+        let config = guest_config(&staged, "sqlite", None);
+        approve_guest(&config, &staged.plugin);
+        let ext = ExternalDatabase::spawn(&staged.plugin, &config)
+            .await
+            .unwrap_or_else(|err| panic!("spawn sqlite: {err}"));
+        let owner = "stream_owner";
+        let binding = "DB";
+        let unit_ref =
+            plugin_binding_unit_ref(&config, Some(DatabasePluginKind::Sqlite), owner, binding);
+        let (db, binding_caps) = ext
+            .open_binding_seaorm(&config, owner, binding, &unit_ref, true)
+            .await
+            .unwrap_or_else(|err| panic!("open binding: {err}"));
+        assert!(
+            binding_caps.streams_results(),
+            "the sqlite guest streams binding results too"
+        );
+
+        // The binding proxy reads a standalone batch as frames (streamed caps).
+        let rows = db
+            .query_all_raw(bookclerk_db_exec::canonical_statement(
+                "SELECT 7 AS n",
+                Vec::<sea_orm::Value>::new(),
+            ))
+            .await
+            .unwrap_or_else(|err| panic!("binding proxy streamed read: {err}"));
+        assert_eq!(rows.len(), 1);
+        let n: i64 = rows[0].try_get("", "n").expect("n column");
+        assert_eq!(n, 7);
+
+        // The binding's `GuestDatabase` answers `executeStreamed` with the
+        // collected frames, counted against the binding's streamed budget.
+        let key = format!("{owner}/{binding}");
+        let expected_history = ext
+            .binding_plugin_history(&key, owner, binding)
+            .await
+            .unwrap_or_else(|err| panic!("binding history: {err}"));
+        let guest = BindingGuestDatabase {
+            session: Arc::clone(&ext.session),
+            key,
+            caps: binding_caps.clone(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            host_deadline_unix_ms: 0,
+            expected_plugin_history_digest: expected_history.digest(),
+        };
+        let request = |operation_id: &str| ExecuteRequest {
+            operation_id: operation_id.into(),
+            request_hash: String::new(),
+            statements: vec![TypedDbStatement {
+                sql: "SELECT 7 AS n".into(),
+                parameters: vec![],
+                kind: DbPlanStatementKind::Select,
+                max_rows: 8,
+                result_selection: DbResultSelection::Rows,
+            }],
+            deadline_unix_ms: 0,
+        };
+        let limits = ExecuteStreamLimits::from_capabilities(&binding_caps);
+        let reply = guest
+            .execute_streamed(request("binding-stream"))
+            .await
+            .unwrap_or_else(|err| panic!("binding executeStreamed: {err}"))
+            .collect(limits)
+            .await
+            .unwrap_or_else(|err| panic!("collect binding frames: {err}"));
+        assert_eq!(reply.operation_id, "binding-stream");
+        assert_eq!(reply.statements.len(), 1);
+        assert_eq!(reply.statements[0].rows[0].values[0], DbValue::Int64(7));
+
+        // A fenced job gets `cancelled` before the guest is asked.
+        let fenced = BindingGuestDatabase {
+            cancel: Arc::new(AtomicBool::new(true)),
+            ..guest
+        };
+        let err = fenced
+            .execute_streamed(request("binding-fenced"))
+            .await
+            .expect_err("fence lost");
+        assert_eq!(err.code, bookclerk_plugin_sdk::PluginErrorCode::Cancelled);
+
+        // A binding whose adapter does not stream refuses the streamed call.
+        let mut inline_caps = binding_caps.clone();
+        inline_caps.max_streamed_result_bytes = 0;
+        inline_caps.max_streamed_result_rows = 0;
+        let inline_only = BindingGuestDatabase {
+            caps: inline_caps,
+            cancel: Arc::new(AtomicBool::new(false)),
+            ..fenced
+        };
+        let err = inline_only
+            .execute_streamed(request("binding-inline"))
+            .await
+            .expect_err("no streamed budget");
+        assert_eq!(err.code, bookclerk_plugin_sdk::PluginErrorCode::Unsupported);
+    }
+
     #[test]
     fn capped_binding_deadline_inherits_host_when_guest_is_unlimited() {
         assert_eq!(

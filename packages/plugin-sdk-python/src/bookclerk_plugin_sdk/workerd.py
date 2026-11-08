@@ -1812,12 +1812,14 @@ class AdapterDatabaseSession:
         """Typed atomic batch (``ExecuteRequest`` → ``ExecuteReply``)."""
         raise _unsupported("execute")
 
-    async def executeStreamed(self, _request: ExecuteRequest) -> bytes:
+    async def executeStreamed(self, _request: abi.AdapterExecuteRequest) -> bytes:
         """The same atomic batch as ``execute``, answered as ``ExecuteStreamFrame`` bytes.
 
         The frames are counted against the advertised ``maxStreamedResultBytes``
         / ``maxStreamedResultRows``; adapters that advertise ``0`` for both
-        keep this default, which answers ``unsupported``.
+        keep this default, which answers ``unsupported``. The request carries
+        the proven statements plus ``isolation`` and ``receipt``, like the
+        adapter-side ``execute`` envelope.
 
         Returns:
             Every frame of the committed reply, concatenated.

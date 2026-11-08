@@ -317,7 +317,10 @@ impl D1Proxy {
                 deadline,
             )?;
             let timeout = d1_http_timeout(deadline)?;
-            let raw = match self.run_batch_with_timeout(&statements, timeout).await {
+            let raw = match self
+                .run_batch_for_result_cap(&statements, timeout, caps.max_atomic_result_bytes)
+                .await
+            {
                 Ok(value) => {
                     check_d1_session(
                         bookclerk_db_exec::AtomicInterruptPhase::AroundCommit,
@@ -557,7 +560,7 @@ impl D1Proxy {
             deadline_unix_ms: req.deadline_unix_ms,
         };
         let raw = self
-            .run_batch_with_timeout(&rest_sql, timeout)
+            .run_batch_for_result_cap(&rest_sql, timeout, caps.max_atomic_result_bytes)
             .await
             .map_err(DbErr::from)?;
         check_d1_session(

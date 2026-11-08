@@ -5308,6 +5308,110 @@ mod tests {
                 ..crate::DbCapabilities::advertised_sqlite()
             })
         }
+
+        async fn execute_streamed(
+            &self,
+            request: ExecuteRequest,
+        ) -> Result<crate::db_stream::ExecuteStream> {
+            streamed_probe_reply(&request.operation_id)
+        }
+    }
+
+    /// Rows of `n` wide cells, enough past `n == 64` to leave one scalar
+    /// behind and travel as a `ByteSource`.
+    fn wide_rows(n: usize) -> Vec<crate::DbRow> {
+        (0..n)
+            .map(|i| crate::DbRow {
+                values: vec![
+                    crate::DbValue::Int64(i as i64),
+                    crate::DbValue::Text("x".repeat(8_000)),
+                ],
+            })
+            .collect()
+    }
+
+    /// The reply a streamed probe answers, selected by the operation id:
+    /// `stream-fail` is the adapter's error, `stream-big` leaves one scalar
+    /// behind, anything else is one small row.
+    fn streamed_probe_reply(operation_id: &str) -> Result<crate::db_stream::ExecuteStream> {
+        if operation_id == "stream-fail" {
+            return Err(PluginError::conflict("probe refused the batch"));
+        }
+        let rows = wide_rows(if operation_id == "stream-big" { 64 } else { 1 });
+        let columns = vec![
+            crate::DbColumn {
+                name: "id".into(),
+                db_type: crate::DbType::Int64,
+            },
+            crate::DbColumn {
+                name: "body".into(),
+                db_type: crate::DbType::Text,
+            },
+        ];
+        let statement =
+            crate::StatementResult::from_rows(columns, rows).map_err(PluginError::internal)?;
+        crate::db_stream::ExecuteStream::from_reply(&crate::ExecuteReply {
+            operation_id: operation_id.to_string(),
+            statements: vec![statement],
+            timing: crate::DbTiming::default(),
+        })
+    }
+
+    /// A one-statement typed request with `operation_id`.
+    fn streamed_probe_request(operation_id: &str) -> ExecuteRequest {
+        ExecuteRequest {
+            operation_id: operation_id.into(),
+            request_hash: String::new(),
+            statements: vec![crate::TypedDbStatement {
+                sql: "SELECT id, body FROM probe".into(),
+                parameters: vec![],
+                kind: crate::DbPlanStatementKind::Select,
+                max_rows: 0,
+                result_selection: crate::DbResultSelection::Rows,
+            }],
+            deadline_unix_ms: 0,
+        }
+    }
+
+    /// Drives `GuestDatabase.executeStreamed` across the vat for the inline,
+    /// streamed and failing probe replies.
+    async fn assert_streamed_probe_round_trips(named: &dyn GuestDatabase) -> Result<()> {
+        let limits = crate::db_stream::ExecuteStreamLimits::from_capabilities(
+            &crate::DbCapabilities::advertised_sqlite(),
+        );
+        let small = named
+            .execute_streamed(streamed_probe_request("stream-ok"))
+            .await?
+            .collect(limits)
+            .await?;
+        if small.operation_id != "stream-ok" || small.statements[0].rows.len() != 1 {
+            return Err(PluginError::internal(format!(
+                "inline streamed reply did not round-trip: {small:?}"
+            )));
+        }
+        let big = named
+            .execute_streamed(streamed_probe_request("stream-big"))
+            .await?
+            .collect(limits)
+            .await?;
+        if big.statements[0].rows.len() != 64 {
+            return Err(PluginError::internal(format!(
+                "streamed reply past one scalar did not round-trip: {} rows",
+                big.statements[0].rows.len()
+            )));
+        }
+        match named
+            .execute_streamed(streamed_probe_request("stream-fail"))
+            .await
+        {
+            Err(err) if err.code == PluginErrorCode::Conflict => Ok(()),
+            Err(err) => Err(PluginError::internal(format!(
+                "adapter error changed code across the vat: {err}"
+            ))),
+            Ok(_) => Err(PluginError::internal(
+                "a failing streamed batch must not answer frames",
+            )),
+        }
     }
 
     /// Job runner that receives the `DB` binding taken from `open` bindings.
@@ -5329,6 +5433,9 @@ mod tests {
                     caps.max_request_bytes
                 )));
             }
+            // `executeStreamed` crosses the vat as an `ExecuteStreamReply`
+            // (inline, `ByteSource`, or the adapter's error).
+            assert_streamed_probe_round_trips(named.as_ref()).await?;
             named.close().await?;
             Ok(JobOutcome::Completed {
                 message: "named-database-injected".into(),
@@ -5385,6 +5492,220 @@ mod tests {
                 ..Entrypoints::default()
             })
         }
+    }
+
+    /// Database adapter whose session answers `executeStreamed` with the
+    /// probe replies, so the host side of the adapter vat is exercised.
+    struct StreamingAdapterPlugin;
+
+    #[async_trait::async_trait(?Send)]
+    impl PluginWorker for StreamingAdapterPlugin {
+        async fn describe(&self) -> Result<PluginDescribe> {
+            Ok(PluginDescribe {
+                api_version: PRODUCT_API_VERSION,
+                id: "streaming_adapter".into(),
+                capabilities: PluginCapabilities {
+                    entrypoints: vec![Entrypoint::DatabaseAdapter],
+                    ..PluginCapabilities::default()
+                },
+                display_name: None,
+                rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
+                scalar_limits: ScalarLimits::default().into(),
+                ..PluginDescribe::default()
+            })
+        }
+
+        async fn open(&self, _invocation: Invocation, _bindings: Bindings) -> Result<Entrypoints> {
+            Ok(Entrypoints {
+                database_adapter: Some(Box::new(StreamingAdapter)),
+                ..Entrypoints::default()
+            })
+        }
+    }
+
+    struct StreamingAdapter;
+
+    #[async_trait::async_trait(?Send)]
+    impl crate::Database for StreamingAdapter {
+        async fn open_session(&self) -> Result<Box<dyn crate::AdapterDatabaseSession>> {
+            Ok(Box::new(StreamingSession))
+        }
+    }
+
+    struct StreamingSession;
+
+    #[async_trait::async_trait(?Send)]
+    impl crate::AdapterDatabaseSession for StreamingSession {
+        async fn capabilities(&self) -> Result<crate::DbCapabilities> {
+            Ok(crate::DbCapabilities::advertised_sqlite())
+        }
+
+        async fn execute(
+            &self,
+            _request: crate::host_envelope::AdapterExecuteRequest,
+        ) -> Result<crate::ExecuteReply> {
+            Err(PluginError::unsupported("execute"))
+        }
+
+        async fn execute_streamed(
+            &self,
+            request: crate::host_envelope::AdapterExecuteRequest,
+        ) -> Result<crate::db_stream::ExecuteStream> {
+            streamed_probe_reply(&request.request.operation_id)
+        }
+    }
+
+    /// Adapter that keeps the trait's default `executeStreamed`.
+    struct InlineOnlyAdapterPlugin;
+
+    #[async_trait::async_trait(?Send)]
+    impl PluginWorker for InlineOnlyAdapterPlugin {
+        async fn describe(&self) -> Result<PluginDescribe> {
+            StreamingAdapterPlugin.describe().await
+        }
+
+        async fn open(&self, _invocation: Invocation, _bindings: Bindings) -> Result<Entrypoints> {
+            Ok(Entrypoints {
+                database_adapter: Some(Box::new(InlineOnlyAdapter)),
+                ..Entrypoints::default()
+            })
+        }
+    }
+
+    struct InlineOnlyAdapter;
+
+    #[async_trait::async_trait(?Send)]
+    impl crate::Database for InlineOnlyAdapter {
+        async fn open_session(&self) -> Result<Box<dyn crate::AdapterDatabaseSession>> {
+            Ok(Box::new(InlineOnlySession))
+        }
+    }
+
+    struct InlineOnlySession;
+
+    #[async_trait::async_trait(?Send)]
+    impl crate::AdapterDatabaseSession for InlineOnlySession {
+        async fn capabilities(&self) -> Result<crate::DbCapabilities> {
+            Ok(crate::DbCapabilities::advertised_sqlite())
+        }
+
+        async fn execute(
+            &self,
+            _request: crate::host_envelope::AdapterExecuteRequest,
+        ) -> Result<crate::ExecuteReply> {
+            Err(PluginError::unsupported("execute"))
+        }
+    }
+
+    /// Opens `plugin` over an in-memory vat and returns its adapter session.
+    async fn open_adapter_session(
+        plugin: Arc<dyn PluginWorker>,
+    ) -> Box<dyn crate::AdapterDatabaseSession> {
+        let (client_end, server_end) = duplex(64 * 1024);
+        let (server_r, server_w) = tokio::io::split(server_end);
+        let (client_r, client_w) = tokio::io::split(client_end);
+        tokio::task::spawn_local(async move {
+            let _ = serve_plugin(plugin, server_r, server_w, 64 * 1024).await;
+        });
+        let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
+        tokio::task::spawn_local(rpc);
+        let adapter = open_default(&client)
+            .await
+            .database_adapter
+            .expect("databaseAdapter exported");
+        adapter.open_session().await.expect("open_session")
+    }
+
+    fn adapter_streamed_request(operation_id: &str) -> crate::host_envelope::AdapterExecuteRequest {
+        crate::host_envelope::AdapterExecuteRequest::new(
+            streamed_probe_request(operation_id),
+            crate::host_envelope::GuestReceiptPersist::default(),
+        )
+    }
+
+    /// `AdapterDatabaseSession.executeStreamed` carries an inline reply, a
+    /// reply past one scalar as a `ByteSource`, and the adapter's error, and
+    /// the host collects each under the streamed budget.
+    #[tokio::test(flavor = "current_thread")]
+    async fn adapter_session_streams_replies_over_the_vat() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let session = open_adapter_session(Arc::new(StreamingAdapterPlugin)).await;
+                let caps = session.capabilities().await.expect("capabilities");
+                let limits = crate::db_stream::ExecuteStreamLimits::from_capabilities(&caps);
+
+                let small = session
+                    .execute_streamed(adapter_streamed_request("stream-ok"))
+                    .await
+                    .expect("inline streamed reply");
+                assert!(
+                    matches!(
+                        small.into_body(),
+                        crate::db_stream::ExecuteStreamBody::Inline(_)
+                    ),
+                    "a reply within one scalar is the inline member"
+                );
+                let small = session
+                    .execute_streamed(adapter_streamed_request("stream-ok"))
+                    .await
+                    .expect("inline streamed reply")
+                    .collect(limits)
+                    .await
+                    .expect("decode inline frames");
+                assert_eq!(small.operation_id, "stream-ok");
+                assert_eq!(small.statements[0].rows.len(), 1);
+
+                let big = session
+                    .execute_streamed(adapter_streamed_request("stream-big"))
+                    .await
+                    .expect("streamed reply");
+                assert!(
+                    matches!(
+                        big.into_body(),
+                        crate::db_stream::ExecuteStreamBody::Reader(_)
+                    ),
+                    "a reply past one scalar arrives behind the ByteSource"
+                );
+                let big = session
+                    .execute_streamed(adapter_streamed_request("stream-big"))
+                    .await
+                    .expect("streamed reply")
+                    .collect(limits)
+                    .await
+                    .expect("decode streamed frames");
+                assert_eq!(big.statements[0].rows.len(), 64);
+                assert_eq!(
+                    big.statements[0].rows[63].values[1],
+                    crate::DbValue::Text("x".repeat(8_000))
+                );
+
+                let err = session
+                    .execute_streamed(adapter_streamed_request("stream-fail"))
+                    .await
+                    .expect_err("the adapter's error is the err member");
+                assert_eq!(err.code, PluginErrorCode::Conflict);
+                assert!(err.message.contains("probe refused"), "{err}");
+            })
+            .await;
+    }
+
+    /// An adapter that keeps the default `executeStreamed` answers
+    /// `unsupported` across the vat, which the host reads as "page inline".
+    #[tokio::test(flavor = "current_thread")]
+    async fn adapter_session_without_streaming_is_unsupported_over_the_vat() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let session = open_adapter_session(Arc::new(InlineOnlyAdapterPlugin)).await;
+                let err = session
+                    .execute_streamed(adapter_streamed_request("stream-ok"))
+                    .await
+                    .expect_err("default executeStreamed is unsupported");
+                assert_eq!(err.code, PluginErrorCode::Unsupported);
+                assert!(err.message.contains("executeStreamed"), "{err}");
+            })
+            .await;
     }
 
     struct SlowHandler;

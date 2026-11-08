@@ -270,21 +270,23 @@ impl ExecuteStreamDecoder {
             .seen
             .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
         if self.seen > self.limits.raw_ceiling() {
-            return Err(self.bytes_exceeded(self.seen));
+            let err = self.bytes_exceeded(self.seen);
+            return self.fail(err);
         }
         self.buf.extend_from_slice(bytes);
         while self.buf.len() >= 8 {
             let mut word = [0u8; 4];
             word.copy_from_slice(&self.buf[..4]);
             if u32::from_le_bytes(word) != 0 {
-                return Err(PluginError::invalid_params(
+                return self.fail(PluginError::invalid_params(
                     "streamed reply frame is not a single-segment Cap'n message",
                 ));
             }
             word.copy_from_slice(&self.buf[4..8]);
             let frame_len = (u64::from(u32::from_le_bytes(word)) * 8).saturating_add(8);
             if frame_len > u64::from(self.limits.frame_ceiling()) {
-                return Err(self.bytes_exceeded(frame_len));
+                let err = self.bytes_exceeded(frame_len);
+                return self.fail(err);
             }
             let frame_len = usize::try_from(frame_len).unwrap_or(usize::MAX);
             if self.buf.len() < frame_len {
@@ -397,7 +399,9 @@ impl ExecuteStreamDecoder {
                 },
             ) => {
                 if let Some(done) = open {
-                    close_statement(&mut statements, done)?;
+                    if let Err(err) = close_statement(&mut statements, done) {
+                        return self.fail(err);
+                    }
                 }
                 if index != next_index {
                     return self.fail(PluginError::invalid_params(format!(
@@ -465,7 +469,9 @@ impl ExecuteStreamDecoder {
                 ExecuteStreamFrame::End(timing),
             ) => {
                 if let Some(done) = open {
-                    close_statement(&mut statements, done)?;
+                    if let Err(err) = close_statement(&mut statements, done) {
+                        return self.fail(err);
+                    }
                 }
                 let count = u32::try_from(statements.len()).unwrap_or(u32::MAX);
                 if count != statement_count {
@@ -908,6 +914,29 @@ mod tests {
         assert_eq!(decoder.finish().expect_err("finish after failure"), first);
     }
 
+    /// A statement whose rows do not match its columns is rejected when it
+    /// closes, and that rejection ends the stream like any other.
+    #[test]
+    fn a_statement_that_fails_validation_ends_the_stream_for_good() {
+        let mut decoder = ExecuteStreamDecoder::new(limits());
+        decoder.push(&head(1)).unwrap_or_else(|err| panic!("{err}"));
+        decoder
+            .push(&statement(0))
+            .unwrap_or_else(|err| panic!("{err}"));
+        let wide = frame(&ExecuteStreamFrame::Rows(vec![DbRow {
+            values: vec![DbValue::Int64(1)],
+        }]));
+        decoder.push(&wide).unwrap_or_else(|err| panic!("{err}"));
+        let first = decoder
+            .push(&frame(&ExecuteStreamFrame::End(DbTiming::default())))
+            .expect_err("a row wider than its columns");
+        assert_eq!(first.code, PluginErrorCode::InvalidParams);
+        assert!(decoder.is_finished(), "the failure is final");
+        let again = decoder.push(&head(1)).expect_err("no new reply");
+        assert!(again.message.contains("after its final frame"), "{again}");
+        assert_eq!(decoder.finish().expect_err("finish after failure"), first);
+    }
+
     #[test]
     fn an_error_frame_after_the_head_is_the_adapter_error() {
         let mut bytes = head(1);
@@ -1055,5 +1084,58 @@ mod tests {
         assert_eq!(inline.max_bytes, caps.max_atomic_result_bytes);
         assert_eq!(inline.bytes_limit, "maxAtomicResultBytes");
         assert_eq!(inline.max_rows, caps.max_result_rows);
+    }
+    /// The body's `Debug` names the transport form without dumping frames,
+    /// and `into_body` hands the frames back as the wire holds them.
+    #[tokio::test]
+    async fn body_debug_names_the_transport_form() {
+        let inline = ExecuteStream::inline(vec![1, 2, 3]);
+        assert_eq!(format!("{inline:?}"), "ExecuteStream { body: Inline(3) }");
+        let ExecuteStreamBody::Inline(bytes) = inline.into_body() else {
+            panic!("inline frames stay inline");
+        };
+        assert_eq!(bytes, vec![1, 2, 3]);
+
+        let reader = ExecuteStream::reader(Box::pin(std::io::Cursor::new(vec![0u8; 16])));
+        assert_eq!(format!("{reader:?}"), "ExecuteStream { body: Reader }");
+        let ExecuteStreamBody::Reader(mut reader) = reader.into_body() else {
+            panic!("reader frames stay behind the reader");
+        };
+        let mut out = Vec::new();
+        reader
+            .read_to_end(&mut out)
+            .await
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(out.len(), 16);
+    }
+
+    /// A statement whose rows exceed one scalar is cut into several `Rows`
+    /// frames, down to one row per frame when a single row is that wide.
+    #[test]
+    fn wide_rows_split_until_each_frame_fits_or_holds_one_row() {
+        let wide = "x".repeat(200 * 1024);
+        let rows = (0..3)
+            .map(|_| DbRow {
+                values: vec![crate::db_value::DbValue::Text(wide.clone())],
+            })
+            .collect::<Vec<_>>();
+        let mut out = Vec::new();
+        push_rows_frames(&mut out, &rows).unwrap_or_else(|err| panic!("{err}"));
+        let mut frames = 0usize;
+        let mut cursor = 0usize;
+        while cursor < out.len() {
+            let mut word = [0u8; 4];
+            word.copy_from_slice(&out[cursor + 4..cursor + 8]);
+            let len = usize::try_from(u32::from_le_bytes(word)).unwrap_or(usize::MAX) * 8 + 8;
+            let frame = decode_execute_stream_frame_bytes(&out[cursor..cursor + len], u32::MAX)
+                .unwrap_or_else(|err| panic!("{err}"));
+            let ExecuteStreamFrame::Rows(rows) = frame else {
+                panic!("only rows frames: {frame:?}");
+            };
+            assert_eq!(rows.len(), 1, "each 200 KiB row travels alone");
+            frames += 1;
+            cursor += len;
+        }
+        assert_eq!(frames, 3);
     }
 }

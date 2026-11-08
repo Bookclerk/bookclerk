@@ -661,6 +661,15 @@ fn fuzz_corpus_db_stream_holds_invariants() {
     }
 }
 
+/// The raw byte ceiling lies past the fuzz input cap, so it is checked here
+/// for every budget the oracle knows.
+#[test]
+fn db_stream_raw_ceiling_is_enforced_for_every_budget() {
+    for selector in 0..db_stream_oracle::BUDGETS {
+        db_stream_oracle::check_raw_ceiling(selector);
+    }
+}
+
 /// Builds the `db_stream` seeds from the encoder and keeps them current.
 ///
 /// Each seed is a budget byte, a chunk-size byte and a stream: a reply that

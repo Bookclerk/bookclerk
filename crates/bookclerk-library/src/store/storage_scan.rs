@@ -460,15 +460,16 @@ impl LibraryStore {
     ///
     /// `limit` is clamped to 1..=64. A full page of enriched `books` rows is
     /// larger than the inline result cap (256 KiB); an adapter that streams
-    /// results returns it as one read. Against an adapter that only answers
-    /// inline, the read halves when the guest result would exceed
-    /// `maxResultBytes`, and the smaller width that fits is reused until
-    /// `limit` rows are collected or the catalog ends.
+    /// results returns it as one read. When the guest result would exceed
+    /// the byte budget it is read under (`maxResultBytes` on an adapter that
+    /// only answers inline, or `maxStreamedResultBytes`), the read halves,
+    /// and the smaller width that fits is reused until `limit` rows are
+    /// collected or the catalog ends.
     ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when the read fails for a reason other
-    /// than the inline result cap, or when a single row still exceeds it.
+    /// than a result byte cap, or when a single row still exceeds it.
     pub async fn list_books_page(
         &self,
         account_id: Option<&str>,

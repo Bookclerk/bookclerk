@@ -528,3 +528,20 @@ pub fn note_query_row() -> bool {
 pub fn query_rows_seen() -> usize {
     LAST_QUERY_ROWS_SEEN.load(Ordering::SeqCst)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ExecBudget;
+
+    /// The per-statement byte cap starts at the advertised value and can be
+    /// lowered for an attempt that is read under a smaller budget.
+    #[test]
+    fn query_byte_cap_is_advertised_then_adjustable() {
+        let budget = ExecBudget::with_cancel(None, 0, None);
+        assert_eq!(budget.raw_query_byte_cap(), 0, "no cap until one is set");
+        budget.set_query_byte_cap(64 * 1024);
+        assert_eq!(budget.raw_query_byte_cap(), 64 * 1024);
+        budget.set_query_byte_cap(0);
+        assert_eq!(budget.raw_query_byte_cap(), 0, "0 clears the cap");
+    }
+}

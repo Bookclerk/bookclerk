@@ -21,14 +21,14 @@ pub const BOOK_PAGE_DEFAULT_LIMIT: u64 = 40;
 pub const BOOK_PAGE_MAX_LIMIT: u64 = 500;
 
 /// Uuids per search-hit `IN` batch, and the first width of a page piece
-/// when an adapter has no streamed results.
+/// when a whole page does not fit the adapter's result budget.
 ///
 /// Keeps every key read and hydration batch well under the adapters' bind
-/// limits. Against an adapter that streams, result size is covered by the
-/// streamed budget the host reads pages under. Against one that only
-/// answers inline, a sparse `books` row is about 1.2 KiB on the Cap'n wire,
-/// so 64 sparse rows stay under the 256 KiB `maxResultBytes`; enriched rows
-/// do not, and the readers halve a piece whose result exceeds the cap.
+/// limits. Against an adapter that streams, a whole page normally fits the
+/// streamed budget the host reads it under. Against one that only answers
+/// inline, a sparse `books` row is about 1.2 KiB on the Cap'n wire, so 64
+/// sparse rows stay under the 256 KiB `maxResultBytes`; enriched rows do
+/// not, and the readers halve a piece whose result exceeds the cap.
 const BOOK_PAGE_CHUNK: usize = 64;
 
 /// `books` columns in [`book_from_row`] order.
@@ -86,11 +86,13 @@ impl LibraryStore {
     ///
     /// Against an adapter that streams results the page is one guest read: a
     /// full page of enriched rows is larger than the inline result cap but
-    /// well under the streamed budget. Against an adapter that only answers
-    /// inline, the page is read in pieces of at most 64 rows, a piece is
-    /// halved when its result would exceed the cap, and later pieces keep
-    /// that smaller width. `limit`, `offset`, and `total` are the caller's
-    /// page, not one of those pieces. `total` is counted once.
+    /// well under the streamed budget. When a page does not fit the budget
+    /// it was read under (an adapter that only answers inline, or rows wide
+    /// enough to pass even the streamed budget), the page is read in pieces
+    /// of at most 64 rows, a piece is halved when its result would exceed
+    /// the cap, and later pieces keep that smaller width. `limit`, `offset`,
+    /// and `total` are the caller's page, not one of those pieces. `total`
+    /// is counted once.
     ///
     /// # Errors
     ///
@@ -183,14 +185,15 @@ impl LibraryStore {
     }
 
     /// Reads `[offset, offset+limit)`, falling back to pieces when the
-    /// adapter answers with the inline result-byte cap.
+    /// adapter answers with a result-byte cap.
     ///
     /// The first read asks for the whole page: at most
     /// [`BOOK_PAGE_MAX_LIMIT`] rows, which an adapter's streamed result
-    /// budget always covers. An adapter without streamed results rejects a
-    /// large page with `maxResultBytes`; the read then continues in pieces
-    /// of at most [`BOOK_PAGE_CHUNK`] rows, halving a piece that still
-    /// exceeds the cap and keeping that width for the rest of the page.
+    /// budget normally covers. An adapter without streamed results rejects a
+    /// large page with `maxResultBytes`, and unusually wide rows can pass
+    /// even `maxStreamedResultBytes`; the read then continues in pieces of
+    /// at most [`BOOK_PAGE_CHUNK`] rows, halving a piece that still exceeds
+    /// the cap and keeping that width for the rest of the page.
     async fn read_book_rows(
         &self,
         uuids: &[String],
@@ -385,17 +388,17 @@ fn nocase_key_order(left: &BookKey, right: &BookKey) -> std::cmp::Ordering {
         .then_with(|| left.uuid.cmp(&right.uuid))
 }
 
-/// True when `err` is an inline result-byte cap, not a lock, a row cap, or
-/// the streamed budget.
+/// True when `err` is a result-byte cap, not a lock or a row cap.
 ///
-/// Only `maxResultBytes` and `maxAtomicResultBytes` match, so a page read
-/// over an adapter's streamed result path is never halved: a result past the
-/// streamed budget (`maxStreamedResultBytes`) is a hard failure.
+/// The inline caps (`maxResultBytes`, `maxAtomicResultBytes`) match for an
+/// adapter that only answers inline; `maxStreamedResultBytes` matches so a
+/// page whose rows are wide enough to pass even the streamed budget is read
+/// in smaller pieces instead of failing. A row cap is never halved around.
 pub(crate) fn is_result_too_large(err: &LibraryError) -> bool {
     err.limit().is_some_and(|limit| {
         matches!(
             limit.limit.as_str(),
-            "maxResultBytes" | "maxAtomicResultBytes"
+            "maxResultBytes" | "maxAtomicResultBytes" | "maxStreamedResultBytes"
         )
     })
 }
@@ -759,7 +762,7 @@ mod tests {
     use bookclerk_plugin_abi::LimitExceeded;
 
     #[test]
-    fn result_too_large_matches_only_inline_result_byte_caps() {
+    fn result_too_large_matches_only_result_byte_caps() {
         let bytes = LibraryError::LimitExceeded(LimitExceeded::new("maxResultBytes", 10, 20));
         assert!(is_result_too_large(&bytes));
         let atomic = LibraryError::Unavailable(
@@ -771,8 +774,8 @@ mod tests {
         let streamed =
             LibraryError::LimitExceeded(LimitExceeded::new("maxStreamedResultBytes", 10, 20));
         assert!(
-            !is_result_too_large(&streamed),
-            "the streamed budget is never retried in pieces"
+            is_result_too_large(&streamed),
+            "a page past the streamed budget is read in pieces too"
         );
         let busy = LibraryError::Unavailable("SQLITE_BUSY".into());
         assert!(!is_result_too_large(&busy));
