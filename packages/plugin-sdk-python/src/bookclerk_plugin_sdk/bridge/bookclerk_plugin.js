@@ -5018,6 +5018,45 @@ var ExecuteResultReplyCodec = {
     }
   }
 };
+var ExecuteStreamReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "inline":
+        s.setUint16(0, 0);
+        s.setData(0, v.value ?? EMPTY_BYTES);
+        break;
+      case "stream":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          s.setCap(0, caps.exportCap(v.value));
+        }
+        break;
+      case "err":
+        s.setUint16(0, 2);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("ExecuteStreamReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "inline", value: s.getData(0) };
+      case 1:
+        return { kind: "stream", value: caps.importCap(s.getCapIndex(0)) };
+      case 2:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("ExecuteStreamReply", disc);
+    }
+  }
+};
 var DbCapabilitiesCodec = {
   dataWords: 8,
   pointerCount: 0,
@@ -6846,6 +6885,34 @@ var AdapterDatabaseSessionAssertRestoreConstraintsResultsCodec = {
     };
   }
 };
+var AdapterDatabaseSessionExecuteStreamedParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      AdapterExecuteRequestCodec.write(s.initStruct(0, 2, 4), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: AdapterExecuteRequestCodec.read(s.getStruct(0, 2, 4), caps)
+    };
+  }
+};
+var AdapterDatabaseSessionExecuteStreamedResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      ExecuteStreamReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: ExecuteStreamReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var PluginWorkerDatabaseMigrationsParamsCodec = {
   dataWords: 0,
   pointerCount: 1,
@@ -7857,7 +7924,7 @@ function sessionCall(method) {
       throw new InvokeError(400, "invalid_params", `AdapterDatabaseSession.${method} requires X-Bookclerk-Target`);
     }
     const params = p;
-    const args = method === "execute" ? [params.request] : method === "importIdentity" ? [params.rows] : method === "dropUserRelations" ? [params.names] : [];
+    const args = method === "execute" || method === "executeStreamed" ? [params.request] : method === "importIdentity" ? [params.rows] : method === "dropUserRelations" ? [params.names] : [];
     return named(s, cx.host.bindContext(cx.ctx), "session", [cx.target, method, ...args]);
   };
 }
@@ -8067,7 +8134,10 @@ var METHODS = {
     listUserRelations: session("listUserRelations", AdapterDatabaseSessionListUserRelationsParamsCodec, AdapterDatabaseSessionListUserRelationsResultsCodec, (value) => okValue(asList(value).map((n) => String(n)))),
     prepareUnitRestore: session("prepareUnitRestore", AdapterDatabaseSessionPrepareUnitRestoreParamsCodec, AdapterDatabaseSessionPrepareUnitRestoreResultsCodec, okEmpty),
     dropUserRelations: session("dropUserRelations", AdapterDatabaseSessionDropUserRelationsParamsCodec, AdapterDatabaseSessionDropUserRelationsResultsCodec, okEmpty),
-    assertRestoreConstraints: session("assertRestoreConstraints", AdapterDatabaseSessionAssertRestoreConstraintsParamsCodec, AdapterDatabaseSessionAssertRestoreConstraintsResultsCodec, okEmpty)
+    assertRestoreConstraints: session("assertRestoreConstraints", AdapterDatabaseSessionAssertRestoreConstraintsParamsCodec, AdapterDatabaseSessionAssertRestoreConstraintsResultsCodec, okEmpty),
+    // An isolate adapter answers with the frames in memory, so the reply is
+    // always the `inline` member; the launcher relays them as a stream.
+    executeStreamed: session("executeStreamed", AdapterDatabaseSessionExecuteStreamedParamsCodec, AdapterDatabaseSessionExecuteStreamedResultsCodec, (value) => ({ kind: "inline", value }))
   }
 };
 var CAP_KINDS = /* @__PURE__ */ new Set([
@@ -8376,6 +8446,19 @@ var AdapterDatabaseSession = class extends RpcTarget {
    */
   execute(_request) {
     return Promise.reject(unsupported("execute"));
+  }
+  /**
+   * The same atomic batch as {@link AdapterDatabaseSession.execute}, answered
+   * as concatenated `ExecuteStreamFrame` messages counted against the
+   * advertised `maxStreamedResultBytes` / `maxStreamedResultRows`; optional.
+   * Adapters that advertise `0` for both leave the default, which answers
+   * `unsupported`.
+   *
+   * @param _request - Proven statements plus isolation and receipt.
+   * @returns Every frame of the committed reply, concatenated.
+   */
+  executeStreamed(_request) {
+    return Promise.reject(unsupported("executeStreamed"));
   }
   /**
    * Close the adapter session.
@@ -9480,7 +9563,8 @@ var ADAPTER_SESSION_METHODS = /* @__PURE__ */ new Set([
   "listUserRelations",
   "prepareUnitRestore",
   "dropUserRelations",
-  "assertRestoreConstraints"
+  "assertRestoreConstraints",
+  "executeStreamed"
 ]);
 function freshSessionId() {
   const c = globalThis.crypto;

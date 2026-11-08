@@ -22,6 +22,7 @@ import type {
   DbCapabilities,
   EventResult,
   ExecuteReply,
+  ExecuteStreamReply,
   ExternalUser,
   IdentityHighWater,
   JobController as WireJobController,
@@ -386,7 +387,7 @@ function sessionCall(method: string): AnySpec["call"] {
     }
     const params = p as Record<string, unknown>;
     const args =
-      method === "execute"
+      method === "execute" || method === "executeStreamed"
         ? [params.request as AdapterExecuteRequest]
         : method === "importIdentity"
           ? [params.rows as IdentityHighWater[]]
@@ -856,6 +857,14 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       W.AdapterDatabaseSessionAssertRestoreConstraintsParamsCodec,
       W.AdapterDatabaseSessionAssertRestoreConstraintsResultsCodec,
       okEmpty,
+    ),
+    // An isolate adapter answers with the frames in memory, so the reply is
+    // always the `inline` member; the launcher relays them as a stream.
+    executeStreamed: session(
+      "executeStreamed",
+      W.AdapterDatabaseSessionExecuteStreamedParamsCodec,
+      W.AdapterDatabaseSessionExecuteStreamedResultsCodec,
+      (value) => ({ kind: "inline", value: value as Uint8Array }) as ExecuteStreamReply,
     ),
   },
 };

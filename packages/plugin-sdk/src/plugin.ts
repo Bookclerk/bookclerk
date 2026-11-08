@@ -67,6 +67,7 @@ import { requirePluginMigrationRegistration } from "./plugin-migrations.js";
 import type {
   AuthenticateUserParams,
   CatalogDetailParams,
+  AdapterExecuteRequest,
   CatalogHit,
   CliInvokeParams,
   CliInvokeResult,
@@ -436,6 +437,20 @@ export class AdapterDatabaseSession extends RpcTarget {
    */
   execute(_request: ExecuteRequest): Promise<ExecuteReply> {
     return Promise.reject(unsupported("execute"));
+  }
+
+  /**
+   * The same atomic batch as {@link AdapterDatabaseSession.execute}, answered
+   * as concatenated `ExecuteStreamFrame` messages counted against the
+   * advertised `maxStreamedResultBytes` / `maxStreamedResultRows`; optional.
+   * Adapters that advertise `0` for both leave the default, which answers
+   * `unsupported`.
+   *
+   * @param _request - Proven statements plus isolation and receipt.
+   * @returns Every frame of the committed reply, concatenated.
+   */
+  executeStreamed(_request: AdapterExecuteRequest): Promise<Uint8Array> {
+    return Promise.reject(unsupported("executeStreamed"));
   }
 
   /**
@@ -2098,6 +2113,7 @@ const ADAPTER_SESSION_METHODS: ReadonlySet<string> = new Set([
   "prepareUnitRestore",
   "dropUserRelations",
   "assertRestoreConstraints",
+  "executeStreamed",
 ]);
 
 function freshSessionId(): string {
