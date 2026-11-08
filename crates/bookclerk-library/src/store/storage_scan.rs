@@ -459,12 +459,16 @@ impl LibraryStore {
     /// Pages books by surrogate id so a scan does not load the catalog at once.
     ///
     /// `limit` is clamped to 1..=64. A full page of enriched `books` rows is
-    /// larger than the inline result cap, so the host reads it as one
-    /// streamed result.
+    /// larger than the inline result cap (256 KiB); an adapter that streams
+    /// results returns it as one read. Against an adapter that only answers
+    /// inline, the read halves when the guest result would exceed
+    /// `maxResultBytes`, and the smaller width that fits is reused until
+    /// `limit` rows are collected or the catalog ends.
     ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when the read fails.
+    /// Returns [`LibraryError::Orm`] when the read fails for a reason other
+    /// than the inline result cap, or when a single row still exceeds it.
     pub async fn list_books_page(
         &self,
         account_id: Option<&str>,
@@ -472,7 +476,35 @@ impl LibraryStore {
         limit: u64,
     ) -> Result<Vec<BookRecord>> {
         let want = limit.clamp(1, 64);
-        self.fetch_books_page(account_id, after_id, want).await
+        let mut books = Vec::new();
+        let mut cursor = after_id;
+        let mut width = want;
+        while u64::try_from(books.len()).unwrap_or(u64::MAX) < want {
+            let have = u64::try_from(books.len()).unwrap_or(0);
+            let mut take = (want - have).min(width).max(1);
+            let rows = loop {
+                match self.fetch_books_page(account_id, cursor, take).await {
+                    Ok(rows) => break rows,
+                    Err(err) if super::books_page::is_result_too_large(&err) && take > 1 => {
+                        take /= 2;
+                        width = take;
+                    }
+                    Err(err) => return Err(err),
+                }
+            };
+            let n = u64::try_from(rows.len()).unwrap_or(0);
+            let last = rows.last().map(|row| row.id);
+            books.extend(rows);
+            if n < take {
+                break;
+            }
+            cursor = last;
+        }
+        let cap = usize::try_from(want).unwrap_or(usize::MAX);
+        if books.len() > cap {
+            books.truncate(cap);
+        }
+        Ok(books)
     }
 
     /// One catalog slice of at most `limit` books after `after_id`.

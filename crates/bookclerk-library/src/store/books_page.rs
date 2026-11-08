@@ -20,11 +20,15 @@ pub const BOOK_PAGE_DEFAULT_LIMIT: u64 = 40;
 /// Upper clamp for a library book page. Matches the HTTP handler.
 pub const BOOK_PAGE_MAX_LIMIT: u64 = 500;
 
-/// Uuids per search-hit `IN` batch.
+/// Uuids per search-hit `IN` batch, and the first width of a page piece
+/// when an adapter has no streamed results.
 ///
 /// Keeps every key read and hydration batch well under the adapters' bind
-/// limits; result size is covered by the streamed result budget the host
-/// reads pages under.
+/// limits. Against an adapter that streams, result size is covered by the
+/// streamed budget the host reads pages under. Against one that only
+/// answers inline, a sparse `books` row is about 1.2 KiB on the Cap'n wire,
+/// so 64 sparse rows stay under the 256 KiB `maxResultBytes`; enriched rows
+/// do not, and the readers halve a piece whose result exceeds the cap.
 const BOOK_PAGE_CHUNK: usize = 64;
 
 /// `books` columns in [`book_from_row`] order.
@@ -80,9 +84,13 @@ impl LibraryStore {
     /// `status` is the wire string from [`crate::AcquireStatus::as_str`].
     /// `limit` is clamped to 1..=500. `total` uses the same `WHERE` as the page.
     ///
-    /// The page is one streamed guest read: a full page of enriched rows is
-    /// larger than the inline result cap but well under the streamed budget.
-    /// `total` is counted once.
+    /// Against an adapter that streams results the page is one guest read: a
+    /// full page of enriched rows is larger than the inline result cap but
+    /// well under the streamed budget. Against an adapter that only answers
+    /// inline, the page is read in pieces of at most 64 rows, a piece is
+    /// halved when its result would exceed the cap, and later pieces keep
+    /// that smaller width. `limit`, `offset`, and `total` are the caller's
+    /// page, not one of those pieces. `total` is counted once.
     ///
     /// # Errors
     ///
@@ -174,10 +182,15 @@ impl LibraryStore {
         count_from_reply(&reply)
     }
 
-    /// Reads `[offset, offset+limit)` as one page.
+    /// Reads `[offset, offset+limit)`, falling back to pieces when the
+    /// adapter answers with the inline result-byte cap.
     ///
-    /// A page is at most [`BOOK_PAGE_MAX_LIMIT`] rows, which the adapter's
-    /// streamed result budget always covers, so no piecewise retry is needed.
+    /// The first read asks for the whole page: at most
+    /// [`BOOK_PAGE_MAX_LIMIT`] rows, which an adapter's streamed result
+    /// budget always covers. An adapter without streamed results rejects a
+    /// large page with `maxResultBytes`; the read then continues in pieces
+    /// of at most [`BOOK_PAGE_CHUNK`] rows, halving a piece that still
+    /// exceeds the cap and keeping that width for the rest of the page.
     async fn read_book_rows(
         &self,
         uuids: &[String],
@@ -187,8 +200,35 @@ impl LibraryStore {
         limit: u64,
         offset: u64,
     ) -> Result<Vec<BookRecord>> {
-        self.query_book_rows(uuids, uuid_match, account_id, status, limit, offset)
-            .await
+        let chunk = u64::try_from(BOOK_PAGE_CHUNK).unwrap_or(64);
+        let mut books = Vec::new();
+        let mut remaining = limit;
+        let mut next_offset = offset;
+        let mut width = limit;
+        while remaining > 0 {
+            let mut take = remaining.min(width);
+            let rows = loop {
+                match self
+                    .query_book_rows(uuids, uuid_match, account_id, status, take, next_offset)
+                    .await
+                {
+                    Ok(rows) => break rows,
+                    Err(err) if is_result_too_large(&err) && take > 1 => {
+                        take = if take > chunk { chunk } else { take / 2 };
+                        width = take;
+                    }
+                    Err(err) => return Err(err),
+                }
+            };
+            let n = u64::try_from(rows.len()).unwrap_or(0);
+            books.extend(rows);
+            if n < take {
+                break;
+            }
+            remaining -= n;
+            next_offset = next_offset.saturating_add(n);
+        }
+        Ok(books)
     }
 
     /// One page `SELECT` (no count).
@@ -246,7 +286,8 @@ impl LibraryStore {
         Ok(keys)
     }
 
-    /// Loads full rows for `keys`, [`BOOK_PAGE_CHUNK`] uuids per `IN` list.
+    /// Loads full rows for `keys`, [`BOOK_PAGE_CHUNK`] uuids per `IN` list,
+    /// shrinking the batch when an inline-only adapter finds a result too big.
     ///
     /// SQL `ORDER BY` would reshuffle the merged key order, so the rows are
     /// put back into `keys` order after the read.
@@ -257,8 +298,23 @@ impl LibraryStore {
         status: Option<&str>,
     ) -> Result<Vec<BookRecord>> {
         let mut books = Vec::with_capacity(keys.len());
-        for slice in keys.chunks(BOOK_PAGE_CHUNK) {
-            books.extend(self.query_exact_rows(slice, account_id, status).await?);
+        let mut start = 0usize;
+        let mut width = BOOK_PAGE_CHUNK;
+        while start < keys.len() {
+            let mut take = (keys.len() - start).min(width);
+            let rows = loop {
+                let slice = &keys[start..start + take];
+                match self.query_exact_rows(slice, account_id, status).await {
+                    Ok(rows) => break rows,
+                    Err(err) if is_result_too_large(&err) && take > 1 => {
+                        take /= 2;
+                        width = take;
+                    }
+                    Err(err) => return Err(err),
+                }
+            };
+            books.extend(rows);
+            start += take;
         }
         Ok(order_like_keys(keys, books))
     }
@@ -327,6 +383,21 @@ fn nocase_key_order(left: &BookKey, right: &BookKey) -> std::cmp::Ordering {
         .to_ascii_lowercase()
         .cmp(&right.title.to_ascii_lowercase())
         .then_with(|| left.uuid.cmp(&right.uuid))
+}
+
+/// True when `err` is an inline result-byte cap, not a lock, a row cap, or
+/// the streamed budget.
+///
+/// Only `maxResultBytes` and `maxAtomicResultBytes` match, so a page read
+/// over an adapter's streamed result path is never halved: a result past the
+/// streamed budget (`maxStreamedResultBytes`) is a hard failure.
+pub(crate) fn is_result_too_large(err: &LibraryError) -> bool {
+    err.limit().is_some_and(|limit| {
+        matches!(
+            limit.limit.as_str(),
+            "maxResultBytes" | "maxAtomicResultBytes"
+        )
+    })
 }
 
 /// Puts `books` back into `keys` order.
@@ -685,6 +756,27 @@ mod tests {
     use super::*;
     use crate::models::AcquireStatus;
     use crate::store::NewBook;
+    use bookclerk_plugin_abi::LimitExceeded;
+
+    #[test]
+    fn result_too_large_matches_only_inline_result_byte_caps() {
+        let bytes = LibraryError::LimitExceeded(LimitExceeded::new("maxResultBytes", 10, 20));
+        assert!(is_result_too_large(&bytes));
+        let atomic = LibraryError::Unavailable(
+            LimitExceeded::new("maxAtomicResultBytes", 10, 20).to_message(),
+        );
+        assert!(is_result_too_large(&atomic));
+        let rows = LibraryError::LimitExceeded(LimitExceeded::new("maxResultRows", 1, 2));
+        assert!(!is_result_too_large(&rows), "a row cap is not a byte cap");
+        let streamed =
+            LibraryError::LimitExceeded(LimitExceeded::new("maxStreamedResultBytes", 10, 20));
+        assert!(
+            !is_result_too_large(&streamed),
+            "the streamed budget is never retried in pieces"
+        );
+        let busy = LibraryError::Unavailable("SQLITE_BUSY".into());
+        assert!(!is_result_too_large(&busy));
+    }
 
     async fn memory_store() -> LibraryStore {
         LibraryStore::from_connection(
@@ -1231,37 +1323,19 @@ mod tests {
     /// Every search hit exists, and both page widths must still return a page.
     #[tokio::test]
     async fn uuid_page_under_sqlite_streamed_result_cap() {
-        struct CapsGuest {
-            db: sea_orm::DatabaseConnection,
-        }
+        assert_uuid_pages_under_cap(CapMode::Streamed).await;
+    }
 
-        #[async_trait::async_trait]
-        impl crate::TypedAtomicExec for CapsGuest {
-            async fn execute_typed(
-                &self,
-                envelope: bookclerk_db_exec::AdapterExecuteRequest,
-            ) -> std::result::Result<
-                bookclerk_plugin_abi::ExecuteReply,
-                bookclerk_plugin_abi::PluginError,
-            > {
-                let caps = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
-                let streamed = bookclerk_db_exec::ExecCaps::streamed_from_capabilities(&caps)
-                    .expect("first-party sqlite streams results");
-                bookclerk_db_exec::execute_typed_envelope_on_connection(
-                    &self.db,
-                    &envelope,
-                    streamed,
-                    bookclerk_db_exec::AtomicSession::default()
-                        .with_type_env(crate::migrations::host_sql_type_env()),
-                )
-                .await
-                .map_err(|err| bookclerk_plugin_abi::PluginError::internal(err.to_string()))
-            }
-        }
+    /// An adapter without streamed results enforces the inline
+    /// `maxResultBytes`. The same pages must still come back, read in pieces.
+    #[tokio::test]
+    async fn uuid_page_under_sqlite_inline_result_cap() {
+        assert_uuid_pages_under_cap(CapMode::Inline).await;
+    }
 
-        let store = memory_store().await;
-        let db = store.db.clone();
-        let store = store.with_typed_exec(std::sync::Arc::new(CapsGuest { db }));
+    /// Seeds 500 books and pages them by uuid against a capped guest.
+    async fn assert_uuid_pages_under_cap(mode: CapMode) {
+        let store = capped_store(mode).await;
         store
             .upsert_account("audible", "envelope-a", "us", None, false, "audible")
             .await
@@ -1308,37 +1382,19 @@ mod tests {
     /// in one guest result; read as a stream it is one page.
     #[tokio::test]
     async fn filtered_page_limit_256_reads_as_one_streamed_result() {
-        struct CapsGuest {
-            db: sea_orm::DatabaseConnection,
-        }
+        assert_filtered_page_256_under_cap(CapMode::Streamed).await;
+    }
 
-        #[async_trait::async_trait]
-        impl crate::TypedAtomicExec for CapsGuest {
-            async fn execute_typed(
-                &self,
-                envelope: bookclerk_db_exec::AdapterExecuteRequest,
-            ) -> std::result::Result<
-                bookclerk_plugin_abi::ExecuteReply,
-                bookclerk_plugin_abi::PluginError,
-            > {
-                let caps = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
-                let streamed = bookclerk_db_exec::ExecCaps::streamed_from_capabilities(&caps)
-                    .expect("first-party sqlite streams results");
-                bookclerk_db_exec::execute_typed_envelope_on_connection(
-                    &self.db,
-                    &envelope,
-                    streamed,
-                    bookclerk_db_exec::AtomicSession::default()
-                        .with_type_env(crate::migrations::host_sql_type_env()),
-                )
-                .await
-                .map_err(|err| bookclerk_plugin_abi::PluginError::internal(err.to_string()))
-            }
-        }
+    /// The same 256-row page against an inline-only adapter is read in
+    /// pieces that fit under `maxResultBytes`.
+    #[tokio::test]
+    async fn filtered_page_limit_256_stays_under_sqlite_inline_result_cap() {
+        assert_filtered_page_256_under_cap(CapMode::Inline).await;
+    }
 
-        let store = memory_store().await;
-        let db = store.db.clone();
-        let store = store.with_typed_exec(std::sync::Arc::new(CapsGuest { db }));
+    /// Seeds 256 books and reads them as one filtered page of 256.
+    async fn assert_filtered_page_256_under_cap(mode: CapMode) {
+        let store = capped_store(mode).await;
         store
             .upsert_account("audible", "envelope-a", "us", None, false, "audible")
             .await
@@ -1361,10 +1417,22 @@ mod tests {
         assert_eq!(shifted.books[0].title, "Title 00010");
     }
 
-    /// Store whose guest enforces the sqlite streamed result budget.
-    async fn capped_store() -> LibraryStore {
+    /// Which sqlite result caps the test guest enforces.
+    #[derive(Clone, Copy)]
+    enum CapMode {
+        /// The streamed budget (64 MiB, 250 000 rows), as first-party
+        /// adapters advertise.
+        Streamed,
+        /// Only the inline caps (256 KiB), as an adapter without streamed
+        /// results enforces.
+        Inline,
+    }
+
+    /// Store whose guest enforces the sqlite result caps selected by `mode`.
+    async fn capped_store(mode: CapMode) -> LibraryStore {
         struct CapsGuest {
             db: sea_orm::DatabaseConnection,
+            mode: CapMode,
         }
 
         #[async_trait::async_trait]
@@ -1377,12 +1445,17 @@ mod tests {
                 bookclerk_plugin_abi::PluginError,
             > {
                 let caps = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
-                let streamed = bookclerk_db_exec::ExecCaps::streamed_from_capabilities(&caps)
-                    .expect("first-party sqlite streams results");
+                let exec_caps = match self.mode {
+                    CapMode::Streamed => {
+                        bookclerk_db_exec::ExecCaps::streamed_from_capabilities(&caps)
+                            .expect("first-party sqlite streams results")
+                    }
+                    CapMode::Inline => bookclerk_db_exec::ExecCaps::from_capabilities(&caps),
+                };
                 bookclerk_db_exec::execute_typed_envelope_on_connection(
                     &self.db,
                     &envelope,
-                    streamed,
+                    exec_caps,
                     bookclerk_db_exec::AtomicSession::default()
                         .with_type_env(crate::migrations::host_sql_type_env()),
                 )
@@ -1393,7 +1466,7 @@ mod tests {
 
         let store = memory_store().await;
         let db = store.db.clone();
-        store.with_typed_exec(std::sync::Arc::new(CapsGuest { db }))
+        store.with_typed_exec(std::sync::Arc::new(CapsGuest { db, mode }))
     }
 
     /// One enriched `books` wire row: long description and the other text
@@ -1527,7 +1600,20 @@ mod tests {
     /// A page of enriched rows returns whole under the streamed byte budget.
     #[tokio::test]
     async fn filtered_page_of_enriched_rows_reads_under_the_streamed_cap() {
-        let store = capped_store().await;
+        assert_enriched_page_under_cap(CapMode::Streamed).await;
+    }
+
+    /// Against an inline-only adapter, a 64-row enriched page exceeds
+    /// `maxResultBytes` and must be halved until each piece fits.
+    #[tokio::test]
+    async fn filtered_page_of_enriched_rows_shrinks_to_the_inline_result_cap() {
+        assert_enriched_page_under_cap(CapMode::Inline).await;
+    }
+
+    /// Seeds 64 enriched books and reads them as a filtered page and as a
+    /// catalog scan page.
+    async fn assert_enriched_page_under_cap(mode: CapMode) {
+        let store = capped_store(mode).await;
         store
             .upsert_account("audible", "envelope-a", "us", None, false, "audible")
             .await

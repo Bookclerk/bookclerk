@@ -475,7 +475,9 @@ After `openSession` the host calls the typed
   arrives whole instead of being re-read in smaller pieces. First-party
   sqlite and Postgres stream up to 64 MiB and 250 000 rows; D1 up to
   8 MiB and 50 000 rows. A result past the streamed budget still fails
-  closed with `limit_exceeded`.
+  closed with `limit_exceeded`. Against a guest that doesn't stream, those
+  reads fall back to pieces, halving a piece whose inline result would
+  exceed `maxResultBytes`.
 - Guests that omit `returning`, or advertise `0` row, payload or atomic
   caps, aren't loaded.
 

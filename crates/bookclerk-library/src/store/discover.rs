@@ -233,18 +233,28 @@ impl LibraryStore {
         let key = subject.key();
         let mut out = Vec::new();
         let mut after: i64 = 0;
+        let mut width = DISCOVER_READ_PAGE;
         loop {
-            let rows = discover_candidates::Entity::find()
-                .filter(discover_candidates::Column::SubjectKey.eq(key.as_str()))
-                .filter(discover_candidates::Column::Id.gt(after))
-                .order_by_asc(discover_candidates::Column::Id)
-                .limit(DISCOVER_READ_PAGE)
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?;
+            let rows = loop {
+                let read = discover_candidates::Entity::find()
+                    .filter(discover_candidates::Column::SubjectKey.eq(key.as_str()))
+                    .filter(discover_candidates::Column::Id.gt(after))
+                    .order_by_asc(discover_candidates::Column::Id)
+                    .limit(width)
+                    .all(&self.db)
+                    .await
+                    .map_err(LibraryError::Orm);
+                match read {
+                    Ok(rows) => break rows,
+                    Err(err) if super::books_page::is_result_too_large(&err) && width > 1 => {
+                        width /= 2;
+                    }
+                    Err(err) => return Err(err),
+                }
+            };
             let Some(last) = rows.last() else { break };
             after = last.id;
-            let full = u64::try_from(rows.len()).is_ok_and(|n| n >= DISCOVER_READ_PAGE);
+            let full = u64::try_from(rows.len()).is_ok_and(|n| n >= width);
             out.extend(rows.into_iter().filter_map(|m| {
                 Some(StoredCandidate {
                     seed_scope: SeedScope::parse(&m.seed_scope)?,
