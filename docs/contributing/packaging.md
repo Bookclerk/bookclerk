@@ -287,7 +287,8 @@ reviewed code:
 3. **The commit must be on `main`.** The image and docs publishes start
    with [`.github/actions/release-on-main`](../../.github/actions/release-on-main/action.yml),
    which fails unless the default branch contains the release's commit.
-   The website deploy builds from the default branch, not the tag.
+   The website deploy builds its code from the default branch and takes
+   only the release's `docs/` pages from the tag.
 
 > [!NOTE]
 > The check in step 3 runs from the tagged commit's own workflow, so it
