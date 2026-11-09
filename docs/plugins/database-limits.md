@@ -221,6 +221,52 @@ which the store tests open their fixtures from. Ordinary SeaORM reads
 through the connection are held to the engine proxy's first-party caps, as
 on the shipped sqlite adapter.
 
+### A plugin's own binding
+
+A plugin's `env.DB` is a `[[databases]]` binding: an isolated unit the host
+serves through the deployed adapter, scoped to the plugin's own tables.
+`bookclerk_db_testkit::BindingDatabase` opens one in memory under a
+profile, applies the plugin's `databaseMigrations` registration the way
+enrollment does, and serves the `GuestDatabase` methods the host serves,
+so a plugin's SQL meets the caps, the typed `limit_exceeded` error and the
+binding-owned scope before it meets a real adapter.
+
+The TypeScript and Python SDKs reach the same binding from a test suite.
+`createTestDatabase({ profile })` spawns the `bookclerk-db-testkit` binary
+(`cargo build -p bookclerk-db-testkit` in the workspace; `BOOKCLERK_DB_TESTKIT`
+names it, else it is looked up on `PATH`), which serves the binding over
+the granted channel a workerd isolate already speaks and exits when the
+test closes it:
+
+```ts
+import { createTestDatabase, TEST_DATABASE_PROFILES } from "@bookclerk/plugin-sdk/testkit";
+
+for (const profile of TEST_DATABASE_PROFILES) {
+  const db = await createTestDatabase({ profile, migrations: MIGRATIONS });
+  try {
+    await db.binding.prepare("INSERT INTO notes (id, body) VALUES (?, ?)").bind(id, body).run();
+    const { results } = await db.binding.prepare("SELECT id, body FROM notes ORDER BY id").all();
+  } finally {
+    await db.close();
+  }
+}
+```
+
+```python
+from bookclerk_plugin_sdk.testkit import TEST_DATABASE_PROFILES, create_test_database
+
+for profile in TEST_DATABASE_PROFILES:
+    async with await create_test_database(profile=profile, migrations=MIGRATIONS) as db:
+        await db.binding.prepare("INSERT INTO notes (id, body) VALUES (?, ?)").bind(id, body).run()
+        rows = (await db.binding.prepare("SELECT id, body FROM notes ORDER BY id").all())["results"]
+```
+
+`db.binding` is the D1-shaped binding the plugin gets on `env`; `db.limits()`
+is the profile's advertisement. The default profile is `minimum`, the
+strictest; run the suite under all three. A registration that fails the
+BookclerkSQL proof, or a profile the kit does not know, is refused before
+the binding is handed out, with the kit's message.
+
 ## Checklist
 
 - Read with `all()`; the SDK streams when it can, and the result is still
