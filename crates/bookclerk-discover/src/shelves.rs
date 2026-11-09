@@ -115,7 +115,7 @@ pub fn shelf_kind_catalog() -> Vec<ShelfKindInfo> {
         kind("similar_taste", "Similar to books you finish"),
         kind("chirp_deals", "Chirp deals"),
         kind("from_store", "Picked for you on {Store}"),
-        kind("requests", "Household wishlist"),
+        kind("requests", "On the wishlist"),
         kind("top_picks", "Top picks for you"),
     ]
 }
@@ -179,7 +179,7 @@ enum SeriesRule {
 /// Partitions scored recommendations into Discover shelves.
 ///
 /// Every title lands on one shelf. Shelves claim titles in the order they
-/// are built: the household wishlist first, then the series shelves, the
+/// are built: the wishlist first, then the series shelves, the
 /// subject's wishes, authors, narrators, genres, starter genres, similar
 /// taste, Chirp deals, then one shelf per store for whatever is left, each
 /// title under the store where it costs the subject least (member price on
@@ -222,8 +222,8 @@ pub fn build_discover_feed(
     );
     builder.push_items(
         "requests",
-        "Household wishlist",
-        Some("Titles people in your household want"),
+        "On the wishlist",
+        Some("Titles people have wishlisted"),
         wishlist,
     );
 

@@ -312,7 +312,7 @@ resolves to stays on the queue, so *Dune Messiah* is not hidden by an owned
 product id.
 
 Shelves then partition the ranked list so that **every title lands on one
-shelf**. Shelves claim titles in page order: the household wishlist first,
+shelf**. Shelves claim titles in page order: the wishlist first,
 then the series shelves, the person's own wishes, authors, narrators,
 genres, starter genres, similar taste, Chirp deals, then one **Picked for
 you on {Store}** shelf per store for whatever is left, each title under the
@@ -446,7 +446,7 @@ queue order; Discover personalizes the feed (including wishlist items).
 
 | Shelf | Kind id | Signal |
 | --- | --- | --- |
-| Household wishlist | `requests` | Open shared wishlist items, first on the page (tiny wisher avatars on each card) |
+| On the wishlist | `requests` | Open shared wishlist items, first on the page (tiny wisher avatars on each card) |
 | Finish these series | `finish_series` | Incomplete series + next index; series take turns |
 | Pick up where you left off | `keep_listening` | Active / multi-book listening in a series; series take turns |
 | Because you wishlisted {Title} | `wish` (`wish:dune`, …) | Titles the stores found from one of the person's own open wishes (newest three wishes) |

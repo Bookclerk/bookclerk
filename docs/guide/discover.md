@@ -7,7 +7,7 @@ track of books you want but do not own yet, across every store at once.
 
 Discover shows rows of suggestions, each with its reason, for example:
 
-- **Household wishlist**: what people in your household want, first.
+- **On the wishlist**: what people in your household want, first.
 - **Finish these series**: the next book in a series you started.
 - **Pick up where you left off**: books you have started.
 - **Because you wishlisted** a title: books related to something on your
