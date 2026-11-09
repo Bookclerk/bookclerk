@@ -7131,3 +7131,186 @@ fn plugin_err_from_db_keeps_a_cap_failure_typed() {
         bookclerk_plugin_abi::PluginErrorCode::Cancelled
     );
 }
+
+/// Every named atomic operation, admitted, run and decoded under each
+/// test-kit profile.
+///
+/// The tests above run on the D1 profile. These run each operation once
+/// under [`crate::test_support::Profile::ALL`], so a plan that only fits the
+/// shipped advertisements fails here under the host minimum.
+mod every_profile {
+    use super::*;
+    use crate::models::{UserRole, UserStatus};
+    use crate::test_support::Profile;
+    use chrono::{Duration as ChronoDuration, Utc};
+
+    /// An empty store that enforces `profile` on every batch and named
+    /// operation.
+    async fn kit(profile: Profile) -> LibraryStore {
+        crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store()
+    }
+
+    #[tokio::test]
+    async fn user_operations_run_under_every_profile() {
+        for profile in Profile::ALL {
+            let store = kit(profile).await;
+            let owner = store
+                .create_user(UserRole::Owner, Some("Owner"), None)
+                .await
+                .unwrap();
+            let member = store
+                .create_user(UserRole::Member, Some("Member"), None)
+                .await
+                .unwrap();
+            let promoted = store
+                .set_user_role(member.id, UserRole::Administrator)
+                .await
+                .unwrap();
+            assert_eq!(promoted.role, UserRole::Administrator, "{profile:?}");
+            let disabled = store
+                .set_user_status(member.id, UserStatus::Disabled)
+                .await
+                .unwrap();
+            assert_eq!(disabled.status, UserStatus::Disabled, "{profile:?}");
+            let hash = crate::hash_password(&winner_password()).unwrap();
+            store
+                .set_user_password_hash(member.id, Some(hash.as_str()))
+                .await
+                .unwrap();
+            store.delete_user(member.id).await.unwrap();
+            assert!(
+                store.get_user(member.id).await.unwrap().is_none(),
+                "{profile:?}"
+            );
+            assert!(store.get_user(owner.id).await.unwrap().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn consume_once_operations_run_under_every_profile() {
+        for profile in Profile::ALL {
+            let store = kit(profile).await;
+            let user = store
+                .create_user(UserRole::Member, Some("Invitee"), None)
+                .await
+                .unwrap();
+            let identity = store
+                .ensure_local_portal_identity(user.id, Some("Invitee"))
+                .await
+                .unwrap();
+            let in_five = Utc::now() + ChronoDuration::minutes(5);
+            store
+                .insert_claim_ticket("ticket", Some(identity.id), in_five, "test")
+                .await
+                .unwrap();
+            let hash = crate::hash_password(&winner_password()).unwrap();
+            store
+                .redeem_claim_ticket_to_session(
+                    "ticket",
+                    "session-hash",
+                    Utc::now() + ChronoDuration::hours(12),
+                    None,
+                    Some(hash.as_str()),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let nonce = ["n", "once"].concat();
+            store
+                .insert_oidc_rp_state("state", "corp", "verifier", &nonce, "login", None, in_five)
+                .await
+                .unwrap();
+            let state = store.take_oidc_rp_state("state").await.unwrap();
+            assert_eq!(state.map(|s| s.0).as_deref(), Some("corp"), "{profile:?}");
+
+            store
+                .insert_webauthn_challenge("chal", Some(user.id), "login", "{}", in_five)
+                .await
+                .unwrap();
+            let challenge = store
+                .take_webauthn_challenge("chal", "login")
+                .await
+                .unwrap();
+            assert_eq!(challenge.map(|c| c.0), Some(Some(user.id)), "{profile:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn totp_operations_run_under_every_profile() {
+        let _dek = crate::master_key::master_key_test_read_lock_async().await;
+        crate::master_key::ensure_shared_test_dek();
+        for profile in Profile::ALL {
+            let store = kit(profile).await;
+            let user = store
+                .create_user(UserRole::Member, Some("Totp"), None)
+                .await
+                .unwrap();
+            store_pending_totp(&store, user.id, &sample_totp_secret()).await;
+            store
+                .confirm_totp_enrollment(user.id, &sample_totp_secret())
+                .await
+                .unwrap();
+            assert!(store.get_user(user.id).await.unwrap().unwrap().totp_enabled);
+            store.disable_user_totp(user.id).await.unwrap();
+            assert!(
+                !store.get_user(user.id).await.unwrap().unwrap().totp_enabled,
+                "{profile:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn job_operations_run_under_every_profile() {
+        for profile in Profile::ALL {
+            let store = kit(profile).await;
+            let EnqueueOutcome::Created { id } =
+                store.enqueue_job(scan_spec(None, 32)).await.unwrap()
+            else {
+                panic!("expected a created job under {profile:?}");
+            };
+            let claimed = claim_job(&store, "worker").await;
+            assert_eq!(claimed.id, id, "{profile:?}");
+            store
+                .reserve_job_temp_path(&id, "/tmp/a", 80, 100)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn event_and_acquire_operations_run_under_every_profile() {
+        for profile in Profile::ALL {
+            let store = kit(profile).await;
+            let id = expect_created(
+                persist_outbox_event(&store, outbox_spec("book_acquired", "evt-1", "{}"))
+                    .await
+                    .unwrap(),
+            );
+            store
+                .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "dispatch")
+                .await
+                .unwrap();
+            let delivery = store
+                .claim_next_event_delivery("worker", 60, "claim", &["echo".into()], 4, "")
+                .await
+                .unwrap();
+            assert_eq!(delivery.map(|d| d.event_id), Some(id), "{profile:?}");
+
+            store
+                .upsert_account("audible", "a1", "us", Some("a1"), true, "audible")
+                .await
+                .unwrap();
+            store
+                .upsert_book(&NewBook::minimal("B00001", "a1", "us", "Title"))
+                .await
+                .unwrap();
+            store
+                .set_acquire_status("B00001", "a1", AcquireStatus::Acquired, None, None)
+                .await
+                .unwrap();
+        }
+    }
+}
