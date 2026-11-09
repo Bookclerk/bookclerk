@@ -261,7 +261,9 @@ pub struct OperatorAuthState {
     login_window: Duration,
     /// How long a client stays locked after exceeding `login_max_failures`.
     login_lockout: Duration,
-    /// Per-client throttle buckets keyed by resolved client IP.
+    /// Sign-in throttle buckets: one per resolved client IP, plus per-account
+    /// buckets such as `elevate:<user_id>` (password elevation) and
+    /// `clerk-step-up:<user_id>` (clerk join step-up).
     login_attempts: Mutex<HashMap<String, LoginThrottleBucket>>,
 }
 
@@ -2440,7 +2442,9 @@ pub async fn elevate(
         }
         return Err(StatusCode::UNAUTHORIZED);
     }
-    auth.clear_login_failures(&client_key).await;
+    // Only the Owner bucket is cleared: the client bucket is shared with the
+    // other sign-in routes, and a successful elevation must not reset their
+    // count for this address.
     auth.clear_login_failures(&owner_key).await;
     issue_elevation(&state, &library, user.id, &headers).await
 }
@@ -5371,7 +5375,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn elevate_success_clears_earlier_failures() {
+    async fn elevate_success_clears_the_owner_bucket_only() {
         use axum::http::StatusCode;
 
         let (_state, app, library) = phase2_harness("op-token-elevate-clear").await;
@@ -5384,9 +5388,16 @@ pub(crate) mod tests {
         let (status, _) = elevate_from(&app, &cookie, "192.0.2.4", &phase2_owner_password()).await;
         assert_eq!(status, StatusCode::OK);
 
-        // Both buckets were cleared, so a fifth miss is a plain 401 again.
+        // The Owner bucket was cleared: three misses from another address stay 401
+        // (the Owner count is now 3, below the cap even after one more miss).
+        for _ in 0..3 {
+            let (status, _) =
+                elevate_from(&app, &cookie, "192.0.2.5", &wrong_elevate_password()).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        // The first address kept its count, so its fifth miss locks it.
         let (status, _) = elevate_from(&app, &cookie, "192.0.2.4", &wrong_elevate_password()).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]
