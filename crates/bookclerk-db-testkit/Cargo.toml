@@ -24,6 +24,7 @@ tokio = { workspace = true, features = ["rt", "macros", "io-util", "io-std", "ne
 uuid.workspace = true
 
 [dev-dependencies]
+bookclerk-plugin-sdk.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]

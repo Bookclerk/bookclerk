@@ -57,7 +57,7 @@ pub use db::{db_value_from_sea, proxy_rows_from_typed};
 pub use db_binding::{
     chunk_indexes, execute_reply_to_d1_results, statement_result_to_d1_result, ChunkCaps,
     D1ExecResult, D1Meta, D1Result, DatabaseBinding, DatabaseBindingOptions, PreparedStatement,
-    RetryToken,
+    RetryToken, RowStream,
 };
 pub use error::{Result, SdkError};
 pub use fetch_dir::{fetch_work_dir, upload_file_path, FetchWorkDir, UploadFile};

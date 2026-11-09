@@ -96,7 +96,11 @@ only that. The others check:
 - **`db_stream`**: decoding a frame stream in one push and in chunks of
   any size agree (both the same reply, or both refused), an accepted
   reply has no statement over the row cap, and it re-encodes to frames
-  that decode to the same reply. The shared oracle is
+  that decode to the same reply. A streaming decoder (the one the Rust
+  SDK's `iterate()` reads with, which keeps no rows) fed the same chunks
+  accepts exactly what one push accepts, hands out every row of it once
+  and in order, and finishes with the same reply minus its rows. The
+  shared oracle is
   `fuzz/oracles/db_stream.rs`, replayed from `bookclerk-plugin-abi`. The
   TypeScript and Python SDK decoders replay the same seeds and, on every
   run, a fixed set of mutants derived from them with a seeded generator
