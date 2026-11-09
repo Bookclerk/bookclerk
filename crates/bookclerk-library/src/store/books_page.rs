@@ -31,6 +31,13 @@ pub const BOOK_PAGE_MAX_LIMIT: u64 = 500;
 /// not, and the readers halve a piece whose result exceeds the cap.
 const BOOK_PAGE_CHUNK: usize = 64;
 
+/// Row limit of one narrow `uuid, title` key read.
+///
+/// Several stored uuids can fold to one search hit, so a key read is not
+/// bounded by its hit count. A read that returns this many rows may have
+/// been cut off and is retried with fewer hits.
+const BOOK_KEY_READ_ROWS: usize = 500;
+
 /// `books` columns in [`book_from_row`] order.
 ///
 /// Named so a later column added at the end of the table cannot shift this
@@ -163,8 +170,18 @@ impl LibraryStore {
             .min(keys.len());
         let width = usize::try_from(limit).unwrap_or(keys.len());
         let end = start.saturating_add(width).min(keys.len());
+        let page_keys = &keys[start..end];
+        // Several stored uuids can fold to one search hit, so the hydration
+        // width is sized on the stored uuids it binds rather than on the
+        // hits. The folded statement shape is at least as wide as the exact
+        // one hydration sends, which keeps the estimate conservative.
+        let stored = page_keys
+            .iter()
+            .map(|key| key.uuid.clone())
+            .collect::<Vec<_>>();
+        let hydrate_chunk = self.uuid_chunk(&stored, account_id, status);
         let books = self
-            .hydrate_book_keys(&keys[start..end], account_id, status, chunk)
+            .hydrate_book_keys(page_keys, account_id, status, hydrate_chunk)
             .await?;
         Ok(BookPage { books, total })
     }
@@ -312,7 +329,9 @@ impl LibraryStore {
     /// Narrow `uuid, title` rows for a long search-hit list, `chunk` uuids
     /// per `IN` list, shrinking the list when the adapter finds a result too
     /// big (an adapter at the host-minimum row budget answers one row per
-    /// read).
+    /// read) or a read fills [`BOOK_KEY_READ_ROWS`] and may have been cut off.
+    /// A single hit that still does not fit is paged through the full-row
+    /// read, which splits on result caps.
     ///
     /// The same stored uuid is kept once when two hit chunks both match it.
     async fn collect_book_keys(
@@ -328,17 +347,45 @@ impl LibraryStore {
         let mut width = chunk.max(1);
         while start < uuids.len() {
             let mut take = (uuids.len() - start).min(width);
-            let reply = loop {
+            let batch = loop {
                 let slice = &uuids[start..start + take];
-                match self.query_book_keys(slice, account_id, status).await {
-                    Err(err) if is_result_too_large(&err) && take > 1 => {
-                        take /= 2;
-                        width = take;
+                let cut_off = match self.query_book_keys(slice, account_id, status).await {
+                    Err(err) if is_result_too_large(&err) => true,
+                    Err(err) => return Err(err),
+                    Ok(reply) => {
+                        let batch = keys_from_reply(&reply)?;
+                        if batch.len() < BOOK_KEY_READ_ROWS {
+                            break batch;
+                        }
+                        // A full read may have stopped at the row limit.
+                        true
                     }
-                    other => break other?,
+                };
+                if cut_off && take > 1 {
+                    take /= 2;
+                    width = take;
+                    continue;
                 }
+                // One hit matches more stored uuids than one read returns:
+                // page through that hit's rows instead.
+                break self
+                    .read_book_rows(
+                        slice,
+                        UuidMatch::Folded,
+                        account_id,
+                        status,
+                        BOOK_PAGE_MAX_LIMIT,
+                        0,
+                    )
+                    .await?
+                    .into_iter()
+                    .map(|book| BookKey {
+                        uuid: book.uuid,
+                        title: book.title,
+                    })
+                    .collect();
             };
-            for key in keys_from_reply(&reply)? {
+            for key in batch {
                 if seen.insert(key.uuid.clone()) {
                     keys.push(key);
                 }
@@ -357,8 +404,7 @@ impl LibraryStore {
     ) -> Result<bookclerk_plugin_abi::ExecuteReply> {
         let sql = key_sql(uuids.len(), account_id.is_some(), status.is_some());
         let values = filter_values(uuids, true, account_id, status);
-        let width = uuids.len().saturating_mul(4).clamp(1, 500);
-        let cap = u32::try_from(width).unwrap_or(500);
+        let cap = u32::try_from(BOOK_KEY_READ_ROWS).unwrap_or(u32::MAX);
         self.execute_reads(vec![select_stmt(&sql, values, cap)])
             .await
     }
@@ -577,8 +623,7 @@ fn key_sql(uuid_count: usize, has_account: bool, has_status: bool) -> String {
         has_account,
         has_status,
     );
-    let width = uuid_count.saturating_mul(4).clamp(1, 500);
-    format!("SELECT uuid, title FROM books{page_where} LIMIT {width}")
+    format!("SELECT uuid, title FROM books{page_where} LIMIT {BOOK_KEY_READ_ROWS}")
 }
 
 /// `WHERE` fragment, including the leading space, or empty when unrestricted.

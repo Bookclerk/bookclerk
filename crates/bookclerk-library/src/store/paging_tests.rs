@@ -188,6 +188,51 @@ async fn uuid_batches_are_sized_on_the_longest_uuids() {
     }
 }
 
+/// Long stored uuids that fold to one search hit all hydrate: the
+/// hydration batch is sized on the stored uuids it binds, not on the hits,
+/// so several long case variants of one hit stay within the payload cap.
+#[tokio::test]
+async fn long_case_variants_of_one_hit_all_hydrate() {
+    let base = "v".repeat(200);
+    let variants: Vec<String> = (0..8)
+        .map(|i| {
+            base.char_indices()
+                .map(|(at, c)| {
+                    if at < 8 && (i >> at) & 1 == 1 {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        store
+            .upsert_account("audible", "acct-v", "us", None, false, "audible")
+            .await
+            .unwrap();
+        for (i, uuid) in variants.iter().enumerate() {
+            let mut book = NewBook::minimal(format!("V{i:05}"), "acct-v", "us", format!("V {i}"));
+            book.uuid = Some(uuid.clone());
+            store.upsert_book(&book).await.unwrap();
+        }
+        let mut requested: Vec<String> = (0..64).map(|i| format!("s{i}")).collect();
+        requested.push(base.clone());
+        let page = store
+            .list_books_by_uuid_page(&requested, None, None, BOOK_PAGE_MAX_LIMIT, 0)
+            .await
+            .unwrap();
+        let mut found = uuids(&page.books);
+        found.sort();
+        let mut expected = variants.clone();
+        expected.sort();
+        assert_eq!(page.total, variants.len(), "{}", profile.name());
+        assert_eq!(found, expected, "{}", profile.name());
+    }
+}
+
 /// A scan job of `account` at `priority`; scans of different accounts never
 /// coalesce.
 fn scan_job(account: &str, priority: i64) -> EnqueueJobSpec {
