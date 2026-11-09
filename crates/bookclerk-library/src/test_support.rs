@@ -417,6 +417,9 @@ mod tests {
             "deadline_exceeded: atomic deadline elapsed".into(),
         ));
         assert_eq!(err.code, PluginErrorCode::DeadlineExceeded);
+        // A driver error carries no message prefix to match on.
+        let err = engine_error(DbErr::RecordNotFound("jobs".into()));
+        assert_eq!(err.code, PluginErrorCode::Internal);
     }
 
     #[test]
