@@ -2730,7 +2730,10 @@ mod tests {
             canonical_execute_request_hash, desugar_canonical_sql, DbPlanStatementKind,
             DbResultSelection,
         };
-        let raw = "SELECT id FROM notes ORDER BY id";
+        // Trailing trivia before the comma and the end of the statement: the
+        // session desugars the stamped SQL once more before it checks the
+        // hash, so the rewrite has to be a fixed point on its own output.
+        let raw = "SELECT id FROM notes ORDER BY id , body ";
         let mut req = bookclerk_plugin_abi::decode_execute_request_bytes(&guest_sql_bytes(
             raw,
             vec![],
@@ -2744,6 +2747,11 @@ mod tests {
         let desugared = desugar_canonical_sql(raw);
         assert_ne!(desugared, raw, "ORDER BY is rewritten by the desugaring");
         assert_eq!(req.statements[0].sql, desugared);
+        assert_eq!(
+            desugar_canonical_sql(&req.statements[0].sql),
+            req.statements[0].sql,
+            "the session's second desugaring leaves the stamped SQL unchanged"
+        );
         // The session recomputes the hash over the request it receives; the
         // broker's stamp must be that hash.
         assert_eq!(

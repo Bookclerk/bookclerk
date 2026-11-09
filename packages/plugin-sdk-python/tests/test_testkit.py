@@ -10,18 +10,24 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import stat
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
+from bookclerk_plugin_sdk import testkit
 from bookclerk_plugin_sdk.testkit import (
     TEST_DATABASE_PROFILES,
     create_test_database,
     default_profile,
-    testkit_binary,
 )
 from bookclerk_plugin_sdk.workerd import PluginError
+
+# Imported under another name: a module-level ``test*`` function is collected as a test.
+kit_binary = testkit.testkit_binary
 
 WORKSPACE = Path(__file__).resolve().parents[3]
 
@@ -107,15 +113,15 @@ class TestkitBinaryTests(unittest.TestCase):
 
     def test_explicit_path_wins(self) -> None:
         """An explicit path is returned as given."""
-        self.assertEqual(testkit_binary("explicit"), "explicit")
+        self.assertEqual(kit_binary("explicit"), "explicit")
 
     def test_environment_then_path_name(self) -> None:
         """Without a path the environment, then the bare name, is used."""
         saved = os.environ.pop("BOOKCLERK_DB_TESTKIT", None)
         try:
-            self.assertEqual(testkit_binary(), "bookclerk-db-testkit")
+            self.assertEqual(kit_binary(), "bookclerk-db-testkit")
             os.environ["BOOKCLERK_DB_TESTKIT"] = "/opt/kit"
-            self.assertEqual(testkit_binary(), "/opt/kit")
+            self.assertEqual(kit_binary(), "/opt/kit")
         finally:
             if saved is None:
                 os.environ.pop("BOOKCLERK_DB_TESTKIT", None)
@@ -131,6 +137,99 @@ class TestkitBinaryTests(unittest.TestCase):
         """A binary that cannot start is reported, not raised as ``OSError``."""
         with self.assertRaises(RuntimeError):
             _run(create_test_database(binary=str(WORKSPACE / "no-such-bookclerk-db-testkit")))
+
+
+class _FakeProcess:
+    """Stands in for the kit process: exits on request, or lingers."""
+
+    def __init__(self, *, exits: bool) -> None:
+        self.exits = exits
+        self.stdin: Any = None
+        self.killed = False
+
+    def kill(self) -> None:
+        """Record the kill; ``wait()`` returns afterwards."""
+        self.killed = True
+
+    async def wait(self) -> int:
+        """Return once the process has exited, which a lingering one never does unkilled."""
+        while not (self.exits or self.killed):
+            await asyncio.sleep(0.01)
+        return 0
+
+
+class ChannelErrorTests(unittest.TestCase):
+    """The granted-channel statuses map onto the codes a plugin sees."""
+
+    def test_statuses_map_onto_plugin_error_codes(self) -> None:
+        """401, 404/405, 413 and anything else have their codes; 2xx is the body."""
+        self.assertEqual(testkit._database_body(testkit._Response(200, b"ok"), "execute"), b"ok")
+        cases = {401: "unauthorized", 404: "unsupported", 405: "unsupported", 500: "unavailable"}
+        for status, code in cases.items():
+            with self.assertRaises(PluginError) as caught:
+                testkit._database_body(testkit._Response(status, b"nope"), "execute")
+            self.assertEqual(caught.exception.code, code, str(status))
+            self.assertIn("nope", str(caught.exception))
+        with self.assertRaises(PluginError) as unsupported:
+            testkit._database_body(testkit._Response(404, b""), "limits")
+        self.assertIn("GuestDatabase.limits is not served", str(unsupported.exception))
+
+    def test_413_carries_the_parsed_limit_when_the_message_is_canonical(self) -> None:
+        """A canonical limit message becomes ``details``; any other text stays untyped."""
+        canonical = b"limit exceeded: maxResultBytes is 4096; used 5000"
+        with self.assertRaises(PluginError) as typed:
+            testkit._database_body(testkit._Response(413, canonical), "execute")
+        self.assertEqual(typed.exception.code, "limit_exceeded")
+        assert typed.exception.details is not None
+        self.assertEqual(typed.exception.details["limit"], "maxResultBytes")
+        self.assertEqual(int(typed.exception.details["cap"]), 4096)
+        with self.assertRaises(PluginError) as untyped:
+            testkit._database_body(testkit._Response(413, b"too big"), "execute")
+        self.assertEqual(untyped.exception.code, "limit_exceeded")
+        self.assertIsNone(untyped.exception.details)
+
+    def test_an_unreachable_kit_is_unavailable(self) -> None:
+        """A connection failure on either route is ``unavailable`` naming the method."""
+        serving = testkit._Serving(url="http://127.0.0.1:1", token="t", profile="minimum")
+        db = testkit.TestDatabase("minimum", _FakeProcess(exits=True), serving)
+
+        async def scenario() -> None:
+            with self.assertRaises(PluginError) as limits:
+                await db.limits()
+            self.assertEqual(limits.exception.code, "unavailable")
+            self.assertIn("GuestDatabase.limits", str(limits.exception))
+            with self.assertRaises(PluginError) as execute:
+                await db.binding.prepare("SELECT 1 AS one").first()
+            self.assertEqual(execute.exception.code, "unavailable")
+            self.assertIn("GuestDatabase.execute", str(execute.exception))
+            await db.close()
+
+        _run(scenario())
+
+
+class CloseTests(unittest.TestCase):
+    """Stopping the kit."""
+
+    def test_a_lingering_process_is_killed(self) -> None:
+        """A kit that ignores the closed stdin is killed after the stop timeout."""
+        serving = testkit._Serving(url="http://127.0.0.1:1", token="t", profile="d1")
+        process = _FakeProcess(exits=False)
+        db = testkit.TestDatabase("d1", process, serving)
+        with mock.patch.object(testkit, "_STOP_TIMEOUT_SECONDS", 0.05):
+            _run(db.close())
+        self.assertTrue(process.killed)
+
+    @unittest.skipIf(os.name == "nt", "the fake kit is a shell script")
+    def test_an_unexpected_announcement_is_reported(self) -> None:
+        """A kit that announces something other than its address is stopped and reported."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "fake-kit"
+            fake.write_text("#!/bin/sh\nread -r _request\necho '{\"nope\": true}'\nsleep 30\n")
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+            with self.assertRaises(RuntimeError) as caught:
+                _run(create_test_database(binary=str(fake)))
+            self.assertIn("announced an unexpected line", str(caught.exception))
+            self.assertIn("nope", str(caught.exception))
 
 
 @unittest.skipIf(BINARY is None, "bookclerk-db-testkit binary unavailable")

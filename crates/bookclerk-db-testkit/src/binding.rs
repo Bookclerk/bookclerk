@@ -186,10 +186,15 @@ fn library_error(err: LibraryError) -> PluginError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bookclerk_plugin_abi::PluginErrorCode;
+    use bookclerk_plugin_abi::{LimitExceeded, PluginErrorCode};
 
     #[test]
     fn library_errors_map_to_the_codes_a_guest_sees() {
+        let limit = LimitExceeded::new("maxResultBytes", 4096, 5000);
+        let typed = library_error(LibraryError::LimitExceeded(limit.clone()));
+        assert_eq!(typed.code, PluginErrorCode::LimitExceeded);
+        assert_eq!(typed.message, limit.to_message());
+
         let schema = library_error(LibraryError::Schema("bad ddl".into()));
         assert_eq!(schema.code, PluginErrorCode::InvalidParams);
         assert_eq!(schema.message, "bad ddl");
