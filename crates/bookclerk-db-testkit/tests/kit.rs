@@ -300,6 +300,23 @@ async fn an_empty_batch_is_refused_before_it_reaches_the_engine() {
 }
 
 #[tokio::test]
+async fn a_batch_past_its_deadline_is_refused_and_nothing_is_applied() {
+    let db = TestDatabase::open(Profile::FirstParty).await.unwrap();
+    let mut expired = request("late", vec![insert_candidate("k1", "{}")]);
+    expired.deadline_unix_ms = 1;
+    let err = db
+        .execute_batch(expired)
+        .await
+        .expect_err("the deadline elapsed before the batch ran");
+    assert_eq!(err.code, PluginErrorCode::DeadlineExceeded, "{err}");
+    assert!(candidate_keys(&db).await.is_empty(), "nothing was applied");
+    let mut open = request("in-time", vec![insert_candidate("k1", "{}")]);
+    open.deadline_unix_ms = u64::MAX;
+    db.execute_batch(open).await.unwrap();
+    assert_eq!(candidate_keys(&db).await, ["k1"]);
+}
+
+#[tokio::test]
 async fn a_duplicate_row_in_one_batch_is_a_conflict_and_nothing_is_applied() {
     let db = TestDatabase::open(Profile::FirstParty).await.unwrap();
     let err = db

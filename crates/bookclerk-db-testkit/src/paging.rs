@@ -14,11 +14,15 @@ use std::future::Future;
 /// and the page size, and returns the page's items and the cursor for the
 /// page after it (`None` when this was the last page).
 ///
+/// A page may be empty and still carry a cursor: a listing that skips rows
+/// it cannot read (unreadable job payloads, say) answers that way for a
+/// page of skipped rows, and the walk goes on to the next page.
+///
 /// # Panics
 ///
-/// Panics when a page is empty but reports a next cursor, or when the walk
-/// exceeds `max_pages`, so a cursor that never advances fails the test
-/// instead of hanging it.
+/// Panics when the walk exceeds `max_pages`, so a cursor that never
+/// advances fails the test instead of hanging it. Size `max_pages` from the
+/// rows the listing reads, skipped ones included.
 pub async fn collect_pages<T, C, F, Fut>(
     page_size: u64,
     max_pages: usize,
@@ -32,10 +36,6 @@ where
     let mut cursor = None;
     for _ in 0..max_pages {
         let (items, next) = next_page(cursor, page_size).await;
-        assert!(
-            !(items.is_empty() && next.is_some()),
-            "an empty page reported a next cursor"
-        );
         out.extend(items);
         match next {
             Some(c) => cursor = Some(c),
@@ -47,6 +47,13 @@ where
 
 /// Asserts that walking `next_page` at `page_size` yields exactly `full`.
 ///
+/// The walk is bounded at one page per item of `full` plus two, which
+/// covers a listing that caps its pages below the requested size (one row
+/// per page under a one-row result cap). A listing that skips rows it
+/// cannot read may need more pages than it returns items; walk it with
+/// [`assert_pages_match_full_within`] and a bound sized from the rows it
+/// reads.
+///
 /// # Panics
 ///
 /// Panics when the paged walk differs from `full`, or on the conditions of
@@ -57,10 +64,25 @@ where
     F: FnMut(Option<C>, u64) -> Fut,
     Fut: Future<Output = (Vec<T>, Option<C>)>,
 {
-    // Every page but the last carries at least one item (an empty page with
-    // a cursor fails the walk), so a listing that caps its pages below the
-    // requested size still ends within one page per item.
-    let max_pages = full.len() + 2;
+    assert_pages_match_full_within(full, page_size, full.len() + 2, next_page).await;
+}
+
+/// [`assert_pages_match_full`] with the walk bounded at `max_pages`.
+///
+/// # Panics
+///
+/// Panics when the paged walk differs from `full`, or on the conditions of
+/// [`collect_pages`].
+pub async fn assert_pages_match_full_within<T, C, F, Fut>(
+    full: &[T],
+    page_size: u64,
+    max_pages: usize,
+    next_page: F,
+) where
+    T: PartialEq + Debug,
+    F: FnMut(Option<C>, u64) -> Fut,
+    Fut: Future<Output = (Vec<T>, Option<C>)>,
+{
     let paged = collect_pages(page_size, max_pages, next_page).await;
     assert_eq!(
         paged, full,
@@ -108,6 +130,37 @@ mod tests {
                 let start = after.map_or(0, |a| usize::try_from(a).unwrap() + 1);
                 let page: Vec<u32> = items.iter().copied().skip(start).take(1).collect();
                 let next = page.last().copied().filter(|_| start + 1 < items.len());
+                (page, next)
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn an_empty_page_with_a_cursor_is_walked_past() {
+        // Rows 3 and 4 are unreadable: the listing skips them and answers an
+        // empty page that still points at the rows after them.
+        let items: Vec<u32> = (0..6).collect();
+        let full: Vec<u32> = items
+            .iter()
+            .copied()
+            .filter(|i| ![3, 4].contains(i))
+            .collect();
+        assert_pages_match_full_within(&full, 2, items.len(), |after: Option<u32>, size| {
+            let items = items.clone();
+            async move {
+                let start = after.map_or(0, |a| usize::try_from(a).unwrap() + 1);
+                let read: Vec<u32> = items
+                    .iter()
+                    .copied()
+                    .skip(start)
+                    .take(usize::try_from(size).unwrap())
+                    .collect();
+                let next = read
+                    .last()
+                    .copied()
+                    .filter(|_| start + read.len() < items.len());
+                let page = read.into_iter().filter(|i| ![3, 4].contains(i)).collect();
                 (page, next)
             }
         })

@@ -6737,26 +6737,36 @@ async fn assert_scan_delete_is_atomic(store: &LibraryStore) {
         .storage_scan_mark_complete("scan-atomic")
         .await
         .unwrap();
+    let assert_nothing_was_deleted = || async {
+        let (instance, completed) = store
+            .storage_scan_adoption("scan-atomic")
+            .await
+            .unwrap()
+            .expect("generation survived the rollback");
+        assert_eq!(instance, "local:test");
+        assert!(completed);
+        assert_eq!(
+            store
+                .storage_scan_object_page("scan-atomic", "", None, 8)
+                .await
+                .unwrap(),
+            vec!["a.m4b".to_string()]
+        );
+    };
+    // A failure before the batch is sent leaves everything in place.
     super::storage_scan::FAIL_STORAGE_SCAN_DELETE_BEFORE_GENERATION
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let err = store.storage_scan_delete("scan-atomic").await.unwrap_err();
     super::storage_scan::FAIL_STORAGE_SCAN_DELETE_BEFORE_GENERATION
         .store(false, std::sync::atomic::Ordering::SeqCst);
     assert!(err.to_string().contains("injected"), "{err}");
-    let (instance, completed) = store
-        .storage_scan_adoption("scan-atomic")
-        .await
-        .unwrap()
-        .expect("generation survived the rollback");
-    assert_eq!(instance, "local:test");
-    assert!(completed);
-    assert_eq!(
-        store
-            .storage_scan_object_page("scan-atomic", "", None, 8)
-            .await
-            .unwrap(),
-        vec!["a.m4b".to_string()]
-    );
+    assert_nothing_was_deleted().await;
+    // A commit failure after both deletes ran rolls both back: the
+    // completed generation never adopts an empty inventory.
+    crate::inject_commit_failures(1);
+    let err = store.storage_scan_delete("scan-atomic").await.unwrap_err();
+    assert!(err.to_string().contains("commit failed"), "{err}");
+    assert_nothing_was_deleted().await;
     store.storage_scan_delete("scan-atomic").await.unwrap();
     assert!(store
         .storage_scan_adoption("scan-atomic")

@@ -15,9 +15,9 @@ bookclerk-plugin-abi = { workspace = true, features = ["host"] }
 bookclerk-plugin-database-sqlite.workspace = true
 rusqlite.workspace = true
 sea-orm.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]

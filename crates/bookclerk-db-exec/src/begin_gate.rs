@@ -61,10 +61,11 @@ impl BeginGateHandle {
 /// An engine proxy whose `begin()` can be refused.
 ///
 /// While refusing, a `begin()` from the code under test records the proxy's
-/// fail-closed per-task fault, so the first statement inside the transaction
-/// fails with [`INTERACTIVE_TRANSACTIONS_REFUSED`]; the matching commit or
-/// rollback clears the fault without touching the engine, which never opened
-/// a transaction. Batches run inside [`with_batch_in_progress`] pass
+/// fail-closed per-task fault, and the gate answers every statement inside
+/// the transaction with [`INTERACTIVE_TRANSACTIONS_REFUSED`] (the adapters
+/// refuse statements after a failed begin the same way, so none autocommits);
+/// the matching commit or rollback clears the fault without touching the
+/// engine, which never opened a transaction. Batches run inside [`with_batch_in_progress`] pass
 /// through: they are the adapter's atomic batches, not interactive
 /// transactions.
 #[derive(Debug)]
@@ -121,10 +122,16 @@ impl BeginGate {
 #[async_trait]
 impl ProxyDatabaseTrait for BeginGate {
     async fn query(&self, statement: Statement) -> Result<Vec<ProxyRow>, DbErr> {
+        if is_txn_broken() {
+            return Err(txn_broken_err());
+        }
         self.inner.query(statement).await
     }
 
     async fn execute(&self, statement: Statement) -> Result<ProxyExecResult, DbErr> {
+        if is_txn_broken() {
+            return Err(txn_broken_err());
+        }
         self.inner.execute(statement).await
     }
 
@@ -240,6 +247,34 @@ mod tests {
         gate.ping().await.unwrap();
         assert_eq!(*engine.lock().unwrap(), ["query", "execute", "ping"]);
         assert_eq!(handle.refused(), 0, "statements are not begin() calls");
+    }
+
+    #[tokio::test]
+    async fn statements_after_a_refused_begin_fail_until_the_transaction_closes() {
+        let (gate, handle, engine) = gate();
+        let probe = || Statement::from_string(sea_orm::DbBackend::Sqlite, "SELECT 1");
+        handle.refuse(true);
+        gate.begin().await;
+        // SeaORM keeps running the transaction's statements after a begin
+        // that reported nothing, so the gate refuses them the way the
+        // adapters do, or they would autocommit one by one.
+        let err = gate.query(probe()).await.unwrap_err();
+        assert!(
+            err.to_string().contains(INTERACTIVE_TRANSACTIONS_REFUSED),
+            "{err}"
+        );
+        let err = gate.execute(probe()).await.unwrap_err();
+        assert!(
+            err.to_string().contains(INTERACTIVE_TRANSACTIONS_REFUSED),
+            "{err}"
+        );
+        assert!(
+            engine.lock().unwrap().is_empty(),
+            "nothing reached the engine"
+        );
+        gate.rollback().await;
+        gate.execute(probe()).await.unwrap();
+        assert_eq!(*engine.lock().unwrap(), ["execute"]);
     }
 
     #[tokio::test]

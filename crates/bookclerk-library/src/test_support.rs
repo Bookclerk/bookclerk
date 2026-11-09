@@ -164,9 +164,15 @@ fn to_plugin_error(err: LibraryError) -> PluginError {
 }
 
 /// Maps an engine error onto the error the guest would answer with: a
-/// typed `limit_exceeded` when the message carries one, otherwise the
-/// adapter's `unavailable`.
+/// typed `limit_exceeded` when the message carries one, `deadline_exceeded`
+/// when the batch's deadline elapsed, otherwise the adapter's
+/// classification of the failure.
 fn engine_error(err: sea_orm::DbErr) -> PluginError {
+    if let sea_orm::DbErr::Custom(message) = &err {
+        if message.starts_with("deadline_exceeded") {
+            return PluginError::deadline_exceeded(message.clone());
+        }
+    }
     match LibraryError::from_db_err(err) {
         LibraryError::LimitExceeded(limit) => PluginError::limit_exceeded(limit),
         LibraryError::Conflict(message) => PluginError::conflict(message),
@@ -183,16 +189,25 @@ impl TypedAtomicExec for ProfileExec {
     ) -> std::result::Result<ExecuteReply, PluginError> {
         self.sizes().push(envelope.request.statements.len());
         validate_execute_request(&envelope.request, &self.caps).map_err(to_plugin_error)?;
+        // The plugin host admits the stamped proofs against the adapter's
+        // advertisement before dispatch, so the lowered size each
+        // statement proves is held to the profile too.
+        self.caps
+            .admit_proven_execute(&envelope.request, &envelope.proofs)?;
         if Self::take(&self.lock_requests) {
             return Err(PluginError::unavailable(
                 "database is locked (SQLITE_BUSY): injected lock contention",
             ));
         }
+        // The adapters run the batch under the request's deadline (zero
+        // means none), so an expired batch is refused, not committed.
+        let deadline =
+            (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
         let reply = with_batch_in_progress(execute_typed_envelope_on_connection(
             &self.db,
             &envelope,
             ExecCaps::from_capabilities(&self.caps),
-            AtomicSession::from_deadline(None),
+            AtomicSession::from_deadline(deadline),
         ))
         .await
         .map_err(engine_error)?;
@@ -398,6 +413,10 @@ mod tests {
         assert_eq!(err.code, PluginErrorCode::Unavailable);
         let err = engine_error(DbErr::Custom("no such table: missing".into()));
         assert_eq!(err.code, PluginErrorCode::Internal);
+        let err = engine_error(DbErr::Custom(
+            "deadline_exceeded: atomic deadline elapsed".into(),
+        ));
+        assert_eq!(err.code, PluginErrorCode::DeadlineExceeded);
     }
 
     #[test]

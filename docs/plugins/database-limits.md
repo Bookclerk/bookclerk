@@ -210,7 +210,8 @@ assert_eq!(db.refused_begins(), 0);
   rows sized from the advertisement (multibyte text so byte and character
   counts differ, wide JSON so a listing exceeds `maxResultBytes`), and
   `paging::assert_pages_match_full` checks that a paged listing returns
-  what the unpaged one does.
+  what the unpaged one does (`assert_pages_match_full_within` bounds the
+  walk for a listing that skips rows it cannot read).
 - **Plugin batches.** `execute_batch(request)` runs one host-authored
   `ExecuteRequest` through the profile, for tests that drive the adapter
   contract directly.
