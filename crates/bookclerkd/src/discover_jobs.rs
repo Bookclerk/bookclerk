@@ -515,6 +515,29 @@ mod tests {
         )
     }
 
+    /// Sends a JSON `POST` of `body` to `uri` and decodes the JSON answer.
+    async fn post_json(
+        app: &axum::Router,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let request = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(uri)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
     /// Pending Discover jobs as `(kind, subject)` pairs.
     async fn queued(library: &bookclerk_library::LibraryStore) -> Vec<(JobKind, String)> {
         let mut jobs: Vec<(JobKind, String)> = library
@@ -528,6 +551,33 @@ mod tests {
             .collect();
         jobs.sort_by_key(|(kind, subject)| (kind.as_str().to_string(), subject.clone()));
         jobs
+    }
+
+    /// A wish records the library work it resolves to, and a sequel of an
+    /// owned book is not that work.
+    #[tokio::test]
+    async fn a_wish_stores_the_work_it_resolves_to() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, library) = crate::node_api::tests::test_state(&files).await;
+        library
+            .upsert_account("libro", "reader@example.com", "us", None, true, "libro")
+            .await
+            .unwrap();
+        let mut book =
+            bookclerk_library::NewBook::minimal("p1", "reader@example.com", "us", "Dune");
+        book.source = "libro".into();
+        book.plugin_key = "libro".into();
+        book.authors = Some("Frank Herbert".into());
+        library.upsert_book(&book).await.unwrap();
+        let app = crate::api::router(std::sync::Arc::clone(&state), None);
+
+        let wish = |title: &str| serde_json::json!({ "title": title, "authors": "Frank Herbert" });
+        let (status, owned) = post_json(&app, "/api/wishlist", wish("Dune")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{owned}");
+        assert!(owned["work_id"].is_string(), "{owned}");
+        let (status, sequel) = post_json(&app, "/api/wishlist", wish("Dune Messiah")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{sequel}");
+        assert!(sequel["work_id"].is_null(), "{sequel}");
     }
 
     #[tokio::test]
