@@ -7160,8 +7160,10 @@ pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub(crate) mod job_queue;
 
+mod book_lookup;
 mod books_page;
 mod lock_retry;
+pub use book_lookup::{AcquiredBookKey, ACQUIRED_KEYS_MAX_PAGE};
 pub use books_page::{BookPage, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT};
 
 #[cfg(test)]

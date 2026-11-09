@@ -864,28 +864,17 @@ pub async fn run_acquire(
     )
     .await?;
 
-    let books = library.list_books(account).await?;
-    let targets: Vec<_> = books
-        .into_iter()
-        .filter(|b| {
-            title.is_none_or(|a| {
-                a.eq_ignore_ascii_case(&b.uuid)
-                    || a.eq_ignore_ascii_case(&b.product_id)
-                    || b.isbn.as_deref().is_some_and(|i| a.eq_ignore_ascii_case(i))
-                    || b.asin.as_deref().is_some_and(|x| a.eq_ignore_ascii_case(x))
-            })
-        })
-        .filter(|b| {
-            if mode.pdf_only {
-                mode.force || b.pdf_status != AcquireStatus::Acquired
-            } else if mode.force {
-                is_downloadable(&b.content_kind)
-                    && (cfg.library.download_episodes || b.content_kind != "episode")
-            } else {
-                acquire_job_includes_book(b, options.download_pdf, cfg.library.download_episodes)
-            }
-        })
-        .collect();
+    let wanted = |b: &BookRecord| {
+        if mode.pdf_only {
+            mode.force || b.pdf_status != AcquireStatus::Acquired
+        } else if mode.force {
+            is_downloadable(&b.content_kind)
+                && (cfg.library.download_episodes || b.content_kind != "episode")
+        } else {
+            acquire_job_includes_book(b, options.download_pdf, cfg.library.download_episodes)
+        }
+    };
+    let targets = acquire_candidates(&library, account, title, wanted).await?;
     // A pinned instance serves its own plugin's books only; the rest are
     // skipped, not failed.
     let (targets, foreign): (Vec<_>, Vec<_>) = targets.into_iter().partition(|b| {
@@ -1127,6 +1116,42 @@ pub async fn run_listen_sync(state: &AppState, ctx: Option<&JobExecCtx>) -> anyh
     Ok(detail)
 }
 
+/// The books [`run_acquire`] considers: those on `account` (every account
+/// when `None`) that match `title` (every title when `None`) and pass
+/// `wanted`, in title order.
+///
+/// One title is an indexed lookup ([`LibraryStore::find_books_by_any_id`]);
+/// otherwise the library is read in keyset pages and only the books
+/// `wanted` keeps are held, so no read loads the whole catalog at once.
+///
+/// # Errors
+///
+/// Returns the library read error.
+async fn acquire_candidates(
+    library: &bookclerk_library::LibraryStore,
+    account: Option<&str>,
+    title: Option<&str>,
+    wanted: impl Fn(&BookRecord) -> bool,
+) -> bookclerk_library::Result<Vec<BookRecord>> {
+    if let Some(title) = title {
+        let mut found = library.find_books_by_any_id(account, title).await?;
+        found.retain(|b| wanted(b));
+        return Ok(found);
+    }
+    let mut targets = Vec::new();
+    let mut after_id = None;
+    loop {
+        let page = library.list_books_page(account, after_id, 64).await?;
+        let Some(last) = page.last() else {
+            break;
+        };
+        after_id = Some(last.id);
+        targets.extend(page.into_iter().filter(|b| wanted(b)));
+    }
+    targets.sort_by(|a, b| a.title.cmp(&b.title));
+    Ok(targets)
+}
+
 /// Whether [`run_acquire`] should visit this library row.
 ///
 /// Already-acquired audio is still included when companion PDF download is
@@ -1289,6 +1314,58 @@ mod tests {
         )
         .await;
         assert!(!acquire_job_includes_book(&book, true, true));
+    }
+
+    /// One title is found by any of its ids on the account; without a
+    /// title every account's books are read across page boundaries and
+    /// filtered, in title order.
+    #[tokio::test]
+    async fn acquire_candidates_find_one_title_or_page_the_library() {
+        let store = test_store().await;
+        for account in ["user-1", "user-2"] {
+            store
+                .upsert_account("audible", account, "us", None, true, "audible")
+                .await
+                .unwrap();
+        }
+        // More books than one 64-row page, titled in reverse id order.
+        for i in 0..70 {
+            let account = if i % 2 == 0 { "user-1" } else { "user-2" };
+            let book =
+                NewBook::minimal(format!("B{i:04}"), account, "us", format!("T{:03}", 99 - i));
+            store.upsert_book(&book).await.unwrap();
+        }
+        let titles =
+            |books: &[BookRecord]| books.iter().map(|b| b.title.clone()).collect::<Vec<_>>();
+
+        let all = acquire_candidates(&store, None, None, |_| true)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 70);
+        let mut sorted = titles(&all);
+        sorted.sort();
+        assert_eq!(titles(&all), sorted, "title order");
+
+        let nines = acquire_candidates(&store, Some("user-1"), None, |b| b.title.ends_with('9'))
+            .await
+            .unwrap();
+        assert!(nines
+            .iter()
+            .all(|b| b.account_id == "user-1" && b.title.ends_with('9')));
+        assert_eq!(nines.len(), 7, "i = 0, 10, ..., 60");
+
+        let one = acquire_candidates(&store, None, Some("b0003"), |_| true)
+            .await
+            .unwrap();
+        assert_eq!(titles(&one), vec!["T096".to_string()]);
+        let elsewhere = acquire_candidates(&store, Some("user-1"), Some("B0003"), |_| true)
+            .await
+            .unwrap();
+        assert!(elsewhere.is_empty(), "B0003 is on user-2");
+        let skipped = acquire_candidates(&store, None, Some("B0003"), |_| false)
+            .await
+            .unwrap();
+        assert!(skipped.is_empty());
     }
 
     /// A failed plugin discovery still routes an acquire to the node that runs

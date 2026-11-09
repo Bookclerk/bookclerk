@@ -35,9 +35,13 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use bookclerk_library::control_plane::{
-    forwardable_branch_titles, load_cluster_link, set_cluster_link_ancestry,
+    forwardable_branch_title, forwardable_branch_title_keys_page, load_cluster_link,
+    set_cluster_link_ancestry, ForwardableBranchKey, FORWARDABLE_KEYS_MAX_PAGE,
 };
-use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
+use bookclerk_library::entities::branch_titles;
+use bookclerk_library::{
+    AcquireStatus, AcquiredBookKey, BookRecord, LibraryStore, ACQUIRED_KEYS_MAX_PAGE,
+};
 use bookclerk_node_client::{CatalogSession, HostClientHandle, OwnerCallError};
 use bookclerk_node_proto::{
     is_storage_key, CatalogFile, CatalogMetadata, CatalogRef, CatalogTitle, FileCopy, UploadFile,
@@ -107,13 +111,24 @@ pub struct SyncReport {
     pub delivered: u64,
 }
 
-/// One title this install may share, before its files are listed.
+/// One title this install may share, by identity only: its full row is
+/// read when the title is sent or delivered ([`CatalogSync::load`]), so a
+/// pass never holds every title's metadata at once.
 #[derive(Debug, Clone)]
 enum Source {
     /// A book acquired on this install.
+    Own(AcquiredBookKey),
+    /// A title one of this install's branches shared, files delivered.
+    Branch(ForwardableBranchKey),
+}
+
+/// The full row behind a [`Source`], read just before it is used.
+#[derive(Debug, Clone)]
+enum Loaded {
+    /// A book acquired on this install.
     Own(Box<BookRecord>),
     /// A title one of this install's branches shared, files delivered.
-    Branch(Box<bookclerk_library::entities::branch_titles::Model>),
+    Branch(Box<branch_titles::Model>),
 }
 
 /// A shareable title and its place in the sync order.
@@ -295,59 +310,111 @@ impl<S: BranchShelf> CatalogSync<S> {
 
     /// Every title this install may share now, in sync order, one per
     /// store and product id (an own book wins over a branch's).
+    ///
+    /// Reads identity columns only, in keyset pages, so the pass's memory
+    /// and every read stay small however large the library is.
     async fn entries(&self, include_branches: bool) -> anyhow::Result<Vec<Entry>> {
         let mut seen = BTreeSet::new();
         let mut out = Vec::new();
-        for book in self.library.list_books(None).await? {
-            if book.acquire_status != AcquireStatus::Acquired || book.storage_key.is_none() {
-                continue;
-            }
-            let reference = CatalogRef {
-                store: store_id(&book.source),
-                product_id: book.product_id.clone(),
-            };
-            if !seen.insert(reference.clone()) {
-                continue;
-            }
-            out.push(Entry {
-                order: format!(
-                    "{}|own|{}",
-                    book.updated_at
-                        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-                    book.uuid
-                ),
-                reference,
-                source: Source::Own(Box::new(book)),
-            });
-        }
-        if include_branches {
-            for row in forwardable_branch_titles(&self.library).await? {
+        let mut after = None;
+        loop {
+            let page = self
+                .library
+                .acquired_book_keys_page(after, ACQUIRED_KEYS_MAX_PAGE)
+                .await?;
+            let full = u64::try_from(page.len()).unwrap_or(u64::MAX) >= ACQUIRED_KEYS_MAX_PAGE;
+            after = page.last().map(|key| key.id);
+            for key in page {
                 let reference = CatalogRef {
-                    store: row.store.clone(),
-                    product_id: row.product_id.clone(),
+                    store: store_id(&key.source),
+                    product_id: key.product_id.clone(),
                 };
                 if !seen.insert(reference.clone()) {
                     continue;
                 }
                 out.push(Entry {
-                    order: format!("{}|branch|{}", row.updated_at, row.uuid),
+                    order: format!(
+                        "{}|own|{}",
+                        key.updated_at
+                            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                        key.uuid
+                    ),
                     reference,
-                    source: Source::Branch(Box::new(row)),
+                    source: Source::Own(key),
                 });
+            }
+            if !full {
+                break;
+            }
+        }
+        if include_branches {
+            let mut after = None;
+            loop {
+                let page = forwardable_branch_title_keys_page(
+                    &self.library,
+                    after,
+                    FORWARDABLE_KEYS_MAX_PAGE,
+                )
+                .await?;
+                let full =
+                    u64::try_from(page.len()).unwrap_or(u64::MAX) >= FORWARDABLE_KEYS_MAX_PAGE;
+                after = page.last().map(|key| key.id);
+                for key in page.into_iter().filter(|key| key.delivered) {
+                    let reference = CatalogRef {
+                        store: key.store.clone(),
+                        product_id: key.product_id.clone(),
+                    };
+                    if !seen.insert(reference.clone()) {
+                        continue;
+                    }
+                    out.push(Entry {
+                        order: format!("{}|branch|{}", key.updated_at, key.uuid),
+                        reference,
+                        source: Source::Branch(key),
+                    });
+                }
+                if !full {
+                    break;
+                }
             }
         }
         out.sort_by(|a, b| a.order.cmp(&b.order));
         Ok(out)
     }
 
-    /// The [`CatalogTitle`] of `entry`, its files listed on `shelf`.
+    /// The full row behind `entry`, or `None` when it is no longer
+    /// shareable (removed, no longer acquired, detached, or its files no
+    /// longer delivered) since [`Self::entries`] listed it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read error.
+    async fn load(&self, entry: &Entry) -> anyhow::Result<Option<Loaded>> {
+        Ok(match &entry.source {
+            Source::Own(key) => self
+                .library
+                .get_book_by_uuid(&key.uuid)
+                .await?
+                .filter(|book| {
+                    book.acquire_status == AcquireStatus::Acquired && book.storage_key.is_some()
+                })
+                .map(|book| Loaded::Own(Box::new(book))),
+            Source::Branch(key) => forwardable_branch_title(&self.library, &key.uuid)
+                .await?
+                .map(|row| Loaded::Branch(Box::new(row))),
+        })
+    }
+
+    /// The [`CatalogTitle`] of `entry` (its row read as `loaded`), its
+    /// files listed on `shelf`.
     async fn title(
         &self,
         shelf: &dyn StorageBackend,
         entry: &Entry,
+        loaded: &Loaded,
     ) -> anyhow::Result<CatalogTitle> {
-        match &entry.source {
-            Source::Own(book) => {
+        match loaded {
+            Loaded::Own(book) => {
                 let primary = book.storage_key.as_deref().unwrap_or_default();
                 let pdf = (book.pdf_status == AcquireStatus::Acquired)
                     .then_some(book.pdf_storage_key.as_deref())
@@ -365,7 +432,7 @@ impl<S: BranchShelf> CatalogSync<S> {
                     files,
                 })
             }
-            Source::Branch(row) => Ok(CatalogTitle {
+            Loaded::Branch(row) => Ok(CatalogTitle {
                 store: row.store.clone(),
                 product_id: row.product_id.clone(),
                 metadata: serde_json::from_str(&row.metadata_json)
@@ -438,7 +505,19 @@ impl<S: BranchShelf> CatalogSync<S> {
         // as it stands is skipped for good, and withdrawn if shared before.
         let mut unlisted = false;
         for entry in pending {
-            match self.title(shelf.as_ref(), entry).await {
+            // A read failure ends the pass (the next one resumes after what
+            // was accepted); a title gone since it was listed is skipped.
+            let Some(loaded) = self.load(entry).await? else {
+                tracing::debug!(
+                    product_id = %entry.reference.product_id,
+                    "a title is no longer shareable; skipped"
+                );
+                if !unlisted {
+                    cursor.clone_from(&entry.order);
+                }
+                continue;
+            };
+            match self.title(shelf.as_ref(), entry, &loaded).await {
                 Ok(title) if title.problem().is_none() => {
                     let size = serde_json::to_string(&title).map_or(0, |text| text.len());
                     if !batch.is_empty()
@@ -510,7 +589,12 @@ impl<S: BranchShelf> CatalogSync<S> {
             };
             // One title that cannot be read (its files gone, its row
             // malformed) does not hold up the others.
-            let title = match self.title(shelf.as_ref(), entry).await {
+            let title = match self.load(entry).await {
+                Ok(Some(loaded)) => self.title(shelf.as_ref(), entry, &loaded).await,
+                Ok(None) => Err(anyhow::anyhow!("it is no longer shareable")),
+                Err(err) => Err(err),
+            };
+            let title = match title {
                 Ok(title) => title,
                 Err(err) => {
                     tracing::warn!(

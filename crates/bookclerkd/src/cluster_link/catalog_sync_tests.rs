@@ -306,7 +306,8 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
     // What crosses the link: store, product id, metadata, files only.
     for entry in b_sync.entries(true).await.unwrap() {
         let shelf = b_sync.shelf.primary().await.unwrap();
-        let title = b_sync.title(shelf.as_ref(), &entry).await.unwrap();
+        let loaded = b_sync.load(&entry).await.unwrap().unwrap();
+        let title = b_sync.title(shelf.as_ref(), &entry, &loaded).await.unwrap();
         let json = serde_json::to_value(&title).unwrap();
         for key in json.as_object().unwrap().keys() {
             assert!(
@@ -434,7 +435,11 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
     assert_eq!(cut.cursor, "", "the new settings restart the pass");
     let first = b_sync.entries(false).await.unwrap().remove(0);
     let shelf = b_sync.shelf.primary().await.unwrap();
-    let first_title = b_sync.title(shelf.as_ref(), &first).await.unwrap();
+    let first_loaded = b_sync.load(&first).await.unwrap().unwrap();
+    let first_title = b_sync
+        .title(shelf.as_ref(), &first, &first_loaded)
+        .await
+        .unwrap();
     assert!(matches!(
         accept_catalog_batch(&a, b_node, cut.fence, &first.order, false, &[first_title])
             .await
@@ -491,10 +496,11 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
         (BRANCH_TITLE_DETACHED.into(), Some(DETACHED_LEFT.into()))
     );
     assert!(
-        bookclerk_library::control_plane::forwardable_branch_titles(&b)
+        bookclerk_library::control_plane::forwardable_branch_title_keys_page(&b, None, 256)
             .await
             .unwrap()
-            .is_empty(),
+            .iter()
+            .all(|key| !key.delivered),
         "B no longer passes C's title on"
     );
 }
