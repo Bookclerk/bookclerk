@@ -275,6 +275,12 @@ Operators also see scan and acquire. Connecting stores stays in
 
 Link and revoke stores, and manage linked sign-in identities.
 
+**Revoke** marks the account revoked (which stops its scans), signs it
+out at the store (best effort), deletes its saved credentials, then
+unlinks it. Books already in the library stay. If a step fails, the store
+stays listed and the page shows the error, so **Revoke** can be tried
+again.
+
 ### Settings → Account (everyone)
 
 - **Profile**: display name, email and picture. The role is shown;
