@@ -3282,7 +3282,12 @@ fn build_approved_grant(
     }
     if let Some(flag) = grant_override.allow_undeclared_public_redirects {
         approved.allow_undeclared_public_redirects = flag;
-        approved.operator_allow_undeclared_public_redirects = Some(flag);
+        // Record an operator choice only when it departs from the manifest.
+        // Echoing the baseline back (the dialog always submits the box) is
+        // not an answer, so a later version that asks for redirects still
+        // waits for consent instead of reading as already refused.
+        approved.operator_allow_undeclared_public_redirects =
+            (flag != baseline.allow_undeclared_public_redirects).then_some(flag);
     }
     if let Some(hosts) = grant_override.own_user_agent_hosts {
         approved.own_user_agent_hosts = Some(vec_to_set(hosts));
@@ -7017,6 +7022,48 @@ mod tests {
         };
         let view = serde_json::to_value(super::PluginGrantView::from_grant(&legacy)).unwrap();
         assert!(view.get("ownUserAgentHosts").is_none(), "{view}");
+    }
+
+    #[test]
+    fn echoing_the_redirect_default_is_not_an_operator_answer() {
+        use bookclerk_plugin_host::{pending_structural, PluginGrant};
+
+        let baseline = PluginGrant {
+            plugin_id: "demo".into(),
+            network_mode: "outbound".into(),
+            ..PluginGrant::empty()
+        };
+        let echoed = build_approved_grant(
+            &baseline,
+            Some(PluginGrantOverride {
+                allow_undeclared_public_redirects: Some(false),
+                ..PluginGrantOverride::default()
+            }),
+        )
+        .expect("echo the default");
+        assert_eq!(echoed.operator_allow_undeclared_public_redirects, None);
+
+        // A later version asking for redirects still waits for consent.
+        let upgrade = PluginGrant {
+            allow_undeclared_public_redirects: true,
+            ..baseline.clone()
+        };
+        assert!(pending_structural(&echoed, &upgrade).undeclared_public_redirects);
+
+        // Refusing what the manifest asks for is recorded as a refusal.
+        let refused = build_approved_grant(
+            &upgrade,
+            Some(PluginGrantOverride {
+                allow_undeclared_public_redirects: Some(false),
+                ..PluginGrantOverride::default()
+            }),
+        )
+        .expect("refuse redirects");
+        assert_eq!(
+            refused.operator_allow_undeclared_public_redirects,
+            Some(false)
+        );
+        assert!(!pending_structural(&refused, &upgrade).undeclared_public_redirects);
     }
 
     #[test]

@@ -1613,7 +1613,7 @@ fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> an
     let grant = consent_request(&plugin.manifest, plugin.plugin_key());
     let summary = consent_summary(&grant);
     let files_dir = &config.paths().files_dir;
-    let mut store = PluginGrantStore::load(files_dir)?;
+    let store = PluginGrantStore::load(files_dir)?;
     // What this version asks for beyond the stored grant: the same diff
     // `plugins info` and the web consent dialog show.
     let pending = store
@@ -1650,6 +1650,10 @@ fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> an
         }
     }
 
+    // Reload after the prompt: another writer may have changed the store
+    // while the operator was reading, and saving the early copy would
+    // drop that change.
+    let mut store = PluginGrantStore::load(files_dir)?;
     store.upsert(grant.clone());
     store.save(files_dir)?;
 
