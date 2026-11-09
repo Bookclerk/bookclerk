@@ -122,12 +122,12 @@ const INTERFACES: &[InterfaceEntry] = &[
             "searchCatalog",
             "expandCandidates",
             "purchaseHint",
-            "purchaseHints",
             "listDeals",
             "health",
             "diagnose",
             "catalogDetail",
             "revokeAccount",
+            "purchaseHints",
         ],
     },
     InterfaceEntry {
