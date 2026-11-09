@@ -558,7 +558,7 @@ impl PreparedStatement {
     ///
     /// Nothing is sent until the first [`RowStream::next`]. On a session
     /// that streams, rows are decoded as their frames arrive and each is
-    /// handed out once, so memory stays at one read window however large
+    /// handed out once, so memory stays near one frame however large
     /// the result is. The read still fails closed (`limit_exceeded`) past
     /// the session's streamed budget, after the rows that fit were handed
     /// out. On a session that does not stream, or answers `unsupported`
@@ -680,6 +680,9 @@ struct StreamedRows {
     pending: VecDeque<DbRow>,
     /// Rows handed out so far, held to the statement's `max_rows`.
     yielded: usize,
+    /// The failure that ended the stream, yielded once the rows the
+    /// decoder accepted ahead of it are handed out.
+    failure: Option<PluginError>,
 }
 
 /// What one step of a streamed read produced.
@@ -789,6 +792,7 @@ impl RowStream {
             columns: Vec::new(),
             pending: VecDeque::new(),
             yielded: 0,
+            failure: None,
         })))
     }
 
@@ -824,6 +828,9 @@ impl StreamedRows {
     /// ends early, and [`PluginError::invalid_params`] when the head does
     /// not answer the request.
     async fn step(&mut self) -> Result<StreamStep> {
+        if let Some(err) = self.failure.take() {
+            return Err(err);
+        }
         let Some(decoder) = self.decoder.as_mut() else {
             return Ok(StreamStep::End);
         };
@@ -853,7 +860,9 @@ impl StreamedRows {
             decoder.finish()?;
             return Ok(StreamStep::End);
         }
-        for frame in decoder.push_frames(chunk)? {
+        let mut frames = Vec::new();
+        let pushed = decoder.push_frames(chunk, &mut frames);
+        for frame in frames {
             match frame {
                 ExecuteStreamFrame::Head {
                     operation_id,
@@ -864,6 +873,14 @@ impl StreamedRows {
                 // The decoder records the outcome; `finish` reports it.
                 ExecuteStreamFrame::End(_) | ExecuteStreamFrame::Err(_) => {}
             }
+        }
+        if let Err(err) = pushed {
+            // Rows accepted ahead of the failure are handed out first.
+            if self.pending.is_empty() {
+                return Err(err);
+            }
+            self.decoder = None;
+            self.failure = Some(err);
         }
         Ok(StreamStep::Continue)
     }
@@ -2111,10 +2128,10 @@ mod tests {
             ),
             (
                 DbCapabilities::advertised_sqlite(),
-                // Refused with the window that carried them, rows included.
+                // The rows ahead of the trailing bytes are still handed out.
                 StreamAnswer::Trailing(2),
                 PluginErrorCode::InvalidParams,
-                0,
+                2,
             ),
             // Once rows were handed out the read cannot restart behind them.
             (

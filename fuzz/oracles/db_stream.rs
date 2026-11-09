@@ -202,7 +202,9 @@ fn stream_rows(
     let mut decoder = ExecuteStreamDecoder::streaming(limits);
     let mut rows: Vec<Vec<DbRow>> = Vec::new();
     for piece in stream.chunks(chunk) {
-        for frame in decoder.push_frames(piece)? {
+        let mut frames = Vec::new();
+        decoder.push_frames(piece, &mut frames)?;
+        for frame in frames {
             match frame {
                 ExecuteStreamFrame::Statement { .. } => rows.push(Vec::new()),
                 ExecuteStreamFrame::Rows(batch) => {
