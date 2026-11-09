@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use bookclerk_config::{Config, Paths};
+use bookclerk_db_testkit::{BindingDatabase, Profile};
 use bookclerk_plugin_e2e::{skip_or_fail, StagedScope};
 use bookclerk_plugin_host::{
     consent_request, discover_plugins, CliInvokeParams, Entrypoint, PluginFamily, PluginGrantStore,
@@ -235,6 +236,50 @@ async fn staged_first_party_plugins_describe() {
                     );
                 }
             }
+        }
+
+        // `[[databases]]` conformance: the registration the guest answers for
+        // each binding applies on a plugin-owned unit under every capability
+        // profile, so a migration the minimum advertisement refuses (a
+        // statement past `maxPayloadBytes`, a refused DDL form) fails here
+        // rather than at enrollment on an operator's adapter.
+        for database in &plugin.manifest.databases {
+            let migrations = tokio::time::timeout(
+                STAGED_RPC_TIMEOUT,
+                session.database_migrations(&database.binding),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "{} database_migrations({}) timed out after {STAGED_RPC_TIMEOUT:?}",
+                    plugin.manifest.id, database.binding
+                )
+            })
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{} database_migrations({}): {e}",
+                    plugin.manifest.id, database.binding
+                )
+            });
+            for profile in Profile::ALL {
+                let unit = BindingDatabase::open(profile, migrations.clone())
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "{} binding {} migrations refused under profile {}: {e}",
+                            plugin.manifest.id,
+                            database.binding,
+                            profile.name()
+                        )
+                    });
+                assert_eq!(unit.profile(), profile);
+            }
+            eprintln!(
+                "staged_plugins: {} binding {} applies {} migration(s) under every profile",
+                plugin.manifest.id,
+                database.binding,
+                migrations.len()
+            );
         }
 
         // `[[queues.consumers]]` conformance: one `queue(batch)` call answers
