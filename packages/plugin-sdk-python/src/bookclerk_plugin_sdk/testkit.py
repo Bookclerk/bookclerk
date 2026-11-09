@@ -29,7 +29,10 @@ only the minimums.
 
 The binary is found through the ``BOOKCLERK_DB_TESTKIT`` environment variable
 or the ``binary`` argument, else as ``bookclerk-db-testkit`` on ``PATH``
-(``cargo build -p bookclerk-db-testkit`` in the workspace builds it). This
+(``cargo build -p bookclerk-db-testkit`` in the workspace builds it).
+``bookclerk-plugin test`` (``cargo plugin -- test <dir>`` in the workspace)
+runs a plugin's suite once per profile, setting both that variable and
+``BOOKCLERK_DB_TESTKIT_PROFILE``, which is the default ``profile``. This
 module runs under CPython, not inside an isolate.
 """
 
@@ -41,7 +44,7 @@ import json
 import os
 from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
 from .abi import DbCapabilities
@@ -249,8 +252,24 @@ class TestDatabase:
         await self.close()
 
 
+def default_profile(option: TestDatabaseProfile | None = None) -> TestDatabaseProfile:
+    """Pick the profile a test runs under.
+
+    Args:
+        option: The caller's ``profile`` argument.
+
+    Returns:
+        ``option`` when given, else the profile ``bookclerk-plugin test`` names
+        in ``BOOKCLERK_DB_TESTKIT_PROFILE``, else ``minimum``. Not validated.
+    """
+    if option is not None:
+        return option
+    from_env = os.environ.get("BOOKCLERK_DB_TESTKIT_PROFILE", "")
+    return cast(TestDatabaseProfile, from_env) if from_env else "minimum"
+
+
 async def create_test_database(
-    profile: TestDatabaseProfile = "minimum",
+    profile: TestDatabaseProfile | None = None,
     migrations: list[dict[str, Any]] | None = None,
     *,
     binary: str | None = None,
@@ -258,7 +277,9 @@ async def create_test_database(
     """Spawn the kit under ``profile`` with ``migrations`` applied.
 
     Args:
-        profile: Capability profile to enforce (default ``minimum``, the strictest).
+        profile: Capability profile to enforce. Defaults to
+            ``BOOKCLERK_DB_TESTKIT_PROFILE`` when ``bookclerk-plugin test``
+            sets it, else ``minimum``, the strictest.
         migrations: The plugin's ``database_migrations`` registration (each
             ``{"id": ..., "operations": [{"schema": sql} | {"data": sql}, ...]}``),
             applied the way the host applies it at enrollment.
@@ -273,6 +294,7 @@ async def create_test_database(
         RuntimeError: When the binary cannot be started, refuses the profile
             or the registration (its message is included), or exits early.
     """
+    profile = default_profile(profile)
     if profile not in TEST_DATABASE_PROFILES:
         raise ValueError(
             f"unknown test database profile {profile!r} (one of {', '.join(TEST_DATABASE_PROFILES)})"
