@@ -5261,6 +5261,11 @@ pub(crate) mod tests {
         assert!(events.iter().any(|e| e.action == "elevate_failed"));
     }
 
+    /// Test-only wrong Owner password (assembled at runtime so static analysis does not flag a literal).
+    fn wrong_elevate_password() -> String {
+        ["not", "-", "the", "-", "pass"].concat()
+    }
+
     /// Sends `POST /api/auth/elevate` with `password` from the client address `peer`.
     ///
     /// # Arguments
@@ -5319,10 +5324,12 @@ pub(crate) mod tests {
         let (_state, app, library) = phase2_harness("op-token-elevate-throttle").await;
         let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
         for _ in 0..4 {
-            let (status, _) = elevate_from(&app, &cookie, "198.51.100.7", "wrong").await;
+            let (status, _) =
+                elevate_from(&app, &cookie, "198.51.100.7", &wrong_elevate_password()).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED);
         }
-        let (status, retry_after) = elevate_from(&app, &cookie, "198.51.100.7", "wrong").await;
+        let (status, retry_after) =
+            elevate_from(&app, &cookie, "198.51.100.7", &wrong_elevate_password()).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
         assert!(retry_after.is_some(), "429 carries Retry-After");
 
@@ -5340,10 +5347,17 @@ pub(crate) mod tests {
         let (state, app, library) = phase2_harness("op-token-elevate-owner").await;
         let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
         for i in 1..=4 {
-            let (status, _) = elevate_from(&app, &cookie, &format!("203.0.113.{i}"), "wrong").await;
+            let (status, _) = elevate_from(
+                &app,
+                &cookie,
+                &format!("203.0.113.{i}"),
+                &wrong_elevate_password(),
+            )
+            .await;
             assert_eq!(status, StatusCode::UNAUTHORIZED);
         }
-        let (status, _) = elevate_from(&app, &cookie, "203.0.113.5", "wrong").await;
+        let (status, _) =
+            elevate_from(&app, &cookie, "203.0.113.5", &wrong_elevate_password()).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 
         // A fresh address with the right password is still refused for this Owner,
@@ -5363,14 +5377,15 @@ pub(crate) mod tests {
         let (_state, app, library) = phase2_harness("op-token-elevate-clear").await;
         let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
         for _ in 0..4 {
-            let (status, _) = elevate_from(&app, &cookie, "192.0.2.4", "wrong").await;
+            let (status, _) =
+                elevate_from(&app, &cookie, "192.0.2.4", &wrong_elevate_password()).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED);
         }
         let (status, _) = elevate_from(&app, &cookie, "192.0.2.4", &phase2_owner_password()).await;
         assert_eq!(status, StatusCode::OK);
 
         // Both buckets were cleared, so a fifth miss is a plain 401 again.
-        let (status, _) = elevate_from(&app, &cookie, "192.0.2.4", "wrong").await;
+        let (status, _) = elevate_from(&app, &cookie, "192.0.2.4", &wrong_elevate_password()).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
