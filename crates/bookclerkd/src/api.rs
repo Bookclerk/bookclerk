@@ -7309,6 +7309,146 @@ mode = "deny"
         root
     }
 
+    /// Stages a native plugin asking for `tcp` (a TOML array of TCP grants).
+    fn stage_network_plugin(files: &std::path::Path, tcp: &str) {
+        let root = files.join("plugins").join("net_echo");
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("guest");
+        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(
+            root.join("plugin.toml"),
+            format!(
+                r#"
+api_version = 3
+id = "net_echo"
+version = "0.1.0"
+runtime = "native"
+command = "./guest"
+entrypoints = ["cli"]
+
+[capabilities.network]
+mode = "outbound"
+tcp = {tcp}
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    /// An `AppState` over `cfg` with an in-memory library and auth off.
+    async fn consent_test_state(cfg: Config) -> std::sync::Arc<super::AppState> {
+        use bookclerk_integrations::IntegrationRegistry;
+        use bookclerk_library::LibraryStore;
+        use bookclerk_plugin_host::{DatabaseRegistry, DestinationRegistry};
+        use bookclerk_source::SourceRegistry;
+        use std::sync::Arc;
+        use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
+
+        let library = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("sqlite memory"),
+        );
+        Arc::new(super::AppState {
+            config: Arc::new(RwLock::new(cfg)),
+            library: Arc::new(RwLock::new(library)),
+            database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
+            job_notify: Arc::new(Notify::new()),
+            job_runtime: Arc::new(RwLock::new(())),
+            work_lock: Mutex::new(()),
+            discover_gate: Arc::new(Semaphore::new(1)),
+            integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
+            sources: Arc::new(RwLock::new(SourceRegistry::new())),
+            destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
+            auth: Arc::new(RwLock::new(Arc::new(crate::auth::OperatorAuthState::new(
+                String::new(),
+                12,
+                false,
+                5,
+                30,
+            )))),
+            reload_lock: Mutex::new(()),
+            listen_reload: Arc::new(Notify::new()),
+            last_bound_listen: RwLock::new(None),
+            tray: RwLock::new(None),
+            tray_handoff: Mutex::new(None),
+            deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
+            covers: Arc::new(crate::covers::CoverService::detached()),
+        })
+    }
+
+    /// An upgrade that adds a TCP port is reported as pending (#700), and
+    /// approving it clears that.
+    #[tokio::test]
+    async fn plugin_consent_reports_what_an_upgrade_adds() {
+        use axum::extract::{Path, Query, State};
+        use axum::Json;
+
+        let files = tempfile::tempdir().unwrap();
+        stage_network_plugin(
+            files.path(),
+            r#"[{ host = "db.store.example", ports = [5432] }]"#,
+        );
+        let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+        let plugin = bookclerk_plugin_host::discover_plugins(&cfg)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.manifest.id == "net_echo")
+            .expect("staged plugin");
+        let approved =
+            bookclerk_plugin_host::consent_request(&plugin.manifest, plugin.plugin_key());
+        let mut store = bookclerk_plugin_host::PluginGrantStore::default();
+        store.upsert(approved);
+        store.save(files.path()).unwrap();
+
+        // The upgrade asks for another port on the same host.
+        stage_network_plugin(
+            files.path(),
+            r#"[{ host = "db.store.example", ports = [5432, 6432] }]"#,
+        );
+        let state = consent_test_state(cfg).await;
+        let Json(before) = super::get_plugin_consent(
+            State(state.clone()),
+            Path("net_echo".to_string()),
+            Query(super::PluginConsentQuery::default()),
+        )
+        .await
+        .expect("consent");
+        let body = serde_json::to_value(&before).unwrap();
+        assert_eq!(body["covered"], false, "{body}");
+        assert_eq!(
+            body["pending"]["tcp"],
+            serde_json::json!([{ "host": "db.store.example", "ports": [6432] }])
+        );
+        assert!(body["pending"]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l == "  raw TCP connect: db.store.example:[6432]"));
+
+        let Json(after) = super::post_plugin_consent(
+            State(state.clone()),
+            Path("net_echo".to_string()),
+            Query(super::PluginConsentQuery::default()),
+            Json(super::PluginConsentApproveRequest {
+                approve: true,
+                grant: None,
+            }),
+        )
+        .await
+        .expect("approve");
+        let body = serde_json::to_value(&after).unwrap();
+        assert_eq!(body["covered"], true, "{body}");
+        assert_eq!(body["pending"]["lines"], serde_json::json!([]));
+    }
+
     fn write_logo_svg(root: &std::path::Path, svg: &str) {
         std::fs::write(root.join("assets/logo.svg"), svg.as_bytes()).unwrap();
     }
