@@ -446,6 +446,25 @@ class ScenarioTests(unittest.TestCase):
         self.assertTrue(p.selected("python_sdk"))
         self.assertFalse(p.selected("e2e"))
 
+    def test_check_input_selects_its_checks_on_top_of_the_owner(self) -> None:
+        # The SDK test wrappers spawn the kit executable: a change to the kit
+        # re-runs both wrapper checks and the kit's own tests.
+        p = plan("crates/bookclerk-db-testkit/src/binding.rs")
+        self.assertTrue(p.selected("plugin_sdk_abi"))
+        self.assertTrue(p.selected("python_sdk"))
+        self.assertTrue(p.packages["bookclerk-db-testkit"].compiled)
+        self.assertIn("bookclerk-db-testkit", p.packages)
+
+    def test_sdk_checks_build_the_kit_before_running_the_wrappers(self) -> None:
+        for check, label in (("plugin_sdk_abi", "npm run test:testkit"), ("python_sdk", "pytest")):
+            with self.subTest(check=check):
+                cmds = [c for _, c in planned_commands(artifact(plan("crates/bookclerk-db-testkit/src/binding.rs")), check, CTX)]
+                labels = [c.label for c in cmds]
+                build = labels.index("cargo build -p bookclerk-db-testkit")
+                run = labels.index(label)
+                self.assertLess(build, run)
+                self.assertTrue(cmds[run].env["BOOKCLERK_DB_TESTKIT"].endswith("bookclerk-db-testkit"))
+
     def test_dev_edge_selects_consumer_tests_and_doctests_not_its_consumers(self) -> None:
         p = plan("crates/bookclerk-plugins/platform/database-sqlite/src/plugin.rs")
         lib = p.packages["bookclerk-library"]

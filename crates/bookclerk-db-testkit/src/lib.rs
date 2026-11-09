@@ -26,8 +26,11 @@ use bookclerk_plugin_abi::DbCapabilities;
 use bookclerk_plugin_database_sqlite::sqlite::SqliteProxy;
 use sea_orm::{DatabaseConnection, DbBackend, DbErr};
 
+pub mod binding;
 pub mod fixtures;
 pub mod paging;
+
+pub use binding::BindingDatabase;
 
 pub use bookclerk_library::test_support::{Profile, INTERACTIVE_TRANSACTIONS_REFUSED};
 

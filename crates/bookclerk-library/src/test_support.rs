@@ -167,7 +167,11 @@ fn to_plugin_error(err: LibraryError) -> PluginError {
 /// typed `limit_exceeded` when the message carries one, `deadline_exceeded`
 /// when the batch's deadline elapsed, otherwise the adapter's
 /// classification of the failure.
-fn engine_error(err: sea_orm::DbErr) -> PluginError {
+///
+/// `bookclerk-db-testkit` maps the engine errors of a plugin-owned binding
+/// database the same way.
+#[must_use]
+pub fn engine_error(err: sea_orm::DbErr) -> PluginError {
     if let sea_orm::DbErr::Custom(message) = &err {
         if message.starts_with("deadline_exceeded") {
             return PluginError::deadline_exceeded(message.clone());

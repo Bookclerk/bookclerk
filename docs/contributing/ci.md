@@ -216,6 +216,7 @@ paths):
 | A declared `embed` (such as the TS or Python SDK runtime in `bookclerk-workerd`) | The package is compiled-affected |
 | A declared `test_input` | The consumer's tests |
 | A declared `fixture` | The checks declared for that fixture |
+| A declared `check_input` (a workspace executable a non-Cargo check launches, such as the `bookclerk-db-testkit` kit the SDK test wrappers spawn) | The checks declared for it, on top of the owner's own selection |
 | A declared `test_guests` executable | The launching package's tests re-run, with no propagation |
 | `ui/`, `packages/plugin-sdk*/`, ABI scripts | The UI, SDK ABI and API-doc checks |
 | A first-party workerd guest without a Cargo package (`crates/bookclerk-plugins/<tier>/<name>/`) | Its type-check, build and tests (`workerd_guests`) and its staged E2E. `packages/plugin-sdk/` also selects `workerd_guests`, because the guests type-check against it |
@@ -424,6 +425,12 @@ Prettier and markdownlint-cli2) and runs both from the repository root:
 Each language's own linter runs in its own check: oxlint in `ui`, the
 TypeScript SDK and the three Workers, and `ruff check` plus
 `ruff format --check` in `python_sdk`.
+
+The `plugin_sdk_abi` and `python_sdk` checks build the `bookclerk-db-testkit`
+executable first (`cargo build -p bookclerk-db-testkit`) and name it to the
+SDK tests as `BOOKCLERK_DB_TESTKIT`: the SDKs' `createTestDatabase` wrappers
+spawn it (see [Working within database limits](../plugins/database-limits.md#a-plugins-own-binding)),
+so both checks need the Rust toolchain.
 
 To fix formatting locally:
 
