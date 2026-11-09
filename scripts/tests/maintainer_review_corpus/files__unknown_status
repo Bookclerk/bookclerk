@@ -1,0 +1,7 @@
+[
+ {
+  "filename": "a",
+  "status": "exploded",
+  "patch": "@@ -1 +1 @@"
+ }
+]

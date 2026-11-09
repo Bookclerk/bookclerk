@@ -1,0 +1,12 @@
+[
+ {
+  "id": 1,
+  "user": {
+   "login": "fritz-fritz",
+   "id": 5253894,
+   "type": "User"
+  },
+  "state": "LGTM",
+  "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ }
+]
