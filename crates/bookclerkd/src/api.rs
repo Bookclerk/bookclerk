@@ -3938,31 +3938,15 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
         .count_accounts()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? as usize;
-    let books = library
-        .count_books(None)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? as usize;
-    let acquired = library
-        .count_by_status(AcquireStatus::Acquired)
+    let counts = library
+        .count_books_by_status()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let pending = library
-        .count_by_status(AcquireStatus::NotAcquired)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let error = library
-        .count_by_status(AcquireStatus::Error)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let queued = library
-        .count_by_status(AcquireStatus::Queued)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let downloading = library
-        .count_by_status(AcquireStatus::Downloading)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let in_progress = queued + downloading;
+    let books = usize::try_from(counts.total).unwrap_or(0);
+    let acquired = counts.acquired;
+    let pending = counts.not_acquired;
+    let error = counts.error;
+    let in_progress = counts.queued + counts.downloading;
     let (listen, storage_backend) = {
         let cfg = state.config.read().await;
         let destinations = state.destinations.read().await;

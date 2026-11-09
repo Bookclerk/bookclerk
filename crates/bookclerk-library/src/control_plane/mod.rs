@@ -128,7 +128,7 @@ pub use leases::{
     acquire_lease, acquire_lease_on, list_leases, load_lease, load_lease_on, release_lease,
     release_lease_on, renew_lease, renew_lease_on, ClusterLease, LeaseFence, SingletonDuty,
     EVENT_RETENTION_LEASE, JOB_RETENTION_LEASE, KV_EXPIRY_LEASE, MIGRATION_LEASE,
-    SESSION_EXPIRY_LEASE,
+    RECORD_RETENTION_LEASE, SESSION_EXPIRY_LEASE,
 };
 pub use live::{changed_topics, live_revisions, LiveRevision, LiveRevisions, LiveTopic};
 pub use node_queue::{

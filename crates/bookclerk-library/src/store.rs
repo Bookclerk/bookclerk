@@ -30,10 +30,10 @@ use crate::entities::{
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{
-    user_prefs_key, AccountRecord, AcquireStatus, BookRecord, GlobalQueueEntry,
-    ListeningProgressRecord, OidcClientRecord, PortalIdentity, QueueWisher, RequestStatus,
-    StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord, UserPreferences, UserRecord,
-    UserRole, UserStatus,
+    user_prefs_key, AccountRecord, AcquireStatus, AcquireStatusCounts, BookRecord,
+    GlobalQueueEntry, ListeningProgressRecord, OidcClientRecord, PortalIdentity, QueueWisher,
+    RequestStatus, StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord, UserPreferences,
+    UserRecord, UserRole, UserStatus,
 };
 use crate::wishlist_merge::apply_merged_sources;
 use library_model::{holding_from_book, listing_from_book, WorkEnrichment};
@@ -4760,6 +4760,44 @@ impl LibraryStore {
         .await
     }
 
+    /// Counts `books` rows per acquire status in one grouped read.
+    ///
+    /// # Returns
+    ///
+    /// The count for each [`AcquireStatus`] and the table total. A row with
+    /// a status this build does not know is counted in the total only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn count_books_by_status(&self) -> Result<AcquireStatusCounts> {
+        lock_retry::retry_read_lock(|| async {
+            let rows: Vec<(String, i64)> = books::Entity::find()
+                .select_only()
+                .column(books::Column::AcquireStatus)
+                .column_as(books::Column::Id.count(), "n")
+                .group_by(books::Column::AcquireStatus)
+                .into_tuple()
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::from_db_err)?;
+            let mut counts = AcquireStatusCounts::default();
+            for (status, n) in rows {
+                counts.total += n;
+                match AcquireStatus::parse(&status) {
+                    Some(AcquireStatus::NotAcquired) => counts.not_acquired += n,
+                    Some(AcquireStatus::Queued) => counts.queued += n,
+                    Some(AcquireStatus::Downloading) => counts.downloading += n,
+                    Some(AcquireStatus::Acquired) => counts.acquired += n,
+                    Some(AcquireStatus::Error) => counts.error += n,
+                    None => {}
+                }
+            }
+            Ok(counts)
+        })
+        .await
+    }
+
     /// Persist enrichment fields without touching scan / ownership columns.
     ///
     /// # Errors
@@ -7154,6 +7192,7 @@ pub(crate) mod event_outbox;
 pub(crate) mod library_model;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
+pub(crate) mod retention;
 pub(crate) mod storage_scan;
 pub use discover::{DiscoverSubject, SeedScope, StoredCandidate, StoredFeed};
 pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
