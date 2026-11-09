@@ -493,8 +493,10 @@ effective prices. Client-supplied `preferred_sources` are ignored.
 
 Each store gets 8 seconds per lookup. A batch answers within **10 seconds**
 with what has resolved: a query still waiting then carries only its trusted
-store links, unpriced, and the page asks again later, so one slow store
-never turns a page of cards into a failed request. A store that times out
+store links, unpriced, with `incomplete: true`. The page keeps no copy of
+such an answer and the card asks again after 15 seconds (twice at most),
+without dropping prices it already shows, so one slow store never turns a
+page of cards into a failed request or a card left unpriced. A store that times out
 three lookups in a row is **paused** for five minutes (the breaker logs
 `price lookups paused after repeated timeouts`), then tried again; a store
 that answers, even with an error, closes its breaker. Answers, including

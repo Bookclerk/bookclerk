@@ -183,6 +183,11 @@ pub struct PurchaseHintsResponse {
     pub hints: Vec<PurchaseHint>,
     /// Lowest-priced hint (or first catalog hit when no prices resolved).
     pub best: Option<PurchaseHint>,
+    /// True when the batch deadline cut this lookup short: the hints are the
+    /// query's trusted seeds alone, so a client should not keep the answer
+    /// and asks again later. Omitted (false) for a finished lookup.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub incomplete: bool,
 }
 
 /// Look up purchase links via registered
@@ -487,7 +492,11 @@ async fn resolve_purchase_hints_uncached(
     sort_hints_for_display(&mut hints, &preferred);
     let best = best_purchase_hint_preferring(&hints, &preferred)
         .map(|h| best_hint_for_caller(h, &preferred));
-    Ok(PurchaseHintsResponse { hints, best })
+    Ok(PurchaseHintsResponse {
+        hints,
+        best,
+        incomplete: false,
+    })
 }
 
 /// Pick the lowest-priced hint (ties keep earlier order). Unpriced sort after priced.
@@ -606,8 +615,9 @@ pub const BATCH_DEADLINE: Duration = Duration::from_secs(10);
 ///
 /// Every query starts together, at most `max_concurrent` at a time. The
 /// whole batch answers within [`BATCH_DEADLINE`]: a query still waiting
-/// then answers with its trusted seeds alone (no prices), so the page shows
-/// a link rather than nothing and asks again later.
+/// then answers with its trusted seeds alone (no prices) and `incomplete`
+/// set, so the page shows a link rather than nothing, keeps no copy, and
+/// asks again later.
 ///
 /// # Arguments
 ///
@@ -664,7 +674,7 @@ pub async fn resolve_purchase_hints_batch(
 }
 
 /// The hints one query can answer without asking any store: its trusted
-/// store seeds, unpriced.
+/// store seeds, unpriced, marked `incomplete` so the client asks again.
 fn seeded_response(query: &PurchaseHintsQuery) -> PurchaseHintsResponse {
     let region = normalize_region(query.region.as_deref().unwrap_or("us"));
     let title = query.title.trim();
@@ -702,7 +712,11 @@ fn seeded_response(query: &PurchaseHintsQuery) -> PurchaseHintsResponse {
     }
     let preferred = preferred_source_set(&query.preferred_sources);
     sort_hints_for_display(&mut hints, &preferred);
-    PurchaseHintsResponse { hints, best: None }
+    PurchaseHintsResponse {
+        hints,
+        best: None,
+        incomplete: true,
+    }
 }
 
 /// Timeouts in a row after which a store's price lookups are skipped.
@@ -1148,6 +1162,9 @@ mod tests {
         assert_eq!(sources, vec!["audible"]);
         assert!(response.hints[0].price_cents.is_none());
         assert!(response.best.is_none());
+        assert!(response.incomplete, "the client must not keep this answer");
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["incomplete"], serde_json::Value::Bool(true));
     }
 
     #[test]
