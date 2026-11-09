@@ -1510,15 +1510,18 @@ function ShelfCard({
         if (res.incomplete && pricingAttempt < PRICING_RETRIES) {
           retry = setTimeout(() => setRetryState({ rec, n: pricingAttempt + 1 }), PRICING_RETRY_MS);
         }
-        // An unfinished answer never replaces prices the card already has.
+        // An unfinished answer never replaces prices or links the card
+        // already has: it keeps them when they are priced or when the answer
+        // brings nothing in their place.
         const priced = (hints: PurchaseHint[]) => hints.some((h) => h.price_cents != null);
-        const keep = <T,>(prev: T, next: T, prevPriced: boolean) =>
-          res.incomplete && prevPriced ? prev : next;
-        setHints((prev) => keep(prev, res.hints, priced(prev)));
-        setBest((prev) => keep(prev, res.best, prev?.price_cents != null));
+        const keep = <T,>(prev: T, next: T, prevWins: boolean) =>
+          res.incomplete && prevWins ? prev : next;
+        const keepHints = (prev: PurchaseHint[]) =>
+          keep(prev, res.hints, priced(prev) || res.hints.length === 0);
+        setHints(keepHints);
+        setBest((prev) => keep(prev, res.best, prev?.price_cents != null || res.best == null));
         setTitle((prev) => {
-          const prevHints = prev.purchase_hints ?? [];
-          const next = { ...prev, purchase_hints: keep(prevHints, res.hints, priced(prevHints)) };
+          const next = { ...prev, purchase_hints: keepHints(prev.purchase_hints ?? []) };
           return meta ? applyTitleMeta(next, meta) : next;
         });
       } catch {

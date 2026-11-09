@@ -320,11 +320,11 @@ taste, Chirp deals, then one **Picked for you on {Store}** shelf per store
 for whatever is left, each title under the store where it costs the person
 least (member price on stores they have an account with, list price
 elsewhere, its own store when no price is known on the card). Wished titles
-are claimed first and shown last, on the wishlist shelf alone (wished titles
-past the shelf's series or size cap are claimed too, and shown nowhere). A shelf that
-is not about series keeps at most **two titles of one series**, so a long
-series cannot crowd the others out; the two series shelves instead rotate
-between series, so their first cards show several series rather than one in
+are claimed first and shown last, on the wishlist shelf alone (every wish shows,
+however many share a series; wishes past the shelf's size are claimed too,
+and shown nowhere). A shelf that is not about series keeps at most **two
+titles of one series**, so a long series cannot crowd the others out; the
+two series shelves and the wishlist instead rotate between series, so their first cards show several series rather than one in
 a row.
 
 ## Wishlist (no approval flow)
