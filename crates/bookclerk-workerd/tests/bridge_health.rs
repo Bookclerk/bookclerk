@@ -1,9 +1,9 @@
-//! The bridge's loopback agent ignores proxy environment variables (#763).
+//! The launcher's bridge health check ignores proxy environment variables
+//! (#763).
 //!
 //! This file is its own test binary because it changes the process
-//! environment, which `ureq` reads when an agent is built; the single test
-//! below runs every step in order so nothing else reads the environment
-//! meanwhile.
+//! environment, which `ureq` reads when an agent is built; the proxy test
+//! runs every step in order so nothing else reads the environment meanwhile.
 
 // Test code: expect is fine here.
 #![allow(clippy::expect_used)]
@@ -14,7 +14,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use bookclerk_workerd::bridge_http::loopback_agent;
+use bookclerk_workerd::bridge_http::BridgeHttp;
 
 /// The bearer token the test sends, to check where it arrives.
 const TOKEN: &str = "Bearer test-bridge-token";
@@ -25,14 +25,26 @@ const TOKEN: &str = "Bearer test-bridge-token";
 ///
 /// The listener's address and a channel that yields the request head.
 fn one_shot_server() -> (SocketAddr, mpsc::Receiver<String>) {
+    one_shot_server_with(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+}
+
+/// Accepts one connection, records its request head and writes `reply`.
+///
+/// # Arguments
+///
+/// * `reply` - The raw HTTP response to send.
+///
+/// # Returns
+///
+/// The listener's address and a channel that yields the request head.
+fn one_shot_server_with(reply: &'static [u8]) -> (SocketAddr, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
             let head = read_head(&mut stream);
-            let _ = stream
-                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok");
+            let _ = stream.write_all(reply);
             let _ = tx.send(head);
         }
     });
@@ -87,7 +99,8 @@ fn read_head(stream: &mut TcpStream) -> String {
 
 /// With `ALL_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` pointing at a listener
 /// and no `NO_PROXY`, a default agent hands the token to that "proxy" (the
-/// oracle), while [`loopback_agent`] reaches the bridge listener directly.
+/// oracle), while [`BridgeHttp::health`], the launcher's check, reaches the
+/// bridge listener directly.
 #[test]
 fn bridge_requests_skip_an_inherited_proxy() {
     let (proxy, proxy_rx) = one_shot_proxy();
@@ -116,21 +129,18 @@ fn bridge_requests_skip_an_inherited_proxy() {
     assert!(head.starts_with("CONNECT "), "proxy saw: {head}");
     assert!(head.contains(TOKEN), "proxy saw: {head}");
 
-    // The loopback agent reaches the listener directly.
+    // The launcher's health check reaches the listener directly.
     let (proxy, proxy_rx) = one_shot_proxy();
     let proxy_url = format!("http://{proxy}");
     for name in ["ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY"] {
         std::env::set_var(name, &proxy_url);
     }
     let (target, target_rx) = one_shot_server();
-    let url = format!("http://{target}/health");
-    let mut response = loopback_agent()
-        .get(&url)
-        .header("Authorization", TOKEN)
-        .call()
-        .expect("loopback request");
-    assert_eq!(response.status().as_u16(), 200);
-    assert_eq!(response.body_mut().read_to_string().expect("body"), "ok");
+    let bridge = BridgeHttp {
+        port: target.port(),
+        token: "test-bridge-token".to_owned(),
+    };
+    runtime().block_on(bridge.health()).expect("health");
     let head = target_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("the listener got the request");
@@ -140,4 +150,43 @@ fn bridge_requests_skip_an_inherited_proxy() {
         proxy_rx.recv_timeout(Duration::from_millis(200)).is_err(),
         "the proxy got no connection"
     );
+
+    // A refused token and a failing bridge are errors the launcher retries on.
+    let (target, _rx) =
+        one_shot_server_with(b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n");
+    let err = runtime()
+        .block_on(
+            BridgeHttp {
+                port: target.port(),
+                token: "wrong".to_owned(),
+            }
+            .health(),
+        )
+        .expect_err("401 is an error");
+    assert_eq!(err.to_string(), "bridge unauthorized");
+    let (target, _rx) = one_shot_server_with(
+        b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 8\r\n\r\nstarting",
+    );
+    let err = runtime()
+        .block_on(
+            BridgeHttp {
+                port: target.port(),
+                token: "test-bridge-token".to_owned(),
+            }
+            .health(),
+        )
+        .expect_err("503 is an error");
+    assert_eq!(err.to_string(), "bridge HTTP 503: starting");
+}
+
+/// A current-thread Tokio runtime for one `block_on`.
+///
+/// # Returns
+///
+/// The runtime.
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
 }

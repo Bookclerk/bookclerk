@@ -19,7 +19,6 @@ The hosts name the provider in one place, the `bookclerk-tls` crate:
 | A rustls `ClientConfig` or `ServerConfig` (the node API listener and client) | `bookclerk_tls::crypto_provider()` |
 | A blocking HTTP request (diagnostics upload, plugin catalog, workerd download, CLI to daemon) | `use bookclerk_tls::ureq;`, then `ureq::get(url)` as usual |
 | A custom `ureq` agent | `.tls_config(bookclerk_tls::ureq_tls_config())` on its config builder |
-| A loopback request that carries a credential (the workerd launcher to its bridge) | A custom agent as above, plus `.proxy(None)`, so proxy environment variables cannot send the credential elsewhere (`bookclerk_workerd::bridge_http::loopback_agent`) |
 
 `bookclerk_tls::ureq` is the `ureq` crate with one change: its request
 functions (`get`, `post` and the rest) send through a shared agent that

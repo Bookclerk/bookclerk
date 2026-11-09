@@ -672,10 +672,18 @@ fn forward_child_logs(child: &mut Child) {
 }
 
 /// Polls bridge `/health` for up to 30s before mediating RPC.
+///
+/// Uses [`bookclerk_workerd::bridge_http::BridgeHttp`], a raw loopback client
+/// that never consults proxy environment variables, so the session token
+/// stays on `127.0.0.1`.
 async fn wait_for_bridge(listen: &ListenSpec, token: &str) -> Result<()> {
+    let bridge = bookclerk_workerd::bridge_http::BridgeHttp {
+        port: listen.port(),
+        token: token.to_owned(),
+    };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
-        match bridge_get(listen, "/health", token).await {
+        match bridge.health().await {
             Ok(_) => return Ok(()),
             Err(_) => {
                 if tokio::time::Instant::now() > deadline {
@@ -685,63 +693,4 @@ async fn wait_for_bridge(listen: &ListenSpec, token: &str) -> Result<()> {
             }
         }
     }
-}
-
-/// Blocking ureq GET/POST to the loopback bridge, authenticated with the session token.
-///
-/// Sends through [`bookclerk_workerd::bridge_http::loopback_agent`], which
-/// ignores proxy environment variables, so the token never leaves loopback.
-async fn bridge_http(
-    listen: &ListenSpec,
-    method: &str,
-    path: &str,
-    body: Option<Vec<u8>>,
-    token: &str,
-) -> Result<String> {
-    let port = listen.port();
-    let url = format!("http://127.0.0.1:{port}{path}");
-    let url_owned = url.clone();
-    let method = method.to_string();
-    let auth = format!("Bearer {token}");
-    tokio::task::spawn_blocking(move || {
-        let agent = bookclerk_workerd::bridge_http::loopback_agent();
-        let mut response = match method.as_str() {
-            "GET" => agent
-                .get(&url_owned)
-                .header("Authorization", &auth)
-                .call()
-                .with_context(|| url_owned.clone())?,
-            "POST" => {
-                let body = body.unwrap_or_default();
-                agent
-                    .post(&url_owned)
-                    .header("content-type", "application/json")
-                    .header("Authorization", &auth)
-                    .send(body)
-                    .with_context(|| format!("POST {url_owned}"))?
-            }
-            other => bail!("unsupported method {other}"),
-        };
-        let status = response.status();
-        let text = response
-            .body_mut()
-            .read_to_string()
-            .context("read bridge body")?;
-        if method == "GET" {
-            if !status.is_success() {
-                bail!("HTTP {status}");
-            }
-            return Ok(text);
-        }
-        if !status.is_success() && status.as_u16() != 400 {
-            bail!("bridge HTTP {status}: {text}");
-        }
-        Ok(text)
-    })
-    .await?
-}
-
-/// GET a bridge path (used for `/health`).
-async fn bridge_get(listen: &ListenSpec, path: &str, token: &str) -> Result<String> {
-    bridge_http(listen, "GET", path, None, token).await
 }

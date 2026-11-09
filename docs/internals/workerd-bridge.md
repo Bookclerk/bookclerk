@@ -51,11 +51,12 @@ grant lets it export; the isolate does not retain the `Bindings`. That is
 why `PluginWorker.open` / `describe` / `shutdown` stay JSON while everything
 that *is* an ABI method call travels as Cap'n bytes on `/invoke`.
 
-The launcher sends the control plane's requests to `http://127.0.0.1:<port>`
-with `Bearer <BRIDGE_TOKEN>` through an agent that ignores proxy environment
-variables (`ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`), so the token never
-reaches a proxy the launcher inherited. Its other requests, such as the
-`workerd` download, keep the usual proxy handling.
+The launcher talks to the bridge with its own small HTTP/1.1 client on
+`127.0.0.1:<port>` (`BridgeHttp`), for the `/health` check as for every other
+route. It never reads proxy environment variables (`ALL_PROXY`,
+`HTTPS_PROXY`, `HTTP_PROXY`), so `Bearer <BRIDGE_TOKEN>` cannot reach a proxy
+the launcher inherited. Its other requests, such as the `workerd` download,
+keep the usual proxy handling.
 
 ## `POST /invoke`
 
