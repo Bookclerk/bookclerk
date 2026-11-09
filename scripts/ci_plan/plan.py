@@ -316,7 +316,9 @@ OS_LEG_JOBS: dict[str, tuple[str, ...]] = {
 }
 
 # Checks in the ``check`` (lint and docs) job that need no Cargo toolchain.
-NON_CARGO_CHECKS = frozenset({"lint", "ui", "python_sdk", "workerd_guests"})
+# ``python_sdk`` is not one: its tests launch the ``bookclerk-db-testkit``
+# executable (a ``check_input`` in relations.toml), which the check builds.
+NON_CARGO_CHECKS = frozenset({"lint", "ui", "workerd_guests"})
 
 PREREQ_ORDER = ("build", "ensure_workerd", "install_platform", "stage_plugins")
 
@@ -374,6 +376,7 @@ class Relations:
     embeds: list[dict[str, Any]]
     test_inputs: list[dict[str, Any]]
     fixtures: list[dict[str, Any]]
+    check_inputs: list[dict[str, Any]]
     test_guests: dict[str, dict[str, Any]]
     feature_tests: list[dict[str, Any]]
     postgres_steps: dict[str, str]
@@ -410,6 +413,7 @@ def load_relations(path: str | Path | None = None) -> Relations:
         embeds=list(raw.get("embed", [])),
         test_inputs=list(raw.get("test_input", [])),
         fixtures=list(raw.get("fixture", [])),
+        check_inputs=list(raw.get("check_input", [])),
         test_guests=dict(raw.get("test_guests", {})),
         feature_tests=list(raw.get("feature_tests", [])),
         postgres_steps=dict(raw.get("postgres", {}).get("steps", {})),
@@ -445,6 +449,10 @@ def validate_relations(rel: Relations, index: PackageIndex) -> list[str]:
         for check in f.get("checks", []):
             if check not in CHECK_JOB:
                 problems.append(f"fixture: unknown check `{check}`")
+    for c in rel.check_inputs:
+        for check in c.get("checks", []):
+            if check not in CHECK_JOB:
+                problems.append(f"check_input: unknown check `{check}`")
     for t in rel.test_inputs:
         need(t["package"], "test_input")
     for pkg, spec in rel.test_guests.items():
@@ -786,6 +794,7 @@ class _Surfaces:
         self.windows_cluster: list[str] = []
         self.envelope: list[str] = []
         self.fixture_checks: dict[str, list[str]] = {}
+        self.check_input_checks: dict[str, list[str]] = {}
         self.workerd_guests: list[str] = []
 
 
@@ -859,6 +868,14 @@ def build_plan(
                 compiled_seeds[pkg].append(f"{'smoke input' if smoke_only else 'changed'} {path}")
             else:
                 test_seeds[pkg][kind].append(f"{kind} input {path}")
+
+        # A path a check launches at run time (a workspace executable): the
+        # check re-runs on top of whatever the owner's own targets select.
+        for check_input in rel.check_inputs:
+            if any(glob_match(path, p) for p in check_input["paths"]):
+                classified = True
+                for check in check_input.get("checks", []):
+                    surf.check_input_checks.setdefault(check, []).append(path)
 
         for embed in rel.embeds:
             if path in embed["paths"]:
@@ -1063,6 +1080,8 @@ def _select_checks(
         _select(plan, "workerd_guests", guests_why)
     for check, paths in surf.fixture_checks.items():
         _select(plan, check, [f"shared fixture {p}" for p in paths])
+    for check, paths in surf.check_input_checks.items():
+        _select(plan, check, [f"check input {p}" for p in paths])
     if surf.lint:
         _select(plan, "lint", [f"path {p}" for p in surf.lint])
 

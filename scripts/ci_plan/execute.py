@@ -466,6 +466,20 @@ NEXTEST_JUNIT_PROFILE = "ci"
 NEXTEST_JUNIT_DIR = "target/nextest/ci"
 
 
+def _db_testkit(ctx: Context) -> tuple[Command, dict[str, str]]:
+    """The `bookclerk-db-testkit` executable the SDK test wrappers spawn.
+
+    Returns the build command and the environment that names the built
+    executable (`BOOKCLERK_DB_TESTKIT`) for the commands that run the wrappers.
+    """
+    exe = "bookclerk-db-testkit" + (".exe" if ctx.os_name == "Windows" else "")
+    build = Command(
+        "cargo build -p bookclerk-db-testkit",
+        ["cargo", "build", "-p", "bookclerk-db-testkit", "--bin", "bookclerk-db-testkit"],
+    )
+    return build, {"BOOKCLERK_DB_TESTKIT": str(ctx.bin_dir / exe)}
+
+
 def _coverage_report(area: str) -> Path | None:
     """Where ``area``'s LCOV report goes (its directory created), or ``None`` without coverage."""
     root = os.environ.get(COVERAGE_DIR_ENV)
@@ -698,6 +712,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         return [Command("author surface", ["./scripts/check-author-surface.sh"])]
     if check == "plugin_sdk_abi":
         sdk = str(ctx.workspace / "packages" / "plugin-sdk")
+        kit_build, kit_env = _db_testkit(ctx)
         cmds = [
             Command("ABI schema drift", ["python3", "scripts/gen-plugin-abi.py", "--check"]),
             Command("workerd pin sync", ["python3", "scripts/sync-workerd-pin.py", "--check"]),
@@ -718,8 +733,12 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             "test:egress-user-agent",
         ):
             cmds.append(Command(f"npm run {script}", ["npm", "run", script], cwd=sdk))
+        # `createTestDatabase` spawns the kit executable.
+        cmds.append(kit_build)
+        cmds.append(Command("npm run test:testkit", ["npm", "run", "test:testkit"], cwd=sdk, env=kit_env))
         return cmds
     if check == "python_sdk":
+        kit_build, kit_env = _db_testkit(ctx)
         venv = ctx.tmp / "venv-plugin-sdk"
         py = str(venv / ("Scripts" if ctx.os_name == "Windows" else "bin") / "python")
         # Tests import the SDK from its source tree.
@@ -760,7 +779,13 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             ),
             Command("ruff", [py, "-m", "ruff", "check", "packages/plugin-sdk-python"]),
             Command("ruff format", [py, "-m", "ruff", "format", "--check", "packages/plugin-sdk-python"]),
-            Command("pytest", [py, "-m", "pytest", "packages/plugin-sdk-python/tests", "-q", *cov], env=src),
+            # `create_test_database` spawns the kit executable.
+            kit_build,
+            Command(
+                "pytest",
+                [py, "-m", "pytest", "packages/plugin-sdk-python/tests", "-q", *cov],
+                env={**src, **kit_env},
+            ),
         ]
     if check == "workerd_guests":
         return _workerd_guest_commands(ctx)
