@@ -650,6 +650,32 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong passwords from this client or for this Owner; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginThrottled"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many failed login attempts. Try again in 45 seconds.",
+                  "retry_after_secs": 45,
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The password hash could not be read, or the elevated session could not be stored.",
             "content": {
