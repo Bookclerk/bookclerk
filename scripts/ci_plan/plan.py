@@ -87,9 +87,13 @@ ABI_SYNC_PATHS = frozenset(
         "workerd.pin.json",
     }
 )
-# Fuzz seed corpora the TypeScript and Python SDK tests replay as shared
-# vectors besides the owning crate (docs/contributing/fuzzing.md).
-SHARED_SDK_VECTOR_PREFIXES = ("fuzz/corpus/db_stream/",)
+# Shared vectors the TypeScript and Python SDK tests read besides the owning
+# crate: fuzz seed corpora (docs/contributing/fuzzing.md) and the host's
+# receipt-wrap vector for the isolate adapter batch helpers.
+SHARED_SDK_VECTOR_PREFIXES = (
+    "fuzz/corpus/db_stream/",
+    "crates/bookclerk-library/fixtures/guest_receipt/",
+)
 DOCS_PREFIX = "docs/"
 # The bookclerk.app website (Worker, generator and its tests), the brand
 # assets its build copies, the diagnostics collector Worker and the hosted

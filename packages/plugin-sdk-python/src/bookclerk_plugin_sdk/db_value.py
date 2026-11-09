@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import math
+import time
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
 
 from ._abi import (
     DB_RESULT_SELECTIONS,
@@ -1577,6 +1579,596 @@ def decode_execute_stream(data: bytes, limits: ExecuteStreamLimits) -> ExecuteRe
     decoder = ExecuteStreamDecoder(limits)
     decoder.push(data)
     return decoder.finish()
+
+
+# ---------------------------------------------------------------------------
+# Isolate adapter batch runner.
+#
+# A guest's ``executeAtomic`` reaches a database adapter wrapped in a durable
+# replay receipt: a prune ``DELETE`` and a prior-receipt ``SELECT`` in front of
+# the guest statements, every guest write gated on the receipt row being
+# absent, and a stub ``INSERT`` that claims the receipt. The adapter persists
+# the guest reply on that receipt before ``COMMIT``, so a retry with the same
+# ``operationId`` after a lost reply replays the recorded result instead of
+# re-running the writes. The helpers below do that once for every isolate
+# adapter; they mirror ``bookclerk_db_exec::guest_receipt`` in the host.
+# ---------------------------------------------------------------------------
+
+GUEST_RECEIPT_WRAP_PREFIX = 2
+"""Prune + prior-receipt ``SELECT`` statements ahead of the guest statements."""
+
+GUEST_RECEIPT_STUB_SUFFIX = 1
+"""Receipt stub ``INSERT`` after the guest statements."""
+
+GUEST_REPLAY_PAYLOAD_MAX_BYTES = 65536
+"""Largest replay payload, in UTF-8 bytes, a receipt stores for a write batch."""
+
+GUEST_READ_ONLY_REPLAY_PAYLOAD = '{"readOnly":true}'
+"""Payload stored for a read-only guest batch instead of its rows (reads run again on replay)."""
+
+GUEST_RECEIPT_RESULT_LOST = "guest receipt committed without payload; original response lost"
+"""Error text when a receipt committed but the reply it should hold was lost."""
+
+STREAM_FRAME_TARGET_BYTES = 64 * 1024
+"""Encoded size an encoder aims for per ``rows`` frame (one wider row may exceed it)."""
+
+_RECEIPT_CLAIMED = "claimed"
+"""Receipt status of an in-flight claim."""
+
+_FINALIZE_SQL = (
+    "UPDATE bookclerk_receipts SET payload = ?, status = 'ok' "
+    "WHERE operation_id = ? AND status IN ('claimed', 'applied')"
+)
+"""Finalize ``UPDATE`` that stores the replay payload on the claimed receipt."""
+
+
+class AdapterBatchRequest(TypedDict):
+    """The parts of an ``AdapterExecuteRequest`` the batch runner reads.
+
+    Attributes:
+        operationId: Host-chosen idempotency key, echoed on the reply and
+            keyed on the receipt.
+        statements: Wrapped statements in execution order (proofs are not read).
+        receipt: ``{"guestLen", "guestHash"}``; ``guestLen`` ``0`` means the
+            batch carries no guest receipt.
+    """
+
+    operationId: str
+    statements: list[TypedDbStatement]
+    receipt: dict[str, Any]
+
+
+class AdapterTransaction(Protocol):
+    """One open transaction on the adapter's engine.
+
+    The runner calls :meth:`run` once per statement in order, including the
+    finalize statements it adds (canonical SQL with ``?`` placeholders, lowered
+    by the adapter like any other statement), then :meth:`commit`, or
+    :meth:`rollback` when any step failed.
+    """
+
+    async def run(self, statement: TypedDbStatement) -> StatementResult:
+        """Run one statement inside the transaction.
+
+        Args:
+            statement: Canonical statement to lower and execute.
+
+        Returns:
+            The statement's result (rows only when ``resultSelection`` is ``rows``).
+        """
+        ...
+
+    async def commit(self) -> None:
+        """Commit the transaction."""
+        ...
+
+    async def rollback(self) -> None:
+        """Roll the transaction back."""
+        ...
+
+
+async def execute_adapter_batch(
+    request: AdapterBatchRequest,
+    begin: Callable[[], Awaitable[AdapterTransaction]],
+    timing_source: str,
+) -> ExecuteReply:
+    """Run one host batch in a transaction and commit it with its replay receipt.
+
+    Args:
+        request: The adapter request (``execute``).
+        begin: Opens a transaction on the adapter's engine.
+        timing_source: Observability source on the reply timing (``sqlite_txn``, …).
+
+    Returns:
+        The committed reply, wrap statements included (the host unwraps it).
+
+    Raises:
+        PluginError: ``unavailable`` when a prior receipt committed without its
+            reply, ``internal`` when the wrap shape is malformed or the payload
+            is over :data:`GUEST_REPLAY_PAYLOAD_MAX_BYTES`.
+        Exception: Whatever a statement or ``commit`` raised, after the
+            transaction was rolled back.
+    """
+
+    async def body(txn: AdapterTransaction) -> ExecuteReply:
+        return await run_adapter_batch(request, txn, timing_source)
+
+    return await _in_transaction(begin, body)
+
+
+async def execute_adapter_batch_streamed(
+    request: AdapterBatchRequest,
+    begin: Callable[[], Awaitable[AdapterTransaction]],
+    timing_source: str,
+) -> bytes:
+    """Run one host batch for ``executeStreamed``; commit only when its frames fit.
+
+    An isolate adapter's frames cross the invoke reply as one scalar. The
+    frames are encoded inside the transaction, and when they exceed
+    ``MAX_SCALAR_BYTES`` the batch rolls back, so nothing commits that the
+    host cannot receive.
+
+    Args:
+        request: The adapter request (``executeStreamed``).
+        begin: Opens a transaction on the adapter's engine.
+        timing_source: Observability source on the reply timing.
+
+    Returns:
+        Every frame of the committed reply, concatenated.
+
+    Raises:
+        PluginError: ``limit_exceeded`` (``maxScalarBytes``) when the frames do
+            not fit one scalar, or what :func:`execute_adapter_batch` raises.
+    """
+
+    async def body(txn: AdapterTransaction) -> bytes:
+        frames = encode_execute_stream(await run_adapter_batch(request, txn, timing_source))
+        if len(frames) > MAX_SCALAR_BYTES:
+            raise _plugin_error().limit_exceeded(
+                LimitExceeded("maxScalarBytes", MAX_SCALAR_BYTES, len(frames))
+            )
+        return frames
+
+    return await _in_transaction(begin, body)
+
+
+async def _in_transaction(
+    begin: Callable[[], Awaitable[AdapterTransaction]],
+    body: Callable[[AdapterTransaction], Awaitable[Any]],
+) -> Any:
+    """Open a transaction, run ``body``, commit on success, roll back on failure.
+
+    Args:
+        begin: Opens the transaction.
+        body: Work to run before ``COMMIT``.
+
+    Returns:
+        What ``body`` returned.
+
+    Raises:
+        Exception: What ``body`` or ``commit`` raised (a failing rollback does
+            not replace it).
+    """
+    txn = await begin()
+    try:
+        result = await body(txn)
+        await txn.commit()
+    except BaseException:
+        try:
+            await txn.rollback()
+        except Exception:  # noqa: BLE001 - the original failure is the one to report
+            pass
+        raise
+    return result
+
+
+async def run_adapter_batch(
+    request: AdapterBatchRequest, txn: AdapterTransaction, timing_source: str
+) -> ExecuteReply:
+    """Run the wrapped statements and the receipt finalize without committing.
+
+    After the prior-receipt ``SELECT``, a completed receipt for this operation
+    skips the remaining guest work (its results are padded so the wrap shape
+    stays intact) and the host replays the stored reply.
+
+    Args:
+        request: The adapter request.
+        txn: The open transaction (only :meth:`AdapterTransaction.run` is used).
+        timing_source: Observability source on the reply timing.
+
+    Returns:
+        The reply to deliver once the transaction commits.
+
+    Raises:
+        PluginError: See :func:`execute_adapter_batch`.
+    """
+    started = time.monotonic()
+    statements_in = request["statements"]
+    total = len(statements_in)
+    guest_len = int(request["receipt"].get("guestLen", 0))
+    guest_hash = str(request["receipt"].get("guestHash", ""))
+    statements: list[StatementResult] = []
+    for statement in statements_in:
+        statements.append(await txn.run(statement))
+        if guest_len > 0 and should_skip_remaining_guest_work(statements, total, guest_hash):
+            while len(statements) < total:
+                statements.append({"rows": [], "columns": [], "rowsAffected": 0})
+            break
+    if guest_len > 0:
+        partial: ExecuteReply = {
+            "operationId": request["operationId"],
+            "statements": statements,
+            "timing": {"attemptElapsedUs": 0, "dbExecutionUs": 0, "dbTimingSource": timing_source},
+        }
+        read_only = guest_batch_is_read_only(statements_in, guest_len)
+        for finalize in guest_receipt_finalize_statements(
+            partial, guest_len, guest_hash, read_only
+        ):
+            await txn.run(finalize)
+    elapsed = max(0, int((time.monotonic() - started) * 1_000_000))
+    return {
+        "operationId": request["operationId"],
+        "statements": statements,
+        "timing": {
+            "attemptElapsedUs": elapsed,
+            "dbExecutionUs": elapsed,
+            "dbTimingSource": timing_source,
+        },
+    }
+
+
+def guest_batch_is_read_only(statements: list[TypedDbStatement], guest_len: int) -> bool:
+    """True when every guest statement inside the receipt wrap is a ``SELECT``.
+
+    An empty or out-of-range guest slice is not read-only, so a write batch
+    never skips its replay payload.
+
+    Args:
+        statements: The wrapped statements.
+        guest_len: Guest statement count from the receipt hint.
+
+    Returns:
+        Whether the batch only reads.
+    """
+    end = GUEST_RECEIPT_WRAP_PREFIX + guest_len
+    if guest_len == 0 or end > len(statements):
+        return False
+    return all(s["kind"] == "select" for s in statements[GUEST_RECEIPT_WRAP_PREFIX:end])
+
+
+def guest_receipt_finalize_statements(
+    partial: ExecuteReply, guest_len: int, guest_hash: str, read_only: bool
+) -> list[TypedDbStatement]:
+    """Statements that persist the guest reply on the claimed receipt.
+
+    Empty when the prior receipt already holds a payload, belongs to a
+    different request (the host reports the conflict), or is an in-flight
+    claim whose stub this attempt did not insert.
+
+    Args:
+        partial: The wrapped reply so far (prefix, guest and stub results).
+        guest_len: Guest statement count from the receipt hint.
+        guest_hash: Guest ``requestHash`` from the receipt hint.
+        read_only: Whether the guest slice only reads (:func:`guest_batch_is_read_only`).
+
+    Returns:
+        The finalize statements to run before ``COMMIT``.
+
+    Raises:
+        PluginError: ``unavailable`` when a prior receipt committed without its
+            reply, ``internal`` when the wrap shape is malformed or the payload
+            is over :data:`GUEST_REPLAY_PAYLOAD_MAX_BYTES`.
+    """
+    results = partial["statements"]
+    expected = GUEST_RECEIPT_WRAP_PREFIX + guest_len + GUEST_RECEIPT_STUB_SUFFIX
+    if len(results) != expected:
+        raise _plugin_error().from_wire(
+            "internal",
+            f"guest atomic receipt wrap returned {len(results)} statements; expected {expected}",
+        )
+    prior = results[1]
+    prior_hash = _receipt_hash(prior)
+    if prior_hash is not None:
+        if prior_hash != guest_hash:
+            return []
+        if _receipt_text(prior, "payload", 3) is not None:
+            return []
+        claimed = _receipt_text(prior, "status", 2) == _RECEIPT_CLAIMED
+        stub_affected = results[-1]["rowsAffected"]
+        if not claimed and stub_affected == 0:
+            raise _plugin_error().from_wire("unavailable", GUEST_RECEIPT_RESULT_LOST)
+        if claimed and stub_affected == 0:
+            return []
+    if read_only:
+        payload = GUEST_READ_ONLY_REPLAY_PAYLOAD
+    else:
+        payload = guest_replay_payload(
+            {
+                "operationId": partial["operationId"],
+                "statements": results[
+                    GUEST_RECEIPT_WRAP_PREFIX : GUEST_RECEIPT_WRAP_PREFIX + guest_len
+                ],
+                "timing": partial["timing"],
+            }
+        )
+    return [
+        {
+            "sql": _FINALIZE_SQL,
+            "parameters": [
+                {"kind": "text", "value": payload},
+                {"kind": "text", "value": partial["operationId"]},
+            ],
+            "kind": "execute",
+            "maxRows": 0,
+            "resultSelection": "affectedRows",
+        }
+    ]
+
+
+def should_skip_remaining_guest_work(
+    results: list[StatementResult], total: int, guest_hash: str
+) -> bool:
+    """True when the prefix results show a completed prior receipt.
+
+    An in-flight claim with the same hash and a read-only receipt with the
+    same hash do not skip; a receipt with a different hash does (the host
+    reports the conflict).
+
+    Args:
+        results: Results so far.
+        total: Wrapped statement count.
+        guest_hash: Guest ``requestHash`` from the receipt hint.
+
+    Returns:
+        Whether to pad the remaining results instead of running them.
+    """
+    if len(results) != GUEST_RECEIPT_WRAP_PREFIX or total <= GUEST_RECEIPT_WRAP_PREFIX:
+        return False
+    prior = results[1]
+    prior_hash = _receipt_hash(prior)
+    if prior_hash is None:
+        return False
+    same = prior_hash == guest_hash
+    resumes_claim = same and _receipt_text(prior, "status", 2) == _RECEIPT_CLAIMED
+    read_only_replay = same and _receipt_text(prior, "payload", 3) == GUEST_READ_ONLY_REPLAY_PAYLOAD
+    return not resumes_claim and not read_only_replay
+
+
+def guest_replay_payload(reply: ExecuteReply) -> str:
+    """The replay payload for a guest reply, in the JSON form the host decodes.
+
+    Args:
+        reply: The guest slice of the reply.
+
+    Returns:
+        ``{"operation_id", "statements", "timing"}`` with each value in the
+        host's serde form.
+
+    Raises:
+        PluginError: ``internal`` when a cell does not encode or the payload is
+            over :data:`GUEST_REPLAY_PAYLOAD_MAX_BYTES`.
+    """
+    timing = reply["timing"]
+    statements = ",".join(_statement_json(s) for s in reply["statements"])
+    text = (
+        f'{{"operation_id":{_json_text(reply["operationId"])},"statements":[{statements}],'
+        f'"timing":{{"attemptElapsedUs":{_json_uint(timing["attemptElapsedUs"])},'
+        f'"dbExecutionUs":{_json_uint(timing["dbExecutionUs"])},'
+        f'"dbTimingSource":{_json_text(timing["dbTimingSource"])}}}}}'
+    )
+    size = len(text.encode("utf-8"))
+    if size > GUEST_REPLAY_PAYLOAD_MAX_BYTES:
+        raise _plugin_error().from_wire(
+            "internal",
+            f"guest replay payload is {size} bytes; max is {GUEST_REPLAY_PAYLOAD_MAX_BYTES}",
+        )
+    return text
+
+
+def encode_execute_stream(
+    reply: ExecuteReply, frame_target_bytes: int = STREAM_FRAME_TARGET_BYTES
+) -> bytes:
+    """Frame ``reply`` as the byte sequence ``executeStreamed`` answers.
+
+    ``head``, each statement with its rows split near ``frame_target_bytes``,
+    then ``end``. A slice whose frame still exceeds one scalar is halved until
+    each frame fits or holds one row.
+
+    Args:
+        reply: The committed reply.
+        frame_target_bytes: Estimated encoded size to aim for per ``rows`` frame.
+
+    Returns:
+        Every frame, concatenated.
+    """
+    statements = reply["statements"]
+    out = bytearray(
+        _stream_frame(
+            "head", {"operationId": reply["operationId"], "statementCount": len(statements)}
+        )
+    )
+    for index, stmt in enumerate(statements):
+        out += _stream_frame(
+            "statement",
+            {"index": index, "columns": stmt["columns"], "rowsAffected": stmt["rowsAffected"]},
+        )
+        rows = stmt["rows"]
+        start = 0
+        size = 0
+        for i, row in enumerate(rows):
+            estimate = _row_size_estimate(row)
+            if size > 0 and size + estimate > frame_target_bytes:
+                _push_rows_frames(out, rows[start:i])
+                start = i
+                size = 0
+            size += estimate
+        _push_rows_frames(out, rows[start:])
+    out += _stream_frame("end", reply["timing"])
+    return bytes(out)
+
+
+def _push_rows_frames(out: bytearray, rows: list[dict[str, Any]]) -> None:
+    """Append ``rows`` as ``rows`` frames, halving a slice past one scalar.
+
+    Args:
+        out: Frames so far.
+        rows: Rows of the open statement.
+    """
+    if not rows:
+        return
+    encoded = _stream_frame("rows", rows)
+    if len(encoded) > MAX_SCALAR_BYTES and len(rows) > 1:
+        mid = len(rows) // 2
+        _push_rows_frames(out, rows[:mid])
+        _push_rows_frames(out, rows[mid:])
+        return
+    out += encoded
+
+
+def _stream_frame(kind: str, value: Any) -> bytes:
+    """One encoded ``ExecuteStreamFrame`` message.
+
+    Args:
+        kind: Union member (``head``, ``statement``, ``rows``, ``end``).
+        value: Its value.
+
+    Returns:
+        The single-segment Cap'n Proto bytes.
+    """
+    return _encode_message(_execute_stream_frame_codec, {"kind": kind, "value": value})
+
+
+def _row_size_estimate(row: dict[str, Any]) -> int:
+    """Rough wire size of one row: cell payloads plus pointer and tag words.
+
+    Args:
+        row: ``{"values": [...]}``.
+
+    Returns:
+        Estimated bytes.
+    """
+    size = 16
+    for value in row["values"]:
+        if value["kind"] == "text":
+            size += len(value["value"].encode("utf-8")) + 24
+        elif value["kind"] == "bytes":
+            size += len(value["value"]) + 24
+        else:
+            size += 24
+    return size
+
+
+def _receipt_hash(prior: StatementResult) -> str | None:
+    """The ``request_hash`` of a prior-receipt row (empty text still counts, as in the host).
+
+    Args:
+        prior: The prior-receipt ``SELECT`` result.
+
+    Returns:
+        The hash, or ``None`` when there is no row or the cell is not text.
+    """
+    cell = _receipt_cell(prior, "request_hash", 1)
+    if cell is not None and cell.get("kind") == "text":
+        return str(cell["value"])
+    return None
+
+
+def _receipt_text(prior: StatementResult, column: str, fallback: int) -> str | None:
+    """A non-empty text cell of a prior-receipt row.
+
+    Args:
+        prior: The prior-receipt ``SELECT`` result.
+        column: Column name (``status``, ``payload``).
+        fallback: Position used when no column has that name.
+
+    Returns:
+        The text, or ``None`` when there is no row or the cell is not
+        non-empty text.
+    """
+    cell = _receipt_cell(prior, column, fallback)
+    if cell is not None and cell.get("kind") == "text" and cell.get("value"):
+        return str(cell["value"])
+    return None
+
+
+def _receipt_cell(prior: StatementResult, column: str, fallback: int) -> dict[str, Any] | None:
+    """One cell of a prior-receipt row, by column name or else by position.
+
+    Args:
+        prior: The prior-receipt ``SELECT`` result.
+        column: Column name.
+        fallback: Position used when no column has that name.
+
+    Returns:
+        The cell, or ``None`` when there is no row or no such cell.
+    """
+    if not prior["rows"]:
+        return None
+    values = prior["rows"][0]["values"]
+    names = [str(c.get("name", "")).lower() for c in prior["columns"]]
+    idx = names.index(column) if column in names else fallback
+    return values[idx] if idx < len(values) else None
+
+
+def _json_text(text: str) -> str:
+    """A JSON string literal escaped as the host's serde encoder writes it."""
+    return json.dumps(text, ensure_ascii=False)
+
+
+def _json_uint(n: int) -> str:
+    """A non-negative integer counter as JSON.
+
+    Raises:
+        PluginError: ``internal`` when ``n`` is not a ``u64``.
+    """
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0 or n > 2**64 - 1:
+        raise _plugin_error().from_wire(
+            "internal", f"guest replay payload counter {n!r} is not a u64"
+        )
+    return str(n)
+
+
+def _statement_json(stmt: StatementResult) -> str:
+    """One statement result in serde form."""
+    rows = ",".join(
+        '{"values":[' + ",".join(_value_json(v) for v in row["values"]) + "]}"
+        for row in stmt["rows"]
+    )
+    columns = ",".join(
+        f'{{"name":{_json_text(c["name"])},"dbType":{_json_text(c["dbType"])}}}'
+        for c in stmt["columns"]
+    )
+    return (
+        f'{{"rows":[{rows}],"columns":[{columns}],'
+        f'"rowsAffected":{_json_uint(stmt["rowsAffected"])}}}'
+    )
+
+
+def _value_json(value: DbValue) -> str:
+    """One cell in serde form (``{"kind", "value"}``, bytes as a number array).
+
+    Raises:
+        PluginError: ``internal`` for a non-finite float or an unknown kind.
+    """
+    kind = value["kind"]
+    raw: Any = value["value"]
+    if kind == "null":
+        return f'{{"kind":"null","value":{_json_text(raw)}}}'
+    if kind == "boolean":
+        return '{"kind":"boolean","value":' + ("true" if raw else "false") + "}"
+    if kind == "int64":
+        return f'{{"kind":"int64","value":{int(raw)}}}'
+    if kind == "float64":
+        if not math.isfinite(raw):
+            raise _plugin_error().from_wire(
+                "internal", "guest replay payload has a non-finite float"
+            )
+        return f'{{"kind":"float64","value":{json.dumps(float(raw))}}}'
+    if kind == "text":
+        return f'{{"kind":"text","value":{_json_text(raw)}}}'
+    if kind == "bytes":
+        return '{"kind":"bytes","value":[' + ",".join(str(b) for b in bytes(raw)) + "]}"
+    raise _plugin_error().from_wire("internal", f"guest replay payload has an unknown {kind} cell")
 
 
 _PROBE_STATEMENT: TypedDbStatement = {

@@ -80,6 +80,12 @@ Identity (`apiVersion`, `id`, capabilities) comes from `plugin.toml`; an
 optional `describe()` on `Default` only refines `displayName` and similar
 fields.
 
+A database adapter runs each host batch through `execute_adapter_batch`
+or `execute_adapter_batch_streamed` (in `bookclerk_plugin_sdk.db_value`),
+which stores the guest's replay receipt before `COMMIT` and, for a
+streamed reply, rolls back when the frames do not fit one scalar (see
+[Isolate adapter batches](../../sql-contract/v1.md#isolate-adapter-batches-and-replay-receipts)).
+
 ## Triggers
 
 Each `EventMessage` records one outcome, `ack()`, `retry(retry_at=...,
