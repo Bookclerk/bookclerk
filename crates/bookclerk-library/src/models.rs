@@ -1125,6 +1125,11 @@ impl QueueWisher {
 pub struct GlobalQueueEntry {
     /// Stable merge key used to group editions into a work.
     pub work_key: String,
+    /// The library work the wishes resolved to when they were created, when
+    /// the resolver found one. Entries with the same work id are one work
+    /// whatever their identifiers say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_id: Option<String>,
     /// Display title of the work or edition.
     pub title: String,
     /// Comma-separated or JSON author list from the storefront.

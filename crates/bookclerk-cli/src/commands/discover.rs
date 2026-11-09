@@ -225,6 +225,19 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                     None,
                     asin.as_deref().or(isbn.as_deref()),
                 );
+                // The library work this wish is for, when it is already
+                // known, as the web API records it.
+                let work_id = library
+                    .work_for(&bookclerk_library::TitleQuery {
+                        title: &title,
+                        authors: authors.as_deref(),
+                        asin: asin.as_deref(),
+                        isbn: isbn.as_deref(),
+                        series: None,
+                        series_index: None,
+                    })
+                    .await
+                    .unwrap_or_default();
                 let row = library
                     .create_title_request(&NewTitleRequest {
                         uuid: None,
@@ -236,7 +249,7 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                         notes,
                         status: RequestStatus::Open,
                         work_key,
-                        work_id: None,
+                        work_id,
                         resolved_book_uuid: None,
                         cover_url: None,
                     })

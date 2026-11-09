@@ -1080,15 +1080,21 @@ async fn attach_purchase_hints(
 
 /// Whether the household library holds the work a wishlist entry is for.
 ///
-/// The library's resolver decides, as it does for a scanned listing
-/// (shared identifiers, then the work's identifiers, then the work-level
-/// title-and-author match), so a sequel that shares its series' name with
-/// an owned book is its own work and stays on the queue.
+/// An entry that resolved to a work when it was wished is owned when a
+/// library title resolves to that work. Otherwise the library's resolver
+/// decides, as it does for a scanned listing (shared identifiers, then the
+/// work's identifiers, then the work-level title-and-author match), so a
+/// sequel that shares its series' name with an owned book is its own work
+/// and stays on the queue.
 ///
 /// # Errors
 ///
 /// Returns the library read error.
 async fn library_owns_work(library: &LibraryStore, entry: &GlobalQueueEntry) -> Result<bool> {
+    // A wish resolved to a work when it was created: ask about that work.
+    if let Some(work_id) = entry.work_id.as_deref().filter(|id| !id.trim().is_empty()) {
+        return Ok(!library.book_uuids_for_work(work_id).await?.is_empty());
+    }
     let query = bookclerk_library::TitleQuery {
         title: &entry.title,
         authors: entry.authors.as_deref(),
@@ -1543,6 +1549,7 @@ mod tests {
         store.upsert_book(&dune).await.unwrap();
         let entry = |title: &str, isbn: Option<&str>| GlobalQueueEntry {
             work_key: String::new(),
+            work_id: None,
             title: title.into(),
             authors: Some("Frank Herbert".into()),
             asin: None,

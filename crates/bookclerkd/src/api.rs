@@ -6173,6 +6173,20 @@ async fn create_request_inner(
         .map(|identity| identity.id);
     let work_key = work_key_for_request(&body);
     let library = state.library_snapshot().await;
+    // The work this wish is for, when the library already knows it, so the
+    // queue and the shelves compare works rather than titles. A lookup
+    // failure leaves the id unset; the readers fall back to the resolver.
+    let work_id = library
+        .work_for(&bookclerk_library::TitleQuery {
+            title: &body.title,
+            authors: body.authors.as_deref(),
+            asin: body.asin.as_deref(),
+            isbn: body.isbn.as_deref(),
+            series: None,
+            series_index: None,
+        })
+        .await
+        .unwrap_or_default();
     let mut row = library
         .create_title_request(&NewTitleRequest {
             uuid: None,
@@ -6184,7 +6198,7 @@ async fn create_request_inner(
             notes: body.notes.clone(),
             status: RequestStatus::Open,
             work_key,
-            work_id: None,
+            work_id,
             resolved_book_uuid: None,
             cover_url: body.cover_url.clone(),
         })
