@@ -496,6 +496,25 @@ mod tests {
         )
     }
 
+    /// Sends an empty JSON `POST` to `uri` and decodes the JSON answer.
+    async fn post(app: &axum::Router, uri: &str) -> (axum::http::StatusCode, serde_json::Value) {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let request = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(uri)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
     /// Pending Discover jobs as `(kind, subject)` pairs.
     async fn queued(library: &bookclerk_library::LibraryStore) -> Vec<(JobKind, String)> {
         let mut jobs: Vec<(JobKind, String)> = library
@@ -563,6 +582,24 @@ mod tests {
         assert!(summary.contains("scope=household"), "{summary}");
         assert!(summary.ends_with("passes=1"), "{summary}");
 
+        // The handlers ran here, not under the worker, so their rows are
+        // still pending: the page reports the rebuild as in progress.
+        let (_, feed) = get(&app, "/api/discover/recommendations").await;
+        assert_eq!(feed["state"], "refreshing");
+        let (_, report) = get(&app, "/api/discover/status").await;
+        assert_eq!(report["updating"], true);
+        {
+            use sea_orm::ConnectionTrait;
+            library
+                .db()
+                .execute_unprepared(
+                    "UPDATE jobs SET state = 'succeeded' \
+                     WHERE kind IN ('discover_candidates', 'discover_feed')",
+                )
+                .await
+                .unwrap();
+        }
+
         // A fetch that found nothing still counts as fresh: the feed is ready
         // and nothing more is queued.
         let jobs_before = queued(&library).await;
@@ -577,6 +614,26 @@ mod tests {
         assert_eq!(report["ready"], true);
         assert_eq!(report["scope"], "household");
         assert!(report["candidates_fetched_at"].is_string());
+        assert_eq!(report["updating"], false);
+
+        // The Refresh button queues a fetch now and reports it.
+        let (status, report) = post(&app, "/api/discover/refresh").await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{report}");
+        assert_eq!(report["updating"], true);
+        assert_eq!(
+            queued(&library).await,
+            vec![(JobKind::DiscoverCandidates, String::from("operator"))]
+        );
+        let (_, feed) = get(&app, "/api/discover/recommendations").await;
+        assert_eq!(feed["state"], "refreshing");
+        {
+            use sea_orm::ConnectionTrait;
+            library
+                .db()
+                .execute_unprepared("UPDATE jobs SET state = 'succeeded'")
+                .await
+                .unwrap();
+        }
 
         // A feed another release wrote, which does not decode, counts as
         // missing, so the page shows placeholders until a ranking replaces it.
