@@ -601,6 +601,51 @@ mod tests {
         assert!((cosine(&a[0], &b[0]) - 1.0).abs() < 1e-5);
     }
 
+    /// A work with only the given credits, narrators and series lists filled.
+    fn work(credits: &[&str], narrators: &[&str], series: &[&str]) -> WorkRecord {
+        let now = chrono::Utc::now();
+        WorkRecord {
+            id: "w1".into(),
+            kind: "book".into(),
+            title: "The Hobbit".into(),
+            parent_work_id: None,
+            credits: credits.iter().map(|s| (*s).to_string()).collect(),
+            narrators: narrators.iter().map(|s| (*s).to_string()).collect(),
+            series: series.iter().map(|s| (*s).to_string()).collect(),
+            description: None,
+            subjects: None,
+            categories: None,
+            cover_url: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn text_for_work_joins_each_present_field_on_its_own_line() {
+        let mut full = work(
+            &["J. R. R. Tolkien", "Christopher Tolkien"],
+            &["Andy Serkis"],
+            &["Middle-earth"],
+        );
+        full.categories = Some("Fantasy".into());
+        full.subjects = Some("Dragons".into());
+        full.description = Some("x".repeat(1300));
+        let expected = format!(
+            "The Hobbit\nJ. R. R. Tolkien, Christopher Tolkien\nAndy Serkis\nMiddle-earth\nFantasy\nDragons\n{}",
+            "x".repeat(1200)
+        );
+        assert_eq!(text_for_work(&full), expected);
+    }
+
+    #[test]
+    fn text_for_work_leaves_out_empty_lists() {
+        assert_eq!(text_for_work(&work(&[], &[], &[])), "The Hobbit");
+        assert_eq!(text_for_work(&work(&["A"], &[], &[])), "The Hobbit\nA");
+        assert_eq!(text_for_work(&work(&[], &["N"], &[])), "The Hobbit\nN");
+        assert_eq!(text_for_work(&work(&[], &[], &["S"])), "The Hobbit\nS");
+    }
+
     #[test]
     fn vector_roundtrip() {
         let v = vec![0.1f32, -0.2, 0.3];
