@@ -209,7 +209,8 @@ The workflow runs:
 
 - nightly when `main` has moved (an image whose `sha-` tag exists is not
   rebuilt);
-- on a published release;
+- on a published release whose commit is on `main` (see
+  [release tags](#release-tags));
 - on `main` pushes that change the Dev Container's inputs;
 - by hand (a run on any branch but `main` is a dry run).
 
@@ -258,6 +259,41 @@ first appear after the nightly run or a manual run (see
 > [!WARNING]
 > GitHub does not let a public package go back to private. Later publishes
 > keep the package's visibility, so this step is needed only once.
+
+## Release tags
+
+Publishing a release starts the image publish, the docs publish, the
+website deploy and the Audiobookshelf integration test, each for the
+commit the release's `v*` tag names. Those runs use that commit's own copy
+of each workflow, so whoever can create or move a `v*` tag decides what
+gets built, signed and published as a release. Three layers keep that to
+reviewed code:
+
+1. **Rulesets.** Only repository administrators may create a `v*` tag,
+   and nobody may move or delete one. The automation App can write
+   contents, but it can't tag a release. To set them up, run this once
+   as an administrator, with your own GitHub CLI login:
+
+   ```bash
+   bash scripts/setup-release-rulesets.sh Bookclerk/bookclerk
+   ```
+
+   It creates, or updates in place, the **Release tags: creators** and
+   **Release tags: history** rulesets. An administrator still publishes
+   releases from the web UI as before, since that creates the tag.
+2. **Immutable releases.** Turn on **Settings → General → Releases →
+   Enable release immutability**, so a published release's tag and assets
+   can't change afterwards.
+3. **The commit must be on `main`.** The image and docs publishes start
+   with [`.github/actions/release-on-main`](../../.github/actions/release-on-main/action.yml),
+   which fails unless the default branch contains the release's commit.
+   The website deploy builds from the default branch, not the tag.
+
+> [!NOTE]
+> The check in step 3 runs from the tagged commit's own workflow, so it
+> catches a tag put on the wrong commit by mistake, not a forged one: a
+> commit written to drop the check would skip it. The rulesets are the
+> control that stops that.
 
 ## GitHub Actions (signing sketch — not a contract)
 

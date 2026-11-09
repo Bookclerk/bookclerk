@@ -509,6 +509,9 @@ in step with this one, as Markdown that the website and agents read.
   `main` commit matches because a burst skipped it, the release's build is
   committed beside `main`, parented on its head without moving it, and
   that commit is tagged. An existing tag is never moved.
+- **A release's commit must be on `main`.** The build refuses a release
+  whose tag names a commit the default branch doesn't contain (see
+  [release tags](packaging.md#release-tags)).
 
 ### The tree
 
