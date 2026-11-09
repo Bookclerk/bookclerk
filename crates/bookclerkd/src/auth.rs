@@ -1696,8 +1696,10 @@ pub enum UserCaller {
 }
 
 /// Operator token/session **or** any signed-in portal user with a user
-/// account. Puts a [`UserCaller`] in the request extensions; handlers pass it
-/// to the library, which decides from the stored role what the user may do.
+/// account. Puts a [`UserCaller`] (and the same caller as a
+/// [`ScanRequester`], for the scan and acquire planners) in the request
+/// extensions; handlers pass it to the library, which decides from the
+/// stored role what the user may do.
 /// Impersonating a user acts as that user.
 pub async fn require_operator_or_user_auth(
     State(state): State<Arc<AppState>>,
@@ -1706,7 +1708,15 @@ pub async fn require_operator_or_user_auth(
 ) -> Result<Response, StatusCode> {
     match resolve_user_caller(&state, req.headers(), req.uri().path()).await {
         Ok(caller) => {
+            // The scan and acquire planners read who asked from a
+            // `ScanRequester`; they re-read the user's role and status and
+            // limit anyone below Administrator to their own accounts.
+            let requester = match caller {
+                UserCaller::Operator => ScanRequester::Operator,
+                UserCaller::User { user_id } => ScanRequester::User(user_id),
+            };
             req.extensions_mut().insert(caller);
+            req.extensions_mut().insert(requester);
             Ok(next.run(req).await)
         }
         Err(UserCallerRefusal::Status(status)) => Err(status),
@@ -1776,7 +1786,9 @@ pub async fn resolve_user_caller(
 
 /// Operator token/session **or** an active Administrator user portal session.
 ///
-/// Used for scan / acquire / jobs. Full control-plane settings stay on
+/// Used for jobs, status and the legacy `/scan` / `/acquire` aliases
+/// (`/api/library/scan` and `/api/library/acquire` admit any user and
+/// leave the scoping to the planner). Full control-plane settings stay on
 /// [`require_operator_auth`] until Phase 2 elevation. Records who asked as a
 /// [`ScanRequester`] request extension for the scan planner; a handler that
 /// finds none refuses.
@@ -5141,6 +5153,110 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
         let _ = res.into_body().collect().await;
+    }
+
+    /// A Member reaches the scan and acquire planners over HTTP, which keep
+    /// them to the store accounts linked to them; the legacy aliases and
+    /// the job list stay with Administrators.
+    #[tokio::test]
+    async fn member_scans_and_acquires_only_their_own_accounts() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (_state, app, library) = phase2_harness("op-token-member-plan").await;
+        for account in ["mine", "theirs"] {
+            library
+                .upsert_account("pk", account, "us", None, true, "test")
+                .await
+                .unwrap();
+        }
+        let cookie = portal_cookie_for(&library, "test", "member-ext").await;
+        let post = |uri: &str, cookie: Option<&str>, body: serde_json::Value| {
+            let mut req = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json");
+            if let Some(cookie) = cookie {
+                req = req.header(header::COOKIE, cookie);
+            }
+            req.body(Body::from(body.to_string())).unwrap()
+        };
+        let send = |req: Request<Body>| {
+            let app = app.clone();
+            async move {
+                let res = app.oneshot(req).await.unwrap();
+                let status = res.status();
+                let bytes = res.into_body().collect().await.unwrap().to_bytes();
+                let body: serde_json::Value =
+                    serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+                (status, body)
+            }
+        };
+        let empty = serde_json::json!({});
+
+        // Owning no account, there is nothing to plan.
+        let (status, body) = send(post("/api/library/scan", Some(&cookie), empty.clone())).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"], "nothing_to_scan");
+        let (status, body) = send(post("/api/library/acquire", Some(&cookie), empty.clone())).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"], "nothing_to_acquire");
+
+        let identity = library
+            .get_portal_identity("test", "member-ext")
+            .await
+            .unwrap()
+            .expect("member identity");
+        library
+            .link_account(identity.id, "pk", "mine", "test")
+            .await
+            .unwrap();
+
+        // Someone else's account is refused by the planner.
+        for uri in ["/api/library/scan", "/api/library/acquire"] {
+            let (status, body) = send(post(
+                uri,
+                Some(&cookie),
+                serde_json::json!({ "account": "theirs" }),
+            ))
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {body}");
+            assert_eq!(body["error"], "forbidden", "{uri}");
+        }
+        // Scanning everything covers only the linked account.
+        let (status, body) = send(post("/api/library/scan", Some(&cookie), empty.clone())).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["job_ids"].as_array().map(Vec::len), Some(1), "{body}");
+        let (status, body) = send(post(
+            "/api/library/acquire",
+            Some(&cookie),
+            serde_json::json!({ "account": "mine" }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let job_id = body["job_id"].as_str().expect("job id").to_string();
+        let job = library.get_job(&job_id).await.unwrap().expect("job");
+        assert_eq!(job.payload.account.as_deref(), Some("mine"));
+
+        // Signed out is still refused, and the aliases and job list stay
+        // with Administrators.
+        let (status, _) = send(post("/api/library/scan", None, empty.clone())).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        for uri in ["/scan", "/acquire"] {
+            let (status, _) = send(post(uri, Some(&cookie), empty.clone())).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+        }
+        let (status, _) = send(
+            Request::builder()
+                .uri("/api/jobs")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
