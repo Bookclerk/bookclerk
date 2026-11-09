@@ -7165,4 +7165,6 @@ mod lock_retry;
 pub use books_page::{BookPage, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT};
 
 #[cfg(test)]
+mod paging_tests;
+#[cfg(test)]
 mod tests;

@@ -1963,6 +1963,27 @@ mod store_tests {
     }
 
     #[tokio::test]
+    async fn listing_links_and_credit_batches_run_under_every_profile() {
+        use crate::test_support::Profile;
+        for profile in Profile::ALL {
+            let store = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let mut draft = dune("audible", "B001");
+            draft.credits = (0..40)
+                .map(|i| (format!("Cast Member {i}"), resolve::CreditRole::Cast, None))
+                .collect();
+            let listing = resolve::Listing::from_draft(&draft).unwrap();
+            store
+                .record_listing(&listing, &account("a1"))
+                .await
+                .unwrap();
+            let written = credits::Entity::find().count(&store.db).await.unwrap();
+            assert_eq!(written, 40, "{profile:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_credit_write_that_stopped_part_way_is_finished_next_scan() {
         let store = store().await;
         let mut draft = dune("audible", "B001");
@@ -2097,7 +2118,7 @@ mod store_tests {
             .await
             .unwrap();
         let store = LibraryStore::from_connection(db.clone())
-            .with_atomic_txn(Arc::new(InProcessSqliteAtomic { db }));
+            .with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db)));
         let listing = resolve::Listing::from_draft(&dune("audible", "B001")).unwrap();
         let plan = store
             .record_listing(&listing, &account("a1"))

@@ -6,7 +6,11 @@
 //! plain engine connection does neither, so a test that passes on one can
 //! still fail on the hosted demo. [`ProfileStore`] wraps an engine proxy in
 //! a [`BeginGate`] and routes every host batch through a [`ProfileExec`]
-//! that applies a [`Profile`]'s capability advertisement.
+//! that applies a [`Profile`]'s capability advertisement. Named atomic
+//! operations (job claims, outbox writes, user security changes) go the way
+//! the plugin host sends them to an adapter: compiled to one typed batch,
+//! validated against the profile and run through the same executor
+//! ([`ProfileAtomic`]).
 //!
 //! This module is the engine-neutral core; the `bookclerk-db-testkit` crate
 //! opens it on in-memory SQLite and adds fixtures.
@@ -16,15 +20,25 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bookclerk_db_exec::begin_gate::{with_batch_in_progress, BeginGate, BeginGateHandle};
 use bookclerk_db_exec::{
-    execute_typed_envelope_on_connection, AdapterExecuteRequest, AtomicSession, ExecCaps,
+    execute_typed_envelope_on_connection, stamp_adapter_execute, AdapterExecuteRequest,
+    AtomicSession, ExecCaps,
 };
-use bookclerk_plugin_abi::{DbCapabilities, ExecuteReply, ExecuteRequest, PluginError};
+use bookclerk_plugin_abi::{
+    DbCapabilities, ExecuteReply, ExecuteRequest, PluginError, PluginErrorCode,
+};
 use sea_orm::{Database, DatabaseConnection, DbBackend, ProxyDatabaseTrait};
 
-use crate::atomic_txn::TypedAtomicExec;
+use crate::atomic_ops::DbAtomicResult;
+use crate::atomic_txn::{AtomicTxnBackend, TypedAtomicExec};
 use crate::error::{LibraryError, Result};
-use crate::sql_plan::{validate_execute_reply, validate_execute_request};
+use crate::named_atomic::{NamedAtomicBackend, NamedAtomicRunner};
+use crate::sql_plan::{
+    authorize_typed_request, interpret_typed_exec, validate_execute_reply,
+    validate_execute_request, validate_plan, CompiledAtomic,
+};
 use crate::store::LibraryStore;
+
+pub mod paging;
 
 pub use bookclerk_db_exec::begin_gate::INTERACTIVE_TRANSACTIONS_REFUSED;
 
@@ -225,6 +239,94 @@ impl TypedAtomicExec for ProfileExec {
     }
 }
 
+/// Runs named atomic operations the way the plugin host sends them to a
+/// database adapter, through a [`ProfileExec`].
+///
+/// Each compiled plan is validated against the profile's advertisement,
+/// authorized and stamped as the host does for a guest batch, run through
+/// the profile executor and interpreted from the typed reply. Nothing here
+/// reaches the engine another way, so a named operation that would exceed
+/// the profile fails closed in the test as it would on the hosted adapter.
+#[derive(Debug)]
+pub struct ProfileAtomic {
+    /// The executor every batch runs through.
+    exec: Arc<ProfileExec>,
+    /// The profile's advertisement.
+    caps: DbCapabilities,
+}
+
+impl ProfileAtomic {
+    /// How far ahead of now a batch's deadline is set, in milliseconds; the
+    /// host uses the same horizon for its named operations.
+    const DEADLINE_MS: u64 = 120_000;
+
+    /// Wraps `exec` with `caps`.
+    #[must_use]
+    pub fn new(exec: Arc<ProfileExec>, caps: DbCapabilities) -> Self {
+        Self { exec, caps }
+    }
+}
+
+/// Maps the error a guest answered with onto the library error the host
+/// reports for a named operation: a typed limit stays a limit, an
+/// ambiguous transport outcome (the batch may have been applied) is
+/// `Unavailable`, anything else is an operation failure.
+fn from_guest_error(err: PluginError) -> LibraryError {
+    if let Some(limit) = err.limit() {
+        return LibraryError::LimitExceeded(limit);
+    }
+    match err.code {
+        PluginErrorCode::Unavailable
+        | PluginErrorCode::Cancelled
+        | PluginErrorCode::DeadlineExceeded => LibraryError::Unavailable(err.to_string()),
+        PluginErrorCode::InvalidParams
+        | PluginErrorCode::Unauthorized
+        | PluginErrorCode::Forbidden
+        | PluginErrorCode::NotFound
+        | PluginErrorCode::Unsupported
+        | PluginErrorCode::Internal
+        | PluginErrorCode::PayloadTooLarge
+        | PluginErrorCode::InvalidCursor
+        | PluginErrorCode::Conflict
+        | PluginErrorCode::LimitExceeded
+        | PluginErrorCode::Unknown => LibraryError::Other(anyhow::anyhow!(err.to_string())),
+    }
+}
+
+/// Current unix time in milliseconds.
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+#[async_trait]
+impl NamedAtomicRunner for ProfileAtomic {
+    async fn run_compiled(
+        &self,
+        compiled: CompiledAtomic,
+        operation_id: String,
+    ) -> Result<DbAtomicResult> {
+        validate_plan(&compiled, &self.caps)?;
+        let mut typed = compiled.clone().into_typed_request(operation_id);
+        typed.deadline_unix_ms = unix_now_ms().saturating_add(Self::DEADLINE_MS);
+        authorize_typed_request(&mut typed, &self.caps)?;
+        let envelope = stamp_adapter_execute(typed, &crate::migrations::host_sql_type_env())
+            .map_err(LibraryError::from_db_err)?;
+        let reply = self
+            .exec
+            .execute_typed(envelope)
+            .await
+            .map_err(from_guest_error)?;
+        Ok(interpret_typed_exec(
+            &compiled,
+            &reply,
+            &compiled.expected_hash,
+        ))
+    }
+}
+
 /// A library store opened on an engine proxy that behaves like an external
 /// database plugin under one [`Profile`].
 #[derive(Debug)]
@@ -241,7 +343,8 @@ pub struct ProfileStore {
 
 impl ProfileStore {
     /// Opens `engine` behind a begin gate, applies the host schema and wires
-    /// a store that enforces `profile`.
+    /// a store that enforces `profile` on every host batch and every named
+    /// atomic operation.
     ///
     /// `backend` is the SQL dialect the engine proxy speaks, which SeaORM
     /// needs to render statements; the kit opens sqlite-shaped engines.
@@ -266,9 +369,11 @@ impl ProfileStore {
         crate::apply_host_schema(&db).await?;
         handle.refuse(true);
         let exec = Arc::new(ProfileExec::new(db.clone(), caps.clone()));
+        let atomic = NamedAtomicBackend::new(ProfileAtomic::new(Arc::clone(&exec), caps.clone()));
         let store = LibraryStore::from_connection(db)
             .with_db_capabilities(caps)
-            .with_typed_exec(Arc::clone(&exec) as Arc<dyn TypedAtomicExec>);
+            .with_typed_exec(Arc::clone(&exec) as Arc<dyn TypedAtomicExec>)
+            .with_atomic_txn(Arc::new(atomic) as Arc<dyn AtomicTxnBackend>);
         Ok(Self {
             profile,
             store,
@@ -390,6 +495,37 @@ mod tests {
     use sea_orm::DbErr;
 
     use super::*;
+
+    #[test]
+    fn guest_errors_map_to_the_library_errors_the_host_reports() {
+        let limit = LimitExceeded::new("maxResultBytes", 4096, 5000);
+        assert!(matches!(
+            from_guest_error(PluginError::limit_exceeded(limit.clone())),
+            LibraryError::LimitExceeded(got) if got == limit
+        ));
+        for code in [
+            PluginErrorCode::Unavailable,
+            PluginErrorCode::Cancelled,
+            PluginErrorCode::DeadlineExceeded,
+        ] {
+            assert!(
+                matches!(
+                    from_guest_error(PluginError::new(code, "maybe applied")),
+                    LibraryError::Unavailable(_)
+                ),
+                "{code:?} is an ambiguous outcome"
+            );
+        }
+        for code in [PluginErrorCode::Conflict, PluginErrorCode::InvalidParams] {
+            assert!(
+                matches!(
+                    from_guest_error(PluginError::new(code, "refused")),
+                    LibraryError::Other(_)
+                ),
+                "{code:?} is an operation failure"
+            );
+        }
+    }
 
     #[test]
     fn admission_errors_map_to_the_guest_error_codes() {

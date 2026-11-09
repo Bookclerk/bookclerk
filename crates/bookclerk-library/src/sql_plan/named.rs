@@ -1996,6 +1996,19 @@ fn plan_lock_slot(slot_key: &str) -> Vec<SqlStmt> {
     ]
 }
 
+/// Every job kind a host decodes, quoted for a SQL `IN` list.
+///
+/// `invalid` is the terminal placeholder of a rejected row, never a
+/// claimable command.
+fn claimable_job_kinds_sql() -> String {
+    crate::models::JobKind::ALL
+        .iter()
+        .filter(|kind| **kind != crate::models::JobKind::Invalid)
+        .map(|kind| format!("'{}'", kind.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Marks pending rows that cannot be decoded as `invalid_job` before claim.
 ///
 /// `json(payload)` aborts a D1 batch. Rewriting the envelope in the same
@@ -2004,12 +2017,14 @@ fn plan_lock_slot(slot_key: &str) -> Vec<SqlStmt> {
 /// `json_extract` of a JSON number is INTEGER (`1 = '1'` is false) while
 /// Postgres `#>>` is TEXT, and SQL v1 forbids CAST TEXT↔INTEGER.
 fn plan_mark_unreadable_pending_jobs(now: &str) -> SqlStmt {
+    let kinds = claimable_job_kinds_sql();
     sql(
-        "UPDATE jobs SET \
+        &format!(
+            "UPDATE jobs SET \
             state = 'failed', \
             kind = 'invalid', \
             resource_class = 'network', \
-            payload = '{\"v\":1}', \
+            payload = '{{\"v\":1}}', \
             error_kind = 'invalid_job', \
             error_message = CASE \
                 WHEN json_valid(payload) = 0 THEN 'malformed job payload JSON' \
@@ -2026,9 +2041,10 @@ fn plan_mark_unreadable_pending_jobs(now: &str) -> SqlStmt {
          WHERE state = 'pending' AND ( \
             json_valid(payload) = 0 \
             OR IFNULL(json_extract(payload, '$.v') || '', '') != '1' \
-            OR kind NOT IN ('scan', 'acquire', 'listen_sync', 'integration_scan', 'cache_sweep') \
+            OR kind NOT IN ({kinds}) \
             OR resource_class NOT IN ('network', 'media', 'transcription', 'indexing') \
-         )",
+         )"
+        ),
         vec![j_str(now), j_str(now)],
     )
 }
@@ -2118,8 +2134,10 @@ fn plan_claim_next_job(
         .unwrap_or_else(|_| now.to_string());
     let mut statements = plan_lock_job_queue();
     statements.push(plan_mark_unreadable_pending_jobs(now));
+    let kinds = claimable_job_kinds_sql();
     statements.push(sql(
-        "UPDATE jobs SET \
+        &format!(
+            "UPDATE jobs SET \
                     state = 'running', \
                     attempt_count = attempt_count + 1, \
                     lease_owner = ?, \
@@ -2137,10 +2155,11 @@ fn plan_claim_next_job(
                        AND IFNULL(json_extract(payload, '$.v') || '', '') = '1' \
                        AND json_extract(payload, '$.requires') IS NULL \
                        AND json_extract(payload, '$.node_id') IS NULL \
-                       AND kind IN ('scan', 'acquire', 'listen_sync', 'integration_scan') \
+                       AND kind IN ({kinds}) \
                        AND resource_class IN ('network', 'media', 'transcription', 'indexing') \
                      ORDER BY priority DESC, created_at ASC LIMIT 1\
-                 ) AND state = 'pending'",
+                 ) AND state = 'pending'"
+        ),
         vec![
             j_str(owner),
             j_str(&expires),
@@ -4079,6 +4098,79 @@ mod tests {
             assert_eq!(kind, "invalid");
             assert_eq!(error.as_deref(), Some("invalid_job"));
         }
+    }
+
+    /// `JobKind::ALL` names every variant, so the claim plan's kind list
+    /// (derived from it) cannot miss one and fail its pending jobs as
+    /// `invalid_job`.
+    #[test]
+    fn job_kind_all_lists_every_variant() {
+        use crate::models::JobKind;
+        // Exhaustive on purpose: a new variant stops this from compiling
+        // until it is added here, and the assertion fails until `ALL` has it.
+        fn every(kind: JobKind) -> [JobKind; 10] {
+            match kind {
+                JobKind::Scan
+                | JobKind::Acquire
+                | JobKind::ListenSync
+                | JobKind::IntegrationScan
+                | JobKind::PluginCopy
+                | JobKind::PluginScheduled
+                | JobKind::DiscoverCandidates
+                | JobKind::DiscoverFeed
+                | JobKind::CacheSweep
+                | JobKind::Invalid => [
+                    JobKind::Scan,
+                    JobKind::Acquire,
+                    JobKind::ListenSync,
+                    JobKind::IntegrationScan,
+                    JobKind::PluginCopy,
+                    JobKind::PluginScheduled,
+                    JobKind::DiscoverCandidates,
+                    JobKind::DiscoverFeed,
+                    JobKind::CacheSweep,
+                    JobKind::Invalid,
+                ],
+            }
+        }
+        for kind in every(JobKind::Scan) {
+            assert!(
+                JobKind::ALL.contains(&kind),
+                "{kind:?} is missing from JobKind::ALL"
+            );
+            assert_eq!(JobKind::parse(kind.as_str()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn claim_takes_every_job_kind_without_requirements() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let kinds: Vec<_> = crate::models::JobKind::ALL
+            .iter()
+            .filter(|kind| **kind != crate::models::JobKind::Invalid)
+            .collect();
+        for (i, kind) in kinds.iter().enumerate() {
+            let priority = i64::try_from(kinds.len() - i).unwrap();
+            seed_pending_job(&conn, kind.as_str(), kind.as_str(), r#"{"v":1}"#, priority);
+        }
+        for (i, kind) in kinds.iter().enumerate() {
+            let now = format!("2024-06-01T00:00:{i:02}Z");
+            let result = run_plan(
+                &conn,
+                &plan_claim_next_job("network", &format!("worker-{i}"), 60, &now),
+            );
+            assert_eq!(result.status, atomic_status::OK, "{}", kind.as_str());
+            let (state, stored_kind, error, _) = claim_row(&conn, kind.as_str());
+            assert_eq!(state, "running", "{}", kind.as_str());
+            assert_eq!(stored_kind, kind.as_str());
+            assert_eq!(error, None, "{}", kind.as_str());
+        }
+        let left = run_plan(
+            &conn,
+            &plan_claim_next_job("network", "worker-last", 60, "2024-06-01T00:01:00Z"),
+        );
+        assert_eq!(left.status, atomic_status::EMPTY);
     }
 
     #[test]

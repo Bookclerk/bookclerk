@@ -1763,7 +1763,7 @@ mod tests {
         let PublishDomainEventOutcome::Created { id } = created else {
             panic!("{created:?}");
         };
-        let store = store.with_atomic_txn(std::sync::Arc::new(InProcessSqliteAtomic { db }));
+        let store = store.with_atomic_txn(std::sync::Arc::new(InProcessSqliteAtomic::on(db)));
         bookclerk_library::set_dispatch_chunk_for_test(Some(1));
         bookclerk_library::inject_dispatch_page_failures(1);
         let err = dispatch_pending(&store, 7, "", false, 0, "test-node")

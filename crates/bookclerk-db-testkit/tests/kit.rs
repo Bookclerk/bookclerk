@@ -181,22 +181,44 @@ async fn the_minimum_profile_refuses_a_long_batch_and_a_wide_cell() {
         .unwrap_err();
     assert_eq!(err.limit().unwrap().limit, "maxStatements", "{err}");
 
-    // A cell over the cell cap never fits the statement payload either, so
-    // the payload cap answers first, before anything reaches the engine.
-    let wide = fixtures::description_over_cell_cap(&caps);
+    // A bind over the statement payload cap is refused before anything
+    // reaches the engine.
+    let over_payload = "x".repeat(usize::try_from(caps.max_payload_bytes).unwrap() + 1);
     let err = db
-        .execute_batch(request("wide-cell", vec![insert_candidate("wide", &wide)]))
+        .execute_batch(request(
+            "wide-payload",
+            vec![insert_candidate("wide", &over_payload)],
+        ))
         .await
         .unwrap_err();
     assert_eq!(err.limit().unwrap().limit, "maxPayloadBytes", "{err}");
     assert!(candidate_keys(&db).await.is_empty());
+
+    // A cell over the cell cap fits the payload and is written, but no
+    // result may carry it back: the read fails closed.
+    let wide = fixtures::description_over_cell_cap(&caps);
+    db.execute_batch(request("wide-cell", vec![insert_candidate("wide", &wide)]))
+        .await
+        .unwrap();
+    let err = db
+        .execute_batch(request(
+            "read-wide",
+            vec![query(
+                "SELECT candidate_json FROM discover_candidates WHERE candidate_key = ?",
+                vec![DbValue::Text("wide".into())],
+                1,
+            )],
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.limit().unwrap().limit, "maxCellBytes", "{err}");
 
     // A description that leaves room for the SQL and the other binds fits.
     let fits = fixtures::description_near_cell_cap(&caps, 512);
     db.execute_batch(request("fits", vec![insert_candidate("fits", &fits)]))
         .await
         .unwrap();
-    assert_eq!(candidate_keys(&db).await, vec!["fits"]);
+    assert_eq!(candidate_keys(&db).await, vec!["fits", "wide"]);
 
     // Eight rows that each fit the payload cap do not fit a one-row result;
     // one row reads back alone.

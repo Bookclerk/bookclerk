@@ -190,12 +190,20 @@ assert_eq!(db.refused_begins(), 0);
   advertisement, `Profile::D1` the D1 one, and `Profile::Minimum` the
   smallest advertisement the host connects to
   (`DbCapabilities::host_minimum()`: 4,096-byte results, 1,024-byte cells,
-  one row per statement, no streamed reads). Run host and plugin database
+  one row per statement, D1's statement payload, 64 KiB requests, 32
+  function arguments, no streamed reads). Run host and plugin database
   code under all three (`Profile::ALL`): what works on the shipped adapters
   has to work when a plugin advertises only the minimums.
 - **Refused `begin()`.** The connection's `begin()` is refused the way the
   adapter refuses it, and `refused_begins()` counts the attempts. A host
   write that works on an external adapter leaves the count at zero.
+- **Named atomic operations.** Job admission and claims, outbox publish
+  and dispatch, user security changes and listing links go the way the
+  plugin host sends them to an adapter: compiled to one typed batch,
+  admitted against the profile, run through the same executor and read
+  back from the typed reply. They never take the in-process `begin()`
+  fallback a store without a database plugin uses, so a named operation
+  the adapter would refuse fails in the test too.
 - **Every cap applied.** Each host batch is admitted against the profile
   (`maxStatements`, `maxBinds`, `maxPayloadBytes`, `maxRequestBytes`), run
   as one transaction under its result caps and its reply checked, so a
@@ -217,9 +225,14 @@ assert_eq!(db.refused_begins(), 0);
   contract directly.
 
 Inside `bookclerk-library` the same kit is `test_support::ProfileStore`,
-which the store tests open their fixtures from. Ordinary SeaORM reads
-through the connection are held to the engine proxy's first-party caps, as
-on the shipped sqlite adapter.
+which the store tests open their fixtures from, and
+`test_support::paging` holds the paged-listing checks the kit re-exports.
+Every paged listing of the store (book pages, job claim candidates,
+dispatched and missing-delivery events, storage-scan identities, Discover
+candidates) has a test that walks it under every profile and compares the
+walk with the unpaged read. Ordinary SeaORM reads through the connection
+are held to the engine proxy's first-party caps, as on the shipped sqlite
+adapter.
 
 ### A plugin's own binding
 

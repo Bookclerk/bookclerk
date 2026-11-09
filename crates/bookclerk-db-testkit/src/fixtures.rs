@@ -86,7 +86,8 @@ fn json_string(text: &str) -> String {
 ///
 /// Panics when `count` rows of at most one cell each cannot exceed the
 /// result cap, so a test asking for too few rows fails at the fixture
-/// instead of passing on a listing that never reached the cap.
+/// instead of passing on a listing that never reached the cap, and when a
+/// generated row does not fit a cell after all.
 #[must_use]
 pub fn rows_over_result_cap(
     caps: &DbCapabilities,
@@ -107,6 +108,11 @@ pub fn rows_over_result_cap(
         .map(|i| {
             let key = format!("{prefix}{i:05}");
             let json = wide_json(&key, per_row);
+            let len = json.len();
+            assert!(
+                len <= cell_cap,
+                "row {key} is {len} bytes, over the {cell_cap}-byte cell cap"
+            );
             (key, json)
         })
         .collect()

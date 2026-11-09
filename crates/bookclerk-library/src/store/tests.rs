@@ -38,7 +38,7 @@ async fn next_event_of(store: &LibraryStore, event_type: &str) -> crate::DomainE
 
 #[tokio::test]
 async fn account_and_book_roundtrip() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let acct = store
         .upsert_account("audible", "user-1", "us", Some("Main"), true, "audible")
         .await
@@ -1721,6 +1721,9 @@ async fn test_store() -> LibraryStore {
 
 /// A store opened without an atomic backend, as local tools open one: named
 /// atomic operations and job writes take their in-process `begin()` fallback.
+///
+/// Only the fault-injection test of that fallback opens one; every other
+/// store test runs on the kit under a profile.
 async fn in_process_store() -> LibraryStore {
     LibraryStore::from_connection(
         bookclerk_plugin_database_sqlite::open_memory()
@@ -1758,6 +1761,21 @@ async fn claim_job(store: &LibraryStore, owner: &str) -> JobRecord {
         .expect("claim")
 }
 
+/// Claims the best ready network job the way the daemon's worker does: a
+/// candidate page, then a CAS on that row's lease generation.
+async fn claim_job_routed(store: &LibraryStore, owner: &str) -> JobRecord {
+    let page = store
+        .list_job_claim_candidates(JobResourceClass::Network, None, 8)
+        .await
+        .unwrap();
+    let candidate = page.jobs.first().expect("a ready candidate");
+    store
+        .claim_job_by_id(&candidate.id, candidate.lease_generation, owner, 60)
+        .await
+        .unwrap()
+        .expect("routed claim")
+}
+
 fn fence_of(job: &JobRecord) -> JobFence {
     job.fence().expect("claimed job has a fence")
 }
@@ -1779,8 +1797,31 @@ fn acquire_spec(title: Option<&str>, account: Option<&str>, max_pending: i64) ->
 }
 
 #[tokio::test]
+async fn a_delayed_job_keeps_its_run_after_through_the_named_operation() {
+    let store = kit_store().await;
+    let later = chrono::Utc::now() + chrono::Duration::hours(1);
+    let spec = EnqueueJobSpec {
+        run_after: Some(later),
+        ..scan_spec(None, 32)
+    };
+    let EnqueueOutcome::Created { id } = store.enqueue_job(spec).await.unwrap() else {
+        panic!("expected a created job");
+    };
+    let job = store.get_job(&id).await.unwrap().expect("job row");
+    assert_eq!(job.run_after.timestamp(), later.timestamp());
+    let page = store
+        .list_job_claim_candidates(JobResourceClass::Network, None, 8)
+        .await
+        .unwrap();
+    assert!(
+        page.jobs.iter().all(|c| c.id != id),
+        "a job due in an hour is not a claim candidate yet"
+    );
+}
+
+#[tokio::test]
 async fn enqueue_dedupes_active_scan_and_acquire() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let first = store.enqueue_job(scan_spec(None, 32)).await.unwrap();
     let EnqueueOutcome::Created { id: scan_id } = first else {
         panic!("expected created scan: {first:?}");
@@ -1868,7 +1909,7 @@ async fn enqueue_dedupes_active_scan_and_acquire() {
 
 #[tokio::test]
 async fn enqueue_respects_max_pending_and_reuses_terminal_keys() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let a = store.enqueue_job(scan_spec(None, 1)).await.unwrap();
     let EnqueueOutcome::Created { id } = a else {
         panic!("expected created: {a:?}");
@@ -1905,7 +1946,7 @@ async fn enqueue_respects_max_pending_and_reuses_terminal_keys() {
 
 #[tokio::test]
 async fn claim_heartbeat_and_expired_lease_reclaim() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = store.enqueue_job(scan_spec(None, 8)).await.unwrap();
     let EnqueueOutcome::Created { id } = created else {
         panic!("expected created: {created:?}");
@@ -2082,7 +2123,7 @@ async fn count_books_waits_out_a_peer_sqlite_lock() {
 
 #[tokio::test]
 async fn completed_acquire_is_not_repeated_unsafely() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     store
         .upsert_account("audible", "user-1", "us", None, true, "audible")
         .await
@@ -2126,7 +2167,7 @@ async fn completed_acquire_is_not_repeated_unsafely() {
 
 #[tokio::test]
 async fn orphaned_downloading_book_is_reconciled() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     store
         .upsert_account("audible", "user-1", "us", None, true, "audible")
         .await
@@ -2151,7 +2192,7 @@ async fn orphaned_downloading_book_is_reconciled() {
 
 #[tokio::test]
 async fn concurrent_identical_admits_coalesce() {
-    let store = std::sync::Arc::new(in_process_store().await);
+    let store = std::sync::Arc::new(kit_store().await);
     let mut handles = Vec::new();
     for _ in 0..16 {
         let store = store.clone();
@@ -2175,7 +2216,7 @@ async fn concurrent_identical_admits_coalesce() {
 
 #[tokio::test]
 async fn concurrent_admits_never_exceed_max_pending() {
-    let store = std::sync::Arc::new(in_process_store().await);
+    let store = std::sync::Arc::new(kit_store().await);
     let mut handles = Vec::new();
     for i in 0..12 {
         let store = store.clone();
@@ -2202,7 +2243,7 @@ async fn concurrent_admits_never_exceed_max_pending() {
 
 #[tokio::test]
 async fn concurrent_claims_have_one_winner() {
-    let store = std::sync::Arc::new(in_process_store().await);
+    let store = std::sync::Arc::new(kit_store().await);
     store.enqueue_job(scan_spec(None, 8)).await.unwrap();
     let mut handles = Vec::new();
     for i in 0..8 {
@@ -2230,7 +2271,7 @@ async fn concurrent_claims_have_one_winner() {
 
 #[tokio::test]
 async fn stale_fence_cannot_finalize_or_heartbeat() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = store.enqueue_job(scan_spec(None, 8)).await.unwrap();
     let EnqueueOutcome::Created { id } = created else {
         panic!("expected created: {created:?}");
@@ -2265,7 +2306,7 @@ async fn stale_fence_cannot_finalize_or_heartbeat() {
 async fn suspend_job_commits_checkpoint_and_stale_fence_cannot() {
     use bookclerk_plugin_abi::JobCheckpoint;
 
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = store
         .enqueue_job(EnqueueJobSpec {
             kind: JobKind::PluginCopy,
@@ -2323,7 +2364,7 @@ async fn suspend_job_commits_checkpoint_and_stale_fence_cannot() {
 async fn suspend_lost_fence_does_not_commit_and_reclaim_sees_checkpoint() {
     use bookclerk_plugin_abi::JobCheckpoint;
 
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = store
         .enqueue_job(EnqueueJobSpec {
             kind: JobKind::PluginCopy,
@@ -2398,7 +2439,7 @@ async fn suspend_lost_fence_does_not_commit_and_reclaim_sees_checkpoint() {
 async fn suspend_resume_then_retryable_failures_still_reach_max_attempts() {
     use bookclerk_plugin_abi::JobCheckpoint;
 
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = store
         .enqueue_job(EnqueueJobSpec {
             kind: JobKind::PluginCopy,
@@ -2419,7 +2460,7 @@ async fn suspend_resume_then_retryable_failures_still_reach_max_attempts() {
     let EnqueueOutcome::Created { id } = created else {
         panic!("expected created: {created:?}");
     };
-    let first = claim_job(&store, "worker-suspend").await;
+    let first = claim_job_routed(&store, "worker-suspend").await;
     assert_eq!(first.attempt_count, 1);
     let checkpoint = JobCheckpoint {
         schema_version: 1,
@@ -2437,7 +2478,9 @@ async fn suspend_resume_then_retryable_failures_still_reach_max_attempts() {
     assert!(parked.payload.resume_pending);
     assert!(parked.payload.checkpoint.is_some());
 
-    let resumed = claim_job(&store, "worker-resume").await;
+    // The daemon claims through the routed path, which resumes a parked job
+    // without spending an attempt.
+    let resumed = claim_job_routed(&store, "worker-resume").await;
     assert_eq!(resumed.attempt_count, 1);
     assert!(!resumed.payload.resume_pending);
     assert_eq!(
@@ -2476,7 +2519,7 @@ async fn suspend_resume_then_retryable_failures_still_reach_max_attempts() {
 
 #[tokio::test]
 async fn set_job_progress_writes_row_and_rejects_stale_generation() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = store
         .enqueue_job(EnqueueJobSpec {
             kind: JobKind::PluginCopy,
@@ -2515,7 +2558,7 @@ async fn set_job_progress_writes_row_and_rejects_stale_generation() {
 
 #[tokio::test]
 async fn malformed_payload_is_marked_invalid_and_not_claimed() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let now = chrono::Utc::now().to_rfc3339();
     crate::entities::jobs::ActiveModel {
         id: sea_orm::ActiveValue::Set("bad-payload".into()),
@@ -2562,7 +2605,7 @@ async fn malformed_payload_is_marked_invalid_and_not_claimed() {
 
 #[tokio::test]
 async fn unknown_kind_is_marked_invalid() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let now = chrono::Utc::now().to_rfc3339();
     crate::entities::jobs::ActiveModel {
         id: sea_orm::ActiveValue::Set("bad-kind".into()),
@@ -2608,7 +2651,7 @@ async fn unknown_kind_is_marked_invalid() {
 
 #[tokio::test]
 async fn unknown_resource_class_is_marked_invalid_and_does_not_block_claim() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let now = chrono::Utc::now().to_rfc3339();
     crate::entities::jobs::ActiveModel {
         id: sea_orm::ActiveValue::Set("bad-class".into()),
@@ -2659,7 +2702,7 @@ async fn unknown_resource_class_is_marked_invalid_and_does_not_block_claim() {
 
 #[tokio::test]
 async fn plugin_copy_admits_and_claims() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let spec = EnqueueJobSpec {
         kind: JobKind::PluginCopy,
         payload: JobPayload {
@@ -2706,7 +2749,7 @@ fn integration_scan_spec(integration_id: &str, force: bool, max_pending: i64) ->
 
 #[tokio::test]
 async fn integration_scan_force_does_not_coalesce_with_normal() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let normal = store
         .enqueue_job(integration_scan_spec("echo", false, 8))
         .await
@@ -2723,7 +2766,7 @@ async fn integration_scan_force_does_not_coalesce_with_normal() {
     };
     assert_ne!(normal_id, forced_id);
 
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let forced = store
         .enqueue_job(integration_scan_spec("echo", true, 8))
         .await
@@ -2754,7 +2797,7 @@ async fn integration_scan_force_does_not_coalesce_with_normal() {
 #[tokio::test]
 async fn cancel_versus_claim_always_cancels_or_flags_running() {
     for _ in 0..40 {
-        let store = std::sync::Arc::new(in_process_store().await);
+        let store = std::sync::Arc::new(kit_store().await);
         let created = store.enqueue_job(scan_spec(None, 8)).await.unwrap();
         let EnqueueOutcome::Created { id } = created else {
             panic!("expected created: {created:?}");
@@ -2796,7 +2839,7 @@ async fn cancel_versus_claim_always_cancels_or_flags_running() {
 
 #[tokio::test]
 async fn temp_quota_rejects_oversized_and_concurrent_reserves() {
-    let store = std::sync::Arc::new(in_process_store().await);
+    let store = std::sync::Arc::new(kit_store().await);
     let created = store
         .enqueue_job(acquire_spec(None, None, 8))
         .await
@@ -2813,7 +2856,7 @@ async fn temp_quota_rejects_oversized_and_concurrent_reserves() {
         .await
         .is_err());
 
-    let store2 = std::sync::Arc::new(in_process_store().await);
+    let store2 = std::sync::Arc::new(kit_store().await);
     let created = store2
         .enqueue_job(acquire_spec(None, None, 8))
         .await
@@ -2837,7 +2880,7 @@ async fn temp_quota_rejects_oversized_and_concurrent_reserves() {
 
 #[tokio::test]
 async fn expired_acquire_lease_is_reclaimed_for_retry() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = store
         .enqueue_job(acquire_spec(None, None, 8))
         .await
@@ -2867,7 +2910,7 @@ async fn expired_acquire_lease_is_reclaimed_for_retry() {
 
 #[tokio::test]
 async fn heartbeat_after_expiry_wins_over_reclaim() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = store.enqueue_job(scan_spec(None, 8)).await.unwrap();
     let EnqueueOutcome::Created { id } = created else {
         panic!("expected created: {created:?}");
@@ -2997,7 +3040,7 @@ fn audible_v1_wake_grants() -> String {
 
 #[tokio::test]
 async fn publish_domain_event_dedupes_and_rejects_oversized_payload() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let first = persist_outbox_event(
         &store,
         outbox_spec("book_acquired", "book_acquired:u1", r#"{"titleId":"u1"}"#),
@@ -3045,7 +3088,7 @@ fn queue_spec(queue: &str, body: &str) -> PublishDomainEventSpec {
 
 #[tokio::test]
 async fn publish_accepts_plugin_key_sources_and_rejects_unknown_queues() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let mut spec = outbox_spec("book_acquired", "book_acquired:pk", "{}");
     spec.source = "registry:crates.io#bookclerk-plugin-source-libro".into();
     expect_created(persist_outbox_event(&store, spec).await.unwrap());
@@ -3079,7 +3122,7 @@ async fn publish_accepts_plugin_key_sources_and_rejects_unknown_queues() {
 
 #[tokio::test]
 async fn queue_messages_reach_queue_consumers_only_and_honor_retries() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let mut jobs = EventCatalogSubscription::queue("jobs");
     jobs.max_retries = Some(2);
     store
@@ -3181,7 +3224,7 @@ async fn queue_messages_reach_queue_consumers_only_and_honor_retries() {
 
 #[tokio::test]
 async fn event_consumer_max_retries_sets_delivery_max_attempts() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let mut sub = EventCatalogSubscription::new("book_acquired", vec![1]);
     sub.max_retries = Some(0);
     store
@@ -3235,7 +3278,7 @@ async fn claim_delivery_for_opt(
 
 #[tokio::test]
 async fn publish_domain_event_namespaces_dedup_by_account_and_source() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let a = persist_outbox_event(
         &store,
         outbox_spec_account("book_acquired", "book_acquired:ns", "{}", "", "acct-a"),
@@ -3274,7 +3317,7 @@ async fn publish_domain_event_namespaces_dedup_by_account_and_source() {
 
 #[tokio::test]
 async fn dispatch_is_idempotent_and_isolates_subscribers() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec("book_acquired", "book_acquired:iso", r#"{"titleId":"iso"}"#),
@@ -3321,7 +3364,7 @@ async fn dispatch_is_idempotent_and_isolates_subscribers() {
 
 #[tokio::test]
 async fn concurrent_host_cas_claims_do_not_skip_keyset_pages() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     for i in 0..5 {
         let created = persist_outbox_event(
             &store,
@@ -3342,7 +3385,7 @@ async fn concurrent_host_cas_claims_do_not_skip_keyset_pages() {
     }
     let db = store.db().clone();
     super::event_outbox::set_claim_page_for_test(Some(2));
-    let store = std::sync::Arc::new(store.with_atomic_txn(Arc::new(InProcessSqliteAtomic { db })));
+    let store = std::sync::Arc::new(store.with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db))));
     let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
     let mut handles = Vec::new();
     for i in 0..2 {
@@ -3379,7 +3422,7 @@ async fn concurrent_host_cas_claims_do_not_skip_keyset_pages() {
 
 #[tokio::test]
 async fn dispatch_page_fault_leaves_parent_pending_and_retries() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec("book_acquired", "book_acquired:page-fault", "{}"),
@@ -3388,7 +3431,7 @@ async fn dispatch_page_fault_leaves_parent_pending_and_retries() {
     .unwrap();
     let id = expect_created(created);
     let db = store.db().clone();
-    let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic { db }));
+    let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db)));
     let subs = [
         EventSubscriber::plugin("echo"),
         EventSubscriber::plugin("audiobookshelf"),
@@ -3429,7 +3472,7 @@ async fn dispatch_page_fault_leaves_parent_pending_and_retries() {
 
 #[tokio::test]
 async fn dispatch_retry_keeps_frozen_snapshot_when_catalog_changes() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec("book_acquired", "book_acquired:snapshot-catalog", "{}"),
@@ -3438,7 +3481,7 @@ async fn dispatch_retry_keeps_frozen_snapshot_when_catalog_changes() {
     .unwrap();
     let id = expect_created(created);
     let db = store.db().clone();
-    let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic { db }));
+    let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db)));
     let original = [
         EventSubscriber::plugin("echo"),
         EventSubscriber::plugin("audiobookshelf"),
@@ -3504,9 +3547,9 @@ async fn dispatch_snapshot_cas_two_stores_agree() {
     .await
     .unwrap();
     let id = expect_created(created);
-    let store1 = store1.with_atomic_txn(Arc::new(InProcessSqliteAtomic { db: db1 }));
+    let store1 = store1.with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db1)));
     let store2 = LibraryStore::from_connection(db2.clone())
-        .with_atomic_txn(Arc::new(InProcessSqliteAtomic { db: db2 }));
+        .with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db2)));
     let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
     super::event_outbox::set_snapshot_claim_barrier(Some(barrier));
     let op = format!("dispatch-{id}");
@@ -3571,10 +3614,58 @@ async fn dispatch_snapshot_cas_two_stores_agree() {
         .is_some());
 }
 
+/// A call that reuses an operation id after the event is dispatched, with
+/// a catalog that changed in between, adds the new subscribers instead of
+/// failing as a reused operation id with a different request.
+#[tokio::test]
+async fn a_dispatched_event_retried_with_new_subscribers_adds_them() {
+    let store = kit_store().await;
+    let id = expect_created(
+        persist_outbox_event(
+            &store,
+            outbox_spec("book_acquired", "retry-after-dispatch", "{}"),
+        )
+        .await
+        .unwrap(),
+    );
+    let first = [EventSubscriber::plugin("echo")];
+    let created = store
+        .dispatch_event_deliveries(&id, &first, "op-reused")
+        .await
+        .unwrap();
+    assert_eq!(created, 1);
+    let replayed = store
+        .dispatch_event_deliveries(&id, &first, "op-reused")
+        .await
+        .unwrap();
+    assert_eq!(
+        replayed, created,
+        "a retry with the frozen subscribers replays the original receipt"
+    );
+    let grown = [
+        EventSubscriber::plugin("echo"),
+        EventSubscriber::plugin("late"),
+    ];
+    store
+        .dispatch_event_deliveries(&id, &grown, "op-reused")
+        .await
+        .unwrap();
+    for plugin in ["echo", "late"] {
+        assert!(
+            store
+                .get_event_delivery(&format!("{id}:{plugin}"))
+                .await
+                .unwrap()
+                .is_some(),
+            "{plugin}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn unrelated_dispatch_does_not_wait_on_snapshot_cas_barrier() {
     let _barrier_owner = super::event_outbox::own_snapshot_claim_barrier().await;
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec("book_acquired", "book_acquired:no-barrier-wait", "{}"),
@@ -3583,7 +3674,7 @@ async fn unrelated_dispatch_does_not_wait_on_snapshot_cas_barrier() {
     .unwrap();
     let id = expect_created(created);
     let db = store.db().clone();
-    let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic { db }));
+    let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db)));
     super::event_outbox::set_snapshot_claim_barrier(Some(std::sync::Arc::new(
         tokio::sync::Barrier::new(2),
     )));
@@ -3600,7 +3691,7 @@ async fn unrelated_dispatch_does_not_wait_on_snapshot_cas_barrier() {
 
 #[tokio::test]
 async fn malformed_dispatch_snapshot_fails_closed() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec("book_acquired", "book_acquired:bad-snapshot", "{}"),
@@ -3621,7 +3712,7 @@ async fn malformed_dispatch_snapshot_fails_closed() {
         .await
         .unwrap();
     let db = store.db().clone();
-    let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic { db }));
+    let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db)));
     let err = store
         .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "bad-snap")
         .await
@@ -3646,7 +3737,7 @@ async fn dispatch_twenty_five_subscribers_on_sqlite_caps_are_all_inserted() {
     .unwrap();
     let id = expect_created(created);
     let db = store.db().clone();
-    let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic { db }));
+    let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db)));
     assert!(
         store.dispatch_chunk_size() >= 25,
         "sqlite caps must pack more than the old take(24) planner cap"
@@ -3671,7 +3762,7 @@ async fn dispatch_twenty_five_subscribers_on_sqlite_caps_are_all_inserted() {
 
 #[tokio::test]
 async fn oversized_dispatch_page_is_rejected_and_parent_stays_pending() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec("book_acquired", "book_acquired:oversize", "{}"),
@@ -3679,9 +3770,7 @@ async fn oversized_dispatch_page_is_rejected_and_parent_stays_pending() {
     .await
     .unwrap();
     let id = expect_created(created);
-    let backend = InProcessSqliteAtomic {
-        db: store.db().clone(),
-    };
+    let backend = InProcessSqliteAtomic::on(store.db().clone());
     let subs: Vec<EventSubscriber> = (0..100)
         .map(|i| EventSubscriber::plugin(format!("plugin-{i:03}")))
         .collect();
@@ -3700,7 +3789,7 @@ async fn oversized_dispatch_page_is_rejected_and_parent_stays_pending() {
 
 #[tokio::test]
 async fn crash_between_publish_and_dispatch_leaves_pending_outbox() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec(
@@ -3727,7 +3816,7 @@ async fn crash_between_publish_and_dispatch_leaves_pending_outbox() {
 
 #[tokio::test]
 async fn reclaim_expired_event_delivery_and_stale_fence_ignored() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec(
@@ -3772,7 +3861,7 @@ async fn reclaim_expired_event_delivery_and_stale_fence_ignored() {
 
 #[tokio::test]
 async fn reclaim_expired_resume_restores_resume_pending() {
-    reclaim_expired_resume_restores(&in_process_store().await).await;
+    reclaim_expired_resume_restores(&kit_store().await).await;
 }
 
 #[tokio::test]
@@ -3844,7 +3933,7 @@ async fn reclaim_expired_resume_restores(store: &LibraryStore) {
 
 #[tokio::test]
 async fn suspend_resume_does_not_increment_attempt_count() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec(
@@ -3887,7 +3976,7 @@ async fn suspend_resume_does_not_increment_attempt_count() {
 
 #[tokio::test]
 async fn fifo_skips_later_delivery_with_same_ordering_key() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let a = persist_outbox_event(
         &store,
         outbox_spec_ordered("book_acquired", "book_acquired:fifo-a", "{}", "same-book"),
@@ -3932,7 +4021,7 @@ async fn fifo_skips_later_delivery_with_same_ordering_key() {
 
 #[tokio::test]
 async fn fifo_blocked_window_does_not_starve_other_ordering_keys() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let sub = [EventSubscriber::plugin("echo")];
     let mut blocked_ids = Vec::new();
     for i in 0..40 {
@@ -3979,7 +4068,7 @@ async fn fifo_blocked_window_does_not_starve_other_ordering_keys() {
 
 #[tokio::test]
 async fn operator_retry_and_ack_dead_letter() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec("book_acquired", "book_acquired:dlq", r#"{"titleId":"dlq"}"#),
@@ -4043,7 +4132,7 @@ async fn operator_retry_and_ack_dead_letter() {
 
 #[tokio::test]
 async fn retry_at_max_attempts_dead_letters() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec(
@@ -4590,7 +4679,7 @@ async fn acquire_status_and_outbox_commit_together() {
 
 #[tokio::test]
 async fn fifo_uses_persisted_ordering_key_without_title_id() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let sub = [EventSubscriber::plugin("echo")];
     let a = persist_outbox_event(
         &store,
@@ -4636,7 +4725,7 @@ async fn fifo_uses_persisted_ordering_key_without_title_id() {
 
 #[tokio::test]
 async fn claim_filters_to_loaded_plugin_ids() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec("book_acquired", "book_acquired:plug", "{}"),
@@ -4695,7 +4784,7 @@ async fn claim_filters_to_loaded_plugin_ids() {
 
 #[tokio::test]
 async fn catalog_dispatch_creates_rows_claim_filters_loaded_plugins() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     store
         .upsert_event_subscriber(
             "node-a",
@@ -4759,7 +4848,7 @@ async fn catalog_dispatch_creates_rows_claim_filters_loaded_plugins() {
 
 #[tokio::test]
 async fn catalog_filter_match_and_miss() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let mut spec = EventCatalogSubscription::new("book_acquired", vec![1]);
     spec.filter = Some(serde_json::json!({ "source": "audible" }));
     store
@@ -4811,7 +4900,7 @@ async fn catalog_filter_match_and_miss() {
 
 #[tokio::test]
 async fn cancel_pending_and_running_delivery() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec(
@@ -4851,7 +4940,7 @@ async fn cancel_pending_and_running_delivery() {
     .unwrap();
     let id = expect_created(created);
     store
-        .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "op")
+        .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "op-running")
         .await
         .unwrap();
     let claimed = claim_delivery(&store, "cancel-w").await;
@@ -4870,7 +4959,7 @@ async fn cancel_pending_and_running_delivery() {
 
 #[tokio::test]
 async fn resume_suspended_delivery_sets_run_after_now() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec(
@@ -4911,7 +5000,7 @@ async fn resume_suspended_delivery_sets_run_after_now() {
 
 #[tokio::test]
 async fn prune_event_retention_independent_of_dead_letters() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let acked = persist_outbox_event(
         &store,
         outbox_spec(
@@ -4942,7 +5031,7 @@ async fn prune_event_retention_independent_of_dead_letters() {
     .unwrap();
     let dl_id = expect_created(dead);
     store
-        .dispatch_event_deliveries(&dl_id, &[EventSubscriber::plugin("echo")], "op")
+        .dispatch_event_deliveries(&dl_id, &[EventSubscriber::plugin("echo")], "op-dead")
         .await
         .unwrap();
     let claimed = claim_delivery(&store, "prune-dl").await;
@@ -4979,7 +5068,7 @@ async fn prune_event_retention_independent_of_dead_letters() {
 
 #[tokio::test]
 async fn event_delivery_metrics_split_pending_and_suspended() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec(
@@ -5023,7 +5112,7 @@ async fn event_delivery_metrics_split_pending_and_suspended() {
 
 #[tokio::test]
 async fn catalog_union_enabled_wins_and_expired_nodes_drop_out() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let spec = EventCatalogSubscription::new("book_acquired", vec![1]);
     store
         .upsert_event_subscriber("node-a", "echo", std::slice::from_ref(&spec), true)
@@ -5053,7 +5142,7 @@ async fn catalog_union_enabled_wins_and_expired_nodes_drop_out() {
         1
     );
 
-    let store = in_process_store().await;
+    let store = kit_store().await;
     store
         .upsert_event_subscriber("node-a", "echo", std::slice::from_ref(&spec), false)
         .await
@@ -5078,7 +5167,7 @@ async fn catalog_union_enabled_wins_and_expired_nodes_drop_out() {
         0
     );
 
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let stale = chrono::Utc::now() - chrono::Duration::seconds(120);
     store
         .upsert_event_subscriber_at("node-a", "echo", &[spec], true, stale)
@@ -5090,7 +5179,7 @@ async fn catalog_union_enabled_wins_and_expired_nodes_drop_out() {
 
 #[tokio::test]
 async fn late_join_reconciles_more_than_two_hundred_dispatched_events() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let mut ids = Vec::new();
     for i in 0..201 {
         let created = persist_outbox_event(
@@ -5132,7 +5221,7 @@ async fn late_join_reconciles_more_than_two_hundred_dispatched_events() {
 
 #[tokio::test]
 async fn unchanged_catalog_reconcile_does_zero_dispatch_writes() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     store
         .upsert_event_subscriber(
             "node-a",
@@ -5204,7 +5293,7 @@ async fn unchanged_catalog_reconcile_does_zero_dispatch_writes() {
 
 #[tokio::test]
 async fn wake_on_matching_event_makes_delivery_claimable() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let first = persist_outbox_event(
         &store,
         outbox_spec(
@@ -5319,7 +5408,7 @@ async fn park_echo_wake(
 
 #[tokio::test]
 async fn duplicate_publish_replays_skipped_wake() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let parked = park_echo_wake(
         &store,
         "book_acquired:dup-wake-1",
@@ -5370,7 +5459,7 @@ async fn duplicate_publish_replays_skipped_wake() {
 
 #[tokio::test]
 async fn process_pending_wakes_repairs_dispatched_gap() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let parked = park_echo_wake(
         &store,
         "book_acquired:gap-wake-1",
@@ -5410,7 +5499,7 @@ async fn process_pending_wakes_repairs_dispatched_gap() {
 
 #[tokio::test]
 async fn wake_stays_inside_account_boundary() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let parked = park_echo_wake(
         &store,
         "book_acquired:acct-a-1",
@@ -5454,7 +5543,7 @@ async fn wake_stays_inside_account_boundary() {
 
 #[tokio::test]
 async fn wake_pages_more_than_page_size_same_account() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let parent = persist_outbox_event(
         &store,
         outbox_spec("book_acquired", "book_acquired:wake-page-parent", "{}"),
@@ -5522,7 +5611,7 @@ async fn wake_pages_more_than_page_size_same_account() {
 
 #[tokio::test]
 async fn per_plugin_in_flight_cap_blocks_second_claim() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let sub = [EventSubscriber::plugin("echo")];
     for (dedup, key) in [("cap-a", "k-a"), ("cap-b", "k-b")] {
         let created = persist_outbox_event(
@@ -5584,7 +5673,7 @@ async fn per_plugin_in_flight_cap_blocks_second_claim() {
 
 #[tokio::test]
 async fn publish_rejects_invalid_source_and_accepts_empty() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let mut bad = outbox_spec("book_acquired", "book_acquired:bad-src", "{}");
     bad.source = "not valid".into();
     assert!(persist_outbox_event(&store, bad).await.is_err());
@@ -5601,7 +5690,7 @@ async fn publish_rejects_invalid_source_and_accepts_empty() {
 
 #[tokio::test]
 async fn zero_delivery_event_survives_until_retention_deadline() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec("book_acquired", "book_acquired:zero-delivery", r#"{}"#),
@@ -5632,7 +5721,7 @@ async fn zero_delivery_event_survives_until_retention_deadline() {
 
 #[tokio::test]
 async fn unknown_event_resource_class_is_rejected_and_does_not_block_claim() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let created = persist_outbox_event(
         &store,
         outbox_spec("book_acquired", "book_acquired:class-network", r#"{}"#),
@@ -5714,7 +5803,7 @@ async fn unknown_event_resource_class_is_rejected_and_does_not_block_claim() {
 
 #[tokio::test]
 async fn wake_grants_keep_subscription_schema_and_filter() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let parked = park_echo_wake(
         &store,
         "book_acquired:grant-1",
@@ -5775,7 +5864,7 @@ async fn wake_grants_keep_subscription_schema_and_filter() {
 
 #[tokio::test]
 async fn process_pending_wakes_is_bounded_and_leases_prevent_shared_slice() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let mut ids = Vec::new();
     for dedup in ["bound-a", "bound-b", "bound-c"] {
         let created = persist_outbox_event(
@@ -5831,7 +5920,7 @@ async fn process_pending_wakes_is_bounded_and_leases_prevent_shared_slice() {
 
 #[tokio::test]
 async fn stale_wake_finish_and_cursor_do_not_clobber_new_owner() {
-    stale_wake_fence_does_not_clobber(&in_process_store().await).await;
+    stale_wake_fence_does_not_clobber(&kit_store().await).await;
 }
 
 #[tokio::test]
@@ -5891,7 +5980,7 @@ async fn stale_wake_fence_does_not_clobber(store: &LibraryStore) {
 
 #[tokio::test]
 async fn stale_wake_delivery_update_does_not_clear_new_registration() {
-    stale_wake_delivery_update_does_not_clear(&in_process_store().await).await;
+    stale_wake_delivery_update_does_not_clear(&kit_store().await).await;
 }
 
 #[tokio::test]
@@ -5993,7 +6082,7 @@ async fn stale_wake_delivery_update_does_not_clear(store: &LibraryStore) {
 
 #[tokio::test]
 async fn wake_consumes_registration_so_retry_is_not_rewoken() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let parked = park_echo_wake(
         &store,
         "book_acquired:consume-wake-1",
@@ -6090,7 +6179,7 @@ async fn wake_consumes_registration_so_retry_is_not_rewoken() {
 
 #[tokio::test]
 async fn claim_requires_this_nodes_schema_version() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     store
         .upsert_event_subscriber(
             "node-v1",
@@ -6160,7 +6249,7 @@ async fn claim_requires_this_nodes_schema_version() {
 
 #[tokio::test]
 async fn incompatible_d1_style_claim_is_released_without_attempt_burn() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     store
         .upsert_event_subscriber(
             "node-v1",
@@ -6207,7 +6296,7 @@ async fn incompatible_d1_style_claim_is_released_without_attempt_burn() {
 
 #[tokio::test]
 async fn atomic_claim_skips_incompatible_oldest_and_claims_later_compatible() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     store
         .upsert_event_subscriber(
             "node-v1",
@@ -6238,7 +6327,7 @@ async fn atomic_claim_skips_incompatible_oldest_and_claims_later_compatible() {
         .unwrap();
 
     let db = store.db().clone();
-    let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic { db }));
+    let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db)));
     let claimed = store
         .claim_next_event_delivery(
             "atomic-skip-worker",
@@ -6836,7 +6925,7 @@ async fn postgres_storage_scan_delete_rolls_back_before_the_generation_is_remove
 
 #[tokio::test]
 async fn terminal_jobs_drop_scan_inventory_and_pending_retries_keep_it() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let pending = store
         .enqueue_job(EnqueueJobSpec {
             kind: JobKind::Acquire,
@@ -6932,7 +7021,7 @@ async fn terminal_jobs_drop_scan_inventory_and_pending_retries_keep_it() {
 
 #[tokio::test]
 async fn a_claim_with_a_past_cutoff_leaves_freshly_due_deliveries_to_better_nodes() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let id = expect_created(
         persist_outbox_event(
             &store,
@@ -6967,7 +7056,7 @@ async fn a_claim_with_a_past_cutoff_leaves_freshly_due_deliveries_to_better_node
 
 #[tokio::test]
 async fn wishlist_writes_publish_wishlist_changed() {
-    let store = in_process_store().await;
+    let store = kit_store().await;
     let alice = store
         .upsert_portal_identity("audiobookshelf", "u1", Some("alice"))
         .await
@@ -7089,4 +7178,206 @@ fn plugin_err_from_db_keeps_a_cap_failure_typed() {
         cancelled.code,
         bookclerk_plugin_abi::PluginErrorCode::Cancelled
     );
+}
+
+/// Every named atomic operation, admitted, run and decoded under each
+/// test-kit profile.
+///
+/// The tests above run on the D1 profile. These run each operation once
+/// under [`crate::test_support::Profile::ALL`], so a plan that only fits the
+/// shipped advertisements fails here under the host minimum.
+mod every_profile {
+    use super::*;
+    use crate::models::{UserRole, UserStatus};
+    use crate::test_support::Profile;
+    use chrono::{Duration as ChronoDuration, Utc};
+
+    /// An empty store that enforces `profile` on every batch and named
+    /// operation.
+    async fn kit(profile: Profile) -> LibraryStore {
+        crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store()
+    }
+
+    #[tokio::test]
+    async fn user_operations_run_under_every_profile() {
+        for profile in Profile::ALL {
+            let store = kit(profile).await;
+            let owner = store
+                .create_user(UserRole::Owner, Some("Owner"), None)
+                .await
+                .unwrap();
+            let member = store
+                .create_user(UserRole::Member, Some("Member"), None)
+                .await
+                .unwrap();
+            let promoted = store
+                .set_user_role(member.id, UserRole::Administrator)
+                .await
+                .unwrap();
+            assert_eq!(promoted.role, UserRole::Administrator, "{profile:?}");
+            let disabled = store
+                .set_user_status(member.id, UserStatus::Disabled)
+                .await
+                .unwrap();
+            assert_eq!(disabled.status, UserStatus::Disabled, "{profile:?}");
+            let hash = crate::hash_password(&winner_password()).unwrap();
+            store
+                .set_user_password_hash(member.id, Some(hash.as_str()))
+                .await
+                .unwrap();
+            store.delete_user(member.id).await.unwrap();
+            assert!(
+                store.get_user(member.id).await.unwrap().is_none(),
+                "{profile:?}"
+            );
+            assert!(store.get_user(owner.id).await.unwrap().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn consume_once_operations_run_under_every_profile() {
+        for profile in Profile::ALL {
+            let store = kit(profile).await;
+            let user = store
+                .create_user(UserRole::Member, Some("Invitee"), None)
+                .await
+                .unwrap();
+            let identity = store
+                .ensure_local_portal_identity(user.id, Some("Invitee"))
+                .await
+                .unwrap();
+            let in_five = Utc::now() + ChronoDuration::minutes(5);
+            store
+                .insert_claim_ticket("ticket", Some(identity.id), in_five, "test")
+                .await
+                .unwrap();
+            let hash = crate::hash_password(&winner_password()).unwrap();
+            store
+                .redeem_claim_ticket_to_session(
+                    "ticket",
+                    "session-hash",
+                    Utc::now() + ChronoDuration::hours(12),
+                    None,
+                    Some(hash.as_str()),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let nonce = ["n", "once"].concat();
+            store
+                .insert_oidc_rp_state("state", "corp", "verifier", &nonce, "login", None, in_five)
+                .await
+                .unwrap();
+            let state = store.take_oidc_rp_state("state").await.unwrap();
+            assert_eq!(state.map(|s| s.0).as_deref(), Some("corp"), "{profile:?}");
+
+            store
+                .insert_webauthn_challenge("chal", Some(user.id), "login", "{}", in_five)
+                .await
+                .unwrap();
+            let challenge = store
+                .take_webauthn_challenge("chal", "login")
+                .await
+                .unwrap();
+            assert_eq!(challenge.map(|c| c.0), Some(Some(user.id)), "{profile:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn totp_operations_run_under_every_profile() {
+        let _dek = crate::master_key::master_key_test_read_lock_async().await;
+        crate::master_key::ensure_shared_test_dek();
+        for profile in Profile::ALL {
+            let store = kit(profile).await;
+            let user = store
+                .create_user(UserRole::Member, Some("Totp"), None)
+                .await
+                .unwrap();
+            store_pending_totp(&store, user.id, &sample_totp_secret()).await;
+            store
+                .confirm_totp_enrollment(user.id, &sample_totp_secret())
+                .await
+                .unwrap();
+            assert!(store.get_user(user.id).await.unwrap().unwrap().totp_enabled);
+            store.disable_user_totp(user.id).await.unwrap();
+            assert!(
+                !store.get_user(user.id).await.unwrap().unwrap().totp_enabled,
+                "{profile:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn job_operations_run_under_every_profile() {
+        for profile in Profile::ALL {
+            let store = kit(profile).await;
+            let EnqueueOutcome::Created { id } =
+                store.enqueue_job(scan_spec(None, 32)).await.unwrap()
+            else {
+                panic!("expected a created job under {profile:?}");
+            };
+            let claimed = claim_job(&store, "worker").await;
+            assert_eq!(claimed.id, id, "{profile:?}");
+            store
+                .reserve_job_temp_path(&id, "/tmp/a", 80, 100)
+                .await
+                .unwrap();
+        }
+    }
+
+    /// A claim whose job row has a cell past the host-minimum cell cap is
+    /// refused with the typed limit, as an adapter advertising only the
+    /// minimums refuses it.
+    #[tokio::test]
+    async fn an_oversized_claim_result_is_a_typed_cell_limit_under_the_minimum() {
+        let store = kit(Profile::Minimum).await;
+        let mut spec = scan_spec(None, 32);
+        spec.payload.title = Some("t".repeat(1200));
+        store.enqueue_job(spec).await.unwrap();
+        let err = store
+            .claim_next_job(JobResourceClass::Network, "worker", 60, "claim-wide")
+            .await
+            .unwrap_err();
+        match err {
+            LibraryError::LimitExceeded(limit) => assert_eq!(limit.limit, "maxCellBytes"),
+            other => panic!("expected maxCellBytes, got {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn event_and_acquire_operations_run_under_every_profile() {
+        for profile in Profile::ALL {
+            let store = kit(profile).await;
+            let id = expect_created(
+                persist_outbox_event(&store, outbox_spec("book_acquired", "evt-1", "{}"))
+                    .await
+                    .unwrap(),
+            );
+            store
+                .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "dispatch")
+                .await
+                .unwrap();
+            let delivery = store
+                .claim_next_event_delivery("worker", 60, "claim", &["echo".into()], 4, "")
+                .await
+                .unwrap();
+            assert_eq!(delivery.map(|d| d.event_id), Some(id), "{profile:?}");
+
+            store
+                .upsert_account("audible", "a1", "us", Some("a1"), true, "audible")
+                .await
+                .unwrap();
+            store
+                .upsert_book(&NewBook::minimal("B00001", "a1", "us", "Title"))
+                .await
+                .unwrap();
+            store
+                .set_acquire_status("B00001", "a1", AcquireStatus::Acquired, None, None)
+                .await
+                .unwrap();
+        }
+    }
 }

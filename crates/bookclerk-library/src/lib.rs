@@ -28,13 +28,13 @@ pub mod email;
 pub mod entities;
 mod error;
 mod host_schema;
-#[cfg(any(test, feature = "test-support"))]
 mod in_process_atomic;
 pub mod library_link;
 pub mod master_key;
 pub mod migrations;
 /// Public library DTOs and status enums (`BookRecord`, `AcquireStatus`, prefs) re-exported from this crate.
 mod models;
+mod named_atomic;
 pub mod operator_token;
 pub mod password;
 pub mod proxy_txn;
@@ -88,8 +88,7 @@ pub use host_schema::{
     migrate_host_schema_to_with_batch, require_schema_migrations, schema_state_compatible,
     SchemaApplyOptions, SchemaBatch, MIGRATION_LEASE_TTL, MIGRATION_LEASE_WAIT,
 };
-#[cfg(any(test, feature = "test-support"))]
-pub use in_process_atomic::InProcessSqliteAtomic;
+pub use in_process_atomic::{InProcessSqlite, InProcessSqliteAtomic};
 pub use master_key::{
     configure_master_key, configure_master_key_with, discard_minted_master_key,
     encode_master_key_file, inspect_master_key, install_master_key, master_key_fingerprint,
@@ -129,6 +128,7 @@ pub use models::{
     MAX_QUEUE_WISHERS, NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES,
     QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
 };
+pub use named_atomic::{NamedAtomicBackend, NamedAtomicRunner};
 pub use operator_token::{
     read_or_create_operator_token, resolve_operator_token, rotate_operator_token,
     ResolveOperatorToken,

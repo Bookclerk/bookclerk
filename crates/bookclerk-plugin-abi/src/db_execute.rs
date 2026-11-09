@@ -56,7 +56,12 @@ pub const POSTGRES_MAX_SCHEMA_COLUMNS: u32 = 1_600;
 pub const SQLITE_MAX_PATTERN_BYTES: u32 = 50_000;
 
 /// Host refuses guests that cannot accept at least this many function args.
-pub const HOST_MIN_FUNCTION_ARGS: u32 = 8;
+///
+/// The host's own plans build result rows with `json_object` calls up to
+/// the SQL-v1 portable maximum
+/// ([`crate::SQL_V1_JSON_OBJECT_MAX_ARGS`], D1's physical ceiling), so a
+/// guest below it could not run a job claim or an outbox publish.
+pub const HOST_MIN_FUNCTION_ARGS: u32 = crate::SQL_V1_JSON_OBJECT_MAX_ARGS as u32;
 
 /// Host refuses guests whose schema-column cap is below the library schema.
 ///
@@ -81,8 +86,16 @@ pub const HOST_MIN_STATEMENTS: u32 = 40;
 /// Host refuses guests that do not bound result rows (`0` is unspecified).
 pub const HOST_MIN_RESULT_ROWS: u32 = 1;
 
-/// Host refuses guests that do not bound encoded statement payload bytes.
-pub const HOST_MIN_PAYLOAD_BYTES: u32 = 1024;
+/// Smallest canonical SQL+binds cap the D1 payload proof searches from.
+const PAYLOAD_SEARCH_FLOOR: u32 = 1024;
+
+/// Host refuses guests that bound encoded statement payload bytes below
+/// this, or not at all.
+///
+/// The host's own named plans (job claims, outbox publish and dispatch,
+/// acquire status) are single statements sized for D1's proven cap, so a
+/// guest below it could not run them. The minimum is therefore D1's.
+pub const HOST_MIN_PAYLOAD_BYTES: u32 = D1_MAX_PAYLOAD_BYTES;
 
 /// `?` → `unhex(?)` for D1 BLOB binds.
 const D1_UNHEX_PLACEHOLDER_EXTRA: usize = 7;
@@ -97,9 +110,9 @@ const D1_QUERY_CAP_WRAP_MAX_EXTRA: usize =
 /// advertised sqlite-family bind slot.
 ///
 /// This length-only formula does **not** include proof-directed INTEGER
-/// overflow CASE wraps: a worst-case `1+1+…` payload of
-/// [`HOST_MIN_PAYLOAD_BYTES`] already exceeds [`D1_MAX_SQL_STATEMENT_BYTES`]
-/// after wrapping. Overflow is charged by proven preflight from
+/// overflow CASE wraps: a worst-case `1+1+…` payload of the 1,024-byte
+/// search floor already exceeds [`D1_MAX_SQL_STATEMENT_BYTES`] after
+/// wrapping. Overflow is charged by proven preflight from
 /// `integer_arith_sites` (or a typecheck of literal-only SQL in
 /// [`DbCapabilities::admit_statement`]). Hosts compare the proven bound to
 /// [`DbCapabilities::max_lowered_statement_bytes`], not engine identity.
@@ -176,7 +189,7 @@ fn lowered_statement_preflight(
 /// proves against [`D1_MAX_SQL_STATEMENT_BYTES`].
 const fn proven_d1_max_payload_bytes() -> u32 {
     let physical = D1_MAX_SQL_STATEMENT_BYTES as usize;
-    let mut n = HOST_MIN_PAYLOAD_BYTES as usize;
+    let mut n = PAYLOAD_SEARCH_FLOOR as usize;
     let mut best = n;
     while n <= physical {
         if lowered_statement_upper_bound_len(n) <= physical {
@@ -191,7 +204,7 @@ const fn proven_d1_max_payload_bytes() -> u32 {
 
 /// Canonical SQL+binds cap advertised for D1.
 ///
-/// Largest `n >= `[`HOST_MIN_PAYLOAD_BYTES`] such that
+/// Largest `n` at or above the 1,024-byte search floor such that
 /// [`lowered_statement_upper_bound_len`]`(n) <= `[`D1_MAX_SQL_STATEMENT_BYTES`].
 /// Host admission uses generic [`DbCapabilities::max_payload_bytes`] plus
 /// [`DbCapabilities::max_lowered_statement_bytes`]; it does not name D1.
@@ -199,6 +212,15 @@ pub const D1_MAX_PAYLOAD_BYTES: u32 = proven_d1_max_payload_bytes();
 
 /// Host refuses guests that do not bound JSON bytes of one statement's rows.
 pub const HOST_MIN_RESULT_BYTES: u32 = 4_096;
+
+/// Host refuses guests that bound one encoded request below this, or not at
+/// all.
+///
+/// The host's named plans are one request each: a job claim with its
+/// receipt encodes to about 5 KiB, and a dispatch page of `maxStatements`
+/// delivery inserts to tens of KiB. 64 KiB carries every one of them at the
+/// host-minimum statement and bind caps.
+pub const HOST_MIN_REQUEST_BYTES: u32 = 65_536;
 
 /// Host refuses guests that do not bound one result cell (`0` is unspecified).
 pub const HOST_MIN_CELL_BYTES: u32 = 1_024;
@@ -645,11 +667,11 @@ impl DbCapabilities {
                 self.max_cell_bytes
             ));
         }
-        if self.max_request_bytes < HOST_MIN_RESULT_BYTES
+        if self.max_request_bytes < HOST_MIN_REQUEST_BYTES
             || self.max_request_bytes > MAX_SCALAR_BYTES
         {
             return Some(format!(
-                "database guest maxRequestBytes {} must be between {HOST_MIN_RESULT_BYTES} and {MAX_SCALAR_BYTES}",
+                "database guest maxRequestBytes {} must be between {HOST_MIN_REQUEST_BYTES} and {MAX_SCALAR_BYTES}",
                 self.max_request_bytes
             ));
         }
@@ -857,7 +879,7 @@ impl DbCapabilities {
             max_payload_bytes: HOST_MIN_PAYLOAD_BYTES,
             max_result_bytes: HOST_MIN_RESULT_BYTES,
             max_cell_bytes: HOST_MIN_CELL_BYTES,
-            max_request_bytes: HOST_MIN_RESULT_BYTES,
+            max_request_bytes: HOST_MIN_REQUEST_BYTES,
             max_atomic_result_bytes: HOST_MIN_RESULT_BYTES,
             max_function_args: HOST_MIN_FUNCTION_ARGS,
             max_schema_columns: HOST_MIN_SCHEMA_COLUMNS,
@@ -1012,6 +1034,16 @@ pub fn sql_payload_exceeds(sql: &str, values_json: &str, max_payload_bytes: u32)
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_d1_payload_cap_is_the_largest_payload_the_lowering_bound_proves() {
+        let cap = proven_d1_max_payload_bytes();
+        assert_eq!(cap, D1_MAX_PAYLOAD_BYTES);
+        let physical = D1_MAX_SQL_STATEMENT_BYTES as usize;
+        let cap = cap as usize;
+        assert!(lowered_statement_upper_bound_len(cap) <= physical);
+        assert!(lowered_statement_upper_bound_len(cap + 1) > physical);
+    }
 
     #[test]
     fn host_minimum_meets_the_host_minimums_and_nothing_more() {
