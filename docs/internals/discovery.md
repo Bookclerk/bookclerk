@@ -446,7 +446,7 @@ queue order; Discover personalizes the feed (including wishlist items).
 
 | Shelf | Kind id | Signal |
 | --- | --- | --- |
-| On the wishlist | `requests` | Open shared wishlist items, first on the page (tiny wisher avatars on each card) |
+| On the wishlist | `requests` | Open shared wishlist items, first on the page and in the viewer's own taste order (tiny wisher avatars on each card) |
 | Finish these series | `finish_series` | Incomplete series + next index; series take turns |
 | Pick up where you left off | `keep_listening` | Active / multi-book listening in a series; series take turns |
 | Because you wishlisted {Title} | `wish` (`wish:dune`, …) | Titles the stores found from one of the person's own open wishes (newest three wishes) |
