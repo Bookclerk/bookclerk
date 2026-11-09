@@ -10,6 +10,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 
 use bookclerk_db_testkit::{BindingDatabase, Profile};
+use sea_orm::{ConnectionTrait, DbBackend, Statement};
+
 use bookclerk_plugin_abi::{
     decode_db_capabilities_reply_bytes, decode_execute_result_reply_bytes,
     encoded_execute_request_bytes, DbPlanStatementKind, DbResultSelection, DbValue, ExecuteRequest,
@@ -88,6 +90,18 @@ async fn the_plugin_schema_is_applied_and_queried_under_every_profile() {
         assert_eq!(row.values[0], DbValue::Int64(1));
         assert_eq!(row.values[1], DbValue::Text("first".into()));
         assert_eq!(db.batch_sizes(), vec![1, 1]);
+
+        // The unit behind the binding shows what the plugin wrote.
+        let written = db
+            .connection()
+            .query_one_raw(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name LIKE '%notes'",
+            ))
+            .await
+            .unwrap()
+            .expect("one count row");
+        assert_eq!(written.try_get::<i64>("", "n").unwrap(), 1, "{profile:?}");
     }
 }
 
@@ -341,4 +355,20 @@ fn the_binary_refuses_an_unknown_profile_and_bad_usage() {
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("Usage"));
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bookclerk-db-testkit"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", out.status);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Usage"));
+
+    // Stdin closed before the request line: no binding is served.
+    let out = Command::new(env!("CARGO_BIN_EXE_bookclerk-db-testkit"))
+        .arg("serve")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("stdin closed before the request line"));
 }

@@ -61,6 +61,9 @@ TestDatabaseProfile = Literal["first-party", "d1", "minimum"]
 """One of :data:`TEST_DATABASE_PROFILES`."""
 
 TEST_DATABASE_PROFILES: tuple[TestDatabaseProfile, ...] = ("first-party", "d1", "minimum")
+
+_STOP_TIMEOUT_SECONDS: float = 5.0
+"""How long :meth:`TestDatabase.close` waits for the kit to exit on its own before killing it."""
 """The capability profiles the kit enforces, in the order conformance runs report them."""
 
 
@@ -231,7 +234,7 @@ class TestDatabase:
         if process.stdin is not None:
             process.stdin.close()
         try:
-            await asyncio.wait_for(process.wait(), timeout=5)
+            await asyncio.wait_for(process.wait(), timeout=_STOP_TIMEOUT_SECONDS)
         except TimeoutError:
             process.kill()
             await process.wait()
