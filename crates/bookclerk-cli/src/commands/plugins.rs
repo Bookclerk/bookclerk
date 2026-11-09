@@ -1621,11 +1621,13 @@ fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> an
         .map(|stored| bookclerk_plugin_host::pending_structural(stored, &grant).summary_lines())
         .unwrap_or_default();
 
-    for line in &pending {
-        println!("{line}");
-    }
-    for line in &summary {
-        println!("{line}");
+    // With `--format json` stdout carries only the JSON document (which has
+    // both lists), so the review copy goes to stderr beside the prompt.
+    for line in pending.iter().chain(&summary) {
+        match format {
+            OutputFormat::Text => println!("{line}"),
+            OutputFormat::Json => eprintln!("{line}"),
+        }
     }
 
     if !yes {

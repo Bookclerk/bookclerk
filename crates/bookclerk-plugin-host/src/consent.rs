@@ -23,8 +23,9 @@
 //!
 //! ```text
 //! effective structural = manifest ∩ operator grant ∩ host policy
-//! effective network    = host policy ∩ ((manifest network ∩ approved network)
-//!                        ∪ operator additions) − operator denials
+//! effective network    = host policy ∩ ((manifest network covered by the
+//!                        approved network) ∪ operator additions)
+//!                        − operator denials
 //! ```
 
 use std::collections::BTreeSet;
@@ -431,7 +432,9 @@ pub struct PluginGrant {
     pub network_mode: String,
     /// Approved initial outbound domain patterns (**workerd** allowlist).
     ///
-    /// Effective set: manifest request ∪ operator additions − operator denials.
+    /// Effective set: (manifest request covered by the approval) ∪ operator
+    /// additions − operator denials. On a stored grant this is the approved
+    /// set; a newer manifest can't add to it ([`effective_grant`]).
     pub domains: BTreeSet<String>,
     /// Network destinations requested by the installed manifest (not operator-added).
     #[serde(default)]
@@ -444,7 +447,9 @@ pub struct PluginGrant {
     /// Operator-denied destinations (even if the manifest still lists them).
     #[serde(default)]
     pub operator_denied_domains: BTreeSet<String>,
-    /// Effective raw TCP grants (manifest ∪ operator additions − denials).
+    /// Effective raw TCP grants: (manifest ports covered by the approval) ∪
+    /// operator additions − denials. On a stored grant these are the approved
+    /// grants; a newer manifest can't add to them ([`effective_grant`]).
     #[serde(default)]
     pub tcp: BTreeSet<TcpGrant>,
     /// TCP grants requested by the installed manifest.
@@ -460,7 +465,9 @@ pub struct PluginGrant {
     /// destinations from operator config after this set is applied.
     #[serde(default)]
     pub operator_denied_tcp: BTreeSet<TcpGrant>,
-    /// Effective CIDR grants beyond the public Internet.
+    /// Effective CIDR grants beyond the public Internet. On a stored grant
+    /// these are the approved ranges; a newer manifest can't add to them
+    /// ([`effective_grant`]).
     #[serde(default)]
     pub address_cidrs: BTreeSet<String>,
     /// CIDRs requested by the installed manifest.
@@ -1509,26 +1516,26 @@ pub fn pending_structural(existing: &PluginGrant, requested: &PluginGrant) -> Pe
             .collect(),
     };
     // Network the request asks for that the stored grant neither approved
-    // nor denied: an operator denial is an answer, so it is not pending.
-    let answered_domains: BTreeSet<&String> = existing
-        .domains
-        .iter()
-        .chain(&existing.operator_denied_domains)
-        .collect();
+    // (an approved pattern or range that already allows it counts) nor
+    // denied: an operator denial is an answer, so it is not pending.
     let domains = requested
         .domains
         .iter()
-        .filter(|domain| !answered_domains.contains(domain))
+        .filter(|domain| {
+            !domain_approved(&existing.domains, domain)
+                && !existing.operator_denied_domains.contains(*domain)
+        })
         .cloned()
         .collect();
-    let mut answered_tcp = tcp_pairs(&existing.tcp);
-    answered_tcp.extend(tcp_pairs(&existing.operator_denied_tcp));
-    let tcp = tcp_ports_outside(&requested.tcp, &answered_tcp);
+    let tcp = tcp_ports_where(&requested.tcp, |host, port| {
+        !tcp_port_approved(&existing.tcp, host, port)
+            && !tcp_port_listed(&existing.operator_denied_tcp, host, port)
+    });
     let address_cidrs = requested
         .address_cidrs
         .iter()
         .filter(|cidr| {
-            !existing.address_cidrs.contains(*cidr)
+            !cidr_approved(&existing.address_cidrs, cidr)
                 && !existing.operator_denied_cidrs.contains(*cidr)
         })
         .cloned()
@@ -1554,74 +1561,102 @@ pub fn pending_structural(existing: &PluginGrant, requested: &PluginGrant) -> Pe
     }
 }
 
-/// Flattens TCP grants into the `(host, port)` pairs they allow.
+/// True when the approved fetch pattern `approved` allows every host the
+/// requested pattern `requested` allows.
+///
+/// Patterns are normalized: an exact host, a `*.suffix` wildcard (the
+/// suffix itself and every subdomain, as the egress policy matches), or
+/// [`bookclerk_plugin_manifest::ANY_PUBLIC_HOST`] (every hostname, never an
+/// IP literal). Restricted names such as `localhost` still need a CIDR at
+/// run time under either pattern, so coverage does not change that.
 ///
 /// # Arguments
 ///
-/// * `grants` - TCP grants; a grant with no ports allows nothing.
+/// * `approved` - A pattern the stored grant approved.
+/// * `requested` - A pattern the request asks for.
 ///
 /// # Returns
 ///
-/// One pair per allowed host and port.
-fn tcp_pairs(grants: &BTreeSet<TcpGrant>) -> BTreeSet<(&str, u16)> {
+/// `true` when `requested` is equal to or narrower than `approved`.
+fn domain_pattern_covers(approved: &str, requested: &str) -> bool {
+    use bookclerk_plugin_manifest::ANY_PUBLIC_HOST;
+    if approved == requested {
+        return true;
+    }
+    if requested == ANY_PUBLIC_HOST {
+        return false;
+    }
+    let host = requested.strip_prefix("*.").unwrap_or(requested);
+    if approved == ANY_PUBLIC_HOST {
+        return host.parse::<IpAddr>().is_err();
+    }
+    approved
+        .strip_prefix("*.")
+        .is_some_and(|rest| host == rest || host.ends_with(&format!(".{rest}")))
+}
+
+/// True when some pattern in `approved` covers `requested`
+/// ([`domain_pattern_covers`]).
+fn domain_approved(approved: &BTreeSet<String>, requested: &str) -> bool {
+    approved
+        .iter()
+        .any(|pattern| domain_pattern_covers(pattern, requested))
+}
+
+/// True when an approved TCP grant allows `port` on every host `host` names.
+///
+/// `*` is a fetch grant only and allows no TCP host, as at run time.
+fn tcp_port_approved(approved: &BTreeSet<TcpGrant>, host: &str, port: u16) -> bool {
+    approved.iter().any(|grant| {
+        grant.host != bookclerk_plugin_manifest::ANY_PUBLIC_HOST
+            && grant.ports.contains(&port)
+            && domain_pattern_covers(&grant.host, host)
+    })
+}
+
+/// True when `grants` lists exactly `host` with `port` (operator denials are
+/// recorded as the grants they deny, so they match by spelling).
+fn tcp_port_listed(grants: &BTreeSet<TcpGrant>, host: &str, port: u16) -> bool {
     grants
         .iter()
-        .flat_map(|grant| grant.ports.iter().map(|port| (grant.host.as_str(), *port)))
-        .collect()
+        .any(|grant| grant.host == host && grant.ports.contains(&port))
 }
 
-/// The part of `requested` whose `(host, port)` pairs are not in `answered`.
+/// True when some CIDR in `approved` contains the whole range `requested`.
 ///
-/// Each requested grant keeps its host and the order of its ports, so a
-/// grant fully outside `answered` comes back unchanged.
-///
-/// # Arguments
-///
-/// * `requested` - TCP grants a manifest or owner request asks for.
-/// * `answered` - Pairs already approved (or denied) by the operator.
-///
-/// # Returns
-///
-/// The requested grants narrowed to their unanswered ports; grants left with
-/// no port are dropped.
-fn tcp_ports_outside(
-    requested: &BTreeSet<TcpGrant>,
-    answered: &BTreeSet<(&str, u16)>,
-) -> BTreeSet<TcpGrant> {
-    tcp_ports_where(requested, |pair| !answered.contains(&pair))
+/// A CIDR that does not parse covers nothing and is covered by nothing.
+fn cidr_approved(approved: &BTreeSet<String>, requested: &str) -> bool {
+    if approved.contains(requested) {
+        return true;
+    }
+    let Ok(requested) = bookclerk_plugin_manifest::CidrGrant::parse(requested) else {
+        return false;
+    };
+    approved.iter().any(|raw| {
+        bookclerk_plugin_manifest::CidrGrant::parse(raw).is_ok_and(|range| {
+            range.network.is_ipv4() == requested.network.is_ipv4()
+                && range.prefix <= requested.prefix
+                && range.contains(requested.network)
+        })
+    })
 }
 
-/// The part of `requested` whose `(host, port)` pairs are in `approved`.
+/// Keeps the ports of each grant for which `keep(host, port)` holds.
 ///
-/// # Arguments
-///
-/// * `requested` - TCP grants the current manifest asks for.
-/// * `approved` - Pairs the stored grant approved.
-///
-/// # Returns
-///
-/// The requested grants narrowed to their approved ports; grants left with no
-/// port are dropped, and a fully approved grant comes back unchanged.
-fn tcp_ports_within(
-    requested: &BTreeSet<TcpGrant>,
-    approved: &BTreeSet<(&str, u16)>,
-) -> BTreeSet<TcpGrant> {
-    tcp_ports_where(requested, |pair| approved.contains(&pair))
-}
-
-/// Keeps the ports of each grant whose `(host, port)` pair passes `keep`.
+/// Each grant keeps its host and the order of its ports, so a grant whose
+/// ports all pass comes back unchanged (and hashes the same).
 ///
 /// # Arguments
 ///
 /// * `grants` - TCP grants to filter.
-/// * `keep` - Predicate over one `(host, port)` pair.
+/// * `keep` - Predicate over one host pattern and port.
 ///
 /// # Returns
 ///
 /// The grants with only the kept ports; grants left with no port are dropped.
 fn tcp_ports_where(
     grants: &BTreeSet<TcpGrant>,
-    keep: impl Fn((&str, u16)) -> bool,
+    keep: impl Fn(&str, u16) -> bool,
 ) -> BTreeSet<TcpGrant> {
     grants
         .iter()
@@ -1630,7 +1665,7 @@ fn tcp_ports_where(
                 .ports
                 .iter()
                 .copied()
-                .filter(|port| keep((grant.host.as_str(), *port)))
+                .filter(|port| keep(&grant.host, *port))
                 .collect();
             (!ports.is_empty()).then(|| TcpGrant {
                 host: grant.host.clone(),
@@ -1835,13 +1870,14 @@ fn classified_operator_network(
     };
     let added = existing.domains.difference(manifest).cloned().collect();
     // Legacy grants without explicit denials: do not treat "not yet stored"
-    // manifest hosts as denied — those re-evaluate from the new package.
+    // manifest hosts as denied. They aren't approved either: they stay
+    // pending until the operator answers (`merge_network_domains`).
     let denied = existing.operator_denied_domains.clone();
     (added, denied)
 }
 
-/// Effective outbound domains: (current manifest ∩ approved) ∪ operator
-/// additions − denials.
+/// Effective outbound domains: (current manifest hosts an approved pattern
+/// covers) ∪ operator additions − denials.
 ///
 /// A host the current manifest asks for that the stored grant never approved
 /// stays out until the operator approves it ([`pending_structural`]).
@@ -1852,7 +1888,11 @@ fn merge_network_domains(existing: &PluginGrant, requested: &PluginGrant) -> BTr
     } else {
         &requested.manifest_domains
     };
-    let mut domains: BTreeSet<String> = manifest.intersection(&existing.domains).cloned().collect();
+    let mut domains: BTreeSet<String> = manifest
+        .iter()
+        .filter(|domain| domain_approved(&existing.domains, domain))
+        .cloned()
+        .collect();
     domains.extend(added);
     for d in denied {
         domains.remove(&d);
@@ -1876,7 +1916,8 @@ fn classified_operator_tcp(
         .difference(&requested.manifest_tcp)
         .cloned()
         .collect();
-    // Legacy grants without explicit TCP denials: new package hosts re-evaluate.
+    // Legacy grants without explicit TCP denials deny nothing; new package
+    // hosts still need the approval to cover them (`merge_tcp`).
     let denied = existing.operator_denied_tcp.clone();
     (added, denied)
 }
@@ -1886,14 +1927,16 @@ fn merge_operator_tcp(existing: &PluginGrant, requested: &PluginGrant) -> BTreeS
     classified_operator_tcp(existing, requested).0
 }
 
-/// Effective TCP: (current manifest ∩ approved ports) ∪ operator additions −
-/// operator denials.
+/// Effective TCP: (current manifest ports an approved grant covers) ∪
+/// operator additions − operator denials.
 ///
 /// A host or port the current manifest asks for that the stored grant never
 /// approved stays out until the operator approves it ([`pending_structural`]).
 fn merge_tcp(existing: &PluginGrant, requested: &PluginGrant) -> BTreeSet<TcpGrant> {
     let (added, denied) = classified_operator_tcp(existing, requested);
-    let mut tcp = tcp_ports_within(&requested.manifest_tcp, &tcp_pairs(&existing.tcp));
+    let mut tcp = tcp_ports_where(&requested.manifest_tcp, |host, port| {
+        tcp_port_approved(&existing.tcp, host, port)
+    });
     tcp.extend(added);
     for grant in denied {
         tcp.remove(&grant);
@@ -1917,13 +1960,14 @@ fn classified_operator_cidrs(
         .difference(&requested.manifest_cidrs)
         .cloned()
         .collect();
-    // Legacy grants without explicit CIDR denials: new package CIDRs re-evaluate.
+    // Legacy grants without explicit CIDR denials deny nothing; new package
+    // CIDRs still need the approval to cover them (`merge_cidrs`).
     let denied = existing.operator_denied_cidrs.clone();
     (added, denied)
 }
 
-/// Effective CIDRs: (current manifest ∩ approved) ∪ operator additions −
-/// operator denials.
+/// Effective CIDRs: (current manifest ranges inside an approved range) ∪
+/// operator additions − operator denials.
 ///
 /// A CIDR the current manifest asks for that the stored grant never approved
 /// stays out until the operator approves it ([`pending_structural`]).
@@ -1931,7 +1975,8 @@ fn merge_cidrs(existing: &PluginGrant, requested: &PluginGrant) -> BTreeSet<Stri
     let (added, denied) = classified_operator_cidrs(existing, requested);
     let mut cidrs: BTreeSet<String> = requested
         .manifest_cidrs
-        .intersection(&existing.address_cidrs)
+        .iter()
+        .filter(|cidr| cidr_approved(&existing.address_cidrs, cidr))
         .cloned()
         .collect();
     cidrs.extend(added);
@@ -4997,6 +5042,74 @@ reason = "  App API contract.  "
         assert!(!effective_grant(&partial, &after)
             .domains
             .contains("cdn.store.example"));
+    }
+
+    #[test]
+    fn narrowing_a_wildcard_or_range_on_upgrade_keeps_access() {
+        let before = network_request(
+            &["*.store.example"],
+            &[("*.store.example", &[443])],
+            &["10.0.0.0/8"],
+        );
+        let stored = approved_for(&before);
+        let after = network_request(
+            &["api.store.example", "*.cdn.store.example"],
+            &[("db.store.example", &[443])],
+            &["10.1.0.0/16"],
+        );
+
+        assert!(
+            pending_structural(&stored, &after).is_empty(),
+            "{:?}",
+            pending_structural(&stored, &after)
+        );
+        let effective = effective_grant(&stored, &after);
+        assert!(effective.domains.contains("api.store.example"));
+        assert!(effective.domains.contains("*.cdn.store.example"));
+        assert!(effective
+            .egress_policy()
+            .allows_tcp("db.store.example", 443));
+        assert!(effective.address_cidrs.contains("10.1.0.0/16"));
+
+        // `*` covers any hostname pattern, but not raw TCP, and a wildcard
+        // does not cover a sibling or a wider pattern.
+        let any = approved_for(&network_request(
+            &[bookclerk_plugin_manifest::ANY_PUBLIC_HOST],
+            &[],
+            &[],
+        ));
+        let pending = pending_structural(
+            &any,
+            &network_request(&["cdn.example"], &[("db.example", &[5432])], &[]),
+        );
+        assert!(pending.domains.is_empty());
+        assert_eq!(pending.tcp.len(), 1);
+        assert!(domain_pattern_covers("*.store.example", "store.example"));
+        assert!(!domain_pattern_covers("*.store.example", "other.example"));
+        assert!(!domain_pattern_covers(
+            "api.store.example",
+            "*.store.example"
+        ));
+        assert!(!domain_pattern_covers(
+            "*.store.example",
+            bookclerk_plugin_manifest::ANY_PUBLIC_HOST
+        ));
+        assert!(!domain_pattern_covers(
+            bookclerk_plugin_manifest::ANY_PUBLIC_HOST,
+            "10.0.0.1"
+        ));
+        assert!(!cidr_approved(
+            &["10.1.0.0/16".to_string()].into(),
+            "10.0.0.0/8"
+        ));
+        assert!(!cidr_approved(
+            &["10.0.0.0/8".to_string()].into(),
+            "fd00::/8"
+        ));
+        assert!(!cidr_approved(
+            &["not-a-cidr".to_string()].into(),
+            "10.0.0.0/8"
+        ));
     }
 
     #[test]

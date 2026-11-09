@@ -137,6 +137,27 @@ function UserAgentGrant({
   );
 }
 
+/**
+ * Adds `extra` TCP grants to `base`, folding ports into an entry for the same
+ * host. The server compares whole grants, so a manifest's `db:[5432,6432]`
+ * must go back as one grant, not as `db:[5432]` plus `db:[6432]`.
+ */
+function mergeTcpGrants(
+  base: { host: string; ports: number[] }[],
+  extra: { host: string; ports: number[] }[],
+): { host: string; ports: number[] }[] {
+  const merged = base.map((grant) => ({ host: grant.host, ports: [...grant.ports] }));
+  for (const grant of extra) {
+    const same = merged.find((item) => item.host.toLowerCase() === grant.host.toLowerCase());
+    if (same) {
+      same.ports = [...new Set([...same.ports, ...grant.ports])].sort((a, b) => a - b);
+    } else {
+      merged.push({ host: grant.host, ports: [...grant.ports] });
+    }
+  }
+  return merged;
+}
+
 function initialList(requested: string[], existing?: string[]): string[] {
   if (existing && existing.length > 0) return uniqueValues(existing);
   if (existing) return [];
@@ -286,10 +307,12 @@ export function PluginConsentDialog({
         ...(pending?.domains ?? []),
       ]),
     );
-    setTcp([
-      ...((existing?.tcp && existing.tcp.length > 0 ? existing.tcp : request.tcp) ?? []),
-      ...(pending?.tcp ?? []),
-    ]);
+    setTcp(
+      mergeTcpGrants(
+        (existing?.tcp && existing.tcp.length > 0 ? existing.tcp : request.tcp) ?? [],
+        pending?.tcp ?? [],
+      ),
+    );
     setAddressCidrs(
       uniqueValues([
         ...initialList(request.addressCidrs ?? [], existing?.addressCidrs),

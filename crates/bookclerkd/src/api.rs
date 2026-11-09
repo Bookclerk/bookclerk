@@ -3457,18 +3457,19 @@ async fn post_plugin_consent(
         PluginRuntimeKind::Workerd => "workerd",
     }
     .to_string();
+    // An approval can leave a structural capability unticked; it stays
+    // pending, so the answer says so instead of claiming coverage.
+    let pending = pending_structural(&approved, &request);
     Ok(Json(PluginConsentResponse {
         plugin_id: plugin.alias().to_string(),
         plugin_key: plugin.plugin_key().canonical().to_string(),
         provenance: plugin.identity.provenance.to_string(),
         runtime,
         request: PluginGrantView::from_grant(&request),
-        covered: true,
+        covered: pending.is_empty(),
         summary,
         existing: Some(PluginGrantView::from_grant(&approved)),
-        pending: Some(PluginConsentPending::from(&pending_structural(
-            &approved, &request,
-        ))),
+        pending: Some(PluginConsentPending::from(&pending)),
         brand,
         limits,
         host_user_agent: bookclerk_plugin_manifest::host_user_agent(),

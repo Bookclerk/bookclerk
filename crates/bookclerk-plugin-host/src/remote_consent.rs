@@ -121,8 +121,10 @@ pub fn remote_request_within(reviewed: &PluginGrant, requested: &PluginGrant) ->
 ///
 /// The same lines (and header) the local consent flow prints for a widened
 /// plugin ([`crate::PendingStructural::summary_lines`]), plus network turned
-/// on and larger budgets, which only an owner request can change. Empty when
-/// [`remote_request_within`] holds.
+/// on and larger budgets, which only an owner request can change. Network
+/// destinations are compared exactly as [`remote_request_within`] compares
+/// them (whole TCP grants, exact patterns and ranges), so the lines are
+/// empty exactly when that holds.
 ///
 /// # Arguments
 ///
@@ -141,7 +143,21 @@ pub fn remote_request_changes(reviewed: &PluginGrant, requested: &PluginGrant) -
     baseline.operator_denied_tcp.clear();
     baseline.operator_denied_cidrs.clear();
     baseline.operator_allow_undeclared_public_redirects = None;
-    let mut lines = crate::consent::pending_structural(&baseline, requested).summary_lines();
+    let mut pending = crate::consent::pending_structural(&baseline, requested);
+    // The gate compares destinations exactly; so does its diff, or a
+    // regrouped TCP grant would need reapproval with nothing listed.
+    pending.domains = requested
+        .domains
+        .difference(&reviewed.domains)
+        .cloned()
+        .collect();
+    pending.tcp = requested.tcp.difference(&reviewed.tcp).cloned().collect();
+    pending.address_cidrs = requested
+        .address_cidrs
+        .difference(&reviewed.address_cidrs)
+        .cloned()
+        .collect();
+    let mut lines = pending.summary_lines();
     let mut extra = Vec::new();
     if outbound(&requested.network_mode) && !outbound(&reviewed.network_mode) {
         extra.push("  network: outbound (reviewed with network denied)".to_string());
@@ -760,7 +776,7 @@ mod tests {
         for expected in [
             "  bindings: plugin_kv",
             "  fetch hosts: any public website (*)",
-            "  raw TCP connect: db.store.example:[6432]",
+            "  raw TCP connect: db.store.example:[5432,6432]",
             "  resource budgets: larger than reviewed",
         ] {
             assert!(lines.iter().any(|l| l == expected), "{expected}: {lines:?}");
