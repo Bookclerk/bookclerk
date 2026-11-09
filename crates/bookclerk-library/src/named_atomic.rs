@@ -66,12 +66,6 @@ impl<R> NamedAtomicBackend<R> {
     pub fn new(runner: R) -> Self {
         Self { runner }
     }
-
-    /// The runner under this backend.
-    #[must_use]
-    pub fn runner(&self) -> &R {
-        &self.runner
-    }
 }
 
 impl<R: NamedAtomicRunner> NamedAtomicBackend<R> {

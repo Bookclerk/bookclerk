@@ -115,12 +115,13 @@ impl LibraryStore {
     /// Pages books whose uuid is in `uuids`, then applies account and status.
     ///
     /// `uuids` is capped at [`BOOK_PAGE_MAX_LIMIT`] (the search-hit cap).
-    /// Lists longer than one `IN` list ([`BOOK_PAGE_CHUNK`] uuids, fewer
-    /// when the adapter's `maxPayloadBytes` or `maxBinds` holds fewer) are
-    /// ordered from narrow `uuid, title` reads, then only the requested page
-    /// is loaded. Shorter lists sort and page in SQL, in pieces that shrink
-    /// when a result would exceed the guest byte cap. An empty uuid list is an empty page. Two stored uuids that differ
-    /// only by ASCII case are different books and both hydrate.
+    /// Lists longer than one `IN` list (64 uuids, fewer when the adapter's
+    /// `maxPayloadBytes` or `maxBinds` holds fewer) are ordered from narrow
+    /// `uuid, title` reads, then only the requested page is loaded. Shorter
+    /// lists sort and page in SQL, in pieces that shrink when a result would
+    /// exceed the guest byte cap. An empty uuid list is an empty page. Two
+    /// stored uuids that differ only by ASCII case are different books and
+    /// both hydrate.
     ///
     /// # Errors
     ///
@@ -325,12 +326,11 @@ impl LibraryStore {
             let reply = loop {
                 let slice = &uuids[start..start + take];
                 match self.query_book_keys(slice, account_id, status).await {
-                    Ok(reply) => break reply,
                     Err(err) if is_result_too_large(&err) && take > 1 => {
                         take /= 2;
                         width = take;
                     }
-                    Err(err) => return Err(err),
+                    other => break other?,
                 }
             };
             for key in keys_from_reply(&reply)? {

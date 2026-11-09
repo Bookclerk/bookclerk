@@ -108,10 +108,10 @@ pub fn rows_over_result_cap(
         .map(|i| {
             let key = format!("{prefix}{i:05}");
             let json = wide_json(&key, per_row);
+            let len = json.len();
             assert!(
-                json.len() <= cell_cap,
-                "row {key} is {} bytes, over the {cell_cap}-byte cell cap",
-                json.len()
+                len <= cell_cap,
+                "row {key} is {len} bytes, over the {cell_cap}-byte cell cap"
             );
             (key, json)
         })

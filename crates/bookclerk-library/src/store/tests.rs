@@ -1797,6 +1797,29 @@ fn acquire_spec(title: Option<&str>, account: Option<&str>, max_pending: i64) ->
 }
 
 #[tokio::test]
+async fn a_delayed_job_keeps_its_run_after_through_the_named_operation() {
+    let store = kit_store().await;
+    let later = chrono::Utc::now() + chrono::Duration::hours(1);
+    let spec = EnqueueJobSpec {
+        run_after: Some(later),
+        ..scan_spec(None, 32)
+    };
+    let EnqueueOutcome::Created { id } = store.enqueue_job(spec).await.unwrap() else {
+        panic!("expected a created job");
+    };
+    let job = store.get_job(&id).await.unwrap().expect("job row");
+    assert_eq!(job.run_after.timestamp(), later.timestamp());
+    let page = store
+        .list_job_claim_candidates(JobResourceClass::Network, None, 8)
+        .await
+        .unwrap();
+    assert!(
+        page.jobs.iter().all(|c| c.id != id),
+        "a job due in an hour is not a claim candidate yet"
+    );
+}
+
+#[tokio::test]
 async fn enqueue_dedupes_active_scan_and_acquire() {
     let store = kit_store().await;
     let first = store.enqueue_job(scan_spec(None, 32)).await.unwrap();

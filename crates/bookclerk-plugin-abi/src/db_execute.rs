@@ -110,9 +110,9 @@ const D1_QUERY_CAP_WRAP_MAX_EXTRA: usize =
 /// advertised sqlite-family bind slot.
 ///
 /// This length-only formula does **not** include proof-directed INTEGER
-/// overflow CASE wraps: a worst-case `1+1+…` payload of
-/// [`PAYLOAD_SEARCH_FLOOR`] already exceeds [`D1_MAX_SQL_STATEMENT_BYTES`]
-/// after wrapping. Overflow is charged by proven preflight from
+/// overflow CASE wraps: a worst-case `1+1+…` payload of the 1,024-byte
+/// search floor already exceeds [`D1_MAX_SQL_STATEMENT_BYTES`] after
+/// wrapping. Overflow is charged by proven preflight from
 /// `integer_arith_sites` (or a typecheck of literal-only SQL in
 /// [`DbCapabilities::admit_statement`]). Hosts compare the proven bound to
 /// [`DbCapabilities::max_lowered_statement_bytes`], not engine identity.
@@ -204,7 +204,7 @@ const fn proven_d1_max_payload_bytes() -> u32 {
 
 /// Canonical SQL+binds cap advertised for D1.
 ///
-/// Largest `n >= `[`PAYLOAD_SEARCH_FLOOR`] such that
+/// Largest `n` at or above the 1,024-byte search floor such that
 /// [`lowered_statement_upper_bound_len`]`(n) <= `[`D1_MAX_SQL_STATEMENT_BYTES`].
 /// Host admission uses generic [`DbCapabilities::max_payload_bytes`] plus
 /// [`DbCapabilities::max_lowered_statement_bytes`]; it does not name D1.
@@ -1034,6 +1034,16 @@ pub fn sql_payload_exceeds(sql: &str, values_json: &str, max_payload_bytes: u32)
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_d1_payload_cap_is_the_largest_payload_the_lowering_bound_proves() {
+        let cap = proven_d1_max_payload_bytes();
+        assert_eq!(cap, D1_MAX_PAYLOAD_BYTES);
+        let physical = D1_MAX_SQL_STATEMENT_BYTES as usize;
+        let cap = cap as usize;
+        assert!(lowered_statement_upper_bound_len(cap) <= physical);
+        assert!(lowered_statement_upper_bound_len(cap + 1) > physical);
+    }
 
     #[test]
     fn host_minimum_meets_the_host_minimums_and_nothing_more() {

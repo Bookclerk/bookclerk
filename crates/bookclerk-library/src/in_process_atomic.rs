@@ -22,14 +22,6 @@ pub struct InProcessSqlite {
     db: DatabaseConnection,
 }
 
-impl InProcessSqlite {
-    /// The connection the plans run on.
-    #[must_use]
-    pub fn connection(&self) -> &DatabaseConnection {
-        &self.db
-    }
-}
-
 #[async_trait]
 impl NamedAtomicRunner for InProcessSqlite {
     async fn run_compiled(

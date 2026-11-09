@@ -497,6 +497,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn guest_errors_map_to_the_library_errors_the_host_reports() {
+        let limit = LimitExceeded::new("maxResultBytes", 4096, 5000);
+        assert!(matches!(
+            from_guest_error(PluginError::limit_exceeded(limit.clone())),
+            LibraryError::LimitExceeded(got) if got == limit
+        ));
+        for code in [
+            PluginErrorCode::Unavailable,
+            PluginErrorCode::Cancelled,
+            PluginErrorCode::DeadlineExceeded,
+        ] {
+            assert!(
+                matches!(
+                    from_guest_error(PluginError::new(code, "maybe applied")),
+                    LibraryError::Unavailable(_)
+                ),
+                "{code:?} is an ambiguous outcome"
+            );
+        }
+        for code in [PluginErrorCode::Conflict, PluginErrorCode::InvalidParams] {
+            assert!(
+                matches!(
+                    from_guest_error(PluginError::new(code, "refused")),
+                    LibraryError::Other(_)
+                ),
+                "{code:?} is an operation failure"
+            );
+        }
+    }
+
+    #[test]
     fn admission_errors_map_to_the_guest_error_codes() {
         let limit = LimitExceeded::new("maxStatements", 8, 9);
         let err = to_plugin_error(LibraryError::LimitExceeded(limit.clone()));
