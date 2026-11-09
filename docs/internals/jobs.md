@@ -30,8 +30,9 @@ the catalog heartbeat) and continues when either undispatched remain or
 paged 200, restricted to the retention window — an unchanged catalog with no
 missing pairs does a bounded empty `SELECT` and zero dispatch writes. The
 subscriber snapshot an event's first dispatch freezes (so its pages resume
-unchanged after a crash) covers only that dispatch; a late-join adds
-deliveries for the subscribers it finds now. D1
+unchanged after a crash, and a retry that sends the same list replays their
+receipts) covers only that dispatch; a late-join adds deliveries for the
+subscribers it finds now. D1
 dispatch receipts are per pair (`dispatch-{event_id}-{plugin_id}` /
 `reconcile-{event_id}-{plugin_id}`). Each VPS claims only PluginKeys loaded on
 that process **and** only events its own node catalog matches (type, schema

@@ -38,6 +38,29 @@ const BOOK_PAGE_CHUNK: usize = 64;
 /// been cut off and is retried with fewer hits.
 const BOOK_KEY_READ_ROWS: usize = 500;
 
+#[cfg(test)]
+thread_local! {
+    /// Test override of [`BOOK_KEY_READ_ROWS`], so paging past one key read
+    /// does not need hundreds of seeded rows.
+    static KEY_READ_ROWS_OVERRIDE: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Overrides the key-read row limit on this thread (library tests only).
+#[cfg(test)]
+pub(crate) fn set_key_read_rows_for_test(rows: Option<usize>) {
+    KEY_READ_ROWS_OVERRIDE.with(|c| c.set(rows));
+}
+
+/// Row limit of one key read: [`BOOK_KEY_READ_ROWS`], or a test override.
+fn key_read_rows() -> usize {
+    #[cfg(test)]
+    if let Some(rows) = KEY_READ_ROWS_OVERRIDE.with(std::cell::Cell::get) {
+        return rows;
+    }
+    BOOK_KEY_READ_ROWS
+}
+
 /// `books` columns in [`book_from_row`] order.
 ///
 /// Named so a later column added at the end of the table cannot shift this
@@ -330,8 +353,8 @@ impl LibraryStore {
     /// per `IN` list, shrinking the list when the adapter finds a result too
     /// big (an adapter at the host-minimum row budget answers one row per
     /// read) or a read fills [`BOOK_KEY_READ_ROWS`] and may have been cut off.
-    /// A single hit that still does not fit is paged through the full-row
-    /// read, which splits on result caps.
+    /// A single hit that still does not fit is paged by its keys alone (see
+    /// [`Self::page_hit_keys`]).
     ///
     /// The same stored uuid is kept once when two hit chunks both match it.
     async fn collect_book_keys(
@@ -354,7 +377,7 @@ impl LibraryStore {
                     Err(err) => return Err(err),
                     Ok(reply) => {
                         let batch = keys_from_reply(&reply)?;
-                        if batch.len() < BOOK_KEY_READ_ROWS {
+                        if batch.len() < key_read_rows() {
                             break batch;
                         }
                         // A full read may have stopped at the row limit.
@@ -367,23 +390,8 @@ impl LibraryStore {
                     continue;
                 }
                 // One hit matches more stored uuids than one read returns:
-                // page through that hit's rows instead.
-                break self
-                    .read_book_rows(
-                        slice,
-                        UuidMatch::Folded,
-                        account_id,
-                        status,
-                        BOOK_PAGE_MAX_LIMIT,
-                        0,
-                    )
-                    .await?
-                    .into_iter()
-                    .map(|book| BookKey {
-                        uuid: book.uuid,
-                        title: book.title,
-                    })
-                    .collect();
+                // page through that hit's keys instead.
+                break self.page_hit_keys(&slice[0], account_id, status).await?;
             };
             for key in batch {
                 if seen.insert(key.uuid.clone()) {
@@ -395,6 +403,63 @@ impl LibraryStore {
         Ok(keys)
     }
 
+    /// Every `uuid, title` key whose folded uuid matches `hit`, read in
+    /// `uuid` order with a keyset cursor.
+    ///
+    /// Used when one search hit matches more stored uuids than a single read
+    /// returns. Each read asks for [`BOOK_KEY_READ_ROWS`] rows and halves the
+    /// row count when the adapter reports a result cap, so only narrow key
+    /// columns are read and no row outside the requested page is hydrated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Other`] when a read fails, or when even a
+    /// one-row read exceeds the adapter's result caps.
+    async fn page_hit_keys(
+        &self,
+        hit: &str,
+        account_id: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<Vec<BookKey>> {
+        let mut keys = Vec::new();
+        let mut after: Option<String> = None;
+        let mut rows = key_read_rows();
+        loop {
+            let mut binds = Binds { next: 0 };
+            let mut where_clause = where_sql(
+                &mut binds,
+                1,
+                UuidMatch::Folded,
+                account_id.is_some(),
+                status.is_some(),
+            );
+            let mut values = filter_values(&[hit.to_string()], true, account_id, status);
+            if let Some(cursor) = &after {
+                where_clause.push_str(&format!(" AND uuid > {}", binds.next()));
+                values.push(DbValue::Text(cursor.clone()));
+            }
+            let sql =
+                format!("SELECT uuid, title FROM books{where_clause} ORDER BY uuid LIMIT {rows}");
+            let cap = u32::try_from(rows).unwrap_or(u32::MAX);
+            let batch = match self
+                .execute_reads(vec![select_stmt(&sql, values, cap)])
+                .await
+            {
+                Err(err) if is_result_too_large(&err) && rows > 1 => {
+                    rows /= 2;
+                    continue;
+                }
+                other => keys_from_reply(&other?)?,
+            };
+            let full = batch.len() >= rows;
+            after = batch.last().map(|key| key.uuid.clone());
+            keys.extend(batch);
+            if !full {
+                return Ok(keys);
+            }
+        }
+    }
+
     /// One narrow `uuid, title` read for `uuids`.
     async fn query_book_keys(
         &self,
@@ -404,7 +469,7 @@ impl LibraryStore {
     ) -> Result<bookclerk_plugin_abi::ExecuteReply> {
         let sql = key_sql(uuids.len(), account_id.is_some(), status.is_some());
         let values = filter_values(uuids, true, account_id, status);
-        let cap = u32::try_from(BOOK_KEY_READ_ROWS).unwrap_or(u32::MAX);
+        let cap = u32::try_from(key_read_rows()).unwrap_or(u32::MAX);
         self.execute_reads(vec![select_stmt(&sql, values, cap)])
             .await
     }
@@ -623,7 +688,8 @@ fn key_sql(uuid_count: usize, has_account: bool, has_status: bool) -> String {
         has_account,
         has_status,
     );
-    format!("SELECT uuid, title FROM books{page_where} LIMIT {BOOK_KEY_READ_ROWS}")
+    let rows = key_read_rows();
+    format!("SELECT uuid, title FROM books{page_where} LIMIT {rows}")
 }
 
 /// `WHERE` fragment, including the leading space, or empty when unrestricted.

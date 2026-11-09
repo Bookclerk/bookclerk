@@ -328,13 +328,22 @@ pub(crate) fn dispatch_chunk_override() -> Option<usize> {
 
 /// Operation id of one dispatch page.
 ///
-/// A page of an event's first dispatch is `{operation_id}:p{page}`: the
-/// frozen snapshot makes a resumed page send the same subscribers, so its
-/// receipt replays. After the event is dispatched, the subscribers come from
-/// the caller and may differ between a retry and the original call, so the
-/// page is named after its contents (`{operation_id}:d{digest}`): a retry
-/// with the same subscribers replays, and one with different subscribers is
-/// a new operation instead of an idempotency conflict.
+/// A page that sends the event's frozen snapshot is `{operation_id}:p{page}`:
+/// the snapshot makes a resumed page, or a retry of a first dispatch whose
+/// reply was lost, send the same subscribers, so its receipt replays. Any
+/// other list comes from a later caller and may differ between a retry and
+/// the original call, so the page is named after its contents and whether it
+/// marks the event dispatched (`{operation_id}:d{digest}`): a retry with the
+/// same page replays, and a different page is a new operation instead of an
+/// idempotency conflict.
+///
+/// # Arguments
+///
+/// * `operation_id` - The caller's operation id for the whole dispatch.
+/// * `page` - Zero-based page index within the dispatch.
+/// * `from_snapshot` - True when the dispatch sends the frozen snapshot.
+/// * `subscribers` - The subscribers this page sends.
+/// * `last` - True when this page marks the event dispatched.
 ///
 /// # Errors
 ///
@@ -342,13 +351,14 @@ pub(crate) fn dispatch_chunk_override() -> Option<usize> {
 fn dispatch_page_operation_id(
     operation_id: &str,
     page: usize,
-    first_dispatch: bool,
+    from_snapshot: bool,
     subscribers: &[EventSubscriber],
+    last: bool,
 ) -> Result<String> {
-    if first_dispatch {
+    if from_snapshot {
         return Ok(format!("{operation_id}:p{page}"));
     }
-    let json = serde_json::to_string(subscribers)
+    let json = serde_json::to_string(&(subscribers, last))
         .map_err(|e| LibraryError::Other(anyhow!("dispatch page: {e}")))?;
     let digest = crate::hash_token(&json);
     Ok(format!("{operation_id}:d{}", &digest[..16]))
@@ -440,12 +450,19 @@ impl LibraryStore {
             // for subscribers that joined since (catalog reconciliation), so
             // it takes the subscribers it was given; `INSERT OR IGNORE`
             // keeps the rows that exist.
-            let first_dispatch = row.dispatch_state == STATE_PENDING;
-            let snapshot = if first_dispatch {
-                self.load_or_init_dispatch_snapshot(row, subscribers)
-                    .await?
+            let (snapshot, from_snapshot) = if row.dispatch_state == STATE_PENDING {
+                let snapshot = self
+                    .load_or_init_dispatch_snapshot(row, subscribers)
+                    .await?;
+                (snapshot, true)
             } else {
-                subscribers.to_vec()
+                // A retry of the first dispatch (its reply lost after the
+                // final page) sends the frozen list again and replays its
+                // receipts; any other list is a later reconciliation.
+                let frozen = row.dispatch_snapshot_json.trim();
+                let same =
+                    !frozen.is_empty() && parse_dispatch_snapshot(event_id, frozen)? == subscribers;
+                (subscribers.to_vec(), same)
             };
             let chunk = self.dispatch_chunk_size().max(1);
             if snapshot.is_empty() {
@@ -462,8 +479,9 @@ impl LibraryStore {
                 let op = dispatch_page_operation_id(
                     operation_id,
                     page,
-                    first_dispatch,
+                    from_snapshot,
                     &snapshot[start..end],
+                    last,
                 )?;
                 total += atomic
                     .dispatch_event_deliveries(event_id, &snapshot[start..end], &op, last)

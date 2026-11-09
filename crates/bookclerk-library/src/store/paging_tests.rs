@@ -194,30 +194,10 @@ async fn uuid_batches_are_sized_on_the_longest_uuids() {
 #[tokio::test]
 async fn long_case_variants_of_one_hit_all_hydrate() {
     let base = "v".repeat(200);
-    let variants: Vec<String> = (0..8)
-        .map(|i| {
-            base.char_indices()
-                .map(|(at, c)| {
-                    if at < 8 && (i >> at) & 1 == 1 {
-                        c.to_ascii_uppercase()
-                    } else {
-                        c
-                    }
-                })
-                .collect()
-        })
-        .collect();
+    let variants = case_variants(&base, 8);
     for profile in Profile::ALL {
         let store = kit(profile).await;
-        store
-            .upsert_account("audible", "acct-v", "us", None, false, "audible")
-            .await
-            .unwrap();
-        for (i, uuid) in variants.iter().enumerate() {
-            let mut book = NewBook::minimal(format!("V{i:05}"), "acct-v", "us", format!("V {i}"));
-            book.uuid = Some(uuid.clone());
-            store.upsert_book(&book).await.unwrap();
-        }
+        seed_variants(&store, "acct-v", &variants, |i| format!("V {i}")).await;
         let mut requested: Vec<String> = (0..64).map(|i| format!("s{i}")).collect();
         requested.push(base.clone());
         let page = store
@@ -231,6 +211,103 @@ async fn long_case_variants_of_one_hit_all_hydrate() {
         assert_eq!(page.total, variants.len(), "{}", profile.name());
         assert_eq!(found, expected, "{}", profile.name());
     }
+}
+
+/// `count` distinct ASCII case variants of `base`, which must have at
+/// least `log2(count)` letters.
+fn case_variants(base: &str, count: usize) -> Vec<String> {
+    (0..count)
+        .map(|i| {
+            base.char_indices()
+                .map(|(at, c)| {
+                    if i.checked_shr(u32::try_from(at).unwrap()).unwrap_or(0) & 1 == 1 {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Stores one book per uuid in `uuids` under `account`, titled by `title`.
+async fn seed_variants(
+    store: &LibraryStore,
+    account: &str,
+    uuids: &[String],
+    title: impl Fn(usize) -> String,
+) {
+    store
+        .upsert_account("audible", account, "us", None, false, "audible")
+        .await
+        .unwrap();
+    for (i, uuid) in uuids.iter().enumerate() {
+        let mut book = NewBook::minimal(format!("{account}-{i:05}"), account, "us", title(i));
+        book.uuid = Some(uuid.clone());
+        store.upsert_book(&book).await.unwrap();
+    }
+}
+
+/// A long hit list whose one hit matches a book outside the requested page
+/// with a cell larger than the Minimum profile's `maxCellBytes`: only keys
+/// are read for unrequested rows, so the page still loads.
+#[tokio::test]
+async fn an_oversized_unrequested_case_variant_does_not_fail_the_page() {
+    let base = "o".repeat(40);
+    let variants = case_variants(&base, 2);
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        seed_variants(&store, "acct-o", &variants, |i| ["A", "B"][i].to_string()).await;
+        let mut wide = NewBook::minimal("acct-o-00001", "acct-o", "us", "B");
+        wide.uuid = Some(variants[1].clone());
+        wide.categories = Some("c".repeat(2_000));
+        store.upsert_book(&wide).await.unwrap();
+        let mut requested: Vec<String> = (0..64).map(|i| format!("s{i}")).collect();
+        requested.push(base.clone());
+        let page = store
+            .list_books_by_uuid_page(&requested, None, None, 1, 0)
+            .await
+            .unwrap();
+        assert_eq!(page.total, 2, "{}", profile.name());
+        assert_eq!(
+            uuids(&page.books),
+            [variants[0].clone()],
+            "{}",
+            profile.name()
+        );
+    }
+}
+
+/// One hit that matches more stored uuids than a single key read returns
+/// is paged by key until exhausted, so the total counts every match. The
+/// key-read limit is lowered to four so nine variants cross it.
+#[tokio::test]
+async fn more_case_variants_than_one_key_read_all_count() {
+    let base = "m".repeat(12);
+    let variants = case_variants(&base, 9);
+    super::books_page::set_key_read_rows_for_test(Some(4));
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        seed_variants(&store, "acct-m", &variants, |i| format!("M {i:05}")).await;
+        let mut requested: Vec<String> = (0..64).map(|i| format!("s{i}")).collect();
+        requested.push(base.clone());
+        let page = store
+            .list_books_by_uuid_page(&requested, None, None, BOOK_PAGE_MAX_LIMIT, 1)
+            .await
+            .unwrap();
+        let found = uuids(&page.books);
+        let distinct: std::collections::HashSet<&String> = found.iter().collect();
+        assert_eq!(page.total, variants.len(), "{}", profile.name());
+        assert_eq!(found.len(), variants.len() - 1, "{}", profile.name());
+        assert_eq!(distinct.len(), found.len(), "{}", profile.name());
+        assert!(
+            found.iter().all(|uuid| variants.contains(uuid)),
+            "{}",
+            profile.name()
+        );
+    }
+    super::books_page::set_key_read_rows_for_test(None);
 }
 
 /// A scan job of `account` at `priority`; scans of different accounts never

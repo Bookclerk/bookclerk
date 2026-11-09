@@ -3629,14 +3629,19 @@ async fn a_dispatched_event_retried_with_new_subscribers_adds_them() {
         .unwrap(),
     );
     let first = [EventSubscriber::plugin("echo")];
-    store
+    let created = store
         .dispatch_event_deliveries(&id, &first, "op-reused")
         .await
         .unwrap();
-    store
+    assert_eq!(created, 1);
+    let replayed = store
         .dispatch_event_deliveries(&id, &first, "op-reused")
         .await
         .unwrap();
+    assert_eq!(
+        replayed, created,
+        "a retry with the frozen subscribers replays the original receipt"
+    );
     let grown = [
         EventSubscriber::plugin("echo"),
         EventSubscriber::plugin("late"),
