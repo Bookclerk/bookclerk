@@ -364,7 +364,7 @@ impl ChirpSource {
     /// aliased GraphQL request instead of one per card.
     ///
     /// Titles whose Chirp product id is known resolve first, without a
-    /// search; the rest are looked up by title until [`RESOLVE_BUDGET`] runs
+    /// search; the rest are looked up by title until the 5 s `RESOLVE_BUDGET` runs
     /// out, and a title not tried by then answers `None`, which the host
     /// does not take as an answer.
     ///
