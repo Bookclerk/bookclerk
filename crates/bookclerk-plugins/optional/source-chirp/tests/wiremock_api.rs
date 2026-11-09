@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 
 use bookclerk_plugin_source_chirp::{
     fetch_title_materials, guest_fetch_title, guest_login, guest_scan, ChirpAuthFile, ChirpClient,
+    ChirpSource,
 };
-use bookclerk_storefront::LoginOptions;
+use bookclerk_storefront::{CatalogSearchOpts, LoginOptions, DEFAULT_CATALOG_SEARCH_LIMIT};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -243,4 +244,46 @@ async fn guest_fetch_uses_host_credentials() {
         .await
         .unwrap();
     assert_eq!(fetch.parts.len(), 1);
+}
+
+#[tokio::test]
+async fn search_with_a_zero_limit_returns_the_default_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(|req: &Request| {
+            assert_eq!(op_name(req).as_deref(), Some("BookclerkCatalogSearch"));
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            assert_eq!(
+                body.pointer("/variables/pageSize"),
+                Some(&serde_json::json!(DEFAULT_CATALOG_SEARCH_LIMIT))
+            );
+            let objects: Vec<serde_json::Value> = (0..25)
+                .map(|i| {
+                    serde_json::json!({
+                        "id": format!("book-{i}"),
+                        "displayTitle": format!("Title {i}"),
+                    })
+                })
+                .collect();
+            graphql_response(serde_json::json!({
+                "data": { "audiobooks": { "totalCount": 25, "objects": objects } }
+            }))
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Page 2 skips typeahead, so the single request is the catalog search.
+    let hits = ChirpSource::with_graphql_url(server.uri())
+        .search_catalog(&CatalogSearchOpts {
+            query: "title".into(),
+            limit: 0,
+            page: 2,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), DEFAULT_CATALOG_SEARCH_LIMIT);
+    assert_eq!(hits[0].title, "Title 0");
 }
