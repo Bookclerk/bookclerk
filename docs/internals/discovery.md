@@ -303,6 +303,14 @@ Candidates are **unowned** storefront hits (plus open wishlist items), scored by
 5. Wishlist boost (`wish_count × 40` on the shared queue / Discover merge)
 6. Purchase hints resolved at view time (see below)
 
+Whether a wished title is already owned is decided by the library's
+resolver (`LibraryStore::owned_work_for`), the same way a scanned listing
+finds its work: shared identifiers, then the work's identifiers, then the
+work-level title-and-author match. A wish whose work no library title
+resolves to stays on the queue, so *Dune Messiah* is not hidden by an owned
+*Dune*. Storefront candidates are still dropped by owned ASIN, ISBN and
+product id.
+
 Shelves then partition the ranked list so that **every title lands on one
 shelf**. Shelves claim titles in page order: the series shelves, the
 person's own wishes, authors, narrators, genres, starter genres, similar

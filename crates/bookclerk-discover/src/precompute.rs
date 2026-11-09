@@ -688,7 +688,6 @@ pub async fn rank_subject_feed(
     let recs = rank_candidates(
         library,
         registry,
-        &household,
         &taste.books,
         &taste.weights,
         &taste.listening,

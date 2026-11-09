@@ -19,7 +19,7 @@ use crate::embed::{bytes_to_vector, cosine, open_embedder, Embedder};
 use crate::error::Result;
 use crate::identity::{
     identities_match, merge_global_queue_entries, merge_recommendation, push_edition,
-    push_shelf_category, recommendation_map_key, works_match, StoreEdition, WorkIdentity,
+    push_shelf_category, recommendation_map_key, StoreEdition, WorkIdentity,
 };
 use crate::purchase::{
     purchase_hints_for, seed_purchase_hint, seed_source_is_trusted, PurchaseHint,
@@ -468,13 +468,7 @@ pub async fn rank_global_request_queue(
 
     let mut ranked = Vec::new();
     for entry in queue {
-        if library_owns_identity(
-            &books,
-            entry.asin.as_deref(),
-            entry.isbn.as_deref(),
-            &entry.title,
-            entry.authors.as_deref(),
-        ) {
+        if library_owns_work(library, &entry).await? {
             continue;
         }
         let (taste_score, reasons, _) = score_work_against_taste(
@@ -555,7 +549,6 @@ async fn recommend_all(
         library,
         registry,
         &books,
-        &books,
         &TasteWeights::new(),
         &listening,
         candidates,
@@ -620,7 +613,6 @@ pub(crate) fn owned_identity_sets(
 ///
 /// * `library` - Library store (wishlist queue, stored embeddings).
 /// * `registry` - Storefronts, used only for live purchase hints when asked.
-/// * `owned_books` - The household library; owned titles are never recommended.
 /// * `taste_books` - Books whose finishes, ratings and series shape the taste
 ///   (the subject's own books, with the household's blended in while the
 ///   subject's own are few).
@@ -636,18 +628,15 @@ pub(crate) fn owned_identity_sets(
 /// # Errors
 ///
 /// Returns the library read error.
-#[allow(clippy::too_many_arguments)] // One call per taste; a struct would only rename the slices.
 pub(crate) async fn rank_candidates(
     library: &LibraryStore,
     registry: &SourceRegistry,
-    owned_books: &[BookRecord],
     taste_books: &[BookRecord],
     taste_weights: &TasteWeights,
     listening: &[ListeningProgressRecord],
     candidates: Vec<crate::candidates::StorefrontCandidate>,
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
-    let books = owned_books;
     let profile = build_taste_profile(library, taste_books, taste_weights, listening, opts).await?;
     let mut embedder = open_candidate_embedder(opts)?;
     let mut scored: HashMap<String, Recommendation> = HashMap::new();
@@ -750,13 +739,7 @@ pub(crate) async fn rank_candidates(
 
     // Global wishlist works: recommend taste + heavy multi-user wish boost.
     for entry in merge_global_queue_entries(library.list_global_request_queue().await?) {
-        if library_owns_identity(
-            books,
-            entry.asin.as_deref(),
-            entry.isbn.as_deref(),
-            &entry.title,
-            entry.authors.as_deref(),
-        ) {
+        if library_owns_work(library, &entry).await? {
             continue;
         }
         let (taste_score, mut reasons, mut categories) = score_work_against_taste(
@@ -1095,30 +1078,26 @@ async fn attach_purchase_hints(
     }
 }
 
-/// Whether the household library already owns this bibliographic identity.
-fn library_owns_identity(
-    books: &[BookRecord],
-    asin: Option<&str>,
-    isbn: Option<&str>,
-    title: &str,
-    authors: Option<&str>,
-) -> bool {
-    let want = WorkIdentity::new(asin, isbn, title, authors);
-    books.iter().any(|b| {
-        identities_match(
-            want,
-            WorkIdentity::new(
-                b.asin.as_deref(),
-                b.isbn.as_deref(),
-                &b.title,
-                b.authors.as_deref(),
-            )
-            .with_series(b.series.as_deref())
-            .with_series_index(b.series_index.as_deref()),
-        ) || (asin.is_none()
-            && isbn.is_none()
-            && works_match(title, authors, &b.title, b.authors.as_deref()))
-    })
+/// Whether the household library holds the work a wishlist entry is for.
+///
+/// The library's resolver decides, as it does for a scanned listing
+/// (shared identifiers, then the work's identifiers, then the work-level
+/// title-and-author match), so a sequel that shares its series' name with
+/// an owned book is its own work and stays on the queue.
+///
+/// # Errors
+///
+/// Returns the library read error.
+async fn library_owns_work(library: &LibraryStore, entry: &GlobalQueueEntry) -> Result<bool> {
+    let query = bookclerk_library::TitleQuery {
+        title: &entry.title,
+        authors: entry.authors.as_deref(),
+        asin: entry.asin.as_deref(),
+        isbn: entry.isbn.as_deref(),
+        series: entry.series.as_deref(),
+        series_index: entry.series_index.as_deref(),
+    };
+    Ok(library.owned_work_for(&query).await?.is_some())
 }
 
 /// Inserts or merges a recommendation when ASIN/ISBN/title identity already exists.
@@ -1562,23 +1541,42 @@ mod tests {
         dune.series = Some("Dune".into());
         dune.series_index = Some("1".into());
         store.upsert_book(&dune).await.unwrap();
-        let books = store.list_books(None).await.unwrap();
-        let herbert = Some("Frank Herbert");
-        assert!(library_owns_identity(&books, None, None, "Dune", herbert));
-        assert!(!library_owns_identity(
-            &books,
-            None,
-            Some("9781427202376"),
-            "Dune Messiah",
-            herbert
-        ));
-        assert!(!library_owns_identity(
-            &books,
-            None,
-            None,
-            "Children of Dune",
-            herbert
-        ));
+        let entry = |title: &str, isbn: Option<&str>| GlobalQueueEntry {
+            work_key: String::new(),
+            title: title.into(),
+            authors: Some("Frank Herbert".into()),
+            asin: None,
+            isbn: isbn.map(str::to_string),
+            cover_url: None,
+            description: None,
+            subtitle: None,
+            narrators: None,
+            series: None,
+            series_index: None,
+            publisher: None,
+            length_minutes: None,
+            published_at: None,
+            genres: None,
+            language: None,
+            store_editions: Vec::new(),
+            purchase_hints: Vec::new(),
+            wish_count: 1,
+            wishers: Vec::new(),
+            sample_uuids: Vec::new(),
+            first_requested_at: chrono::Utc::now(),
+            last_requested_at: chrono::Utc::now(),
+        };
+        assert!(library_owns_work(&store, &entry("Dune", None))
+            .await
+            .unwrap());
+        assert!(
+            !library_owns_work(&store, &entry("Dune Messiah", Some("9781427202376")))
+                .await
+                .unwrap()
+        );
+        assert!(!library_owns_work(&store, &entry("Children of Dune", None))
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
