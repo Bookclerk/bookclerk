@@ -323,8 +323,9 @@ async fn password_login_connects_the_account_and_revoke_unlinks_it() {
     );
 }
 
-/// A failed credential delete answers 503 and keeps the link, and the
-/// repeated revoke finishes the cleanup instead of answering "not linked".
+/// A failed credential delete answers 503 and keeps the link (with scanning
+/// already off), and the repeated revoke finishes the cleanup instead of
+/// answering "not linked".
 #[tokio::test]
 async fn revoke_keeps_the_link_when_the_credential_delete_fails() {
     use sea_orm::ConnectionTrait;
@@ -358,7 +359,9 @@ async fn revoke_keeps_the_link_when_the_credential_delete_fails() {
         .into_iter()
         .find(|a| a.account_id == "reader@example.com")
         .unwrap();
-    assert_eq!(account.connection_status, "active");
+    // Scanning went off before the failed step; the link stays for the retry.
+    assert_eq!(account.connection_status, "revoked");
+    assert!(!account.scan_enabled);
     let (status, _, body) = call(&app, "GET", "/connections", Some(&cookie), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["connections"].as_array().map(Vec::len), Some(1));
