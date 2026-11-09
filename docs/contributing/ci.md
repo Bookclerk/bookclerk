@@ -1257,6 +1257,9 @@ workflow does the same for the Python plugin SDK
    cannot find a node id again once it has escaped a backslash or a
    non-ASCII character in it, so `tests/conftest.py` refuses such test ids.
    Give a parametrized case an ASCII id instead of `repr` of its input.
+   mutmut also runs the tests from a copy one folder deeper, under
+   `mutants/`, so a test finds the repository root by a folder it holds,
+   never by a fixed `parents[N]`; `tests/test_conventions.py` checks that.
 6. The run stops after 60 minutes. mutmut records each result as it lands,
    so the summary then counts the mutants tested before the limit and says
    the run was stopped. If mutmut fails or stops before testing any
