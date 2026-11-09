@@ -19,7 +19,11 @@ from typing import Any
 from unittest import mock
 
 from bookclerk_plugin_sdk import testkit
-from bookclerk_plugin_sdk.testkit import TEST_DATABASE_PROFILES, create_test_database
+from bookclerk_plugin_sdk.testkit import (
+    TEST_DATABASE_PROFILES,
+    create_test_database,
+    default_profile,
+)
 from bookclerk_plugin_sdk.workerd import PluginError
 
 # Imported under another name: a module-level ``test*`` function is collected as a test.
@@ -79,6 +83,29 @@ def _text(s: str) -> dict[str, Any]:
 def _run(coro: Any) -> Any:
     """Run ``coro`` on a fresh event loop."""
     return asyncio.run(coro)
+
+
+class DefaultProfileTests(unittest.TestCase):
+    """The profile a test runs under when none is passed."""
+
+    def test_argument_then_environment_then_minimum(self) -> None:
+        """An explicit profile wins, then ``bookclerk-plugin test``'s variable, then ``minimum``."""
+        saved = os.environ.pop("BOOKCLERK_DB_TESTKIT_PROFILE", None)
+        try:
+            self.assertEqual(default_profile(None), "minimum")
+            os.environ["BOOKCLERK_DB_TESTKIT_PROFILE"] = ""
+            self.assertEqual(default_profile(None), "minimum")
+            os.environ["BOOKCLERK_DB_TESTKIT_PROFILE"] = "first-party"
+            self.assertEqual(default_profile(None), "first-party")
+            self.assertEqual(default_profile("d1"), "d1")
+            os.environ["BOOKCLERK_DB_TESTKIT_PROFILE"] = "huge"
+            with self.assertRaisesRegex(ValueError, "unknown test database profile 'huge'"):
+                asyncio.run(create_test_database())
+        finally:
+            if saved is None:
+                os.environ.pop("BOOKCLERK_DB_TESTKIT_PROFILE", None)
+            else:
+                os.environ["BOOKCLERK_DB_TESTKIT_PROFILE"] = saved
 
 
 class TestkitBinaryTests(unittest.TestCase):

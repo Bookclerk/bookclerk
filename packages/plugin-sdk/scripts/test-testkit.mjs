@@ -17,7 +17,7 @@ const root = dirname(fileURLToPath(import.meta.url));
 const dist = join(root, "../dist");
 const workspace = join(root, "../../..");
 
-const { TEST_DATABASE_PROFILES, createTestDatabase, testkitBinary } = await import(
+const { TEST_DATABASE_PROFILES, createTestDatabase, defaultProfile, testkitBinary } = await import(
   join(dist, "testkit.js")
 );
 const { PluginError } = await import(join(dist, "errors.js"));
@@ -178,6 +178,30 @@ for (const profile of TEST_DATABASE_PROFILES) {
     await db.close();
   }
   console.log("ok first-party streamed all()");
+}
+
+// --- Default profile ------------------------------------------------------------
+{
+  const saved = process.env.BOOKCLERK_DB_TESTKIT_PROFILE;
+  delete process.env.BOOKCLERK_DB_TESTKIT_PROFILE;
+  assert.equal(defaultProfile(undefined), "minimum");
+  process.env.BOOKCLERK_DB_TESTKIT_PROFILE = "";
+  assert.equal(defaultProfile(undefined), "minimum");
+  process.env.BOOKCLERK_DB_TESTKIT_PROFILE = "first-party";
+  assert.equal(defaultProfile(undefined), "first-party");
+  assert.equal(defaultProfile("d1"), "d1");
+  // `bookclerk-plugin test` names the profile; the wrapper runs under it.
+  const fromEnv = await createTestDatabase();
+  try {
+    assert.equal(fromEnv.profile, "first-party");
+  } finally {
+    await fromEnv.close();
+  }
+  process.env.BOOKCLERK_DB_TESTKIT_PROFILE = "huge";
+  await assert.rejects(createTestDatabase(), /unknown test database profile "huge"/);
+  if (saved === undefined) delete process.env.BOOKCLERK_DB_TESTKIT_PROFILE;
+  else process.env.BOOKCLERK_DB_TESTKIT_PROFILE = saved;
+  console.log("ok default profile");
 }
 
 // --- Refusals -----------------------------------------------------------------
