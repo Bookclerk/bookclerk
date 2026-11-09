@@ -215,10 +215,14 @@ pub fn build_discover_feed(
     };
 
     // Wished titles belong on the wishlist shelf alone: claim them now and
-    // add the shelf at the end.
-    let wishlist = builder.take(
-        |r| has_category(r, "requests") || r.from_request,
-        SeriesRule::Cap,
+    // add the shelf at the end. Wished titles the shelf or series cap left
+    // off are claimed too, so they never reach another shelf.
+    let wished = |r: &Recommendation| has_category(r, "requests") || r.from_request;
+    let wishlist = builder.take(wished, SeriesRule::Cap);
+    builder.claimed.extend(
+        recs.iter()
+            .filter(|r| wished(r))
+            .map(recommendation_map_key),
     );
 
     builder.push(
@@ -981,6 +985,27 @@ mod tests {
         assert_eq!(ids(&feed), vec!["author:ada-author", "requests"]);
         assert_eq!(titles(&feed, "author:ada-author"), vec!["By Ada"]);
         assert_eq!(titles(&feed, "requests"), vec!["Wanted"]);
+    }
+
+    #[test]
+    fn wished_titles_past_the_series_cap_stay_off_other_shelves() {
+        let wished = |title: &str| Recommendation {
+            from_request: true,
+            ..rec(title, 50.0, &["author", "requests"])
+        };
+        let recs = vec![
+            wished("Book One"),
+            wished("Book Two"),
+            wished("Book Three"),
+            rec("By Ada", 2.0, &["author"]),
+        ];
+        let feed = build_discover_feed(&recs, &ada_taste(), 8, &[]);
+        assert_eq!(titles(&feed, "requests").len(), SERIES_CAP);
+        for shelf in feed.shelves.iter().filter(|s| s.id != "requests") {
+            for item in &shelf.items {
+                assert!(!item.from_request, "{} on {}", item.title, shelf.id);
+            }
+        }
     }
 
     #[test]
