@@ -172,7 +172,19 @@ commit (`ghcr.io/<owner>/bookclerk-demo:sha-<12 hex>`), the deploy verifies
 its build provenance and deploys it in a few minutes; otherwise it builds
 the image itself, which takes about 15 minutes. A run after a publish or a
 release stops early when the live demo already runs that commit (and an
-earlier run for it succeeded) or a newer one. It needs the repository
+earlier run for it succeeded) or a newer one.
+
+Once a day (06:17 UTC) the same workflow refreshes the seed. The baked
+library's store records and Discover shelves are cached for a day, and a
+container that boots from an older template fetches them again, so its
+first pages are slow. The refresh reads which commit the live demo runs,
+re-bakes only the seed on that commit's verified published image
+(`packaging/demo/Dockerfile.refresh`) and redeploys the same commit, so the
+demo never moves to newer code. It takes a few minutes and stops early when
+a push, a nightly deploy or another refresh baked a seed in the last 20
+hours. A manual run with **refresh** checked does it at once.
+
+It needs the repository
 secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; the token's
 permissions are listed in
 [`docs/contributing/automation.md`](../../docs/contributing/automation.md#cloudflare-worker-deploys). The workflow makes

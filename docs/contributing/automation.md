@@ -848,6 +848,31 @@ and plugin changes reach the demo), and on demand.
 - A repository without the two Cloudflare secrets gets a notice instead of
   a failure.
 
+#### The daily seed refresh
+
+The demo image carries a pre-seeded library whose store records and Discover
+shelves are cached for a day. A container that boots from an older template
+fetches them again, so its first pages are slow. Once a day (06:17 UTC,
+after the nightly publish) the workflow refreshes the seed without moving
+the demo to newer code:
+
+1. It asks the live demo's `/_demo/health` which commit it runs.
+2. It stops when a run in the last 20 hours already baked a fresh seed: a
+   push (which builds its image), a run after a publish (which deploys the
+   image that publish just built) or another refresh. A release run doesn't
+   count, since it can deploy an image built days earlier.
+3. It verifies that commit's published demo image as above, and stops when
+   there is none or it fails verification. A refresh never builds the
+   release binaries.
+4. It re-bakes only the seed on top of that image with
+   `packaging/demo/Dockerfile.refresh` and the commit's own
+   `packaging/demo/bake-seed.sh`, then deploys the result with that commit's
+   Worker, as any other deploy.
+
+Refresh runs are named `Refresh demo seed`, so they never count as a deploy
+of a commit. A manual run with the **refresh** input checked refreshes at
+once, without the 20-hour check.
+
 ### API token permissions
 
 The API token is scoped to the Workers by name, so it needs these for each
