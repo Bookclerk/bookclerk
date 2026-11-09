@@ -109,6 +109,19 @@ The API equivalent is `POST /api/discover/sync-listening`. Every enabled
 integration that offers listening sync contributes. Ranking reads only the
 shared table and never calls a plugin's client.
 
+Each item is matched by its identifiers, never by its title:
+
+1. Its ASIN, then its ISBN, is looked up in the library's edition
+   identifiers. When the editions found belong to one work, the item
+   counts toward that work.
+2. The owned book with the same ASIN, then the same ISBN, is linked when
+   there is one. If the identifiers named no work, the item takes that
+   book's work.
+
+An item with neither identifier is still stored, but it is not tied to a
+book or work, so it does not seed Discover. A sync is written in a few
+bulk reads and atomic batches sized to the database plugin's limits.
+
 API coverage notes:
 [`crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md`](../../crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md).
 

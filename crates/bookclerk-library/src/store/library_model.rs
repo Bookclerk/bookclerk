@@ -658,7 +658,7 @@ pub fn holding_from_book(book: &NewBook) -> resolve::HoldingDraft {
 
 impl LibraryStore {
     /// Ids bound per `IN (...)` lookup on this store's backend.
-    fn lookup_chunk(&self) -> usize {
+    pub(super) fn lookup_chunk(&self) -> usize {
         lookup_chunk(self.max_binds)
     }
 
@@ -1291,7 +1291,7 @@ impl LibraryStore {
     }
 
     /// Each edition's work, through its expression.
-    async fn works_of_editions(
+    pub(super) async fn works_of_editions(
         &self,
         edition_ids: BTreeSet<String>,
     ) -> Result<std::collections::BTreeMap<String, String>> {

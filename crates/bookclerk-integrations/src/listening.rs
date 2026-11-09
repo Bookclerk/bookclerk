@@ -1,9 +1,10 @@
 //! Shared helpers for integration listening / progress sync.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use bookclerk_library::{
-    BookRecord, LibraryStore, ListeningProgressRecord, NewListeningProgress, PublishDomainEventSpec,
+    LibraryStore, ListeningIdentifiers, ListeningProgressRecord, NewListeningProgress,
+    PublishDomainEventSpec,
 };
 
 use crate::error::Result;
@@ -12,6 +13,14 @@ use crate::types::ListeningProgressSnapshot;
 /// Upsert provider-agnostic listening snapshots into `listening_progress`.
 ///
 /// `provider` should be the integration id (`audiobookshelf`, plugin id, …).
+/// The whole sync costs a few bulk statements, not a round trip chain per
+/// item: portal identities and stored rows are read in chunks, each item's
+/// ASIN and ISBN resolve to a work through the indexed `edition_identifiers`
+/// table (and to an owned book through the indexed `books` identifier
+/// columns; titles are never compared), and the rows are written as atomic
+/// batches sized to the database plugin's limits
+/// ([`LibraryStore::upsert_listening_progress_batch`]).
+///
 /// When the sync changes what Discover reads from any stored row (see
 /// `TasteState`: who the row belongs to, which owned book and work it matched,
 /// its authors, and how far they got), publishes one `listening_synced`; a sync that changes
@@ -21,81 +30,69 @@ use crate::types::ListeningProgressSnapshot;
 ///
 /// * `library` - Open library store used for reads/writes.
 /// * `provider` - Integration id.
-/// * `items` - `items` input for this call.
+/// * `items` - Snapshots the integration reported, in its order.
 ///
 /// # Returns
 ///
-/// On success, the inner `usize` value.
+/// How many snapshots were stored (every item; reports of one row merge).
 ///
 /// # Errors
 ///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
+/// Returns an error when a store read or write fails. Batches written
+/// before the failure stay.
 pub async fn upsert_listening_snapshots(
     library: &LibraryStore,
     provider: &str,
     items: &[ListeningProgressSnapshot],
 ) -> Result<usize> {
-    // Load once per sync — matching is O(items × books) over in-memory rows,
-    // not O(items) full-table DB reads.
-    let books = library.list_books(None).await?;
-    let mut upserted = 0usize;
-    // Per stored row: its state before this sync (first sighting) and after
-    // (last write), so a row the sync reports twice compares end to end.
-    let mut rows: BTreeMap<(String, String), (Option<TasteState>, TasteState)> = BTreeMap::new();
-    for item in items {
-        let identity_id = library
-            .get_portal_identity(provider, &item.external_user_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|i| i.id);
-
-        let book_uuid = match_book_uuid_in(
-            &books,
-            item.asin.as_deref(),
-            item.isbn.as_deref(),
-            item.title.as_deref(),
-        );
-        let work_id = if let Some(ref uuid) = book_uuid {
-            library.work_id_for_book(uuid).await.ok().flatten()
-        } else {
-            None
-        };
-
-        let before = library
-            .get_listening_progress(provider, &item.external_user_id, &item.external_item_id)
-            .await?
-            .as_ref()
-            .map(TasteState::of);
-        let stored = library
-            .upsert_listening_progress(&NewListeningProgress {
-                identity_id: item.identity_id.or(identity_id),
-                provider: provider.into(),
-                external_user_id: item.external_user_id.clone(),
-                book_uuid,
-                work_id,
-                external_item_id: item.external_item_id.clone(),
-                title: item.title.clone(),
-                authors: item.authors.clone(),
-                asin: item.asin.clone(),
-                isbn: item.isbn.clone(),
-                progress: item.progress,
-                current_time_seconds: item.current_time_seconds,
-                duration_seconds: item.duration_seconds,
-                is_finished: item.is_finished,
-                last_listened_at: item.last_listened_at,
-            })
-            .await?;
-        let after = TasteState::of(&stored);
-        rows.entry((stored.external_user_id, stored.external_item_id))
-            .and_modify(|(_, last)| *last = after.clone())
-            .or_insert((before, after));
-        upserted += 1;
+    if items.is_empty() {
+        return Ok(0);
     }
+    let users: BTreeSet<String> = items
+        .iter()
+        .filter(|item| item.identity_id.is_none())
+        .map(|item| item.external_user_id.clone())
+        .collect();
+    let identities = library.portal_identity_ids(provider, &users).await?;
+    let keys: Vec<ListeningIdentifiers> = items
+        .iter()
+        .map(|item| ListeningIdentifiers {
+            asin: item.asin.clone(),
+            isbn: item.isbn.clone(),
+        })
+        .collect();
+    let matches = library.match_listening_items(&keys).await?;
+    let rows: Vec<NewListeningProgress> = items
+        .iter()
+        .zip(matches)
+        .map(|(item, matched)| NewListeningProgress {
+            identity_id: item
+                .identity_id
+                .or_else(|| identities.get(&item.external_user_id).copied()),
+            provider: provider.into(),
+            external_user_id: item.external_user_id.clone(),
+            book_uuid: matched.book_uuid,
+            work_id: matched.work_id,
+            external_item_id: item.external_item_id.clone(),
+            title: item.title.clone(),
+            authors: item.authors.clone(),
+            asin: item.asin.clone(),
+            isbn: item.isbn.clone(),
+            progress: item.progress,
+            current_time_seconds: item.current_time_seconds,
+            duration_seconds: item.duration_seconds,
+            is_finished: item.is_finished,
+            last_listened_at: item.last_listened_at,
+        })
+        .collect();
+    let writes = library.upsert_listening_progress_batch(&rows).await?;
+
     let mut identities = BTreeSet::new();
     let mut changed = false;
-    for (before, after) in rows.values() {
-        if before.as_ref() != Some(after) {
+    for write in &writes {
+        let before = write.before.as_ref().map(TasteState::of);
+        let after = TasteState::of_written(&write.after);
+        if before.as_ref() != Some(&after) {
             changed = true;
             identities.extend(after.identity_id);
             identities.extend(before.as_ref().and_then(|b| b.identity_id));
@@ -104,7 +101,7 @@ pub async fn upsert_listening_snapshots(
     if changed {
         publish_listening_synced(library, provider, &identities).await;
     }
-    Ok(upserted)
+    Ok(items.len())
 }
 
 /// What Discover reads from one stored listening row: whose it is, which
@@ -125,6 +122,22 @@ struct TasteState {
 }
 
 impl TasteState {
+    /// The taste-relevant part of a row as it was just written.
+    fn of_written(row: &NewListeningProgress) -> Self {
+        Self {
+            identity_id: row.identity_id,
+            book_uuid: row.book_uuid.clone(),
+            work_id: row.work_id.clone(),
+            authors: row.authors.clone(),
+            stage: listening_stage(
+                row.progress,
+                row.current_time_seconds,
+                row.duration_seconds,
+                row.is_finished,
+            ),
+        }
+    }
+
     /// The taste-relevant part of a stored row.
     fn of(row: &ListeningProgressRecord) -> Self {
         Self {
@@ -225,63 +238,6 @@ async fn publish_listening_synced(
     if let Err(err) = library.publish_domain_event(spec).await {
         tracing::warn!(provider, error = %err, "could not publish listening_synced");
     }
-}
-
-/// Best-effort match to an owned library book via ASIN, ISBN, or exact title.
-///
-/// # Arguments
-///
-/// * `library` - Open library store used for reads/writes.
-/// * `asin` - Optional Audible / Amazon ASIN.
-/// * `isbn` - Optional ISBN (any punctuation; normalized internally).
-/// * `title` - Display title.
-///
-/// # Returns
-///
-/// On success, the inner `Option<String>` value.
-///
-/// # Errors
-///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
-pub async fn match_book_uuid(
-    library: &LibraryStore,
-    asin: Option<&str>,
-    isbn: Option<&str>,
-    title: Option<&str>,
-) -> Result<Option<String>> {
-    let books = library.list_books(None).await?;
-    Ok(match_book_uuid_in(&books, asin, isbn, title))
-}
-
-/// Matches a snapshot to an owned book by ASIN, then ISBN, then exact title (case-insensitive).
-fn match_book_uuid_in(
-    books: &[BookRecord],
-    asin: Option<&str>,
-    isbn: Option<&str>,
-    title: Option<&str>,
-) -> Option<String> {
-    if let Some(asin) = asin {
-        if let Some(b) = books.iter().find(|b| {
-            b.asin
-                .as_deref()
-                .map(|a| a.eq_ignore_ascii_case(asin))
-                .unwrap_or(false)
-        }) {
-            return Some(b.uuid.clone());
-        }
-    }
-    if let Some(isbn) = isbn {
-        if let Some(b) = books.iter().find(|b| b.isbn.as_deref() == Some(isbn)) {
-            return Some(b.uuid.clone());
-        }
-    }
-    if let Some(title) = title {
-        let title_l = title.to_lowercase();
-        if let Some(b) = books.iter().find(|b| b.title.to_lowercase() == title_l) {
-            return Some(b.uuid.clone());
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -417,6 +373,59 @@ mod tests {
             .await
             .expect("sync");
         assert_eq!(synced_events(&library).await.len(), 8);
+    }
+
+    #[tokio::test]
+    async fn items_match_owned_books_by_identifier_not_title() {
+        let library = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("memory store"),
+        );
+        library
+            .upsert_account("audible", "a1", "us", None, true, "audible")
+            .await
+            .expect("account");
+        let dune = library
+            .upsert_book(&bookclerk_library::NewBook::minimal(
+                "B00DUNE001",
+                "a1",
+                "US",
+                "Dune",
+            ))
+            .await
+            .expect("book");
+        let work = library.work_id_for_book(&dune.uuid).await.expect("work");
+        assert!(work.is_some());
+        let dana = library
+            .upsert_portal_identity("audiobookshelf", "u1", Some("Dana"))
+            .await
+            .expect("identity");
+
+        let mut by_asin = snapshot("u1", "a", 0.3);
+        by_asin.asin = Some("b00dune001".into());
+        // Same title, no identifiers: titles are never compared.
+        let mut by_title = snapshot("u2", "b", 0.3);
+        by_title.title = Some("Dune".into());
+        let stored = upsert_listening_snapshots(&library, "audiobookshelf", &[by_asin, by_title])
+            .await
+            .expect("sync");
+        assert_eq!(stored, 2);
+
+        let a = library
+            .get_listening_progress("audiobookshelf", "u1", "a")
+            .await
+            .expect("read")
+            .expect("row");
+        assert_eq!(a.book_uuid.as_deref(), Some(dune.uuid.as_str()));
+        assert_eq!(a.work_id, work);
+        assert_eq!(a.identity_id, Some(dana.id));
+        let b = library
+            .get_listening_progress("audiobookshelf", "u2", "b")
+            .await
+            .expect("read")
+            .expect("row");
+        assert_eq!((b.book_uuid, b.work_id, b.identity_id), (None, None, None));
     }
 
     #[test]
