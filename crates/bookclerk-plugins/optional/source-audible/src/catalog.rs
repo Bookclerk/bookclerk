@@ -424,7 +424,7 @@ pub async fn purchase_hint(
 }
 
 /// Most ASINs the public catalog prices in one `products` request.
-const PRICE_BATCH_ASINS: usize = 50;
+pub const PRICE_BATCH_ASINS: usize = 50;
 
 /// Resolves purchase hints for several titles, pricing them together.
 ///
