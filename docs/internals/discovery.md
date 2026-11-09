@@ -506,7 +506,7 @@ answered are cached (10 minutes, empty answers included).
 Cards show a price before any lookup: at the end of each store's fetch the
 `discover_candidates` job fills in prices the store answered in the last
 day from one row per store in the store-call cache, shared by everyone, and
-prices up to 48 of the rest in one `purchase_hints` call, so a refresh after
+prices up to 120 distinct titles of the rest in one `purchase_hints` call, so a refresh after
 a wish asks the store only about titles it has not priced. The list price is
 stored on the candidate. The card shows it as the store's list price and the
 live lookup refreshes it when the card scrolls into view. Member prices are

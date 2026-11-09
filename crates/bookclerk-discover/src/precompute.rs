@@ -85,11 +85,11 @@ pub const STARTER_GENRES: [&str; 6] = [
 /// Hits asked of a store for one starter genre.
 const STARTER_GENRE_HITS: usize = 24;
 
-/// Most candidates one store is asked to price at the end of a fetch, in
-/// one `purchase_hints` call. Audible prices fifty per request and Chirp
-/// a page per query; a store that loops stops at its own budget and the
+/// Most distinct titles one store is asked to price at the end of a fetch,
+/// in one `purchase_hints` call. Audible and Chirp take this in a few
+/// upstream requests; a store that loops stops at its own budget and the
 /// rest stay unpriced until a card asks live.
-pub const PRICE_PRECOMPUTE_LIMIT: usize = 48;
+pub const PRICE_PRECOMPUTE_LIMIT: usize = 120;
 
 /// Most remembered prices one store keeps in its row of the store-call
 /// cache, oldest dropped first. About 130 bytes each once escaped, so the
@@ -517,10 +517,13 @@ async fn price_candidates(
             }
         }
     }
+    // One question per title: seeds that found the same product share it.
+    let mut asked = HashSet::new();
     let unpriced: Vec<usize> = candidates
         .iter()
         .enumerate()
         .filter(|(_, c)| c.price_cents.is_none() && !c.product_id.trim().is_empty())
+        .filter(|(_, c)| asked.insert(c.product_id.clone()))
         .map(|(i, _)| i)
         .take(PRICE_PRECOMPUTE_LIMIT)
         .collect();
@@ -573,10 +576,13 @@ async fn price_candidates(
             label,
             at: now,
         };
-        price.apply(&mut candidates[i]);
-        memo.insert(candidates[i].product_id.clone(), price);
+        let product_id = candidates[i].product_id.clone();
+        for candidate in candidates.iter_mut().filter(|c| c.product_id == product_id) {
+            price.apply(candidate);
+            priced += 1;
+        }
+        memo.insert(product_id, price);
         learned = true;
-        priced += 1;
     }
     if learned {
         if memo.len() > PRICE_MEMO_MAX_ENTRIES {
@@ -1390,10 +1396,11 @@ mod tests {
             calls: std::sync::Arc::default(),
             price_calls: std::sync::Arc::clone(&price_calls),
         };
-        let mut first = vec![unpriced("a"), unpriced("b")];
+        // Two seeds found "a": one question, both copies priced.
+        let mut first = vec![unpriced("a"), unpriced("b"), unpriced("a")];
         assert_eq!(
             price_candidates(&library, &store, &mut first, "us").await,
-            2
+            3
         );
         assert_eq!(price_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
         let mut again = vec![unpriced("a"), unpriced("b"), unpriced("c")];
