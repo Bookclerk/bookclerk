@@ -1545,6 +1545,42 @@ mod tests {
         (store, books)
     }
 
+    /// Owning the first book of a series does not count as owning its
+    /// sequel, so a wish for the sequel reaches the queue and the shelves.
+    #[tokio::test]
+    async fn owning_a_series_namesake_does_not_own_its_sequel() {
+        let store = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        store
+            .upsert_account("audible", "acct", "us", Some("Main"), true, "audible")
+            .await
+            .unwrap();
+        let mut dune = bookclerk_library::NewBook::minimal("B002V1OF70", "acct", "us", "Dune");
+        dune.authors = Some("Frank Herbert".into());
+        dune.asin = Some("B002V1OF70".into());
+        dune.series = Some("Dune".into());
+        dune.series_index = Some("1".into());
+        store.upsert_book(&dune).await.unwrap();
+        let books = store.list_books(None).await.unwrap();
+        let herbert = Some("Frank Herbert");
+        assert!(library_owns_identity(&books, None, None, "Dune", herbert));
+        assert!(!library_owns_identity(
+            &books,
+            None,
+            Some("9781427202376"),
+            "Dune Messiah",
+            herbert
+        ));
+        assert!(!library_owns_identity(
+            &books,
+            None,
+            None,
+            "Children of Dune",
+            herbert
+        ));
+    }
+
     #[tokio::test]
     async fn a_highly_rated_book_makes_its_author_liked() {
         let (store, books) = rated_library().await;

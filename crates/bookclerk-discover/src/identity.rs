@@ -180,6 +180,13 @@ pub fn identities_match(a: WorkIdentity<'_>, b: WorkIdentity<'_>) -> bool {
         return false;
     }
 
+    // "Dune" vs "Dune Messiah": a volume named after its series is not the
+    // sequel that carries the series name inside its title, whatever the
+    // author overlap says.
+    if series_namesake_vs_volume(a, b) {
+        return false;
+    }
+
     // Bare "Infinity Blade" vs "Infinity Blade: Redemption" shares a stripped
     // base title — only allow when both sides agree on series index (e.g. #1
     // with "…: Awakening"). Without indexes, keep them separate.
@@ -504,14 +511,39 @@ fn series_names_compatible(a: Option<&str>, b: Option<&str>) -> bool {
     }
 }
 
+/// True when one side's title is the name of a series either side belongs
+/// to, and the other side's title merely contains that name: the series'
+/// namesake volume ("Dune", in series "Dune") against another volume ("Dune
+/// Messiah", "Children of Dune"). Equal titles are not affected.
+fn series_namesake_vs_volume(a: WorkIdentity<'_>, b: WorkIdentity<'_>) -> bool {
+    let ta = clean_title_for_compares(a.title, true);
+    let tb = clean_title_for_compares(b.title, true);
+    if ta.is_empty() || tb.is_empty() || ta == tb {
+        return false;
+    }
+    let series: Vec<String> = [a.series, b.series]
+        .into_iter()
+        .flatten()
+        .map(|name| clean_title_for_compares(name, true))
+        .filter(|name| !name.is_empty())
+        .collect();
+    let namesake = |title: &str| series.iter().any(|name| name == title);
+    (namesake(&ta) || namesake(&tb)) && title_contains_other(&ta, &tb)
+}
+
 /// True when the shorter cleaned title is a whole-word subset of the longer one.
+///
+/// A one-word title never counts: "Dune" inside "Dune Messiah" or "It"
+/// inside "It Ends with Us" names another book, while the short-and-long
+/// variants this rule is for ("Hail Mary" / "Project Hail Mary") keep at
+/// least two words.
 fn title_contains_other(a: &str, b: &str) -> bool {
     let (shorter, longer) = if a.chars().count() <= b.chars().count() {
         (a, b)
     } else {
         (b, a)
     };
-    if shorter.chars().count() < 4 {
+    if shorter.chars().count() < 4 || !shorter.contains(' ') {
         return false;
     }
     if longer == shorter
@@ -1042,6 +1074,32 @@ fn fill_opt_string(slot: &mut Option<String>, incoming: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A series' namesake volume is not merged with a sequel that carries
+    /// the series name, whether or not the series is known.
+    #[test]
+    fn a_series_namesake_is_not_its_sequel() {
+        let herbert = Some("Frank Herbert");
+        assert!(!works_match("Dune", herbert, "Dune Messiah", herbert));
+        assert!(!works_match("Dune", herbert, "Children of Dune", herbert));
+        // A library copy with an ASIN against a wish with an ISBN falls to the
+        // soft match, which must keep them apart.
+        let dune = WorkIdentity::new(Some("B002V1OF70"), None, "Dune", herbert)
+            .with_series(Some("Dune"))
+            .with_series_index(Some("1"));
+        let messiah = WorkIdentity::new(None, Some("9781427202376"), "Dune Messiah", herbert);
+        assert!(!identities_match(dune, messiah));
+        assert!(!identities_match(messiah, dune));
+        // The namesake rule alone, with the series known only on the sequel.
+        let sequel = WorkIdentity::new(None, None, "God Emperor of Dune", herbert)
+            .with_series(Some("The Dune Sequence"));
+        let bare = WorkIdentity::new(None, None, "Dune", herbert).with_series(Some("Dune"));
+        assert!(!identities_match(bare, sequel));
+        // Short and long forms of one title still match on the same author.
+        let weir = Some("Andy Weir");
+        assert!(works_match("Hail Mary", weir, "Project Hail Mary", weir));
+        assert!(works_match("Dune", herbert, "Dune", herbert));
+    }
 
     #[test]
     fn isbn_preferred_over_asin() {
