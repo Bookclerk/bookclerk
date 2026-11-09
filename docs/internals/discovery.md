@@ -504,13 +504,16 @@ page of cards into a failed request. Only queries at least one store
 answered are cached (10 minutes, empty answers included).
 
 Cards show a price before any lookup: at the end of each store's fetch the
-`discover_candidates` job prices up to 48 of that store's candidates in one
-`purchase_hints` call and stores the list price on the candidate (not in
-the store-call cache, since prices change daily). The card shows it as the
-store's list price and the live lookup refreshes it when the card scrolls
-into view. Member prices are applied only for stores the viewer has an
-account with, decided server-side as before. A store that asks to slow
-down, fails or times out leaves its candidates unpriced until a card asks.
+`discover_candidates` job fills in prices the store answered in the last
+day from one row per store in the store-call cache, shared by everyone, and
+prices up to 48 of the rest in one `purchase_hints` call, so a refresh after
+a wish asks the store only about titles it has not priced. The list price is
+stored on the candidate. The card shows it as the store's list price and the
+live lookup refreshes it when the card scrolls into view. Member prices are
+applied only for stores the viewer has an account with, decided server-side
+as before. A store paused for rate limiting is not asked, a 429 here pauses
+its live lookups too, and a failure or timeout leaves the rest unpriced until
+a card asks.
 
 Stores are paused in two ways. A store that answers **429** returns
 `rate_limited` with its `Retry-After`, and its price lookups are left alone
