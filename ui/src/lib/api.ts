@@ -3331,11 +3331,6 @@ export interface CatalogSearchPage {
   sort_dir?: string;
 }
 
-/**
- * Loads the caller's stored Discover shelves.
- *
- * @returns Discover feed payload; `state` says whether shelves are still being prepared.
- */
 /** Stored state of the caller's Discover shelves (`GET /api/discover/status`). */
 export interface DiscoverStatus {
   subject: string;
@@ -3368,6 +3363,11 @@ export async function requestDiscoverRefresh(): Promise<DiscoverStatus> {
   return parseJson(res);
 }
 
+/**
+ * Loads the caller's stored Discover shelves.
+ *
+ * @returns Discover feed payload; `state` says whether shelves are still being prepared.
+ */
 export async function fetchDiscoverFeed(): Promise<DiscoverFeed> {
   // The daemon only reads stored shelves (queued jobs build them), so this
   // answers quickly; live prices still load viewport-gated per card.
