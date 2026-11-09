@@ -42,6 +42,7 @@ boundary extends it.
 | `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
+| `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 
 Some boundaries need more than a cell:
 
@@ -169,6 +170,15 @@ only that. The others check:
   library id in `acquire.targets` is 1 to 16 ASCII letters and digits,
   checked byte by byte. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
+- **`plan_authz`**: decodes a small library (store accounts on two plugins
+  whose ids and labels collide, who each is linked to, library rows and
+  plugin instances) and one Member's scan or acquire request into an
+  in-memory database, then plans it. Every planned job names an account,
+  and every account its needle reaches at run time (id or label, ignoring
+  ASCII case, within the pinned instance's plugin) is linked to that
+  Member, checked against the oracle's own model rather than the planner's
+  queries. A refusal is `Forbidden` or `Invalid`. The shared oracle is
+  `fuzz/oracles/plan_authz.rs`, replayed from `bookclerk-library`.
 
 ## Boundaries outside the Rust workspace
 

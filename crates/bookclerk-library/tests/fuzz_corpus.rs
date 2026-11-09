@@ -220,3 +220,27 @@ fn every_variant_admits_a_plain_granted_select() {
         }
     }
 }
+
+/// The `plan_authz` oracle, shared with the fuzz target: every job the scan
+/// and acquire planners plan for a Member reaches only accounts linked to
+/// that Member.
+#[path = "../../../fuzz/oracles/plan_authz.rs"]
+mod plan_authz_oracle;
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_plan_authz_replays() {
+    let (mut planned, mut refused) = (0, 0);
+    for path in corpus_files("plan_authz") {
+        let bytes = std::fs::read(&path).expect("read");
+        if plan_authz_oracle::check(&bytes) > 0 {
+            planned += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides: plans to check, and refusals.
+    assert!(planned > 0, "no plan_authz seed planned a job");
+    assert!(refused > 0, "every plan_authz seed planned a job");
+}
