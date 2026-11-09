@@ -10,6 +10,7 @@ always uses the domain types.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import math
@@ -1761,12 +1762,13 @@ async def _in_transaction(
         result = await body(txn)
         await txn.commit()
     except BaseException:
-        # Shielded, so a cancellation arriving now cannot leave the
-        # transaction open; the original failure is the one to report.
-        try:
-            await asyncio.shield(txn.rollback())
-        except (Exception, asyncio.CancelledError):  # noqa: BLE001
-            pass
+        # Shielded and awaited to the end, so a cancellation arriving now
+        # cannot leave the transaction open or return before it closes; the
+        # original failure is the one to report.
+        rollback = asyncio.ensure_future(txn.rollback())
+        while not rollback.done():
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await asyncio.shield(rollback)
         raise
     return result
 

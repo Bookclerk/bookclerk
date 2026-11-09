@@ -15,7 +15,9 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
+from bookclerk_plugin_sdk import db_value
 from bookclerk_plugin_sdk._abi import MAX_SCALAR_BYTES
 from bookclerk_plugin_sdk.db_value import (
     GUEST_READ_ONLY_REPLAY_PAYLOAD,
@@ -347,12 +349,12 @@ class BatchTest(unittest.TestCase):
             task = asyncio.create_task(execute_adapter_batch(_request("write"), begin, SOURCE))
             await entered.wait()
             task.cancel()
-            await asyncio.sleep(0)
+            for _ in range(3):
+                await asyncio.sleep(0)
+            self.assertFalse(task.done(), "the batch waits for its rollback")
             release.set()
             with self.assertRaises(ValueError):
                 await task
-            for _ in range(3):
-                await asyncio.sleep(0)
             return events
 
         self.assertEqual(_run(scenario()), ["rolled back"])
@@ -375,6 +377,24 @@ class BatchTest(unittest.TestCase):
         self.assertIn(GUEST_RECEIPT_CLAIM_LOST, str(caught.exception))
         self.assertEqual(engine.commits, 0)
         self.assertEqual(engine.rollbacks, 1)
+
+    def test_write_past_one_scalar_rolls_back_then_commits_once(self) -> None:
+        engine = self._engine()
+        # The replay payload cap keeps a real write's frames far below one
+        # scalar, so shrink the scalar to reach the post-write check.
+        with (
+            mock.patch.object(db_value, "MAX_SCALAR_BYTES", 64),
+            self.assertRaises(PluginError) as caught,
+        ):
+            _run(execute_adapter_batch_streamed(_request("write"), engine.begin, SOURCE, LIMITS))
+        self.assertEqual(caught.exception.code, "limit_exceeded")
+        self.assertIn("maxScalarBytes", str(caught.exception))
+        self.assertEqual(engine.commits, 0)
+        self.assertFalse(engine.has_notes())
+        self.assertIsNone(engine.receipt("fixture-write"))
+        for _ in range(2):
+            _run(execute_adapter_batch_streamed(_request("write"), engine.begin, SOURCE, LIMITS))
+        self.assertEqual(engine.note_count(), 1)
 
     def test_receipt_without_its_reply_is_unavailable(self) -> None:
         engine = self._engine()
