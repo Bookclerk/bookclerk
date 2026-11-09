@@ -7304,6 +7304,7 @@ pub(crate) mod library_model;
 pub(crate) mod listening;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
+pub(crate) mod request_queue;
 pub(crate) mod retention;
 pub(crate) mod search_feed;
 pub(crate) mod storage_scan;
@@ -7311,6 +7312,7 @@ pub(crate) mod write_batches;
 pub use discover::{DiscoverSubject, SeedScope, StoredCandidate, StoredFeed};
 pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
+pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};
 pub(crate) mod job_queue;
 
 mod books_page;

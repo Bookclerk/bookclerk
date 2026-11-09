@@ -186,6 +186,7 @@ stateDiagram-v2
 | `plugin_scheduled` | `plugin_scheduled:instance={id}:cron={schedule}` | `network` | `scheduled(controller)` on the instance (`run_plugin_scheduled`) |
 | `discover_candidates` | `discover_candidates:subject={key}` | `network` | `run_discover_candidates`, then admits the subject's `discover_feed` |
 | `discover_feed` | `discover_feed:subject={key}` | `network` | `run_discover_feed` (no network; ranks stored candidates) |
+| `discover_request_queue` | `discover_request_queue` | `network` | `run_discover_request_queue` (no network; ranks the shared request queue) |
 | `cache_sweep` | `cache_sweep:node={id}` | `network` | `run_cache_sweep` (no network; one node's image caches and job scratch) |
 | `search_index_rebuild` | `search_index_rebuild:node={id}` | `network` | `run_search_index_rebuild` (no network; rebuilds one node's search index) |
 
@@ -210,6 +211,12 @@ consumes `wishlist_changed`, `listening_synced` and `book_acquired` and
 admits jobs with a 30 s `run_after`) queue them. See
 [Precomputed shelves](discovery.md#precomputed-shelves) and
 [Taste events](discovery.md#taste-events).
+
+`discover_request_queue` carries no subject: one ranking of the shared
+request queue serves everyone. Discover's event consumer queues it on the
+same three events, and a read of `GET /api/request-queue` queues it when
+the stored ranking is missing an entry or older than a day. See
+[Request queue](discovery.md#request-queue).
 
 A `cache_sweep` job belongs to one node: `JobPayload.node_id` names it,
 and only that node's routed claim takes the job (the unrouted claim never

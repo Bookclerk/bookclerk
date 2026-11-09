@@ -173,6 +173,9 @@ events:
 | `listening_synced` | A listening sync changed, for some stored row, whose it is, which owned book or work it matched, its authors, whether they started it, which quarter they are in, or whether they finished it. | A fetch for everyone with shelves. |
 | `book_acquired` | The household acquires a book. | A fetch for everyone with shelves. |
 
+Every one of the three events also queues one ranking of the shared
+[request queue](#request-queue).
+
 Each job it queues may only run 30 seconds later, so the changes of one
 sync or one browsing session fold into a single job per person. The one
 exception is the fetch for the person who wished: they are looking at the
@@ -342,6 +345,7 @@ title is **not** in the household library.
   weight. Each row includes `wishers` (tiny profile pictures: upload /
   Gravatar / SSO / monogram) for the people who have the title open. Discover's
   `requests` shelf (the first row) carries the same `wishers` / `wish_count` fields.
+  The route only reads a stored ranking; see [Request queue](#request-queue).
 - Identity merge: a wish is resolved to a library work when it is created
   (`LibraryStore::work_for`, the same resolution a scanned listing gets)
   and stores the `work_id`; wishes with the same work are one queue entry,
@@ -370,6 +374,37 @@ title is **not** in the household library.
   store’s `search_catalog`.
 
 Multi-region storefronts are deferred (US default for now).
+
+### Request queue
+
+The shared queue is ranked by a job, not inside the page request. Ranking
+reads the whole library and listening history, so doing it per request
+held the Discover gate and slowed every Wishlist load as libraries grew.
+
+1. A `discover_request_queue` job ranks every open entry against household
+   taste. It stores one row per entry in `discover_request_queue`: the
+   entry key (`work:{work_id}` when the wishes resolved to a library work,
+   otherwise the entry's `work_key`), the `work_id`, the taste score, up to
+   six taste reasons and whether the library already holds the work. It
+   copies no title, cover or price: those stay with the wishes.
+2. Discover's consumer (see [Taste events](#taste-events)) queues the job
+   on every `wishlist_changed`, `book_acquired` and `listening_synced`,
+   after the same 30-second debounce. The queue is not personalized, so one
+   job serves everyone, and its dedup key folds a burst of events into one
+   pass.
+3. `GET /api/request-queue` reads the open wishes, joins each entry with its
+   stored row, and adds the wish-count boost and the wish reasons from the
+   live counts. It hides entries the last pass found in the library. An
+   entry wished since that pass shows straight away with no taste score,
+   so its wish count alone places it.
+4. When an entry has no stored row, or the ranking is older than a day, the
+   read queues a pass and still answers with what it has. The day limit
+   covers taste changes no event announces, such as a removed book.
+
+> [!NOTE]
+> The entry key changes when wishes are keyed by work and edition rather
+> than by `work_key`. Store titles and prices for the queue move to the
+> shared store listing pool, not to this table.
 
 ## Configuration
 
