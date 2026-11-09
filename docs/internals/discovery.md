@@ -102,9 +102,14 @@ operator, a household user, or a portal identity) has a **subject key**
    exceed the inline limit (`maxResultBytes`). A stored feed is one cell,
    and the plugin counts a row as JSON, where each quote or backslash in
    the feed takes two bytes.
-   So the feed is kept under 192 KiB in that escaped form: if it is larger,
-   every shelf is cut to its best items (down to four), then long
-   descriptions are shortened, then the last shelves are dropped. Writing a
+   So the feed is kept under 192 KiB in that escaped form. If it is
+   larger, what the page does not show goes first: long descriptions are
+   shortened to 300 characters (the title dialog fetches the whole blurb
+   when the stored one ends in `…`), then each card keeps three reasons and
+   drops `seed_categories`. Only then is every shelf cut to its best items
+   (down to four), and last the final shelves are dropped. The ranking job
+   logs the stored feed's size and card count (`stored discover feed`).
+   Writing a
    feed replaces the old row without reading it, so an old feed that is too
    large to read cannot block its replacement.
 

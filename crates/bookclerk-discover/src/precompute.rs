@@ -800,6 +800,11 @@ pub struct RankReport {
     pub shelves: usize,
     /// Stored candidates read.
     pub candidates: usize,
+    /// Cards on the stored shelves, after any trimming to fit the budget.
+    pub cards: usize,
+    /// Bytes of the stored feed as the database counts it (an escaped JSON
+    /// string), at most [`STORED_FEED_MAX_BYTES`].
+    pub stored_bytes: usize,
 }
 
 /// Ranks one subject's stored candidates into shelves and stores the feed.
@@ -870,10 +875,13 @@ pub async fn rank_subject_feed(
     library
         .put_discover_feed(subject, &json, taste.scope, newest)
         .await?;
+    let stored_bytes = serde_json::to_string(&json).map_or(json.len(), |escaped| escaped.len());
     Ok(RankReport {
         scope: taste.scope,
         shelves: feed.shelves.len(),
         candidates: stored.len(),
+        cards: feed.shelves.iter().map(|s| s.items.len()).sum(),
+        stored_bytes,
     })
 }
 
@@ -1344,6 +1352,8 @@ mod tests {
         assert_eq!(ranked.scope, SeedScope::Own);
         assert_eq!(ranked.candidates, 5);
         assert!(ranked.shelves > 0);
+        assert!(ranked.cards >= ranked.shelves);
+        assert!(ranked.stored_bytes > 0 && ranked.stored_bytes <= STORED_FEED_MAX_BYTES);
 
         let read = stored_subject_feed(&library, &subject, &[])
             .await
