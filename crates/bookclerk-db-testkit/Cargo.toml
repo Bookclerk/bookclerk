@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-db-testkit"
-description = "Contract conformance test kit: capability profiles, begin refusal and fault injection for database tests"
+description = "Contract conformance test kit: capability profiles, begin refusal, fault injection and the database adapter conformance suite"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -20,7 +20,7 @@ rusqlite.workspace = true
 sea-orm.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "io-util", "io-std", "net", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "macros", "io-util", "io-std", "net", "process", "sync", "time"] }
 uuid.workspace = true
 
 [dev-dependencies]
