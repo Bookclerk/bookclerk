@@ -146,6 +146,12 @@ async function readAnnouncement(child: ChildProcess): Promise<Serving> {
   const stderr: string[] = [];
   child.stderr?.setEncoding("utf8");
   child.stderr?.on("data", (chunk: string) => stderr.push(chunk));
+  // Collected until stderr closes, so a refusal written just before exit is
+  // part of the error even when stdout closes first.
+  const stderrClosed = new Promise<void>((resolve) => {
+    if (child.stderr === null) resolve();
+    else child.stderr.once("close", () => resolve());
+  });
   const lines = createInterface({ input: stdout, crlfDelay: Infinity });
   const line = await new Promise<string | undefined>((resolve, reject) => {
     const done = (value: string | undefined): void => {
@@ -160,6 +166,7 @@ async function readAnnouncement(child: ChildProcess): Promise<Serving> {
     });
   });
   if (line === undefined) {
+    await stderrClosed;
     throw new Error(
       `bookclerk-db-testkit exited before announcing its address${
         stderr.length > 0 ? `: ${stderr.join("").trim()}` : ""
@@ -251,6 +258,39 @@ function grantedTransport(serving: Serving): AtomicTransport {
   };
 }
 
+/** One migration operation as the kit's request line spells it. */
+type KitMigrationOp = { schema: string } | { data: string };
+
+/**
+ * Spells a `databaseMigrations` registration the way the kit reads it.
+ *
+ * A plugin may return each operation typed (`{ kind: "schema", value }`,
+ * the {@link PluginMigration} shape) or in the short form the
+ * `schemaMigrationOp` / `dataMigrationOp` helpers build (`{ schema }`); the
+ * host accepts both, so the kit is handed the one form it parses.
+ *
+ * @param migrations - The registration, in either form.
+ * @returns The same migrations with every operation as `{ schema }` or `{ data }`.
+ * @throws Error naming the migration when an operation is neither form.
+ */
+export function kitMigrations(
+  migrations: readonly PluginMigration[],
+): { id: string; operations: KitMigrationOp[] }[] {
+  return migrations.map((migration) => ({
+    id: migration.id,
+    operations: migration.operations.map((op): KitMigrationOp => {
+      const o = op as { kind?: unknown; value?: unknown; schema?: unknown; data?: unknown };
+      if (typeof o.schema === "string") return { schema: o.schema };
+      if (typeof o.data === "string") return { data: o.data };
+      if (o.kind === "schema" && typeof o.value === "string") return { schema: o.value };
+      if (o.kind === "data" && typeof o.value === "string") return { data: o.value };
+      throw new Error(
+        `migration ${JSON.stringify(migration.id)} has an operation without schema or data`,
+      );
+    }),
+  }));
+}
+
 /**
  * The profile a test runs under: the option, else the one
  * `bookclerk-plugin test` names in `BOOKCLERK_DB_TESTKIT_PROFILE`, else
@@ -289,7 +329,9 @@ export async function createTestDatabase(options: TestDatabaseOptions = {}): Pro
     child.once("error", () => resolve());
   });
   const announced = readAnnouncement(child);
-  child.stdin?.write(`${JSON.stringify({ profile, migrations: options.migrations ?? [] })}\n`);
+  child.stdin?.write(
+    `${JSON.stringify({ profile, migrations: kitMigrations(options.migrations ?? []) })}\n`,
+  );
   let serving: Serving;
   try {
     serving = await announced;

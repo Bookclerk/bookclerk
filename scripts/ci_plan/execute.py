@@ -37,6 +37,7 @@ from .plan import (
     Plan,
     discover_guests,
     full_plan,
+    has_plugin_tests,
     load_metadata,
     load_relations,
     package_index_from_metadata,
@@ -339,6 +340,7 @@ def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
         or plan.selected("ui")
         or plan.selected("plugin_sdk_abi")
         or plan.selected("workerd_guests")
+        or plan.selected("plugin_examples")
         or (plan.selected("api_docs") and (docs.get("all") or docs.get("typescript") or docs.get("ui")))
     )
     # uv installs the Python SDK and its pdoc extra from uv.lock.
@@ -588,6 +590,74 @@ def _workerd_guest_commands(ctx: "Context") -> list[Command]:
     return cmds
 
 
+def plugin_example_dirs(workspace: Path) -> list[Path]:
+    """Reference examples whose suites open a database through the test kit.
+
+    An example qualifies when ``examples/plugins-*/plugin.toml`` declares a
+    ``[[databases]]`` binding and its ``package.json`` has a ``test`` script
+    (``has_plugin_tests``), the same rule the planner selects by.
+
+    Args:
+        workspace: The repository root.
+
+    Returns:
+        The example directories, sorted.
+
+    Raises:
+        ExecError: When a manifest cannot be parsed.
+    """
+    out: list[Path] = []
+    for manifest in sorted((workspace / "examples").glob("plugins-*/plugin.toml")):
+        try:
+            data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+            qualifies = has_plugin_tests(manifest.parent, data)
+        except (OSError, tomllib.TOMLDecodeError, PlanError) as exc:
+            raise ExecError(f"cannot parse {manifest}: {exc}") from exc
+        if qualifies:
+            out.append(manifest.parent)
+    return out
+
+
+def _plugin_example_commands(ctx: "Context") -> list[Command]:
+    """Type-check, rebuild and run every database example under each profile.
+
+    The examples build against the TypeScript SDK, so it is built first.
+    Each example's shipped ``modules/`` is emitted from ``src/`` by its
+    build, and a committed tree that differs is drift, as for the
+    first-party guests. ``bookclerk-plugin test`` then runs the example's
+    own suite once per database profile with the kit executable named.
+
+    Args:
+        ctx: Paths and platform facts.
+
+    Returns:
+        The commands, in order.
+    """
+    sdk = str(ctx.workspace / "packages" / "plugin-sdk")
+    kit_build, kit_env = _db_testkit(ctx)
+    tool = str(ctx.bin_dir / ("bookclerk-plugin" + (".exe" if ctx.os_name == "Windows" else "")))
+    cmds = [
+        Command("npm ci (plugin-sdk)", ["npm", "ci"], cwd=sdk),
+        Command("npm run build (plugin-sdk)", ["npm", "run", "build"], cwd=sdk),
+        kit_build,
+        Command(
+            "cargo build -p bookclerk-plugin-tools",
+            ["cargo", "build", "-p", "bookclerk-plugin-tools", "--bin", "bookclerk-plugin"],
+        ),
+    ]
+    for example in plugin_example_dirs(ctx.workspace):
+        rel = example.relative_to(ctx.workspace).as_posix()
+        cmds += [
+            Command(f"npm ci ({rel})", ["npm", "ci"], cwd=str(example)),
+            Command(f"tsc ({rel})", ["npm", "run", "typecheck"], cwd=str(example)),
+            Command(f"clear modules ({rel})", [sys.executable, "-c", _CLEAR_MODULES], cwd=str(example)),
+            Command(f"npm run build ({rel})", ["npm", "run", "build"], cwd=str(example)),
+            Command(f"modules drift ({rel})", [sys.executable, "-c", _MODULES_DRIFT], cwd=str(example)),
+            Command(f"bookclerk-plugin test ({rel})", [tool, "test", rel], env=kit_env),
+        ]
+    return cmds
+
+
 def _bundle_dir(bundle: str) -> Path | None:
     """Where ``bundle``'s built files go, or ``None`` when bundles are not kept."""
     root = os.environ.get(BUNDLE_DIR_ENV)
@@ -790,6 +860,8 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         ]
     if check == "workerd_guests":
         return _workerd_guest_commands(ctx)
+    if check == "plugin_examples":
+        return _plugin_example_commands(ctx)
     if check == "site_test":
         site = str(ctx.workspace / "tools" / "site")
         return [

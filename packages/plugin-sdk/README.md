@@ -35,6 +35,19 @@ author tools, is the
 page ([`docs/plugins/sdk/typescript/README.md`](../../docs/plugins/sdk/typescript/README.md)
 in this repository). The package's reference follows it on the same page.
 
+## Database
+
+A `[[databases]]` binding is D1-shaped (`prepare`, `bind`, `all`, `batch`)
+and adds `limits()`, `iterate()` and `chunk()` for staying within the
+adapter's caps; a cap that is hit is a `PluginError` with code
+`limit_exceeded`. `createTestDatabase()` from `@bookclerk/plugin-sdk/testkit`
+serves the same binding to a Node test suite, and `bookclerk-plugin test .`
+runs that suite under every capability profile. See
+[Working within database limits](https://bookclerk.app/docs/plugins/database-limits)
+([`docs/plugins/database-limits.md`](../../docs/plugins/database-limits.md));
+`examples/plugins-echo-workerd-ts` in the repository is a worked plugin
+with tests.
+
 ## Tests
 
 ```bash
