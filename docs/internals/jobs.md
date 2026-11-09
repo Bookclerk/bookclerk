@@ -248,8 +248,9 @@ Reserved classes (no worker in this release): `media`, `transcription`,
   one consumer for the cluster). An edition event refreshes each listing
   that sells the edition, a holding event its listing, and `book_acquired`
   its title. A listing refresh deletes the listing's documents and adds
-  back the titles that still sell it, so a title that is gone leaves the
-  index. `holding_removed`, which carries the same `listingId` as
+  back the titles that still sell it (and any older document of the same
+  title), so a title that is gone leaves the index. A holding event whose
+  listing is already gone removes the marker below, so the node rebuilds. `holding_removed`, which carries the same `listingId` as
   `holding_added`, is subscribed by the change that starts publishing it.
 - **Rebuild job.** A finished rebuild leaves a marker for the current
   document layout in the index folder. When it is missing (a new node, a
@@ -261,7 +262,7 @@ Reserved classes (no worker in this release): `media`, `transcription`,
   the index in one commit.
 
 One writer runs at a time per index. A delivery that finds a rebuild (or
-the CLI) writing is retried after 10 s, up to 60 times. Searches read the
+the CLI) writing is retried after 10 s, for up to an hour. Searches read the
 last commit, so they keep answering from the old index while a rebuild
 runs.
 

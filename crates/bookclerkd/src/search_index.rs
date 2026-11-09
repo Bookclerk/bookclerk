@@ -31,7 +31,7 @@ use std::time::Duration;
 use anyhow::Context;
 use bookclerk_library::{
     DomainEventRecord, EnqueueJobSpec, EventCatalogSubscription, EventDeliveryRecord, JobKind,
-    JobPayload, JobTrigger, LibraryStore, ListingRef,
+    JobPayload, JobTrigger, LibraryStore,
 };
 use bookclerk_search::{SearchEngine, SearchError};
 use chrono::Utc;
@@ -66,9 +66,9 @@ pub const INDEX_EVENT_TYPES: [&str; 4] = [
 const BUSY_RETRY: Duration = Duration::from_secs(10);
 
 /// Redeliveries before a delivery is dead-lettered. A rebuild of a large
-/// library can hold the index for minutes, and each wait is
-/// [`BUSY_RETRY`], so sixty retries cover ten minutes.
-const MAX_RETRIES: u32 = 60;
+/// library can hold the index for a long time, and each wait is
+/// [`BUSY_RETRY`], so 360 retries cover an hour.
+const MAX_RETRIES: u32 = 360;
 
 /// How long after a rebuild was admitted the heartbeat waits before it
 /// queues another for an index that is still incomplete, so a rebuild that
@@ -223,16 +223,15 @@ async fn apply_change(
             let listings = library.listing_refs_of_edition(edition_id).await?;
             engine.refresh_listings(library, &listings).await
         }
-        Change::Listing(listing_id) => {
-            // A listing that is gone has no titles left to show; its
-            // documents go with the next rebuild.
-            let listings: Vec<ListingRef> = library
-                .listing_ref_by_id(listing_id)
-                .await?
-                .into_iter()
-                .collect();
-            engine.refresh_listings(library, &listings).await
-        }
+        Change::Listing(listing_id) => match library.listing_ref_by_id(listing_id).await? {
+            Some(listing) => engine.refresh_listings(library, &[listing]).await,
+            None => {
+                // The listing is gone, so its term is unknown and its
+                // documents cannot be found: rebuild instead.
+                engine.mark_incomplete()?;
+                Ok(0)
+            }
+        },
         Change::Title(uuid) => {
             engine
                 .refresh_titles(library, std::slice::from_ref(uuid))

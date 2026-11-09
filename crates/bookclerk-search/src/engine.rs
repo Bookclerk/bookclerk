@@ -51,6 +51,9 @@ fn complete_marker() -> String {
     format!("bookclerk-complete-v{SCHEMA_VERSION}")
 }
 
+/// Serializes replacing an index of an older layout within this process.
+static REPLACE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Writer heap of an event refresh: Tantivy's one-thread minimum, since a
 /// refresh writes a handful of documents.
 const REFRESH_WRITER_HEAP: usize = 15_000_000;
@@ -185,9 +188,19 @@ impl SearchEngine {
             Err(TantivyError::SchemaError(_)) => {
                 // An index of an older layout: it is a cache of the
                 // library, so it is replaced and the missing marker asks
-                // for a rebuild.
-                Self::discard_index(dir)?;
-                Self::open_index(dir, schema)
+                // for a rebuild. Opens that race here replace it once: the
+                // later one opens again under the lock and finds the new
+                // index.
+                let _replacing = REPLACE_LOCK
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match Self::open_index(dir, schema.clone()) {
+                    Err(TantivyError::SchemaError(_)) => {
+                        Self::discard_index(dir)?;
+                        Self::open_index(dir, schema)
+                    }
+                    other => other,
+                }
             }
             other => other,
         }
@@ -331,13 +344,17 @@ impl SearchEngine {
         for (listing, books) in &titles {
             writer.delete_term(Term::from_field_text(self.listing, &listing.term()));
             for book in books {
+                // A title whose listing spelling changed still has a
+                // document under the old term; its uuid finds it.
+                writer.delete_term(Term::from_field_text(
+                    self.uuid,
+                    &book.uuid.to_ascii_lowercase(),
+                ));
                 self.add_book(&mut writer, book)?;
             }
             count += books.len();
         }
-        writer
-            .commit()
-            .map_err(|err| SearchError::Index(err.to_string()))?;
+        Self::commit_refresh(writer)?;
         Ok(count)
     }
 
@@ -370,10 +387,39 @@ impl SearchEngine {
                 count += 1;
             }
         }
+        Self::commit_refresh(writer)?;
+        Ok(count)
+    }
+
+    /// Commits a refresh, then lets the merges it started finish, so a
+    /// burst of events (a first scan) does not leave one tiny segment per
+    /// event behind.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Index`] when the commit or a merge fails.
+    fn commit_refresh(mut writer: IndexWriter) -> Result<()> {
         writer
             .commit()
             .map_err(|err| SearchError::Index(err.to_string()))?;
-        Ok(count)
+        writer
+            .wait_merging_threads()
+            .map_err(|err| SearchError::Index(err.to_string()))
+    }
+
+    /// Forgets that the index was fully rebuilt, so the daemon queues a new
+    /// rebuild. For a change a refresh cannot place, such as an event whose
+    /// listing is already gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Index`] when the marker cannot be removed.
+    pub fn mark_incomplete(&self) -> Result<()> {
+        match std::fs::remove_file(self.dir.join(complete_marker())) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(SearchError::Index(err.to_string())),
+        }
     }
 
     /// A one-thread writer for a small refresh.
@@ -567,20 +613,41 @@ impl SearchEngine {
             return Ok(SearchPage::default());
         };
         let searcher = self.reader()?.searcher();
-        if limit == 0 {
-            let total = searcher
-                .search(&query, &Count)
-                .map_err(|err| SearchError::Index(err.to_string()))?;
+        let total = searcher
+            .search(&query, &Count)
+            .map_err(|err| SearchError::Index(err.to_string()))?;
+        // Tantivy sizes its collector buffer from `offset + limit`, so both
+        // are bounded by the hits first: a huge `offset` from a query string
+        // must not ask for a huge allocation.
+        let take = limit.min(total.saturating_sub(offset));
+        if take == 0 {
             return Ok(SearchPage {
                 uuids: Vec::new(),
                 total,
             });
         }
-        let page = TopDocs::with_limit(limit)
+        let uuids = self.page_uuids(&searcher, query.as_ref(), offset, take)?;
+        Ok(SearchPage { uuids, total })
+    }
+
+    /// The uuids of hits `offset..offset + take` in title order, read from
+    /// one searcher; the caller keeps both within the hit count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Index`] when the index cannot be read.
+    fn page_uuids(
+        &self,
+        searcher: &tantivy::Searcher,
+        query: &dyn Query,
+        offset: usize,
+        take: usize,
+    ) -> Result<Vec<String>> {
+        let page = TopDocs::with_limit(take)
             .and_offset(offset)
             .order_by_string_fast_field("sort", Order::Asc);
-        let (total, docs) = searcher
-            .search(&query, &(Count, page))
+        let docs = searcher
+            .search(query, &page)
             .map_err(|err| SearchError::Index(err.to_string()))?;
         let mut uuids = Vec::with_capacity(docs.len());
         for (_, addr) in docs {
@@ -591,23 +658,31 @@ impl SearchEngine {
                 uuids.push(uuid.to_string());
             }
         }
-        Ok(SearchPage { uuids, total })
+        Ok(uuids)
     }
 
     /// The uuid of every document a query matches, in title order.
     ///
     /// For callers that must filter the hits by something the index does
-    /// not hold authoritatively; there is no cap. Blocking.
+    /// not hold authoritatively; there is no cap. The count and the hits
+    /// come from one searcher, so a commit in between cannot cut the list
+    /// short. Blocking.
     ///
     /// # Errors
     ///
     /// As [`Self::search_page`].
     pub fn match_uuids(&self, raw_query: &str) -> Result<Vec<String>> {
-        let total = self.search_page(raw_query, 0, 0)?.total;
+        let Some(query) = self.parse(raw_query)? else {
+            return Ok(Vec::new());
+        };
+        let searcher = self.reader()?.searcher();
+        let total = searcher
+            .search(&query, &Count)
+            .map_err(|err| SearchError::Index(err.to_string()))?;
         if total == 0 {
             return Ok(Vec::new());
         }
-        Ok(self.search_page(raw_query, 0, total)?.uuids)
+        self.page_uuids(&searcher, query.as_ref(), 0, total)
     }
 
     /// A reader on the latest commit.
@@ -820,6 +895,14 @@ mod tests {
             }
         );
         assert_eq!(engine.match_uuids("shelf").unwrap().len(), 3);
+        // An offset from a query string cannot size the collector.
+        assert_eq!(
+            engine.search_page("shelf", usize::MAX, 500).unwrap(),
+            SearchPage {
+                uuids: Vec::new(),
+                total: 3
+            }
+        );
         assert_eq!(
             engine.search_page("  ", 0, 10).unwrap(),
             SearchPage::default()
@@ -866,6 +949,9 @@ mod tests {
         assert!(!SearchEngine::is_complete(dir.path()));
         engine.rebuild(&library).await.unwrap();
         assert!(SearchEngine::is_complete(dir.path()));
+        engine.mark_incomplete().unwrap();
+        assert!(!SearchEngine::is_complete(dir.path()));
+        engine.mark_incomplete().unwrap();
     }
 
     #[tokio::test]
