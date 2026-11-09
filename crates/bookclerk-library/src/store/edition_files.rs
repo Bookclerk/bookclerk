@@ -253,34 +253,12 @@ impl LibraryStore {
     ///
     /// Returns an error when a read fails.
     pub async fn books_of_edition(&self, edition_id: &str) -> Result<BTreeSet<String>> {
-        let listings = store_listings::Entity::find()
-            .filter(store_listings::Column::EditionId.eq(edition_id))
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
         let mut uuids = BTreeSet::new();
-        for listing in listings {
-            // A row keeps its product id as the store spelled it, padding
-            // included, while the listing keeps the normalized spelling:
-            // narrow by the first word, then compare normalized.
-            let first_word = listing
-                .product_id
-                .split_whitespace()
-                .next()
-                .unwrap_or_default();
-            let rows = books::Entity::find()
-                .filter(books::Column::PluginKey.eq(listing.plugin_key.as_str()))
-                .filter(books::Column::ProductId.contains(first_word))
-                .all(self.db())
-                .await
-                .map_err(LibraryError::Orm)?;
+        for listing in self.listing_refs_of_edition(edition_id).await? {
             uuids.extend(
-                rows.into_iter()
-                    .filter(|b| {
-                        bookclerk_resolve::stored_product_id(&b.product_id) == listing.product_id
-                            && bookclerk_resolve::stored_marketplace(&b.marketplace)
-                                == listing.marketplace
-                    })
+                self.books_of_listing(&listing)
+                    .await?
+                    .into_iter()
                     .map(|b| b.uuid),
             );
         }

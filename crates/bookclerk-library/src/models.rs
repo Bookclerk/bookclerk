@@ -1366,6 +1366,10 @@ pub enum JobKind {
     /// (`cache_sweep`); only the node named by [`JobPayload::node_id`]
     /// claims it.
     CacheSweep,
+    /// Rebuild one node's full-text search index from the library
+    /// (`search_index_rebuild`); only the node named by
+    /// [`JobPayload::node_id`] claims it.
+    SearchIndexRebuild,
     /// Terminal placeholder after an unreadable persisted command is rejected.
     Invalid,
 }
@@ -1373,7 +1377,7 @@ pub enum JobKind {
 impl JobKind {
     /// Every kind, in declaration order; the SQL plans derive their kind
     /// lists from it so a new kind cannot be left unclaimable.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Scan,
         Self::Acquire,
         Self::ListenSync,
@@ -1383,6 +1387,7 @@ impl JobKind {
         Self::DiscoverCandidates,
         Self::DiscoverFeed,
         Self::CacheSweep,
+        Self::SearchIndexRebuild,
         Self::Invalid,
     ];
 
@@ -1399,6 +1404,7 @@ impl JobKind {
             Self::DiscoverCandidates => "discover_candidates",
             Self::DiscoverFeed => "discover_feed",
             Self::CacheSweep => "cache_sweep",
+            Self::SearchIndexRebuild => "search_index_rebuild",
             Self::Invalid => "invalid",
         }
     }
@@ -1416,6 +1422,7 @@ impl JobKind {
             "discover_candidates" => Some(Self::DiscoverCandidates),
             "discover_feed" => Some(Self::DiscoverFeed),
             "cache_sweep" => Some(Self::CacheSweep),
+            "search_index_rebuild" => Some(Self::SearchIndexRebuild),
             "invalid" => Some(Self::Invalid),
             _ => None,
         }
@@ -1495,6 +1502,11 @@ impl JobKind {
             // another sweep due folds into it.
             Self::CacheSweep => format!(
                 "cache_sweep:node={}",
+                payload.node_id.as_deref().unwrap_or("-")
+            ),
+            // One queued or running rebuild per node.
+            Self::SearchIndexRebuild => format!(
+                "search_index_rebuild:node={}",
                 payload.node_id.as_deref().unwrap_or("-")
             ),
             Self::Invalid => "invalid".into(),
@@ -1720,7 +1732,7 @@ pub struct JobPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
     /// The one node that may claim this job, for work on that node's own
-    /// disk ([`JobKind::CacheSweep`]).
+    /// disk ([`JobKind::CacheSweep`], [`JobKind::SearchIndexRebuild`]).
     ///
     /// `None` lets any node that meets [`Self::requires`] claim it. The
     /// routed claim (`control_plane::claim_routed_job`) skips a job pinned
@@ -2727,6 +2739,14 @@ mod cache_sweep_tests {
         assert_eq!(
             JobKind::CacheSweep.dedup_key(&JobPayload::default()),
             "cache_sweep:node=-"
+        );
+        assert_eq!(
+            JobKind::parse("search_index_rebuild"),
+            Some(JobKind::SearchIndexRebuild)
+        );
+        assert_eq!(
+            JobKind::SearchIndexRebuild.dedup_key(&pinned("node-a")),
+            "search_index_rebuild:node=node-a"
         );
         // The pin is kept through storage and left out when absent.
         let json = serde_json::to_string(&pinned("node-a")).unwrap();

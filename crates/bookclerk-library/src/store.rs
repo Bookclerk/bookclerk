@@ -7154,6 +7154,7 @@ pub(crate) mod event_outbox;
 pub(crate) mod library_model;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
+pub(crate) mod search_feed;
 pub(crate) mod storage_scan;
 pub use discover::{DiscoverSubject, SeedScope, StoredCandidate, StoredFeed};
 pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
