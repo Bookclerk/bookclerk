@@ -1,5 +1,5 @@
 //! Plugin authoring tools behind the `bookclerk-plugin` CLI: `check`, `fmt`,
-//! `sync-embed`, `package`, and `smoke`.
+//! `sync-embed`, `package`, `smoke`, and `test`.
 //!
 //! Audience: plugin maintainers validating `plugin.toml` layout and packaging
 //! archives for distribution. Kept out of `bookclerk-plugin-sdk` so guest
@@ -10,12 +10,14 @@
 //! | [`check_plugin`] / [`fmt_plugin_toml`] / [`package_plugin`] | Validate, format, archive |
 //! | [`sync_embed`] | Optional workerd JS vendor |
 //! | [`run_tools_cli`] / [`smoke_plugin`] | CLI entry + live workerd smoke |
+//! | [`test_plugin`] | The plugin's suite under every database profile |
 //!
 //! See `docs/plugins/README.md` and the crate README.
 
 mod check;
 mod cli;
 mod package;
+mod profiles;
 mod smoke;
 
 pub use check::{
@@ -23,6 +25,10 @@ pub use check::{
 };
 pub use cli::run as run_tools_cli;
 pub use package::package_plugin;
+pub use profiles::{
+    detect_test_runner, kit_binary, test_plugin, TestRunner, KIT_BINARY_ENV, KIT_PROFILE_ENV,
+    TEST_DATABASE_PROFILES,
+};
 pub use smoke::smoke_plugin;
 
 use bookclerk_plugin_manifest::{format_manifest, parse, PluginManifest};
