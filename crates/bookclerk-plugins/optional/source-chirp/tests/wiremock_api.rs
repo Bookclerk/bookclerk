@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 
 use bookclerk_plugin_source_chirp::{
     fetch_title_materials, guest_fetch_title, guest_login, guest_scan, ChirpAuthFile, ChirpClient,
+    ChirpSource,
 };
-use bookclerk_storefront::LoginOptions;
+use bookclerk_storefront::{LoginOptions, PurchaseHintOpts, SourceError};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -243,4 +244,83 @@ async fn guest_fetch_uses_host_credentials() {
         .await
         .unwrap();
     assert_eq!(fetch.parts.len(), 1);
+}
+
+/// A price query for the Chirp product `id`.
+fn priced(id: &str) -> PurchaseHintOpts {
+    PurchaseHintOpts {
+        product_id: Some(id.into()),
+        title: Some(format!("Title {id}")),
+        region: "us".into(),
+        with_price: true,
+        ..PurchaseHintOpts::default()
+    }
+}
+
+#[tokio::test]
+async fn a_page_of_titles_is_priced_in_one_aliased_query() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(|req: &Request| {
+            assert_eq!(op_name(req).as_deref(), Some("BookclerkAudiobookPricings"));
+            graphql_response(serde_json::json!({ "data": {
+                "a0": { "id": "1", "currentProduct": {
+                    "id": "p1", "discountPrice": "$3.99", "discountedPriceCents": 399,
+                    "listingPrice": "$19.99", "isFreeListing": false
+                }},
+                "a1": null
+            }}))
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+    let hints = ChirpSource::with_graphql_url(server.uri())
+        .purchase_hints(&[priced("1"), priced("2")])
+        .await
+        .unwrap();
+    assert_eq!(hints.len(), 2);
+    assert!(hints[0].as_ref().unwrap().price_label.is_some());
+    assert!(hints[1].as_ref().unwrap().price_label.is_none());
+}
+
+#[tokio::test]
+async fn a_429_reaches_the_host_with_its_wait() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "30"))
+        .mount(&server)
+        .await;
+    let source = ChirpSource::with_graphql_url(server.uri());
+    for result in [
+        source.purchase_hints(&[priced("1")]).await.map(|_| ()),
+        source.purchase_hint(&priced("1")).await.map(|_| ()),
+    ] {
+        assert!(
+            matches!(result, Err(SourceError::RateLimited(Some(w))) if w.as_secs() == 30),
+            "{result:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_failed_pricing_query_leaves_the_titles_unpriced() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let source = ChirpSource::with_graphql_url(server.uri());
+    let hints = source.purchase_hints(&[priced("1")]).await.unwrap();
+    assert!(hints[0].as_ref().unwrap().price_label.is_none());
+    let hint = source.purchase_hint(&priced("1")).await.unwrap().unwrap();
+    assert!(hint.price_label.is_none());
+    // Nothing to price asks nothing.
+    let unpriced = PurchaseHintOpts {
+        with_price: false,
+        ..priced("1")
+    };
+    assert_eq!(source.purchase_hints(&[unpriced]).await.unwrap().len(), 1);
 }

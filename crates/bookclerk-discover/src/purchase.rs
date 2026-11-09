@@ -1326,6 +1326,233 @@ mod tests {
         ));
     }
 
+    /// How a [`BatchStore`] answers `purchase_hints`.
+    #[derive(Clone, Copy)]
+    enum Answer {
+        /// One hint per query: list 10.00, member 5.00.
+        Priced,
+        /// HTTP 429 with a wait of 30 s.
+        Limited,
+        /// A non-rate-limit failure.
+        Broken,
+    }
+
+    /// A storefront double that counts its batch calls.
+    struct BatchStore {
+        /// Store id.
+        id: &'static str,
+        /// What every batch gets.
+        answer: Answer,
+        /// `purchase_hints` calls received.
+        batches: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl bookclerk_source::ContentSource for BatchStore {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn portal_auth_mode(&self) -> bookclerk_source::PortalAuthMode {
+            bookclerk_source::PortalAuthMode::Password
+        }
+
+        fn portal_brand(&self) -> bookclerk_source::SourceBrand {
+            bookclerk_source::SourceBrand {
+                id: "fake",
+                name: "Fake",
+                bg: "#000000",
+                fg: "#ffffff",
+                accent: "#000000",
+                icon_url: "",
+            }
+        }
+
+        async fn login(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _opts: bookclerk_source::LoginOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::SourceAccount> {
+            Err(bookclerk_source::SourceError::api("unused"))
+        }
+
+        async fn list_accounts(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+        ) -> bookclerk_source::Result<Vec<bookclerk_source::SourceAccount>> {
+            Ok(Vec::new())
+        }
+
+        async fn scan(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _opts: bookclerk_source::ScanOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::ScanSummary> {
+            Ok(bookclerk_source::ScanSummary::default())
+        }
+
+        async fn fetch_title(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _account_id: &str,
+            _title_id: &str,
+            _opts: &bookclerk_source::FetchOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::SourceFetch> {
+            Err(bookclerk_source::SourceError::api("unused"))
+        }
+
+        async fn purchase_hint(
+            &self,
+            opts: &PurchaseHintOpts,
+        ) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
+            Ok(Some(SourcePurchaseHint {
+                product_id: opts.product_id.clone().unwrap_or_default(),
+                title: opts.title.clone(),
+                ..SourcePurchaseHint::default()
+            }))
+        }
+
+        async fn purchase_hints(
+            &self,
+            opts: &[PurchaseHintOpts],
+        ) -> bookclerk_source::Result<Vec<Option<SourcePurchaseHint>>> {
+            self.batches
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match self.answer {
+                Answer::Priced => Ok(opts
+                    .iter()
+                    .map(|o| {
+                        Some(SourcePurchaseHint {
+                            product_id: o.product_id.clone().unwrap_or_else(|| "p".into()),
+                            title: o.title.clone(),
+                            price_cents: Some(500),
+                            currency: Some("USD".into()),
+                            price_label: Some("$5.00".into()),
+                            list_price_cents: Some(1_000),
+                            list_price_label: Some("$10.00".into()),
+                            member_price_cents: Some(500),
+                            member_price_label: Some("$5.00".into()),
+                            ..SourcePurchaseHint::default()
+                        })
+                    })
+                    .collect()),
+                Answer::Limited => Err(bookclerk_source::SourceError::RateLimited(Some(
+                    Duration::from_secs(30),
+                ))),
+                Answer::Broken => Err(bookclerk_source::SourceError::api("down")),
+            }
+        }
+    }
+
+    /// A query whose title is unique to `name`, so tests share no cache row.
+    fn batch_query(name: &str, preferred: &[&str]) -> PurchaseHintsQuery {
+        PurchaseHintsQuery {
+            title: format!("Batch {name}"),
+            authors: None,
+            asin: None,
+            isbn: None,
+            candidate_source: None,
+            candidate_product_id: None,
+            store_editions: Vec::new(),
+            region: None,
+            preferred_sources: preferred.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
+    /// A registry of one [`BatchStore`] and the counter of its calls.
+    fn one_store(
+        id: &'static str,
+        answer: Answer,
+    ) -> (
+        SourceRegistry,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let batches = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = SourceRegistry::new();
+        registry.register(std::sync::Arc::new(BatchStore {
+            id,
+            answer,
+            batches: std::sync::Arc::clone(&batches),
+        }));
+        (registry, batches)
+    }
+
+    /// A page of cards is one call per store; member prices only reach a
+    /// viewer with an account there; answered queries come from the cache.
+    #[tokio::test]
+    async fn a_batch_is_one_call_per_store_and_respects_membership() {
+        let (registry, batches) = one_store("batch-priced", Answer::Priced);
+        let queries = vec![
+            batch_query("member", &["batch-priced"]),
+            batch_query("stranger", &[]),
+        ];
+        let results = resolve_purchase_hints_batch(&registry, &queries, 4).await;
+        assert_eq!(batches.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let member = results[0].as_ref().unwrap().best.clone().unwrap();
+        assert_eq!(member.price_cents, Some(500));
+        let stranger = results[1].as_ref().unwrap().best.clone().unwrap();
+        assert_eq!(stranger.price_cents, Some(1_000));
+        assert!(stranger.member_price_cents.is_none());
+
+        let again = resolve_purchase_hints_batch(&registry, &queries, 4).await;
+        assert_eq!(batches.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(again[0].as_ref().unwrap().best.is_some());
+    }
+
+    /// A 429 pauses the store: the next batch does not ask it, and nothing
+    /// unanswered is cached.
+    #[tokio::test]
+    async fn a_rate_limited_store_is_paused_for_the_next_batch() {
+        let (registry, batches) = one_store("batch-limited", Answer::Limited);
+        let first = vec![batch_query("limited-1", &[])];
+        let results = resolve_purchase_hints_batch(&registry, &first, 4).await;
+        assert!(results[0].as_ref().unwrap().hints.is_empty());
+        assert!(store_breaker_open(
+            "batch-limited",
+            std::time::Instant::now()
+        ));
+        let second = vec![batch_query("limited-2", &[])];
+        resolve_purchase_hints_batch(&registry, &second, 4).await;
+        assert_eq!(batches.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Any other failure leaves the card's links and closes the breaker.
+    #[tokio::test]
+    async fn a_failing_store_leaves_the_trusted_links() {
+        let (registry, batches) = one_store("batch-broken", Answer::Broken);
+        let mut query = batch_query("broken", &[]);
+        query.asin = Some("B000000009".into());
+        let results = resolve_purchase_hints_batch(&registry, &[query.clone()], 4).await;
+        assert_eq!(batches.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let response = results[0].as_ref().unwrap();
+        assert_eq!(response.hints[0].source, "audible");
+        assert!(response.hints[0].price_cents.is_none());
+        assert!(!store_breaker_open(
+            "batch-broken",
+            std::time::Instant::now()
+        ));
+    }
+
+    /// A single-title lookup honors a pause too.
+    #[tokio::test]
+    async fn a_paused_store_is_skipped_by_single_lookups() {
+        let (registry, _) = one_store("single-paused", Answer::Priced);
+        note_store_rate_limit(
+            "single-paused",
+            Some(Duration::from_secs(60)),
+            std::time::Instant::now(),
+        );
+        let mut hints = Vec::new();
+        let opts = PurchaseHintOpts {
+            title: Some("Paused".into()),
+            with_price: true,
+            region: "us".into(),
+            ..PurchaseHintOpts::default()
+        };
+        append_registry_hints(&registry, &mut hints, &opts, None).await;
+        assert!(hints.is_empty());
+    }
+
     #[test]
     fn a_batch_asks_a_store_about_the_product_id_it_already_knows() {
         let query = PurchaseHintsQuery {

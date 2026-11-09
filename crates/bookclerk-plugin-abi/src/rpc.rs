@@ -5693,6 +5693,75 @@ mod tests {
         }
     }
 
+    /// Answers from the product id, or asks the caller to slow down.
+    struct PricingStore {
+        /// Fail every batch with a rate limit instead of answering.
+        limited: bool,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl ContentSource for PricingStore {
+        async fn purchase_hint(&self, params: PurchaseHintParams) -> Result<Option<PurchaseHint>> {
+            if self.limited {
+                return Err(PluginError::rate_limited(
+                    "slow down",
+                    Some(std::time::Duration::from_secs(9)),
+                ));
+            }
+            Ok(params.product_id.map(|product_id| PurchaseHint {
+                product_id,
+                ..PurchaseHint::default()
+            }))
+        }
+    }
+
+    /// A batch crosses the wire in order, `None` stays `None`, and a rate
+    /// limit keeps its code.
+    #[tokio::test(flavor = "current_thread")]
+    async fn purchase_hints_round_trip_over_capnp() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let client = ContentSourceClient {
+                    client: capnp_rpc::new_client(ContentSourceServer {
+                        inner: Arc::new(PricingStore { limited: false }),
+                    }),
+                };
+                let queries = vec![
+                    PurchaseHintParams {
+                        product_id: Some("a".into()),
+                        ..PurchaseHintParams::default()
+                    },
+                    PurchaseHintParams::default(),
+                    PurchaseHintParams {
+                        product_id: Some("c".into()),
+                        ..PurchaseHintParams::default()
+                    },
+                ];
+                let hints = client
+                    .purchase_hints(PurchaseHintsParams { queries })
+                    .await
+                    .expect("a batch");
+                let ids: Vec<Option<String>> =
+                    hints.into_iter().map(|h| h.map(|h| h.product_id)).collect();
+                assert_eq!(ids, vec![Some("a".into()), None, Some("c".into())]);
+
+                let limited = ContentSourceClient {
+                    client: capnp_rpc::new_client(ContentSourceServer {
+                        inner: Arc::new(PricingStore { limited: true }),
+                    }),
+                };
+                let err = limited
+                    .purchase_hints(PurchaseHintsParams {
+                        queries: vec![PurchaseHintParams::default()],
+                    })
+                    .await
+                    .expect_err("a rate limit");
+                assert_eq!(err.code, PluginErrorCode::RateLimited, "{err}");
+            })
+            .await;
+    }
+
     /// A peer that answers `executeStreamed` with `unimplemented` is reported
     /// as `unsupported`, so callers fall back to inline reads; any other
     /// transport failure stays `unavailable`.

@@ -671,17 +671,29 @@ async fn fetch_audible_prices(
     asins: &[String],
     region: &str,
 ) -> bookclerk_storefront::Result<std::collections::HashMap<String, DualPriced>> {
-    let mut out = std::collections::HashMap::new();
-    let Ok(http) = public_http_client() else {
-        return Ok(out);
-    };
     let region = normalize_region(region);
     let url = format!(
         "https://api.audible{}/1.0/catalog/products",
         region_tld(&region)
     );
+    fetch_audible_prices_from(&url, asins).await
+}
+
+/// [`fetch_audible_prices`] against the catalog `products` endpoint at `url`.
+///
+/// # Errors
+///
+/// As [`fetch_audible_prices`].
+async fn fetch_audible_prices_from(
+    url: &str,
+    asins: &[String],
+) -> bookclerk_storefront::Result<std::collections::HashMap<String, DualPriced>> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(http) = public_http_client() else {
+        return Ok(out);
+    };
     let Ok(resp) = http
-        .get(&url)
+        .get(url)
         .query(&[
             ("asins", asins.join(",").as_str()),
             ("num_results", asins.len().to_string().as_str()),
@@ -867,6 +879,76 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+    use wiremock::matchers::{method, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// One `products` entry priced at list 20.00, member 12.00.
+    fn product(asin: &str) -> Value {
+        json!({ "asin": asin, "price": {
+            "list_price": { "base": 20.0, "currency_code": "USD" },
+            "lowest_price": { "base": 12.0, "currency_code": "USD", "type": "member" }
+        }})
+    }
+
+    #[tokio::test]
+    async fn one_request_prices_several_asins() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(query_param("asins", "B000000001,B000000002"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({ "products": [product("b000000001"), { "asin": "B000000002" }] }),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let prices = fetch_audible_prices_from(
+            &server.uri(),
+            &["B000000001".to_string(), "B000000002".to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(prices.len(), 1, "the unpriced ASIN is absent");
+        let priced = &prices["B000000001"];
+        assert_eq!(priced.list_cents, Some(2000));
+        assert_eq!(priced.member_cents, Some(1200));
+    }
+
+    #[tokio::test]
+    async fn a_429_keeps_its_wait_and_other_failures_are_no_price() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "45"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        let asins = ["B000000001".to_string()];
+        let limited = fetch_audible_prices_from(&server.uri(), &asins).await;
+        assert!(
+            matches!(limited, Err(SourceError::RateLimited(Some(w))) if w.as_secs() == 45),
+            "{:?}",
+            limited.map(|m| m.len())
+        );
+        let failed = fetch_audible_prices_from(&server.uri(), &asins)
+            .await
+            .unwrap();
+        assert!(failed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_batch_without_prices_resolves_links_and_asks_nothing() {
+        let opts = PurchaseHintOpts {
+            asin: Some("B000000001".into()),
+            region: "us".into(),
+            with_price: false,
+            ..PurchaseHintOpts::default()
+        };
+        let hints = purchase_hints(&[opts]).await.unwrap();
+        assert_eq!(hints[0].as_ref().unwrap().product_id, "B000000001");
+    }
 
     #[test]
     fn audible_price_json_member_and_list() {
