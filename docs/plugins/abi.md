@@ -888,7 +888,10 @@ The typed methods on `CoverFetcher` and `CoverEntrypoint` are:
   fails that `put` with `payload_too_large`; every other method is
   `unsupported`.
 - Answer a failed URL with `stored: false` and an `error` such as
-  `HTTP 404`. Throw only when the whole request is malformed.
+  `HTTP 404`. The host reads `HTTP 404` as a missing image: it answers its
+  own `404` for that URL and remembers it like any other failure, rather
+  than reporting a gateway error. Throw only when the whole request is
+  malformed.
 - The host checks the answer: one entry per URL, the URLs as asked, and a
   body for every `stored: true`. A `stored` answer with no body becomes an
   error.
