@@ -8027,6 +8027,12 @@ function decodeExecuteRequest(bytes) {
     deadlineUnixMs: Number(root.getUint64(3))
   };
 }
+function encodeExecuteReply(reply) {
+  const msg = new CapnpMessage();
+  const root = msg.initRoot(0, 3);
+  writeExecuteReply(root, reply);
+  return msg.finish();
+}
 function encodeExecuteResultReply(outcome) {
   const msg = new CapnpMessage();
   const root = msg.initRoot(1, 1);
@@ -11602,8 +11608,18 @@ async function executeAdapterBatchStreamed(request, begin, options) {
     const reply = await runAdapterBatch(request, txn, options);
     const frames = encodeExecuteStream(reply, STREAM_FRAME_TARGET_BYTES, MAX_SCALAR_BYTES);
     decodeExecuteStream(frames, options.limits);
+    requireReplyWithinBudget(reply, options.limits);
     return frames;
   });
+}
+function requireReplyWithinBudget(reply, limits) {
+  if (limits.maxBytes === 0) {
+    return;
+  }
+  const used = encodeExecuteReply(reply).length;
+  if (used > limits.maxBytes) {
+    throw PluginError.limitExceeded({ limit: limits.bytesLimit, cap: limits.maxBytes, used });
+  }
 }
 async function inTransaction(begin, body) {
   const txn = await begin();

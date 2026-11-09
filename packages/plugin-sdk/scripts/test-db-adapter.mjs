@@ -352,6 +352,28 @@ assert.match(embed, /export \{[^}]*\bexecuteAdapterBatch,[^}]*\bexecuteAdapterBa
   assert.equal(engine.notes().length, 1, "the write ran once");
 }
 
+// #761: a reply whose encoded size passes the streamed byte budget but fits
+// the decoder's framing slack still rolls back: the host holds the
+// reassembled reply to the budget itself.
+{
+  const engine = new Engine();
+  const tight = { ...OPTIONS, limits: { ...LIMITS, maxBytes: 256 } };
+  await rejectsWith(
+    executeAdapterBatchStreamed(request("write"), engine.begin, tight),
+    "limit_exceeded",
+    /maxStreamedResultBytes is 256; used \d+/,
+  );
+  assert.equal(engine.commits, 0);
+  assert.equal(engine.rollbacks, 1);
+  assert.equal(engine.hasNotes(), false);
+  assert.equal(engine.receipt("fixture-write"), undefined);
+  const unlimited = { ...OPTIONS, limits: { ...LIMITS, maxBytes: 0 } };
+  await executeAdapterBatchStreamed(request("write"), engine.begin, unlimited);
+  await executeAdapterBatchStreamed(request("write"), engine.begin, STREAMED);
+  assert.equal(engine.commits, 2);
+  assert.equal(engine.notes().length, 1, "the write ran once");
+}
+
 // #761: a result cell the host would refuse (TEXT with U+0000) rolls the
 // batch back before its receipt commits.
 {

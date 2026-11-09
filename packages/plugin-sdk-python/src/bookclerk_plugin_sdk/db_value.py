@@ -1712,9 +1712,11 @@ async def execute_adapter_batch_streamed(
     An isolate adapter's frames cross the invoke reply as one scalar. The
     frames are encoded inside the transaction: encoding stops with
     ``limit_exceeded`` (``maxScalarBytes``) as soon as they pass
-    ``MAX_SCALAR_BYTES``, and the finished frames are decoded under ``limits``
-    the way the host decodes them. Either failure rolls the batch back, so
-    nothing commits that the host would refuse.
+    ``MAX_SCALAR_BYTES``, the finished frames are decoded under ``limits`` the
+    way the host decodes them, and the reassembled reply's encoded size is
+    held to ``limits.max_bytes`` the way the host validates it (the decoder
+    alone allows framing slack past the budget). Any failure rolls the batch
+    back, so nothing commits that the host would refuse.
 
     Args:
         request: The adapter request (``executeStreamed``).
@@ -1735,9 +1737,37 @@ async def execute_adapter_batch_streamed(
         reply = await run_adapter_batch(request, txn, timing_source)
         frames = encode_execute_stream(reply, max_bytes=MAX_SCALAR_BYTES)
         decode_execute_stream(frames, limits)
+        _require_reply_within_budget(reply, limits)
         return frames
 
     return await _in_transaction(begin, body)
+
+
+def _require_reply_within_budget(reply: ExecuteReply, limits: ExecuteStreamLimits) -> None:
+    """Hold a reply's encoded ``ExecuteReply`` size to the streamed budget.
+
+    The host checks the reassembled reply this way. Each statement result
+    encodes smaller than the whole reply, so this also covers the host's
+    per-statement byte check under the same budget.
+
+    Args:
+        reply: The reply about to commit.
+        limits: The advertised streamed budget (``max_bytes`` ``0`` =
+            unlimited, as the host reads it).
+
+    Raises:
+        PluginError: ``limit_exceeded`` naming ``limits.bytes_limit`` when the
+            encoded reply is larger than ``limits.max_bytes``.
+    """
+    if limits.max_bytes == 0:
+        return
+    msg = _CapnpMessage()
+    _write_execute_reply(msg.init_root(0, 3), reply)
+    used = len(msg.finish())
+    if used > limits.max_bytes:
+        raise _plugin_error().limit_exceeded(
+            LimitExceeded(limits.bytes_limit, limits.max_bytes, used)
+        )
 
 
 async def _in_transaction(

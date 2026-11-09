@@ -24,7 +24,13 @@
  */
 
 import { MAX_SCALAR_BYTES } from "./abi.js";
-import type { DbColumn, DbRow, ExecuteReply, StatementResult } from "./db-execute.js";
+import {
+  encodeExecuteReply,
+  type DbColumn,
+  type DbRow,
+  type ExecuteReply,
+  type StatementResult,
+} from "./db-execute.js";
 import type { DbValue } from "./db-value.js";
 import { decodeExecuteStream, validateCell, type ExecuteStreamLimits } from "./db-stream.js";
 import { PluginError } from "./errors.js";
@@ -154,9 +160,11 @@ export async function executeAdapterBatch(
  *
  * The frames are encoded inside the transaction. Encoding stops with
  * `limit_exceeded` (`maxScalarBytes`) as soon as they pass one invoke
- * scalar, and the finished frames are decoded under `options.limits` the way
- * the host decodes them. Either failure rolls the batch back, so nothing
- * commits that the host would refuse.
+ * scalar, the finished frames are decoded under `options.limits` the way
+ * the host decodes them, and the reassembled reply's encoded size is held to
+ * `options.limits.maxBytes` the way the host validates it (the decoder alone
+ * allows framing slack past the budget). Any failure rolls the batch back,
+ * so nothing commits that the host would refuse.
  *
  * @param request - The adapter request (`executeStreamed`).
  * @param begin - Opens a transaction on the adapter's engine.
@@ -174,8 +182,32 @@ export async function executeAdapterBatchStreamed(
     const reply = await runAdapterBatch(request, txn, options);
     const frames = encodeExecuteStream(reply, STREAM_FRAME_TARGET_BYTES, MAX_SCALAR_BYTES);
     decodeExecuteStream(frames, options.limits);
+    requireReplyWithinBudget(reply, options.limits);
     return frames;
   });
+}
+
+/**
+ * Holds a reply's encoded `ExecuteReply` size to the streamed budget, as the
+ * host does after it reassembles the frames.
+ *
+ * Each statement result encodes smaller than the whole reply, so this also
+ * covers the host's per-statement byte check under the same budget.
+ *
+ * @param reply - The reply about to commit.
+ * @param limits - The advertised streamed budget (`maxBytes` `0` = unlimited,
+ *   as the host reads it).
+ * @throws `PluginError` `limit_exceeded` naming `limits.bytesLimit` when the
+ *   encoded reply is larger than `limits.maxBytes`.
+ */
+function requireReplyWithinBudget(reply: ExecuteReply, limits: ExecuteStreamLimits): void {
+  if (limits.maxBytes === 0) {
+    return;
+  }
+  const used = encodeExecuteReply(reply).length;
+  if (used > limits.maxBytes) {
+    throw PluginError.limitExceeded({ limit: limits.bytesLimit, cap: limits.maxBytes, used });
+  }
 }
 
 /**

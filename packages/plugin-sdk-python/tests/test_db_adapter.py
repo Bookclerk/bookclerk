@@ -306,6 +306,22 @@ class BatchTest(unittest.TestCase):
         self.assertEqual(engine.commits, 2)
         self.assertEqual(engine.note_count(), 1)
 
+    def test_reply_over_the_streamed_byte_budget_rolls_back_then_commits_once(self) -> None:
+        engine = self._engine()
+        tight = dataclasses.replace(LIMITS, max_bytes=256)
+        with self.assertRaises(PluginError) as caught:
+            _run(execute_adapter_batch_streamed(_request("write"), engine.begin, SOURCE, tight))
+        self.assertEqual(caught.exception.code, "limit_exceeded")
+        self.assertRegex(str(caught.exception), r"maxStreamedResultBytes is 256; used \d+")
+        self.assertEqual(engine.commits, 0)
+        self.assertFalse(engine.has_notes())
+        self.assertIsNone(engine.receipt("fixture-write"))
+        unlimited = dataclasses.replace(LIMITS, max_bytes=0)
+        _run(execute_adapter_batch_streamed(_request("write"), engine.begin, SOURCE, unlimited))
+        _run(execute_adapter_batch_streamed(_request("write"), engine.begin, SOURCE, LIMITS))
+        self.assertEqual(engine.commits, 2)
+        self.assertEqual(engine.note_count(), 1)
+
     def test_invalid_result_cell_rolls_back_before_the_receipt(self) -> None:
         engine = self._engine()
         _run(execute_adapter_batch(_request("write"), engine.begin, SOURCE))
