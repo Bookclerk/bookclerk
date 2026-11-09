@@ -1226,10 +1226,9 @@ mod isolate_adapter_fixture {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE);
         let mut text = serde_json::to_string_pretty(&fixture()).expect("encode");
         text.push('\n');
+        // Regenerating writes the vector, then checks it like any other run.
         if std::env::var_os("UPDATE_GUEST_RECEIPT_FIXTURE").is_some() {
-            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
             std::fs::write(&path, &text).expect("write fixture");
-            return;
         }
         let committed = std::fs::read_to_string(&path).unwrap_or_default();
         assert!(
@@ -1244,9 +1243,10 @@ mod isolate_adapter_fixture {
         let finalize =
             bookclerk_db_exec::guest_receipt_finalize_stmts(&partial, 2, &"c".repeat(64), false)
                 .expect("finalize");
-        let DbValue::Text(payload) = &finalize[0].parameters[0] else {
-            panic!("finalize binds the payload first");
-        };
+        let bound = serde_json::to_value(&finalize[0].parameters[0]).expect("encode");
+        let payload = bound["value"]
+            .as_str()
+            .expect("finalize binds the payload text first");
         let decoded: GuestReplayPayload = serde_json::from_str(payload).expect("decode");
         assert_eq!(decoded.statements, partial.statements[2..4].to_vec());
     }
