@@ -91,7 +91,7 @@ language (embedding and runtime settings):
 
 | Launcher | Example |
 | --- | --- |
-| Rust | `cargo plugin -- check .` / `cargo plugin -- smoke .` / `cargo plugin -- package --out dist .` |
+| Rust | `cargo plugin -- check .` / `cargo plugin -- smoke .` / `cargo plugin -- test .` / `cargo plugin -- package --out dist .` |
 | TypeScript | `npx bookclerk-plugin check .` / `npx bookclerk-plugin smoke .` |
 | Python | `python -m bookclerk_plugin_sdk check .` / `python -m bookclerk_plugin_sdk smoke .` |
 
@@ -103,6 +103,10 @@ language (embedding and runtime settings):
    `BRIDGE_TOKEN`.
 3. POSTs `describe` (plus the role's `health` route) with
    `Authorization: Bearer …`.
+
+`test` (Rust CLI only) runs the plugin's own suite once per database
+capability profile; see
+[Database limits](../plugins/database-limits.md#the-suite-under-every-profile).
 
 The Rust CLI lives in the **`bookclerk-plugin-tools`** crate (`cargo plugin`
 runs its `bookclerk-plugin` binary), and uses the `bookclerk-workerd`
