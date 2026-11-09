@@ -852,26 +852,28 @@ and plugin changes reach the demo), and on demand.
 
 The demo image carries a pre-seeded library whose store records and Discover
 shelves are cached for a day. A container that boots from an older template
-fetches them again, so its first pages are slow. Once a day (06:17 UTC,
-after the nightly publish) the workflow refreshes the seed without moving
-the demo to newer code:
+fetches them again, so its first pages are slow. The run after each nightly
+publish keeps the seed current without moving the demo to newer code:
 
-1. It asks the live demo's `/_demo/health` which commit it runs.
-2. It stops when a run in the last 20 hours already baked a fresh seed: a
-   push (which builds its image), a run after a publish (which deploys the
-   image that publish just built) or another refresh. A release run doesn't
-   count, since it can deploy an image built days earlier.
-3. It verifies that commit's published demo image as above, and stops when
-   there is none or it fails verification. A refresh never builds the
-   release binaries.
-4. It re-bakes only the seed on top of that image with
+1. When the live demo already runs the published commit (the run would
+   otherwise stop), it checks whether a run in the last 12 hours baked a
+   seed: a push (which builds its image), a run after a publish (which
+   deploys the image that publish just built) or another refresh. A release
+   run doesn't count, since it can deploy an image built days earlier.
+2. If none did, it verifies that commit's published demo image as above,
+   and stops when there is none. A refresh never builds the release
+   binaries.
+3. It re-bakes only the seed on top of that image with
    `packaging/demo/Dockerfile.refresh` and the commit's own
    `packaging/demo/bake-seed.sh`, then deploys the result with that commit's
    Worker, as any other deploy.
 
-Refresh runs are named `Refresh demo seed`, so they never count as a deploy
-of a commit. A manual run with the **refresh** input checked refreshes at
-once, without the 20-hour check.
+The refresh rides on the nightly publish rather than a schedule of its own,
+because GitHub starts scheduled runs hours late: a separate schedule would
+often fire before the nightly deploy and bake a seed that deploy replaces.
+A manual run with the **refresh** input checked re-bakes the live commit's
+seed at once, without the 12-hour check. Its run is named
+`Refresh demo seed`, so it never counts as a deploy of a commit.
 
 ### API token permissions
 

@@ -19,12 +19,13 @@
 # Once a day it also refreshes the seed: the baked library's store records
 # and Discover shelves are cached for a day, and a container that boots
 # from an older template fetches them again, which makes its first pages
-# slow. The refresh reads which commit the live demo runs, re-bakes only
-# the seed on top of that commit's verified published image
-# (packaging/demo/Dockerfile.refresh, a few minutes) and redeploys the same
-# commit, so it never moves the demo to newer code. It stops when a deploy
-# or refresh already baked a fresh seed in the last 20 hours. A manual run
-# with `refresh` does the same at once.
+# slow. When the run after the nightly publish finds that the live demo
+# already runs the published commit, and no run in the last 12 hours baked
+# a seed, it re-bakes only the seed on top of that commit's verified
+# published image (packaging/demo/Dockerfile.refresh, a few minutes) and
+# redeploys the same commit. It never moves the demo to newer code and
+# never builds the release binaries. A manual run with `refresh` re-bakes
+# the live commit's seed at once.
 #
 # GitHub repository secrets (without the first two the workflow only prints a
 # notice, so a fork without Cloudflare credentials stays green):
@@ -53,10 +54,10 @@
 name: demo-deploy
 # Names the deployed commit, which after a publish is not the run's head_sha
 # (main's newest commit); the gate finds earlier deploys of a commit by it. A
-# seed refresh learns its commit from the live demo, so its name names none
-# and never matches a deploy.
+# manual seed refresh learns its commit from the live demo, so its name names
+# none and never matches a deploy.
 run-name: >-
-  ${{ (github.event_name == 'schedule' || inputs.refresh) && 'Refresh demo seed'
+  ${{ inputs.refresh && 'Refresh demo seed'
   || format('Deploy demo {0}', github.event.workflow_run.head_sha || github.sha) }}
 
 on:
@@ -69,16 +70,12 @@ on:
   release:
     types: [published]
   # Replaces a nightly schedule of its own: the nightly image publish builds
-  # the same demo image, so the demo deploys the one it pushed.
+  # the same demo image, so the demo deploys the one it pushed, and a night
+  # with nothing new to deploy refreshes the seed instead.
   workflow_run:
     workflows: ["Publish images"]
     types: [completed]
     branches: [main]
-  # The daily seed refresh, two and a half hours after the nightly image
-  # publish (images-publish.yml, 03:47 UTC) so a night with a deploy has
-  # finished it and the refresh stops early.
-  schedule:
-    - cron: "17 6 * * *"
   workflow_dispatch:
     inputs:
       refresh:
@@ -143,11 +140,10 @@ jobs:
       # (a push deployed it while the images were building), so the demo
       # never goes back. Pushes and manual runs always deploy.
       #
-      # A seed refresh deploys the commit the live demo runs. A scheduled one
-      # stops when a run in the last 20 hours already baked a fresh seed: a
-      # push (which builds its image), an after-publish run (which deploys
-      # the image that publish just built) or another refresh. A release run
-      # does not count, since it may deploy an image built days earlier.
+      # An after-publish run that would stop because the live demo already
+      # runs its commit refreshes that commit's seed instead, unless a run
+      # in the last 12 hours already baked one. A manual refresh deploys the
+      # commit the live demo runs.
       #
       # Then the image: the one images-publish.yml pushed for this commit,
       # when its provenance attestation proves that workflow in this
@@ -162,7 +158,7 @@ jobs:
         env:
           READY: ${{ steps.secrets.outputs.ready }}
           EVENT: ${{ github.event_name }}
-          REFRESH: ${{ github.event_name == 'schedule' || inputs.refresh }}
+          REFRESH: ${{ inputs.refresh }}
           DOMAIN: ${{ vars.DOMAIN }}
           DEMO_URL: ${{ vars.DEMO_URL }}
           # After a publish, the commit that run built, which main may
@@ -195,30 +191,43 @@ jobs:
               live=$(python3 scripts/demo_image.py live <<<"$body")
             fi
           fi
-          if [ "$deploy" = true ] && [ "$REFRESH" = true ]; then
-            fresh=0
-            if [ "$EVENT" = schedule ]; then
-              since=$(date -u -d '20 hours ago' +%Y-%m-%dT%H:%M:%SZ)
-              runs=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/demo-deploy.yml/runs" \
-                -f status=success -f "created=>=$since" -f per_page=100 \
-                --jq '.workflow_runs[] | select(.event == "push" or .event == "workflow_run" or .event == "schedule" or (.event == "workflow_dispatch" and .display_title == "Refresh demo seed")) | .id' \
-                2>/dev/null || true)
-              for run in $runs; do
-                if checked "$run"; then fresh=1; break; fi
-              done
-            fi
+          # Whether a run in the last 12 hours already baked a fresh seed: a
+          # push (which builds its image), an after-publish deploy (which
+          # deploys the image that publish just built) or a refresh. A
+          # release run does not count, since it can deploy an image built
+          # days earlier.
+          seed_is_fresh() {
+            local since runs run
+            since=$(date -u -d '12 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+            runs=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/demo-deploy.yml/runs" \
+              -f status=success -f "created=>=$since" -f per_page=100 \
+              --jq '.workflow_runs[] | select(.event == "push" or .event == "workflow_run" or (.event == "workflow_dispatch" and .display_title == "Refresh demo seed")) | .id' \
+              2>/dev/null || true)
+            for run in $runs; do
+              if checked "$run"; then return 0; fi
+            done
+            return 1
+          }
+          # Turns this run into a seed refresh of the live commit, or says
+          # why it can't be one.
+          refresh=false
+          start_refresh() {
             if [ -z "$live" ]; then
               echo "::notice::${url:-The demo} reports no commit; no seed to refresh"
-              deploy=false
-            elif [ "$fresh" -gt 0 ]; then
-              echo "::notice::A deploy in the last 20 hours already baked a fresh seed; nothing to refresh"
-              deploy=false
-            elif ! gh api "repos/$GITHUB_REPOSITORY/contents/packaging/demo/bake-seed.sh?ref=$live" --silent 2>/dev/null; then
+              return 1
+            fi
+            if ! gh api "repos/$GITHUB_REPOSITORY/contents/packaging/demo/bake-seed.sh?ref=$live" --silent 2>/dev/null; then
               echo "::notice::$live bakes no seed at build time (no packaging/demo/bake-seed.sh); nothing to refresh"
-              deploy=false
-            else
+              return 1
+            fi
+            SHA="$live"
+            refresh=true
+          }
+          if [ "$deploy" = true ] && [ "$REFRESH" = true ]; then
+            if start_refresh; then
               echo "Refreshing the seed of $live, the commit $url runs"
-              SHA="$live"
+            else
+              deploy=false
             fi
           elif [ "$deploy" = true ] && { [ "$EVENT" = workflow_run ] || [ "$EVENT" = release ]; }; then
             # The Worker reports the new version as soon as it is uploaded,
@@ -236,8 +245,17 @@ jobs:
               if checked "$run"; then done=1; break; fi
             done
             if [ "$live" = "$SHA" ] && [ "$done" -gt 0 ]; then
-              echo "::notice::$url already runs $SHA; nothing to deploy"
-              deploy=false
+              # The nightly publish found nothing newer: keep the seed of
+              # the commit the demo runs from going stale instead.
+              if [ "$EVENT" = workflow_run ] && seed_is_fresh; then
+                echo "::notice::$url already runs $SHA with a seed baked in the last 12 hours; nothing to deploy"
+                deploy=false
+              elif [ "$EVENT" = workflow_run ] && start_refresh; then
+                echo "::notice::$url already runs $SHA; refreshing its seed"
+              else
+                echo "::notice::$url already runs $SHA; nothing to deploy"
+                deploy=false
+              fi
             elif [ "$EVENT" = workflow_run ] && [ -n "$live" ] && [ "$live" != "$SHA" ] \
               && [ "$(gh api "repos/$GITHUB_REPOSITORY/compare/$SHA...$live" --jq '.status' 2>/dev/null || true)" = ahead ]; then
               echo "::notice::$url already runs $live, which is newer than $SHA; nothing to deploy"
@@ -298,7 +316,7 @@ jobs:
                 --deny-self-hosted-runners >/dev/null; then
                 image="$repo@$digest"
                 echo "::notice::Deploying the published demo image $image"
-              elif [ "$REFRESH" = true ]; then
+              elif [ "$refresh" = true ]; then
                 echo "::warning::$repo@$digest failed provenance verification; no seed refresh"
                 deploy=false
               else
@@ -313,8 +331,7 @@ jobs:
               echo "No published demo image for $SHA; building it here"
             fi
           fi
-          refresh=false
-          if [ "$deploy" = true ] && [ "$REFRESH" = true ]; then refresh=true; fi
+          if [ "$deploy" != true ]; then refresh=false; fi
           echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "image=$image" >> "$GITHUB_OUTPUT"

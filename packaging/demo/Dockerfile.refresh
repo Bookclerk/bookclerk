@@ -1,7 +1,7 @@
 # Re-bakes the hosted demo's seeded library on top of an existing demo image,
-# leaving every binary and plugin as they are. demo-deploy.yml runs it once
-# a day on the published image of the commit the live demo runs, then
-# redeploys that same commit:
+# leaving every binary and plugin as they are. demo-deploy.yml runs it after
+# a nightly publish with nothing new to deploy, on the published image of the
+# commit the live demo runs, then redeploys that same commit:
 #
 #   docker buildx build --load --build-arg BASE=<demo image> \
 #     --tag bookclerk-demo:local <dir with this file as Dockerfile and bake-seed.sh>
