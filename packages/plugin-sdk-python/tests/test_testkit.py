@@ -236,6 +236,26 @@ class CloseTests(unittest.TestCase):
 class TestDatabaseTests(unittest.TestCase):
     """The served binding under every profile."""
 
+    def test_the_variable_profile_reaches_the_kit(self) -> None:
+        """With ``BOOKCLERK_DB_TESTKIT_PROFILE`` set, a no-argument open serves that profile."""
+
+        async def scenario() -> None:
+            async with await create_test_database(profile="d1", migrations=MIGRATIONS) as explicit:
+                d1_limits = await explicit.limits()
+            async with await create_test_database(migrations=MIGRATIONS) as db:
+                self.assertEqual(db.profile, "d1")
+                self.assertEqual(await db.limits(), d1_limits)
+
+        saved = os.environ.pop("BOOKCLERK_DB_TESTKIT_PROFILE", None)
+        os.environ["BOOKCLERK_DB_TESTKIT_PROFILE"] = "d1"
+        try:
+            _run(scenario())
+        finally:
+            if saved is None:
+                os.environ.pop("BOOKCLERK_DB_TESTKIT_PROFILE", None)
+            else:
+                os.environ["BOOKCLERK_DB_TESTKIT_PROFILE"] = saved
+
     def test_schema_batch_and_scope_under_every_profile(self) -> None:
         """Schema applied, a batch is one transaction, the scope is the plugin's."""
 

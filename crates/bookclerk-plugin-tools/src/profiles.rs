@@ -162,7 +162,7 @@ fn kit_binary_in(
     if let Some(explicit) = env_path.filter(|p| !p.is_empty()) {
         let path = PathBuf::from(explicit);
         if path.is_file() {
-            return Ok(path);
+            return absolute_kit(path);
         }
         return Err(SdkError::message(format!(
             "{KIT_BINARY_ENV} names {} but it is not a file",
@@ -175,7 +175,7 @@ fn kit_binary_in(
         .map(|dir| dir.join(&file_name))
         .filter(|p| p.is_file())
     {
-        return Ok(sibling);
+        return absolute_kit(sibling);
     }
     if let Some(found) = path_var
         .map(|var| std::env::split_paths(&var).collect::<Vec<_>>())
@@ -184,12 +184,20 @@ fn kit_binary_in(
         .map(|dir| dir.join(&file_name))
         .find(|p| p.is_file())
     {
-        return Ok(found);
+        return absolute_kit(found);
     }
     Err(SdkError::message(format!(
         "{KIT_BINARY_NAME} not found: set {KIT_BINARY_ENV}, build it beside this binary \
          (`cargo build -p bookclerk-db-testkit`), or put it on PATH"
     )))
+}
+
+/// The kit path as the runner must see it: absolute, so a path given
+/// relative to this command's working directory still names the binary
+/// after the runner changes into the plugin directory.
+fn absolute_kit(path: PathBuf) -> Result<PathBuf> {
+    std::path::absolute(&path)
+        .map_err(|e| SdkError::message(format!("resolve {}: {e}", path.display())))
 }
 
 /// Runs the plugin's test suite once per profile.
@@ -393,5 +401,18 @@ mod tests {
         let bare = dir_with(&[("Cargo.toml", "")]);
         let err = test_plugin(bare.path(), &["minimum".into()], &[]).expect_err("manifest");
         assert!(err.to_string().contains("plugin.toml"), "{err}");
+    }
+
+    #[test]
+    fn a_relative_kit_path_is_made_absolute_for_the_runner() {
+        // `Cargo.toml` is a file relative to the test's working directory;
+        // the runner starts in the plugin directory, so it must get the
+        // absolute path.
+        let found = kit_binary_in(Some(OsString::from("Cargo.toml")), None, None).expect("kit");
+        assert!(found.is_absolute(), "{}", found.display());
+        assert_eq!(
+            found,
+            std::env::current_dir().expect("cwd").join("Cargo.toml")
+        );
     }
 }

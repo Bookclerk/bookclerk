@@ -511,8 +511,8 @@ fn record_profile() {
         .open(std::env::var("RECORD_FILE").expect("record file"))
         .expect("open log");
     writeln!(log, "{profile}").expect("write");
-    if std::env::var_os("FAIL_UNDER_MINIMUM").is_some() {
-        assert_ne!(profile, "minimum", "refused on purpose");
+    if let Ok(refused) = std::env::var("FAIL_UNDER") {
+        assert_ne!(profile, refused, "refused on purpose");
     }
 }
 "#,
@@ -523,11 +523,12 @@ fn record_profile() {
 
 /// Runs `bookclerk-plugin test` on `plugin`, with the record file and the
 /// fake kit path in the environment, and returns the output and the
-/// profiles the suite recorded.
+/// profiles the suite recorded. The suite fails under `fail_under`, when
+/// one is named.
 fn run_plugin_test(
     plugin: &tempfile::TempDir,
     args: &[&str],
-    fail_under_minimum: bool,
+    fail_under: Option<&str>,
 ) -> (std::process::Output, Vec<String>) {
     let record = plugin.path().join("profiles.log");
     let kit = plugin.path().join("plugin.toml");
@@ -539,8 +540,8 @@ fn run_plugin_test(
         .env("RECORD_FILE", &record)
         .env("CARGO_TARGET_DIR", plugin.path().join("target"))
         .env_remove("RUSTFLAGS");
-    if fail_under_minimum {
-        cmd.env("FAIL_UNDER_MINIMUM", "1");
+    if let Some(profile) = fail_under {
+        cmd.env("FAIL_UNDER", profile);
     }
     let out = cmd.output().expect("run test");
     let recorded = std::fs::read_to_string(&record)
@@ -554,7 +555,7 @@ fn run_plugin_test(
 #[test]
 fn test_runs_the_suite_once_per_profile() {
     let plugin = recording_cargo_plugin();
-    let (out, recorded) = run_plugin_test(&plugin, &[], false);
+    let (out, recorded) = run_plugin_test(&plugin, &[], None);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(recorded, ["first-party", "d1", "minimum"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -565,22 +566,23 @@ fn test_runs_the_suite_once_per_profile() {
         );
     }
 
-    let (out, recorded) = run_plugin_test(&plugin, &["--profile", "minimum"], false);
+    let (out, recorded) = run_plugin_test(&plugin, &["--profile", "minimum"], None);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(recorded, ["first-party", "d1", "minimum", "minimum"]);
 }
 
 #[test]
-fn test_reports_every_profile_and_fails_on_the_one_that_failed() {
+fn test_runs_the_later_profiles_after_the_first_one_fails() {
     let plugin = recording_cargo_plugin();
-    let (out, recorded) = run_plugin_test(&plugin, &["--", "record_profile"], true);
+    let (out, recorded) = run_plugin_test(&plugin, &["--", "record_profile"], Some("first-party"));
     assert!(!out.status.success(), "{out:?}");
     assert_eq!(recorded, ["first-party", "d1", "minimum"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("profile first-party: ok"), "{stderr}");
-    assert!(stderr.contains("profile minimum: failed"), "{stderr}");
+    assert!(stderr.contains("profile first-party: failed"), "{stderr}");
+    assert!(stderr.contains("profile d1: ok"), "{stderr}");
+    assert!(stderr.contains("profile minimum: ok"), "{stderr}");
     assert!(
-        stderr.contains("tests failed under profile(s) minimum"),
+        stderr.contains("tests failed under profile(s) first-party"),
         "{stderr}"
     );
 }
@@ -599,7 +601,7 @@ fn test_rejects_bad_usage_before_running_anything() {
         .expect("run test");
     assert_eq!(out.status.code(), Some(2), "{out:?}");
 
-    let (out, recorded) = run_plugin_test(&plugin, &["--profile", "postgres"], false);
+    let (out, recorded) = run_plugin_test(&plugin, &["--profile", "postgres"], None);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert!(recorded.is_empty());
     assert!(String::from_utf8_lossy(&out.stderr).contains("unknown profile"));

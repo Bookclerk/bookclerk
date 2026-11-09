@@ -262,16 +262,27 @@ async fn staged_first_party_plugins_describe() {
                 )
             });
             for profile in Profile::ALL {
-                let unit = BindingDatabase::open(profile, migrations.clone())
-                    .await
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "{} binding {} migrations refused under profile {}: {e}",
-                            plugin.manifest.id,
-                            database.binding,
-                            profile.name()
-                        )
-                    });
+                let unit = tokio::time::timeout(
+                    STAGED_RPC_TIMEOUT,
+                    BindingDatabase::open(profile, migrations.clone()),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "{} binding {} migrations under profile {} ran past {STAGED_RPC_TIMEOUT:?}",
+                        plugin.manifest.id,
+                        database.binding,
+                        profile.name()
+                    )
+                })
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{} binding {} migrations refused under profile {}: {e}",
+                        plugin.manifest.id,
+                        database.binding,
+                        profile.name()
+                    )
+                });
                 assert_eq!(unit.profile(), profile);
             }
             eprintln!(

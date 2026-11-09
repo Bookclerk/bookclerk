@@ -276,8 +276,11 @@ when `pyproject.toml` exists, else `cargo test`, and hands each run
 `BOOKCLERK_DB_TESTKIT` (the kit binary: `BOOKCLERK_DB_TESTKIT` itself, a
 `bookclerk-db-testkit` beside the CLI, or one on `PATH`) and
 `BOOKCLERK_DB_TESTKIT_PROFILE`, which `createTestDatabase()` and
-`create_test_database()` take as their default profile. So a suite written
-with the default profile runs under `first-party`, `d1` and `minimum`:
+`create_test_database()` take as their default profile, and which a Rust
+suite reads with `bookclerk_db_testkit::selected_profile()` before it
+opens its `TestDatabase` or `BindingDatabase`. So a suite written with the
+default profile runs under `first-party`, `d1` and `minimum`; one that
+opens a fixed profile passes all three runs while testing only that one:
 
 ```sh
 cargo build -p bookclerk-db-testkit

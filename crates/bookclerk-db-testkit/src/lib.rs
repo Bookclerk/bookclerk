@@ -34,6 +34,61 @@ pub use binding::BindingDatabase;
 
 pub use bookclerk_library::test_support::{Profile, INTERACTIVE_TRANSACTIONS_REFUSED};
 
+/// The environment variable `bookclerk-plugin test` sets to the profile of
+/// the current run.
+pub const PROFILE_ENV: &str = "BOOKCLERK_DB_TESTKIT_PROFILE";
+
+/// A `BOOKCLERK_DB_TESTKIT_PROFILE` value that names no profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownProfile(
+    /// The value as the environment carried it.
+    pub String,
+);
+
+impl std::fmt::Display for UnknownProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown test database profile {:?} in {PROFILE_ENV} (one of {})",
+            self.0,
+            Profile::ALL
+                .iter()
+                .map(|profile| profile.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+impl std::error::Error for UnknownProfile {}
+
+/// The profile of the current `bookclerk-plugin test` run, or
+/// [`Profile::Minimum`] when the suite runs on its own.
+///
+/// A Rust suite opens its [`TestDatabase`] or [`BindingDatabase`] under
+/// this profile so each of the command's runs exercises a different
+/// advertisement, as the TypeScript and Python kits do by default.
+///
+/// # Errors
+///
+/// Returns [`UnknownProfile`] when the variable is set to a name outside
+/// [`Profile::ALL`].
+pub fn selected_profile() -> Result<Profile, UnknownProfile> {
+    selected_profile_in(std::env::var_os(PROFILE_ENV))
+}
+
+/// [`selected_profile`] over an explicit variable value.
+fn selected_profile_in(value: Option<std::ffi::OsString>) -> Result<Profile, UnknownProfile> {
+    let Some(value) = value else {
+        return Ok(Profile::Minimum);
+    };
+    let name = value.to_string_lossy();
+    if name.is_empty() {
+        return Ok(Profile::Minimum);
+    }
+    Profile::parse(&name).ok_or_else(|| UnknownProfile(name.into_owned()))
+}
+
 /// An in-memory library that behaves like an external database plugin.
 ///
 /// Open one with [`TestDatabase::open`] and run the code under test against
@@ -138,5 +193,33 @@ impl TestDatabase {
     /// anything is applied, the way a busy file lock answers.
     pub fn lock_next_requests(&self, n: u32) {
         self.inner.lock_next_requests(n);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn the_selected_profile_is_the_variable_or_minimum() {
+        assert_eq!(selected_profile_in(None), Ok(Profile::Minimum));
+        assert_eq!(
+            selected_profile_in(Some(std::ffi::OsString::new())),
+            Ok(Profile::Minimum)
+        );
+        for profile in Profile::ALL {
+            assert_eq!(
+                selected_profile_in(Some(profile.name().into())),
+                Ok(profile)
+            );
+        }
+        let err = selected_profile_in(Some("huge".into())).expect_err("unknown");
+        assert_eq!(err, UnknownProfile("huge".into()));
+        assert!(
+            err.to_string().contains("first-party, d1, minimum"),
+            "{err}"
+        );
     }
 }

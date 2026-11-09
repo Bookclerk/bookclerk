@@ -68,6 +68,7 @@ directory:
 
 ```bash
 cargo install --git https://github.com/Bookclerk/bookclerk bookclerk-plugin-tools
+cargo install --git https://github.com/Bookclerk/bookclerk bookclerk-db-testkit  # the kit `test` serves
 bookclerk-plugin check .
 bookclerk-plugin smoke .
 bookclerk-plugin test .    # the plugin's suite under every database profile
