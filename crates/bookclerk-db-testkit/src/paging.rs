@@ -138,13 +138,13 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_page_with_a_cursor_is_walked_past() {
-        // Rows 3 and 4 are unreadable: the listing skips them and answers an
-        // empty page that still points at the rows after them.
+        // Rows 2 and 3 fill one page and are unreadable: the listing skips them
+        // and answers an empty page that still points at the rows after them.
         let items: Vec<u32> = (0..6).collect();
         let full: Vec<u32> = items
             .iter()
             .copied()
-            .filter(|i| ![3, 4].contains(i))
+            .filter(|i| ![2, 3].contains(i))
             .collect();
         assert_pages_match_full_within(&full, 2, items.len(), |after: Option<u32>, size| {
             let items = items.clone();
@@ -160,7 +160,7 @@ mod tests {
                     .last()
                     .copied()
                     .filter(|_| start + read.len() < items.len());
-                let page = read.into_iter().filter(|i| ![3, 4].contains(i)).collect();
+                let page = read.into_iter().filter(|i| ![2, 3].contains(i)).collect();
                 (page, next)
             }
         })
