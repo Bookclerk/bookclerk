@@ -799,20 +799,20 @@ pub fn flatten_feed(feed: &DiscoverFeed, limit: usize) -> Vec<Recommendation> {
     out
 }
 
-/// Fewest items a shelf keeps while [`encode_feed_within`] shrinks a feed.
+/// Fewest items a shelf keeps while [`fit_feed_within`] shrinks a feed.
 const FIT_MIN_ITEMS: usize = 4;
 
-/// Characters of a description kept once [`encode_feed_within`] finds a feed
+/// Characters of a description kept once [`fit_feed_within`] finds a feed
 /// too large. A card shows a few lines at most, and the title dialog asks
 /// for the whole blurb when the stored one is short or ends in `…`.
 const FIT_DESCRIPTION_CHARS: usize = 300;
 
-/// Reasons a card keeps once [`encode_feed_within`] finds a feed too large.
+/// Reasons a card keeps once [`fit_feed_within`] finds a feed too large.
 /// The page shows the first one it does not already show as a badge.
 const FIT_REASONS: usize = 3;
 
-/// Encodes `feed` as JSON that stays within `budget` bytes once stored,
-/// shrinking it first.
+/// Encodes `feed` with `encode` so it stays within `budget` bytes once
+/// stored, shrinking it first.
 ///
 /// A stored feed is one database cell, and the database plugins refuse a
 /// cell or result over their `maxResultBytes` (256 KiB for the first-party
@@ -834,23 +834,25 @@ const FIT_REASONS: usize = 3;
 /// * `feed` - Feed to encode; trimmed in place when it is too large.
 /// * `budget` - Most bytes the encoded feed may take as an escaped JSON
 ///   string.
+/// * `encode` - Encodes the feed in its stored form.
 ///
 /// # Returns
 ///
-/// The encoded feed (unescaped). An empty feed is returned even when `budget` is
-/// smaller than it.
+/// The encoded feed (unescaped). An empty feed is returned even when
+/// `budget` is smaller than it.
 ///
 /// # Errors
 ///
-/// Returns the JSON encoding error.
-pub fn encode_feed_within(
+/// Returns the error `encode` returns.
+pub(crate) fn fit_feed_within(
     feed: &mut DiscoverFeed,
     budget: usize,
+    encode: impl Fn(&DiscoverFeed) -> Result<String, serde_json::Error>,
 ) -> Result<String, serde_json::Error> {
     let mut descriptions_cut = false;
     let mut extras_cut = false;
     loop {
-        let json = serde_json::to_string(feed)?;
+        let json = encode(feed)?;
         if serde_json::to_string(&json)?.len() <= budget {
             return Ok(json);
         }
@@ -896,6 +898,15 @@ pub fn encode_feed_within(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Encodes `feed` as plain JSON within `budget`, as the stored form
+    /// does once pool metadata is left out.
+    fn encode_feed_within(
+        feed: &mut DiscoverFeed,
+        budget: usize,
+    ) -> Result<String, serde_json::Error> {
+        fit_feed_within(feed, budget, serde_json::to_string)
+    }
 
     fn rec(title: &str, score: f64, categories: &[&str]) -> Recommendation {
         let mut r = Recommendation {

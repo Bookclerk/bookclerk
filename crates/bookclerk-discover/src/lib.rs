@@ -26,6 +26,7 @@ mod precompute;
 mod purchase;
 mod recommend;
 mod shelves;
+mod stored_feed;
 mod title_meta;
 mod ttl_cache;
 

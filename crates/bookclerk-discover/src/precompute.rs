@@ -14,7 +14,9 @@
 //!    candidates against the same taste, with no network, and stores the
 //!    shelves.
 //! 3. [`stored_subject_feed`] reads them back for the page, dropping the
-//!    subject's hidden shelves.
+//!    subject's hidden shelves and joining each card's catalog metadata
+//!    (description, cover, …) from the stored candidates, which the stored
+//!    feed leaves out.
 //!
 //! See `docs/internals/discovery.md`, *Precomputed shelves*.
 
@@ -41,7 +43,10 @@ use crate::recommend::{
     engagement_by_book, feed_from_recommendations, owned_identity_sets, rank_candidates,
     shelf_taste, RecommendOptions, TasteWeights,
 };
-use crate::shelves::{encode_feed_within, shelf_is_disabled, DiscoverFeed};
+use crate::shelves::{shelf_is_disabled, DiscoverFeed};
+use crate::stored_feed::{
+    decode_stored_feed, encode_stored_feed, feed_needs_pool, join_feed, CandidatePool,
+};
 
 /// Longest one storefront call may take before its store moves on.
 pub const STORE_CALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -124,7 +129,9 @@ impl RememberedPrice {
 /// refuse a cell or query result over 256 KiB (`maxResultBytes`) and count
 /// a row as JSON, so the budget applies to the escaped feed. The row read
 /// back carries a few more columns, so the feed keeps 64 KiB of headroom
-/// under that.
+/// under that. Cards are stored without the metadata the candidate pool
+/// holds, so a feed normally takes a fraction of this; the budget is a
+/// backstop.
 pub const STORED_FEED_MAX_BYTES: usize = 192 * 1024;
 
 /// One subject's taste: whose seeds Discover uses and what they read.
@@ -869,7 +876,10 @@ pub async fn rank_subject_feed(
     shelf.wish_titles.clone_from(&taste.wish_titles);
     shelf.linked_sources.clone_from(&taste.linked_sources);
     let mut feed = feed_from_recommendations(&recs, &shelf, &rank_opts);
-    let json = encode_feed_within(&mut feed, STORED_FEED_MAX_BYTES).map_err(|e| {
+    // Cards keep only what is personal to the subject; catalog metadata the
+    // pool holds is joined back when the page reads the feed.
+    let pool = CandidatePool::from_rows(&stored);
+    let json = encode_stored_feed(&mut feed, &pool, STORED_FEED_MAX_BYTES).map_err(|e| {
         crate::error::DiscoverError::message(format!("encode the discover feed: {e}"))
     })?;
     library
@@ -898,7 +908,13 @@ pub struct StoredSubjectFeed {
     pub candidates_fetched_at: Option<DateTime<Utc>>,
 }
 
-/// Reads one subject's stored feed and drops their hidden shelves.
+/// Reads one subject's stored feed, drops their hidden shelves and joins
+/// each card's catalog metadata from the candidate pool.
+///
+/// The stored feed keeps card references and what is personal to the
+/// subject; the description, cover and other metadata the subject's
+/// `discover_candidates` rows hold are read from them here, in pages that
+/// stay under the database plugin's result limit.
 ///
 /// # Returns
 ///
@@ -917,12 +933,16 @@ pub async fn stored_subject_feed(
     let Some(stored) = library.get_discover_feed(subject).await? else {
         return Ok(None);
     };
-    let Ok(mut feed) = serde_json::from_str::<DiscoverFeed>(&stored.feed_json) else {
+    let Some(mut feed) = decode_stored_feed(&stored.feed_json) else {
         tracing::debug!(subject = %subject.key(), "stored discover feed does not decode");
         return Ok(None);
     };
     feed.shelves
         .retain(|shelf| !shelf_is_disabled(&shelf.id, disabled_shelves));
+    if feed_needs_pool(&feed) {
+        let rows = library.list_discover_candidates(subject).await?;
+        join_feed(&mut feed, &CandidatePool::from_rows(&rows));
+    }
     Ok(Some(StoredSubjectFeed {
         feed,
         scope: stored.seed_scope,
@@ -1044,6 +1064,8 @@ mod tests {
                     product_id: (*id).to_string(),
                     title: format!("Deal {id}"),
                     origin: String::from("deals"),
+                    cover_url: Some(format!("https://covers.example/{id}.jpg")),
+                    description: Some(format!("The long blurb of deal {id}. ").repeat(20)),
                     ..CatalogHit::default()
                 })
                 .collect())
@@ -1362,6 +1384,26 @@ mod tests {
         assert_eq!(read.scope, SeedScope::Own);
         assert_eq!(read.feed.shelves.len(), ranked.shelves);
         assert!(read.candidates_fetched_at.is_some());
+        // The stored feed leaves the deals' blurbs and covers to the pool,
+        // and the read joins them back.
+        let raw = library.get_discover_feed(&subject).await.unwrap().unwrap();
+        assert!(!raw.feed_json.contains("long blurb"), "{}", raw.feed_json);
+        let deals: Vec<_> = read
+            .feed
+            .shelves
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter(|c| c.title.starts_with("Deal "))
+            .collect();
+        assert!(!deals.is_empty());
+        for card in deals {
+            let id = card.candidate_product_id.as_deref().unwrap();
+            assert!(card.description.as_deref().unwrap().contains(id));
+            assert_eq!(
+                card.cover_url.as_deref(),
+                Some(format!("https://covers.example/{id}.jpg").as_str())
+            );
+        }
         let hidden: Vec<String> = read.feed.shelves.iter().map(|s| s.id.clone()).collect();
         let filtered = stored_subject_feed(&library, &subject, &hidden)
             .await
