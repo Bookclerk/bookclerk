@@ -230,7 +230,7 @@ impl GraphicAudioSource {
         if opts.with_price {
             if let Some(ref mut h) = hint {
                 if let Some(priced) =
-                    fetch_ga_price(h.url.as_deref(), &h.product_id, &self.store_url).await
+                    fetch_ga_price(h.url.as_deref(), &h.product_id, &self.store_url).await?
                 {
                     h.price_cents = Some(priced.0);
                     h.currency = Some(String::from("USD"));
@@ -334,25 +334,51 @@ fn ga_title_score(query: &str, hit: &str) -> f32 {
     }
 }
 
-/// Fetches a Magento product page and parses USD cents plus a display label; `None` on HTTP/parse failure.
+/// Fetches a Magento product page and parses USD cents plus a display label.
+///
+/// # Returns
+///
+/// `None` when the page cannot be fetched or carries no price.
+///
+/// # Errors
+///
+/// Returns [`bookclerk_storefront::SourceError::RateLimited`] when the
+/// store answers 429, with its `Retry-After` when it sent one.
 async fn fetch_ga_price(
     product_url: Option<&str>,
     product_id: &str,
     store_url: &str,
-) -> Option<(i64, String)> {
-    let http = catalog_http_client().ok()?;
+) -> bookclerk_storefront::Result<Option<(i64, String)>> {
+    let Ok(http) = catalog_http_client() else {
+        return Ok(None);
+    };
     let url = product_url.map(str::to_string).unwrap_or_else(|| {
         format!(
             "{}/catalog/product/view/id/{product_id}",
             store_url.trim_end_matches('/')
         )
     });
-    let resp = http.get(&url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
+    let Ok(resp) = http.get(&url).send().await else {
+        return Ok(None);
+    };
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    if let Some(limited) = bookclerk_storefront::SourceError::from_rate_limit(
+        resp.status().as_u16(),
+        retry_after.as_deref(),
+    ) {
+        return Err(limited);
     }
-    let html = resp.text().await.ok()?;
-    parse_ga_price_html(&html)
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    let Ok(html) = resp.text().await else {
+        return Ok(None);
+    };
+    Ok(parse_ga_price_html(&html))
 }
 
 /// Reads `data-price-amount` or a `$` amount near Magento price wrappers; returns cents and a USD label.

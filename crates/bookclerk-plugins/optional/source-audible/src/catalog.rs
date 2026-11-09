@@ -10,7 +10,7 @@ use bookclerk_audible_catalog::{
 };
 use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_storefront::{
-    CatalogHit, CatalogSearchField, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts,
+    CatalogHit, CatalogSearchField, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts, SourceError,
     SourcePurchaseHint,
 };
 use serde_json::Value;
@@ -412,12 +412,64 @@ pub async fn purchase_hint(
     };
 
     if opts.with_price {
-        if let Some(priced) = fetch_audible_price(&asin, &region).await {
+        if let Some(priced) = fetch_audible_prices(std::slice::from_ref(&asin), &region)
+            .await?
+            .remove(&asin)
+        {
             apply_dual_price(&mut hint, &priced);
         }
     }
 
     Ok(Some(hint))
+}
+
+/// Most ASINs the public catalog prices in one `products` request.
+const PRICE_BATCH_ASINS: usize = 50;
+
+/// Resolves purchase hints for several titles, pricing them together.
+///
+/// Each title's ASIN is resolved as [`purchase_hint`] does (a search when
+/// the query has none), then every priced title's ASIN goes into one
+/// catalog request per [`PRICE_BATCH_ASINS`], so a page of cards costs one
+/// price request instead of one per card.
+///
+/// # Errors
+///
+/// Returns [`SourceError::RateLimited`] when Audible asks to slow down;
+/// a resolution that fails otherwise answers `None` for that title.
+pub async fn purchase_hints(
+    opts: &[PurchaseHintOpts],
+) -> bookclerk_storefront::Result<Vec<Option<SourcePurchaseHint>>> {
+    let mut hints = Vec::with_capacity(opts.len());
+    for query in opts {
+        let unpriced = PurchaseHintOpts {
+            with_price: false,
+            ..query.clone()
+        };
+        hints.push(purchase_hint(&unpriced).await?);
+    }
+    let asins: Vec<String> = hints
+        .iter()
+        .zip(opts)
+        .filter(|(hint, query)| query.with_price && hint.is_some())
+        .filter_map(|(hint, _)| hint.as_ref().map(|h| h.product_id.clone()))
+        .collect();
+    if asins.is_empty() {
+        return Ok(hints);
+    }
+    let region = normalize_region(&opts[0].region);
+    let mut prices = std::collections::HashMap::new();
+    for chunk in asins.chunks(PRICE_BATCH_ASINS) {
+        prices.extend(fetch_audible_prices(chunk, &region).await?);
+    }
+    for (hint, query) in hints.iter_mut().zip(opts) {
+        if let (true, Some(h)) = (query.with_price, hint.as_mut()) {
+            if let Some(priced) = prices.get(&h.product_id) {
+                apply_dual_price(h, priced);
+            }
+        }
+    }
+    Ok(hints)
 }
 
 /// Maps an Audible catalog product to a [`CatalogHit`] (the ASIN is both `product_id` and an identifier).
@@ -603,37 +655,74 @@ fn apply_dual_price(hint: &mut SourcePurchaseHint, priced: &DualPriced) {
 }
 
 /// Fetches list/member prices from the public catalog products API; `None` on HTTP or parse failure.
-async fn fetch_audible_price(asin: &str, region: &str) -> Option<DualPriced> {
-    let http = public_http_client().ok()?;
+/// Prices `asins` (at most [`PRICE_BATCH_ASINS`]) in one catalog request.
+///
+/// # Returns
+///
+/// The prices Audible reported, by ASIN (upper case); ASINs it did not
+/// return are absent. A failed request that is not a rate limit answers an
+/// empty map, since a missing price is not an error on a card.
+///
+/// # Errors
+///
+/// Returns [`SourceError::RateLimited`] when Audible answers 429, with its
+/// `Retry-After` when it sent one.
+async fn fetch_audible_prices(
+    asins: &[String],
+    region: &str,
+) -> bookclerk_storefront::Result<std::collections::HashMap<String, DualPriced>> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(http) = public_http_client() else {
+        return Ok(out);
+    };
     let region = normalize_region(region);
     let url = format!(
         "https://api.audible{}/1.0/catalog/products",
         region_tld(&region)
     );
-    let resp = http
+    let Ok(resp) = http
         .get(&url)
         .query(&[
-            ("asins", asin),
-            ("num_results", "1"),
+            ("asins", asins.join(",").as_str()),
+            ("num_results", asins.len().to_string().as_str()),
             ("response_groups", "price,product_desc,product_attrs"),
         ])
         .send()
         .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
+    else {
+        return Ok(out);
+    };
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    if let Some(limited) =
+        SourceError::from_rate_limit(resp.status().as_u16(), retry_after.as_deref())
+    {
+        return Err(limited);
     }
-    let body: Value = resp.json().await.ok()?;
-    let products = body.get("products")?.as_array()?;
-    let product = products.iter().find(|p| {
-        p.get("asin")
-            .and_then(Value::as_str)
-            .is_some_and(|a| a.eq_ignore_ascii_case(asin))
-    })?;
-    parse_audible_price_value(product.get("price")?)
+    if !resp.status().is_success() {
+        return Ok(out);
+    }
+    let Ok(body) = resp.json::<Value>().await else {
+        return Ok(out);
+    };
+    let Some(products) = body.get("products").and_then(Value::as_array) else {
+        return Ok(out);
+    };
+    for product in products {
+        let Some(asin) = product.get("asin").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(priced) = product.get("price").and_then(parse_audible_price_value) {
+            out.insert(asin.to_ascii_uppercase(), priced);
+        }
+    }
+    Ok(out)
 }
 
-/// Reads `base` (major units) and `currency_code` from a catalog amount object as cents.
+/// Cents and currency of one Audible price node (`base` and `currency_code`).
 fn audible_amount_node(node: &Value) -> Option<(i64, String)> {
     let amount = node.get("base")?.as_f64()?;
     let currency = node

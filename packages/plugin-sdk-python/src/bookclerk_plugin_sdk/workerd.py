@@ -1406,6 +1406,7 @@ STOREFRONT_METHODS: tuple[str, ...] = (
     "searchCatalog",
     "expandCandidates",
     "purchaseHint",
+    "purchaseHints",
     "listDeals",
     "catalogDetail",
     "revokeAccount",
@@ -1461,6 +1462,22 @@ class StorefrontEntrypoint(NamedEntrypoint):
     async def purchaseHint(self, _params: abi.PurchaseHintParams):
         """Purchase link / price hint (``PurchaseHintParams`` → ``PurchaseHint``)."""
         raise _unsupported("purchaseHint")
+
+    async def purchaseHints(self, params: abi.PurchaseHintsParams):
+        """Purchase links / price hints for several titles at once.
+
+        Asks :meth:`purchaseHint` for each query in turn, in order; a store
+        whose catalog prices many products per request overrides this to make
+        one request. Raise a ``rate_limited`` :class:`PluginError` (with
+        ``details.retryAfterMs``) when the store asks to slow down.
+
+        Args:
+            params: The titles to price, in order.
+
+        Returns:
+            One ``PurchaseHint`` or ``None`` per query.
+        """
+        return [await self.purchaseHint(query) for query in params.queries]
 
     async def listDeals(self, _params: abi.ListDealsParams):
         """Current storefront deals (``ListDealsParams`` → list of ``CatalogHit``)."""

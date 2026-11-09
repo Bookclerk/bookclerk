@@ -177,7 +177,7 @@ pub struct PurchaseHintsQuery {
 }
 
 /// Priced catalog matches for one title, sorted best-first.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct PurchaseHintsResponse {
     /// Resolved purchase hints for this query.
     pub hints: Vec<PurchaseHint>,
@@ -604,16 +604,23 @@ pub const BATCH_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Resolve many purchase-hint queries at once (order preserved).
 ///
-/// Every query starts together, at most `max_concurrent` at a time. The
-/// whole batch answers within [`BATCH_DEADLINE`]: a query still waiting
-/// then answers with its trusted seeds alone (no prices), so the page shows
-/// a link rather than nothing and asks again later.
+/// Queries answered from the cache are done at once. For the rest, every
+/// store is asked **once**, through [`bookclerk_source::ContentSource::purchase_hints`],
+/// for all of them together, so a store whose catalog prices many products
+/// per request makes one request for a page of cards. The whole batch
+/// answers within [`BATCH_DEADLINE`]: a store still working then counts as
+/// timed out, and a query no store answered carries its trusted seeds alone
+/// (no prices), so the page shows a link rather than nothing and asks again
+/// later. A store that asks to slow down
+/// ([`bookclerk_source::SourceError::RateLimited`]) is left alone for the
+/// time it said (see [`RATE_LIMIT_FIRST_PAUSE`]).
 ///
 /// # Arguments
 ///
 /// * `registry` - Configured content-source or integration registry.
 /// * `queries` - Batch of purchase-hint queries.
-/// * `max_concurrent` - Lookups in flight at once (clamped to 1–8).
+/// * `max_concurrent` - Unused since each store is asked once; kept for
+///   the route's call shape.
 ///
 /// # Returns
 ///
@@ -623,50 +630,159 @@ pub async fn resolve_purchase_hints_batch(
     queries: &[PurchaseHintsQuery],
     max_concurrent: usize,
 ) -> Vec<Result<PurchaseHintsResponse>> {
-    let limit = max_concurrent.clamp(1, 8);
-    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(limit));
+    let _ = max_concurrent;
     let deadline = tokio::time::Instant::now() + BATCH_DEADLINE;
+    let regions: Vec<String> = queries
+        .iter()
+        .map(|q| normalize_region(q.region.as_deref().unwrap_or("us")))
+        .collect();
+    let mut out: Vec<Option<PurchaseHintsResponse>> = queries
+        .iter()
+        .zip(&regions)
+        .map(|(q, region)| purchase_hints_cache().get(&purchase_hints_cache_key(q, region)))
+        .collect();
+    let pending: Vec<usize> = (0..queries.len()).filter(|i| out[*i].is_none()).collect();
+    if pending.is_empty() {
+        return out.into_iter().map(|r| Ok(r.unwrap_or_default())).collect();
+    }
+
+    // Each pending query starts from its trusted seeds.
+    let mut hints: Vec<Vec<PurchaseHint>> = queries
+        .iter()
+        .zip(&regions)
+        .map(|(q, region)| seeded_hints(q, region))
+        .collect();
+    // Queries at least one store answered, so caching them hides no price.
+    let mut answered: Vec<bool> = vec![false; queries.len()];
+
+    let now = std::time::Instant::now();
     let mut set = tokio::task::JoinSet::new();
-    for (offset, q) in queries.iter().enumerate() {
-        let q = q.clone();
-        let registry = registry.clone();
-        let gate = std::sync::Arc::clone(&gate);
+    for source in registry.all() {
+        let id = source.id().to_string();
+        if store_breaker_open(&id, now) {
+            tracing::debug!(source = %id, "purchase_hints skipped: store paused");
+            continue;
+        }
+        let opts: Vec<PurchaseHintOpts> = pending
+            .iter()
+            .map(|&i| store_query_opts(&queries[i], &regions[i], &id))
+            .collect();
         set.spawn(async move {
-            let resolved = async {
-                let _permit = gate.acquire().await.ok()?;
-                Some(resolve_purchase_hints(&registry, &q).await)
-            };
-            let outcome = match tokio::time::timeout_at(deadline, resolved).await {
-                Ok(Some(result)) => result,
-                // Out of time (or the gate closed): links only, priced later.
-                Ok(None) | Err(_) => Ok(seeded_response(&q)),
-            };
-            (offset, outcome)
+            let outcome = tokio::time::timeout_at(deadline, source.purchase_hints(&opts)).await;
+            (id, opts, outcome)
         });
     }
-    let mut slot: Vec<Option<Result<PurchaseHintsResponse>>> =
-        (0..queries.len()).map(|_| None).collect();
     while let Some(joined) = set.join_next().await {
-        match joined {
-            Ok((offset, result)) => slot[offset] = Some(result),
-            Err(err) => tracing::debug!(error = %err, "purchase-hints batch task failed"),
+        let (id, opts, outcome) = match joined {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::debug!(error = %err, "purchase_hints task join failed");
+                continue;
+            }
+        };
+        let now = std::time::Instant::now();
+        let answers = match outcome {
+            Ok(Ok(answers)) => {
+                note_store_outcome(&id, false, now);
+                answers
+            }
+            Ok(Err(bookclerk_source::SourceError::RateLimited(wait))) => {
+                note_store_rate_limit(&id, wait, now);
+                continue;
+            }
+            Ok(Err(err)) => {
+                note_store_outcome(&id, false, now);
+                tracing::debug!(source = %id, error = %err, "purchase_hints failed");
+                continue;
+            }
+            Err(_) => {
+                note_store_outcome(&id, true, now);
+                tracing::debug!(source = %id, "purchase_hints timed out");
+                continue;
+            }
+        };
+        for ((&i, query_opts), answer) in pending.iter().zip(&opts).zip(answers) {
+            answered[i] = true;
+            let Some(hint) = answer else { continue };
+            let mapped = PurchaseHint::from_source_hint(&id, hint);
+            let trusted_product = seed_source_is_trusted(&id)
+                && query_opts
+                    .product_id
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|s| !s.is_empty());
+            if trusted_product
+                || catalog_hint_matches_query(
+                    query_opts.title.as_deref().unwrap_or(""),
+                    query_opts.authors.as_deref(),
+                    &mapped,
+                )
+            {
+                merge_or_push(&mut hints[i], mapped);
+            } else {
+                tracing::debug!(
+                    source = %id,
+                    product_id = %mapped.product_id,
+                    hint_title = ?mapped.title,
+                    "dropping batch purchase hint that failed title match"
+                );
+            }
         }
     }
-    slot.into_iter()
-        .map(|result| {
-            result.unwrap_or_else(|| {
-                Err(crate::error::DiscoverError::message(
-                    "purchase-hints batch task cancelled",
-                ))
-            })
-        })
-        .collect()
+
+    for &i in &pending {
+        let query = &queries[i];
+        let preferred = preferred_source_set(&query.preferred_sources);
+        let mut found = std::mem::take(&mut hints[i]);
+        sort_hints_for_display(&mut found, &preferred);
+        let best = best_purchase_hint_preferring(&found, &preferred)
+            .map(|h| best_hint_for_caller(h, &preferred));
+        let response = PurchaseHintsResponse { hints: found, best };
+        if answered[i] {
+            purchase_hints_cache().insert(
+                purchase_hints_cache_key(query, &regions[i]),
+                response.clone(),
+            );
+        }
+        out[i] = Some(response);
+    }
+    out.into_iter().map(|r| Ok(r.unwrap_or_default())).collect()
 }
 
-/// The hints one query can answer without asking any store: its trusted
-/// store seeds, unpriced.
-fn seeded_response(query: &PurchaseHintsQuery) -> PurchaseHintsResponse {
-    let region = normalize_region(query.region.as_deref().unwrap_or("us"));
+/// What one store is asked about one query in a batch: the query's title,
+/// people and identifiers, plus the product id the query already knows for
+/// that store (its own card, or a listed edition), so the store needs no
+/// search.
+fn store_query_opts(query: &PurchaseHintsQuery, region: &str, store: &str) -> PurchaseHintOpts {
+    let own = query
+        .candidate_source
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case(store))
+        .then(|| query.candidate_product_id.clone())
+        .flatten();
+    let edition = query
+        .store_editions
+        .iter()
+        .find(|e| e.source.eq_ignore_ascii_case(store))
+        .map(|e| e.product_id.clone());
+    let clean = |v: Option<&str>| {
+        v.map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    PurchaseHintOpts {
+        product_id: clean(own.as_deref()).or_else(|| clean(edition.as_deref())),
+        title: clean(Some(&query.title)),
+        authors: clean(query.authors.as_deref()),
+        asin: clean(query.asin.as_deref()),
+        isbn: clean(query.isbn.as_deref()),
+        region: region.to_string(),
+        with_price: true,
+    }
+}
+
+/// The trusted store links one query carries before any store is asked.
+fn seeded_hints(query: &PurchaseHintsQuery, region: &str) -> Vec<PurchaseHint> {
     let title = query.title.trim();
     let mut hints = Vec::new();
     for ed in &query.store_editions {
@@ -674,7 +790,7 @@ fn seeded_response(query: &PurchaseHintsQuery) -> PurchaseHintsResponse {
             continue;
         }
         if let Some(seed) =
-            seed_purchase_hint(&ed.source, &ed.product_id, Some(title.to_string()), &region)
+            seed_purchase_hint(&ed.source, &ed.product_id, Some(title.to_string()), region)
         {
             push_dedupe(&mut hints, seed);
         }
@@ -684,7 +800,7 @@ fn seeded_response(query: &PurchaseHintsQuery) -> PurchaseHintsResponse {
         query.candidate_product_id.as_deref(),
     ) {
         if seed_source_is_trusted(source) {
-            if let Some(seed) = seed_purchase_hint(source, pid, Some(title.to_string()), &region) {
+            if let Some(seed) = seed_purchase_hint(source, pid, Some(title.to_string()), region) {
                 push_dedupe(&mut hints, seed);
             }
         }
@@ -697,12 +813,10 @@ fn seeded_response(query: &PurchaseHintsQuery) -> PurchaseHintsResponse {
     {
         push_dedupe(
             &mut hints,
-            audible_hint(asin, Some(title.to_string()), &region),
+            audible_hint(asin, Some(title.to_string()), region),
         );
     }
-    let preferred = preferred_source_set(&query.preferred_sources);
-    sort_hints_for_display(&mut hints, &preferred);
-    PurchaseHintsResponse { hints, best: None }
+    hints
 }
 
 /// Timeouts in a row after which a store's price lookups are skipped.
@@ -711,13 +825,25 @@ pub const BREAKER_TRIP_TIMEOUTS: u32 = 3;
 /// How long a tripped store is skipped before one lookup tries it again.
 pub const BREAKER_OPEN_FOR: Duration = Duration::from_secs(5 * 60);
 
-/// One store's recent price-lookup timeouts.
+/// How long a store that asked to slow down without saying for how long
+/// is left alone the first time; each repeat doubles it.
+pub const RATE_LIMIT_FIRST_PAUSE: Duration = Duration::from_secs(60);
+
+/// Longest pause a rate limit can grow to by doubling, and the most a
+/// store's own `Retry-After` is honored for.
+pub const RATE_LIMIT_MAX_PAUSE: Duration = Duration::from_secs(15 * 60);
+
+/// One store's recent price-lookup failures.
 #[derive(Debug, Clone, Copy, Default)]
 struct StoreBreaker {
     /// Timeouts since the store last answered.
     timeouts: u32,
-    /// When the breaker tripped, while it is open.
+    /// When the breaker tripped on timeouts, while it is open.
     tripped_at: Option<std::time::Instant>,
+    /// Until when the store asked to be left alone.
+    paused_until: Option<std::time::Instant>,
+    /// Rate limits in a row, each doubling the next default pause.
+    rate_limits: u32,
 }
 
 impl StoreBreaker {
@@ -725,6 +851,7 @@ impl StoreBreaker {
     fn is_open(&self, now: std::time::Instant) -> bool {
         self.tripped_at
             .is_some_and(|at| now.duration_since(at) < BREAKER_OPEN_FOR)
+            || self.paused_until.is_some_and(|until| now < until)
     }
 
     /// Records a timeout; trips after [`BREAKER_TRIP_TIMEOUTS`] in a row.
@@ -736,10 +863,37 @@ impl StoreBreaker {
         }
     }
 
-    /// Records an answer (or a failure that was not a timeout): the store
-    /// is reachable, so the breaker closes.
+    /// Records the store asking to slow down: paused for `wait` when it said
+    /// (capped at [`RATE_LIMIT_MAX_PAUSE`]), else for a default that doubles
+    /// on each rate limit in a row.
+    fn rate_limited(&mut self, now: std::time::Instant, wait: Option<Duration>) {
+        let pause = match wait {
+            Some(wait) => wait.min(RATE_LIMIT_MAX_PAUSE),
+            None => RATE_LIMIT_FIRST_PAUSE
+                .saturating_mul(1u32 << self.rate_limits.min(10))
+                .min(RATE_LIMIT_MAX_PAUSE),
+        };
+        self.rate_limits = self.rate_limits.saturating_add(1);
+        self.paused_until = Some(now + pause);
+    }
+
+    /// Records an answer (or a failure that was not a timeout or a rate
+    /// limit): the store is reachable and willing, so the breaker closes.
     fn answered(&mut self) {
         *self = Self::default();
+    }
+}
+
+/// Records a store asking to slow down.
+fn note_store_rate_limit(store: &str, wait: Option<Duration>, now: std::time::Instant) {
+    if let Ok(mut map) = store_breakers().lock() {
+        let breaker = map.entry(store.to_string()).or_default();
+        breaker.rate_limited(now, wait);
+        tracing::info!(
+            %store,
+            pause_secs = breaker.paused_until.map(|u| u.duration_since(now).as_secs()),
+            "price lookups paused: the store asked to slow down"
+        );
     }
 }
 
@@ -818,15 +972,27 @@ async fn append_registry_hints(
                 continue;
             }
         };
-        note_store_outcome(&id, outcome.is_err(), std::time::Instant::now());
+        let now = std::time::Instant::now();
         let hint = match outcome {
-            Ok(Ok(Some(hint))) => hint,
-            Ok(Ok(None)) => continue,
+            Ok(Ok(Some(hint))) => {
+                note_store_outcome(&id, false, now);
+                hint
+            }
+            Ok(Ok(None)) => {
+                note_store_outcome(&id, false, now);
+                continue;
+            }
+            Ok(Err(bookclerk_source::SourceError::RateLimited(wait))) => {
+                note_store_rate_limit(&id, wait, now);
+                continue;
+            }
             Ok(Err(err)) => {
+                note_store_outcome(&id, false, now);
                 tracing::debug!(source = %id, error = %err, "purchase_hint failed");
                 continue;
             }
             Err(_) => {
+                note_store_outcome(&id, true, now);
                 tracing::debug!(source = %id, "purchase_hint timed out");
                 continue;
             }
@@ -1126,7 +1292,73 @@ mod tests {
     }
 
     #[test]
-    fn a_timed_out_query_answers_with_its_trusted_links_only() {
+    fn a_rate_limit_pauses_a_store_for_what_it_said_or_a_doubling_default() {
+        let start = std::time::Instant::now();
+        let mut breaker = StoreBreaker::default();
+        // The store said 30 s: paused exactly that long.
+        breaker.rate_limited(start, Some(Duration::from_secs(30)));
+        assert!(breaker.is_open(start + Duration::from_secs(29)));
+        assert!(!breaker.is_open(start + Duration::from_secs(30)));
+        // Nothing said: the default, doubling on each repeat, capped.
+        let mut breaker = StoreBreaker::default();
+        breaker.rate_limited(start, None);
+        assert_eq!(breaker.paused_until, Some(start + RATE_LIMIT_FIRST_PAUSE));
+        breaker.rate_limited(start, None);
+        assert_eq!(
+            breaker.paused_until,
+            Some(start + RATE_LIMIT_FIRST_PAUSE * 2)
+        );
+        for _ in 0..12 {
+            breaker.rate_limited(start, None);
+        }
+        assert_eq!(breaker.paused_until, Some(start + RATE_LIMIT_MAX_PAUSE));
+        // A store's own long wait is capped too, and an answer clears it.
+        breaker.rate_limited(start, Some(Duration::from_secs(3_600)));
+        assert_eq!(breaker.paused_until, Some(start + RATE_LIMIT_MAX_PAUSE));
+        breaker.answered();
+        assert!(!breaker.is_open(start));
+
+        note_store_rate_limit("test-limited-store", Some(Duration::from_secs(5)), start);
+        assert!(store_breaker_open("test-limited-store", start));
+        assert!(!store_breaker_open(
+            "test-limited-store",
+            start + Duration::from_secs(5)
+        ));
+    }
+
+    #[test]
+    fn a_batch_asks_a_store_about_the_product_id_it_already_knows() {
+        let query = PurchaseHintsQuery {
+            title: "Dune".into(),
+            authors: Some("Frank Herbert".into()),
+            asin: Some("B002V1OF70".into()),
+            isbn: None,
+            candidate_source: Some("chirp".into()),
+            candidate_product_id: Some("12345".into()),
+            store_editions: vec![crate::identity::StoreEdition::new("libro", "9780441172719")],
+            region: None,
+            preferred_sources: Vec::new(),
+        };
+        assert_eq!(
+            store_query_opts(&query, "us", "chirp")
+                .product_id
+                .as_deref(),
+            Some("12345")
+        );
+        assert_eq!(
+            store_query_opts(&query, "us", "libro")
+                .product_id
+                .as_deref(),
+            Some("9780441172719")
+        );
+        let audible = store_query_opts(&query, "us", "audible");
+        assert!(audible.product_id.is_none());
+        assert_eq!(audible.asin.as_deref(), Some("B002V1OF70"));
+        assert!(audible.with_price);
+    }
+
+    #[test]
+    fn a_query_no_store_answered_keeps_its_trusted_links_only() {
         let query = PurchaseHintsQuery {
             title: "Dune".into(),
             authors: Some("Frank Herbert".into()),
@@ -1141,13 +1373,12 @@ mod tests {
             region: None,
             preferred_sources: Vec::new(),
         };
-        let response = seeded_response(&query);
+        let hints = seeded_hints(&query, "us");
         // Only Audible is trusted from an id; Libro and Chirp need a live
         // title match, and nothing was priced.
-        let sources: Vec<&str> = response.hints.iter().map(|h| h.source.as_str()).collect();
+        let sources: Vec<&str> = hints.iter().map(|h| h.source.as_str()).collect();
         assert_eq!(sources, vec!["audible"]);
-        assert!(response.hints[0].price_cents.is_none());
-        assert!(response.best.is_none());
+        assert!(hints[0].price_cents.is_none());
     }
 
     #[test]

@@ -11,8 +11,9 @@ use crate::generated::{
     ExternalUser, FetchTitleParams, Invocation, ListDealsParams, ListeningProgress,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MetadataChapters,
     MetadataChaptersParams, MetadataLookupParams, MetadataRecord, MetadataSearchParams, PlainFetch,
-    PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams, RevokeAccountParams,
-    ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams, SourceAccount,
+    PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintsParams,
+    RevokeAccountParams, ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams,
+    SourceAccount,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
@@ -284,6 +285,24 @@ pub trait ContentSource {
     /// Purchase link / price hint; `Ok(None)` when the title is unknown.
     async fn purchase_hint(&self, _params: PurchaseHintParams) -> Result<Option<PurchaseHint>> {
         Err(PluginError::unsupported("purchaseHint"))
+    }
+
+    /// Purchase links / price hints for several titles in one call, one
+    /// answer per query in order.
+    ///
+    /// The default asks [`Self::purchase_hint`] for each query in turn and
+    /// stops at the first error, so a guest whose backend prices many
+    /// products per request overrides this to make one request. A
+    /// `rate_limited` error applies to the whole batch.
+    async fn purchase_hints(
+        &self,
+        params: PurchaseHintsParams,
+    ) -> Result<Vec<Option<PurchaseHint>>> {
+        let mut out = Vec::with_capacity(params.queries.len());
+        for query in params.queries {
+            out.push(self.purchase_hint(query).await?);
+        }
+        Ok(out)
     }
 
     /// Current storefront deals.

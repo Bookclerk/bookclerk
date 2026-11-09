@@ -104,6 +104,7 @@ import type {
   PublishOk,
   PurchaseHint,
   PurchaseHintParams,
+  PurchaseHintsParams,
   QueueMessage as WireQueueMessage,
   QueueSendOk,
   RevokeAccountParams,
@@ -1808,6 +1809,7 @@ const STOREFRONT_METHODS = Object.freeze([
   "searchCatalog",
   "expandCandidates",
   "purchaseHint",
+  "purchaseHints",
   "listDeals",
   "catalogDetail",
   "revokeAccount",
@@ -1905,6 +1907,24 @@ export class StorefrontEntrypoint<
    */
   purchaseHint(_params: PurchaseHintParams): Promise<PurchaseHint | null> {
     return Promise.reject(unsupported("purchaseHint"));
+  }
+  /**
+   * Purchase links / price hints for several titles in one call, one
+   * answer per query in order. The default asks {@link purchaseHint} for
+   * each query in turn; a store whose catalog prices many products per
+   * request overrides this to make one request. Reject with a
+   * `rate_limited` {@link PluginError} (its `details.retryAfterMs` says how
+   * long) when the store asks to slow down, so the host leaves it alone.
+   *
+   * @param params - The titles to price, in order.
+   * @returns One hint or `null` per query.
+   */
+  async purchaseHints(params: PurchaseHintsParams): Promise<Array<PurchaseHint | null>> {
+    const out: Array<PurchaseHint | null> = [];
+    for (const query of params.queries) {
+      out.push(await this.purchaseHint(query));
+    }
+    return out;
   }
   /**
    * Current storefront deals.

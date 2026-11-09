@@ -327,12 +327,70 @@ impl ChirpSource {
 
         if opts.with_price {
             if let Some(ref mut h) = hint {
-                if let Ok(Some(pricing)) = client.audiobook_pricing(&h.product_id).await {
-                    apply_chirp_pricing(h, &pricing);
+                match client.audiobook_pricing(&h.product_id).await {
+                    Ok(Some(pricing)) => apply_chirp_pricing(h, &pricing),
+                    Ok(None) => {}
+                    // The store's own "slow down" reaches the host; other
+                    // failures leave the card unpriced.
+                    Err(crate::error::ChirpError::RateLimited(wait)) => {
+                        return Err(bookclerk_storefront::SourceError::RateLimited(wait));
+                    }
+                    Err(err) => {
+                        tracing::debug!(error = %err, "chirp pricing failed");
+                    }
                 }
             }
         }
         Ok(hint)
+    }
+
+    /// Resolves purchase hints for several titles, pricing them in one
+    /// aliased GraphQL request instead of one per card.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bookclerk_storefront::SourceError::RateLimited`] when Chirp
+    /// asks to slow down; other pricing failures leave the cards unpriced.
+    pub async fn purchase_hints(
+        &self,
+        opts: &[PurchaseHintOpts],
+    ) -> bookclerk_storefront::Result<Vec<Option<SourcePurchaseHint>>> {
+        let mut hints = Vec::with_capacity(opts.len());
+        for query in opts {
+            let unpriced = PurchaseHintOpts {
+                with_price: false,
+                ..query.clone()
+            };
+            hints.push(self.purchase_hint(&unpriced).await?);
+        }
+        let ids: Vec<String> = hints
+            .iter()
+            .zip(opts)
+            .filter(|(hint, query)| query.with_price && hint.is_some())
+            .filter_map(|(hint, _)| hint.as_ref().map(|h| h.product_id.clone()))
+            .collect();
+        if ids.is_empty() {
+            return Ok(hints);
+        }
+        let client = ChirpClient::new(&self.graphql_url);
+        let prices = match client.audiobook_pricings(&ids).await {
+            Ok(prices) => prices,
+            Err(crate::error::ChirpError::RateLimited(wait)) => {
+                return Err(bookclerk_storefront::SourceError::RateLimited(wait));
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, "chirp batch pricing failed");
+                return Ok(hints);
+            }
+        };
+        for (hint, query) in hints.iter_mut().zip(opts) {
+            if let (true, Some(h)) = (query.with_price, hint.as_mut()) {
+                if let Some(pricing) = prices.get(&h.product_id) {
+                    apply_chirp_pricing(h, pricing);
+                }
+            }
+        }
+        Ok(hints)
     }
 
     /// Lists up to `limit` titles on the storefront's current deals shelf.

@@ -491,14 +491,31 @@ as a **membership** signal: linked stores are compared at member price; other
 stores at list / non-member price; the shelf shows the global cheapest of those
 effective prices. Client-supplied `preferred_sources` are ignored.
 
-Each store gets 8 seconds per lookup. A batch answers within **10 seconds**
-with what has resolved: a query still waiting then carries only its trusted
-store links, unpriced, and the page asks again later, so one slow store
-never turns a page of cards into a failed request. A store that times out
-three lookups in a row is **paused** for five minutes (the breaker logs
-`price lookups paused after repeated timeouts`), then tried again; a store
-that answers, even with an error, closes its breaker. Answers, including
-empty ones, are cached for 10 minutes per query.
+A page of cards is priced with **one call per store**: the batch route
+sends every visible card's query to each deployed store's `purchaseHints`
+entrypoint together, with the product id the card already knows for that
+store, so Audible prices up to fifty titles in one catalog request and
+Chirp prices a page in one aliased GraphQL query; Libro.fm and GraphicAudio
+have no bulk endpoint and loop inside the guest. The batch answers within
+**10 seconds** with what has resolved: a store still working then counts as
+timed out, a query no store answered carries only its trusted store links,
+unpriced, and the page asks again later, so one slow store never turns a
+page of cards into a failed request. Only queries at least one store
+answered are cached (10 minutes, empty answers included).
+
+Cards show a price before any lookup: the list price the catalog reported
+when the candidate was fetched is stored on the card as the store's list
+price, and the live lookup refreshes it when the card scrolls into view.
+Member prices are applied only for stores the viewer has an account with,
+decided server-side as before.
+
+Stores are paused in two ways. A store that answers **429** returns
+`rate_limited` with its `Retry-After`, and its price lookups are left alone
+for that long (at most fifteen minutes), or for a minute that doubles on
+each repeat when it did not say; a store that answers again closes the
+pause. A store that times out three lookups in a row is paused for five
+minutes (the breaker logs `price lookups paused after repeated timeouts`),
+then tried again. The single-title route honors the same pauses.
 
 ## Non-goals (this iteration)
 

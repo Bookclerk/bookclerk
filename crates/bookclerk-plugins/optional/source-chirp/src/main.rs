@@ -8,8 +8,8 @@ use bookclerk_plugin_sdk::{
     serve, Bindings, Brand, CatalogHit, ContentSource as ContentSourceRole, Entrypoints,
     ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams, LoginParams,
     LoginResult, PlainFetch, PluginDescribe, PluginError, PluginWorker, PortalAuthMode,
-    PurchaseHint, PurchaseHintParams, ScalarLimits, ScanParams, ScanSummary, SearchCatalogParams,
-    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    PurchaseHint, PurchaseHintParams, PurchaseHintsParams, ScalarLimits, ScanParams, ScanSummary,
+    SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_storefront::abi::{expand_seed_from_params, DEFAULT_LIST_DEALS_LIMIT};
 use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
@@ -135,7 +135,25 @@ impl ContentSourceRole for ChirpContentSource {
             .purchase_hint(&PurchaseHintOpts::from(params))
             .await
             .map(|hint| hint.map(Into::into))
-            .map_err(internal)
+            .map_err(PluginError::from)
+    }
+
+    /// One aliased GraphQL request prices a page of cards.
+    async fn purchase_hints(
+        &self,
+        params: PurchaseHintsParams,
+    ) -> Result<Vec<Option<PurchaseHint>>, PluginError> {
+        let opts: Vec<PurchaseHintOpts> = params
+            .queries
+            .into_iter()
+            .map(PurchaseHintOpts::from)
+            .collect();
+        let source = bookclerk_plugin_source_chirp::ChirpSource::new();
+        source
+            .purchase_hints(&opts)
+            .await
+            .map(|hints| hints.into_iter().map(|h| h.map(Into::into)).collect())
+            .map_err(PluginError::from)
     }
 
     async fn list_deals(&self, params: ListDealsParams) -> Result<Vec<CatalogHit>, PluginError> {
