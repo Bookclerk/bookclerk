@@ -82,7 +82,7 @@ test_results = "python-sdk/junit.xml"
 root = "."
 paths = ["packages/plugin-sdk-python/src/"]
 suffixes = [".py"]
-floor = 81
+floor = 82
 
 [areas.workerd-guests]
 report = "workerd-guests/lcov.info"
