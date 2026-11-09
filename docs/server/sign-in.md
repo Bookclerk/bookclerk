@@ -44,6 +44,12 @@ An Owner can **elevate** to operator, with an IdP step-up, a passkey or
 their password. Elevated, they get **Server** and **Plugins** settings and
 impersonation. Administrators can add users but cannot elevate.
 
+Wrong elevation passwords count toward the same lockout as other sign-in
+attempts, both for the client address and for the Owner. After too many
+misses, `POST /api/auth/elevate` answers `429` with a `Retry-After` header,
+even from another address, until the lockout ends. A passkey or IdP step-up
+still works meanwhile.
+
 ## Sign-in methods
 
 ### Passwords and second factors
