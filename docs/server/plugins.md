@@ -698,6 +698,11 @@ The consent grant is missing, or the plugin widened `capabilities` since
 the last grant. Approve again, then run `bookclerk plugins deploy <id>`.
 Spawning also fails closed until the grant covers the current manifest.
 
+An upgrade that only asks for more (another binding, fetch host, TCP port
+or CIDR) doesn't stop the plugin: it keeps running under the earlier
+grant, and `bookclerk plugins info <id>` lists what is waiting for
+consent (see [Upgrades](../plugins/capabilities.md#upgrades)).
+
 ## Next steps
 
 - [Capabilities and consent](../plugins/capabilities.md): what a plugin

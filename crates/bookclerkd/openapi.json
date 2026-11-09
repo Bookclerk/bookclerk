@@ -32630,6 +32630,62 @@
           }
         }
       },
+      "PluginConsentPending": {
+        "type": "object",
+        "description": "The difference between a plugin's request and its stored grant.",
+        "required": [
+          "lines",
+          "domains",
+          "tcp",
+          "addressCidrs",
+          "allowUndeclaredPublicRedirects"
+        ],
+        "properties": {
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Operator-facing lines naming every capability awaiting consent, the\nsame lines `bookclerk plugins info` and `bookclerk plugins approve`\nprint; empty when the stored grant covers the request.",
+            "example": [
+              "Awaiting consent (not automatically approved):",
+              "  fetch hosts: any public website (*)"
+            ]
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fetch host patterns the request adds (`*` is any public host).",
+            "example": [
+              "*"
+            ]
+          },
+          "tcp": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TcpGrantView"
+            },
+            "description": "TCP `host:ports` the request adds, narrowed to the new ports."
+          },
+          "addressCidrs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "CIDRs the request adds.",
+            "example": [
+              "192.168.1.0/24"
+            ]
+          },
+          "allowUndeclaredPublicRedirects": {
+            "type": "boolean",
+            "description": "Whether the request newly asks to follow undeclared public redirects.",
+            "example": false
+          }
+        }
+      },
       "PluginConsentResponse": {
         "type": "object",
         "description": "Consent dialog payload for one plugin.",
@@ -32692,6 +32748,17 @@
               {
                 "$ref": "#/components/schemas/PluginGrantView",
                 "description": "Previously approved grant, when one is stored."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PluginConsentPending",
+                "description": "What the request asks for beyond the stored grant (a plugin upgrade\nthat widened its capabilities); absent when no grant is stored. The\nplugin keeps running under the stored grant until these are approved."
               },
               {
                 "type": "null"
@@ -35416,7 +35483,8 @@
           "request_digest",
           "grant",
           "updated_at",
-          "state"
+          "state",
+          "pending"
         ],
         "properties": {
           "cluster_id": {
@@ -35568,6 +35636,17 @@
             "type": "string",
             "description": "How this host stands on the request: `consented`, `awaiting_host_consent` (no approval, or a revoked one), `awaiting_host_reapproval` (the owner changed the request or the archive since the approval), or `invalid_grant` (a grant that does not parse).",
             "example": "consented"
+          },
+          "pending": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What the owner's current request asks for beyond the request the operator approved, as the operator-facing lines the CLI prints; empty when nothing was approved yet or the request stays within the approval.",
+            "example": [
+              "Awaiting consent (not automatically approved):",
+              "  fetch hosts: any public website (*)"
+            ]
           }
         }
       },

@@ -242,6 +242,9 @@ export function PluginConsentDialog({
 }) {
   const request = consent.request;
   const existing = consent.existing;
+  const pending = consent.pending;
+  // The header line ("Awaiting consent …") is replaced by this dialog's own heading.
+  const pendingLines = (pending?.lines ?? []).slice(1).map((line) => line.trim());
   const brand = consent.brand;
   const limits = consent.limits;
   const isWorkerd = consent.runtime === "workerd";
@@ -275,11 +278,29 @@ export function PluginConsentDialog({
 
   useEffect(() => {
     setNetworkMode(existing?.networkMode || request.networkMode || "deny");
-    setDomains(initialList(request.domains, existing?.domains));
-    setTcp((existing?.tcp && existing.tcp.length > 0 ? existing.tcp : request.tcp) ?? []);
-    setAddressCidrs(initialList(request.addressCidrs ?? [], existing?.addressCidrs));
+    // What a new version adds is shown ticked, as a first install shows the whole request:
+    // accepting approves it, unticking denies it. It is listed under "New in this version".
+    setDomains(
+      uniqueValues([
+        ...initialList(request.domains, existing?.domains),
+        ...(pending?.domains ?? []),
+      ]),
+    );
+    setTcp([
+      ...((existing?.tcp && existing.tcp.length > 0 ? existing.tcp : request.tcp) ?? []),
+      ...(pending?.tcp ?? []),
+    ]);
+    setAddressCidrs(
+      uniqueValues([
+        ...initialList(request.addressCidrs ?? [], existing?.addressCidrs),
+        ...(pending?.addressCidrs ?? []),
+      ]),
+    );
     setAllowUndeclaredPublicRedirects(
-      existing?.allowUndeclaredPublicRedirects ?? request.allowUndeclaredPublicRedirects ?? false,
+      Boolean(pending?.allowUndeclaredPublicRedirects) ||
+        (existing?.allowUndeclaredPublicRedirects ??
+          request.allowUndeclaredPublicRedirects ??
+          false),
     );
     setOwnUserAgentHosts(
       initialList(request.ownUserAgentHosts ?? [], existing?.ownUserAgentHosts).filter((host) =>
@@ -303,7 +324,7 @@ export function PluginConsentDialog({
     setCidrDraft("");
     setFlagDraft("");
     setOpenSection(null);
-  }, [consent, existing, request, limits]);
+  }, [consent, existing, pending, request, limits]);
 
   const selectedDomains = useMemo(() => uniqueValues(domains), [domains]);
   const suggestedDomains = useMemo(
@@ -543,6 +564,25 @@ export function PluginConsentDialog({
         </div>
 
         <div className="max-h-[min(58vh,28rem)] overflow-y-auto px-6">
+          {pendingLines.length > 0 ? (
+            <div
+              role="note"
+              className="mt-3 rounded-md border border-brick/30 bg-brick/5 px-3 py-2 text-xs text-ink/75"
+            >
+              <p className="font-semibold text-ink">New in this version</p>
+              <p className="mt-0.5">
+                The plugin keeps running under your earlier grant until you accept these. Untick any
+                you don&apos;t want.
+              </p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {pendingLines.map((line) => (
+                  <li key={line} className="break-words">
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <p className="pb-1 pt-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-ink/45">
             This plugin would like to
           </p>

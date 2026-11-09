@@ -1612,7 +1612,18 @@ fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> an
     let plugin = find_plugin(config, id)?;
     let grant = consent_request(&plugin.manifest, plugin.plugin_key());
     let summary = consent_summary(&grant);
+    let files_dir = &config.paths().files_dir;
+    let mut store = PluginGrantStore::load(files_dir)?;
+    // What this version asks for beyond the stored grant: the same diff
+    // `plugins info` and the web consent dialog show.
+    let pending = store
+        .get_by_plugin_key(plugin.plugin_key().canonical())
+        .map(|stored| bookclerk_plugin_host::pending_structural(stored, &grant).summary_lines())
+        .unwrap_or_default();
 
+    for line in &pending {
+        println!("{line}");
+    }
     for line in &summary {
         println!("{line}");
     }
@@ -1637,8 +1648,6 @@ fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> an
         }
     }
 
-    let files_dir = &config.paths().files_dir;
-    let mut store = PluginGrantStore::load(files_dir)?;
     store.upsert(grant.clone());
     store.save(files_dir)?;
 
@@ -1647,6 +1656,7 @@ fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> an
         "approved": true,
         "grant": grant,
         "summary": summary,
+        "pending": pending,
         "grants_file": PluginGrantStore::path(files_dir),
     });
     emit(format, &payload, || {

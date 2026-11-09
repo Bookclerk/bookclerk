@@ -834,6 +834,11 @@ struct PluginConsentResponse {
     /// Previously approved grant, when one is stored.
     existing: Option<PluginGrantView>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// What the request asks for beyond the stored grant (a plugin upgrade
+    /// that widened its capabilities); absent when no grant is stored. The
+    /// plugin keeps running under the stored grant until these are approved.
+    pending: Option<PluginConsentPending>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     /// Optional portal or manifest branding for the dialog.
     brand: Option<PluginConsentBrand>,
     /// Host-capped resource defaults (workerd budgets + shared disk). Always set.
@@ -842,6 +847,40 @@ struct PluginConsentResponse {
     /// the request's `ownUserAgentHosts`.
     #[schema(example = "bookclerk/0.1.0 (+https://bookclerk.app)")]
     host_user_agent: String,
+}
+
+/// The difference between a plugin's request and its stored grant.
+#[derive(Debug, Clone, Default, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct PluginConsentPending {
+    /// Operator-facing lines naming every capability awaiting consent, the
+    /// same lines `bookclerk plugins info` and `bookclerk plugins approve`
+    /// print; empty when the stored grant covers the request.
+    #[schema(example = json!(["Awaiting consent (not automatically approved):", "  fetch hosts: any public website (*)"]))]
+    lines: Vec<String>,
+    /// Fetch host patterns the request adds (`*` is any public host).
+    #[schema(example = json!(["*"]))]
+    domains: Vec<String>,
+    /// TCP `host:ports` the request adds, narrowed to the new ports.
+    tcp: Vec<TcpGrantView>,
+    /// CIDRs the request adds.
+    #[schema(example = json!(["192.168.1.0/24"]))]
+    address_cidrs: Vec<String>,
+    /// Whether the request newly asks to follow undeclared public redirects.
+    #[schema(example = false)]
+    allow_undeclared_public_redirects: bool,
+}
+
+impl From<&bookclerk_plugin_host::PendingStructural> for PluginConsentPending {
+    fn from(pending: &bookclerk_plugin_host::PendingStructural) -> Self {
+        Self {
+            lines: pending.summary_lines(),
+            domains: pending.domains.iter().cloned().collect(),
+            tcp: pending.tcp.iter().map(TcpGrantView::from).collect(),
+            address_cidrs: pending.address_cidrs.iter().cloned().collect(),
+            allow_undeclared_public_redirects: pending.undeclared_public_redirects,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -3345,8 +3384,11 @@ async fn get_plugin_consent(
     let existing = store
         .get_by_plugin_key(plugin.plugin_key().canonical())
         .cloned();
+    let pending = existing
+        .as_ref()
+        .map(|grant| pending_structural(grant, &request));
     let covered = existing.as_ref().is_some_and(|grant| {
-        grant_covers(grant, &request) && pending_structural(grant, &request).is_empty()
+        grant_covers(grant, &request) && pending.as_ref().is_some_and(|p| p.is_empty())
     });
     let brand = plugin_consent_brand(&state, plugin).await;
     let limits = plugin_consent_limits(plugin, cfg.plugins.jail.cpu_rate_percent);
@@ -3364,6 +3406,7 @@ async fn get_plugin_consent(
         covered,
         summary,
         existing: existing.as_ref().map(PluginGrantView::from_grant),
+        pending: pending.as_ref().map(PluginConsentPending::from),
         brand,
         limits,
         host_user_agent: bookclerk_plugin_manifest::host_user_agent(),
@@ -3423,6 +3466,9 @@ async fn post_plugin_consent(
         covered: true,
         summary,
         existing: Some(PluginGrantView::from_grant(&approved)),
+        pending: Some(PluginConsentPending::from(&pending_structural(
+            &approved, &request,
+        ))),
         brand,
         limits,
         host_user_agent: bookclerk_plugin_manifest::host_user_agent(),
