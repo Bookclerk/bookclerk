@@ -19,6 +19,7 @@ use sea_orm::{
 use bookclerk_plugin_abi::{DbCapabilities, ExecuteRequest, TypedDbStatement};
 
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
+use crate::column_read::SelectColumnExt;
 use crate::control_plane::batch;
 use crate::entities::{
     discover_candidates, discover_feeds, discover_fetches, discover_store_calls, portal_identities,
@@ -442,16 +443,12 @@ impl LibraryStore {
         let found = match subject {
             DiscoverSubject::Operator => return Ok(true),
             DiscoverSubject::User(id) => users::Entity::find_by_id(*id)
-                .select_only()
-                .column(users::Column::Id)
-                .into_tuple::<i64>()
+                .into_column::<i64, _>(users::Column::Id)
                 .one(&self.db)
                 .await
                 .map_err(LibraryError::Orm)?,
             DiscoverSubject::Portal(id) => portal_identities::Entity::find_by_id(*id)
-                .select_only()
-                .column(portal_identities::Column::Id)
-                .into_tuple::<i64>()
+                .into_column::<i64, _>(portal_identities::Column::Id)
                 .one(&self.db)
                 .await
                 .map_err(LibraryError::Orm)?,
@@ -711,27 +708,39 @@ impl LibraryStore {
         loop {
             // Only the id and key: a feed body can be large, and this walk
             // touches every subject.
-            let rows: Vec<(i64, String)> = discover_feeds::Entity::find()
+            let rows = discover_feeds::Entity::find()
                 .select_only()
                 .column(discover_feeds::Column::Id)
                 .column(discover_feeds::Column::SubjectKey)
                 .filter(discover_feeds::Column::Id.gt(after))
                 .order_by_asc(discover_feeds::Column::Id)
                 .limit(DISCOVER_READ_PAGE)
-                .into_tuple()
+                .into_model::<FeedSubjectRow>()
                 .all(&self.db)
                 .await
                 .map_err(LibraryError::Orm)?;
-            let Some((last, _)) = rows.last() else { break };
-            after = *last;
+            let Some(last) = rows.last() else { break };
+            after = last.id;
             let full = u64::try_from(rows.len()).is_ok_and(|n| n >= DISCOVER_READ_PAGE);
-            out.extend(rows.iter().filter_map(|(_, k)| DiscoverSubject::parse(k)));
+            out.extend(
+                rows.iter()
+                    .filter_map(|row| DiscoverSubject::parse(&row.subject_key)),
+            );
             if !full {
                 break;
             }
         }
         Ok(out)
     }
+}
+
+/// One stored feed's id and subject key, read by column name (#854).
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct FeedSubjectRow {
+    /// `discover_feeds.id`: the page cursor.
+    id: i64,
+    /// `discover_feeds.subject_key`: a [`DiscoverSubject`] key.
+    subject_key: String,
 }
 
 #[cfg(test)]

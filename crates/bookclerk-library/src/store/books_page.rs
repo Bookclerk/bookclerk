@@ -1257,7 +1257,7 @@ mod tests {
         .expect("explain");
         let mut lines = Vec::new();
         for row in rows {
-            if let Ok(text) = row.try_get_by_index::<String>(0) {
+            if let Ok(text) = crate::column_read::only_column::<String>(&row) {
                 lines.push(text);
             }
         }
@@ -1494,8 +1494,8 @@ mod tests {
             .expect("explain");
         let mut lines = Vec::new();
         for row in rows {
-            for index in 0..8 {
-                if let Ok(text) = row.try_get_by_index::<String>(index) {
+            for column in row.column_names() {
+                if let Ok(text) = row.try_get::<String>("", &column) {
                     lines.push(text);
                 }
             }

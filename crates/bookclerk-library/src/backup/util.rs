@@ -130,22 +130,17 @@ where
     Ok(())
 }
 
-/// Reads a catalog text cell by name with positional fallback.
+/// Reads a catalog text cell by name.
+///
+/// There is no positional fallback: on the host's proxied connection the
+/// row's columns are sorted by name, so an index would name another column
+/// (see [`crate::column_read`]).
 ///
 /// # Errors
 ///
-/// Returns when the column is missing.
+/// Returns when the column is missing or not text.
 pub fn cell_text(row: &QueryResult, name: &str) -> Result<String> {
     row.try_get::<String>("", name)
-        .or_else(|_| {
-            row.try_get_by_index::<String>(match name {
-                "kind" => 0,
-                "name" => 1,
-                "table_name" => 2,
-                "canonical_sql" => 3,
-                _ => 0,
-            })
-        })
         .map_err(|err| LibraryError::Schema(format!("catalog column `{name}`: {err}")))
 }
 

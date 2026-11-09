@@ -908,8 +908,7 @@ async fn a_clerk_redeem_records_an_owner_node_with_no_socket_credential() {
                 ))
                 .await
                 .unwrap()
-                .unwrap()
-                .try_get_by_index::<i64>(0)
+                .map(|row| crate::column_read::only_column::<i64>(&row).unwrap())
                 .unwrap()
         }
     };

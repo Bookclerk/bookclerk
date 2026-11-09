@@ -12,6 +12,7 @@
 use sea_orm::{EntityTrait, PaginatorTrait, QueryOrder, QuerySelect};
 use sha2::{Digest as _, Sha256};
 
+use crate::column_read::SelectColumnExt;
 use crate::entities::{
     books, cluster_links, configuration_changes, discover_feeds, event_deliveries, jobs,
     node_status, remote_plugin_consents, users,
@@ -99,11 +100,9 @@ where
         .await
         .map_err(LibraryError::from_db_err)?;
     let newest: Option<String> = E::find()
-        .select_only()
-        .column(column)
         .order_by_desc(column)
         .limit(1)
-        .into_tuple()
+        .into_column(column)
         .one(store.db())
         .await
         .map_err(LibraryError::from_db_err)?;
@@ -170,11 +169,9 @@ pub async fn live_revisions(store: &LibraryStore) -> Result<LiveRevisions> {
                     .await
                     .map_err(LibraryError::from_db_err)?;
                 let newest: Option<i64> = configuration_changes::Entity::find()
-                    .select_only()
-                    .column(configuration_changes::Column::Id)
                     .order_by_desc(configuration_changes::Column::Id)
                     .limit(1)
-                    .into_tuple()
+                    .into_column(configuration_changes::Column::Id)
                     .one(store.db())
                     .await
                     .map_err(LibraryError::from_db_err)?;

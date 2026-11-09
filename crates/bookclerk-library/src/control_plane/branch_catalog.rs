@@ -1189,6 +1189,17 @@ pub struct BranchTitleCounts {
     pub detached: u64,
 }
 
+/// A shared title's manifest and delivered digests, read by column name
+/// (#854).
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct DeliveredShaRow {
+    /// `branch_titles.manifest_sha256`: the digest the branch was sent.
+    manifest_sha256: String,
+    /// `branch_titles.delivered_sha256`: the digest the branch reported
+    /// delivered, when it has.
+    delivered_sha256: Option<String>,
+}
+
 /// [`BranchTitleCounts`] of `node_id`.
 ///
 /// # Errors
@@ -1214,12 +1225,12 @@ pub async fn branch_title_counts(store: &LibraryStore, node_id: &str) -> Result<
         .filter(branch_titles::Column::NodeId.eq(node_id))
         .filter(branch_titles::Column::State.eq(BRANCH_TITLE_SHARED))
         .filter(branch_titles::Column::DeliveredSha256.is_not_null())
-        .into_tuple::<(String, Option<String>)>()
+        .into_model::<DeliveredShaRow>()
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?
         .into_iter()
-        .filter(|(manifest, delivered)| delivered.as_deref() == Some(manifest.as_str()))
+        .filter(|row| row.delivered_sha256.as_deref() == Some(row.manifest_sha256.as_str()))
         .count() as u64;
     Ok(BranchTitleCounts {
         shared,

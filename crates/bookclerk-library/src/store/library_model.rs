@@ -12,12 +12,13 @@ use std::collections::BTreeSet;
 
 use bookclerk_resolve as resolve;
 use chrono::Utc;
-use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{now_str, parse_dt, LibraryStore, NewBook};
 use crate::atomic_ops::{atomic_status, DbAtomicParams};
+use crate::column_read::SelectColumnExt;
 use crate::entities::{
     credits, edition_identifiers, editions, expressions, holdings, resolution_overrides,
     series_entries, store_listings, work_identifiers, works,
@@ -938,9 +939,7 @@ impl LibraryStore {
             let matched = works::Entity::find()
                 .filter(works::Column::MatchKey.eq(match_key.as_str()))
                 .filter(works::Column::Kind.eq(listing.work_kind.as_str()))
-                .select_only()
-                .column(works::Column::Id)
-                .into_tuple::<String>()
+                .into_column::<String, _>(works::Column::Id)
                 .all(db)
                 .await
                 .map_err(LibraryError::Orm)?;
@@ -1342,9 +1341,7 @@ impl LibraryStore {
         use crate::entities::books;
         let expression_ids: Vec<String> = expressions::Entity::find()
             .filter(expressions::Column::WorkId.eq(work_id))
-            .select_only()
-            .column(expressions::Column::Id)
-            .into_tuple::<String>()
+            .into_column::<String, _>(expressions::Column::Id)
             .all(&self.db)
             .await
             .map_err(LibraryError::Orm)?;

@@ -591,18 +591,18 @@ pub(super) async fn claims_another_books_key(
             .iter()
             .cloned()
             .fold(sea_orm::Condition::any(), |all, probe| all.add(probe));
-        let others: Vec<(Option<String>, Option<String>)> = books::Entity::find()
+        let others = books::Entity::find()
             .select_only()
             .column(books::Column::StorageKey)
             .column(books::Column::PdfStorageKey)
             .filter(books::Column::Uuid.is_not_in(siblings.iter().cloned()))
             .filter(any)
-            .into_tuple()
+            .into_model::<BookStorageKeys>()
             .all(store.db())
             .await
             .map_err(LibraryError::Orm)?;
-        for (audio, pdf) in others {
-            for key in audio.into_iter().chain(pdf) {
+        for row in others {
+            for key in row.storage_key.into_iter().chain(row.pdf_storage_key) {
                 if let Some(stem) = file_stem_key(&key) {
                     stems.insert(stem.to_string());
                 }
@@ -613,6 +613,15 @@ pub(super) async fn claims_another_books_key(
     Ok(copies
         .iter()
         .any(|key| exact.contains(*key) || sidecar_stems(key).any(|stem| stems.contains(stem))))
+}
+
+/// A book's audio and PDF storage keys, read by column name (#854).
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct BookStorageKeys {
+    /// `books.storage_key`: the audio object's key, when stored.
+    storage_key: Option<String>,
+    /// `books.pdf_storage_key`: the companion PDF's key, when stored.
+    pdf_storage_key: Option<String>,
 }
 
 /// How many times [`claim_upload_keys`] claims one key whose record keeps

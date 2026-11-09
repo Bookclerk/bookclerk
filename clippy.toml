@@ -8,3 +8,15 @@
 # Tests may unwrap/expect; production code states its invariant or propagates.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
+
+# The host's store connection is SeaORM's proxy, whose rows are maps sorted by
+# column name, so a positional tuple read binds columns alphabetically rather
+# than in SELECT order (#854). Read several columns with a FromQueryResult
+# struct; see docs/plugins/database-limits.md#reading-columns-by-name-in-host-code.
+# `crates/bookclerk-library/clippy.toml` repeats these and also disallows
+# single-cell positional reads there.
+disallowed-methods = [
+    { path = "sea_orm::Select::into_tuple", reason = "proxy rows are sorted by column name, not SELECT order; use a FromQueryResult struct or bookclerk_library::column_read::SelectColumnExt::into_column" },
+    { path = "sea_orm::QueryResult::try_get_many_by_index", reason = "proxy rows are sorted by column name, not SELECT order; read by name" },
+    { path = "sea_orm::TryGetableMany::try_get_many_by_index", reason = "proxy rows are sorted by column name, not SELECT order; read by name" },
+]

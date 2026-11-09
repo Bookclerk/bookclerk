@@ -170,6 +170,32 @@ interactive transaction fails Clippy; the native-connection tools (backend
 migration, backup restore) and the in-process fallbacks a store without an
 atomic backend takes carry a narrow allow with the reason beside it.
 
+## Reading columns by name in host code
+
+The host reaches the database plugin through SeaORM's proxy connection,
+and SeaORM keeps a proxy row as a map sorted by column name. A positional
+read therefore sees the columns in alphabetical order, not in `SELECT`
+order: `select_only().column(uuid).column(product_id).into_tuple()` puts
+`product_id` in the tuple's first slot. The adapters return their columns
+in order; the order is lost on the host side.
+
+Host code reads columns by name instead:
+
+- Several columns: a `#[derive(FromQueryResult)]` struct read with
+  `into_model::<T>()`.
+- One column of an entity query: `SelectColumnExt::into_column(column)`
+  from `bookclerk_library::column_read`, which selects only that column.
+- The only column of a raw statement's row, such as `SELECT COUNT(*)`:
+  `column_read::only_column(&row)`, which refuses a row with more than one
+  column.
+
+`crates/bookclerk-library/clippy.toml` disallows `Select::into_tuple`,
+`QueryResult::try_get_by_index` and `QueryResult::try_get_many_by_index`
+(and their trait forms) in the library crate, and the workspace
+`clippy.toml` disallows `into_tuple` and `try_get_many_by_index` in the
+other crates, so a positional read fails Clippy. Adapters read their own
+engine rows, which keep `SELECT` order, and may still read a cell by index.
+
 ## Testing against the limits
 
 A plain in-memory SQLite connection accepts `begin()` and never hits a cap,
@@ -320,3 +346,4 @@ operator's adapter.
   and D1's are smaller than sqlite's.
 - Test under every `bookclerk-db-testkit` profile, and keep
   `refused_begins()` at zero.
+- In host code, read columns by name, never by position.

@@ -15,6 +15,7 @@ use sea_orm::{
 use uuid::Uuid;
 
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
+use crate::column_read::SelectColumnExt;
 use crate::entities::{
     books, domain_events, event_deliveries, event_outbox_stats, event_subscriber_nodes,
 };
@@ -162,7 +163,7 @@ where
     .map_err(LibraryError::Orm)?;
     let mut ids = Vec::new();
     for row in rows {
-        if let Ok(id) = row.try_get_by_index::<String>(0) {
+        if let Ok(id) = crate::column_read::only_column::<String>(&row) {
             if !id.is_empty() {
                 ids.push(id);
             }
@@ -1435,11 +1436,9 @@ impl LibraryStore {
     /// Returns [`LibraryError::Orm`] when the read fails.
     pub async fn list_queue_names(&self) -> Result<Vec<String>> {
         let names: Vec<String> = domain_events::Entity::find()
-            .select_only()
-            .column(domain_events::Column::QueueName)
             .distinct()
             .order_by_asc(domain_events::Column::QueueName)
-            .into_tuple()
+            .into_column(domain_events::Column::QueueName)
             .all(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
