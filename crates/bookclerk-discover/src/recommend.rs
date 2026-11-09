@@ -618,7 +618,9 @@ pub(crate) fn owned_identity_sets(
 ///   subject's own are few).
 /// * `taste_weights` - How much each taste book counts (see [`TasteWeights`]).
 /// * `listening` - The subject's listening rows.
-/// * `candidates` - Unowned storefront candidates, already merged by identity.
+/// * `candidates` - Unowned storefront candidates, already merged by identity;
+///   those for a work the library holds are dropped here
+///   ([`retain_unowned_works`]).
 /// * `opts` - Ranking options.
 ///
 /// # Returns
@@ -637,6 +639,7 @@ pub(crate) async fn rank_candidates(
     candidates: Vec<crate::candidates::StorefrontCandidate>,
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
+    let candidates = retain_unowned_works(library, candidates).await?;
     let profile = build_taste_profile(library, taste_books, taste_weights, listening, opts).await?;
     let mut embedder = open_candidate_embedder(opts)?;
     let mut scored: HashMap<String, Recommendation> = HashMap::new();
@@ -1106,6 +1109,70 @@ async fn library_owns_work(library: &LibraryStore, entry: &GlobalQueueEntry) -> 
     Ok(library.owned_work_for(&query).await?.is_some())
 }
 
+/// Drops storefront candidates for a work the household library holds.
+///
+/// The ASIN / ISBN / product sets catch the exact editions the library
+/// holds; another edition of an owned book (a different narrator, store or
+/// ASIN) has none of those ids. The library's resolver places each
+/// candidate as it would a scanned listing (shared identifiers, then the
+/// work's identifiers, then the work-level title-and-author match), and a
+/// candidate whose work has a held title is dropped. A sequel that shares
+/// its series' name is its own work and stays. Whether a work is held is
+/// read once per work.
+///
+/// # Arguments
+///
+/// * `library` - Library store whose works and holdings decide.
+/// * `candidates` - Storefront candidates, already free of owned ids.
+///
+/// # Returns
+///
+/// The candidates whose work the library does not hold, in their order.
+///
+/// # Errors
+///
+/// Returns the library read error.
+pub(crate) async fn retain_unowned_works(
+    library: &LibraryStore,
+    candidates: Vec<crate::candidates::StorefrontCandidate>,
+) -> Result<Vec<crate::candidates::StorefrontCandidate>> {
+    if candidates.is_empty() {
+        return Ok(candidates);
+    }
+    let mut held: HashMap<String, bool> = HashMap::new();
+    let mut kept = Vec::with_capacity(candidates.len());
+    for c in candidates {
+        if c.title.trim().is_empty() {
+            kept.push(c);
+            continue;
+        }
+        let query = bookclerk_library::TitleQuery {
+            title: &c.title,
+            authors: c.authors.as_deref(),
+            asin: c.asin.as_deref(),
+            isbn: c.isbn.as_deref(),
+            series: c.series.as_deref(),
+            series_index: c.series_index.as_deref(),
+        };
+        let Some(work_id) = library.work_for(&query).await? else {
+            kept.push(c);
+            continue;
+        };
+        let owned = match held.get(&work_id) {
+            Some(owned) => *owned,
+            None => {
+                let owned = !library.book_uuids_for_work(&work_id).await?.is_empty();
+                held.insert(work_id, owned);
+                owned
+            }
+        };
+        if !owned {
+            kept.push(c);
+        }
+    }
+    Ok(kept)
+}
+
 /// Inserts or merges a recommendation when ASIN/ISBN/title identity already exists.
 fn upsert_recommendation(map: &mut HashMap<String, Recommendation>, rec: Recommendation) {
     let match_key = map.iter().find_map(|(key, existing)| {
@@ -1528,6 +1595,67 @@ mod tests {
             .unwrap();
         let books = store.list_books(None).await.unwrap();
         (store, books)
+    }
+
+    /// Another store's edition of an owned book is dropped from the
+    /// candidates by its work, though it shares no id with the library; a
+    /// sequel and an unknown title stay, and so does everything for a
+    /// library with no books.
+    #[tokio::test]
+    async fn another_edition_of_an_owned_book_is_not_a_candidate() {
+        let store = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let candidate = |source: &str, product: &str, title: &str| {
+            let mut c = crate::candidates::hit_to_candidate(
+                source,
+                bookclerk_source::CatalogHit {
+                    product_id: product.into(),
+                    title: title.into(),
+                    ..bookclerk_source::CatalogHit::default()
+                },
+            );
+            c.authors = Some("Frank Herbert".into());
+            c
+        };
+        let mut chirp_dune = candidate("chirp", "chirp-dune", "Dune");
+        chirp_dune.isbn = Some("9781427201447".into());
+        let mut audible_dune = candidate("audible", "B0OTHER001", "Dune");
+        audible_dune.asin = Some("B0OTHER001".into());
+        let pool = || {
+            vec![
+                chirp_dune.clone(),
+                candidate("libro", "messiah", "Dune Messiah"),
+                audible_dune.clone(),
+                candidate("libro", "unknown", "The Dosadi Experiment"),
+            ]
+        };
+        let titles = |kept: &[crate::candidates::StorefrontCandidate]| {
+            kept.iter()
+                .map(|c| c.product_id.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let empty = retain_unowned_works(&store, pool()).await.unwrap();
+        assert_eq!(
+            titles(&empty).len(),
+            4,
+            "a new library keeps every candidate"
+        );
+
+        store
+            .upsert_account("audible", "acct", "us", Some("Main"), true, "audible")
+            .await
+            .unwrap();
+        let mut dune = bookclerk_library::NewBook::minimal("B002V1OF70", "acct", "us", "Dune");
+        dune.authors = Some("Frank Herbert".into());
+        dune.asin = Some("B002V1OF70".into());
+        dune.series = Some("Dune".into());
+        dune.series_index = Some("1".into());
+        store.upsert_book(&dune).await.unwrap();
+
+        let kept = retain_unowned_works(&store, pool()).await.unwrap();
+        assert_eq!(titles(&kept), ["messiah", "unknown"]);
     }
 
     /// Owning the first book of a series does not count as owning its
