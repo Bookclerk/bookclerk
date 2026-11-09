@@ -794,6 +794,11 @@ fn authorize_granted_request(
 ) -> Result<(), PluginError> {
     validate_guest_execute_request(req)?;
     authorize_guest_sql_policy(req, policy)?;
+    // The host session desugars before it stamps and checks the canonical
+    // hash, so the broker hashes the same request: hashed as written, a
+    // statement the desugaring rewrites (`ORDER BY` null placement, `/` and
+    // `%` by zero) would reach the session with a hash it cannot reproduce.
+    bookclerk_plugin_abi::desugar_execute_request(req);
     for stmt in &mut req.statements {
         stmt.kind = guest_statement_kind(&stmt.sql);
     }
@@ -2717,6 +2722,54 @@ mod tests {
             413
         );
         assert_eq!(plugin_error_status(&PluginError::invalid_params("x")), 400);
+    }
+
+    #[test]
+    fn granted_request_is_hashed_after_desugaring() {
+        use bookclerk_plugin_abi::{
+            canonical_execute_request_hash, desugar_canonical_sql, DbPlanStatementKind,
+            DbResultSelection,
+        };
+        // Trailing trivia before the comma and the end of the statement: the
+        // session desugars the stamped SQL once more before it checks the
+        // hash, so the rewrite has to be a fixed point on its own output.
+        let raw = "SELECT id FROM notes ORDER BY id , body ";
+        let mut req = bookclerk_plugin_abi::decode_execute_request_bytes(&guest_sql_bytes(
+            raw,
+            vec![],
+            DbPlanStatementKind::Select,
+            DbResultSelection::Rows,
+            10,
+        ))
+        .expect("decode");
+        authorize_granted_request(&mut req, 0, &GuestSqlPolicy::host_authoritative())
+            .expect("authorized");
+        let desugared = desugar_canonical_sql(raw);
+        assert_ne!(desugared, raw, "ORDER BY is rewritten by the desugaring");
+        assert_eq!(req.statements[0].sql, desugared);
+        assert_eq!(
+            desugar_canonical_sql(&req.statements[0].sql),
+            req.statements[0].sql,
+            "the session's second desugaring leaves the stamped SQL unchanged"
+        );
+        // The session recomputes the hash over the request it receives; the
+        // broker's stamp must be that hash.
+        assert_eq!(
+            req.request_hash,
+            canonical_execute_request_hash(&req).expect("hash"),
+        );
+        // A retry token computed over the desugared request is accepted.
+        let mut retry = bookclerk_plugin_abi::decode_execute_request_bytes(&guest_sql_bytes(
+            raw,
+            vec![],
+            DbPlanStatementKind::Select,
+            DbResultSelection::Rows,
+            10,
+        ))
+        .expect("decode");
+        retry.request_hash = req.request_hash.clone();
+        authorize_granted_request(&mut retry, 0, &GuestSqlPolicy::host_authoritative())
+            .expect("retry token matches the desugared request");
     }
 
     #[test]
