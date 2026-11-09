@@ -1,5 +1,6 @@
 //! Suggest storefronts where a title might be purchased (with live pricing).
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use bookclerk_enrich::normalize_region;
@@ -182,6 +183,12 @@ pub struct PurchaseHintsResponse {
     pub hints: Vec<PurchaseHint>,
     /// Lowest-priced hint (or first catalog hit when no prices resolved).
     pub best: Option<PurchaseHint>,
+    /// True when the batch deadline cut this lookup short: the hints are the
+    /// query's trusted seeds alone, so a client should not keep the answer
+    /// and asks again later. Omitted (false) for a finished lookup.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schema(example = false)]
+    pub incomplete: bool,
 }
 
 /// Look up purchase links via registered
@@ -486,7 +493,11 @@ async fn resolve_purchase_hints_uncached(
     sort_hints_for_display(&mut hints, &preferred);
     let best = best_purchase_hint_preferring(&hints, &preferred)
         .map(|h| best_hint_for_caller(h, &preferred));
-    Ok(PurchaseHintsResponse { hints, best })
+    Ok(PurchaseHintsResponse {
+        hints,
+        best,
+        incomplete: false,
+    })
 }
 
 /// Pick the lowest-priced hint (ties keep earlier order). Unpriced sort after priced.
@@ -548,7 +559,7 @@ fn source_is_preferred(source: &str, preferred: &std::collections::HashSet<Strin
 ///
 /// - Linked (member): member → primary → list
 /// - Unlinked / no accounts: list → primary (when not a dual member-only primary) → member
-fn effective_price_cents(hint: &PurchaseHint, as_member: bool) -> Option<i64> {
+pub(crate) fn effective_price_cents(hint: &PurchaseHint, as_member: bool) -> Option<i64> {
     if as_member {
         return hint
             .member_price_cents
@@ -596,52 +607,186 @@ fn best_hint_for_caller(
     out
 }
 
-/// Resolve many purchase-hint queries with bounded concurrency (order preserved).
+/// Longest a batch waits for its lookups before answering with what has
+/// resolved. Under the daemon's 25 s route budget, so a slow store never
+/// turns a page of cards into one failed request.
+pub const BATCH_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Resolve many purchase-hint queries at once (order preserved).
+///
+/// Every query starts together, at most `max_concurrent` at a time. The
+/// whole batch answers within [`BATCH_DEADLINE`]: a query still waiting
+/// then answers with its trusted seeds alone (no prices) and `incomplete`
+/// set, so the page shows a link rather than nothing, keeps no copy, and
+/// asks again later.
 ///
 /// # Arguments
 ///
 /// * `registry` - Configured content-source or integration registry.
-/// * `queries` - Batch of purchase-hint or title-meta queries.
-/// * `max_concurrent` - Numeric `max_concurrent` value for this call.
+/// * `queries` - Batch of purchase-hint queries.
+/// * `max_concurrent` - Lookups in flight at once (clamped to 1–8).
 ///
 /// # Returns
 ///
-/// On success, `Vec<Result<PurchaseHintsResponse>>`.
-///
-/// # Errors
-///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
+/// One result per query, in request order.
 pub async fn resolve_purchase_hints_batch(
     registry: &SourceRegistry,
     queries: &[PurchaseHintsQuery],
     max_concurrent: usize,
 ) -> Vec<Result<PurchaseHintsResponse>> {
     let limit = max_concurrent.clamp(1, 8);
-    let mut out = Vec::with_capacity(queries.len());
-    for chunk in queries.chunks(limit) {
-        let mut set = tokio::task::JoinSet::new();
-        for (offset, q) in chunk.iter().enumerate() {
-            let q = q.clone();
-            let registry = registry.clone();
-            set.spawn(async move { (offset, resolve_purchase_hints(&registry, &q).await) });
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(limit));
+    let deadline = tokio::time::Instant::now() + BATCH_DEADLINE;
+    let mut set = tokio::task::JoinSet::new();
+    for (offset, q) in queries.iter().enumerate() {
+        let q = q.clone();
+        let registry = registry.clone();
+        let gate = std::sync::Arc::clone(&gate);
+        set.spawn(async move {
+            let resolved = async {
+                let _permit = gate.acquire().await.ok()?;
+                Some(resolve_purchase_hints(&registry, &q).await)
+            };
+            let outcome = match tokio::time::timeout_at(deadline, resolved).await {
+                Ok(Some(result)) => result,
+                // Out of time (or the gate closed): links only, priced later.
+                Ok(None) | Err(_) => Ok(seeded_response(&q)),
+            };
+            (offset, outcome)
+        });
+    }
+    let mut slot: Vec<Option<Result<PurchaseHintsResponse>>> =
+        (0..queries.len()).map(|_| None).collect();
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok((offset, result)) => slot[offset] = Some(result),
+            Err(err) => tracing::debug!(error = %err, "purchase-hints batch task failed"),
         }
-        let mut slot: Vec<Option<Result<PurchaseHintsResponse>>> =
-            (0..chunk.len()).map(|_| None).collect();
-        while let Some(joined) = set.join_next().await {
-            match joined {
-                Ok((offset, result)) => slot[offset] = Some(result),
-                Err(err) => tracing::debug!(error = %err, "purchase-hints batch task failed"),
-            }
-        }
-        for result in slot {
-            out.push(result.unwrap_or_else(|| {
+    }
+    slot.into_iter()
+        .map(|result| {
+            result.unwrap_or_else(|| {
                 Err(crate::error::DiscoverError::message(
                     "purchase-hints batch task cancelled",
                 ))
-            }));
+            })
+        })
+        .collect()
+}
+
+/// The hints one query can answer without asking any store: its trusted
+/// store seeds, unpriced, marked `incomplete` so the client asks again.
+fn seeded_response(query: &PurchaseHintsQuery) -> PurchaseHintsResponse {
+    let region = normalize_region(query.region.as_deref().unwrap_or("us"));
+    let title = query.title.trim();
+    let mut hints = Vec::new();
+    for ed in &query.store_editions {
+        if !seed_source_is_trusted(&ed.source) {
+            continue;
+        }
+        if let Some(seed) =
+            seed_purchase_hint(&ed.source, &ed.product_id, Some(title.to_string()), &region)
+        {
+            push_dedupe(&mut hints, seed);
         }
     }
-    out
+    if let (Some(source), Some(pid)) = (
+        query.candidate_source.as_deref(),
+        query.candidate_product_id.as_deref(),
+    ) {
+        if seed_source_is_trusted(source) {
+            if let Some(seed) = seed_purchase_hint(source, pid, Some(title.to_string()), &region) {
+                push_dedupe(&mut hints, seed);
+            }
+        }
+    }
+    if let Some(asin) = query
+        .asin
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+    {
+        push_dedupe(
+            &mut hints,
+            audible_hint(asin, Some(title.to_string()), &region),
+        );
+    }
+    let preferred = preferred_source_set(&query.preferred_sources);
+    sort_hints_for_display(&mut hints, &preferred);
+    PurchaseHintsResponse {
+        hints,
+        best: None,
+        incomplete: true,
+    }
+}
+
+/// Timeouts in a row after which a store's price lookups are skipped.
+pub const BREAKER_TRIP_TIMEOUTS: u32 = 3;
+
+/// How long a tripped store is skipped. After that, lookups ask it again,
+/// and [`BREAKER_TRIP_TIMEOUTS`] more timeouts in a row pause it again.
+pub const BREAKER_OPEN_FOR: Duration = Duration::from_secs(5 * 60);
+
+/// One store's recent price-lookup timeouts.
+#[derive(Debug, Clone, Copy, Default)]
+struct StoreBreaker {
+    /// Timeouts since the store last answered.
+    timeouts: u32,
+    /// When the breaker tripped, while it is open.
+    tripped_at: Option<std::time::Instant>,
+}
+
+impl StoreBreaker {
+    /// True when the store should be skipped right now.
+    fn is_open(&self, now: std::time::Instant) -> bool {
+        self.tripped_at
+            .is_some_and(|at| now.duration_since(at) < BREAKER_OPEN_FOR)
+    }
+
+    /// Records a timeout; trips after [`BREAKER_TRIP_TIMEOUTS`] in a row.
+    fn timed_out(&mut self, now: std::time::Instant) {
+        self.timeouts = self.timeouts.saturating_add(1);
+        if self.timeouts >= BREAKER_TRIP_TIMEOUTS {
+            self.tripped_at = Some(now);
+            self.timeouts = 0;
+        }
+    }
+
+    /// Records an answer (or a failure that was not a timeout): the store
+    /// is reachable, so the breaker closes.
+    fn answered(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Process-wide breaker per store id.
+fn store_breakers() -> &'static std::sync::Mutex<HashMap<String, StoreBreaker>> {
+    use std::sync::OnceLock;
+    static BREAKERS: OnceLock<std::sync::Mutex<HashMap<String, StoreBreaker>>> = OnceLock::new();
+    BREAKERS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// True when `store`'s price lookups are skipped because it kept timing out.
+fn store_breaker_open(store: &str, now: std::time::Instant) -> bool {
+    store_breakers()
+        .lock()
+        .map(|map| map.get(store).is_some_and(|b| b.is_open(now)))
+        .unwrap_or(false)
+}
+
+/// Records how `store`'s lookup ended.
+fn note_store_outcome(store: &str, timed_out: bool, now: std::time::Instant) {
+    if let Ok(mut map) = store_breakers().lock() {
+        let breaker = map.entry(store.to_string()).or_default();
+        if timed_out {
+            breaker.timed_out(now);
+            if breaker.is_open(now) {
+                tracing::info!(%store, "price lookups paused after repeated timeouts");
+            }
+        } else {
+            breaker.answered();
+        }
+    }
 }
 
 /// Queries every registered source (8s timeout) and merges title-matched or trusted-id hints.
@@ -653,10 +798,16 @@ async fn append_registry_hints(
 ) {
     const PER_SOURCE_HINT_TIMEOUT: Duration = Duration::from_secs(8);
     let prefer = prefer_source.map(str::to_string);
+    let now = std::time::Instant::now();
     let mut set = tokio::task::JoinSet::new();
     for source in registry.all() {
         let mut call_opts = opts.clone();
         let id = source.id().to_string();
+        // A store that kept timing out is left alone for a while.
+        if store_breaker_open(&id, now) {
+            tracing::debug!(source = %id, "purchase_hint skipped: store paused");
+            continue;
+        }
         // When the candidate is for this source, prefer its product id.
         if prefer
             .as_deref()
@@ -683,6 +834,7 @@ async fn append_registry_hints(
                 continue;
             }
         };
+        note_store_outcome(&id, outcome.is_err(), std::time::Instant::now());
         let hint = match outcome {
             Ok(Ok(Some(hint))) => hint,
             Ok(Ok(None)) => continue,
@@ -959,6 +1111,63 @@ pub fn format_money_label(cents: i64, currency: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_store_breaker_trips_after_repeated_timeouts_and_closes_on_an_answer() {
+        let start = std::time::Instant::now();
+        let mut breaker = StoreBreaker::default();
+        for _ in 1..BREAKER_TRIP_TIMEOUTS {
+            breaker.timed_out(start);
+            assert!(!breaker.is_open(start));
+        }
+        breaker.timed_out(start);
+        assert!(breaker.is_open(start));
+        assert!(breaker.is_open(start + BREAKER_OPEN_FOR / 2));
+        // Past the pause the store is tried again.
+        assert!(!breaker.is_open(start + BREAKER_OPEN_FOR));
+        // Any answer, even an error, closes it.
+        breaker.timed_out(start);
+        breaker.answered();
+        assert!(!breaker.is_open(start));
+        assert_eq!(breaker.timeouts, 0);
+
+        note_store_outcome("test-breaker-store", true, start);
+        assert!(!store_breaker_open("test-breaker-store", start));
+        for _ in 0..BREAKER_TRIP_TIMEOUTS {
+            note_store_outcome("test-breaker-store", true, start);
+        }
+        assert!(store_breaker_open("test-breaker-store", start));
+        note_store_outcome("test-breaker-store", false, start);
+        assert!(!store_breaker_open("test-breaker-store", start));
+    }
+
+    #[test]
+    fn a_timed_out_query_answers_with_its_trusted_links_only() {
+        let query = PurchaseHintsQuery {
+            title: "Dune".into(),
+            authors: Some("Frank Herbert".into()),
+            asin: Some("B002V1OF70".into()),
+            isbn: Some("9780441172719".into()),
+            candidate_source: Some("libro".into()),
+            candidate_product_id: Some("9780441172719".into()),
+            store_editions: vec![
+                crate::identity::StoreEdition::new("audible", "B002V1OF70"),
+                crate::identity::StoreEdition::new("chirp", "12345"),
+            ],
+            region: None,
+            preferred_sources: Vec::new(),
+        };
+        let response = seeded_response(&query);
+        // Only Audible is trusted from an id; Libro and Chirp need a live
+        // title match, and nothing was priced.
+        let sources: Vec<&str> = response.hints.iter().map(|h| h.source.as_str()).collect();
+        assert_eq!(sources, vec!["audible"]);
+        assert!(response.hints[0].price_cents.is_none());
+        assert!(response.best.is_none());
+        assert!(response.incomplete, "the client must not keep this answer");
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["incomplete"], serde_json::Value::Bool(true));
+    }
 
     #[test]
     fn audible_links_use_the_marketplace_host() {
