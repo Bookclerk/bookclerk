@@ -1656,6 +1656,15 @@ mod tests {
 
         let kept = retain_unowned_works(&store, pool()).await.unwrap();
         assert_eq!(titles(&kept), ["messiah", "unknown"]);
+
+        // No candidates, or one with no title to place, pass through.
+        assert!(retain_unowned_works(&store, Vec::new())
+            .await
+            .unwrap()
+            .is_empty());
+        let untitled = candidate("chirp", "untitled", "  ");
+        let kept = retain_unowned_works(&store, vec![untitled]).await.unwrap();
+        assert_eq!(titles(&kept), ["untitled"]);
     }
 
     /// Owning the first book of a series does not count as owning its
