@@ -105,16 +105,19 @@ export function noteFromRow(row) {
  * Then `chunk()` splits the inserts into batches that each fit one request under
  * the session's `maxStatements` and `maxRequestBytes`. Each batch commits
  * atomically; the loop does not, so when a later batch fails the notes of
- * the earlier ones stay stored and the count says how far it got.
+ * the earlier ones stay stored. `onCommitted` hears the running total after
+ * each batch, so a caller can say how far a failed write got.
  *
  * @param db - The plugin's notes binding.
  * @param bodies - Note texts, stored in order.
+ * @param onCommitted - Called with the number of notes stored so far after
+ *   each batch commits.
  * @returns How many notes were stored.
  * @throws NoteTooLargeError, before anything is written, when a body passes
  *   `maxCellBytes`; PluginError from the binding, `limit_exceeded` included
  *   when one statement passes `maxPayloadBytes` or `maxRequestBytes`.
  */
-export async function addNotes(db, bodies) {
+export async function addNotes(db, bodies, onCommitted) {
     const caps = await db.limits();
     for (const body of bodies) {
         const used = UTF8.encode(body).byteLength;
@@ -127,6 +130,7 @@ export async function addNotes(db, bodies) {
     for await (const batch of db.chunk(inserts)) {
         await db.batch(batch);
         stored += batch.length;
+        onCommitted?.(stored);
     }
     return stored;
 }
@@ -135,12 +139,14 @@ export async function addNotes(db, bodies) {
  *
  * @param db - The plugin's notes binding.
  * @returns The number of notes.
+ * @throws Error when the count does not come back as one INTEGER.
  */
 export async function countNotes(db) {
-    const n = await db.prepare("SELECT count(*) AS n FROM notes").first("n");
-    return n !== null && typeof n === "object" && "kind" in n && n.kind === "int64"
-        ? Number(n.value)
-        : 0;
+    const row = await db.prepare("SELECT count(*) AS n FROM notes").first();
+    const n = row === null ? undefined : row["n"];
+    if (n?.kind !== "int64")
+        throw new Error("notes count has an unexpected shape");
+    return Number(n.value);
 }
 /**
  * Yields every note in id order without holding them all in memory.
@@ -148,8 +154,12 @@ export async function countNotes(db) {
  * When the session streams (`maxStreamedResultBytes > 0`), one `iterate()`
  * reads the whole table as a single snapshot, a frame at a time. When it
  * does not, every read is held to the inline caps, so the notes are read in
- * pages keyed on `id` (never `OFFSET`), each sized from `maxResultRows` and
- * halved whenever a page's bytes pass `maxResultBytes`.
+ * pages keyed on `id` (never `OFFSET`), each sized from `maxResultRows`,
+ * halved whenever a page's bytes pass `maxResultBytes`, and doubled again
+ * (up to `maxResultRows`) after each full page, so one run of wide notes
+ * does not slow the rest of the walk.
+ *
+ * Stopping early (`break`, or `return()` on the generator) ends the read.
  *
  * @param db - The plugin's notes binding.
  * @returns The notes, oldest first.
@@ -164,7 +174,8 @@ export async function* listNotes(db) {
         }
         return;
     }
-    let pageSize = Math.max(1, caps.maxResultRows);
+    const maxPage = Math.max(1, caps.maxResultRows);
+    let pageSize = maxPage;
     let after = 0n;
     for (;;) {
         let rows;
@@ -190,5 +201,6 @@ export async function* listNotes(db) {
         }
         if (rows.length < pageSize)
             return;
+        pageSize = Math.min(maxPage, pageSize * 2);
     }
 }

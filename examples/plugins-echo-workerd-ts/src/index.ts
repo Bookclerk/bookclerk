@@ -73,14 +73,43 @@ const CLI: CliSchema = {
     },
     {
       name: "notes-list",
-      about: "List the stored notes, oldest first",
-      args: [],
+      about: "List the oldest LIMIT stored notes",
+      args: [
+        {
+          name: "limit",
+          long: "limit",
+          kind: "int",
+          required: false,
+          positional: false,
+          default: "100",
+        },
+      ],
     },
   ],
 };
 
 /** Largest `--count` `notes-add` accepts, so one command stays a modest write. */
 const MAX_NOTES_PER_ADD = 10_000;
+
+/**
+ * Largest `--limit` `notes-list` accepts: the listing goes back in one CLI
+ * reply, so it is bounded even though `listNotes` itself streams.
+ */
+const MAX_NOTES_PER_LIST = 1_000;
+
+/**
+ * Parses a whole-number CLI argument within `1..=max`.
+ *
+ * @param value - The argument as given.
+ * @param max - Largest value accepted.
+ * @returns The number, or `undefined` when `value` is not plain decimal
+ *   digits in range.
+ */
+function wholeNumber(value: string, max: number): number | undefined {
+  if (!/^[0-9]{1,6}$/.test(value)) return undefined;
+  const n = Number(value);
+  return n >= 1 && n <= max ? n : undefined;
+}
 
 /**
  * A CLI reply.
@@ -114,28 +143,37 @@ export class Cli extends CliEntrypoint<Env> {
         return reply(0, `pong: ${message}\n`, "", { pong: message });
       }
       case "notes-add": {
-        const count = Number(args["count"] ?? "1");
-        if (!Number.isSafeInteger(count) || count < 1 || count > MAX_NOTES_PER_ADD) {
+        const count = wholeNumber(args["count"] ?? "1", MAX_NOTES_PER_ADD);
+        if (count === undefined) {
           return reply(2, "", `--count must be 1 to ${MAX_NOTES_PER_ADD}\n`, null);
         }
         const body = args["body"] ?? "";
+        let committed = 0;
         try {
           const stored = await addNotes(
             this.env.DB,
             Array.from({ length: count }, () => body),
+            (n) => (committed = n),
           );
           const total = await countNotes(this.env.DB);
           return reply(0, `stored ${stored}; ${total} in total\n`, "", { stored, total });
         } catch (err) {
-          return databaseFailure(err);
+          return databaseFailure(err, committed);
         }
       }
       case "notes-list": {
+        const limit = wholeNumber(args["limit"] ?? "100", MAX_NOTES_PER_LIST);
+        if (limit === undefined) {
+          return reply(2, "", `--limit must be 1 to ${MAX_NOTES_PER_LIST}\n`, null);
+        }
         const lines: string[] = [];
         try {
-          for await (const note of listNotes(this.env.DB)) lines.push(`${note.id}: ${note.body}`);
+          for await (const note of listNotes(this.env.DB)) {
+            lines.push(`${note.id}: ${note.body}`);
+            if (lines.length === limit) break;
+          }
         } catch (err) {
-          return databaseFailure(err);
+          return databaseFailure(err, 0);
         }
         return reply(0, lines.map((line) => `${line}\n`).join(""), "", { count: lines.length });
       }
@@ -150,17 +188,25 @@ export class Cli extends CliEntrypoint<Env> {
  * other error is passed on so the host reports it.
  *
  * @param err - What the binding threw.
+ * @param committed - Notes already stored by batches that committed before
+ *   the failure; they stay stored.
  * @returns Exit status 1 with the exceeded cap.
- * @throws `err` when it is not a `limit_exceeded` error.
+ * @throws `err` when it is not a `limit_exceeded` error and nothing was
+ *   stored; otherwise an Error that says how many notes were.
  */
-function databaseFailure(err: unknown): CliInvokeResult {
+function databaseFailure(err: unknown, committed: number): CliInvokeResult {
   const limit = exceededLimit(err);
-  if (limit === undefined) throw err;
+  const kept = committed > 0 ? `${committed} notes were stored before the failure` : "";
+  if (limit === undefined) {
+    if (committed === 0) throw err;
+    throw new Error(`${kept}: ${String(err)}`, { cause: err });
+  }
   return reply(
     1,
     "",
-    `the database refused the request: ${limit.limit} is ${limit.cap}, it needed ${limit.used}\n`,
-    { limit },
+    `the database refused the request: ${limit.limit} is ${limit.cap}, it needed ${limit.used}\n` +
+      (kept === "" ? "" : `${kept}\n`),
+    { limit, stored: committed },
   );
 }
 

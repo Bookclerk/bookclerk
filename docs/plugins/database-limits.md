@@ -313,24 +313,29 @@ that did. CI runs `bookclerk-plugin test` on every example that declares
 `[[databases]]` and has a `test` script (the `plugin_examples` check; see
 [CI](../contributing/ci.md)).
 
+`cargo test-staged` covers the migrations of every staged plugin
+the same way: the registration each `[[databases]]` binding answers is
+applied on a plugin-owned unit under every profile, so a migration the
+minimum advertisement refuses fails there rather than at enrollment on an
+operator's adapter.
+
 ### A worked example
 
 `examples/plugins-echo-workerd-ts/` keeps a `notes` table on its `DB`
 binding and follows this page end to end:
 
 - `src/notes.ts` registers the table through `databaseMigrations`, writes
-  with `chunk()` and `batch()`, refuses a note past `maxCellBytes` before
-  sending it, and handles `limit_exceeded` by its `limit`.
+  with `chunk()` and `batch()` (reporting how many notes the committed
+  batches stored when a later one fails), refuses a note past
+  `maxCellBytes` before sending it, and handles `limit_exceeded` by its
+  `limit`.
 - Its `listNotes()` reads with one `iterate()` when the session streams.
   When it does not, it pages by `id` (never `OFFSET`), sized from
-  `maxResultRows` and halved when a page passes `maxResultBytes`.
+  `maxResultRows`, halved when a page passes `maxResultBytes` and grown
+  back after a full page.
 - `test/notes.test.ts` and `test/index.test.ts` open the binding with
   `createTestDatabase()` and size every assertion from `db.limits()`, so
-  the same suite passes under `first-party`, `d1` and `minimum`. `cargo test-staged` covers the migrations of every staged plugin
-the same way: the registration each `[[databases]]` binding answers is
-applied on a plugin-owned unit under every profile, so a migration the
-minimum advertisement refuses fails there rather than at enrollment on an
-operator's adapter.
+  the same suite passes under `first-party`, `d1` and `minimum`.
 
 ## Checklist
 

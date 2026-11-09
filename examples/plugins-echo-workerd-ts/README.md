@@ -57,9 +57,11 @@ a worked example of the SDK database helpers
   before it grants the binding.
 - `notes-add --body <text> --count <n>` checks each note against
   `limits().maxCellBytes`, then writes with `chunk()` + `batch()`.
-- `notes-list` reads with one `iterate()` when the session streams, and
-  otherwise pages by `id`, sized from `maxResultRows` and halved when a
-  page passes `maxResultBytes`.
+- `notes-list [--limit <n>]` reads with one `iterate()` when the session
+  streams, and otherwise pages by `id`, sized from `maxResultRows`, halved
+  when a page passes `maxResultBytes` and grown back after a full page.
+- `notes-add` reports how many notes the committed batches stored when a
+  later batch fails.
 - A typed `limit_exceeded` error is reported by the cap it names.
 
 ```bash

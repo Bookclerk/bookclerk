@@ -115,11 +115,83 @@ test("notes-add stores the note COUNT times and notes-list prints them", async (
 });
 
 test("notes-add refuses a count out of range", async () => {
-  for (const count of ["0", "-1", "1.5", "lots", "10001"]) {
+  for (const count of ["0", "-1", "1.5", "lots", "10001", "0x10", "1e3", " 5 ", ""]) {
     const r = await run("notes-add", { body: "x", count });
     assert.equal(r.exitCode, 2, count);
     assert.match(r.stderr, /--count must be 1 to 10000/);
   }
+});
+
+test("notes-list stops at --limit and refuses a limit out of range", async () => {
+  await run("notes-add", { body: "many", count: "5" });
+  const r = await run("notes-list", { limit: "2" });
+  assert.equal(r.exitCode, 0, r.stderr);
+  assert.equal(r.stdout.trimEnd().split("\n").length, 2);
+  for (const limit of ["0", "1001", "two"]) {
+    const bad = await run("notes-list", { limit });
+    assert.equal(bad.exitCode, 2, limit);
+    assert.match(bad.stderr, /--limit must be 1 to 1000/);
+  }
+});
+
+test("notes-add says how many notes a failed write had already stored", async () => {
+  const caps = await db.limits();
+  const count = String(caps.maxStatements * 2);
+  /**
+   * A binding whose second batch fails with `failure`.
+   *
+   * @param failure - What the second `batch()` rejects with.
+   * @returns The CLI over that binding.
+   */
+  const cliFailingWith = (failure: unknown) => {
+    let batches = 0;
+    const binding = new Proxy(db.binding, {
+      get(target, key, receiver) {
+        if (key === "batch") {
+          return (...a: Parameters<typeof target.batch>) =>
+            ++batches === 2 ? Promise.reject(failure) : target.batch(...a);
+        }
+        const value: unknown = Reflect.get(target, key, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    return new Cli({} as never, { DB: binding } as never);
+  };
+  const limit = { code: "limit_exceeded", limit: { limit: "maxRequestBytes", cap: 1, used: 2 } };
+  const params = (c: string) =>
+    ({
+      command: "notes-add",
+      args: [
+        { name: "body", value: "b" },
+        { name: "count", value: c },
+      ],
+    }) as unknown as CliInvokeParams;
+  const r = await cliFailingWith(limit).invoke(params(count));
+  assert.equal(r.exitCode, 1);
+  assert.match(
+    r.stderr,
+    /maxRequestBytes is 1, it needed 2\n\d+ notes were stored before the failure\n$/,
+  );
+  await assert.rejects(
+    cliFailingWith(new Error("unavailable")).invoke(params(count)),
+    /^Error: \d+ notes were stored before the failure: Error: unavailable$/,
+  );
+  const plain = new Error("unavailable");
+  await assert.rejects(
+    new Cli(
+      {} as never,
+      {
+        DB: new Proxy(db.binding, {
+          get(target, key, receiver) {
+            if (key === "batch") return () => Promise.reject(plain);
+            const value: unknown = Reflect.get(target, key, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        }),
+      } as never,
+    ).invoke(params("1")),
+    (err) => err === plain,
+  );
 });
 
 test("notes-add reports the cap a note is too large for", async () => {

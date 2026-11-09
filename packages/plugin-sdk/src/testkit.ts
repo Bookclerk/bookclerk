@@ -61,6 +61,7 @@ import {
 } from "./db-execute.js";
 import { PluginError, parseLimitExceeded } from "./errors.js";
 import type { DbCapabilities, PluginMigration } from "./generated.js";
+import { requirePluginMigrationRegistration } from "./plugin-migrations.js";
 
 /** The capability profiles the kit enforces, in the order conformance runs report them. */
 export const TEST_DATABASE_PROFILES = ["first-party", "d1", "minimum"] as const;
@@ -166,7 +167,15 @@ async function readAnnouncement(child: ChildProcess): Promise<Serving> {
     });
   });
   if (line === undefined) {
-    await stderrClosed;
+    // Bounded: a process that inherited the kit's stderr could hold it open.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      stderrClosed,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 2_000);
+      }),
+    ]);
+    clearTimeout(timer);
     throw new Error(
       `bookclerk-db-testkit exited before announcing its address${
         stderr.length > 0 ? `: ${stderr.join("").trim()}` : ""
@@ -267,15 +276,19 @@ type KitMigrationOp = { schema: string } | { data: string };
  * A plugin may return each operation typed (`{ kind: "schema", value }`,
  * the {@link PluginMigration} shape) or in the short form the
  * `schemaMigrationOp` / `dataMigrationOp` helpers build (`{ schema }`); the
- * host accepts both, so the kit is handed the one form it parses.
+ * host accepts both, so the kit is handed the one form it parses. The
+ * registration is first held to the same resource bounds the isolate SDK
+ * applies before the host sees it.
  *
  * @param migrations - The registration, in either form.
  * @returns The same migrations with every operation as `{ schema }` or `{ data }`.
- * @throws Error naming the migration when an operation is neither form.
+ * @throws Error naming the migration when an operation is neither form, or
+ *   with code `payload_too_large` when the registration passes an ABI bound.
  */
 export function kitMigrations(
   migrations: readonly PluginMigration[],
 ): { id: string; operations: KitMigrationOp[] }[] {
+  requirePluginMigrationRegistration([...migrations]);
   return migrations.map((migration) => ({
     id: migration.id,
     operations: migration.operations.map((op): KitMigrationOp => {

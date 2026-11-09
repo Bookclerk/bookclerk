@@ -28,6 +28,10 @@ function opSql(op: PluginMigrationOp): string {
     if ("data" in op && typeof op.data === "string") {
       return op.data;
     }
+    // The typed form (`{ kind, value }`), as `PluginMigrationOp` spells it.
+    if ("value" in op && typeof op.value === "string") {
+      return op.value;
+    }
   }
   return "";
 }

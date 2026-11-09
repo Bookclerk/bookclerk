@@ -116,9 +116,9 @@ test("listNotes yields nothing for an empty table", async () => {
   assert.deepEqual(await allNotes(), []);
 });
 
-test("listNotes halves a page whose bytes pass maxResultBytes", async () => {
-  // A session that does not stream and allows four rows a page, where any
-  // page of more than one row is too many bytes: a scripted binding, since
+test("listNotes halves a page whose bytes pass maxResultBytes, then grows back", async () => {
+  // A session that does not stream and allows four rows a page, where note
+  // 2 is so wide that it fits a page only alone: a scripted binding, since
   // no kit profile combines several rows a page with no streamed reads.
   const stored = [1n, 2n, 3n, 4n, 5n].map((id) => ({
     id: { kind: "int64", value: id },
@@ -133,8 +133,10 @@ test("listNotes halves a page whose bytes pass maxResultBytes", async () => {
         all: () => {
           const n = Number(size.value);
           pageSizes.push(n);
-          if (n > 1) return Promise.reject(tooWide);
           const results = stored.filter((r) => r.id.value > (after.value as bigint)).slice(0, n);
+          if (results.length > 1 && results.some((r) => r.id.value === 2n)) {
+            return Promise.reject(tooWide);
+          }
           return Promise.resolve({ results });
         },
       }),
@@ -146,7 +148,8 @@ test("listNotes halves a page whose bytes pass maxResultBytes", async () => {
     notes.map((n) => n.id),
     [1n, 2n, 3n, 4n, 5n],
   );
-  assert.deepEqual(pageSizes, [4, 2, 1, 1, 1, 1, 1, 1]);
+  // Halved to fit note 2, then doubled back to the row cap after it.
+  assert.deepEqual(pageSizes, [4, 2, 1, 2, 1, 2, 4]);
 
   // One row that alone passes the cap, or any other error, is not retried.
   pageSizes.length = 0;
@@ -193,6 +196,28 @@ test("exceededLimit reads only typed limit errors", () => {
   );
   assert.equal(exceededLimit(null), undefined);
   assert.equal(exceededLimit("limit_exceeded"), undefined);
+});
+
+test("countNotes refuses a count of the wrong shape", async () => {
+  const scripted = (row: unknown) =>
+    ({ prepare: () => ({ first: () => Promise.resolve(row) }) }) as unknown as DatabaseBinding;
+  assert.equal(await countNotes(scripted({ n: { kind: "int64", value: 3n } })), 3);
+  await assert.rejects(countNotes(scripted(null)), /unexpected shape/);
+  await assert.rejects(
+    countNotes(scripted({ n: { kind: "text", value: "3" } })),
+    /unexpected shape/,
+  );
+});
+
+test("addNotes reports each committed batch", async () => {
+  const caps = await db.limits();
+  const seen: number[] = [];
+  const count = caps.maxStatements * 2 + 1;
+  const bodies = Array.from({ length: count }, (_, i) => `n${i}`);
+  assert.equal(await addNotes(db.binding, bodies, (n) => seen.push(n)), count);
+  assert.ok(seen.length >= 3, `batches ${seen.join(",")}`);
+  assert.equal(seen.at(-1), count);
+  for (let i = 1; i < seen.length; i++) assert.ok(seen[i]! > seen[i - 1]!);
 });
 
 test("NoteTooLargeError reads as a typed limit", () => {
