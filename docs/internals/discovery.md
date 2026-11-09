@@ -342,7 +342,9 @@ title is **not** in the household library.
   (`LibraryStore::work_for`, the same resolution a scanned listing gets)
   and stores the `work_id`; wishes with the same work are one queue entry,
   and Discover treats such an entry as owned when a library title resolves
-  to that work. Wishes the library could not place fall back to canonical
+  to that work. The entry (`GET /api/request-queue`) carries that `work_id`,
+  and the Wishlist and Discover pages match the viewer's own wish on it
+  before the bibliographic key, since the entry keeps only one wisher's key. Wishes the library could not place fall back to canonical
   ISBN-10↔13 when present, else ASIN, else soft title+author; ASIN-keyed
   and ISBN-keyed rows for the same work are merged (ISBN is **not**
   universal across Chirp / GA / Audible public search)

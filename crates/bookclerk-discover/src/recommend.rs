@@ -239,6 +239,13 @@ pub struct RankedQueueEntry {
     /// Stable map key for this work (`isbn:…`, `asin:…`, or soft title+author).
     #[schema(example = "isbn:9780441478125")]
     pub work_key: String,
+    /// Library work the entry's wishes resolve to, when the library could
+    /// place them. Wishes for one work are one entry even when their
+    /// `work_key`s differ, so a client matches its own wishes on this id
+    /// first and on `work_key` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "0b7e2c1d-5f3a-4e6b-9c8d-1a2b3c4d5e6f")]
+    pub work_id: Option<String>,
     /// Display title as shown on the storefront or library card.
     #[schema(example = "The Left Hand of Darkness")]
     pub title: String,
@@ -301,6 +308,7 @@ impl RankedQueueEntry {
         Self {
             cover_path: None,
             work_key: entry.work_key,
+            work_id: entry.work_id,
             title: entry.title,
             authors: entry.authors,
             asin: entry.asin,
@@ -1501,6 +1509,46 @@ mod tests {
             ..RecommendOptions::default()
         };
         assert!(open_candidate_embedder(&opts).unwrap().is_none());
+    }
+
+    /// A ranked queue entry names the library work its wishes resolve to, so
+    /// a client can match its own wish whatever key that wish was stored
+    /// under; an entry the library could not place carries none.
+    #[test]
+    fn a_ranked_entry_names_its_work() {
+        let entry = |work_id: Option<&str>| GlobalQueueEntry {
+            work_key: "asin:B002V1OF70".into(),
+            work_id: work_id.map(str::to_string),
+            title: "Dune".into(),
+            authors: None,
+            asin: None,
+            isbn: None,
+            cover_url: None,
+            description: None,
+            subtitle: None,
+            narrators: None,
+            series: None,
+            series_index: None,
+            publisher: None,
+            length_minutes: None,
+            published_at: None,
+            genres: None,
+            language: None,
+            store_editions: Vec::new(),
+            purchase_hints: Vec::new(),
+            wish_count: 2,
+            wishers: Vec::new(),
+            sample_uuids: Vec::new(),
+            first_requested_at: chrono::Utc::now(),
+            last_requested_at: chrono::Utc::now(),
+        };
+        let ranked = RankedQueueEntry::from_global(entry(Some("work-dune")), 0.0, Vec::new());
+        let json = serde_json::to_value(&ranked).unwrap();
+        assert_eq!(json["work_id"], "work-dune");
+        assert_eq!(json["work_key"], "asin:B002V1OF70");
+        let unplaced = RankedQueueEntry::from_global(entry(None), 0.0, Vec::new());
+        let json = serde_json::to_value(&unplaced).unwrap();
+        assert!(json.get("work_id").is_none(), "{json}");
     }
 
     /// A store holding one unfinished book rated 5 by "Ada Author", and its rows.
