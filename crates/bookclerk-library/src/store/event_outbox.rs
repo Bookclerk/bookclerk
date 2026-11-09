@@ -326,6 +326,34 @@ pub(crate) fn dispatch_chunk_override() -> Option<usize> {
     DISPATCH_CHUNK_OVERRIDE.with(|c| c.get())
 }
 
+/// Operation id of one dispatch page.
+///
+/// A page of an event's first dispatch is `{operation_id}:p{page}`: the
+/// frozen snapshot makes a resumed page send the same subscribers, so its
+/// receipt replays. After the event is dispatched, the subscribers come from
+/// the caller and may differ between a retry and the original call, so the
+/// page is named after its contents (`{operation_id}:d{digest}`): a retry
+/// with the same subscribers replays, and one with different subscribers is
+/// a new operation instead of an idempotency conflict.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Other`] when the page cannot be serialized.
+fn dispatch_page_operation_id(
+    operation_id: &str,
+    page: usize,
+    first_dispatch: bool,
+    subscribers: &[EventSubscriber],
+) -> Result<String> {
+    if first_dispatch {
+        return Ok(format!("{operation_id}:p{page}"));
+    }
+    let json = serde_json::to_string(subscribers)
+        .map_err(|e| LibraryError::Other(anyhow!("dispatch page: {e}")))?;
+    let digest = crate::hash_token(&json);
+    Ok(format!("{operation_id}:d{}", &digest[..16]))
+}
+
 fn take_dispatch_page_fault() -> bool {
     DISPATCH_PAGE_FAULTS.with(|c| {
         let n = c.load(Ordering::SeqCst);
@@ -412,7 +440,8 @@ impl LibraryStore {
             // for subscribers that joined since (catalog reconciliation), so
             // it takes the subscribers it was given; `INSERT OR IGNORE`
             // keeps the rows that exist.
-            let snapshot = if row.dispatch_state == STATE_PENDING {
+            let first_dispatch = row.dispatch_state == STATE_PENDING;
+            let snapshot = if first_dispatch {
                 self.load_or_init_dispatch_snapshot(row, subscribers)
                     .await?
             } else {
@@ -430,7 +459,12 @@ impl LibraryStore {
             while start < snapshot.len() {
                 let end = (start + chunk).min(snapshot.len());
                 let last = end == snapshot.len();
-                let op = format!("{operation_id}:p{page}");
+                let op = dispatch_page_operation_id(
+                    operation_id,
+                    page,
+                    first_dispatch,
+                    &snapshot[start..end],
+                )?;
                 total += atomic
                     .dispatch_event_deliveries(event_id, &snapshot[start..end], &op, last)
                     .await?;

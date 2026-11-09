@@ -194,14 +194,15 @@ async fn branch_title_limits_are_prefixes_of_the_full_listing() {
         session.fence,
         "c1",
         false,
-        &[title("p1", 10), title("p2", 20), title("p3", 30)],
+        &[title("p3", 30), title("p1", 10), title("p2", 20)],
     )
     .await;
     let products = |rows: Vec<BranchTitle>| -> Vec<String> {
         rows.into_iter().map(|row| row.product_id).collect()
     };
     let full = products(list_branch_titles(&store, Some(BRANCH), 100).await.unwrap());
-    assert_eq!(full, ["p1", "p2", "p3"]);
+    // Oldest first, which is insertion order, not product order.
+    assert_eq!(full, ["p3", "p1", "p2"]);
     for limit in 1..=4u64 {
         let page = products(
             list_branch_titles(&store, Some(BRANCH), limit)

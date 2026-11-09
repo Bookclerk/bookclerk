@@ -3614,6 +3614,49 @@ async fn dispatch_snapshot_cas_two_stores_agree() {
         .is_some());
 }
 
+/// A call that reuses an operation id after the event is dispatched, with
+/// a catalog that changed in between, adds the new subscribers instead of
+/// failing as a reused operation id with a different request.
+#[tokio::test]
+async fn a_dispatched_event_retried_with_new_subscribers_adds_them() {
+    let store = kit_store().await;
+    let id = expect_created(
+        persist_outbox_event(
+            &store,
+            outbox_spec("book_acquired", "retry-after-dispatch", "{}"),
+        )
+        .await
+        .unwrap(),
+    );
+    let first = [EventSubscriber::plugin("echo")];
+    store
+        .dispatch_event_deliveries(&id, &first, "op-reused")
+        .await
+        .unwrap();
+    store
+        .dispatch_event_deliveries(&id, &first, "op-reused")
+        .await
+        .unwrap();
+    let grown = [
+        EventSubscriber::plugin("echo"),
+        EventSubscriber::plugin("late"),
+    ];
+    store
+        .dispatch_event_deliveries(&id, &grown, "op-reused")
+        .await
+        .unwrap();
+    for plugin in ["echo", "late"] {
+        assert!(
+            store
+                .get_event_delivery(&format!("{id}:{plugin}"))
+                .await
+                .unwrap()
+                .is_some(),
+            "{plugin}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn unrelated_dispatch_does_not_wait_on_snapshot_cas_barrier() {
     let _barrier_owner = super::event_outbox::own_snapshot_claim_barrier().await;
@@ -7277,6 +7320,25 @@ mod every_profile {
                 .reserve_job_temp_path(&id, "/tmp/a", 80, 100)
                 .await
                 .unwrap();
+        }
+    }
+
+    /// A claim whose job row has a cell past the host-minimum cell cap is
+    /// refused with the typed limit, as an adapter advertising only the
+    /// minimums refuses it.
+    #[tokio::test]
+    async fn an_oversized_claim_result_is_a_typed_cell_limit_under_the_minimum() {
+        let store = kit(Profile::Minimum).await;
+        let mut spec = scan_spec(None, 32);
+        spec.payload.title = Some("t".repeat(1200));
+        store.enqueue_job(spec).await.unwrap();
+        let err = store
+            .claim_next_job(JobResourceClass::Network, "worker", 60, "claim-wide")
+            .await
+            .unwrap_err();
+        match err {
+            LibraryError::LimitExceeded(limit) => assert_eq!(limit.limit, "maxCellBytes"),
+            other => panic!("expected maxCellBytes, got {other}"),
         }
     }
 

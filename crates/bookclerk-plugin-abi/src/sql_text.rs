@@ -617,7 +617,9 @@ pub fn sql_v1_function_calls(sql: &str) -> Result<Vec<SqlFnCall>> {
                 prev_word = name.clone();
                 if is_call {
                     if let Some((n, end)) = count_call_args(sql, j)? {
-                        out.push(SqlFnCall { name, arg_count: n });
+                        if !sql_v1_cte_columns_end(sql, end)? {
+                            out.push(SqlFnCall { name, arg_count: n });
+                        }
                         i = end;
                         continue;
                     }
@@ -684,13 +686,44 @@ fn sql_v1_keyword_before_paren(word: &str) -> bool {
             | "do"
             | "conflict"
             | "if"
+            | "materialized"
     )
 }
 
 /// True when the identifier after `word` (folded) names a table, so the
 /// parenthesis after that identifier opens a column list, not a call.
+///
+/// `exists` covers `CREATE TABLE IF NOT EXISTS name (…)`: an `EXISTS`
+/// subquery opens its parenthesis directly, with no name in between.
 fn sql_v1_names_a_table(word: &str) -> bool {
-    matches!(word, "into" | "table" | "references" | "update")
+    matches!(word, "into" | "table" | "references" | "update" | "exists")
+}
+
+/// True when the parenthesised list that closed just before `end` is a
+/// common table expression's column list: `name (a, b) AS (…)` or
+/// `AS [NOT] MATERIALIZED (…)`.
+///
+/// A call aliased in a select list (`count(x) AS n`) is followed by a name,
+/// never by a parenthesis, so it still counts.
+///
+/// # Errors
+///
+/// Returns [`PluginError::invalid_params`] when a comment after the list is
+/// unterminated.
+fn sql_v1_cte_columns_end(sql: &str, end: usize) -> Result<bool> {
+    let bytes = sql.as_bytes();
+    let mut i = skip_trivia(sql, end)?;
+    if !keyword_at(sql, i, "as") {
+        return Ok(false);
+    }
+    i = skip_trivia(sql, i + 2)?;
+    if keyword_at(sql, i, "not") {
+        i = skip_trivia(sql, i + 3)?;
+    }
+    if keyword_at(sql, i, "materialized") {
+        i = skip_trivia(sql, i + "materialized".len())?;
+    }
+    Ok(bytes.get(i) == Some(&b'('))
 }
 
 /// True when `c` may start an unquoted identifier.
@@ -1140,6 +1173,16 @@ mod tests {
         let binds = vec!["?"; 40].join(", ");
         require_function_args_within(&format!("INSERT INTO t ({cols}) VALUES ({binds})"), 32)
             .expect("column list and VALUES row");
+        require_function_args_within(&format!("CREATE TABLE IF NOT EXISTS t ({cols})"), 32)
+            .expect("column list after IF NOT EXISTS");
+        let cte = format!(
+            "WITH a ({cols}) AS (SELECT {binds}), b ({cols}) AS MATERIALIZED (SELECT * FROM a) \
+             SELECT count(*) AS n FROM b"
+        );
+        require_function_args_within(&cte, 32).expect("CTE column lists");
+        let calls = sql_v1_function_calls(&cte).expect("function calls");
+        assert_eq!(calls.len(), 1, "an aliased call still counts: {calls:?}");
+        assert_eq!(calls[0].name, "count");
         require_function_args_within(
             &format!("CREATE TABLE t ({cols}, FOREIGN KEY (c0) REFERENCES u (a))"),
             32,

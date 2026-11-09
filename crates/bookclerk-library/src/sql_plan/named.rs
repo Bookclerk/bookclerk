@@ -4100,6 +4100,48 @@ mod tests {
         }
     }
 
+    /// `JobKind::ALL` names every variant, so the claim plan's kind list
+    /// (derived from it) cannot miss one and fail its pending jobs as
+    /// `invalid_job`.
+    #[test]
+    fn job_kind_all_lists_every_variant() {
+        use crate::models::JobKind;
+        // Exhaustive on purpose: a new variant stops this from compiling
+        // until it is added here, and the assertion fails until `ALL` has it.
+        fn every(kind: JobKind) -> [JobKind; 10] {
+            match kind {
+                JobKind::Scan
+                | JobKind::Acquire
+                | JobKind::ListenSync
+                | JobKind::IntegrationScan
+                | JobKind::PluginCopy
+                | JobKind::PluginScheduled
+                | JobKind::DiscoverCandidates
+                | JobKind::DiscoverFeed
+                | JobKind::CacheSweep
+                | JobKind::Invalid => [
+                    JobKind::Scan,
+                    JobKind::Acquire,
+                    JobKind::ListenSync,
+                    JobKind::IntegrationScan,
+                    JobKind::PluginCopy,
+                    JobKind::PluginScheduled,
+                    JobKind::DiscoverCandidates,
+                    JobKind::DiscoverFeed,
+                    JobKind::CacheSweep,
+                    JobKind::Invalid,
+                ],
+            }
+        }
+        for kind in every(JobKind::Scan) {
+            assert!(
+                JobKind::ALL.contains(&kind),
+                "{kind:?} is missing from JobKind::ALL"
+            );
+            assert_eq!(JobKind::parse(kind.as_str()), Some(kind));
+        }
+    }
+
     #[test]
     fn claim_takes_every_job_kind_without_requirements() {
         let conn = Connection::open_in_memory().unwrap();

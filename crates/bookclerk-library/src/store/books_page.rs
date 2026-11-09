@@ -172,9 +172,11 @@ impl LibraryStore {
     /// How many uuids one `IN` list may carry against this store's adapter.
     ///
     /// [`BOOK_PAGE_CHUNK`] at most, and fewer when the page statement for
-    /// that many of `uuids` (the widest statement a uuid read sends) would
-    /// exceed the adapter's `maxPayloadBytes` or `maxBinds`: the width is
-    /// halved until the statement fits, and never goes below one.
+    /// that many of the longest `uuids` (the widest statement a uuid read
+    /// sends) would exceed the adapter's `maxPayloadBytes` or `maxBinds`:
+    /// the width is halved until the statement fits, and never goes below
+    /// one. Sizing on the longest uuids keeps every batch of that width
+    /// within the cap, whichever uuids it holds.
     fn uuid_chunk(
         &self,
         uuids: &[String],
@@ -184,6 +186,8 @@ impl LibraryStore {
         let caps = self.db_capabilities();
         let max_binds = usize::try_from(caps.max_binds).unwrap_or(usize::MAX);
         let max_payload = usize::try_from(caps.max_payload_bytes).unwrap_or(usize::MAX);
+        let mut longest = uuids.to_vec();
+        longest.sort_by_key(|uuid| std::cmp::Reverse(uuid.len()));
         let mut n = uuids.len().clamp(1, BOOK_PAGE_CHUNK);
         loop {
             let (page_sql, _) = statements_for(
@@ -193,7 +197,8 @@ impl LibraryStore {
                 account_id.is_some(),
                 status.is_some(),
             );
-            let mut values = filter_values(&uuids[..n.min(uuids.len())], true, account_id, status);
+            let mut values =
+                filter_values(&longest[..n.min(longest.len())], true, account_id, status);
             values.push(DbValue::Int64(i64::MAX));
             values.push(DbValue::Int64(i64::MAX));
             let fits = (caps.max_binds == 0 || values.len() <= max_binds)

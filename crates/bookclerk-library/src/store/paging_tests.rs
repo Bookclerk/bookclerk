@@ -77,8 +77,14 @@ where
 async fn filtered_book_pages_match_the_full_listing() {
     for profile in Profile::ALL {
         let store = kit(profile).await;
-        seed_books(&store, "acct-a", 7).await;
-        seed_books(&store, "acct-b", 2).await;
+        // `seed_books` marks every even-numbered book acquired.
+        let mut seeded: Vec<(String, &str, bool)> = Vec::new();
+        for (account, n) in [("acct-a", 7), ("acct-b", 2)] {
+            let books = seed_books(&store, account, n).await;
+            for (i, uuid) in books.into_iter().enumerate() {
+                seeded.push((uuid, account, i % 2 == 0));
+            }
+        }
         for (account, status) in [
             (Some("acct-a"), None),
             (Some("acct-a"), Some(AcquireStatus::Acquired.as_str())),
@@ -90,6 +96,17 @@ async fn filtered_book_pages_match_the_full_listing() {
                 .await
                 .unwrap();
             assert_eq!(full.books.len(), full.total, "{}", profile.name());
+            let want_acquired = status.map(|s| s == AcquireStatus::Acquired.as_str());
+            let mut expected: Vec<String> = seeded
+                .iter()
+                .filter(|(_, a, _)| account.is_none_or(|want| want == *a))
+                .filter(|(_, _, acquired)| want_acquired.is_none_or(|want| want == *acquired))
+                .map(|(uuid, _, _)| uuid.clone())
+                .collect();
+            expected.sort();
+            let mut got = uuids(&full.books);
+            got.sort();
+            assert_eq!(got, expected, "{} {account:?} {status:?}", profile.name());
             let store = &store;
             assert_offset_pages_match(
                 &uuids(&full.books),
@@ -124,6 +141,17 @@ async fn uuid_book_pages_match_the_full_listing_on_both_read_paths() {
                     .await
                     .unwrap();
                 assert_eq!(full.books.len(), full.total, "{}", profile.name());
+                // `seed_books` marks every even-numbered book acquired.
+                let mut expected: Vec<String> = all
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, uuid)| uuids_in.contains(uuid) && (status.is_none() || i % 2 == 0))
+                    .map(|(_, uuid)| uuid.clone())
+                    .collect();
+                expected.sort();
+                let mut got = uuids(&full.books);
+                got.sort();
+                assert_eq!(got, expected, "{} {status:?}", profile.name());
                 let (store, requested) = (&store, &requested);
                 assert_offset_pages_match(&uuids(&full.books), sizes, |size, offset| async move {
                     store
@@ -134,6 +162,29 @@ async fn uuid_book_pages_match_the_full_listing_on_both_read_paths() {
                 .await;
             }
         }
+    }
+}
+
+/// A uuid list whose later entries are much longer than its first ones
+/// still reads: the batch width is sized on the longest uuids, so no batch
+/// of that width exceeds the adapter's payload cap.
+#[tokio::test]
+async fn uuid_batches_are_sized_on_the_longest_uuids() {
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        let real = seed_books(&store, "acct-w", 3).await;
+        let mut requested: Vec<String> = (0..64).map(|i| format!("s{i}")).collect();
+        requested.extend((0..64).map(|i| format!("{i:03}{}", "l".repeat(200))));
+        requested.extend(real.iter().cloned());
+        let page = store
+            .list_books_by_uuid_page(&requested, None, None, BOOK_PAGE_MAX_LIMIT, 0)
+            .await
+            .unwrap();
+        let mut found = uuids(&page.books);
+        found.sort();
+        let mut expected = real.clone();
+        expected.sort();
+        assert_eq!(found, expected, "{}", profile.name());
     }
 }
 
