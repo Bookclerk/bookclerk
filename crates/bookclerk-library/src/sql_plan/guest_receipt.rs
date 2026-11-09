@@ -1232,9 +1232,11 @@ mod isolate_adapter_fixture {
         let mut text = serde_json::to_string_pretty(&fixture()).expect("encode");
         text.push('\n');
         // Regenerating writes the vector, then checks it like any other run.
-        if std::env::var_os("UPDATE_GUEST_RECEIPT_FIXTURE").is_some() {
-            std::fs::write(&path, &text).expect("write fixture");
-        }
+        // One expression, so the regenerate path does not leave an unrun line.
+        std::env::var_os("UPDATE_GUEST_RECEIPT_FIXTURE")
+            .map(|_| std::fs::write(&path, &text))
+            .transpose()
+            .expect("write fixture");
         let committed = std::fs::read_to_string(&path).unwrap_or_default();
         assert!(
             committed == text,
