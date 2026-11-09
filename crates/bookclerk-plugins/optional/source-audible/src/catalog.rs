@@ -426,12 +426,52 @@ pub async fn purchase_hint(
 /// Most ASINs the public catalog prices in one `products` request.
 pub const PRICE_BATCH_ASINS: usize = 50;
 
+/// How long [`purchase_hints`] keeps starting catalog searches for titles
+/// without an ASIN. Well under the host's 10 s batch deadline, so the price
+/// request for every resolved title still lands in time.
+pub const RESOLVE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The ASIN `opts` already names (its `asin`, else an ASIN-shaped
+/// `product_id`), which needs no catalog search.
+fn known_asin(opts: &PurchaseHintOpts) -> Option<String> {
+    [opts.asin.as_deref(), opts.product_id.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|s| is_valid_asin(s))
+        .map(str::to_ascii_uppercase)
+}
+
+/// The resolved ASINs to price, grouped by each query's marketplace and
+/// listed once per marketplace, for the queries that asked for a price.
+fn asins_by_region(
+    hints: &[Option<SourcePurchaseHint>],
+    opts: &[PurchaseHintOpts],
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut by_region: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (hint, query) in hints.iter().zip(opts) {
+        if let (true, Some(h)) = (query.with_price, hint.as_ref()) {
+            let asins = by_region
+                .entry(normalize_region(&query.region))
+                .or_default();
+            if !asins.contains(&h.product_id) {
+                asins.push(h.product_id.clone());
+            }
+        }
+    }
+    by_region
+}
+
 /// Resolves purchase hints for several titles, pricing them together.
 ///
-/// Each title's ASIN is resolved as [`purchase_hint`] does (a search when
-/// the query has none), then every priced title's ASIN goes into one
-/// catalog request per [`PRICE_BATCH_ASINS`], so a page of cards costs one
-/// price request instead of one per card.
+/// Titles whose ASIN is known resolve first, without a search. The rest
+/// are searched one by one (as [`purchase_hint`] does) until
+/// [`RESOLVE_BUDGET`] runs out; a title not searched by then answers `None`,
+/// which the host does not take as an answer. Then the resolved ASINs are
+/// priced per marketplace, each query in its own region, one catalog
+/// request per [`PRICE_BATCH_ASINS`], so a page of cards costs one price
+/// request per region instead of one per card.
 ///
 /// # Errors
 ///
@@ -440,31 +480,56 @@ pub const PRICE_BATCH_ASINS: usize = 50;
 pub async fn purchase_hints(
     opts: &[PurchaseHintOpts],
 ) -> bookclerk_storefront::Result<Vec<Option<SourcePurchaseHint>>> {
-    let mut hints = Vec::with_capacity(opts.len());
-    for query in opts {
+    purchase_hints_within(opts, RESOLVE_BUDGET).await
+}
+
+/// [`purchase_hints`] with a chosen search budget.
+///
+/// # Errors
+///
+/// As [`purchase_hints`].
+async fn purchase_hints_within(
+    opts: &[PurchaseHintOpts],
+    budget: std::time::Duration,
+) -> bookclerk_storefront::Result<Vec<Option<SourcePurchaseHint>>> {
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut hints: Vec<Option<SourcePurchaseHint>> = vec![None; opts.len()];
+    // Known ASINs first, so a slow search never costs them their price.
+    let mut order: Vec<usize> = (0..opts.len()).collect();
+    order.sort_by_key(|&i| known_asin(&opts[i]).is_none());
+    for i in order {
         let unpriced = PurchaseHintOpts {
             with_price: false,
-            ..query.clone()
+            ..opts[i].clone()
         };
-        hints.push(purchase_hint(&unpriced).await?);
+        if known_asin(&opts[i]).is_some() {
+            hints[i] = purchase_hint(&unpriced).await?;
+            continue;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        match tokio::time::timeout_at(deadline, purchase_hint(&unpriced)).await {
+            Ok(resolved) => hints[i] = resolved?,
+            // Out of search time: the rest stay untried.
+            Err(_) => break,
+        }
     }
-    let asins: Vec<String> = hints
-        .iter()
-        .zip(opts)
-        .filter(|(hint, query)| query.with_price && hint.is_some())
-        .filter_map(|(hint, _)| hint.as_ref().map(|h| h.product_id.clone()))
-        .collect();
-    if asins.is_empty() {
-        return Ok(hints);
-    }
-    let region = normalize_region(&opts[0].region);
-    let mut prices = std::collections::HashMap::new();
-    for chunk in asins.chunks(PRICE_BATCH_ASINS) {
-        prices.extend(fetch_audible_prices(chunk, &region).await?);
+
+    let by_region = asins_by_region(&hints, opts);
+    let mut prices: std::collections::HashMap<(String, String), DualPriced> =
+        std::collections::HashMap::new();
+    for (region, asins) in by_region {
+        for chunk in asins.chunks(PRICE_BATCH_ASINS) {
+            for (asin, priced) in fetch_audible_prices(chunk, &region).await? {
+                prices.insert((region.clone(), asin), priced);
+            }
+        }
     }
     for (hint, query) in hints.iter_mut().zip(opts) {
         if let (true, Some(h)) = (query.with_price, hint.as_mut()) {
-            if let Some(priced) = prices.get(&h.product_id) {
+            let key = (normalize_region(&query.region), h.product_id.clone());
+            if let Some(priced) = prices.get(&key) {
                 apply_dual_price(h, priced);
             }
         }
@@ -948,6 +1013,58 @@ mod tests {
         };
         let hints = purchase_hints(&[opts]).await.unwrap();
         assert_eq!(hints[0].as_ref().unwrap().product_id, "B000000001");
+    }
+
+    /// With no search time left, a title without an ASIN is left untried
+    /// while one with a known ASIN still resolves.
+    #[tokio::test]
+    async fn known_asins_resolve_before_the_search_budget() {
+        let searched = PurchaseHintOpts {
+            title: Some("A Title Only".into()),
+            region: "us".into(),
+            with_price: false,
+            ..PurchaseHintOpts::default()
+        };
+        let known = PurchaseHintOpts {
+            asin: Some("B000000001".into()),
+            region: "us".into(),
+            with_price: false,
+            ..PurchaseHintOpts::default()
+        };
+        let hints = purchase_hints_within(&[searched, known], std::time::Duration::ZERO)
+            .await
+            .unwrap();
+        assert!(hints[0].is_none());
+        assert_eq!(hints[1].as_ref().unwrap().product_id, "B000000001");
+    }
+
+    /// Each query is priced in its own marketplace; an ASIN two queries in
+    /// one region share is asked for once, and unpriced queries not at all.
+    #[test]
+    fn prices_are_asked_per_region() {
+        let hint = |asin: &str| {
+            Some(SourcePurchaseHint {
+                product_id: asin.into(),
+                ..SourcePurchaseHint::default()
+            })
+        };
+        let query = |region: &str, with_price: bool| PurchaseHintOpts {
+            region: region.into(),
+            with_price,
+            ..PurchaseHintOpts::default()
+        };
+        let hints = [hint("B1"), hint("B2"), hint("B1"), hint("B3"), None];
+        let opts = [
+            query("us", true),
+            query("uk", true),
+            query("us", true),
+            query("us", false),
+            query("us", true),
+        ];
+        let by_region = asins_by_region(&hints, &opts);
+        assert_eq!(by_region.len(), 2);
+        assert_eq!(by_region[&normalize_region("us")], ["B1"]);
+        assert_eq!(by_region[&normalize_region("uk")], ["B2"]);
     }
 
     #[test]

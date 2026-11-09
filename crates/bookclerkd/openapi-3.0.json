@@ -35727,6 +35727,10 @@
               }
             },
             "nullable": true
+          },
+          "incomplete": {
+            "type": "boolean",
+            "description": "True when the batch deadline cut this lookup short: the hints are the\nquery's trusted seeds alone, so a client should not keep the answer\nand asks again later. Omitted (false) for a finished lookup."
           }
         }
       },

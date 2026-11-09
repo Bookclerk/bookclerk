@@ -496,12 +496,19 @@ sends every visible card's query to each deployed store's `purchaseHints`
 entrypoint together, with the product id the card already knows for that
 store, so Audible prices up to fifty titles in one catalog request and
 Chirp prices a page in one aliased GraphQL query; Libro.fm and GraphicAudio
-have no bulk endpoint and loop inside the guest. The batch answers within
+have no bulk endpoint and loop inside the guest. Audible and Chirp resolve
+the titles whose product id they already know first, then look the rest up
+by title for at most five seconds, so a slow search never costs a known
+title its price; Audible prices each query in its own marketplace. The batch answers within
 **10 seconds** with what has resolved: a store still working then counts as
-timed out, a query no store answered carries only its trusted store links,
-unpriced, and the page asks again later, so one slow store never turns a
-page of cards into a failed request. Only queries at least one store
-answered are cached (10 minutes, empty answers included).
+timed out. A query no store answered with a hint carries only its trusted
+store links, unpriced, with `incomplete: true`: a store's `None` is no
+proof it lacks the title, since a guest out of its own time budget answers
+`None` for titles it never tried. Such an answer is not cached, the page
+keeps no copy, and the card asks again after 15 seconds (twice at most)
+without dropping prices it already shows, so one slow store never turns a
+page of cards into a failed request or a card left unpriced. Queries a
+store answered with a hint are cached for 10 minutes.
 
 Cards show a price before any lookup: the list price the catalog reported
 when the candidate was fetched is stored on the card as the store's list

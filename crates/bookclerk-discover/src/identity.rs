@@ -672,6 +672,9 @@ pub fn merge_candidate_metadata(into: &mut StorefrontCandidate, from: &Storefron
     fill_opt_string(&mut into.published_at, from.published_at.as_deref());
     fill_opt_string(&mut into.categories, from.categories.as_deref());
     fill_opt_string(&mut into.language, from.language.as_deref());
+    // A starter search that found a title another path found first still
+    // places it on that starter shelf.
+    fill_opt_string(&mut into.starter_genre, from.starter_genre.as_deref());
     if into.length_minutes.is_none() {
         into.length_minutes = from.length_minutes;
     }
@@ -1074,6 +1077,33 @@ fn fill_opt_string(slot: &mut Option<String>, incoming: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A title a starter search found after another path keeps its starter
+    /// genre when the two candidates merge, in either order.
+    #[test]
+    fn a_merged_candidate_keeps_its_starter_genre() {
+        let hit = |product: &str| {
+            crate::candidates::hit_to_candidate(
+                "fake",
+                bookclerk_source::CatalogHit {
+                    product_id: product.into(),
+                    title: "Dune".into(),
+                    ..bookclerk_source::CatalogHit::default()
+                },
+            )
+        };
+        let deal = hit("deal");
+        let mut starter = hit("starter");
+        starter.starter_genre = Some("Science Fiction".into());
+
+        let mut into = deal.clone();
+        merge_candidate_metadata(&mut into, &starter);
+        assert_eq!(into.starter_genre.as_deref(), Some("Science Fiction"));
+
+        let mut into = starter.clone();
+        merge_candidate_metadata(&mut into, &deal);
+        assert_eq!(into.starter_genre.as_deref(), Some("Science Fiction"));
+    }
 
     /// A series' namesake volume is not merged with a sequel that carries
     /// the series name, whether or not the series is known.

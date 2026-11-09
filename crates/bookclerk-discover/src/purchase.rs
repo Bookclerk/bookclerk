@@ -183,6 +183,11 @@ pub struct PurchaseHintsResponse {
     pub hints: Vec<PurchaseHint>,
     /// Lowest-priced hint (or first catalog hit when no prices resolved).
     pub best: Option<PurchaseHint>,
+    /// True when the batch deadline cut this lookup short: the hints are the
+    /// query's trusted seeds alone, so a client should not keep the answer
+    /// and asks again later. Omitted (false) for a finished lookup.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub incomplete: bool,
 }
 
 /// Look up purchase links via registered
@@ -487,7 +492,11 @@ async fn resolve_purchase_hints_uncached(
     sort_hints_for_display(&mut hints, &preferred);
     let best = best_purchase_hint_preferring(&hints, &preferred)
         .map(|h| best_hint_for_caller(h, &preferred));
-    Ok(PurchaseHintsResponse { hints, best })
+    Ok(PurchaseHintsResponse {
+        hints,
+        best,
+        incomplete: false,
+    })
 }
 
 /// Pick the lowest-priced hint (ties keep earlier order). Unpriced sort after priced.
@@ -609,9 +618,11 @@ pub const BATCH_DEADLINE: Duration = Duration::from_secs(10);
 /// for all of them together, so a store whose catalog prices many products
 /// per request makes one request for a page of cards. The whole batch
 /// answers within [`BATCH_DEADLINE`]: a store still working then counts as
-/// timed out, and a query no store answered carries its trusted seeds alone
-/// (no prices), so the page shows a link rather than nothing and asks again
-/// later. A store that asks to slow down
+/// timed out. A query no store answered with a hint (timed out, paused, or
+/// never tried within a guest's own budget) carries its trusted seeds alone
+/// (no prices) and `incomplete` set: it is not cached, so the page shows a
+/// link rather than nothing, keeps no copy, and asks again later. A store
+/// that asks to slow down
 /// ([`bookclerk_source::SourceError::RateLimited`]) is left alone for the
 /// time it said (see [`RATE_LIMIT_FIRST_PAUSE`]).
 ///
@@ -652,7 +663,8 @@ pub async fn resolve_purchase_hints_batch(
         .zip(&regions)
         .map(|(q, region)| seeded_hints(q, region))
         .collect();
-    // Queries at least one store answered, so caching them hides no price.
+    // Queries at least one store answered with a hint, so caching them
+    // hides no price. The rest answer `incomplete` and are not cached.
     let mut answered: Vec<bool> = vec![false; queries.len()];
 
     let now = std::time::Instant::now();
@@ -702,8 +714,11 @@ pub async fn resolve_purchase_hints_batch(
             }
         };
         for ((&i, query_opts), answer) in pending.iter().zip(&opts).zip(answers) {
-            answered[i] = true;
+            // `None` is no proof the store lacks the title: a guest that
+            // ran out of its own time budget answers `None` for every title
+            // it never tried. Only a hint counts as an answer.
             let Some(hint) = answer else { continue };
+            answered[i] = true;
             let mapped = PurchaseHint::from_source_hint(&id, hint);
             let trusted_product = seed_source_is_trusted(&id)
                 && query_opts
@@ -737,7 +752,11 @@ pub async fn resolve_purchase_hints_batch(
         sort_hints_for_display(&mut found, &preferred);
         let best = best_purchase_hint_preferring(&found, &preferred)
             .map(|h| best_hint_for_caller(h, &preferred));
-        let response = PurchaseHintsResponse { hints: found, best };
+        let response = PurchaseHintsResponse {
+            hints: found,
+            best,
+            incomplete: !answered[i],
+        };
         if answered[i] {
             purchase_hints_cache().insert(
                 purchase_hints_cache_key(query, &regions[i]),
@@ -1335,6 +1354,9 @@ mod tests {
         Limited,
         /// A non-rate-limit failure.
         Broken,
+        /// Success with `None` for every query, as a guest out of its own
+        /// time budget answers for titles it never tried.
+        Untried,
     }
 
     /// A storefront double that counts its batch calls.
@@ -1440,6 +1462,7 @@ mod tests {
                     Duration::from_secs(30),
                 ))),
                 Answer::Broken => Err(bookclerk_source::SourceError::api("down")),
+                Answer::Untried => Ok(vec![None; opts.len()]),
             }
         }
     }
@@ -1531,6 +1554,25 @@ mod tests {
             "batch-broken",
             std::time::Instant::now()
         ));
+    }
+
+    /// A store's `None` is no answer: the query is `incomplete`, is not
+    /// cached, and the next batch asks the store again; a priced answer is
+    /// complete.
+    #[tokio::test]
+    async fn an_untried_query_is_incomplete_and_asked_again() {
+        let (registry, batches) = one_store("batch-untried", Answer::Untried);
+        let queries = vec![batch_query("untried", &[])];
+        let first = resolve_purchase_hints_batch(&registry, &queries, 4).await;
+        assert!(first[0].as_ref().unwrap().incomplete);
+        let again = resolve_purchase_hints_batch(&registry, &queries, 4).await;
+        assert!(again[0].as_ref().unwrap().incomplete);
+        assert_eq!(batches.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let (registry, _) = one_store("batch-complete", Answer::Priced);
+        let priced =
+            resolve_purchase_hints_batch(&registry, &[batch_query("complete", &[])], 4).await;
+        assert!(!priced[0].as_ref().unwrap().incomplete);
     }
 
     /// A single-title lookup honors a pause too.

@@ -304,6 +304,33 @@ async fn a_429_reaches_the_host_with_its_wait() {
     }
 }
 
+/// A 429 on the title lookup (typeahead) reaches the host too, and stops
+/// the batch at once.
+#[tokio::test]
+async fn a_429_on_a_title_lookup_reaches_the_host() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "20"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let by_title = |title: &str| PurchaseHintOpts {
+        title: Some(title.into()),
+        region: "us".into(),
+        with_price: true,
+        ..PurchaseHintOpts::default()
+    };
+    let result = ChirpSource::with_graphql_url(server.uri())
+        .purchase_hints(&[by_title("First"), by_title("Second")])
+        .await;
+    assert!(
+        matches!(result, Err(SourceError::RateLimited(Some(w))) if w.as_secs() == 20),
+        "{:?}",
+        result.map(|h| h.len())
+    );
+}
+
 #[tokio::test]
 async fn a_failed_pricing_query_leaves_the_titles_unpriced() {
     let server = MockServer::start().await;
