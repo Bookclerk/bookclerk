@@ -47,7 +47,10 @@ try {
 
 In Python the same error is `PluginError` with `err.code == "limit_exceeded"`
 and `err.limit.limit`; in Rust it is `PluginError` with
-`err.code == PluginErrorCode::LimitExceeded` and `err.limit()`.
+`err.code == PluginErrorCode::LimitExceeded` and `err.limit()`. A workerd
+author isolate gets the same typed error even though its binding crosses
+Workers RPC to the adapter isolate: the error travels inside the reply (see
+[Database errors between the isolates](../internals/workerd-bridge.md#database-errors-between-the-isolates)).
 
 ## Reads: `all()` streams when the session can
 

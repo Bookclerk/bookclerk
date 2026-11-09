@@ -34,7 +34,9 @@ import {
   createDatabaseBinding,
   decodeDbCapabilitiesReply,
   decodeExecuteResultReply,
+  encodeDbCapabilitiesReply,
   encodeExecuteRequest,
+  encodeExecuteResultReply,
   type AtomicTransport,
   type DatabaseBinding,
   type ExecuteReply,
@@ -56,6 +58,7 @@ import type {
   QueueSendOptions,
 } from "./env.js";
 import { PluginError, parseLimitExceeded } from "./errors.js";
+import { ExecuteStreamFrameCodec, encodeMessage } from "./generated-wire.js";
 import {
   dispatchInvoke,
   InvokeError,
@@ -582,6 +585,12 @@ export interface NamedQueue {
  * one named `[[databases]]` binding. The author-side SDK wraps it as the
  * D1-shaped {@link DatabaseBinding} on `env.<BINDING>`; Python authors call
  * {@link GrantedDatabaseTransport.executeBytes} with Cap'n bytes instead.
+ *
+ * The `*Bytes` methods report every failure inside the reply (the
+ * `ExecuteResultReply` or `DbCapabilitiesReply` `err` arm, or one `err`
+ * stream frame) rather than by throwing, so the error keeps its code and
+ * `details` across the Workers RPC boundary between the two isolates; both
+ * author SDKs read through them.
  */
 export interface GrantedDatabaseTransport extends AtomicTransport {
   /**
@@ -753,22 +762,7 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
         if (entry.database) {
           merged[entry.name] = entry.database;
         } else if (entry.transport) {
-          // A transport that predates `limits` or `executeStreamed` reads
-          // inline; the binding only calls what the transport offers.
-          const transport: Partial<GrantedDatabaseTransport> &
-            Pick<GrantedDatabaseTransport, "execute"> = entry.transport;
-          const limits = transport.limits;
-          const executeStreamed = transport.executeStreamed;
-          merged[entry.name] = createDatabaseBinding({
-            execute: (request) => transport.execute(request),
-            ...(typeof limits === "function" ? { limits: () => limits.call(transport) } : {}),
-            ...(typeof executeStreamed === "function"
-              ? {
-                  executeStreamed: (request: ExecuteRequest) =>
-                    executeStreamed.call(transport, request),
-                }
-              : {}),
-          });
+          merged[entry.name] = transportDatabase(entry.transport);
         }
       }
     }
@@ -786,6 +780,54 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
     }
   }
   return Object.freeze(merged) as BookclerkEnv;
+}
+
+/**
+ * Wraps the adapter's granted transport as the author's D1-shaped binding.
+ *
+ * The transport lives in the adapter isolate, so its methods are Workers RPC
+ * calls, and an error thrown across RPC loses its `PluginError` prototype,
+ * code and `details`. The binding therefore reads through the `*Bytes`
+ * methods, whose failures arrive inside the Cap'n reply (`err` arm) and are
+ * decoded here into a typed `PluginError`; the structured methods are the
+ * fallback for a transport that offers no bytes form. A transport that
+ * predates `limits` or the streamed read reads inline: the binding only
+ * calls what the transport offers.
+ *
+ * @param entry - Transport stub from the granted context.
+ * @returns The binding installed on `env.<BINDING>`.
+ */
+function transportDatabase(entry: GrantedDatabaseTransport): DatabaseBinding {
+  const transport: Partial<GrantedDatabaseTransport> & Pick<GrantedDatabaseTransport, "execute"> =
+    entry;
+  const { executeBytes, limits, limitsBytes, executeStreamed, openStreamedBytes } = transport;
+  const execute =
+    typeof executeBytes === "function"
+      ? async (request: ExecuteRequest): Promise<ExecuteReply> =>
+          decodeExecuteResultReply(
+            await executeBytes.call(transport, encodeExecuteRequest(request)),
+          )
+      : (request: ExecuteRequest): Promise<ExecuteReply> => transport.execute(request);
+  const readLimits =
+    typeof limitsBytes === "function"
+      ? async (): Promise<DbCapabilities> =>
+          decodeDbCapabilitiesReply(await limitsBytes.call(transport))
+      : typeof limits === "function"
+        ? (): Promise<DbCapabilities> => limits.call(transport)
+        : undefined;
+  const streamed =
+    typeof openStreamedBytes === "function"
+      ? (request: ExecuteRequest): Promise<ReadableStream<Uint8Array> | Uint8Array> =>
+          openStreamedBytes.call(transport, encodeExecuteRequest(request))
+      : typeof executeStreamed === "function"
+        ? (request: ExecuteRequest): Promise<ReadableStream<Uint8Array> | Uint8Array> =>
+            executeStreamed.call(transport, request)
+        : undefined;
+  return createDatabaseBinding({
+    execute,
+    ...(readLimits ? { limits: readLimits } : {}),
+    ...(streamed ? { executeStreamed: streamed } : {}),
+  });
 }
 
 function applyInvocationEnv(instance: object, context: GrantedContext | undefined): void {
@@ -3002,6 +3044,11 @@ class GrantedKv extends RpcTarget implements KvNamespaceBinding {
  * exchanges the binding's database-only grant token on `POST /db/execute`,
  * so the author isolate never holds the bearer itself. ABI failures come
  * back inside the `ExecuteResultReply` union and surface as `PluginError`.
+ *
+ * The `*Bytes` methods never throw: a channel failure (a non-2xx status or
+ * a failed fetch) is encoded into the reply's `err` arm instead, because the
+ * author isolate calls them over Workers RPC and a thrown `PluginError` would
+ * arrive there as a plain error without its code or `details`.
  */
 class GrantedDatabase extends RpcTarget implements GrantedDatabaseTransport {
   #granted: GrantedFetcher;
@@ -3034,12 +3081,16 @@ class GrantedDatabase extends RpcTarget implements GrantedDatabaseTransport {
    * @returns Unpacked `ExecuteResultReply` message.
    */
   async executeBytes(bytes: Uint8Array): Promise<Uint8Array> {
-    const resp = await this.#granted.fetch("http://granted/db/execute", {
-      method: "POST",
-      headers: { ...this.#auth, "content-type": "application/octet-stream" },
-      body: bytes,
-    });
-    return grantedDatabaseBody(resp);
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/execute", {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/octet-stream" },
+        body: bytes,
+      });
+      return await grantedDatabaseBody(resp);
+    } catch (err) {
+      return encodeExecuteResultReply({ err: wirePluginError(err) });
+    }
   }
 
   /**
@@ -3067,15 +3118,20 @@ class GrantedDatabase extends RpcTarget implements GrantedDatabaseTransport {
    * locally).
    *
    * @param bytes - Unpacked `ExecuteRequest` message.
-   * @returns Every `ExecuteStreamFrame`, concatenated.
+   * @returns Every `ExecuteStreamFrame`, concatenated; a channel failure is
+   *   one `err` frame.
    */
   async executeStreamedBytes(bytes: Uint8Array): Promise<Uint8Array> {
-    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
-      method: "POST",
-      headers: { ...this.#auth, "content-type": "application/octet-stream" },
-      body: bytes,
-    });
-    return grantedDatabaseBody(resp, "executeStreamed");
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/octet-stream" },
+        body: bytes,
+      });
+      return await grantedDatabaseBody(resp, "executeStreamed");
+    } catch (err) {
+      return errFrame(err);
+    }
   }
 
   /**
@@ -3084,18 +3140,23 @@ class GrantedDatabase extends RpcTarget implements GrantedDatabaseTransport {
    * frames as they arrive.
    *
    * @param bytes - Unpacked `ExecuteRequest` message.
-   * @returns The response body: the frame sequence.
+   * @returns The response body: the frame sequence; a channel failure is
+   *   one `err` frame.
    */
   async openStreamedBytes(bytes: Uint8Array): Promise<ReadableStream<Uint8Array> | Uint8Array> {
-    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
-      method: "POST",
-      headers: { ...this.#auth, "content-type": "application/octet-stream" },
-      body: bytes,
-    });
-    if (!resp.ok) {
-      await grantedDatabaseBody(resp, "executeStreamed");
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/octet-stream" },
+        body: bytes,
+      });
+      if (!resp.ok) {
+        await grantedDatabaseBody(resp, "executeStreamed");
+      }
+      return resp.body ?? new Uint8Array(0);
+    } catch (err) {
+      return errFrame(err);
     }
-    return resp.body ?? new Uint8Array(0);
   }
 
   /**
@@ -3110,15 +3171,46 @@ class GrantedDatabase extends RpcTarget implements GrantedDatabaseTransport {
   /**
    * Same answer as Cap'n Proto bytes (Python authors decode locally).
    *
-   * @returns Unpacked `DbCapabilitiesReply` message.
+   * @returns Unpacked `DbCapabilitiesReply` message; a channel failure is
+   *   its `err` arm.
    */
   async limitsBytes(): Promise<Uint8Array> {
-    const resp = await this.#granted.fetch("http://granted/db/limits", {
-      method: "GET",
-      headers: { ...this.#auth },
-    });
-    return grantedDatabaseBody(resp, "limits");
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/limits", {
+        method: "GET",
+        headers: { ...this.#auth },
+      });
+      return await grantedDatabaseBody(resp, "limits");
+    } catch (err) {
+      return encodeDbCapabilitiesReply({ err: wirePluginError(err) });
+    }
   }
+}
+
+/**
+ * The wire form of a granted-channel failure: a `PluginError` keeps its code,
+ * message and `details`; anything else (a fetch that threw) is `unavailable`.
+ *
+ * @param err - What the channel call threw.
+ * @returns `PluginError` fields as the Cap'n `err` arms carry them.
+ */
+function wirePluginError(err: unknown): { code: string; message: string; details: string } {
+  if (err instanceof PluginError) {
+    return { code: err.wireCode, message: err.message, details: err.detailsText };
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return { code: "unavailable", message: `database grant: ${message}`, details: "" };
+}
+
+/**
+ * A streamed reply that is one `err` frame: how the bytes transport reports a
+ * channel failure, which both SDKs' stream decoders raise as `PluginError`.
+ *
+ * @param err - What the channel call threw.
+ * @returns One encoded `ExecuteStreamFrame`.
+ */
+function errFrame(err: unknown): Uint8Array {
+  return encodeMessage(ExecuteStreamFrameCodec, { kind: "err", value: wirePluginError(err) });
 }
 
 /**
