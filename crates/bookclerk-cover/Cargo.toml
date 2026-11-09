@@ -12,7 +12,7 @@ authors.workspace = true
 # Pure-Rust codecs only: no C decoder ever sees an untrusted cover.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 fast_image_resize = "5"
-jpeg-encoder = "0.6"
+jpeg-encoder = "0.7"
 thiserror.workspace = true
 # Cover tokens (`token`).
 base64.workspace = true
