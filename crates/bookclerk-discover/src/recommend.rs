@@ -227,6 +227,17 @@ fn taste_multiplier(weights: &TasteWeights, book: &BookRecord) -> f64 {
     weights.get(&book.uuid).copied().unwrap_or(1.0)
 }
 
+/// The multiplier `weights` gives a listening `row`: its book's multiplier,
+/// so a blended household listen counts as much as the book it is for (one
+/// when the row names no listed book).
+fn listening_multiplier(weights: &TasteWeights, row: &ListeningProgressRecord) -> f64 {
+    row.book_uuid
+        .as_deref()
+        .and_then(|uuid| weights.get(uuid))
+        .copied()
+        .unwrap_or(1.0)
+}
+
 /// True when `wish_count` should be omitted from JSON (zero / unset).
 fn wish_count_is_zero(n: &i64) -> bool {
     *n == 0
@@ -920,7 +931,7 @@ async fn build_taste_profile(
     }
 
     for row in listening {
-        let weight = listening_engagement(row);
+        let weight = listening_engagement(row) * listening_multiplier(weights, row);
         if weight <= 0.0 {
             continue;
         }
@@ -1212,7 +1223,7 @@ pub(crate) fn shelf_taste(
         }
     }
     for row in listening {
-        let weight = listening_engagement(row);
+        let weight = listening_engagement(row) * listening_multiplier(weights, row);
         if weight <= 0.0 {
             continue;
         }
@@ -1619,6 +1630,35 @@ mod tests {
             Some(&("Ada Author".to_owned(), 2.0))
         );
         assert!(!taste.owned_sources.is_empty());
+    }
+
+    #[test]
+    fn a_blended_listen_counts_at_its_book_weight() {
+        let row = |book_uuid: &str| bookclerk_library::ListeningProgressRecord {
+            id: 1,
+            identity_id: None,
+            provider: String::from("abs"),
+            external_user_id: String::from("u1"),
+            book_uuid: Some(book_uuid.to_owned()),
+            work_id: None,
+            external_item_id: String::from("item"),
+            title: None,
+            authors: Some(String::from("Ann Author")),
+            asin: None,
+            isbn: None,
+            progress: Some(0.5),
+            current_time_seconds: Some(3_600.0),
+            duration_seconds: Some(7_200.0),
+            is_finished: false,
+            last_listened_at: None,
+            updated_at: chrono::Utc::now(),
+        };
+        let full = listening_engagement(&row("mine"));
+        let mut weights = TasteWeights::new();
+        weights.insert(String::from("household"), 0.5);
+        let taste = shelf_taste(&[], &weights, &[row("mine"), row("household")]);
+        let weight = taste.authors.get("ann author").map(|(_, w)| *w);
+        assert_eq!(weight, Some(full * 1.5));
     }
 
     #[test]

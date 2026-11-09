@@ -187,6 +187,7 @@ pub struct PurchaseHintsResponse {
     /// query's trusted seeds alone, so a client should not keep the answer
     /// and asks again later. Omitted (false) for a finished lookup.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schema(example = false)]
     pub incomplete: bool,
 }
 

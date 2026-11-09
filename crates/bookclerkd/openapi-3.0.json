@@ -15444,8 +15444,19 @@
               }
             }
           },
+          "429": {
+            "description": "The job queue is full, so the fetch was not queued.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "job queue is full"
+              }
+            }
+          },
           "500": {
-            "description": "The lookup failed.",
+            "description": "The lookup failed, or the fetch could not be queued.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -35730,7 +35741,8 @@
           },
           "incomplete": {
             "type": "boolean",
-            "description": "True when the batch deadline cut this lookup short: the hints are the\nquery's trusted seeds alone, so a client should not keep the answer\nand asks again later. Omitted (false) for a finished lookup."
+            "description": "True when the batch deadline cut this lookup short: the hints are the\nquery's trusted seeds alone, so a client should not keep the answer\nand asks again later. Omitted (false) for a finished lookup.",
+            "example": false
           }
         }
       },
