@@ -4771,18 +4771,32 @@ impl LibraryStore {
     ///
     /// Returns an error when the read fails.
     pub async fn count_books_by_status(&self) -> Result<AcquireStatusCounts> {
+        /// One group of the read, decoded by column name: the host database
+        /// proxy does not keep the select order, so a positional tuple
+        /// read could swap the columns.
+        #[derive(Debug, sea_orm::FromQueryResult)]
+        struct StatusCount {
+            /// The group's `acquire_status` wire string.
+            acquire_status: String,
+            /// Rows in the group.
+            n: i64,
+        }
         lock_retry::retry_read_lock(|| async {
-            let rows: Vec<(String, i64)> = books::Entity::find()
+            let rows = books::Entity::find()
                 .select_only()
                 .column(books::Column::AcquireStatus)
                 .column_as(books::Column::Id.count(), "n")
                 .group_by(books::Column::AcquireStatus)
-                .into_tuple()
+                .into_model::<StatusCount>()
                 .all(&self.db)
                 .await
                 .map_err(LibraryError::from_db_err)?;
             let mut counts = AcquireStatusCounts::default();
-            for (status, n) in rows {
+            for StatusCount {
+                acquire_status: status,
+                n,
+            } in rows
+            {
                 counts.total += n;
                 match AcquireStatus::parse(&status) {
                     Some(AcquireStatus::NotAcquired) => counts.not_acquired += n,
