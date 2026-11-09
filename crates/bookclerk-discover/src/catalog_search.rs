@@ -6,12 +6,12 @@
 //! ranking stays on Discover shelves.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bookclerk_source::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, CatalogSortDir,
-    SourceRegistry,
+    ContentSource, SourceRegistry,
 };
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -550,18 +550,10 @@ pub async fn catalog_search_page(
                     cursor.pages.insert(id.clone(), page_now.saturating_add(1));
                     any_source_has_more = true;
                 }
-                for (rank, hit) in hits.into_iter().enumerate() {
+                for hit in hits {
                     let hit = hit.decode_html_entities();
-                    let audible_rank = if id.eq_ignore_ascii_case("audible") {
-                        Some(
-                            page_now
-                                .saturating_sub(1)
-                                .saturating_mul(per_store as u32)
-                                .saturating_add(rank as u32),
-                        )
-                    } else {
-                        None
-                    };
+                    // The store's declared rank; 0 is "unranked" on the wire.
+                    let store_rank = hit.rank_hint.filter(|rank| *rank > 0);
                     upsert_hit(
                         &mut by_key,
                         StorefrontCandidate {
@@ -592,7 +584,7 @@ pub async fn catalog_search_page(
                             rating_overall: hit.rating_overall,
                             rating_count: hit.rating_count,
                             is_abridged: hit.is_abridged,
-                            audible_rank,
+                            store_rank,
                         },
                     );
                 }
@@ -661,32 +653,45 @@ pub async fn catalog_search_page(
     })
 }
 
-/// ISBN or Libro product id used to call `catalog_detail` for a lean search row.
-fn isbn_key_for_enrich(c: &StorefrontCandidate) -> Option<String> {
-    if let Some(isbn) = c.isbn.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        return Some(isbn.to_string());
-    }
-    for ed in &c.store_editions {
-        if ed.source.eq_ignore_ascii_case("libro") {
-            let pid = ed.product_id.trim();
-            if !pid.is_empty() {
-                return Some(pid.to_string());
-            }
-        }
-    }
-    if c.source.eq_ignore_ascii_case("libro") {
-        let pid = c.product_id.trim();
-        if !pid.is_empty() {
-            return Some(pid.to_string());
-        }
-    }
-    None
+/// How an enrichment store is asked for a lean search row's full record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EnrichKey {
+    /// The row's ISBN, through `catalog_detail_by_isbn`.
+    Isbn(String),
+    /// The enrichment store's own product id for this row (it listed the
+    /// work itself), through `catalog_detail`.
+    Product(String),
 }
 
-/// True when description, narrators, runtime, genres, or abridged are still missing and an ISBN exists.
-fn candidate_needs_page_enrich(c: &StorefrontCandidate) -> bool {
-    let lean = c
-        .description
+/// Key to ask `provider` for `c`'s full record: the row's ISBN when it has
+/// one, else the product id `provider` itself gave the row.
+///
+/// # Arguments
+///
+/// * `c` - The ranked search row.
+/// * `provider` - Plugin id of a store that declared `detailByIsbn`.
+///
+/// # Returns
+///
+/// `None` when the row has neither an ISBN nor an edition at `provider`.
+fn enrich_key_for(c: &StorefrontCandidate, provider: &str) -> Option<EnrichKey> {
+    if let Some(isbn) = c.isbn.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(EnrichKey::Isbn(isbn.to_string()));
+    }
+    let own = std::iter::once((c.source.as_str(), c.product_id.as_str())).chain(
+        c.store_editions
+            .iter()
+            .map(|ed| (ed.source.as_str(), ed.product_id.as_str())),
+    );
+    own.filter(|(source, _)| source.eq_ignore_ascii_case(provider))
+        .map(|(_, pid)| pid.trim())
+        .find(|pid| !pid.is_empty())
+        .map(|pid| EnrichKey::Product(pid.to_string()))
+}
+
+/// True when description, narrators, runtime, genres, or abridged are still missing.
+fn candidate_is_lean(c: &StorefrontCandidate) -> bool {
+    c.description
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -702,30 +707,68 @@ fn candidate_needs_page_enrich(c: &StorefrontCandidate) -> bool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .is_none()
-        || c.is_abridged.is_none();
-    lean && isbn_key_for_enrich(c).is_some()
+        || c.is_abridged.is_none()
 }
 
-/// Fill bibliographic gaps on the final page via Libro product detail.
+/// Asks one enrichment store for a row's full record, soft-failing to `None`.
+async fn enrich_lookup(provider: &Arc<dyn ContentSource>, key: &EnrichKey) -> Option<CatalogHit> {
+    let result = match key {
+        EnrichKey::Isbn(isbn) => provider.catalog_detail_by_isbn(isbn).await,
+        EnrichKey::Product(pid) => provider.catalog_detail(pid).await,
+    };
+    match result {
+        Ok(hit) => hit,
+        Err(err) => {
+            tracing::debug!(
+                source = %provider.id(),
+                key = ?key,
+                error = %err,
+                "catalog search page enrich failed"
+            );
+            None
+        }
+    }
+}
+
+/// Fill bibliographic gaps on the final page from the stores that declared
+/// `CatalogCapabilities.detailByIsbn`.
 ///
-/// Bounded by [`PAGE_ENRICH_TIMEOUT`] so a slow guest cannot exceed the
-/// daemon search budget. Chirp-only rows without ISBN are skipped (title-meta
-/// / purchase-hints still fill those in the detail modal).
+/// Each lean row asks those stores in registry order (`sort_key`) and takes
+/// the first full record. Bounded by [`PAGE_ENRICH_TIMEOUT`] so a slow guest
+/// cannot exceed the daemon search budget. Rows with no ISBN and no edition
+/// at an enrichment store are skipped (title-meta / purchase-hints still fill
+/// those in the detail modal).
 async fn enrich_ranked_page(
     registry: &SourceRegistry,
     ranked: &mut [(String, StorefrontCandidate)],
 ) {
-    let Some(libro) = registry.get("libro") else {
+    let providers: Vec<Arc<dyn ContentSource>> = registry
+        .routed()
+        .into_iter()
+        .filter(|source| source.answers_catalog_detail_by_isbn())
+        .collect();
+    enrich_page_from(&providers, ranked).await;
+}
+
+/// [`enrich_ranked_page`] over an explicit provider list (for tests).
+async fn enrich_page_from(
+    providers: &[Arc<dyn ContentSource>],
+    ranked: &mut [(String, StorefrontCandidate)],
+) {
+    if providers.is_empty() {
         return;
-    };
-    let pending: Vec<(usize, String)> = ranked
+    }
+    let pending: Vec<(usize, Vec<(usize, EnrichKey)>)> = ranked
         .iter()
         .enumerate()
+        .filter(|(_, (_, c))| candidate_is_lean(c))
         .filter_map(|(i, (_, c))| {
-            if !candidate_needs_page_enrich(c) {
-                return None;
-            }
-            isbn_key_for_enrich(c).map(|k| (i, k))
+            let keys: Vec<(usize, EnrichKey)> = providers
+                .iter()
+                .enumerate()
+                .filter_map(|(p, provider)| enrich_key_for(c, provider.id()).map(|k| (p, k)))
+                .collect();
+            (!keys.is_empty()).then_some((i, keys))
         })
         .collect();
     if pending.is_empty() {
@@ -735,28 +778,25 @@ async fn enrich_ranked_page(
     let enrich = async {
         for chunk in pending.chunks(PAGE_ENRICH_CONCURRENCY) {
             let mut set = JoinSet::new();
-            for &(i, ref key) in chunk {
-                let libro = libro.clone();
-                let key = key.clone();
+            for (i, keys) in chunk {
+                let i = *i;
+                let keys: Vec<(Arc<dyn ContentSource>, EnrichKey)> = keys
+                    .iter()
+                    .filter_map(|(p, key)| providers.get(*p).map(|src| (src.clone(), key.clone())))
+                    .collect();
                 set.spawn(async move {
-                    let hit = match libro.catalog_detail(&key).await {
-                        Ok(h) => h,
-                        Err(err) => {
-                            tracing::debug!(
-                                key = %key,
-                                error = %err,
-                                "catalog search page enrich failed"
-                            );
-                            None
+                    for (provider, key) in &keys {
+                        if let Some(hit) = enrich_lookup(provider, key).await {
+                            return (i, Some((provider.id().to_string(), hit)));
                         }
-                    };
-                    (i, hit)
+                    }
+                    (i, None)
                 });
             }
             while let Some(joined) = set.join_next().await {
-                if let Ok((i, Some(hit))) = joined {
+                if let Ok((i, Some((provider, hit)))) = joined {
                     if let Some((_, c)) = ranked.get_mut(i) {
-                        apply_catalog_detail_hit(c, hit);
+                        apply_catalog_detail_hit(c, &provider, hit);
                     }
                 }
             }
@@ -772,9 +812,11 @@ async fn enrich_ranked_page(
     }
 }
 
-/// Merges Libro product-detail fields onto a ranked search candidate.
-fn apply_catalog_detail_hit(c: &mut StorefrontCandidate, hit: CatalogHit) {
-    let from = hit_to_candidate("libro", hit);
+/// Merges an enrichment store's catalog-detail record onto a ranked search
+/// candidate: it fills missing fields and adds that store's edition, since
+/// the store just confirmed it lists the work.
+fn apply_catalog_detail_hit(c: &mut StorefrontCandidate, provider: &str, hit: CatalogHit) {
+    let from = hit_to_candidate(provider, hit);
     merge_candidate_metadata(c, &from);
 }
 
@@ -921,15 +963,15 @@ fn rank_candidates(
                 cmp_opt_f64(a_score, b_score, effective_dir)
             }
             CatalogSearchSort::Relevance => {
-                let a_rank = a.audible_rank.unwrap_or(u32::MAX);
-                let b_rank = b.audible_rank.unwrap_or(u32::MAX);
-                // Storefront page order: rank 0 first (ignore sort_dir).
+                let a_rank = a.store_rank.unwrap_or(u32::MAX);
+                let b_rank = b.store_rank.unwrap_or(u32::MAX);
+                // Storefront rank order: rank 1 first (ignore sort_dir).
                 a_rank.cmp(&b_rank)
             }
             CatalogSearchSort::Popularity => {
-                let a_rank = a.audible_rank.unwrap_or(u32::MAX);
-                let b_rank = b.audible_rank.unwrap_or(u32::MAX);
-                // audible_rank 0 = most popular. Invert so Asc = least popular
+                let a_rank = a.store_rank.unwrap_or(u32::MAX);
+                let b_rank = b.store_rank.unwrap_or(u32::MAX);
+                // store_rank 1 = most popular. Invert so Asc = least popular
                 // first and Desc = most popular first (matches rating/price).
                 apply_sort_dir(b_rank.cmp(&a_rank), effective_dir)
             }
@@ -942,8 +984,8 @@ fn rank_candidates(
                 ) {
                     Ordering::Equal
                 } else if matches!(sort, CatalogSearchSort::Rating) {
-                    let a_rank = a.audible_rank.unwrap_or(u32::MAX);
-                    let b_rank = b.audible_rank.unwrap_or(u32::MAX);
+                    let a_rank = a.store_rank.unwrap_or(u32::MAX);
+                    let b_rank = b.store_rank.unwrap_or(u32::MAX);
                     a_rank.cmp(&b_rank)
                 } else {
                     Ordering::Equal
@@ -1266,7 +1308,7 @@ mod tests {
             rating_overall: None,
             rating_count: None,
             is_abridged: None,
-            audible_rank: Some(0),
+            store_rank: Some(0),
         }
     }
 
@@ -1451,7 +1493,7 @@ mod tests {
             let mut c = cand(None, Some(id));
             c.product_id = id.into();
             c.title = id.into();
-            c.audible_rank = Some(rank);
+            c.store_rank = Some(rank);
             (id.into(), c)
         };
         let mut asc = vec![make("top", 0), make("mid", 1), make("low", 5)];
@@ -1518,7 +1560,7 @@ mod tests {
                     rating_overall: None,
                     rating_count: None,
                     is_abridged: None,
-                    audible_rank: None,
+                    store_rank: None,
                 },
             }],
         };
@@ -1545,5 +1587,226 @@ mod tests {
         let legacy = hex::encode(serde_json::to_vec(&c).unwrap());
         let legacy_dec = decode_cursor(&legacy).expect("legacy hex");
         assert_eq!(legacy_dec.pending[0].work_key, "asin:B00TEST");
+    }
+
+    /// A store that declared `detailByIsbn`: answers detail lookups from
+    /// `answer` and records every call.
+    struct DetailStore {
+        /// Store id.
+        id: &'static str,
+        /// Record every lookup returns; `None` answers "not found".
+        answer: Option<CatalogHit>,
+        /// Lookups made, as `isbn:<v>` or `product:<v>`.
+        calls: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl DetailStore {
+        /// Records one lookup and returns the canned answer.
+        fn record(&self, call: String) -> Option<CatalogHit> {
+            self.calls.lock().unwrap().push(call);
+            self.answer.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ContentSource for DetailStore {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn portal_auth_mode(&self) -> bookclerk_source::PortalAuthMode {
+            bookclerk_source::PortalAuthMode::Password
+        }
+
+        fn portal_brand(&self) -> bookclerk_source::SourceBrand {
+            bookclerk_source::SourceBrand {
+                id: "fake",
+                name: "Fake",
+                bg: "#000000",
+                fg: "#ffffff",
+                accent: "#000000",
+                icon_url: "",
+            }
+        }
+
+        async fn login(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _opts: bookclerk_source::LoginOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::SourceAccount> {
+            Err(bookclerk_source::SourceError::api("unused"))
+        }
+
+        async fn list_accounts(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+        ) -> bookclerk_source::Result<Vec<bookclerk_source::SourceAccount>> {
+            Ok(Vec::new())
+        }
+
+        async fn scan(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _opts: bookclerk_source::ScanOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::ScanSummary> {
+            Ok(bookclerk_source::ScanSummary::default())
+        }
+
+        async fn fetch_title(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _account_id: &str,
+            _title_id: &str,
+            _opts: &bookclerk_source::FetchOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::SourceFetch> {
+            Err(bookclerk_source::SourceError::api("unused"))
+        }
+
+        fn answers_catalog_detail_by_isbn(&self) -> bool {
+            true
+        }
+
+        async fn catalog_detail(
+            &self,
+            product_id: &str,
+        ) -> bookclerk_source::Result<Option<CatalogHit>> {
+            Ok(self.record(format!("product:{product_id}")))
+        }
+
+        async fn catalog_detail_by_isbn(
+            &self,
+            isbn: &str,
+        ) -> bookclerk_source::Result<Option<CatalogHit>> {
+            Ok(self.record(format!("isbn:{isbn}")))
+        }
+    }
+
+    /// A [`DetailStore`] and the log of calls made to it.
+    fn detail_store(
+        id: &'static str,
+        answer: Option<CatalogHit>,
+    ) -> (Arc<dyn ContentSource>, Arc<std::sync::Mutex<Vec<String>>>) {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store = DetailStore {
+            id,
+            answer,
+            calls: calls.clone(),
+        };
+        (Arc::new(store), calls)
+    }
+
+    /// A lean row from `source` with no description, narrators or runtime.
+    fn lean_row(source: &str, product_id: &str, isbn: Option<&str>) -> StorefrontCandidate {
+        let mut c = cand(None, Some("Author"));
+        c.source = source.into();
+        c.product_id = product_id.into();
+        c.asin = None;
+        c.isbn = isbn.map(str::to_string);
+        c.store_editions = vec![StoreEdition::new(source, product_id)];
+        c.store_rank = None;
+        c
+    }
+
+    #[test]
+    fn enrich_key_prefers_the_isbn_then_the_providers_own_listing() {
+        let with_isbn = lean_row("chirp", "c1", Some("9780000000001"));
+        assert_eq!(
+            enrich_key_for(&with_isbn, "libro"),
+            Some(EnrichKey::Isbn("9780000000001".into()))
+        );
+        let mut listed_at_provider = lean_row("chirp", "c1", None);
+        listed_at_provider
+            .store_editions
+            .push(StoreEdition::new("libro", "libro-42"));
+        assert_eq!(
+            enrich_key_for(&listed_at_provider, "libro"),
+            Some(EnrichKey::Product("libro-42".into()))
+        );
+        assert_eq!(
+            enrich_key_for(&lean_row("libro", "libro-7", None), "libro"),
+            Some(EnrichKey::Product("libro-7".into()))
+        );
+        assert_eq!(
+            enrich_key_for(&lean_row("chirp", "c1", None), "libro"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn page_enrich_asks_declared_stores_in_order_until_one_answers() {
+        let (first, first_calls) = detail_store("alpha", None);
+        let (second, second_calls) = detail_store(
+            "beta",
+            Some(CatalogHit {
+                product_id: "beta-1".into(),
+                title: "Adventure".into(),
+                description: Some("A long blurb.".into()),
+                length_minutes: Some(600),
+                ..CatalogHit::default()
+            }),
+        );
+        let mut ranked = vec![
+            (
+                String::from("isbn:9780000000001"),
+                lean_row("chirp", "c1", Some("9780000000001")),
+            ),
+            // No ISBN and no listing at either store: nobody is asked.
+            (String::from("soft:x"), lean_row("chirp", "c2", None)),
+        ];
+        enrich_page_from(&[first, second], &mut ranked).await;
+
+        assert_eq!(*first_calls.lock().unwrap(), vec!["isbn:9780000000001"]);
+        assert_eq!(*second_calls.lock().unwrap(), vec!["isbn:9780000000001"]);
+        let enriched = &ranked[0].1;
+        assert_eq!(enriched.description.as_deref(), Some("A long blurb."));
+        assert_eq!(enriched.length_minutes, Some(600));
+        assert!(enriched
+            .store_editions
+            .iter()
+            .any(|ed| ed.source == "beta" && ed.product_id == "beta-1"));
+        assert!(ranked[1].1.description.is_none());
+    }
+
+    #[tokio::test]
+    async fn page_enrich_skips_full_rows_and_runs_without_providers() {
+        let (store, calls) = detail_store("alpha", None);
+        let mut full = lean_row("chirp", "c1", Some("9780000000001"));
+        full.description = Some("Blurb".into());
+        full.narrators = Some("Reader".into());
+        full.length_minutes = Some(60);
+        full.is_abridged = Some(false);
+        let mut ranked = vec![(String::from("isbn:9780000000001"), full)];
+        enrich_page_from(&[store], &mut ranked).await;
+        assert!(calls.lock().unwrap().is_empty());
+
+        let mut lean = vec![(
+            String::from("isbn:9780000000002"),
+            lean_row("chirp", "c3", Some("9780000000002")),
+        )];
+        enrich_page_from(&[], &mut lean).await;
+        assert!(lean[0].1.description.is_none());
+    }
+
+    #[test]
+    fn merged_rows_keep_the_best_store_rank() {
+        let mut a = lean_row("audible", "B1", None);
+        a.store_rank = Some(7);
+        let mut b = lean_row("chirp", "c1", None);
+        b.store_rank = Some(3);
+        merge_candidate_metadata(&mut a, &b);
+        assert_eq!(a.store_rank, Some(3));
+        let mut unranked = lean_row("libro", "l1", None);
+        merge_candidate_metadata(&mut unranked, &a);
+        assert_eq!(unranked.store_rank, Some(3));
+    }
+
+    #[test]
+    fn legacy_cursor_rows_read_audible_rank_as_store_rank() {
+        let mut row = serde_json::to_value(lean_row("audible", "B1", None)).unwrap();
+        row.as_object_mut()
+            .unwrap()
+            .insert(String::from("audible_rank"), serde_json::json!(4));
+        let back: StorefrontCandidate = serde_json::from_value(row).unwrap();
+        assert_eq!(back.store_rank, Some(4));
     }
 }

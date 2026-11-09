@@ -318,6 +318,7 @@ fn fill_describe(mut b: plugin_describe::Builder<'_>, d: &PluginDescribe) -> cap
         }
     }
     write_cli_schema(b.reborrow().init_cli(), &d.cli)?;
+    crate::generated::write_catalog_capabilities(b.reborrow().init_catalog(), &d.catalog)?;
     Ok(())
 }
 
@@ -416,6 +417,12 @@ fn read_describe(m: plugin_describe::Reader<'_>) -> Result<PluginDescribe> {
         brand,
         config_options,
         cli,
+        catalog: if m.has_catalog() {
+            crate::generated::read_catalog_capabilities(m.get_catalog().map_err(from_capnp)?)
+                .map_err(from_capnp)?
+        } else {
+            crate::generated::CatalogCapabilities::default()
+        },
     })
 }
 
@@ -4960,6 +4967,42 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
     use tokio::io::duplex;
+
+    #[test]
+    fn describe_round_trips_declared_catalog_capabilities() {
+        let declared = PluginDescribe {
+            id: "store".into(),
+            catalog: crate::CatalogCapabilities {
+                detail_by_isbn: true,
+            },
+            ..PluginDescribe::default()
+        };
+        let mut message = capnp::message::Builder::new_default();
+        fill_describe(
+            message.init_root::<plugin_describe::Builder<'_>>(),
+            &declared,
+        )
+        .expect("encode describe");
+        let back = read_describe(
+            message
+                .get_root_as_reader::<plugin_describe::Reader<'_>>()
+                .expect("describe root"),
+        )
+        .expect("decode describe");
+        assert!(back.catalog.detail_by_isbn);
+        assert_eq!(back, declared);
+
+        // A guest that never sets the struct declares nothing.
+        let mut bare = capnp::message::Builder::new_default();
+        bare.init_root::<plugin_describe::Builder<'_>>()
+            .set_id("store");
+        let back = read_describe(
+            bare.get_root_as_reader::<plugin_describe::Reader<'_>>()
+                .expect("describe root"),
+        )
+        .expect("decode bare describe");
+        assert!(!back.catalog.detail_by_isbn);
+    }
 
     struct MemDest {
         store: Mutex<HashMap<String, Vec<u8>>>,

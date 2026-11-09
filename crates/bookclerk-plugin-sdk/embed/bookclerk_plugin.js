@@ -3092,7 +3092,7 @@ var RevokeAccountParamsCodec = {
   }
 };
 var CatalogHitCodec = {
-  dataWords: 5,
+  dataWords: 6,
   pointerCount: 17,
   write(s, v, caps) {
     s.setText(0, v.productId ?? "");
@@ -3168,6 +3168,9 @@ var CatalogHitCodec = {
     if (v.parentProductId !== void 0) {
       s.setText(16, v.parentProductId ?? "");
     }
+    if (v.rankHint !== void 0) {
+      s.setUint32(10, v.rankHint ?? 0);
+    }
   },
   read(s, caps) {
     const out = {
@@ -3242,6 +3245,10 @@ var CatalogHitCodec = {
     if (!(parentProductIdValue === "")) {
       out.parentProductId = parentProductIdValue;
     }
+    const rankHintValue = s.getUint32(10);
+    if (!(rankHintValue === 0)) {
+      out.rankHint = rankHintValue;
+    }
     return out;
   }
 };
@@ -3251,7 +3258,7 @@ var CatalogHitsCodec = {
   write(s, v, caps) {
     {
       const list = v.hits ?? [];
-      const items = s.initStructList(0, list.length, 5, 17);
+      const items = s.initStructList(0, list.length, 6, 17);
       for (let i = 0; i < items.length; i++) {
         CatalogHitCodec.write(items[i], list[i], caps);
       }
@@ -3259,7 +3266,7 @@ var CatalogHitsCodec = {
   },
   read(s, caps) {
     return {
-      hits: s.getStructList(0, 5, 17).map((item) => CatalogHitCodec.read(item, caps))
+      hits: s.getStructList(0, 6, 17).map((item) => CatalogHitCodec.read(item, caps))
     };
   }
 };
@@ -3302,13 +3309,13 @@ var CatalogDetailCodec = {
   write(s, v, caps) {
     s.setBool(0, v.found ?? false);
     if (v.hit != null) {
-      CatalogHitCodec.write(s.initStruct(0, 5, 17), v.hit, caps);
+      CatalogHitCodec.write(s.initStruct(0, 6, 17), v.hit, caps);
     }
   },
   read(s, caps) {
     return {
       found: s.getBool(0),
-      hit: CatalogHitCodec.read(s.getStruct(0, 5, 17), caps)
+      hit: CatalogHitCodec.read(s.getStruct(0, 6, 17), caps)
     };
   }
 };

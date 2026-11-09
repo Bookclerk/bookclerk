@@ -129,12 +129,17 @@ pub async fn search_catalog(
     }
     .map_err(|e| bookclerk_storefront::SourceError::api(e.to_string()))?;
 
-    Ok(products
+    let mut hits: Vec<CatalogHit> = products
         .into_iter()
         .filter(|p| !p.asin.trim().is_empty())
         .take(limit)
         .map(|p| product_to_hit(p, String::from("search")))
-        .collect())
+        .collect();
+    // Audible's order is meaningful for every sort it is asked for (its
+    // relevance and bestseller rankings), so each hit carries its rank and
+    // catalog search can merge it with other stores.
+    opts.stamp_rank_hints(&mut hits);
+    Ok(hits)
 }
 
 /// Expand author / series / narrator / series-ASIN candidates from a taste seed.

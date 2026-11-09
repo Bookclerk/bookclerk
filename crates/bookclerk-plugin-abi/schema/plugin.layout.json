@@ -1245,6 +1245,25 @@
         }
       ]
     },
+    "CatalogCapabilities": {
+      "name": "CatalogCapabilities",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "detailByIsbn",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "CatalogDetail": {
       "name": "CatalogDetail",
       "file": "plugin.capnp",
@@ -1335,7 +1354,7 @@
     "CatalogHit": {
       "name": "CatalogHit",
       "file": "plugin.capnp",
-      "dataWords": 5,
+      "dataWords": 6,
       "pointerCount": 17,
       "discriminantCount": 0,
       "discriminantOffset": 0,
@@ -1580,6 +1599,15 @@
             "kind": "text"
           },
           "offset": 16
+        },
+        {
+          "name": "rankHint",
+          "codeOrder": 25,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 10
         }
       ]
     },
@@ -9293,7 +9321,7 @@
       "name": "PluginDescribe",
       "file": "plugin.capnp",
       "dataWords": 2,
-      "pointerCount": 10,
+      "pointerCount": 11,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -9428,6 +9456,16 @@
             "name": "CliSchema"
           },
           "offset": 9
+        },
+        {
+          "name": "catalog",
+          "codeOrder": 13,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "CatalogCapabilities"
+          },
+          "offset": 10
         }
       ]
     },
