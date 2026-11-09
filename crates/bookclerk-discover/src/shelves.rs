@@ -379,8 +379,14 @@ pub fn build_discover_feed(
 
     let FeedBuilder { mut shelves, .. } = builder;
     // Keep at least a "Top picks" dump if everything is empty but recs exist.
-    if shelves.is_empty() && !recs.is_empty() && !shelf_is_disabled("top_picks", disabled_shelves) {
-        let mut top = recs.to_vec();
+    // Wished titles stay off it: they belong to the wishlist shelf alone,
+    // even when that shelf is hidden.
+    let mut top: Vec<Recommendation> = if shelves.is_empty() {
+        recs.iter().filter(|r| !wished(r)).cloned().collect()
+    } else {
+        Vec::new()
+    };
+    if !top.is_empty() && !shelf_is_disabled("top_picks", disabled_shelves) {
         top.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -985,6 +991,17 @@ mod tests {
         assert_eq!(ids(&feed), vec!["author:ada-author", "requests"]);
         assert_eq!(titles(&feed, "author:ada-author"), vec!["By Ada"]);
         assert_eq!(titles(&feed, "requests"), vec!["Wanted"]);
+    }
+
+    #[test]
+    fn a_hidden_wishlist_keeps_wished_titles_off_top_picks() {
+        let wished = Recommendation {
+            from_request: true,
+            ..rec("Wanted", 50.0, &["requests"])
+        };
+        let hidden = vec![String::from("requests")];
+        let feed = build_discover_feed(&[wished], &ShelfTaste::default(), 8, &hidden);
+        assert!(feed.shelves.is_empty(), "{:?}", ids(&feed));
     }
 
     #[test]
