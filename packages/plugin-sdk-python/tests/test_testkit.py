@@ -29,7 +29,14 @@ from bookclerk_plugin_sdk.workerd import PluginError
 # Imported under another name: a module-level ``test*`` function is collected as a test.
 kit_binary = testkit.testkit_binary
 
-WORKSPACE = Path(__file__).resolve().parents[3]
+# The repository root: the nearest folder above holding the ABI crate. A
+# fixed depth would break when mutation testing runs these tests from a copy
+# under `mutants/` (docs/contributing/ci.md#python-sdk).
+REPO_ROOT = next(
+    p for p in Path(__file__).resolve().parents if (p / "crates" / "bookclerk-plugin-abi").is_dir()
+)
+
+WORKSPACE = REPO_ROOT
 
 MIGRATIONS: list[dict[str, Any]] = [
     {
