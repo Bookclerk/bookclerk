@@ -26,7 +26,7 @@ use bookclerk_library::{
 };
 use bookclerk_source::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, ContentSource,
-    SourceRegistry,
+    PurchaseHintOpts, SourceError, SourceRegistry,
 };
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -84,6 +84,12 @@ pub const STARTER_GENRES: [&str; 6] = [
 
 /// Hits asked of a store for one starter genre.
 const STARTER_GENRE_HITS: usize = 24;
+
+/// Most candidates one store is asked to price at the end of a fetch, in
+/// one `purchase_hints` call. Audible prices fifty per request and Chirp
+/// a page per query; a store that loops stops at its own budget and the
+/// rest stay unpriced until a card asks live.
+pub const PRICE_PRECOMPUTE_LIMIT: usize = 48;
 
 /// Most bytes a stored feed's JSON may take once escaped as a JSON string.
 ///
@@ -302,6 +308,8 @@ pub struct FetchReport {
     pub candidates: usize,
     /// Stores whose fetch failed outright, by plugin id.
     pub stores_failed: Vec<String>,
+    /// Candidates that carry a price from the fetch, across stores.
+    pub priced: usize,
 }
 
 /// Fetches one subject's storefront candidates and stores them store by store.
@@ -365,7 +373,7 @@ pub async fn fetch_subject_candidates(
     let base = total / stores.len();
     let extra = total % stores.len();
 
-    let mut tasks: JoinSet<(String, Vec<StorefrontCandidate>, bool)> = JoinSet::new();
+    let mut tasks: JoinSet<(String, Vec<StorefrontCandidate>, bool, usize)> = JoinSet::new();
     for (index, source) in stores.into_iter().enumerate() {
         // Split the total budget so the stores together never exceed it; a
         // store whose share is zero is not asked and keeps its stored rows.
@@ -380,7 +388,7 @@ pub async fn fetch_subject_candidates(
         let exclude_sets = opts.exclude_graphicaudio_series_sets;
         tasks.spawn(async move {
             let id = source.id().to_string();
-            let (hits, ok) = fetch_one_store(
+            let (mut hits, ok) = fetch_one_store(
                 &library,
                 source.as_ref(),
                 &seeds,
@@ -390,11 +398,16 @@ pub async fn fetch_subject_candidates(
                 exclude_sets,
             )
             .await;
-            (id, hits, ok)
+            let priced = if ok {
+                price_candidates(source.as_ref(), &mut hits, &region).await
+            } else {
+                0
+            };
+            (id, hits, ok, priced)
         });
     }
     while let Some(joined) = tasks.join_next().await {
-        let Ok((store, candidates, ok)) = joined else {
+        let Ok((store, candidates, ok, priced)) = joined else {
             tracing::warn!("a discover store fetch task stopped before it finished");
             continue;
         };
@@ -402,6 +415,7 @@ pub async fn fetch_subject_candidates(
             report.stores_failed.push(store);
             continue;
         }
+        report.priced += priced;
         let mut map: HashMap<String, StorefrontCandidate> = HashMap::new();
         for c in candidates {
             insert_candidate(&mut map, c, &owned.0, &owned.1, &owned.2);
@@ -429,10 +443,90 @@ pub async fn fetch_subject_candidates(
         seeds = report.seeds,
         stores = report.stores_saved,
         candidates = report.candidates,
+        priced = report.priced,
         failed = ?report.stores_failed,
         "stored discover candidates"
     );
     Ok(report)
+}
+
+/// Prices up to [`PRICE_PRECOMPUTE_LIMIT`] of one store's candidates in one
+/// `purchase_hints` call and writes the prices onto them, so cards show a
+/// price before any live lookup.
+///
+/// Prices are not written to the store-call cache: they change daily and
+/// the live lookup refreshes them when a card is in view. A store that
+/// asks to slow down, fails or times out leaves its candidates unpriced.
+///
+/// # Returns
+///
+/// How many candidates received a price.
+async fn price_candidates(
+    source: &dyn ContentSource,
+    candidates: &mut [StorefrontCandidate],
+    region: &str,
+) -> usize {
+    let unpriced: Vec<usize> = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.price_cents.is_none() && !c.product_id.trim().is_empty())
+        .map(|(i, _)| i)
+        .take(PRICE_PRECOMPUTE_LIMIT)
+        .collect();
+    if unpriced.is_empty() {
+        return 0;
+    }
+    let opts: Vec<PurchaseHintOpts> = unpriced
+        .iter()
+        .map(|&i| {
+            let c = &candidates[i];
+            PurchaseHintOpts {
+                product_id: Some(c.product_id.clone()),
+                title: Some(c.title.clone()),
+                authors: c.authors.clone(),
+                asin: c.asin.clone(),
+                isbn: c.isbn.clone(),
+                region: region.to_string(),
+                with_price: true,
+            }
+        })
+        .collect();
+    let id = source.id().to_string();
+    let answers = match tokio::time::timeout(STORE_CALL_TIMEOUT, source.purchase_hints(&opts)).await
+    {
+        Ok(Ok(answers)) => answers,
+        Ok(Err(SourceError::RateLimited(wait))) => {
+            tracing::info!(store = %id, ?wait, "candidate pricing skipped: the store asked to slow down");
+            return 0;
+        }
+        Ok(Err(err)) => {
+            tracing::debug!(store = %id, error = %err, "candidate pricing failed");
+            return 0;
+        }
+        Err(_) => {
+            tracing::debug!(store = %id, "candidate pricing timed out");
+            return 0;
+        }
+    };
+    let mut priced = 0;
+    for (&i, answer) in unpriced.iter().zip(answers) {
+        let Some(hint) = answer else { continue };
+        // The list price: what someone without an account there pays.
+        let cents = hint.list_price_cents.or(hint.price_cents);
+        let label = hint
+            .list_price_label
+            .clone()
+            .or_else(|| hint.price_label.clone());
+        if cents.is_none() && label.is_none() {
+            continue;
+        }
+        let c = &mut candidates[i];
+        c.price_cents = cents;
+        c.currency = hint.currency.clone();
+        c.price_label = label;
+        priced += 1;
+    }
+    priced
 }
 
 /// Alternates book and wishlist seeds, so a store's call budget reaches
@@ -890,6 +984,25 @@ mod tests {
                 ..CatalogHit::default()
             }])
         }
+
+        /// Every product costs 12.34 at this store.
+        async fn purchase_hint(
+            &self,
+            opts: &PurchaseHintOpts,
+        ) -> bookclerk_source::Result<Option<bookclerk_source::SourcePurchaseHint>> {
+            Ok(opts
+                .product_id
+                .clone()
+                .map(|product_id| bookclerk_source::SourcePurchaseHint {
+                    product_id,
+                    title: opts.title.clone(),
+                    url: None,
+                    price_cents: Some(1_234),
+                    currency: Some(String::from("USD")),
+                    price_label: Some(String::from("$12.34")),
+                    ..Default::default()
+                }))
+        }
     }
 
     /// A library with two members' books: Alice's account is linked to her
@@ -1127,10 +1240,19 @@ mod tests {
             .await
             .unwrap();
         // Alice's book and Bob's blended-in book each seed an expand call;
-        // the deals come regardless.
+        // the deals come regardless, and every candidate was priced in the
+        // same fetch.
         assert_eq!(fetched.seeds, 2);
         assert_eq!(fetched.candidates, 5);
+        assert_eq!(fetched.priced, 5);
         let stored = library.list_discover_candidates(&subject).await.unwrap();
+        assert!(stored.iter().all(|c| {
+            serde_json::from_str::<StorefrontCandidate>(&c.candidate_json)
+                .unwrap()
+                .price_label
+                .as_deref()
+                == Some("$12.34")
+        }));
         let near = stored
             .iter()
             .map(|c| serde_json::from_str::<StorefrontCandidate>(&c.candidate_json).unwrap())
