@@ -11834,7 +11834,7 @@ function valueJson(value) {
       if (!Number.isFinite(value.value)) {
         throw PluginError.fromWire("internal", "guest replay payload has a non-finite float");
       }
-      return `{"kind":"float64","value":${JSON.stringify(value.value)}}`;
+      return `{"kind":"float64","value":${Object.is(value.value, -0) ? "-0.0" : JSON.stringify(value.value)}}`;
     case "text":
       return `{"kind":"text","value":${JSON.stringify(value.value)}}`;
     case "bytes":

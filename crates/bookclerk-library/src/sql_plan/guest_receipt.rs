@@ -1113,6 +1113,7 @@ mod isolate_adapter_fixture {
                     DbValue::Boolean(true),
                     DbValue::Bytes(vec![0, 1, 254, 255]),
                     DbValue::Null(DbType::Text),
+                    DbValue::Float64(-0.0),
                 ],
             }],
             columns: vec![
@@ -1134,6 +1135,10 @@ mod isolate_adapter_fixture {
                     db_type: DbType::Bytes,
                 },
                 text("note"),
+                DbColumn {
+                    name: "signed_zero".into(),
+                    db_type: DbType::Float64,
+                },
             ],
             rows_affected: 1,
         };

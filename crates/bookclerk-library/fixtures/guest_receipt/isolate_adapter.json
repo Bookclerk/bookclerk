@@ -67,6 +67,10 @@
             {
               "dbType": "text",
               "name": "note"
+            },
+            {
+              "dbType": "float64",
+              "name": "signed_zero"
             }
           ],
           "rows": [
@@ -100,6 +104,10 @@
                 {
                   "kind": "null",
                   "value": "text"
+                },
+                {
+                  "kind": "float64",
+                  "value": -0.0
                 }
               ]
             }
@@ -125,7 +133,7 @@
         "parameters": [
           {
             "kind": "text",
-            "value": "{\"operation_id\":\"fixture-partial\",\"statements\":[{\"rows\":[],\"columns\":[],\"rowsAffected\":0},{\"rows\":[{\"values\":[{\"kind\":\"int64\",\"value\":-9007199254740991},{\"kind\":\"text\",\"value\":\"line\\n\\\"quoted\\\"\\t\\\\ café \\u0001 📚\"},{\"kind\":\"float64\",\"value\":1.5},{\"kind\":\"boolean\",\"value\":true},{\"kind\":\"bytes\",\"value\":[0,1,254,255]},{\"kind\":\"null\",\"value\":\"text\"}]}],\"columns\":[{\"name\":\"id\",\"dbType\":\"int64\"},{\"name\":\"body\",\"dbType\":\"text\"},{\"name\":\"score\",\"dbType\":\"float64\"},{\"name\":\"done\",\"dbType\":\"bool\"},{\"name\":\"blob\",\"dbType\":\"bytes\"},{\"name\":\"note\",\"dbType\":\"text\"}],\"rowsAffected\":1}],\"timing\":{\"attemptElapsedUs\":0,\"dbExecutionUs\":0,\"dbTimingSource\":\"sqlite_txn\"}}"
+            "value": "{\"operation_id\":\"fixture-partial\",\"statements\":[{\"rows\":[],\"columns\":[],\"rowsAffected\":0},{\"rows\":[{\"values\":[{\"kind\":\"int64\",\"value\":-9007199254740991},{\"kind\":\"text\",\"value\":\"line\\n\\\"quoted\\\"\\t\\\\ café \\u0001 📚\"},{\"kind\":\"float64\",\"value\":1.5},{\"kind\":\"boolean\",\"value\":true},{\"kind\":\"bytes\",\"value\":[0,1,254,255]},{\"kind\":\"null\",\"value\":\"text\"},{\"kind\":\"float64\",\"value\":-0.0}]}],\"columns\":[{\"name\":\"id\",\"dbType\":\"int64\"},{\"name\":\"body\",\"dbType\":\"text\"},{\"name\":\"score\",\"dbType\":\"float64\"},{\"name\":\"done\",\"dbType\":\"bool\"},{\"name\":\"blob\",\"dbType\":\"bytes\"},{\"name\":\"note\",\"dbType\":\"text\"},{\"name\":\"signed_zero\",\"dbType\":\"float64\"}],\"rowsAffected\":1}],\"timing\":{\"attemptElapsedUs\":0,\"dbExecutionUs\":0,\"dbTimingSource\":\"sqlite_txn\"}}"
           },
           {
             "kind": "text",
