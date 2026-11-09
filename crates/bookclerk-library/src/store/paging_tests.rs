@@ -85,12 +85,15 @@ async fn filtered_book_pages_match_the_full_listing() {
                 seeded.push((uuid, account, i % 2 == 0));
             }
         }
-        for (account, status) in [
+        for (case, (account, status)) in [
             (Some("acct-a"), None),
             (Some("acct-a"), Some(AcquireStatus::Acquired.as_str())),
             (None, Some(AcquireStatus::NotAcquired.as_str())),
             (None, None),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let full = store
                 .list_books_filtered_page(account, status, BOOK_PAGE_MAX_LIMIT, 0)
                 .await
@@ -106,7 +109,7 @@ async fn filtered_book_pages_match_the_full_listing() {
             expected.sort();
             let mut got = uuids(&full.books);
             got.sort();
-            assert_eq!(got, expected, "{} {account:?} {status:?}", profile.name());
+            assert_eq!(got, expected, "{} filter case {case}", profile.name());
             let store = &store;
             assert_offset_pages_match(
                 &uuids(&full.books),
