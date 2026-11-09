@@ -182,6 +182,36 @@ async fn shared_titles_land_as_the_branch_owners_and_deduplicate() {
     );
 }
 
+/// A limited listing is a prefix of the full, oldest-first listing.
+#[tokio::test]
+async fn branch_title_limits_are_prefixes_of_the_full_listing() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let session = open(&store, true, true).await;
+    accepted(
+        &store,
+        session.fence,
+        "c1",
+        false,
+        &[title("p1", 10), title("p2", 20), title("p3", 30)],
+    )
+    .await;
+    let products = |rows: Vec<BranchTitle>| -> Vec<String> {
+        rows.into_iter().map(|row| row.product_id).collect()
+    };
+    let full = products(list_branch_titles(&store, Some(BRANCH), 100).await.unwrap());
+    assert_eq!(full, ["p1", "p2", "p3"]);
+    for limit in 1..=4u64 {
+        let page = products(
+            list_branch_titles(&store, Some(BRANCH), limit)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(page, full[..usize::try_from(limit).unwrap().min(3)]);
+    }
+}
+
 #[tokio::test]
 async fn only_a_trusted_branch_may_share() {
     let _lock = master_key_test_lock_async().await;

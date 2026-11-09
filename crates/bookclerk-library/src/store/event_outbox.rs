@@ -401,9 +401,23 @@ impl LibraryStore {
             c.fetch_add(1, Ordering::SeqCst);
         });
         if let Some(atomic) = &self.atomic {
-            let snapshot = self
-                .load_or_init_dispatch_snapshot(event_id, subscribers)
-                .await?;
+            let row = domain_events::Entity::find_by_id(event_id)
+                .one(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?
+                .ok_or_else(|| LibraryError::NotFound(format!("domain event {event_id}")))?;
+            // The subscriber snapshot is frozen for the pages of the first
+            // dispatch only, so a page that resumes after a crash sees the
+            // same list. Once the event is dispatched, a call adds deliveries
+            // for subscribers that joined since (catalog reconciliation), so
+            // it takes the subscribers it was given; `INSERT OR IGNORE`
+            // keeps the rows that exist.
+            let snapshot = if row.dispatch_state == STATE_PENDING {
+                self.load_or_init_dispatch_snapshot(row, subscribers)
+                    .await?
+            } else {
+                subscribers.to_vec()
+            };
             let chunk = self.dispatch_chunk_size().max(1);
             if snapshot.is_empty() {
                 return atomic
@@ -449,17 +463,14 @@ impl LibraryStore {
         }
     }
 
-    /// Returns the frozen dispatch subscriber snapshot, writing it on first use.
+    /// Returns the frozen dispatch subscriber snapshot of the pending event
+    /// `row`, writing it on first use.
     async fn load_or_init_dispatch_snapshot(
         &self,
-        event_id: &str,
+        row: domain_events::Model,
         subscribers: &[EventSubscriber],
     ) -> Result<Vec<EventSubscriber>> {
-        let row = domain_events::Entity::find_by_id(event_id)
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(format!("domain event {event_id}")))?;
+        let event_id = row.id.as_str();
         if !row.dispatch_snapshot_json.trim().is_empty() {
             return parse_dispatch_snapshot(event_id, &row.dispatch_snapshot_json);
         }
@@ -1831,7 +1842,7 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when the read fails.
-    async fn list_missing_dispatched_events_for_plugin(
+    pub(super) async fn list_missing_dispatched_events_for_plugin(
         &self,
         plugin_id: &str,
         event_types: &[String],

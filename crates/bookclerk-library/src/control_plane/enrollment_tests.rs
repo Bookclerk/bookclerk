@@ -672,13 +672,7 @@ async fn redeem_refuses_keys_that_are_not_prime_order_points() {
 #[tokio::test]
 async fn owner_node_removal_is_one_batch_without_an_interactive_transaction() {
     let _guard = master_key_test_lock_async().await;
-    // The bootstrap batch itself does not pass the `Profile::Minimum`
-    // function-argument admission yet (#777), so the removal is checked under
-    // the two shipped advertisements.
-    for profile in [
-        crate::test_support::Profile::FirstParty,
-        crate::test_support::Profile::D1,
-    ] {
+    for profile in crate::test_support::Profile::ALL {
         let kit = crate::test_support::sqlite::memory(profile).await;
         let store = kit.store().clone();
         let dir = tempfile::tempdir().unwrap();

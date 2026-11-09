@@ -2097,7 +2097,7 @@ mod store_tests {
             .await
             .unwrap();
         let store = LibraryStore::from_connection(db.clone())
-            .with_atomic_txn(Arc::new(InProcessSqliteAtomic { db }));
+            .with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db)));
         let listing = resolve::Listing::from_draft(&dune("audible", "B001")).unwrap();
         let plan = store
             .record_listing(&listing, &account("a1"))

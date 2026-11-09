@@ -1,6 +1,6 @@
 //! Checks that a paged listing returns what the full listing returns.
 //!
-//! Under [`crate::Profile::Minimum`] a result holds one row, so every
+//! Under [`super::Profile::Minimum`] a result holds one row, so every
 //! listing method pages. These helpers walk a cursor-paged method to the end
 //! and compare the walk with the unpaged result.
 

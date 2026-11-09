@@ -28,11 +28,10 @@ use sea_orm::{DatabaseConnection, DbBackend, DbErr};
 
 pub mod binding;
 pub mod fixtures;
-pub mod paging;
 
 pub use binding::BindingDatabase;
 
-pub use bookclerk_library::test_support::{Profile, INTERACTIVE_TRANSACTIONS_REFUSED};
+pub use bookclerk_library::test_support::{paging, Profile, INTERACTIVE_TRANSACTIONS_REFUSED};
 
 /// An in-memory library that behaves like an external database plugin.
 ///

@@ -441,14 +441,7 @@ mod tests {
         let _lock = master_key_test_lock_async().await;
         let dir = tempfile::tempdir().unwrap();
         crate::configure_master_key(dir.path()).expect("master key");
-        // The 16-column secret insert does not pass the `Profile::Minimum`
-        // function-argument admission yet (column lists are counted as
-        // calls, #777), so the batch is checked under the two shipped
-        // advertisements.
-        for profile in [
-            crate::test_support::Profile::FirstParty,
-            crate::test_support::Profile::D1,
-        ] {
+        for profile in crate::test_support::Profile::ALL {
             let kit = crate::test_support::sqlite::memory(profile).await;
             let store = kit.store();
             let keys = ClusterLinkKeys::generate();

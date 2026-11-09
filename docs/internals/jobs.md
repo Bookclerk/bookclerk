@@ -28,7 +28,10 @@ events, then always runs a wake slice (so a backlog cannot starve sleepers or
 the catalog heartbeat) and continues when either undispatched remain or
 `wake still_pending`. Late-join is a **missing `(event_id, plugin_id)` anti-join**
 paged 200, restricted to the retention window — an unchanged catalog with no
-missing pairs does a bounded empty `SELECT` and zero dispatch writes. D1
+missing pairs does a bounded empty `SELECT` and zero dispatch writes. The
+subscriber snapshot an event's first dispatch freezes (so its pages resume
+unchanged after a crash) covers only that dispatch; a late-join adds
+deliveries for the subscribers it finds now. D1
 dispatch receipts are per pair (`dispatch-{event_id}-{plugin_id}` /
 `reconcile-{event_id}-{plugin_id}`). Each VPS claims only PluginKeys loaded on
 that process **and** only events its own node catalog matches (type, schema

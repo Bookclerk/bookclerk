@@ -115,10 +115,11 @@ impl LibraryStore {
     /// Pages books whose uuid is in `uuids`, then applies account and status.
     ///
     /// `uuids` is capped at [`BOOK_PAGE_MAX_LIMIT`] (the search-hit cap).
-    /// Lists longer than 64 uuids are ordered from narrow `uuid, title` reads,
-    /// then only the requested page is loaded. Shorter lists sort and page in
-    /// SQL, in pieces that shrink when a result would exceed the guest byte
-    /// cap. An empty uuid list is an empty page. Two stored uuids that differ
+    /// Lists longer than one `IN` list ([`BOOK_PAGE_CHUNK`] uuids, fewer
+    /// when the adapter's `maxPayloadBytes` or `maxBinds` holds fewer) are
+    /// ordered from narrow `uuid, title` reads, then only the requested page
+    /// is loaded. Shorter lists sort and page in SQL, in pieces that shrink
+    /// when a result would exceed the guest byte cap. An empty uuid list is an empty page. Two stored uuids that differ
     /// only by ASCII case are different books and both hydrate.
     ///
     /// # Errors
@@ -143,14 +144,17 @@ impl LibraryStore {
             .min(usize::try_from(BOOK_PAGE_MAX_LIMIT).unwrap_or(500));
         let uuids = &uuids[..capped];
         let limit = limit.clamp(1, BOOK_PAGE_MAX_LIMIT);
-        if uuids.len() <= BOOK_PAGE_CHUNK {
+        let chunk = self.uuid_chunk(uuids, account_id, status);
+        if uuids.len() <= chunk {
             let total = self.count_book_matches(uuids, account_id, status).await?;
             let books = self
                 .read_book_rows(uuids, UuidMatch::Folded, account_id, status, limit, offset)
                 .await?;
             return Ok(BookPage { books, total });
         }
-        let mut keys = self.collect_book_keys(uuids, account_id, status).await?;
+        let mut keys = self
+            .collect_book_keys(uuids, account_id, status, chunk)
+            .await?;
         keys.sort_by(nocase_key_order);
         let total = keys.len();
         let start = usize::try_from(offset)
@@ -159,9 +163,46 @@ impl LibraryStore {
         let width = usize::try_from(limit).unwrap_or(keys.len());
         let end = start.saturating_add(width).min(keys.len());
         let books = self
-            .hydrate_book_keys(&keys[start..end], account_id, status)
+            .hydrate_book_keys(&keys[start..end], account_id, status, chunk)
             .await?;
         Ok(BookPage { books, total })
+    }
+
+    /// How many uuids one `IN` list may carry against this store's adapter.
+    ///
+    /// [`BOOK_PAGE_CHUNK`] at most, and fewer when the page statement for
+    /// that many of `uuids` (the widest statement a uuid read sends) would
+    /// exceed the adapter's `maxPayloadBytes` or `maxBinds`: the width is
+    /// halved until the statement fits, and never goes below one.
+    fn uuid_chunk(
+        &self,
+        uuids: &[String],
+        account_id: Option<&str>,
+        status: Option<&str>,
+    ) -> usize {
+        let caps = self.db_capabilities();
+        let max_binds = usize::try_from(caps.max_binds).unwrap_or(usize::MAX);
+        let max_payload = usize::try_from(caps.max_payload_bytes).unwrap_or(usize::MAX);
+        let mut n = uuids.len().clamp(1, BOOK_PAGE_CHUNK);
+        loop {
+            let (page_sql, _) = statements_for(
+                BOOK_PAGE_COLUMNS,
+                UuidMatch::Folded,
+                n,
+                account_id.is_some(),
+                status.is_some(),
+            );
+            let mut values = filter_values(&uuids[..n.min(uuids.len())], true, account_id, status);
+            values.push(DbValue::Int64(i64::MAX));
+            values.push(DbValue::Int64(i64::MAX));
+            let fits = (caps.max_binds == 0 || values.len() <= max_binds)
+                && (caps.max_payload_bytes == 0
+                    || statement_payload_bytes(&page_sql, &values) <= max_payload);
+            if fits || n == 1 {
+                return n;
+            }
+            n /= 2;
+        }
     }
 
     /// `COUNT(*)` for one filter shape.
@@ -262,7 +303,10 @@ impl LibraryStore {
         rows_from_reply(&reply)
     }
 
-    /// Narrow `uuid, title` rows for a long search-hit list.
+    /// Narrow `uuid, title` rows for a long search-hit list, `chunk` uuids
+    /// per `IN` list, shrinking the list when the adapter finds a result too
+    /// big (an adapter at the host-minimum row budget answers one row per
+    /// read).
     ///
     /// The same stored uuid is kept once when two hit chunks both match it.
     async fn collect_book_keys(
@@ -270,27 +314,51 @@ impl LibraryStore {
         uuids: &[String],
         account_id: Option<&str>,
         status: Option<&str>,
+        chunk: usize,
     ) -> Result<Vec<BookKey>> {
         let mut keys = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for chunk in uuids.chunks(BOOK_PAGE_CHUNK) {
-            let sql = key_sql(chunk.len(), account_id.is_some(), status.is_some());
-            let values = filter_values(chunk, true, account_id, status);
-            let width = chunk.len().saturating_mul(4).clamp(1, 500);
-            let cap = u32::try_from(width).unwrap_or(500);
-            let reply = self
-                .execute_reads(vec![select_stmt(&sql, values, cap)])
-                .await?;
+        let mut start = 0usize;
+        let mut width = chunk.max(1);
+        while start < uuids.len() {
+            let mut take = (uuids.len() - start).min(width);
+            let reply = loop {
+                let slice = &uuids[start..start + take];
+                match self.query_book_keys(slice, account_id, status).await {
+                    Ok(reply) => break reply,
+                    Err(err) if is_result_too_large(&err) && take > 1 => {
+                        take /= 2;
+                        width = take;
+                    }
+                    Err(err) => return Err(err),
+                }
+            };
             for key in keys_from_reply(&reply)? {
                 if seen.insert(key.uuid.clone()) {
                     keys.push(key);
                 }
             }
+            start += take;
         }
         Ok(keys)
     }
 
-    /// Loads full rows for `keys`, [`BOOK_PAGE_CHUNK`] uuids per `IN` list,
+    /// One narrow `uuid, title` read for `uuids`.
+    async fn query_book_keys(
+        &self,
+        uuids: &[String],
+        account_id: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<bookclerk_plugin_abi::ExecuteReply> {
+        let sql = key_sql(uuids.len(), account_id.is_some(), status.is_some());
+        let values = filter_values(uuids, true, account_id, status);
+        let width = uuids.len().saturating_mul(4).clamp(1, 500);
+        let cap = u32::try_from(width).unwrap_or(500);
+        self.execute_reads(vec![select_stmt(&sql, values, cap)])
+            .await
+    }
+
+    /// Loads full rows for `keys`, `chunk` uuids per `IN` list,
     /// shrinking the batch when an inline-only adapter finds a result too big.
     ///
     /// SQL `ORDER BY` would reshuffle the merged key order, so the rows are
@@ -300,10 +368,11 @@ impl LibraryStore {
         keys: &[BookKey],
         account_id: Option<&str>,
         status: Option<&str>,
+        chunk: usize,
     ) -> Result<Vec<BookRecord>> {
         let mut books = Vec::with_capacity(keys.len());
         let mut start = 0usize;
-        let mut width = BOOK_PAGE_CHUNK;
+        let mut width = chunk.max(1);
         while start < keys.len() {
             let mut take = (keys.len() - start).min(width);
             let rows = loop {
@@ -577,6 +646,21 @@ fn filter_values(
         values.push(DbValue::Text(status.to_string()));
     }
     values
+}
+
+/// Canonical SQL plus encoded bind bytes of one statement, what the
+/// adapter's `maxPayloadBytes` measures.
+///
+/// A bind that cannot be encoded counts as nothing: admission rejects the
+/// statement later with the reason.
+fn statement_payload_bytes(sql: &str, values: &[DbValue]) -> usize {
+    values.iter().fold(sql.len(), |total, value| {
+        total.saturating_add(
+            bookclerk_plugin_abi::encoded_db_value_bytes(value)
+                .map(|bytes| bytes.len())
+                .unwrap_or(0),
+        )
+    })
 }
 
 /// Book rows from the first statement of a page read.
