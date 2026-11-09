@@ -672,18 +672,10 @@ fn forward_child_logs(child: &mut Child) {
 }
 
 /// Polls bridge `/health` for up to 30s before mediating RPC.
-///
-/// Uses [`bookclerk_workerd::bridge_http::BridgeHttp`], a raw loopback client
-/// that never consults proxy environment variables, so the session token
-/// stays on `127.0.0.1`.
 async fn wait_for_bridge(listen: &ListenSpec, token: &str) -> Result<()> {
-    let bridge = bookclerk_workerd::bridge_http::BridgeHttp {
-        port: listen.port(),
-        token: token.to_owned(),
-    };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
-        match bridge.health().await {
+        match bookclerk_workerd::bridge_http::check_health(listen.port(), token).await {
             Ok(_) => return Ok(()),
             Err(_) => {
                 if tokio::time::Instant::now() > deadline {

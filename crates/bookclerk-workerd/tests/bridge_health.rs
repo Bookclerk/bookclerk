@@ -14,7 +14,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use bookclerk_workerd::bridge_http::BridgeHttp;
+use bookclerk_workerd::bridge_http::{check_health, BridgeHttp};
 
 /// The bearer token the test sends, to check where it arrives.
 const TOKEN: &str = "Bearer test-bridge-token";
@@ -99,7 +99,7 @@ fn read_head(stream: &mut TcpStream) -> String {
 
 /// With `ALL_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` pointing at a listener
 /// and no `NO_PROXY`, a default agent hands the token to that "proxy" (the
-/// oracle), while [`BridgeHttp::health`], the launcher's check, reaches the
+/// oracle), while [`check_health`], the launcher's check, reaches the
 /// bridge listener directly.
 #[test]
 fn bridge_requests_skip_an_inherited_proxy() {
@@ -136,11 +136,9 @@ fn bridge_requests_skip_an_inherited_proxy() {
         std::env::set_var(name, &proxy_url);
     }
     let (target, target_rx) = one_shot_server();
-    let bridge = BridgeHttp {
-        port: target.port(),
-        token: "test-bridge-token".to_owned(),
-    };
-    runtime().block_on(bridge.health()).expect("health");
+    runtime()
+        .block_on(check_health(target.port(), "test-bridge-token"))
+        .expect("health");
     let head = target_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("the listener got the request");
