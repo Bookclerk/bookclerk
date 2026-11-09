@@ -803,7 +803,7 @@ pub struct RankReport {
     /// Cards on the stored shelves, after any trimming to fit the budget.
     pub cards: usize,
     /// Bytes of the stored feed as the database counts it (an escaped JSON
-    /// string), at most [`STORED_FEED_MAX_BYTES`].
+    /// string), at most the 192 KiB stored-feed budget.
     pub stored_bytes: usize,
 }
 
