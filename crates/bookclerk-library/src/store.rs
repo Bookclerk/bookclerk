@@ -5422,20 +5422,26 @@ impl LibraryStore {
         let mut by_key: std::collections::HashMap<String, GlobalQueueEntry> =
             std::collections::HashMap::new();
         for row in open {
-            // Wishes resolved to the same work are one entry, whatever
-            // identifiers each wisher's store gave; the rest group by key.
-            let key = match row.work_id.as_deref().map(str::trim) {
-                Some(work_id) if !work_id.is_empty() => format!("work:{work_id}"),
-                _ if row.work_key.trim().is_empty() => fallback_work_key(
+            let key = if row.work_key.trim().is_empty() {
+                fallback_work_key(
                     &row.title,
                     row.authors.as_deref(),
                     row.asin.as_deref(),
                     row.isbn.as_deref(),
-                ),
-                _ => row.work_key.clone(),
+                )
+            } else {
+                row.work_key.clone()
+            };
+            // Wishes resolved to the same work are one entry, whatever
+            // identifiers each wisher's store gave; the rest group by key.
+            // The entry keeps its bibliographic key: clients match cards
+            // and wishes on it.
+            let group = match row.work_id.as_deref().map(str::trim) {
+                Some(work_id) if !work_id.is_empty() => format!("work:{work_id}"),
+                _ => key.clone(),
             };
             let wisher = queue_wisher_for(row.identity_id, &identities, &users);
-            match by_key.entry(key.clone()) {
+            match by_key.entry(group) {
                 std::collections::hash_map::Entry::Vacant(e) => {
                     let mut entry = GlobalQueueEntry {
                         work_key: key,

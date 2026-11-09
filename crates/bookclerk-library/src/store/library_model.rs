@@ -1981,6 +1981,11 @@ mod store_tests {
         let queue = store.list_global_request_queue().await.unwrap();
         assert_eq!(queue.len(), 1, "{queue:?}");
         assert_eq!(queue[0].work_id.as_deref(), Some(dune_work.as_str()));
+        assert!(
+            !queue[0].work_key.starts_with("work:"),
+            "clients match on the bibliographic key: {}",
+            queue[0].work_key
+        );
         assert_eq!(queue[0].wish_count, 2);
     }
 
