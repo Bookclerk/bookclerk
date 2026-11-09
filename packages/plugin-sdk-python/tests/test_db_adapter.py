@@ -19,6 +19,7 @@ from typing import Any
 from bookclerk_plugin_sdk._abi import MAX_SCALAR_BYTES
 from bookclerk_plugin_sdk.db_value import (
     GUEST_READ_ONLY_REPLAY_PAYLOAD,
+    GUEST_RECEIPT_CLAIM_LOST,
     GUEST_RECEIPT_RESULT_LOST,
     GUEST_REPLAY_PAYLOAD_MAX_BYTES,
     ExecuteStreamLimits,
@@ -136,6 +137,8 @@ class _Engine:
         self.delay = 0.0
         # Rewrites a query's rows, standing in for an adapter's own result.
         self.map_rows: Callable[[dict[str, Any], list[Any]], list[Any]] | None = None
+        # Runs before each statement, standing in for a concurrent attempt.
+        self.before_run: Callable[[dict[str, Any]], None] | None = None
 
     async def begin(self) -> _Txn:
         self.db.execute("BEGIN")
@@ -145,6 +148,8 @@ class _Engine:
         sql = FIXTURE["sqlite"].get(statement["sql"])
         assert sql is not None, f"no SQLite lowering for {statement['sql']}"
         self.ran.append(statement["sql"])
+        if self.before_run:
+            self.before_run(statement)
         if self.fail_on and self.fail_on in statement["sql"]:
             raise RuntimeError(f"fail on {self.fail_on}")
         cur = self.db.execute(sql, [_bind(p) for p in statement["parameters"]])
@@ -351,6 +356,25 @@ class BatchTest(unittest.TestCase):
             return events
 
         self.assertEqual(_run(scenario()), ["rolled back"])
+
+    def test_receipt_claimed_after_the_prior_select_rolls_back(self) -> None:
+        engine = self._engine()
+
+        def concurrent_commit(statement: dict[str, Any]) -> None:
+            if statement["sql"].startswith("INSERT INTO notes"):
+                engine.db.execute(
+                    "INSERT INTO bookclerk_receipts (operation_id, operation_kind, request_hash, "
+                    "status, payload, created_at, expires_at) "
+                    "VALUES ('fixture-write', 'guest', 'h', 'ok', '{}', 0, 1)"
+                )
+
+        engine.before_run = concurrent_commit
+        with self.assertRaises(PluginError) as caught:
+            _run(execute_adapter_batch(_request("write"), engine.begin, SOURCE))
+        self.assertEqual(caught.exception.code, "unavailable")
+        self.assertIn(GUEST_RECEIPT_CLAIM_LOST, str(caught.exception))
+        self.assertEqual(engine.commits, 0)
+        self.assertEqual(engine.rollbacks, 1)
 
     def test_receipt_without_its_reply_is_unavailable(self) -> None:
         engine = self._engine()

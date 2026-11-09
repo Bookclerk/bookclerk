@@ -50,6 +50,13 @@ export const GUEST_READ_ONLY_REPLAY_PAYLOAD = '{"readOnly":true}';
 export const GUEST_RECEIPT_RESULT_LOST =
   "guest receipt committed without payload; original response lost";
 
+/**
+ * `unavailable` message when a concurrent attempt committed the receipt
+ * between this attempt's prior-receipt `SELECT` and its stub `INSERT`.
+ */
+export const GUEST_RECEIPT_CLAIM_LOST =
+  "guest receipt claimed by a concurrent attempt; retry to replay it";
+
 /** Encoded size an encoder aims for per `rows` frame (one wider row may exceed it). */
 export const STREAM_FRAME_TARGET_BYTES = 64 * 1024;
 
@@ -252,6 +259,14 @@ export async function runAdapterBatch(
     }
   }
   if (guestLen > 0) {
+    // No prior receipt, yet the stub claimed nothing: another attempt
+    // committed this operation's receipt after the prior-receipt SELECT, and
+    // the gated writes saw it. Roll back so the host's retry replays it.
+    const prior = statements[1];
+    const stub = statements[statements.length - 1];
+    if (prior !== undefined && prior.rows.length === 0 && stub?.rowsAffected === 0) {
+      throw PluginError.fromWire("unavailable", GUEST_RECEIPT_CLAIM_LOST);
+    }
     // A replay answers with the recorded timing, so record what ran.
     const partial: ExecuteReply = {
       operationId: request.operationId,

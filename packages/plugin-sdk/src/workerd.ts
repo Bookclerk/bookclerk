@@ -199,6 +199,7 @@ export {
 export type { ExecuteStreamLimits } from "./db-stream.js";
 export {
   GUEST_READ_ONLY_REPLAY_PAYLOAD,
+  GUEST_RECEIPT_CLAIM_LOST,
   GUEST_RECEIPT_RESULT_LOST,
   GUEST_RECEIPT_STUB_SUFFIX,
   GUEST_RECEIPT_WRAP_PREFIX,

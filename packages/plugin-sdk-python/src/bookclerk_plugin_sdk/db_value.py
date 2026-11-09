@@ -1609,6 +1609,10 @@ GUEST_READ_ONLY_REPLAY_PAYLOAD = '{"readOnly":true}'
 GUEST_RECEIPT_RESULT_LOST = "guest receipt committed without payload; original response lost"
 """Error text when a receipt committed but the reply it should hold was lost."""
 
+GUEST_RECEIPT_CLAIM_LOST = "guest receipt claimed by a concurrent attempt; retry to replay it"
+"""Error text when a concurrent attempt committed the receipt between this
+attempt's prior-receipt ``SELECT`` and its stub ``INSERT``."""
+
 STREAM_FRAME_TARGET_BYTES = 64 * 1024
 """Encoded size an encoder aims for per ``rows`` frame (one wider row may exceed it)."""
 
@@ -1816,6 +1820,15 @@ async def run_adapter_batch(
         }
 
     if guest_len > 0:
+        # No prior receipt, yet the stub claimed nothing: another attempt
+        # committed this operation's receipt after the prior-receipt SELECT,
+        # and the gated writes saw it. Roll back so the host's retry replays it.
+        if (
+            len(statements) >= 2
+            and not statements[1]["rows"]
+            and statements[-1]["rowsAffected"] == 0
+        ):
+            raise _plugin_error().from_wire("unavailable", GUEST_RECEIPT_CLAIM_LOST)
         # A replay answers with the recorded timing, so record what ran.
         partial: ExecuteReply = {
             "operationId": request["operationId"],

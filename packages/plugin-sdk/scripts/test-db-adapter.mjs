@@ -18,6 +18,7 @@ const fixture = JSON.parse(
 
 const {
   GUEST_READ_ONLY_REPLAY_PAYLOAD,
+  GUEST_RECEIPT_CLAIM_LOST,
   GUEST_RECEIPT_RESULT_LOST,
   GUEST_REPLAY_PAYLOAD_MAX_BYTES,
   encodeExecuteStream,
@@ -121,6 +122,8 @@ class Engine {
     this.delayMs = 0;
     // Rewrites a query's rows, standing in for an adapter's own result.
     this.mapRows = null;
+    // Runs before each statement, standing in for a concurrent attempt.
+    this.beforeRun = null;
   }
 
   // Opens a transaction (the runner's `begin`).
@@ -147,6 +150,7 @@ class Engine {
     const sql = fixture.sqlite[statement.sql];
     assert.ok(sql !== undefined, `no SQLite lowering for ${statement.sql}`);
     this.ran.push(statement.sql);
+    if (this.beforeRun) this.beforeRun(statement);
     if (this.failOn && statement.sql.includes(this.failOn))
       throw new Error(`fail on ${this.failOn}`);
     if (statement.kind === "execute") {
@@ -374,6 +378,29 @@ assert.match(embed, /export \{[^}]*\bexecuteAdapterBatch,[^}]*\bexecuteAdapterBa
   const timing = JSON.parse(engine.receipt("fixture-write").payload).timing;
   assert.ok(timing.attemptElapsedUs >= 1000, `timing ${JSON.stringify(timing)}`);
   assert.equal(timing.dbExecutionUs, timing.attemptElapsedUs);
+}
+
+// #761: another attempt commits the receipt between the prior-receipt
+// SELECT and the stub INSERT; the gated write and the stub then claim
+// nothing, so the batch rolls back with `unavailable` instead of answering
+// zero rows as success.
+{
+  const engine = new Engine();
+  engine.beforeRun = (statement) => {
+    if (statement.sql.startsWith("INSERT INTO notes")) {
+      engine.db.exec(
+        "INSERT INTO bookclerk_receipts (operation_id, operation_kind, request_hash, status, " +
+          "payload, created_at, expires_at) VALUES ('fixture-write', 'guest', 'h', 'ok', '{}', 0, 1)",
+      );
+    }
+  };
+  await rejectsWith(
+    executeAdapterBatch(request("write"), engine.begin, OPTIONS),
+    "unavailable",
+    new RegExp(GUEST_RECEIPT_CLAIM_LOST),
+  );
+  assert.equal(engine.commits, 0);
+  assert.equal(engine.rollbacks, 1);
 }
 
 // A receipt that committed without its reply cannot be replayed.

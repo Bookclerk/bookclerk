@@ -11590,6 +11590,7 @@ var GUEST_RECEIPT_STUB_SUFFIX = 1;
 var GUEST_REPLAY_PAYLOAD_MAX_BYTES = 65536;
 var GUEST_READ_ONLY_REPLAY_PAYLOAD = '{"readOnly":true}';
 var GUEST_RECEIPT_RESULT_LOST = "guest receipt committed without payload; original response lost";
+var GUEST_RECEIPT_CLAIM_LOST = "guest receipt claimed by a concurrent attempt; retry to replay it";
 var STREAM_FRAME_TARGET_BYTES = 64 * 1024;
 var STATUS_CLAIMED = "claimed";
 var FINALIZE_SQL = "UPDATE bookclerk_receipts SET payload = ?, status = 'ok' WHERE operation_id = ? AND status IN ('claimed', 'applied')";
@@ -11648,6 +11649,11 @@ async function runAdapterBatch(request, txn, options) {
     }
   }
   if (guestLen > 0) {
+    const prior = statements[1];
+    const stub = statements[statements.length - 1];
+    if (prior !== void 0 && prior.rows.length === 0 && stub?.rowsAffected === 0) {
+      throw PluginError.fromWire("unavailable", GUEST_RECEIPT_CLAIM_LOST);
+    }
     const partial = {
       operationId: request.operationId,
       statements,
@@ -11870,6 +11876,7 @@ export {
   FEATURE_STORAGE_COPY,
   FEATURE_STREAMS,
   GUEST_READ_ONLY_REPLAY_PAYLOAD,
+  GUEST_RECEIPT_CLAIM_LOST,
   GUEST_RECEIPT_RESULT_LOST,
   GUEST_RECEIPT_STUB_SUFFIX,
   GUEST_RECEIPT_WRAP_PREFIX,
