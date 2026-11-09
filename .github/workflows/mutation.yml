@@ -188,10 +188,35 @@ jobs:
           # one test's peak does not stop the run.
           MIN_FREE_DISK_MIB: "3072"
           MIN_AVAILABLE_MEMORY_MIB: "768"
+          # Memory, in MiB, left outside cargo-mutants' cgroup for the runner
+          # and this script.
+          MEMORY_HEADROOM_MIB: "1536"
         run: |
           set +e
-          timeout --signal=INT --kill-after=5m 240m \
-            cargo mutants --workspace --in-diff "$RUNNER_TEMP/pr.diff" --in-place --no-shuffle --output "$RUNNER_TEMP" &
+          # Cap cargo-mutants and everything it starts in a cgroup that holds
+          # all but MEMORY_HEADROOM_MIB of the runner's memory. A mutant that
+          # allocates without bound (a loop bound or a size turned into
+          # garbage) then gets its own process killed by the kernel, which
+          # cargo-mutants counts against that mutant, instead of starving the
+          # runner until it loses contact and the night's results are lost.
+          # The watchdog below polls too slowly to catch that. When the
+          # cgroup cannot be set up, the run goes on uncapped.
+          cgroup=/sys/fs/cgroup/cargo-mutants
+          total=$(awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo)
+          cap=$((total - MEMORY_HEADROOM_MIB))
+          if sudo mkdir -p "$cgroup" \
+            && echo "$((cap * 1024 * 1024))" | sudo tee "$cgroup/memory.max" >/dev/null \
+            && echo 0 | sudo tee "$cgroup/memory.swap.max" >/dev/null; then
+            echo "::notice::cargo-mutants runs in a cgroup capped at ${cap} MiB of ${total} MiB"
+          else
+            echo "::warning::Could not cap cargo-mutants' memory; running uncapped"
+            cgroup=""
+          fi
+          (
+            if [ -n "$cgroup" ]; then echo "$BASHPID" | sudo tee "$cgroup/cgroup.procs" >/dev/null; fi
+            exec timeout --signal=INT --kill-after=5m 240m \
+              cargo mutants --workspace --in-diff "$RUNNER_TEMP/pr.diff" --in-place --no-shuffle --output "$RUNNER_TEMP"
+          ) &
           mutants=$!
           reason=""
           low_memory=0
@@ -237,6 +262,12 @@ jobs:
             echo "stopped=time-limit" >> "$GITHUB_OUTPUT"
           fi
           df -h "$GITHUB_WORKSPACE/target"
+          if [ -n "$cgroup" ] && [ -r "$cgroup/memory.events" ]; then
+            kills=$(awk '$1 == "oom_kill" { print $2 }' "$cgroup/memory.events")
+            if [ "${kills:-0}" -gt 0 ]; then
+              echo "::notice::The memory cap stopped ${kills} process(es); their mutants count as caught or unviable"
+            fi
+          fi
           exit 0
 
       - name: Report
