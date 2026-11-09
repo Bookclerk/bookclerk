@@ -323,6 +323,67 @@ async fn password_login_connects_the_account_and_revoke_unlinks_it() {
     );
 }
 
+/// A failed credential delete answers 503 and keeps the link, and the
+/// repeated revoke finishes the cleanup instead of answering "not linked".
+#[tokio::test]
+async fn revoke_keeps_the_link_when_the_credential_delete_fails() {
+    use sea_orm::ConnectionTrait;
+
+    let (app, library, cookie) = harness(stores()).await;
+    let revoke = "/sources/libro/connections/reader@example.com/revoke";
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        "/sources/libro/login",
+        Some(&cookie),
+        Some(credentials()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Hide the secrets table so the credential delete fails.
+    library
+        .db()
+        .execute_unprepared("ALTER TABLE encrypted_secrets RENAME TO hidden_secrets")
+        .await
+        .unwrap();
+    let (status, _, body) = call(&app, "POST", revoke, Some(&cookie), None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let message = body["error"].as_str().unwrap_or_default();
+    assert!(message.starts_with("revoke cleanup failed: "), "{message}");
+    let account = library
+        .list_accounts()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|a| a.account_id == "reader@example.com")
+        .unwrap();
+    assert_eq!(account.connection_status, "active");
+    let (status, _, body) = call(&app, "GET", "/connections", Some(&cookie), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["connections"].as_array().map(Vec::len), Some(1));
+
+    library
+        .db()
+        .execute_unprepared("ALTER TABLE hidden_secrets RENAME TO encrypted_secrets")
+        .await
+        .unwrap();
+    let (status, _, body) = call(&app, "POST", revoke, Some(&cookie), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"ok": true}));
+    let (status, _, body) = call(&app, "GET", "/connections", Some(&cookie), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["connections"].as_array().map(Vec::len), Some(0));
+    let account = library
+        .list_accounts()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|a| a.account_id == "reader@example.com")
+        .unwrap();
+    assert_eq!(account.connection_status, "revoked");
+}
+
 /// Each refusal a password login documents carries its exact message.
 #[tokio::test]
 async fn password_login_refusals_name_their_cause() {

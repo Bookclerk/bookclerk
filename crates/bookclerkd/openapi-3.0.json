@@ -25434,8 +25434,8 @@
         "tags": [
           "Accounts"
         ],
-        "summary": "Unlinks a store account from this identity and deletes secrets when no other identity remains.",
-        "description": "The account is addressed by `(source, account_id)`: the same store id may\nexist under two plugins. `source` is the alias or plugin key of the link.\n\nWhen the last link goes, the plugin first signs the account out at the\nstore (for example, Audible deregisters its device), best effort.",
+        "summary": "Signs a store account out, deletes its stored credentials, then unlinks it from this identity.",
+        "description": "The account is addressed by `(source, account_id)`: the same store id may\nexist under two plugins. `source` is the alias or plugin key of the link.\n\nLinks are exclusive (one identity per account), so the caller's link is\nthe account's only one and revoking it always clears the credentials.\nThe cleanup runs while the link still exists: the plugin first signs the\naccount out at the store (for example, Audible deregisters its device),\nbest effort; then the account's `encrypted_secrets` rows are deleted and\nits credentials marked revoked; only then is the link removed. A cleanup\nfailure answers 503 and keeps the link, so the same request retries it.\nAlready-acquired library rows stay (product policy).",
         "operationId": "portal_revoke_connection",
         "parameters": [
           {
@@ -25459,7 +25459,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The account was unlinked.",
+            "description": "The account's stored credentials were deleted and the account was unlinked.",
             "content": {
               "application/json": {
                 "schema": {
@@ -25469,7 +25469,7 @@
             }
           },
           "400": {
-            "description": "The account is not linked to this identity, or the library database refused the unlink or the credential revoke (the body carries its message).",
+            "description": "The account is not linked to this identity, or the library database refused the unlink (the body carries its message; the credentials are already gone and a retry finishes the unlink).",
             "content": {
               "application/json": {
                 "schema": {
@@ -25477,7 +25477,7 @@
                 },
                 "examples": {
                   "library_failed": {
-                    "summary": "The library database refused the step.",
+                    "summary": "The library database refused the unlink.",
                     "value": {
                       "error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"
                     }
@@ -25532,14 +25532,25 @@
             }
           },
           "503": {
-            "description": "The store sign-out task that follows the last unlink stopped. The link is already gone (a retry answers 400 `account not linked to this identity`) and the account's stored credentials may remain; the daemon log names the task.",
+            "description": "Deleting the account's stored credentials or marking them revoked failed, or the cleanup task stopped. The account stays linked, so repeating the request runs the cleanup again.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
-                "example": {
-                  "error": "revoke cleanup failed: task 12 panicked"
+                "examples": {
+                  "delete_failed": {
+                    "summary": "The library database refused the credential delete.",
+                    "value": {
+                      "error": "revoke cleanup failed: ORM / database plugin error: Execution Error: error returned from database: database is locked"
+                    }
+                  },
+                  "task_stopped": {
+                    "summary": "The cleanup task panicked.",
+                    "value": {
+                      "error": "revoke cleanup failed: task 12 panicked"
+                    }
+                  }
                 }
               }
             }
