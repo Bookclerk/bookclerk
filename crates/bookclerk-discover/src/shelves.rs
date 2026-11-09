@@ -115,7 +115,7 @@ pub fn shelf_kind_catalog() -> Vec<ShelfKindInfo> {
         kind("similar_taste", "Similar to books you finish"),
         kind("chirp_deals", "Chirp deals"),
         kind("from_store", "Picked for you on {Store}"),
-        kind("requests", "Wishlist"),
+        kind("requests", "Household wishlist"),
         kind("top_picks", "Top picks for you"),
     ]
 }
@@ -179,12 +179,12 @@ enum SeriesRule {
 /// Partitions scored recommendations into Discover shelves.
 ///
 /// Every title lands on one shelf. Shelves claim titles in the order they
-/// are built: the series shelves, the subject's wishes, authors, narrators,
-/// genres, starter genres, similar taste, Chirp deals, then one shelf per
-/// store for whatever is left, each title under the store where it costs
-/// the subject least (member price on stores they have an account with,
-/// list price elsewhere, its own store when no price is known). Wished
-/// titles are claimed first and shown last, on the wishlist shelf alone.
+/// are built: the household wishlist first, then the series shelves, the
+/// subject's wishes, authors, narrators, genres, starter genres, similar
+/// taste, Chirp deals, then one shelf per store for whatever is left, each
+/// title under the store where it costs the subject least (member price on
+/// stores they have an account with, list price elsewhere, its own store
+/// when no price is known). A wished title shows on the wishlist shelf alone.
 /// Shelves other than the series shelves keep at most [`SERIES_CAP`] titles
 /// of one series; the series shelves rotate between series instead.
 ///
@@ -214,11 +214,17 @@ pub fn build_discover_feed(
         shelves: Vec::new(),
     };
 
-    // Wished titles belong on the wishlist shelf alone: claim them now and
-    // add the shelf at the end.
+    // The household's wishlist opens the page: what people want comes
+    // before what the stores suggest, and a wished title shows there alone.
     let wishlist = builder.take(
         |r| has_category(r, "requests") || r.from_request,
         SeriesRule::Cap,
+    );
+    builder.push_items(
+        "requests",
+        "Household wishlist",
+        Some("Titles people in your household want"),
+        wishlist,
     );
 
     builder.push(
@@ -365,13 +371,6 @@ pub fn build_discover_feed(
             SeriesRule::Cap,
         );
     }
-
-    builder.push_items(
-        "requests",
-        "On the wishlist",
-        Some("Titles people have wishlisted"),
-        wishlist,
-    );
 
     let FeedBuilder { mut shelves, .. } = builder;
     // Keep at least a "Top picks" dump if everything is empty but recs exist.
@@ -978,7 +977,7 @@ mod tests {
         wished.from_request = true;
         let recs = vec![wished, rec("By Ada", 2.0, &["author"])];
         let feed = build_discover_feed(&recs, &ada_taste(), 8, &[]);
-        assert_eq!(ids(&feed), vec!["author:ada-author", "requests"]);
+        assert_eq!(ids(&feed), vec!["requests", "author:ada-author"]);
         assert_eq!(titles(&feed, "author:ada-author"), vec!["By Ada"]);
         assert_eq!(titles(&feed, "requests"), vec!["Wanted"]);
     }

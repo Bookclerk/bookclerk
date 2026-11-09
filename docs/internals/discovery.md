@@ -312,13 +312,13 @@ resolves to stays on the queue, so *Dune Messiah* is not hidden by an owned
 product id.
 
 Shelves then partition the ranked list so that **every title lands on one
-shelf**. Shelves claim titles in page order: the series shelves, the
-person's own wishes, authors, narrators, genres, starter genres, similar
-taste, Chirp deals, then one **Picked for you on {Store}** shelf per store
-for whatever is left, each title under the store where it costs the person
-least (member price on stores they have an account with, list price
-elsewhere, its own store when no price is known on the card). Wished titles
-are claimed first and shown last, on the wishlist shelf alone. A shelf that
+shelf**. Shelves claim titles in page order: the household wishlist first,
+then the series shelves, the person's own wishes, authors, narrators,
+genres, starter genres, similar taste, Chirp deals, then one **Picked for
+you on {Store}** shelf per store for whatever is left, each title under the
+store where it costs the person least (member price on stores they have an
+account with, list price elsewhere, its own store when no price is known on
+the card). A wished title shows on the wishlist shelf alone. A shelf that
 is not about series keeps at most **two titles of one series**, so a long
 series cannot crowd the others out; the two series shelves instead rotate
 between series, so their first cards show several series rather than one in
@@ -336,8 +336,8 @@ title is **not** in the household library.
 - Global queue: `GET /api/request-queue` — shared order using **overall /
   operator** taste (not per-portal personalization) plus a heavy wish-count
   weight. Each row includes `wishers` (tiny profile pictures: upload /
-  Gravatar / SSO / monogram) for the people who have the title open. Discover
-  `requests` shelf cards carry the same `wishers` / `wish_count` fields.
+  Gravatar / SSO / monogram) for the people who have the title open. Discover's
+  `requests` shelf (the first row) carries the same `wishers` / `wish_count` fields.
 - Identity merge: canonical ISBN-10↔13 when present, else ASIN, else soft
   title+author; ASIN-keyed and ISBN-keyed rows for the same work are merged
   (ISBN is **not** universal across Chirp / GA / Audible public search)
@@ -446,6 +446,7 @@ queue order; Discover personalizes the feed (including wishlist items).
 
 | Shelf | Kind id | Signal |
 | --- | --- | --- |
+| Household wishlist | `requests` | Open shared wishlist items, first on the page (tiny wisher avatars on each card) |
 | Finish these series | `finish_series` | Incomplete series + next index; series take turns |
 | Pick up where you left off | `keep_listening` | Active / multi-book listening in a series; series take turns |
 | Because you wishlisted {Title} | `wish` (`wish:dune`, …) | Titles the stores found from one of the person's own open wishes (newest three wishes) |
@@ -457,7 +458,6 @@ queue order; Discover personalizes the feed (including wishlist items).
 | Popular in {Genre} | `starter_genre` (`starter_genre:fantasy`, …) | Starter-genre browse while the taste is thin |
 | Chirp deals right now | `chirp_deals` | Chirp top + free deals |
 | Picked for you on {Store} | `from_store` (`from_audible`, …) | Titles no personal shelf took, ranked by taste, under the store where they cost the person least |
-| On the wishlist | `requests` | Open shared wishlist items (tiny wisher avatars on each card) |
 | Top picks for you | `top_picks` | Fallback when every other shelf is empty |
 
 Shelf **titles** stay dynamic (`More from {Author}`, …). Prefs filter on stable
