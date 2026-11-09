@@ -988,3 +988,273 @@ mod tests {
         assert_eq!(err.code, bookclerk_plugin_abi::PluginErrorCode::Unavailable);
     }
 }
+
+/// The shared vector the TypeScript and Python SDKs check their isolate
+/// adapter receipt helpers against.
+///
+/// It holds one host-wrapped write batch and one read-only batch exactly as
+/// [`wrap_guest_typed_request`] builds them, the SQLite lowering of every
+/// statement an adapter runs for them (including the finalize `UPDATE`), and
+/// a partial reply with the finalize statements
+/// [`bookclerk_db_exec::guest_receipt_finalize_stmts`] derives from it, so
+/// the SDK helpers persist the same payload the host decodes.
+#[cfg(test)]
+mod isolate_adapter_fixture {
+    use super::*;
+    use bookclerk_plugin_abi::{DbColumn, DbRow, DbTiming, DbType, StatementResult};
+    use sea_orm::DatabaseBackend;
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+
+    /// Fixture path, relative to this crate.
+    const FIXTURE: &str = "fixtures/guest_receipt/isolate_adapter.json";
+
+    /// Fixed receipt creation time, so the vector does not change per run.
+    const CREATED_AT: &str = "2026-01-01T00:00:00+00:00";
+
+    /// Fixed receipt expiry, far enough out that no test prunes it.
+    const EXPIRES_AT: &str = "2999-01-01T00:00:00+00:00";
+
+    /// The guest table both batches use.
+    const NOTES_DDL: &str =
+        "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)";
+
+    /// One guest statement.
+    fn stmt(
+        sql: &str,
+        parameters: Vec<DbValue>,
+        kind: DbPlanStatementKind,
+        result_selection: DbResultSelection,
+    ) -> TypedDbStatement {
+        TypedDbStatement {
+            sql: sql.into(),
+            parameters,
+            kind,
+            max_rows: 0,
+            result_selection,
+        }
+    }
+
+    /// Wraps `statements` the way the host does, with fixed timestamps, and
+    /// records the SQLite lowering of every wrapped statement in `sqlite`.
+    fn wrapped_case(
+        operation_id: &str,
+        request_hash: &str,
+        statements: Vec<TypedDbStatement>,
+        sqlite: &mut BTreeMap<String, String>,
+    ) -> Value {
+        let env = bookclerk_plugin_abi::sql_type_env_from_canonical_ddl(
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)",
+        );
+        let guest = ExecuteRequest {
+            operation_id: operation_id.into(),
+            request_hash: request_hash.into(),
+            statements,
+            deadline_unix_ms: 0,
+        };
+        let mut wrapped = wrap_guest_typed_request(guest.clone(), &env).expect("wrap");
+        let last = wrapped.request.statements.len() - 1;
+        wrapped.request.statements[0].parameters[0] = DbValue::Text(CREATED_AT.into());
+        wrapped.request.statements[last].parameters[3] = DbValue::Text(CREATED_AT.into());
+        wrapped.request.statements[last].parameters[4] = DbValue::Text(EXPIRES_AT.into());
+        for (stmt, proof) in wrapped.request.statements.iter().zip(&wrapped.proofs) {
+            sqlite.insert(stmt.sql.clone(), lower_sqlite(&stmt.sql, Some(proof)));
+        }
+        json!({
+            "guest": guest,
+            "request": {
+                "operationId": wrapped.request.operation_id,
+                "requestHash": wrapped.request.request_hash,
+                "statements": wrapped.request.statements,
+                "receipt": {
+                    "guestLen": wrapped.guest_receipt.guest_statement_len,
+                    "guestHash": wrapped.guest_receipt.guest_request_hash,
+                },
+            },
+        })
+    }
+
+    /// SQLite text an adapter runs for canonical `sql`.
+    fn lower_sqlite(sql: &str, proof: Option<&bookclerk_plugin_abi::ResolvedStatement>) -> String {
+        if bookclerk_plugin_abi::statement_is_ddl(sql) {
+            return sql.to_string();
+        }
+        bookclerk_db_exec::lower_canonical_sql_typed(DatabaseBackend::Sqlite, sql, proof)
+            .expect("lower")
+    }
+
+    /// A partial wrapped reply whose guest cells cover every `DbValue` kind
+    /// and JSON escapes, with the prior-receipt SELECT empty.
+    fn partial_reply() -> ExecuteReply {
+        let text = |name: &str| DbColumn {
+            name: name.into(),
+            db_type: DbType::Text,
+        };
+        let prior = StatementResult {
+            rows: Vec::new(),
+            columns: [
+                "operation_id",
+                "request_hash",
+                "status",
+                "payload",
+                "created_at",
+            ]
+            .into_iter()
+            .map(text)
+            .collect(),
+            rows_affected: 0,
+        };
+        let guest = StatementResult {
+            rows: vec![DbRow {
+                values: vec![
+                    DbValue::Int64(-9_007_199_254_740_991),
+                    DbValue::Text("line\n\"quoted\"\t\\ caf\u{e9} \u{1} \u{1f4da}".into()),
+                    DbValue::Float64(1.5),
+                    DbValue::Boolean(true),
+                    DbValue::Bytes(vec![0, 1, 254, 255]),
+                    DbValue::Null(DbType::Text),
+                    DbValue::Float64(-0.0),
+                ],
+            }],
+            columns: vec![
+                DbColumn {
+                    name: "id".into(),
+                    db_type: DbType::Int64,
+                },
+                text("body"),
+                DbColumn {
+                    name: "score".into(),
+                    db_type: DbType::Float64,
+                },
+                DbColumn {
+                    name: "done".into(),
+                    db_type: DbType::Bool,
+                },
+                DbColumn {
+                    name: "blob".into(),
+                    db_type: DbType::Bytes,
+                },
+                text("note"),
+                DbColumn {
+                    name: "signed_zero".into(),
+                    db_type: DbType::Float64,
+                },
+            ],
+            rows_affected: 1,
+        };
+        ExecuteReply {
+            operation_id: "fixture-partial".into(),
+            statements: vec![
+                StatementResult::from_affected(0),
+                prior,
+                StatementResult::from_affected(0),
+                guest,
+                StatementResult::from_affected(1),
+            ],
+            timing: DbTiming {
+                attempt_elapsed_us: 0,
+                db_execution_us: 0,
+                db_timing_source: "sqlite_txn".into(),
+            },
+        }
+    }
+
+    /// Builds the whole vector.
+    fn fixture() -> Value {
+        let mut sqlite = BTreeMap::new();
+        let mut setup = Vec::new();
+        for ddl in crate::migrations::binding_bootstrap_statements()
+            .iter()
+            .filter(|sql| sql.contains("bookclerk_receipts"))
+        {
+            setup.push(ddl.clone());
+        }
+        let write = wrapped_case(
+            "fixture-write",
+            &"a".repeat(64),
+            vec![
+                stmt(
+                    NOTES_DDL,
+                    Vec::new(),
+                    DbPlanStatementKind::Execute,
+                    DbResultSelection::Discard,
+                ),
+                stmt(
+                    "INSERT INTO notes (id, body) VALUES (?, ?) RETURNING id, body",
+                    vec![DbValue::Int64(1), DbValue::Text("first".into())],
+                    DbPlanStatementKind::Returning,
+                    DbResultSelection::Rows,
+                ),
+            ],
+            &mut sqlite,
+        );
+        let read_only = wrapped_case(
+            "fixture-read",
+            &"b".repeat(64),
+            vec![stmt(
+                "SELECT id, body FROM notes ORDER BY id",
+                Vec::new(),
+                DbPlanStatementKind::Select,
+                DbResultSelection::Rows,
+            )],
+            &mut sqlite,
+        );
+        let partial = partial_reply();
+        let guest_hash = "c".repeat(64);
+        let finalize =
+            bookclerk_db_exec::guest_receipt_finalize_stmts(&partial, 2, &guest_hash, false)
+                .expect("finalize");
+        for stmt in &finalize {
+            sqlite.insert(stmt.sql.clone(), lower_sqlite(&stmt.sql, None));
+        }
+        json!({
+            "about": "Generated by bookclerk-library `isolate_adapter_receipt_fixture_is_current`; \
+                      regenerate with UPDATE_GUEST_RECEIPT_FIXTURE=1, never edit by hand.",
+            "replayPayloadMaxBytes": bookclerk_db_exec::GUEST_TYPED_REPLAY_PAYLOAD_MAX_BYTES,
+            "readOnlyPayload": bookclerk_db_exec::GUEST_READ_ONLY_REPLAY_PAYLOAD,
+            "setup": setup,
+            "notesDdl": NOTES_DDL,
+            "sqlite": sqlite,
+            "write": write,
+            "readOnly": read_only,
+            "finalize": {
+                "partial": partial,
+                "guestLen": 2,
+                "guestHash": guest_hash,
+                "statements": finalize,
+            },
+        })
+    }
+
+    #[test]
+    fn isolate_adapter_receipt_fixture_is_current() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE);
+        let mut text = serde_json::to_string_pretty(&fixture()).expect("encode");
+        text.push('\n');
+        // Regenerating writes the vector, then checks it like any other run.
+        // One expression, so the regenerate path does not leave an unrun line.
+        std::env::var_os("UPDATE_GUEST_RECEIPT_FIXTURE")
+            .map(|_| std::fs::write(&path, &text))
+            .transpose()
+            .expect("write fixture");
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == text,
+            "{FIXTURE} is stale; regenerate with UPDATE_GUEST_RECEIPT_FIXTURE=1 cargo test -p bookclerk-library isolate_adapter_receipt_fixture"
+        );
+    }
+
+    #[test]
+    fn the_fixture_payload_is_what_the_host_decodes() {
+        let partial = partial_reply();
+        let finalize =
+            bookclerk_db_exec::guest_receipt_finalize_stmts(&partial, 2, &"c".repeat(64), false)
+                .expect("finalize");
+        let bound = serde_json::to_value(&finalize[0].parameters[0]).expect("encode");
+        let payload = bound["value"]
+            .as_str()
+            .expect("finalize binds the payload text first");
+        let decoded: GuestReplayPayload = serde_json::from_str(payload).expect("decode");
+        assert_eq!(decoded.statements, partial.statements[2..4].to_vec());
+    }
+}

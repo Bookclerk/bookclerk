@@ -539,10 +539,10 @@ export async function* streamChunks(
  * Checks a streamed cell the way the inline reader does: a `float64` must
  * be finite and TEXT must not contain U+0000.
  *
- * @param cell - A decoded cell.
+ * @param cell - A decoded cell (or one an adapter is about to send).
  * @throws `PluginError` `invalid_params` when the cell is not a valid `DbValue`.
  */
-function validateCell(cell: DbValue): void {
+export function validateCell(cell: DbValue): void {
   if (cell.kind === "float64" && !Number.isFinite(cell.value)) {
     throw PluginError.fromWire("invalid_params", "streamed reply float64 cell is not finite");
   }
