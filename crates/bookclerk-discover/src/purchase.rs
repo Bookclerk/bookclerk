@@ -842,7 +842,8 @@ fn seeded_hints(query: &PurchaseHintsQuery, region: &str) -> Vec<PurchaseHint> {
 /// Timeouts in a row after which a store's price lookups are skipped.
 pub const BREAKER_TRIP_TIMEOUTS: u32 = 3;
 
-/// How long a tripped store is skipped before one lookup tries it again.
+/// How long a tripped store is skipped. After that, lookups ask it again,
+/// and [`BREAKER_TRIP_TIMEOUTS`] more timeouts in a row pause it again.
 pub const BREAKER_OPEN_FOR: Duration = Duration::from_secs(5 * 60);
 
 /// How long a store that asked to slow down without saying for how long

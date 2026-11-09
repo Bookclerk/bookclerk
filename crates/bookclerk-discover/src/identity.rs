@@ -506,7 +506,7 @@ fn series_names_compatible(a: Option<&str>, b: Option<&str>) -> bool {
             if ca.is_empty() || cb.is_empty() {
                 return true;
             }
-            ca == cb || levenshtein_similarity(&ca, &cb) >= 0.85 || title_contains_other(&ca, &cb)
+            ca == cb || levenshtein_similarity(&ca, &cb) >= 0.85 || contains_whole_words(&ca, &cb)
         }
     }
 }
@@ -518,7 +518,13 @@ fn series_names_compatible(a: Option<&str>, b: Option<&str>) -> bool {
 fn series_namesake_vs_volume(a: WorkIdentity<'_>, b: WorkIdentity<'_>) -> bool {
     let ta = clean_title_for_compares(a.title, true);
     let tb = clean_title_for_compares(b.title, true);
-    if ta.is_empty() || tb.is_empty() || ta == tb {
+    // The same position in the series is the same book under another
+    // title ("The Hunger Games" #1 and "The Hunger Games: Special Edition" #1).
+    if ta.is_empty()
+        || tb.is_empty()
+        || ta == tb
+        || series_indices_agree(a.series_index, b.series_index)
+    {
         return false;
     }
     let series: Vec<String> = [a.series, b.series]
@@ -543,7 +549,23 @@ fn title_contains_other(a: &str, b: &str) -> bool {
     } else {
         (b, a)
     };
-    if shorter.chars().count() < 4 || !shorter.contains(' ') {
+    if !shorter.contains(' ') {
+        return false;
+    }
+    contains_whole_words(shorter, longer)
+}
+
+/// True when the shorter of two cleaned names (at least four characters) is
+/// a whole-word subset of the longer one. Series names use it directly, so a
+/// one-word series ("Mistborn") still names the same series as "Mistborn
+/// Saga".
+fn contains_whole_words(a: &str, b: &str) -> bool {
+    let (shorter, longer) = if a.chars().count() <= b.chars().count() {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    if shorter.chars().count() < 4 {
         return false;
     }
     if longer == shorter
@@ -1125,6 +1147,22 @@ mod tests {
             .with_series(Some("The Dune Sequence"));
         let bare = WorkIdentity::new(None, None, "Dune", herbert).with_series(Some("Dune"));
         assert!(!identities_match(bare, sequel));
+        // The namesake at the same series position is the same book.
+        let hunger = |title| {
+            WorkIdentity::new(None, None, title, Some("Suzanne Collins"))
+                .with_series(Some("The Hunger Games"))
+                .with_series_index(Some("1"))
+        };
+        assert!(!series_namesake_vs_volume(
+            hunger("The Hunger Games"),
+            hunger("The Hunger Games Special Edition")
+        ));
+        // A one-word series still names the same series as a longer form,
+        // so two of its volumes do not merge on title and author.
+        assert!(series_names_compatible(
+            Some("Mistborn"),
+            Some("Mistborn Saga")
+        ));
         // Short and long forms of one title still match on the same author.
         let weir = Some("Andy Weir");
         assert!(works_match("Hail Mary", weir, "Project Hail Mary", weir));

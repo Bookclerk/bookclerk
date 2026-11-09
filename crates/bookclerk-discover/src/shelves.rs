@@ -185,8 +185,8 @@ enum SeriesRule {
 /// title under the store where it costs the subject least (member price on
 /// stores they have an account with, list price elsewhere, its own store
 /// when no price is known). A wished title shows on the wishlist shelf alone.
-/// Shelves other than the series shelves keep at most [`SERIES_CAP`] titles
-/// of one series; the series shelves rotate between series instead.
+/// Shelves other than the series shelves and the wishlist keep at most
+/// [`SERIES_CAP`] titles of one series; those rotate between series instead.
 ///
 /// # Arguments
 ///
@@ -217,11 +217,12 @@ pub fn build_discover_feed(
     // The wishlist opens the page: what people want comes before what the
     // stores suggest, and a wished title shows there alone. The row is in
     // the viewer's own taste order: the shared wish-count boost orders the
-    // Wishlist page's global queue, not this person's Discover. Wished
-    // titles the shelf or series cap left off are claimed too, so they never
-    // reach another shelf.
+    // Wishlist page's global queue, not this person's Discover. Every wish
+    // shows, however many share a series: the series take turns. Wished
+    // titles past the shelf's size are claimed too, so they never reach
+    // another shelf.
     let wished = |r: &Recommendation| has_category(r, "requests") || r.from_request;
-    let wishlist = builder.take_by(wished, SeriesRule::Cap, taste_only_score);
+    let wishlist = builder.take_by(wished, SeriesRule::Interleave, taste_only_score);
     builder.claimed.extend(
         recs.iter()
             .filter(|r| wished(r))
@@ -1050,7 +1051,7 @@ mod tests {
     }
 
     #[test]
-    fn wished_titles_past_the_series_cap_stay_off_other_shelves() {
+    fn every_wish_in_one_series_shows_on_the_wishlist_alone() {
         let wished = |title: &str| Recommendation {
             from_request: true,
             ..rec(title, 50.0, &["author", "requests"])
@@ -1062,7 +1063,7 @@ mod tests {
             rec("By Ada", 2.0, &["author"]),
         ];
         let feed = build_discover_feed(&recs, &ada_taste(), 8, &[]);
-        assert_eq!(titles(&feed, "requests").len(), SERIES_CAP);
+        assert_eq!(titles(&feed, "requests").len(), 3);
         for shelf in feed.shelves.iter().filter(|s| s.id != "requests") {
             for item in &shelf.items {
                 assert!(!item.from_request, "{} on {}", item.title, shelf.id);
