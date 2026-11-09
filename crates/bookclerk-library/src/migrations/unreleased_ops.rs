@@ -1448,6 +1448,19 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY (plugin_instance_id) REFERENCES plugin_instances(plugin_instance_id)
     )",
     ),
+    // One change counter per live-socket topic, bumped in the same batch as
+    // every write to the topic's table (`control_plane::live`).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS live_topic_revisions (
+        topic TEXT PRIMARY KEY NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 0
+    )",
+    ),
+    MigrationOp::Data(
+        r"INSERT OR IGNORE INTO live_topic_revisions (topic, revision) VALUES
+        ('library', 0), ('jobs', 0), ('deliveries', 0), ('nodes', 0), ('config', 0),
+        ('consents', 0), ('clusters', 0), ('users', 0), ('discover', 0)",
+    ),
 ];
 
 #[cfg(test)]

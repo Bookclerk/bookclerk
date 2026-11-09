@@ -1651,6 +1651,12 @@ which topics changed; the SPA then re-reads its ordinary routes.
   client hears `hello` is never absorbed into it. Rejected:
   a table of change events or database triggers, which the SQL-v1
   contract would have to carry on every backend.
+  **Superseded** by the data-model scale audit (item 6): the per-poll
+  counts and newest-stamp reads grew with every table, so each topic now
+  has one counter row in `live_topic_revisions` that every write bumps in
+  its own atomic batch (plain SQL-v1 `UPDATE`, no triggers), and a poll
+  reads only those rows. See
+  [Node API → The live socket](../internals/node-api.md#the-live-socket-apilive).
 - **SPA.** One shared client (`ui/src/lib/live.ts`) per page;
   `useLiveRefresh(topics, refresh, {pollMs, openPollMs})` replaces the
   polling timers of Status, Library, Settings → Nodes and User Management.

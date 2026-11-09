@@ -696,10 +696,10 @@ async fn owner_node_removal_is_one_batch_without_an_interactive_transaction() {
                 .await
                 .unwrap();
         }
-        let batches_before = kit.batch_sizes().len();
         let as_owner = EnrollmentActor::User { user_id: owner };
 
-        // A stale heartbeat row: the status delete is the sixth statement.
+        // A stale heartbeat row: the status delete is the seventh statement,
+        // after the probe that bumps the nodes topic.
         let beat = NodeSampler::new(dir.path()).sample();
         record_node_heartbeat(&store, &enrolled.node_id, &beat)
             .await
@@ -712,13 +712,14 @@ async fn owner_node_removal_is_one_batch_without_an_interactive_transaction() {
             ))
             .await
             .unwrap();
+        let batches_before = kit.batch_sizes().len();
         remove_owner_node(&store, &as_owner, &enrolled.node_id, &this_node)
             .await
             .unwrap();
         assert_eq!(kit.refused_begins(), 0, "{}", profile.name());
         assert_eq!(
             &kit.batch_sizes()[batches_before..],
-            [6],
+            [7],
             "{}",
             profile.name()
         );

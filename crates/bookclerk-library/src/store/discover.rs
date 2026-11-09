@@ -19,7 +19,7 @@ use sea_orm::{
 use bookclerk_plugin_abi::{DbCapabilities, ExecuteRequest, TypedDbStatement};
 
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
-use crate::control_plane::batch;
+use crate::control_plane::{batch, sea_probe, Bump, LiveTopic};
 use crate::entities::{
     discover_candidates, discover_feeds, discover_fetches, discover_store_calls, portal_identities,
     users,
@@ -472,11 +472,15 @@ impl LibraryStore {
             .exec(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
-        discover_feeds::Entity::delete_many()
-            .filter(discover_feeds::Column::SubjectKey.eq(key.clone()))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let probe = discover_feeds::Entity::find()
+            .filter(discover_feeds::Column::SubjectKey.eq(key.clone()));
+        self.exec_bumped(
+            discover_feeds::Entity::delete_many()
+                .filter(discover_feeds::Column::SubjectKey.eq(key.clone())),
+            LiveTopic::Discover,
+            Bump::IfAny(sea_probe(&probe)?),
+        )
+        .await?;
         discover_fetches::Entity::delete_many()
             .filter(discover_fetches::Column::SubjectKey.eq(key))
             .exec(&self.db)
@@ -659,20 +663,18 @@ impl LibraryStore {
             candidates_fetched_at: Set(candidates_fetched_at.map(|t| t.to_rfc3339())),
             computed_at: Set(now_str()),
         };
-        discover_feeds::Entity::insert(row)
-            .on_conflict(
-                OnConflict::column(discover_feeds::Column::SubjectKey)
-                    .update_columns([
-                        discover_feeds::Column::FeedJson,
-                        discover_feeds::Column::SeedScope,
-                        discover_feeds::Column::CandidatesFetchedAt,
-                        discover_feeds::Column::ComputedAt,
-                    ])
-                    .to_owned(),
-            )
-            .exec_without_returning(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let upsert = discover_feeds::Entity::insert(row).on_conflict(
+            OnConflict::column(discover_feeds::Column::SubjectKey)
+                .update_columns([
+                    discover_feeds::Column::FeedJson,
+                    discover_feeds::Column::SeedScope,
+                    discover_feeds::Column::CandidatesFetchedAt,
+                    discover_feeds::Column::ComputedAt,
+                ])
+                .to_owned(),
+        );
+        self.exec_bumped(upsert, LiveTopic::Discover, Bump::Always)
+            .await?;
         Ok(())
     }
 

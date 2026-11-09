@@ -17,6 +17,7 @@ use crate::atomic_ops::DbAtomicResult;
 use serde_json::json;
 
 use super::{AtomicSelection, CompiledAtomic};
+use crate::control_plane::{bump_if_any, bump_if_stamped, LiveTopic};
 
 /// One statement in a planned batch (SQL, binds, and structural kind).
 #[derive(Clone, Debug)]
@@ -85,7 +86,8 @@ pub fn compile_named_request(
     params: &DbAtomicParams,
     now: &str,
 ) -> std::result::Result<CompiledAtomic, DbErr> {
-    let inner = plan_atomic(operation_id, params, now)?;
+    let mut inner = plan_atomic(operation_id, params, now)?;
+    append_live_bump(&mut inner, live_topic_of(params), operation_id, now)?;
     let expected_hash = inner.expected_hash.clone().unwrap_or_default();
     // Canonical Bookclerk SQL (`?` placeholders, SQLite-shaped helpers).
     // Adapters lower placeholders and functions at execute time.
@@ -141,8 +143,92 @@ pub fn compile_claim_event_delivery(
         now: now.to_string(),
         expires_at: receipt_expiry(now),
     };
-    let wrapped = wrap_status_op(inner, &ctx, PayloadKind::JsonFromPlan);
+    let mut wrapped = wrap_status_op(inner, &ctx, PayloadKind::JsonFromPlan);
+    append_live_bump(&mut wrapped, Some(LiveTopic::Deliveries), operation_id, now)?;
     Ok(compiled_from_inner(operation_id, wrapped, request_hash))
+}
+
+/// The live-socket topic whose table `op` writes, if any.
+fn live_topic_of(op: &DbAtomicParams) -> Option<LiveTopic> {
+    match op {
+        DbAtomicParams::DeleteUser { .. }
+        | DbAtomicParams::SetUserStatus { .. }
+        | DbAtomicParams::SetUserPasswordHash { .. }
+        | DbAtomicParams::SetUserRole { .. }
+        | DbAtomicParams::ConfirmTotpEnrollment { .. }
+        | DbAtomicParams::DisableUserTotp { .. }
+        | DbAtomicParams::RedeemClaimTicket { .. } => Some(LiveTopic::Users),
+        DbAtomicParams::EnqueueJob { .. } | DbAtomicParams::ClaimNextJob { .. } => {
+            Some(LiveTopic::Jobs)
+        }
+        DbAtomicParams::SetAcquireStatus { .. } => Some(LiveTopic::Library),
+        DbAtomicParams::DispatchEventDeliveries { .. }
+        | DbAtomicParams::ClaimNextEventDelivery { .. } => Some(LiveTopic::Deliveries),
+        DbAtomicParams::TakeOidcRpState { .. }
+        | DbAtomicParams::TakeWebauthnChallenge { .. }
+        | DbAtomicParams::ReserveJobTemp { .. }
+        | DbAtomicParams::PublishDomainEvent { .. }
+        | DbAtomicParams::LinkListing(_)
+        | DbAtomicParams::WriteCredits(_) => None,
+    }
+}
+
+/// Appends `topic`'s live counter bump as the plan's last statement, after
+/// the receipt read, so no index the reply is read by moves.
+///
+/// The jobs, books and deliveries writes stamp `updated_at` with this
+/// attempt's `now`, so their bump is [`bump_if_stamped`]: it moves exactly
+/// when this attempt changed a row (including a sweep that ran before an
+/// `empty` outcome) and never on a replay, which writes nothing. A user
+/// delete leaves no row to stamp, so user operations bump when this attempt
+/// wrote an `ok` receipt (a replay finds the receipt with an older
+/// `created_at`).
+///
+/// # Errors
+///
+/// Returns [`DbErr::Custom`] when the topic has no change stamp to check.
+fn append_live_bump(
+    plan: &mut AtomicPlan,
+    topic: Option<LiveTopic>,
+    operation_id: &str,
+    now: &str,
+) -> std::result::Result<(), DbErr> {
+    let Some(topic) = topic else {
+        return Ok(());
+    };
+    let bump = match topic {
+        LiveTopic::Users => bump_if_any(
+            topic,
+            TypedDbStatement {
+                sql: format!(
+                    "SELECT 1 FROM bookclerk_receipts \
+                     WHERE operation_id = ? AND status = '{ok}' AND created_at = ?",
+                    ok = atomic_status::OK
+                ),
+                parameters: vec![j_str(operation_id), j_str(now)],
+                kind: DbPlanStatementKind::Select,
+                max_rows: 1,
+                result_selection: DbResultSelection::Rows,
+            },
+        ),
+        LiveTopic::Library
+        | LiveTopic::Jobs
+        | LiveTopic::Deliveries
+        | LiveTopic::Nodes
+        | LiveTopic::Config
+        | LiveTopic::Consents
+        | LiveTopic::Clusters
+        | LiveTopic::Discover => {
+            bump_if_stamped(topic, now).map_err(|err| DbErr::Custom(err.to_string()))?
+        }
+    };
+    plan.statements.push(SqlStmt {
+        sql: bump.sql,
+        binds: bump.parameters,
+        kind: DbPlanStatementKind::Execute,
+        max_rows: 0,
+    });
+    Ok(())
 }
 
 /// SHA-256 hex of the idempotency-relevant fields of `op`, mapped to [`DbErr`].

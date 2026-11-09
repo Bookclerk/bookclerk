@@ -1376,10 +1376,11 @@ async fn webauthn_credential_crud() {
     assert_eq!(replayed, taken);
 }
 
-/// The flag is one `UPDATE` sent to the plugin: no interactive transaction,
-/// and an unknown user is reported from the affected-row count (#733).
+/// The flag is one batch sent to the plugin (the `UPDATE` and its users
+/// counter bump): no interactive transaction, and an unknown user is
+/// reported from the affected-row count (#733).
 #[tokio::test]
-async fn totp_enabled_flag_is_one_statement_without_an_interactive_transaction() {
+async fn totp_enabled_flag_is_one_batch_without_an_interactive_transaction() {
     for profile in crate::test_support::Profile::ALL {
         let kit = crate::test_support::sqlite::memory(profile).await;
         let store = kit.store();
@@ -1387,10 +1388,16 @@ async fn totp_enabled_flag_is_one_statement_without_an_interactive_transaction()
             .create_user(UserRole::Member, Some("Mfa User"), None)
             .await
             .unwrap();
+        let batches_before = kit.batch_sizes().len();
         store.set_user_totp_enabled(user.id, true).await.unwrap();
         assert!(store.get_user(user.id).await.unwrap().unwrap().totp_enabled);
         assert_eq!(kit.refused_begins(), 0, "{}", profile.name());
-        assert_eq!(kit.batch_sizes(), [1], "{}", profile.name());
+        assert_eq!(
+            &kit.batch_sizes()[batches_before..],
+            [2],
+            "{}",
+            profile.name()
+        );
         let err = store
             .set_user_totp_enabled(user.id + 1_000, true)
             .await
@@ -6034,6 +6041,7 @@ async fn stale_wake_delivery_update_does_not_clear(store: &LibraryStore) {
     let now = chrono::Utc::now().to_rfc3339();
     let woken = super::event_outbox::wake_deliveries_fenced_on(
         store.db(),
+        Some(store),
         store.leftover_in_process(),
         &trigger_id,
         "token-b",
@@ -6062,6 +6070,7 @@ async fn stale_wake_delivery_update_does_not_clear(store: &LibraryStore) {
 
     let stale = super::event_outbox::wake_deliveries_fenced_on(
         store.db(),
+        Some(store),
         store.leftover_in_process(),
         &trigger_id,
         "token-a",

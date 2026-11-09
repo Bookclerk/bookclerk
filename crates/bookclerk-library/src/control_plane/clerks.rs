@@ -222,8 +222,16 @@ pub async fn remove_owner_node(
     //
     // A node that beat before step 1 keeps its status row, so steps 2 and 3
     // delete nothing and the node stays.
-    let mut statements = Vec::with_capacity(6);
+    let mut statements = Vec::with_capacity(7);
     if let Some(status) = &checked {
+        statements.push(super::bump_if_any(
+            super::LiveTopic::Nodes,
+            batch::query(
+                "SELECT 1 FROM node_status WHERE node_id = ? AND heartbeat_ms = ?",
+                vec![batch::text(node_id), batch::int(status.heartbeat_ms)],
+                1,
+            ),
+        ));
         statements.push(batch::exec(
             "DELETE FROM node_status WHERE node_id = ? AND heartbeat_ms = ?",
             vec![batch::text(node_id), batch::int(status.heartbeat_ms)],

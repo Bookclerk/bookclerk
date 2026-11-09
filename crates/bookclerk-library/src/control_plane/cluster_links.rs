@@ -21,6 +21,7 @@ use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrde
 use serde::Serialize;
 use zeroize::Zeroizing;
 
+use crate::control_plane::{sea_probe, Bump, LiveTopic};
 use crate::entities::cluster_links;
 use crate::error::{LibraryError, Result};
 use crate::secrets::{
@@ -264,21 +265,20 @@ pub async fn record_cluster_link(
         include_branches: Set(1),
         ancestry_json: Set("[]".into()),
     };
-    cluster_links::Entity::insert(row)
-        .on_conflict(
-            OnConflict::column(cluster_links::Column::OwnerClusterId)
-                .update_columns([
-                    cluster_links::Column::OwnerOrigin,
-                    cluster_links::Column::RemoteNodeId,
-                    cluster_links::Column::SpkiPin,
-                    cluster_links::Column::State,
-                    cluster_links::Column::EnrolledAt,
-                ])
-                .to_owned(),
-        )
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    let insert = cluster_links::Entity::insert(row).on_conflict(
+        OnConflict::column(cluster_links::Column::OwnerClusterId)
+            .update_columns([
+                cluster_links::Column::OwnerOrigin,
+                cluster_links::Column::RemoteNodeId,
+                cluster_links::Column::SpkiPin,
+                cluster_links::Column::State,
+                cluster_links::Column::EnrolledAt,
+            ])
+            .to_owned(),
+    );
+    store
+        .exec_bumped(insert, LiveTopic::Clusters, Bump::Always)
+        .await?;
     // The new link is committed by now, so failing to drop the previous
     // node's keys must not report the enrollment failed: the one-use link
     // is spent and a retry would be refused. The stale row is only left
@@ -415,16 +415,22 @@ pub async fn set_cluster_link_state(
             "unknown cluster link state {state}"
         )));
     }
-    let updated = cluster_links::Entity::update_many()
+    let update = cluster_links::Entity::update_many()
         .col_expr(cluster_links::Column::State, Expr::value(state))
         .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
         .apply_if(remote_node_id, |query, node| {
             query.filter(cluster_links::Column::RemoteNodeId.eq(node))
+        });
+    let probe = cluster_links::Entity::find()
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .apply_if(remote_node_id, |query, node| {
+            query.filter(cluster_links::Column::RemoteNodeId.eq(node))
         })
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok(updated.rows_affected == 1)
+        .filter(cluster_links::Column::State.ne(state));
+    let updated = store
+        .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
+        .await?;
+    Ok(updated == 1)
 }
 
 /// Sets a link's two sharing settings: "Share this branch's books with
@@ -441,7 +447,7 @@ pub async fn set_cluster_link_sharing(
     share_books: bool,
     include_branches: bool,
 ) -> Result<bool> {
-    let updated = cluster_links::Entity::update_many()
+    let update = cluster_links::Entity::update_many()
         .col_expr(
             cluster_links::Column::ShareBooks,
             Expr::value(i64::from(share_books)),
@@ -450,11 +456,18 @@ pub async fn set_cluster_link_sharing(
             cluster_links::Column::IncludeBranches,
             Expr::value(i64::from(include_branches)),
         )
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id));
+    let probe = cluster_links::Entity::find()
         .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok(updated.rows_affected == 1)
+        .filter(
+            sea_orm::Condition::any()
+                .add(cluster_links::Column::ShareBooks.ne(i64::from(share_books)))
+                .add(cluster_links::Column::IncludeBranches.ne(i64::from(include_branches))),
+        );
+    let updated = store
+        .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
+        .await?;
+    Ok(updated == 1)
 }
 
 /// Records the owner library's ancestry as it reported it (`info` at join,
@@ -475,13 +488,16 @@ pub async fn set_cluster_link_ancestry(
     }
     let json = serde_json::to_string(ancestry)
         .map_err(|err| LibraryError::Other(anyhow::anyhow!("ancestry encode: {err}")))?;
-    let updated = cluster_links::Entity::update_many()
-        .col_expr(cluster_links::Column::AncestryJson, Expr::value(json))
+    let probe = cluster_links::Entity::find()
         .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok(updated.rows_affected == 1)
+        .filter(cluster_links::Column::AncestryJson.ne(json.as_str()));
+    let update = cluster_links::Entity::update_many()
+        .col_expr(cluster_links::Column::AncestryJson, Expr::value(json))
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id));
+    let updated = store
+        .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
+        .await?;
+    Ok(updated == 1)
 }
 
 /// This library's ancestry (what `GET /api/node/v1/info` reports): its own
@@ -593,18 +609,22 @@ pub async fn mark_cluster_link_revoked(
     owner_cluster_id: &str,
     remote_node_id: &str,
 ) -> Result<bool> {
-    let updated = cluster_links::Entity::update_many()
+    let update = cluster_links::Entity::update_many()
         .col_expr(
             cluster_links::Column::State,
             Expr::value(CLUSTER_LINK_REVOKED),
         )
         .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
         .filter(cluster_links::Column::RemoteNodeId.eq(remote_node_id))
-        .filter(cluster_links::Column::State.eq(CLUSTER_LINK_ACTIVE))
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok(updated.rows_affected == 1)
+        .filter(cluster_links::Column::State.eq(CLUSTER_LINK_ACTIVE));
+    let probe = cluster_links::Entity::find()
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(cluster_links::Column::RemoteNodeId.eq(remote_node_id))
+        .filter(cluster_links::Column::State.eq(CLUSTER_LINK_ACTIVE));
+    let updated = store
+        .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
+        .await?;
+    Ok(updated == 1)
 }
 
 /// Leaves an owner cluster on this side: marks the link
