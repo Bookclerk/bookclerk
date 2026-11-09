@@ -266,6 +266,15 @@ never holds up Discover again.
 `discovery.embeddings_enabled = false` (the default, or CLI `--hash` / `?no`
 paths that pass `prefer_onnx = false`) skips ONNX and uses local-hash directly.
 
+### Refreshing work vectors
+
+`embed_dirty_works` keeps one vector per work and model in `embeddings`,
+stamped with a hash of the text it was computed from. It first deletes the
+vectors of works that no longer exist, then walks `works` in id order, 128
+at a time. Each page costs one read of the works, one read of their stored
+hashes, and one embedder call for the works whose text changed, so a large
+library is neither held in memory at once nor read one hash per work.
+
 ### OSV / `paste`
 
 With the `onnx-embeddings` feature, `fastembed` → `tokenizers` (and related
