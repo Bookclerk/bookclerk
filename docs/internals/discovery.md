@@ -115,6 +115,8 @@ operator, a household user, or a portal identity) has a **subject key**
    as a wish, keeps its metadata. If a newer fetch replaced a card's
    candidate before the page reads it, the card shows without that
    metadata until the ranking that fetch queues replaces the feed.
+   `GET /api/discover/status` needs only whether a feed exists and when it
+   was ranked, so it reads the feed without the join.
 
    The stored feed carries a format number. A feed in another format, such
    as the whole cards an older release stored, reads as missing and is

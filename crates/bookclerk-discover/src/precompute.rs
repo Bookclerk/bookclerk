@@ -930,19 +930,46 @@ pub async fn stored_subject_feed(
     subject: &DiscoverSubject,
     disabled_shelves: &[String],
 ) -> Result<Option<StoredSubjectFeed>> {
+    let Some(mut stored) = stored_subject_feed_state(library, subject).await? else {
+        return Ok(None);
+    };
+    stored
+        .feed
+        .shelves
+        .retain(|shelf| !shelf_is_disabled(&shelf.id, disabled_shelves));
+    if feed_needs_pool(&stored.feed) {
+        let rows = library.list_discover_candidates(subject).await?;
+        join_feed(&mut stored.feed, &CandidatePool::from_rows(&rows));
+    }
+    Ok(Some(stored))
+}
+
+/// Reads one subject's stored feed without joining its catalog metadata,
+/// for callers that need only whether it exists and when it was ranked.
+///
+/// The cards come back as stored: references and the subject's own fields,
+/// without the description, cover and other metadata
+/// [`stored_subject_feed`] joins from the candidate pool. Hidden shelves
+/// are kept. No candidate row is read.
+///
+/// # Returns
+///
+/// `None` when the subject has no stored feed yet, or it does not decode.
+///
+/// # Errors
+///
+/// Returns the library read error.
+pub async fn stored_subject_feed_state(
+    library: &LibraryStore,
+    subject: &DiscoverSubject,
+) -> Result<Option<StoredSubjectFeed>> {
     let Some(stored) = library.get_discover_feed(subject).await? else {
         return Ok(None);
     };
-    let Some(mut feed) = decode_stored_feed(&stored.feed_json) else {
+    let Some(feed) = decode_stored_feed(&stored.feed_json) else {
         tracing::debug!(subject = %subject.key(), "stored discover feed does not decode");
         return Ok(None);
     };
-    feed.shelves
-        .retain(|shelf| !shelf_is_disabled(&shelf.id, disabled_shelves));
-    if feed_needs_pool(&feed) {
-        let rows = library.list_discover_candidates(subject).await?;
-        join_feed(&mut feed, &CandidatePool::from_rows(&rows));
-    }
     Ok(Some(StoredSubjectFeed {
         feed,
         scope: stored.seed_scope,
@@ -1384,6 +1411,19 @@ mod tests {
         assert_eq!(read.scope, SeedScope::Own);
         assert_eq!(read.feed.shelves.len(), ranked.shelves);
         assert!(read.candidates_fetched_at.is_some());
+        // The state read skips the join: same feed, no blurbs.
+        let state = stored_subject_feed_state(&library, &subject)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.computed_at, read.computed_at);
+        assert_eq!(state.feed.shelves.len(), read.feed.shelves.len());
+        assert!(state
+            .feed
+            .shelves
+            .iter()
+            .flat_map(|s| &s.items)
+            .all(|c| c.description.is_none()));
         // The stored feed leaves the deals' blurbs and covers to the pool,
         // and the read joins them back.
         let raw = library.get_discover_feed(&subject).await.unwrap().unwrap();
@@ -1417,6 +1457,10 @@ mod tests {
             .await
             .unwrap();
         assert!(stored_subject_feed(&library, &subject, &[])
+            .await
+            .unwrap()
+            .is_none());
+        assert!(stored_subject_feed_state(&library, &subject)
             .await
             .unwrap()
             .is_none());

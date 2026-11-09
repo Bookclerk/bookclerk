@@ -4654,8 +4654,9 @@ async fn discover_status_for_caller(
     let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
         .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
     // A feed that does not decode (another release wrote it) counts as
-    // missing, so it is ranked again and not reported ready.
-    let feed = bookclerk_discover::stored_subject_feed(&library, &subject, &[])
+    // missing, so it is ranked again and not reported ready. Status needs
+    // only the feed's presence and times, so card metadata is not joined.
+    let feed = bookclerk_discover::stored_subject_feed_state(&library, &subject)
         .await
         .map_err(internal_err)?;
     let fetched = library
