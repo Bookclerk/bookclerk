@@ -11598,14 +11598,9 @@ async function executeAdapterBatch(request, begin, options) {
 }
 async function executeAdapterBatchStreamed(request, begin, options) {
   return inTransaction(begin, async (txn) => {
-    const frames = encodeExecuteStream(await runAdapterBatch(request, txn, options));
-    if (frames.byteLength > MAX_SCALAR_BYTES) {
-      throw PluginError.limitExceeded({
-        limit: "maxScalarBytes",
-        cap: MAX_SCALAR_BYTES,
-        used: frames.byteLength
-      });
-    }
+    const reply = await runAdapterBatch(request, txn, options);
+    const frames = encodeExecuteStream(reply, STREAM_FRAME_TARGET_BYTES, MAX_SCALAR_BYTES);
+    decodeExecuteStream(frames, options.limits);
     return frames;
   });
 }
@@ -11647,11 +11642,16 @@ async function runAdapterBatch(request, txn, options) {
       dbTimingSource: options.timingSource
     };
   };
+  for (const result of statements) {
+    for (const row of result.rows) {
+      row.values.forEach(validateCell);
+    }
+  }
   if (guestLen > 0) {
     const partial = {
       operationId: request.operationId,
       statements,
-      timing: { attemptElapsedUs: 0, dbExecutionUs: 0, dbTimingSource: options.timingSource }
+      timing: timing()
     };
     const readOnly = guestBatchIsReadOnly(request.statements, guestLen);
     for (const statement of guestReceiptFinalizeStatements(partial, guestLen, guestHash, readOnly)) {
@@ -11732,15 +11732,22 @@ function guestReplayPayload(reply) {
   }
   return text;
 }
-function encodeExecuteStream(reply, frameTargetBytes = STREAM_FRAME_TARGET_BYTES) {
-  const parts = [
-    frame({
-      kind: "head",
-      value: { operationId: reply.operationId, statementCount: reply.statements.length }
-    })
-  ];
+function encodeExecuteStream(reply, frameTargetBytes = STREAM_FRAME_TARGET_BYTES, maxBytes = Number.POSITIVE_INFINITY) {
+  const parts = [];
+  let total = 0;
+  const push = (part) => {
+    total += part.byteLength;
+    if (total > maxBytes) {
+      throw PluginError.limitExceeded({ limit: "maxScalarBytes", cap: maxBytes, used: total });
+    }
+    parts.push(part);
+  };
+  push(frame({
+    kind: "head",
+    value: { operationId: reply.operationId, statementCount: reply.statements.length }
+  }));
   reply.statements.forEach((stmt, index) => {
-    parts.push(frame({
+    push(frame({
       kind: "statement",
       value: { index, columns: stmt.columns, rowsAffected: stmt.rowsAffected }
     }));
@@ -11749,16 +11756,16 @@ function encodeExecuteStream(reply, frameTargetBytes = STREAM_FRAME_TARGET_BYTES
     stmt.rows.forEach((row, i) => {
       const estimate = rowSizeEstimate(row);
       if (size > 0 && size + estimate > frameTargetBytes) {
-        pushRowsFrames(parts, stmt.rows.slice(start, i));
+        pushRowsFrames(push, stmt.rows.slice(start, i));
         start = i;
         size = 0;
       }
       size += estimate;
     });
-    pushRowsFrames(parts, stmt.rows.slice(start));
+    pushRowsFrames(push, stmt.rows.slice(start));
   });
-  parts.push(frame({ kind: "end", value: reply.timing }));
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
+  push(frame({ kind: "end", value: reply.timing }));
+  const out = new Uint8Array(total);
   let at = 0;
   for (const part of parts) {
     out.set(part, at);
@@ -11766,18 +11773,18 @@ function encodeExecuteStream(reply, frameTargetBytes = STREAM_FRAME_TARGET_BYTES
   }
   return out;
 }
-function pushRowsFrames(parts, rows) {
+function pushRowsFrames(push, rows) {
   if (rows.length === 0) {
     return;
   }
   const encoded = frame({ kind: "rows", value: rows });
   if (encoded.byteLength > MAX_SCALAR_BYTES && rows.length > 1) {
     const mid = Math.floor(rows.length / 2);
-    pushRowsFrames(parts, rows.slice(0, mid));
-    pushRowsFrames(parts, rows.slice(mid));
+    pushRowsFrames(push, rows.slice(0, mid));
+    pushRowsFrames(push, rows.slice(mid));
     return;
   }
-  parts.push(encoded);
+  push(encoded);
 }
 function frame(value) {
   return encodeMessage(ExecuteStreamFrameCodec, value);

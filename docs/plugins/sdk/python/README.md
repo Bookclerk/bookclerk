@@ -83,7 +83,8 @@ fields.
 A database adapter runs each host batch through `execute_adapter_batch`
 or `execute_adapter_batch_streamed` (in `bookclerk_plugin_sdk.db_value`),
 which stores the guest's replay receipt before `COMMIT` and, for a
-streamed reply, rolls back when the frames do not fit one scalar (see
+streamed reply, rolls back when the frames do not fit one scalar or the
+adapter's advertised streamed budget (`execute_stream_limits(caps)`) (see
 [Isolate adapter batches](../../sql-contract/v1.md#isolate-adapter-batches-and-replay-receipts)).
 
 ## Triggers

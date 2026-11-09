@@ -42,6 +42,7 @@ const LIMITS = {
   maxRows: 0,
   rowsLimit: "maxStreamedResultRows",
 };
+const STREAMED = { ...OPTIONS, limits: LIMITS };
 
 // A fixture `DbValue` (serde form) as the SDK's `DbValue`.
 function value(raw) {
@@ -117,13 +118,19 @@ class Engine {
     this.ran = [];
     this.failOn = null;
     this.failRollback = false;
+    this.delayMs = 0;
+    // Rewrites a query's rows, standing in for an adapter's own result.
+    this.mapRows = null;
   }
 
   // Opens a transaction (the runner's `begin`).
   begin = async () => {
     this.db.exec("BEGIN");
     return {
-      run: async (statement) => this.run(statement),
+      run: async (statement) => {
+        if (this.delayMs) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+        return this.run(statement);
+      },
       commit: async () => {
         this.db.exec("COMMIT");
         this.commits += 1;
@@ -149,9 +156,10 @@ class Engine {
     const prepared = this.db.prepare(sql);
     prepared.setReadBigInts(true);
     const columns = prepared.columns().map((c) => ({ name: c.name, dbType: dbType(c.type) }));
-    const rows = prepared.all(...statement.parameters.map(bind)).map((row) => ({
+    let rows = prepared.all(...statement.parameters.map(bind)).map((row) => ({
       values: columns.map((c) => cell(row[c.name], c.dbType)),
     }));
+    if (this.mapRows) rows = this.mapRows(statement, rows);
     return { rows, columns, rowsAffected: statement.kind === "returning" ? rows.length : 0 };
   }
 
@@ -250,7 +258,7 @@ assert.match(embed, /export \{[^}]*\bexecuteAdapterBatch,[^}]*\bexecuteAdapterBa
 // The streamed reply decodes to the same reply the inline runner returns.
 {
   const engine = new Engine();
-  const frames = await executeAdapterBatchStreamed(request("write"), engine.begin, OPTIONS);
+  const frames = await executeAdapterBatchStreamed(request("write"), engine.begin, STREAMED);
   const reply = decodeExecuteStream(frames, LIMITS);
   assert.equal(reply.operationId, "fixture-write");
   assert.equal(reply.statements.length, 5);
@@ -280,13 +288,13 @@ assert.match(embed, /export \{[^}]*\bexecuteAdapterBatch,[^}]*\bexecuteAdapterBa
   const wide = "w".repeat(150 * 1024);
   engine.db.prepare("INSERT INTO notes (id, body) VALUES (?, ?), (?, ?)").run(2n, wide, 3n, wide);
   await rejectsWith(
-    executeAdapterBatchStreamed(request("readOnly"), engine.begin, OPTIONS),
+    executeAdapterBatchStreamed(request("readOnly"), engine.begin, STREAMED),
     "limit_exceeded",
     /maxScalarBytes/,
   );
   assert.equal(engine.rollbacks, 1);
   assert.equal(engine.receipt("fixture-read"), undefined);
-  const err = await executeAdapterBatchStreamed(request("readOnly"), engine.begin, OPTIONS).catch(
+  const err = await executeAdapterBatchStreamed(request("readOnly"), engine.begin, STREAMED).catch(
     (e) => e,
   );
   assert.equal(err.details.limit, "maxScalarBytes");
@@ -306,7 +314,7 @@ assert.match(embed, /export \{[^}]*\bexecuteAdapterBatch,[^}]*\bexecuteAdapterBa
     return r;
   });
   await rejectsWith(
-    executeAdapterBatchStreamed(oversized, engine.begin, OPTIONS),
+    executeAdapterBatchStreamed(oversized, engine.begin, STREAMED),
     "internal",
     /guest replay payload is \d+ bytes; max is 65536/,
   );
@@ -314,6 +322,58 @@ assert.match(embed, /export \{[^}]*\bexecuteAdapterBatch,[^}]*\bexecuteAdapterBa
   assert.equal(engine.rollbacks, 1);
   assert.equal(engine.hasNotes(), false);
   assert.equal(engine.receipt("fixture-write"), undefined);
+}
+
+// #761: a write whose frames the host would refuse under the advertised
+// streamed budget rolls back before COMMIT; the retry with the same
+// operationId commits once.
+{
+  const engine = new Engine();
+  engine.mapRows = (statement, rows) =>
+    statement.kind === "returning" ? [...rows, ...rows] : rows;
+  const tight = { ...OPTIONS, limits: { ...LIMITS, maxRows: 1 } };
+  await rejectsWith(
+    executeAdapterBatchStreamed(request("write"), engine.begin, tight),
+    "limit_exceeded",
+    /maxStreamedResultRows/,
+  );
+  assert.equal(engine.commits, 0);
+  assert.equal(engine.rollbacks, 1);
+  assert.equal(engine.hasNotes(), false);
+  assert.equal(engine.receipt("fixture-write"), undefined);
+  engine.mapRows = null;
+  await executeAdapterBatchStreamed(request("write"), engine.begin, tight);
+  await executeAdapterBatchStreamed(request("write"), engine.begin, STREAMED);
+  assert.equal(engine.commits, 2);
+  assert.equal(engine.notes().length, 1, "the write ran once");
+}
+
+// #761: a result cell the host would refuse (TEXT with U+0000) rolls the
+// batch back before its receipt commits.
+{
+  const engine = new Engine();
+  await executeAdapterBatch(request("write"), engine.begin, OPTIONS);
+  engine.mapRows = (statement, rows) =>
+    statement.sql.startsWith("SELECT id, body FROM notes")
+      ? [{ values: [rows[0].values[0], { kind: "text", value: "a\u0000b" }] }]
+      : rows;
+  await rejectsWith(
+    executeAdapterBatch(request("readOnly"), engine.begin, OPTIONS),
+    "invalid_params",
+    /U\+0000/,
+  );
+  assert.equal(engine.rollbacks, 1);
+  assert.equal(engine.receipt("fixture-read"), undefined);
+}
+
+// #761: the receipt records the measured timing a replay answers with.
+{
+  const engine = new Engine();
+  engine.delayMs = 2;
+  await executeAdapterBatch(request("write"), engine.begin, OPTIONS);
+  const timing = JSON.parse(engine.receipt("fixture-write").payload).timing;
+  assert.ok(timing.attemptElapsedUs >= 1000, `timing ${JSON.stringify(timing)}`);
+  assert.equal(timing.dbExecutionUs, timing.attemptElapsedUs);
 }
 
 // A receipt that committed without its reply cannot be replayed.

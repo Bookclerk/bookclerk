@@ -1700,33 +1700,36 @@ async def execute_adapter_batch_streamed(
     request: AdapterBatchRequest,
     begin: Callable[[], Awaitable[AdapterTransaction]],
     timing_source: str,
+    limits: ExecuteStreamLimits,
 ) -> bytes:
-    """Run one host batch for ``executeStreamed``; commit only when its frames fit.
+    """Run one host batch for ``executeStreamed``; commit only when the host can take it.
 
     An isolate adapter's frames cross the invoke reply as one scalar. The
-    frames are encoded inside the transaction, and when they exceed
-    ``MAX_SCALAR_BYTES`` the batch rolls back, so nothing commits that the
-    host cannot receive.
+    frames are encoded inside the transaction: encoding stops with
+    ``limit_exceeded`` (``maxScalarBytes``) as soon as they pass
+    ``MAX_SCALAR_BYTES``, and the finished frames are decoded under ``limits``
+    the way the host decodes them. Either failure rolls the batch back, so
+    nothing commits that the host would refuse.
 
     Args:
         request: The adapter request (``executeStreamed``).
         begin: Opens a transaction on the adapter's engine.
         timing_source: Observability source on the reply timing.
+        limits: The streamed budget this adapter advertises
+            (``execute_stream_limits(caps)``).
 
     Returns:
         Every frame of the committed reply, concatenated.
 
     Raises:
-        PluginError: ``limit_exceeded`` (``maxScalarBytes``) when the frames do
-            not fit one scalar, or what :func:`execute_adapter_batch` raises.
+        PluginError: ``limit_exceeded`` when the frames do not fit one scalar
+            or ``limits``, or what :func:`execute_adapter_batch` raises.
     """
 
     async def body(txn: AdapterTransaction) -> bytes:
-        frames = encode_execute_stream(await run_adapter_batch(request, txn, timing_source))
-        if len(frames) > MAX_SCALAR_BYTES:
-            raise _plugin_error().limit_exceeded(
-                LimitExceeded("maxScalarBytes", MAX_SCALAR_BYTES, len(frames))
-            )
+        reply = await run_adapter_batch(request, txn, timing_source)
+        frames = encode_execute_stream(reply, max_bytes=MAX_SCALAR_BYTES)
+        decode_execute_stream(frames, limits)
         return frames
 
     return await _in_transaction(begin, body)
@@ -1746,17 +1749,19 @@ async def _in_transaction(
         What ``body`` returned.
 
     Raises:
-        Exception: What ``body`` or ``commit`` raised (a failing rollback does
-            not replace it).
+        Exception: What ``body`` or ``commit`` raised (a failing or cancelled
+            rollback does not replace it).
     """
     txn = await begin()
     try:
         result = await body(txn)
         await txn.commit()
     except BaseException:
+        # Shielded, so a cancellation arriving now cannot leave the
+        # transaction open; the original failure is the one to report.
         try:
-            await txn.rollback()
-        except Exception:  # noqa: BLE001 - the original failure is the one to report
+            await asyncio.shield(txn.rollback())
+        except (Exception, asyncio.CancelledError):  # noqa: BLE001
             pass
         raise
     return result
@@ -1780,7 +1785,8 @@ async def run_adapter_batch(
         The reply to deliver once the transaction commits.
 
     Raises:
-        PluginError: See :func:`execute_adapter_batch`.
+        PluginError: See :func:`execute_adapter_batch`; ``invalid_params`` when
+            a result cell is not a valid ``DbValue``.
     """
     started = time.monotonic()
     statements_in = request["statements"]
@@ -1794,27 +1800,34 @@ async def run_adapter_batch(
             while len(statements) < total:
                 statements.append({"rows": [], "columns": [], "rowsAffected": 0})
             break
+    # The host refuses a non-finite float64 or TEXT with U+0000; refuse it
+    # here, before COMMIT, so the write and its receipt roll back.
+    for result in statements:
+        for row in result["rows"]:
+            for cell in row["values"]:
+                _validate_cell(cell)
+
+    def timing() -> dict[str, Any]:
+        elapsed = max(0, int((time.monotonic() - started) * 1_000_000))
+        return {
+            "attemptElapsedUs": elapsed,
+            "dbExecutionUs": elapsed,
+            "dbTimingSource": timing_source,
+        }
+
     if guest_len > 0:
+        # A replay answers with the recorded timing, so record what ran.
         partial: ExecuteReply = {
             "operationId": request["operationId"],
             "statements": statements,
-            "timing": {"attemptElapsedUs": 0, "dbExecutionUs": 0, "dbTimingSource": timing_source},
+            "timing": timing(),
         }
         read_only = guest_batch_is_read_only(statements_in, guest_len)
         for finalize in guest_receipt_finalize_statements(
             partial, guest_len, guest_hash, read_only
         ):
             await txn.run(finalize)
-    elapsed = max(0, int((time.monotonic() - started) * 1_000_000))
-    return {
-        "operationId": request["operationId"],
-        "statements": statements,
-        "timing": {
-            "attemptElapsedUs": elapsed,
-            "dbExecutionUs": elapsed,
-            "dbTimingSource": timing_source,
-        },
-    }
+    return {"operationId": request["operationId"], "statements": statements, "timing": timing()}
 
 
 def guest_batch_is_read_only(statements: list[TypedDbStatement], guest_len: int) -> bool:
@@ -1966,7 +1979,9 @@ def guest_replay_payload(reply: ExecuteReply) -> str:
 
 
 def encode_execute_stream(
-    reply: ExecuteReply, frame_target_bytes: int = STREAM_FRAME_TARGET_BYTES
+    reply: ExecuteReply,
+    frame_target_bytes: int = STREAM_FRAME_TARGET_BYTES,
+    max_bytes: int | None = None,
 ) -> bytes:
     """Frame ``reply`` as the byte sequence ``executeStreamed`` answers.
 
@@ -1977,20 +1992,36 @@ def encode_execute_stream(
     Args:
         reply: The committed reply.
         frame_target_bytes: Estimated encoded size to aim for per ``rows`` frame.
+        max_bytes: Stop as soon as the frames pass this many bytes.
 
     Returns:
         Every frame, concatenated.
+
+    Raises:
+        PluginError: ``limit_exceeded`` (``maxScalarBytes``) when the frames
+            pass ``max_bytes``.
     """
     statements = reply["statements"]
-    out = bytearray(
+    out = bytearray()
+
+    def push(frame: bytes) -> None:
+        out.extend(frame)
+        if max_bytes is not None and len(out) > max_bytes:
+            raise _plugin_error().limit_exceeded(
+                LimitExceeded("maxScalarBytes", max_bytes, len(out))
+            )
+
+    push(
         _stream_frame(
             "head", {"operationId": reply["operationId"], "statementCount": len(statements)}
         )
     )
     for index, stmt in enumerate(statements):
-        out += _stream_frame(
-            "statement",
-            {"index": index, "columns": stmt["columns"], "rowsAffected": stmt["rowsAffected"]},
+        push(
+            _stream_frame(
+                "statement",
+                {"index": index, "columns": stmt["columns"], "rowsAffected": stmt["rowsAffected"]},
+            )
         )
         rows = stmt["rows"]
         start = 0
@@ -1998,20 +2029,20 @@ def encode_execute_stream(
         for i, row in enumerate(rows):
             estimate = _row_size_estimate(row)
             if size > 0 and size + estimate > frame_target_bytes:
-                _push_rows_frames(out, rows[start:i])
+                _push_rows_frames(push, rows[start:i])
                 start = i
                 size = 0
             size += estimate
-        _push_rows_frames(out, rows[start:])
-    out += _stream_frame("end", reply["timing"])
+        _push_rows_frames(push, rows[start:])
+    push(_stream_frame("end", reply["timing"]))
     return bytes(out)
 
 
-def _push_rows_frames(out: bytearray, rows: list[dict[str, Any]]) -> None:
+def _push_rows_frames(push: Callable[[bytes], None], rows: list[dict[str, Any]]) -> None:
     """Append ``rows`` as ``rows`` frames, halving a slice past one scalar.
 
     Args:
-        out: Frames so far.
+        push: Appends one frame.
         rows: Rows of the open statement.
     """
     if not rows:
@@ -2019,10 +2050,10 @@ def _push_rows_frames(out: bytearray, rows: list[dict[str, Any]]) -> None:
     encoded = _stream_frame("rows", rows)
     if len(encoded) > MAX_SCALAR_BYTES and len(rows) > 1:
         mid = len(rows) // 2
-        _push_rows_frames(out, rows[:mid])
-        _push_rows_frames(out, rows[mid:])
+        _push_rows_frames(push, rows[:mid])
+        _push_rows_frames(push, rows[mid:])
         return
-    out += encoded
+    push(encoded)
 
 
 def _stream_frame(kind: str, value: Any) -> bytes:

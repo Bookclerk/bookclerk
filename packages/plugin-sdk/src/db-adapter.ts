@@ -26,6 +26,7 @@
 import { MAX_SCALAR_BYTES } from "./abi.js";
 import type { DbColumn, DbRow, ExecuteReply, StatementResult } from "./db-execute.js";
 import type { DbValue } from "./db-value.js";
+import { decodeExecuteStream, validateCell, type ExecuteStreamLimits } from "./db-stream.js";
 import { PluginError } from "./errors.js";
 import type { AdapterReceipt, AdapterStatement, ExecuteStreamFrame } from "./generated.js";
 import { ExecuteStreamFrameCodec, encodeMessage } from "./generated-wire.js";
@@ -112,6 +113,15 @@ export interface AdapterBatchOptions {
   timingSource: string;
 }
 
+/** Options of {@link executeAdapterBatchStreamed}. */
+export interface AdapterBatchStreamedOptions extends AdapterBatchOptions {
+  /**
+   * The streamed budget this adapter advertises
+   * (`executeStreamLimits(caps)`); the host decodes the reply under it.
+   */
+  limits: ExecuteStreamLimits;
+}
+
 /**
  * Runs one host batch in a transaction and commits it with its replay receipt.
  *
@@ -132,35 +142,31 @@ export async function executeAdapterBatch(
 }
 
 /**
- * Runs one host batch for `executeStreamed` and commits it only when its
- * frames fit the invoke reply.
+ * Runs one host batch for `executeStreamed` and commits it only when the
+ * host can receive its frames.
  *
- * The frames are encoded inside the transaction; when they exceed
- * `MAX_SCALAR_BYTES` the batch rolls back and the call fails with
- * `limit_exceeded` (`maxScalarBytes`), so nothing commits that the host
- * cannot receive.
+ * The frames are encoded inside the transaction. Encoding stops with
+ * `limit_exceeded` (`maxScalarBytes`) as soon as they pass one invoke
+ * scalar, and the finished frames are decoded under `options.limits` the way
+ * the host decodes them. Either failure rolls the batch back, so nothing
+ * commits that the host would refuse.
  *
  * @param request - The adapter request (`executeStreamed`).
  * @param begin - Opens a transaction on the adapter's engine.
- * @param options - Timing source.
+ * @param options - Timing source and the advertised streamed budget.
  * @returns Every frame of the committed reply, concatenated.
  * @throws `PluginError` `limit_exceeded` when the frames do not fit one
- *   scalar, or whatever {@link executeAdapterBatch} throws.
+ *   scalar or the budget, or whatever {@link executeAdapterBatch} throws.
  */
 export async function executeAdapterBatchStreamed(
   request: AdapterBatchRequest,
   begin: () => Promise<AdapterTransaction>,
-  options: AdapterBatchOptions,
+  options: AdapterBatchStreamedOptions,
 ): Promise<Uint8Array> {
   return inTransaction(begin, async (txn) => {
-    const frames = encodeExecuteStream(await runAdapterBatch(request, txn, options));
-    if (frames.byteLength > MAX_SCALAR_BYTES) {
-      throw PluginError.limitExceeded({
-        limit: "maxScalarBytes",
-        cap: MAX_SCALAR_BYTES,
-        used: frames.byteLength,
-      });
-    }
+    const reply = await runAdapterBatch(request, txn, options);
+    const frames = encodeExecuteStream(reply, STREAM_FRAME_TARGET_BYTES, MAX_SCALAR_BYTES);
+    decodeExecuteStream(frames, options.limits);
     return frames;
   });
 }
@@ -208,7 +214,8 @@ async function inTransaction<T>(
  * @returns The reply to deliver once the transaction commits.
  * @throws `PluginError` `unavailable` when a prior receipt committed without
  *   its reply, `internal` when the wrap shape is malformed or the payload is
- *   over {@link GUEST_REPLAY_PAYLOAD_MAX_BYTES}, or whatever `run` threw.
+ *   over {@link GUEST_REPLAY_PAYLOAD_MAX_BYTES}, `invalid_params` when a
+ *   result cell is not a valid `DbValue`, or whatever `run` threw.
  */
 export async function runAdapterBatch(
   request: AdapterBatchRequest,
@@ -237,11 +244,19 @@ export async function runAdapterBatch(
       dbTimingSource: options.timingSource,
     };
   };
+  // The host refuses a non-finite float64 or TEXT with U+0000; refuse it
+  // here, before COMMIT, so the write and its receipt roll back.
+  for (const result of statements) {
+    for (const row of result.rows) {
+      row.values.forEach(validateCell);
+    }
+  }
   if (guestLen > 0) {
+    // A replay answers with the recorded timing, so record what ran.
     const partial: ExecuteReply = {
       operationId: request.operationId,
       statements,
-      timing: { attemptElapsedUs: 0, dbExecutionUs: 0, dbTimingSource: options.timingSource },
+      timing: timing(),
     };
     const readOnly = guestBatchIsReadOnly(request.statements, guestLen);
     for (const statement of guestReceiptFinalizeStatements(
@@ -417,20 +432,33 @@ export function guestReplayPayload(reply: ExecuteReply): string {
  *
  * @param reply - The committed reply.
  * @param frameTargetBytes - Estimated encoded size to aim for per `rows` frame.
+ * @param maxBytes - Stop as soon as the frames pass this many bytes.
  * @returns Every frame, concatenated.
+ * @throws `PluginError` `limit_exceeded` (`maxScalarBytes`) when the frames
+ *   pass `maxBytes`.
  */
 export function encodeExecuteStream(
   reply: ExecuteReply,
   frameTargetBytes: number = STREAM_FRAME_TARGET_BYTES,
+  maxBytes: number = Number.POSITIVE_INFINITY,
 ): Uint8Array {
-  const parts: Uint8Array[] = [
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  const push = (part: Uint8Array): void => {
+    total += part.byteLength;
+    if (total > maxBytes) {
+      throw PluginError.limitExceeded({ limit: "maxScalarBytes", cap: maxBytes, used: total });
+    }
+    parts.push(part);
+  };
+  push(
     frame({
       kind: "head",
       value: { operationId: reply.operationId, statementCount: reply.statements.length },
     }),
-  ];
+  );
   reply.statements.forEach((stmt, index) => {
-    parts.push(
+    push(
       frame({
         kind: "statement",
         value: { index, columns: stmt.columns, rowsAffected: stmt.rowsAffected },
@@ -441,16 +469,16 @@ export function encodeExecuteStream(
     stmt.rows.forEach((row, i) => {
       const estimate = rowSizeEstimate(row);
       if (size > 0 && size + estimate > frameTargetBytes) {
-        pushRowsFrames(parts, stmt.rows.slice(start, i));
+        pushRowsFrames(push, stmt.rows.slice(start, i));
         start = i;
         size = 0;
       }
       size += estimate;
     });
-    pushRowsFrames(parts, stmt.rows.slice(start));
+    pushRowsFrames(push, stmt.rows.slice(start));
   });
-  parts.push(frame({ kind: "end", value: reply.timing }));
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
+  push(frame({ kind: "end", value: reply.timing }));
+  const out = new Uint8Array(total);
   let at = 0;
   for (const part of parts) {
     out.set(part, at);
@@ -463,21 +491,21 @@ export function encodeExecuteStream(
  * Encodes `rows` as one or more `rows` frames, halving a slice whose frame
  * exceeds one scalar until each fits or holds one row.
  *
- * @param parts - Frames so far; the new frames are appended.
+ * @param push - Appends one frame.
  * @param rows - Rows of the open statement.
  */
-function pushRowsFrames(parts: Uint8Array[], rows: DbRow[]): void {
+function pushRowsFrames(push: (part: Uint8Array) => void, rows: DbRow[]): void {
   if (rows.length === 0) {
     return;
   }
   const encoded = frame({ kind: "rows", value: rows });
   if (encoded.byteLength > MAX_SCALAR_BYTES && rows.length > 1) {
     const mid = Math.floor(rows.length / 2);
-    pushRowsFrames(parts, rows.slice(0, mid));
-    pushRowsFrames(parts, rows.slice(mid));
+    pushRowsFrames(push, rows.slice(0, mid));
+    pushRowsFrames(push, rows.slice(mid));
     return;
   }
-  parts.push(encoded);
+  push(encoded);
 }
 
 /**

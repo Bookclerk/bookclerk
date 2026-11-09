@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 import json
 import sqlite3
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from bookclerk_plugin_sdk import db_value
 from bookclerk_plugin_sdk._abi import MAX_SCALAR_BYTES
 from bookclerk_plugin_sdk.db_value import (
     GUEST_READ_ONLY_REPLAY_PAYLOAD,
@@ -105,6 +106,8 @@ class _Txn:
         self.engine = engine
 
     async def run(self, statement: dict[str, Any]) -> dict[str, Any]:
+        if self.engine.delay:
+            await asyncio.sleep(self.engine.delay)
         return self.engine.run(statement)
 
     async def commit(self) -> None:
@@ -130,6 +133,9 @@ class _Engine:
         self.ran: list[str] = []
         self.fail_on: str | None = None
         self.fail_rollback = False
+        self.delay = 0.0
+        # Rewrites a query's rows, standing in for an adapter's own result.
+        self.map_rows: Callable[[dict[str, Any], list[Any]], list[Any]] | None = None
 
     async def begin(self) -> _Txn:
         self.db.execute("BEGIN")
@@ -151,6 +157,8 @@ class _Engine:
         rows = [
             {"values": [_cell(v, t) for v, t in zip(row, types, strict=True)]} for row in rows_raw
         ]
+        if self.map_rows:
+            rows = self.map_rows(statement, rows)
         affected = len(rows) if statement["kind"] == "returning" else 0
         return {"rows": rows, "columns": columns, "rowsAffected": affected}
 
@@ -227,7 +235,9 @@ class BatchTest(unittest.TestCase):
 
     def test_streamed_reply_decodes_to_the_inline_reply(self) -> None:
         engine = self._engine()
-        frames = _run(execute_adapter_batch_streamed(_request("write"), engine.begin, SOURCE))
+        frames = _run(
+            execute_adapter_batch_streamed(_request("write"), engine.begin, SOURCE, LIMITS)
+        )
         reply = decode_execute_stream(frames, LIMITS)
         self.assertEqual(reply["operationId"], "fixture-write")
         self.assertEqual(len(reply["statements"]), 5)
@@ -250,7 +260,7 @@ class BatchTest(unittest.TestCase):
         wide = "w" * (150 * 1024)
         engine.db.execute("INSERT INTO notes (id, body) VALUES (2, ?), (3, ?)", (wide, wide))
         with self.assertRaises(PluginError) as caught:
-            _run(execute_adapter_batch_streamed(_request("readOnly"), engine.begin, SOURCE))
+            _run(execute_adapter_batch_streamed(_request("readOnly"), engine.begin, SOURCE, LIMITS))
         self.assertEqual(caught.exception.code, "limit_exceeded")
         self.assertIn("maxScalarBytes", str(caught.exception))
         self.assertIn(str(MAX_SCALAR_BYTES), str(caught.exception))
@@ -265,12 +275,82 @@ class BatchTest(unittest.TestCase):
             "value": "x" * GUEST_REPLAY_PAYLOAD_MAX_BYTES,
         }
         with self.assertRaises(PluginError) as caught:
-            _run(execute_adapter_batch_streamed(request, engine.begin, SOURCE))
+            _run(execute_adapter_batch_streamed(request, engine.begin, SOURCE, LIMITS))
         self.assertEqual(caught.exception.code, "internal")
         self.assertRegex(str(caught.exception), r"guest replay payload is \d+ bytes; max is 65536")
         self.assertEqual(engine.commits, 0)
         self.assertFalse(engine.has_notes())
         self.assertIsNone(engine.receipt("fixture-write"))
+
+    def test_write_over_the_streamed_budget_rolls_back_then_commits_once(self) -> None:
+        engine = self._engine()
+        engine.map_rows = lambda s, rows: rows + rows if s["kind"] == "returning" else rows
+        tight = dataclasses.replace(LIMITS, max_rows=1)
+        with self.assertRaises(PluginError) as caught:
+            _run(execute_adapter_batch_streamed(_request("write"), engine.begin, SOURCE, tight))
+        self.assertEqual(caught.exception.code, "limit_exceeded")
+        self.assertIn("maxStreamedResultRows", str(caught.exception))
+        self.assertEqual(engine.commits, 0)
+        self.assertFalse(engine.has_notes())
+        self.assertIsNone(engine.receipt("fixture-write"))
+        engine.map_rows = None
+        for _ in range(2):
+            _run(execute_adapter_batch_streamed(_request("write"), engine.begin, SOURCE, tight))
+        self.assertEqual(engine.commits, 2)
+        self.assertEqual(engine.note_count(), 1)
+
+    def test_invalid_result_cell_rolls_back_before_the_receipt(self) -> None:
+        engine = self._engine()
+        _run(execute_adapter_batch(_request("write"), engine.begin, SOURCE))
+        engine.db.execute("INSERT INTO notes (id, body) VALUES (2, ?)", ("a\x00b",))
+        with self.assertRaises(PluginError) as caught:
+            _run(execute_adapter_batch(_request("readOnly"), engine.begin, SOURCE))
+        self.assertEqual(caught.exception.code, "invalid_params")
+        self.assertIn("U+0000", str(caught.exception))
+        self.assertEqual(engine.rollbacks, 1)
+        self.assertIsNone(engine.receipt("fixture-read"))
+
+    def test_receipt_records_the_measured_timing(self) -> None:
+        engine = self._engine()
+        engine.delay = 0.002
+        _run(execute_adapter_batch(_request("write"), engine.begin, SOURCE))
+        timing = json.loads(engine.receipt("fixture-write")[1])["timing"]
+        self.assertGreaterEqual(timing["attemptElapsedUs"], 1000)
+        self.assertEqual(timing["dbExecutionUs"], timing["attemptElapsedUs"])
+
+    def test_cancelled_rollback_still_completes(self) -> None:
+        async def scenario() -> list[str]:
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            events: list[str] = []
+
+            class Txn:
+                async def run(self, statement: dict[str, Any]) -> dict[str, Any]:
+                    raise ValueError("boom")
+
+                async def commit(self) -> None:
+                    events.append("commit")
+
+                async def rollback(self) -> None:
+                    entered.set()
+                    await release.wait()
+                    events.append("rolled back")
+
+            async def begin() -> Txn:
+                return Txn()
+
+            task = asyncio.create_task(execute_adapter_batch(_request("write"), begin, SOURCE))
+            await entered.wait()
+            task.cancel()
+            await asyncio.sleep(0)
+            release.set()
+            with self.assertRaises(ValueError):
+                await task
+            for _ in range(3):
+                await asyncio.sleep(0)
+            return events
+
+        self.assertEqual(_run(scenario()), ["rolled back"])
 
     def test_receipt_without_its_reply_is_unavailable(self) -> None:
         engine = self._engine()
@@ -442,6 +522,3 @@ class RulesTest(unittest.TestCase):
         # With no target, one rows frame would pass a scalar and is halved.
         frames = encode_execute_stream(reply, frame_target_bytes=1 << 40)
         self.assertEqual(decode_execute_stream(frames, LIMITS), decoded)
-
-    def test_helpers_live_in_the_injected_module(self) -> None:
-        self.assertIs(db_value.execute_adapter_batch_streamed, execute_adapter_batch_streamed)

@@ -96,6 +96,7 @@ export {
 } from "./db-adapter.js";
 export type {
   AdapterBatchOptions,
+  AdapterBatchStreamedOptions,
   AdapterBatchRequest,
   AdapterBatchStatement,
   AdapterTransaction,
