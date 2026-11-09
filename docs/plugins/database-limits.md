@@ -267,6 +267,31 @@ strictest; run the suite under all three. A registration that fails the
 BookclerkSQL proof, or a profile the kit does not know, is refused before
 the binding is handed out, with the kit's message.
 
+### The suite under every profile
+
+`bookclerk-plugin test <dir>` (`cargo plugin -- test <dir>` in a Bookclerk
+checkout) runs the plugin's own test runner once per profile. It picks
+`npm test` when `package.json` has a `test` script, else `python -m pytest`
+when `pyproject.toml` exists, else `cargo test`, and hands each run
+`BOOKCLERK_DB_TESTKIT` (the kit binary: `BOOKCLERK_DB_TESTKIT` itself, a
+`bookclerk-db-testkit` beside the CLI, or one on `PATH`) and
+`BOOKCLERK_DB_TESTKIT_PROFILE`, which `createTestDatabase()` and
+`create_test_database()` take as their default profile. So a suite written
+with the default profile runs under `first-party`, `d1` and `minimum`:
+
+```sh
+cargo build -p bookclerk-db-testkit
+cargo plugin -- test examples/plugins-echo-workerd-ts
+cargo plugin -- test . --profile minimum -- --grep notes   # one profile, runner arguments after --
+```
+
+Every profile runs even after one fails, and the report names the ones
+that did. `cargo test-staged` covers the migrations of every staged plugin
+the same way: the registration each `[[databases]]` binding answers is
+applied on a plugin-owned unit under every profile, so a migration the
+minimum advertisement refuses fails there rather than at enrollment on an
+operator's adapter.
+
 ## Checklist
 
 - Read with `all()`; the SDK streams when it can, and the result is still
