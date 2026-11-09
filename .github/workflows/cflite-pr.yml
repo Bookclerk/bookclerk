@@ -25,6 +25,8 @@ on:
       - "crates/bookclerk-config/**"
       - "crates/bookclerk-storefront/**"
       - "crates/bookclerk-plugins/optional/source-libro/**"
+      - "crates/bookclerk-library/**"
+      - "crates/bookclerk-plugins/platform/database-sqlite/**"
       - ".clusterfuzzlite/**"
       - ".github/workflows/cflite-*.yml"
   workflow_dispatch:
