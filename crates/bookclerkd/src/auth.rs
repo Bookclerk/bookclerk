@@ -5240,6 +5240,21 @@ pub(crate) mod tests {
         let job = library.get_job(&job_id).await.unwrap().expect("job");
         assert_eq!(job.payload.account.as_deref(), Some("mine"));
 
+        // The operator token still plans for every account through the
+        // same layer.
+        let (status, body) = send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/library/scan")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, "Bearer op-token-member-plan")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["job_ids"].as_array().map(Vec::len), Some(2), "{body}");
+
         // Signed out is still refused, and the aliases and job list stay
         // with Administrators.
         let (status, _) = send(post("/api/library/scan", None, empty.clone())).await;
