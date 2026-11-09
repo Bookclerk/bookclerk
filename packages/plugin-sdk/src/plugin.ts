@@ -798,30 +798,37 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
  * @returns The binding installed on `env.<BINDING>`.
  */
 function transportDatabase(entry: GrantedDatabaseTransport): DatabaseBinding {
+  // Methods are always invoked on the transport itself (`transport.m(...)`),
+  // never detached and re-bound: on a Workers RPC stub a detached property
+  // is itself a stub, so `m.call(transport, ...)` would call a remote method
+  // named `call`.
   const transport: Partial<GrantedDatabaseTransport> & Pick<GrantedDatabaseTransport, "execute"> =
     entry;
-  const { executeBytes, limits, limitsBytes, executeStreamed, openStreamedBytes } = transport;
   const execute =
-    typeof executeBytes === "function"
+    typeof transport.executeBytes === "function"
       ? async (request: ExecuteRequest): Promise<ExecuteReply> =>
           decodeExecuteResultReply(
-            await executeBytes.call(transport, encodeExecuteRequest(request)),
+            await (transport as GrantedDatabaseTransport).executeBytes(
+              encodeExecuteRequest(request),
+            ),
           )
       : (request: ExecuteRequest): Promise<ExecuteReply> => transport.execute(request);
   const readLimits =
-    typeof limitsBytes === "function"
+    typeof transport.limitsBytes === "function"
       ? async (): Promise<DbCapabilities> =>
-          decodeDbCapabilitiesReply(await limitsBytes.call(transport))
-      : typeof limits === "function"
-        ? (): Promise<DbCapabilities> => limits.call(transport)
+          decodeDbCapabilitiesReply(await (transport as GrantedDatabaseTransport).limitsBytes())
+      : typeof transport.limits === "function"
+        ? (): Promise<DbCapabilities> => (transport as GrantedDatabaseTransport).limits()
         : undefined;
   const streamed =
-    typeof openStreamedBytes === "function"
+    typeof transport.openStreamedBytes === "function"
       ? (request: ExecuteRequest): Promise<ReadableStream<Uint8Array> | Uint8Array> =>
-          openStreamedBytes.call(transport, encodeExecuteRequest(request))
-      : typeof executeStreamed === "function"
+          (transport as Required<GrantedDatabaseTransport>).openStreamedBytes(
+            encodeExecuteRequest(request),
+          )
+      : typeof transport.executeStreamed === "function"
         ? (request: ExecuteRequest): Promise<ReadableStream<Uint8Array> | Uint8Array> =>
-            executeStreamed.call(transport, request)
+            (transport as Required<GrantedDatabaseTransport>).executeStreamed(request)
         : undefined;
   return createDatabaseBinding({
     execute,

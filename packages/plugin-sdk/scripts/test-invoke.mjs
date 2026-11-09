@@ -366,13 +366,25 @@ function rpcStub(target) {
     get(obj, prop) {
       const value = Reflect.get(obj, prop, obj);
       if (typeof value !== "function") return value;
-      return async (...args) => {
+      const method = async (...args) => {
         try {
           return await value.apply(obj, args);
         } catch (err) {
           throw new Error(err instanceof Error ? err.message : String(err));
         }
       };
+      // A detached stub property is itself a stub: `m.call(...)` asks the
+      // remote for a method named `call`, as workerd does.
+      return new Proxy(method, {
+        get(fn, key) {
+          if (key === "call" || key === "apply" || key === "bind") {
+            return () => {
+              throw new Error(`The RPC receiver does not implement the method "${key}".`);
+            };
+          }
+          return Reflect.get(fn, key);
+        },
+      });
     },
   });
 }

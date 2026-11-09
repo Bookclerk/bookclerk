@@ -9512,10 +9512,9 @@ function invocationEnv(rawEnv, context) {
 }
 function transportDatabase(entry) {
   const transport = entry;
-  const { executeBytes, limits, limitsBytes, executeStreamed, openStreamedBytes } = transport;
-  const execute = typeof executeBytes === "function" ? async (request) => decodeExecuteResultReply(await executeBytes.call(transport, encodeExecuteRequest(request))) : (request) => transport.execute(request);
-  const readLimits = typeof limitsBytes === "function" ? async () => decodeDbCapabilitiesReply(await limitsBytes.call(transport)) : typeof limits === "function" ? () => limits.call(transport) : void 0;
-  const streamed = typeof openStreamedBytes === "function" ? (request) => openStreamedBytes.call(transport, encodeExecuteRequest(request)) : typeof executeStreamed === "function" ? (request) => executeStreamed.call(transport, request) : void 0;
+  const execute = typeof transport.executeBytes === "function" ? async (request) => decodeExecuteResultReply(await transport.executeBytes(encodeExecuteRequest(request))) : (request) => transport.execute(request);
+  const readLimits = typeof transport.limitsBytes === "function" ? async () => decodeDbCapabilitiesReply(await transport.limitsBytes()) : typeof transport.limits === "function" ? () => transport.limits() : void 0;
+  const streamed = typeof transport.openStreamedBytes === "function" ? (request) => transport.openStreamedBytes(encodeExecuteRequest(request)) : typeof transport.executeStreamed === "function" ? (request) => transport.executeStreamed(request) : void 0;
   return createDatabaseBinding({
     execute,
     ...readLimits ? { limits: readLimits } : {},
