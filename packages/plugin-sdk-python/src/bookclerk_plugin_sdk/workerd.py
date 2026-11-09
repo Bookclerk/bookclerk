@@ -1396,10 +1396,11 @@ class NamedEntrypoint(WorkerEntrypoint):
         return js(result)
 
 
-PURCHASE_HINTS_BUDGET_SECONDS = 7.0
+PURCHASE_HINTS_BUDGET_SECONDS = 4.0
 """How long the default ``purchaseHints`` keeps starting one-title lookups
-before answering with what it has. Under the host's batch deadline, so a
-store without a bulk endpoint still returns the titles it priced."""
+before answering with what it has. Well under the host's 10 s batch
+deadline, so even a slow last lookup lands before it and a store without a
+bulk endpoint still returns the titles it priced."""
 
 STOREFRONT_METHODS: tuple[str, ...] = (
     "login",

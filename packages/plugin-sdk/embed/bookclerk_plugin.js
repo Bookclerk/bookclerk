@@ -10235,6 +10235,7 @@ var NamedEntrypoint = class extends WorkerEntrypoint {
     return await target.apply(this, args);
   }
 };
+var PURCHASE_HINTS_BUDGET_MS = 4e3;
 var STOREFRONT_METHODS = Object.freeze([
   "login",
   "scan",
@@ -10338,8 +10339,9 @@ var StorefrontEntrypoint = class extends NamedEntrypoint {
   /**
    * Purchase links / price hints for several titles in one call, one
    * answer per query in order. The default asks {@link purchaseHint} for
-   * each query in turn; a store whose catalog prices many products per
-   * request overrides this to make one request. Reject with a
+   * each query, those with a product id first, and stops starting lookups
+   * after {@link PURCHASE_HINTS_BUDGET_MS}; a store whose catalog prices
+   * many products per request overrides this to make one request. Reject with a
    * `rate_limited` {@link PluginError} (its `details.retryAfterMs` says how
    * long) when the store asks to slow down, so the host leaves it alone.
    *
@@ -10347,9 +10349,13 @@ var StorefrontEntrypoint = class extends NamedEntrypoint {
    * @returns One hint or `null` per query.
    */
   async purchaseHints(params) {
-    const out = [];
-    for (const query of params.queries) {
-      out.push(await this.purchaseHint(query));
+    const started = Date.now();
+    const out = params.queries.map(() => null);
+    const order = params.queries.map((query, i) => ({ i, direct: Boolean(query.productId?.trim()) })).sort((a, b) => Number(b.direct) - Number(a.direct)).map((entry) => entry.i);
+    for (const i of order) {
+      if (Date.now() - started >= PURCHASE_HINTS_BUDGET_MS)
+        break;
+      out[i] = await this.purchaseHint(params.queries[i]);
     }
     return out;
   }

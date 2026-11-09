@@ -21,6 +21,12 @@ use crate::rpc_types::{
 };
 use crate::{PluginError, Result};
 
+/// How long the default [`ContentSource::purchase_hints`] keeps starting
+/// one-title lookups before answering with what it has. Well under the
+/// host's 10 s batch deadline, so even a slow last lookup lands before it
+/// and a store without a bulk endpoint still returns the titles it priced.
+pub const PURCHASE_HINTS_BUDGET: std::time::Duration = std::time::Duration::from_secs(4);
+
 /// Inclusive byte range for a streamed read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ByteRange {
@@ -290,17 +296,35 @@ pub trait ContentSource {
     /// Purchase links / price hints for several titles in one call, one
     /// answer per query in order.
     ///
-    /// The default asks [`Self::purchase_hint`] for each query in turn and
-    /// stops at the first error, so a guest whose backend prices many
+    /// The default asks [`Self::purchase_hint`] for each query in turn,
+    /// queries that already name a product id first (one lookup each) and
+    /// title searches after, and stops at the first error. It stops
+    /// starting lookups once [`PURCHASE_HINTS_BUDGET`] has passed and
+    /// answers `None` for the rest, so the host's batch gets what the store
+    /// managed instead of nothing. A guest whose backend prices many
     /// products per request overrides this to make one request. A
     /// `rate_limited` error applies to the whole batch.
     async fn purchase_hints(
         &self,
         params: PurchaseHintsParams,
     ) -> Result<Vec<Option<PurchaseHint>>> {
-        let mut out = Vec::with_capacity(params.queries.len());
-        for query in params.queries {
-            out.push(self.purchase_hint(query).await?);
+        let started = std::time::Instant::now();
+        let mut out: Vec<Option<PurchaseHint>> = vec![None; params.queries.len()];
+        // Queries that already name a product id are one lookup each; title
+        // searches come after, and nothing starts past the budget.
+        let mut order: Vec<usize> = (0..params.queries.len()).collect();
+        order.sort_by_key(|&i| {
+            params.queries[i]
+                .product_id
+                .as_deref()
+                .map(str::trim)
+                .is_none_or(str::is_empty)
+        });
+        for i in order {
+            if started.elapsed() >= PURCHASE_HINTS_BUDGET {
+                break;
+            }
+            out[i] = self.purchase_hint(params.queries[i].clone()).await?;
         }
         Ok(out)
     }
