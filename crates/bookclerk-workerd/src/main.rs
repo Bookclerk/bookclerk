@@ -28,7 +28,6 @@
 
 mod manifest_env;
 
-use bookclerk_tls::ureq;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -689,6 +688,9 @@ async fn wait_for_bridge(listen: &ListenSpec, token: &str) -> Result<()> {
 }
 
 /// Blocking ureq GET/POST to the loopback bridge, authenticated with the session token.
+///
+/// Sends through [`bookclerk_workerd::bridge_http::loopback_agent`], which
+/// ignores proxy environment variables, so the token never leaves loopback.
 async fn bridge_http(
     listen: &ListenSpec,
     method: &str,
@@ -702,14 +704,17 @@ async fn bridge_http(
     let method = method.to_string();
     let auth = format!("Bearer {token}");
     tokio::task::spawn_blocking(move || {
+        let agent = bookclerk_workerd::bridge_http::loopback_agent();
         let mut response = match method.as_str() {
-            "GET" => ureq::get(&url_owned)
+            "GET" => agent
+                .get(&url_owned)
                 .header("Authorization", &auth)
                 .call()
                 .with_context(|| url_owned.clone())?,
             "POST" => {
                 let body = body.unwrap_or_default();
-                ureq::post(&url_owned)
+                agent
+                    .post(&url_owned)
                     .header("content-type", "application/json")
                     .header("Authorization", &auth)
                     .send(body)

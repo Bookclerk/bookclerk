@@ -20,6 +20,35 @@ pub fn generate_bridge_token() -> String {
     hex::encode(bytes)
 }
 
+/// The blocking HTTP client for the launcher's loopback calls to its isolate
+/// bridge (`GET /health`, the JSON control plane), which carry the session's
+/// `BRIDGE_TOKEN`.
+///
+/// It never uses a proxy: `ureq`'s default configuration reads `ALL_PROXY`,
+/// `HTTPS_PROXY` and `HTTP_PROXY` from the environment, so a launcher that
+/// inherits one without a loopback `NO_PROXY` entry would send the bearer
+/// token to the proxy. TLS uses [`bookclerk_tls::ureq_tls_config`] like every
+/// other host agent; requests to anything other than the bridge keep using the
+/// shared agent and its proxy handling.
+///
+/// # Returns
+///
+/// A clone of one process-wide agent; clones share its connection pool.
+#[must_use]
+pub fn loopback_agent() -> bookclerk_tls::ureq::Agent {
+    /// The agent, built on first use.
+    static AGENT: std::sync::OnceLock<bookclerk_tls::ureq::Agent> = std::sync::OnceLock::new();
+    AGENT
+        .get_or_init(|| {
+            bookclerk_tls::ureq::Agent::config_builder()
+                .tls_config(bookclerk_tls::ureq_tls_config())
+                .proxy(None)
+                .build()
+                .new_agent()
+        })
+        .clone()
+}
+
 /// Loopback HTTP client for the isolate bridge.
 #[derive(Clone)]
 pub struct BridgeHttp {

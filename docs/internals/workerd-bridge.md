@@ -51,6 +51,12 @@ grant lets it export; the isolate does not retain the `Bindings`. That is
 why `PluginWorker.open` / `describe` / `shutdown` stay JSON while everything
 that *is* an ABI method call travels as Cap'n bytes on `/invoke`.
 
+The launcher sends the control plane's requests to `http://127.0.0.1:<port>`
+with `Bearer <BRIDGE_TOKEN>` through an agent that ignores proxy environment
+variables (`ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`), so the token never
+reaches a proxy the launcher inherited. Its other requests, such as the
+`workerd` download, keep the usual proxy handling.
+
 ## `POST /invoke`
 
 One ABI method call. Same framing as `/db/execute` on the granted channel:
