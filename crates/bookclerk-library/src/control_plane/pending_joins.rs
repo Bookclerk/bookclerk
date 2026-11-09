@@ -14,15 +14,15 @@
 //! when it is opened.
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
-use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, TransactionTrait as _};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use zeroize::Zeroizing;
 
+use super::batch;
 use super::cluster_links::{decode_spki_pin, ClusterLinkKeys};
 use crate::entities::pending_joins;
 use crate::error::{LibraryError, Result};
 use crate::secrets::{
-    build_sealed_record, delete_secret, get_secret, secret_account_type, secret_kind,
-    unseal_secret, upsert_secret_on,
+    build_sealed_record, delete_secret, get_secret, secret_account_type, secret_kind, unseal_secret,
 };
 use crate::store::LibraryStore;
 use crate::token_hash::hash_token;
@@ -181,27 +181,73 @@ pub async fn create_pending_join(
     let now = Utc::now();
     let ttl = Duration::from_std(PENDING_JOIN_TTL)
         .map_err(|_| LibraryError::Invalid("pending join ttl out of range".into()))?;
-    // The secret and its row land together: a secret without a row would
-    // never be purged. Dropping the transaction on an error rolls it back.
-    let txn = store.db().begin().await.map_err(LibraryError::Orm)?;
-    upsert_secret_on(&txn, &record).await?;
-    let row = pending_joins::ActiveModel {
-        state_hash: Set(state_hash),
-        owner_origin: Set(origin),
-        spki_pin: Set(join.spki_pin.clone()),
-        owner_cluster_id: Set(join.owner_cluster_id.clone()),
-        library_name: Set(join.library_name.trim().to_string()),
-        branch_name: Set(join.branch_name.trim().to_string()),
-        redirect_uri: Set(join.redirect_uri.clone()),
-        allow_clerk: Set(i64::from(join.allow_clerk)),
-        created_at: Set(stamp(now)),
-        expires_at: Set(stamp(now + ttl)),
-    };
-    pending_joins::Entity::insert(row)
-        .exec(&txn)
-        .await
-        .map_err(LibraryError::Orm)?;
-    txn.commit().await.map_err(LibraryError::Orm)?;
+    // The secret and its row land together as one batch to the database
+    // plugin: a secret without a row would never be purged. The secret is
+    // replaced the way `crate::secrets::upsert_secret_on` replaces it, by its
+    // unique key, and keeps the stamp `build_sealed_record` gave it.
+    let operation_id = format!("pending-join-create-{}", uuid::Uuid::new_v4());
+    store
+        .execute_host_batch(batch::request(
+            &operation_id,
+            vec![
+                batch::exec(
+                    "DELETE FROM encrypted_secrets \
+                     WHERE kind = ? AND provider = ? AND account_type = ? \
+                       AND account_id = ? AND name = ?",
+                    vec![
+                        batch::text(&record.kind),
+                        batch::text_opt(record.provider.as_deref()),
+                        batch::text(&record.account_type),
+                        batch::text_opt(record.account_id.as_deref()),
+                        batch::text(&record.name),
+                    ],
+                ),
+                batch::exec(
+                    "INSERT INTO encrypted_secrets (\
+                        kind, provider, account_type, account_id, name, format, ciphertext, \
+                        kdf_algorithm, kdf_salt, kdf_m_cost, kdf_t_cost, kdf_p_cost, \
+                        cipher_algorithm, cipher_nonce, created_at, updated_at\
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    vec![
+                        batch::text(&record.kind),
+                        batch::text_opt(record.provider.as_deref()),
+                        batch::text(&record.account_type),
+                        batch::text_opt(record.account_id.as_deref()),
+                        batch::text(&record.name),
+                        batch::text(&record.format),
+                        batch::blob(&record.ciphertext),
+                        batch::text_opt(record.kdf_algorithm.as_deref()),
+                        batch::blob_opt(record.kdf_salt.as_deref()),
+                        batch::int_opt(record.kdf_m_cost.map(i64::from)),
+                        batch::int_opt(record.kdf_t_cost.map(i64::from)),
+                        batch::int_opt(record.kdf_p_cost.map(i64::from)),
+                        batch::text_opt(record.cipher_algorithm.as_deref()),
+                        batch::blob_opt(record.cipher_nonce.as_deref()),
+                        batch::text(&record.created_at),
+                        batch::text(&stamp(now)),
+                    ],
+                ),
+                batch::exec(
+                    "INSERT INTO pending_joins (\
+                        state_hash, owner_origin, spki_pin, owner_cluster_id, library_name, \
+                        branch_name, redirect_uri, allow_clerk, created_at, expires_at\
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    vec![
+                        batch::text(&state_hash),
+                        batch::text(&origin),
+                        batch::text_opt(join.spki_pin.as_deref()),
+                        batch::text(&join.owner_cluster_id),
+                        batch::text(join.library_name.trim()),
+                        batch::text(join.branch_name.trim()),
+                        batch::text(&join.redirect_uri),
+                        batch::int(i64::from(join.allow_clerk)),
+                        batch::text(&stamp(now)),
+                        batch::text(&stamp(now + ttl)),
+                    ],
+                ),
+            ],
+        ))
+        .await?;
     pending_joins::Entity::find_by_id(hash_token(state))
         .one(store.db())
         .await
@@ -384,6 +430,58 @@ mod tests {
             branch_name: "den".into(),
             redirect_uri: "http://localhost:8787/join/callback".into(),
             allow_clerk: false,
+        }
+    }
+
+    /// External database adapters refuse interactive transactions, so the
+    /// secret and the row land as one batch of three statements (#733), and
+    /// a retry after a lost reply finds the same join.
+    #[tokio::test]
+    async fn a_pending_join_is_one_batch_without_an_interactive_transaction() {
+        let _lock = master_key_test_lock_async().await;
+        let dir = tempfile::tempdir().unwrap();
+        crate::configure_master_key(dir.path()).expect("master key");
+        // The 16-column secret insert does not pass the `Profile::Minimum`
+        // function-argument admission yet (column lists are counted as
+        // calls, #777), so the batch is checked under the two shipped
+        // advertisements.
+        for profile in [
+            crate::test_support::Profile::FirstParty,
+            crate::test_support::Profile::D1,
+        ] {
+            let kit = crate::test_support::sqlite::memory(profile).await;
+            let store = kit.store();
+            let keys = ClusterLinkKeys::generate();
+            let state = "s".repeat(43);
+            let stored = create_pending_join(store, &new_join(), &state, "verifier-1", &keys)
+                .await
+                .unwrap();
+            assert_eq!(stored.owner_origin, "https://owner.example");
+            assert_eq!(kit.refused_begins(), 0, "{}", profile.name());
+            assert_eq!(kit.batch_sizes(), [3], "{}", profile.name());
+            // A lost reply leaves the whole batch applied: the row and its
+            // sealed material are both there for the next step.
+            let again = ClusterLinkKeys::generate();
+            let state2 = "u".repeat(43);
+            kit.lose_next_replies(1);
+            let err = create_pending_join(store, &new_join(), &state2, "verifier-2", &again)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, LibraryError::Unavailable(_)), "{err}");
+            let taken = take_pending_join(store, &state2).await.unwrap().unwrap();
+            assert_eq!(taken.verifier.as_str(), "verifier-2");
+            assert_eq!(taken.keys.sign_public_key(), again.sign_public_key());
+            let first = take_pending_join(store, &state).await.unwrap().unwrap();
+            assert_eq!(first.verifier.as_str(), "verifier-1");
+            let secrets = crate::secrets::list_secrets(store.db(), secret_kind::CLUSTER_JOIN)
+                .await
+                .unwrap();
+            assert_eq!(
+                secrets.len(),
+                0,
+                "{}: sealed material left behind",
+                profile.name()
+            );
         }
     }
 

@@ -591,7 +591,8 @@ impl DbCapabilities {
     }
 
     /// Failure reason, or `None` when the guest meets host minima.
-    fn capability_failure_reason_opt(&self) -> Option<String> {
+    #[must_use]
+    pub fn capability_failure_reason_opt(&self) -> Option<String> {
         if !self.affected_rows {
             return Some("database guest does not advertise affectedRows".into());
         }
@@ -840,6 +841,37 @@ impl DbCapabilities {
         }
     }
 
+    /// The smallest advertisement the host connects to: every numeric cap at
+    /// its `HOST_MIN_*` value, no streamed reads, no plugin databases, no
+    /// consistent backup read or atomic unit restore.
+    ///
+    /// Test kits run host and plugin code under this profile so a write that
+    /// works on the shipped adapters also works on a plugin that advertises
+    /// only the minimums.
+    #[must_use]
+    pub fn host_minimum() -> Self {
+        Self {
+            max_binds: HOST_MIN_BINDS,
+            max_statements: HOST_MIN_STATEMENTS,
+            max_result_rows: HOST_MIN_RESULT_ROWS,
+            max_payload_bytes: HOST_MIN_PAYLOAD_BYTES,
+            max_result_bytes: HOST_MIN_RESULT_BYTES,
+            max_cell_bytes: HOST_MIN_CELL_BYTES,
+            max_request_bytes: HOST_MIN_RESULT_BYTES,
+            max_atomic_result_bytes: HOST_MIN_RESULT_BYTES,
+            max_function_args: HOST_MIN_FUNCTION_ARGS,
+            max_schema_columns: HOST_MIN_SCHEMA_COLUMNS,
+            max_pattern_bytes: HOST_MIN_PATTERN_BYTES,
+            max_lowered_statement_bytes: 0,
+            plugin_databases: false,
+            consistent_backup_read: false,
+            atomic_unit_restore: false,
+            max_streamed_result_bytes: 0,
+            max_streamed_result_rows: 0,
+            ..Self::advertised_sqlite()
+        }
+    }
+
     /// Rejects BookclerkSQL that exceeds this advertisement before dispatch.
     ///
     /// Literal INTEGER arithmetic typechecks against an empty catalog so dense
@@ -980,6 +1012,25 @@ pub fn sql_payload_exceeds(sql: &str, values_json: &str, max_payload_bytes: u32)
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_minimum_meets_the_host_minimums_and_nothing_more() {
+        let caps = DbCapabilities::host_minimum();
+        assert_eq!(caps.capability_failure_reason_opt(), None);
+        assert_eq!(caps.max_result_bytes, HOST_MIN_RESULT_BYTES);
+        assert_eq!(caps.max_cell_bytes, HOST_MIN_CELL_BYTES);
+        assert_eq!(caps.max_result_rows, HOST_MIN_RESULT_ROWS);
+        assert_eq!(caps.max_streamed_result_bytes, 0);
+        for profile in [
+            DbCapabilities::advertised_sqlite(),
+            DbCapabilities::advertised_d1(),
+            DbCapabilities::advertised_postgres(),
+        ] {
+            assert!(profile.max_result_bytes >= caps.max_result_bytes);
+            assert!(profile.max_statements >= caps.max_statements);
+            assert!(profile.max_binds >= caps.max_binds);
+        }
+    }
 
     #[test]
     fn payload_cap_is_scalar_ceiling() {

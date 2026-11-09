@@ -366,6 +366,10 @@ impl LibraryStore {
         if let Some(atomic) = &self.atomic {
             return atomic.publish_domain_event(spec).await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match publish_domain_event_on(&txn, spec).await {
             Ok(outcome) => {
@@ -426,6 +430,10 @@ impl LibraryStore {
             }
             return Ok(total);
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match dispatch_event_deliveries_on(&txn, self.leftover_in_process(), event_id, subscribers)
             .await
@@ -594,6 +602,10 @@ impl LibraryStore {
             )
             .await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match wake_one_page_on(
             &txn,
@@ -686,6 +698,10 @@ impl LibraryStore {
                 )
                 .await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match claim_next_event_delivery_on(
             &txn,

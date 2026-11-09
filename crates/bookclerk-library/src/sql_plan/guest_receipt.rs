@@ -469,6 +469,8 @@ mod replay_finalize {
         let caps = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
         let wrapped = wrap_guest_typed_request(req, &slots_env()).expect("wrap");
         assert!(!wrapped.guest_receipt.is_absent());
+        // The engine-side executor runs inside a transaction it opened.
+        #[allow(clippy::disallowed_methods)]
         let txn = db.begin().await.expect("begin");
         let reply = bookclerk_db_exec::execute_typed_on_txn_envelope(
             bookclerk_db_exec::PhysicalEngine::sqlite(),
