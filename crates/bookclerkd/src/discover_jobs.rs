@@ -296,6 +296,28 @@ pub async fn run_discover_feed(
     ))
 }
 
+/// True when a fetch or ranking for `subject` is waiting or running, so the
+/// page can say its shelves are being rebuilt.
+///
+/// # Errors
+///
+/// Returns the library read error.
+pub async fn subject_refresh_active(
+    library: &bookclerk_library::LibraryStore,
+    subject: &DiscoverSubject,
+) -> anyhow::Result<bool> {
+    let payload = JobPayload {
+        subject: Some(subject.key()),
+        ..JobPayload::default()
+    };
+    for kind in [JobKind::DiscoverCandidates, JobKind::DiscoverFeed] {
+        if library.job_is_active(&kind.dedup_key(&payload)).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// What a read of a subject's stored feed should queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeedRefresh {

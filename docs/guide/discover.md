@@ -9,22 +9,33 @@ Discover shows rows of suggestions, each with its reason, for example:
 
 - **Finish these series**: the next book in a series you started.
 - **Pick up where you left off**: books you have started.
+- **Because you wishlisted** a title: books related to something on your
+  wishlist.
 - **More from** an author, **If you like** an author, or **Narrated by** a
   narrator you like.
 - **Because you like** a genre you finish books in.
 - **Similar to books you finish** and **Top picks for you**.
-- **From stores you use**, and **Chirp deals**.
+- **Popular in** a genre, while Discover is still learning your taste.
+- **Picked for you on** a store: the rest of your matches, each under the
+  store where it costs you least, and **Chirp deals**.
 - **Wishlist**: what people in your household want.
+
+Each book appears on one row only, and no row shows more than two books of
+the same series, so one long series cannot crowd out the rest.
 
 Suggestions come from the stores' catalogs, so they include books nobody in
 your library owns yet. The more you rate and finish, the better they get.
+Until you have a few books or listens of your own, your household's library
+shapes your rows too.
 
 If your household uses Audiobookshelf, Bookclerk can also learn from what
 you listen to there.
 
 Your rows are built in the background, from your own books, listening and
 wishlist, and refreshed every day. The first time you open Discover they may
-take a minute; the page shows placeholders and fills in on its own.
+take a minute; the page shows placeholders and fills in on its own. When you
+add a wish, your rows rebuild within a minute, and the page says **Updating
+shelves** until they land. **Refresh** asks for a rebuild right away.
 
 To hide rows you do not want, open **Preferences** in the top bar.
 

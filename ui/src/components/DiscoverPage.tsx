@@ -62,6 +62,7 @@ import {
   fetchTitleMetaBatch,
   fetchWishlist,
   removeWishlistItem,
+  requestDiscoverRefresh,
   searchCatalog,
   signOut,
   userFacingApiError,
@@ -327,6 +328,22 @@ export function DiscoverPage({
       await refreshFeed();
     } catch (err) {
       setError(userFacingApiError(err, "Couldn't load Discover shelves. Try again."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // The Refresh button asks the daemon to rebuild the caller's shelves, then
+  // re-reads them; the feed then reports `refreshing` until the jobs land
+  // and the live socket brings the new shelves.
+  async function rebuild() {
+    setError(null);
+    setBusy(true);
+    try {
+      await requestDiscoverRefresh();
+      await refreshFeed();
+    } catch (err) {
+      setError(userFacingApiError(err, "Couldn't refresh Discover shelves. Try again."));
     } finally {
       setBusy(false);
     }
@@ -780,8 +797,16 @@ export function DiscoverPage({
             nav={nav}
             onSignOut={onSignOut}
             actions={
-              <Button variant="secondary" onClick={() => void refresh()} disabled={busy}>
-                <Sparkles className="h-4 w-4" />
+              <Button
+                variant="secondary"
+                onClick={() => void rebuild()}
+                disabled={busy || feed.state === "refreshing"}
+              >
+                {feed.state === "refreshing" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                ) : (
+                  <Sparkles className="h-4 w-4" />
+                )}
                 Refresh
               </Button>
             }
@@ -1173,6 +1198,16 @@ export function DiscoverPage({
                 <p className="text-sm text-ink/60">
                   Personalized shelves from your library, listening, and storefront catalogs.
                 </p>
+                {feed.state === "refreshing" && feed.shelves.length > 0 ? (
+                  <p
+                    className="flex items-center gap-2 text-sm text-teal"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <WaveformThrobber size="sm" className="shrink-0" />
+                    <span>Updating shelves from your latest changes…</span>
+                  </p>
+                ) : null}
               </div>
 
               {feed.shelves.length === 0 &&

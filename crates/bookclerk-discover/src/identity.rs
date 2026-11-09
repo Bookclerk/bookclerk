@@ -745,6 +745,14 @@ pub fn merge_recommendation(into: &mut Recommendation, mut from: Recommendation)
     fill_opt_string(&mut into.published_at, from.published_at.as_deref());
     fill_opt_string(&mut into.genres, from.genres.as_deref());
     fill_opt_string(&mut into.language, from.language.as_deref());
+    // The card keeps the seed and genre of the edition it was first found
+    // through; a merge only fills a blank.
+    if into.seed_title.is_none() {
+        into.seed_title = from.seed_title.clone();
+    }
+    if into.starter_genre.is_none() {
+        into.starter_genre = from.starter_genre.clone();
+    }
     if into.length_minutes.is_none() {
         into.length_minutes = from.length_minutes;
     }

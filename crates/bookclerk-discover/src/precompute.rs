@@ -3,10 +3,12 @@
 //! Discover used to rebuild every shelf inside the page request. Now:
 //!
 //! 1. [`fetch_subject_candidates`] (the `discover_candidates` job) picks one
-//!    subject's own seeds (their books, listening, ratings and wishlist, or
-//!    the household's while they have none), asks **every** deployed
+//!    subject's seeds (their books, listening, ratings and wishlist, with the
+//!    household's books blended in while they have fewer than
+//!    [`OWN_TASTE_THRESHOLD`] of their own), asks **every** deployed
 //!    storefront about them concurrently, and stores each store's answer as
-//!    soon as it arrives. Storefront answers are cached for a day in
+//!    soon as it arrives. A thin taste also browses each store's
+//!    [`STARTER_GENRES`]. Storefront answers are cached for a day in
 //!    `discover_store_calls`, shared by every subject.
 //! 2. [`rank_subject_feed`] (the `discover_feed` job) ranks the stored
 //!    candidates against the same taste, with no network, and stores the
@@ -22,7 +24,10 @@ use std::time::Duration;
 use bookclerk_library::{
     BookRecord, DiscoverSubject, LibraryStore, ListeningProgressRecord, RequestStatus, SeedScope,
 };
-use bookclerk_source::{CatalogHit, ContentSource, SourceRegistry};
+use bookclerk_source::{
+    CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, ContentSource,
+    SourceRegistry,
+};
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use tokio::task::JoinSet;
@@ -34,7 +39,7 @@ use crate::candidates::{
 use crate::error::Result;
 use crate::recommend::{
     engagement_by_book, feed_from_recommendations, owned_identity_sets, rank_candidates,
-    RecommendOptions,
+    shelf_taste, RecommendOptions, TasteWeights,
 };
 use crate::shelves::{encode_feed_within, shelf_is_disabled, DiscoverFeed};
 
@@ -54,6 +59,32 @@ pub const STORE_CALL_MAX_AGE: chrono::Duration = chrono::Duration::hours(24);
 /// Most open wishlist titles used as seeds, after the subject's books.
 const WISHLIST_SEED_LIMIT: usize = 4;
 
+/// Books and listens of their own a subject needs before the household's
+/// books stop blending into their taste.
+pub const OWN_TASTE_THRESHOLD: usize = 5;
+
+/// How much a household book counts in a member's taste while it blends in,
+/// relative to one of their own.
+pub const HOUSEHOLD_BLEND_WEIGHT: f64 = 0.5;
+
+/// Seeds below which a fetch also browses each store's [`STARTER_GENRES`],
+/// so a new library still gets shelves.
+pub const STARTER_GENRE_MIN_SEEDS: usize = 5;
+
+/// Genres browsed for a thin taste, in the order the stores are asked (the
+/// call budget may stop before the end).
+pub const STARTER_GENRES: [&str; 6] = [
+    "Science Fiction",
+    "Fantasy",
+    "Mystery & Thriller",
+    "Romance",
+    "History & Biography",
+    "Self-help",
+];
+
+/// Hits asked of a store for one starter genre.
+const STARTER_GENRE_HITS: usize = 24;
+
 /// Most bytes a stored feed's JSON may take once escaped as a JSON string.
 ///
 /// The feed is one `discover_feeds` cell. The first-party database plugins
@@ -68,12 +99,56 @@ pub const STORED_FEED_MAX_BYTES: usize = 192 * 1024;
 pub struct SubjectTaste {
     /// Whether the taste is the subject's own or the household's.
     pub scope: SeedScope,
-    /// Books whose finishes, ratings, series and authors shape the taste.
+    /// Books whose finishes, ratings, series and authors shape the taste:
+    /// the subject's own, then the household's blended in while the
+    /// subject's own are fewer than [`OWN_TASTE_THRESHOLD`].
     pub books: Vec<BookRecord>,
+    /// How much each book in `books` counts; a blended household book is
+    /// listed at [`HOUSEHOLD_BLEND_WEIGHT`], the subject's own count in full.
+    pub weights: TasteWeights,
     /// The subject's listening rows (all rows for the household).
     pub listening: Vec<ListeningProgressRecord>,
-    /// The subject's open wishlist titles, used as extra seeds.
+    /// The subject's open wishlist titles, newest first, used as extra seeds.
     pub wishlist: Vec<SeedTitle>,
+    /// Display titles of `wishlist`, newest first.
+    pub wish_titles: Vec<String>,
+    /// Lowercase storefront ids the subject has an account with.
+    pub linked_sources: HashSet<String>,
+}
+
+impl SubjectTaste {
+    /// The whole household's taste, for a subject with no signal of their own.
+    fn household(
+        books: Vec<BookRecord>,
+        listening: Vec<ListeningProgressRecord>,
+        linked_sources: HashSet<String>,
+    ) -> Self {
+        Self {
+            scope: SeedScope::Household,
+            books,
+            weights: TasteWeights::new(),
+            listening,
+            wishlist: Vec::new(),
+            wish_titles: Vec::new(),
+            linked_sources,
+        }
+    }
+
+    /// The seeds the storefronts are asked about: the subject's books by
+    /// engagement, then the household's blended-in books, each capped.
+    fn book_seeds(&self, limit: usize, region: &str) -> Vec<SeedTitle> {
+        let engagement = engagement_by_book(&self.listening);
+        let ranked = select_taste_seeds(&self.books, &engagement);
+        // Own books first: a blended household book never displaces one.
+        let (own, blended): (Vec<BookRecord>, Vec<BookRecord>) = ranked
+            .into_iter()
+            .partition(|b| !self.weights.contains_key(&b.uuid));
+        own.iter()
+            .chain(blended.iter())
+            .take(limit)
+            .map(|b| SeedTitle::from_book(b, region))
+            .collect()
+    }
 }
 
 /// Loads one subject's taste.
@@ -81,9 +156,13 @@ pub struct SubjectTaste {
 /// A user or portal identity uses the books held by store accounts linked to
 /// them plus the household books they have listened to, the listening rows
 /// recorded for them (by identity id, or by provider and external user id on
-/// rows recorded before the identity was known), and their open wishlist. When
-/// all three are empty (a new member, or a visitor who has connected no store
-/// yet), and always for the operator, the household library is used instead.
+/// rows recorded before the identity was known), and their open wishlist.
+/// While they have fewer than [`OWN_TASTE_THRESHOLD`] books and listens of
+/// their own, the rest of the household's books blend in at
+/// [`HOUSEHOLD_BLEND_WEIGHT`], so a first wish or book adds to the shelves
+/// they already had instead of replacing them. With no signal of their own
+/// at all (a new member, or a visitor who has connected no store yet), and
+/// always for the operator, the household library is used as it stands.
 ///
 /// # Arguments
 ///
@@ -123,12 +202,15 @@ pub async fn load_subject_taste(
             .collect(),
     };
     if identities.is_empty() {
-        return Ok(SubjectTaste {
-            scope: SeedScope::Household,
-            books: household,
-            listening: all_listening,
-            wishlist: Vec::new(),
-        });
+        // The operator compares prices as a member of every store the
+        // household has an account with.
+        let linked = library
+            .list_accounts()
+            .await?
+            .into_iter()
+            .map(|a| a.source.to_ascii_lowercase())
+            .collect();
+        return Ok(SubjectTaste::household(household, all_listening, linked));
     }
 
     let identity_ids: HashSet<i64> = identities.iter().map(|i| i.id).collect();
@@ -139,8 +221,10 @@ pub async fn load_subject_taste(
         .map(|i| (i.provider.as_str(), i.external_user_id.as_str()))
         .collect();
     let mut held: HashSet<(String, String)> = HashSet::new();
+    let mut linked_sources: HashSet<String> = HashSet::new();
     for identity in &identities {
         for link in library.list_account_links(identity.id).await? {
+            linked_sources.insert(link.source.to_ascii_lowercase());
             held.insert((link.plugin_key, link.account_id));
         }
     }
@@ -158,38 +242,52 @@ pub async fn load_subject_taste(
         .iter()
         .filter_map(|r| r.book_uuid.as_deref())
         .collect();
-    let books: Vec<BookRecord> = household
-        .iter()
-        .filter(|b| {
-            held.contains(&(b.plugin_key.clone(), b.account_id.clone()))
-                || listened.contains(b.uuid.as_str())
-        })
-        .cloned()
-        .collect();
-    let wishlist: Vec<SeedTitle> = library
+    let (own, rest): (Vec<BookRecord>, Vec<BookRecord>) = household.into_iter().partition(|b| {
+        held.contains(&(b.plugin_key.clone(), b.account_id.clone()))
+            || listened.contains(b.uuid.as_str())
+    });
+    let wishes: Vec<_> = library
         .list_title_requests(Some(RequestStatus::Open))
         .await?
         .into_iter()
         .filter(|r| r.identity_id.is_some_and(|id| identity_ids.contains(&id)))
         .take(WISHLIST_SEED_LIMIT)
+        .collect();
+    let wish_titles: Vec<String> = wishes.iter().map(|r| r.title.clone()).collect();
+    let wishlist: Vec<SeedTitle> = wishes
+        .into_iter()
         .map(|r| SeedTitle::from_wish(&r.title, r.authors, r.asin, r.isbn))
         .collect();
 
-    if books.is_empty() && listening.is_empty() && wishlist.is_empty() {
-        // Nothing of their own yet: fall back to the whole household's
-        // taste, listening included, as for a subject with no identity.
-        return Ok(SubjectTaste {
-            scope: SeedScope::Household,
-            books: household,
-            listening: all_listening,
-            wishlist: Vec::new(),
-        });
+    if own.is_empty() && listening.is_empty() && wishlist.is_empty() {
+        // Nothing of their own yet: the whole household's taste, listening
+        // included, as for a subject with no identity.
+        let mut household = own;
+        household.extend(rest);
+        return Ok(SubjectTaste::household(
+            household,
+            all_listening,
+            linked_sources,
+        ));
+    }
+    // `own` already holds every book they listened to, so it is their signal.
+    let own_signal = own.len();
+    let mut books = own;
+    let mut weights = TasteWeights::new();
+    if own_signal < OWN_TASTE_THRESHOLD {
+        for book in rest {
+            weights.insert(book.uuid.clone(), HOUSEHOLD_BLEND_WEIGHT);
+            books.push(book);
+        }
     }
     Ok(SubjectTaste {
         scope: SeedScope::Own,
         books,
+        weights,
         listening,
         wishlist,
+        wish_titles,
+        linked_sources,
     })
 }
 
@@ -236,12 +334,7 @@ pub async fn fetch_subject_candidates(
     let taste = load_subject_taste(library, subject, opts).await?;
     let household = library.list_books(None).await?;
     let owned = owned_identity_sets(&household);
-    let book_seeds: Vec<SeedTitle> =
-        select_taste_seeds(&taste.books, &engagement_by_book(&taste.listening))
-            .iter()
-            .take(opts.storefront_seed_limit)
-            .map(|b| SeedTitle::from_book(b, &opts.region))
-            .collect();
+    let book_seeds = taste.book_seeds(opts.storefront_seed_limit, &opts.region);
     let wish_seeds: Vec<SeedTitle> = taste
         .wishlist
         .iter()
@@ -252,6 +345,13 @@ pub async fn fetch_subject_candidates(
         })
         .collect();
     let seeds = interleave_seeds(book_seeds, wish_seeds);
+    // A thin taste browses the starter genres too, so a new library still
+    // gets shelves; the stores' call budget decides how many.
+    let starter: Vec<String> = if seeds.len() < STARTER_GENRE_MIN_SEEDS {
+        STARTER_GENRES.iter().map(|g| (*g).to_string()).collect()
+    } else {
+        Vec::new()
+    };
     let mut report = FetchReport {
         seeds: seeds.len(),
         ..FetchReport::default()
@@ -274,12 +374,22 @@ pub async fn fetch_subject_candidates(
             continue;
         }
         let seeds = seeds.clone();
+        let starter = starter.clone();
         let library = library.clone();
+        let region = opts.region.clone();
         let exclude_sets = opts.exclude_graphicaudio_series_sets;
         tasks.spawn(async move {
             let id = source.id().to_string();
-            let (hits, ok) =
-                fetch_one_store(&library, source.as_ref(), &seeds, per_store, exclude_sets).await;
+            let (hits, ok) = fetch_one_store(
+                &library,
+                source.as_ref(),
+                &seeds,
+                &starter,
+                &region,
+                per_store,
+                exclude_sets,
+            )
+            .await;
             (id, hits, ok)
         });
     }
@@ -345,7 +455,8 @@ fn interleave_seeds(books: Vec<SeedTitle>, wishes: Vec<SeedTitle>) -> Vec<SeedTi
     out
 }
 
-/// Asks one store for its deals, then about each seed, in at most `budget` calls.
+/// Asks one store for its deals, then about each seed, then for each
+/// starter genre, in at most `budget` calls.
 ///
 /// # Returns
 ///
@@ -357,6 +468,8 @@ async fn fetch_one_store(
     library: &LibraryStore,
     source: &dyn ContentSource,
     seeds: &[SeedTitle],
+    starter_genres: &[String],
+    region: &str,
     budget: usize,
     exclude_series_sets: bool,
 ) -> (Vec<StorefrontCandidate>, bool) {
@@ -412,6 +525,36 @@ async fn fetch_one_store(
                 continue;
             }
             out.push(apply_seed_title(hit_to_candidate(&id, hit), seed));
+        }
+    }
+    for genre in starter_genres {
+        if calls >= budget || started.elapsed() >= STORE_FETCH_DEADLINE {
+            break;
+        }
+        let key = call_key(&id, "starter", &[genre, region]);
+        let search = CatalogSearchOpts {
+            query: genre.clone(),
+            region: region.to_string(),
+            limit: STARTER_GENRE_HITS,
+            page: 1,
+            sort: CatalogSearchSort::Popularity,
+            field: Some(CatalogSearchField::Genre),
+            language: None,
+        };
+        let hits = cached_or_call(library, &id, &key, || source.search_catalog(&search)).await;
+        calls += 1;
+        let Some(hits) = hits else { continue };
+        answered += usize::from(!hits.is_empty());
+        for hit in hits {
+            if skip_set(&hit) {
+                continue;
+            }
+            let mut c = hit_to_candidate(&id, hit);
+            c.starter_genre = Some(genre.clone());
+            if c.origin.is_empty() {
+                c.origin = format!("{id} popular in {genre}");
+            }
+            out.push(c);
         }
     }
     (out, answered > 0)
@@ -547,12 +690,16 @@ pub async fn rank_subject_feed(
         registry,
         &household,
         &taste.books,
+        &taste.weights,
         &taste.listening,
         candidates,
         &rank_opts,
     )
     .await?;
-    let mut feed = feed_from_recommendations(&recs, &taste.books, &taste.listening, &rank_opts);
+    let mut shelf = shelf_taste(&taste.books, &taste.weights, &taste.listening);
+    shelf.wish_titles.clone_from(&taste.wish_titles);
+    shelf.linked_sources.clone_from(&taste.linked_sources);
+    let mut feed = feed_from_recommendations(&recs, &shelf, &rank_opts);
     let json = encode_feed_within(&mut feed, STORED_FEED_MAX_BYTES).map_err(|e| {
         crate::error::DiscoverError::message(format!("encode the discover feed: {e}"))
     })?;
@@ -789,20 +936,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(own.scope, SeedScope::Own);
+        // Her one book is too little on its own, so Bob's blends in behind
+        // it at half weight.
         let titles: Vec<&str> = own.books.iter().map(|b| b.title.as_str()).collect();
-        assert_eq!(titles, vec!["Alice Book"]);
+        assert_eq!(titles, vec!["Alice Book", "Bob Book"]);
+        assert!(!own.weights.contains_key(&own.books[0].uuid));
+        assert_eq!(
+            own.weights.get(&own.books[1].uuid),
+            Some(&HOUSEHOLD_BLEND_WEIGHT)
+        );
+        assert_eq!(own.linked_sources, HashSet::from([String::from("libro")]));
+        let seeds: Vec<String> = own
+            .book_seeds(8, "us")
+            .into_iter()
+            .map(|s| s.seed.title)
+            .collect();
+        assert_eq!(
+            seeds,
+            vec!["Alice Book", "Bob Book"],
+            "own books seed first"
+        );
 
         let portal = load_subject_taste(&library, &DiscoverSubject::Portal(alice.id), &opts)
             .await
             .unwrap();
         assert_eq!(portal.scope, SeedScope::Own);
-        assert_eq!(portal.books.len(), 1);
+        assert_eq!(portal.books.len(), 2);
 
         let operator = load_subject_taste(&library, &DiscoverSubject::Operator, &opts)
             .await
             .unwrap();
         assert_eq!(operator.scope, SeedScope::Household);
         assert_eq!(operator.books.len(), 2);
+        assert!(operator.weights.is_empty());
 
         // An identity with nothing linked, and a user with no identity, fall
         // back to the household.
@@ -818,6 +984,49 @@ mod tests {
             assert_eq!(taste.scope, SeedScope::Household, "{subject:?}");
             assert_eq!(taste.books.len(), 2);
         }
+    }
+
+    /// A first wish adds a seed to the household taste the member already
+    /// had instead of replacing it, so their shelves stay.
+    #[tokio::test]
+    async fn a_wish_alone_keeps_the_household_taste_behind_it() {
+        let (library, _) = two_member_library().await;
+        let carol = library
+            .upsert_portal_identity("oidc", "carol", Some("Carol"))
+            .await
+            .unwrap();
+        library
+            .create_title_request(&bookclerk_library::NewTitleRequest {
+                uuid: None,
+                identity_id: Some(carol.id),
+                title: "Hail Mary".into(),
+                authors: Some("Andy Weir".into()),
+                asin: None,
+                isbn: None,
+                notes: None,
+                status: RequestStatus::Open,
+                work_key: String::new(),
+                work_id: None,
+                resolved_book_uuid: None,
+                cover_url: None,
+            })
+            .await
+            .unwrap();
+        let taste = load_subject_taste(
+            &library,
+            &DiscoverSubject::Portal(carol.id),
+            &RecommendOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(taste.scope, SeedScope::Own);
+        assert_eq!(taste.books.len(), 2, "both household books blend in");
+        assert!(taste
+            .books
+            .iter()
+            .all(|b| taste.weights.get(&b.uuid) == Some(&HOUSEHOLD_BLEND_WEIGHT)));
+        assert_eq!(taste.wish_titles, vec!["Hail Mary"]);
+        assert_eq!(taste.wishlist.len(), 1);
     }
 
     /// A listening row on `book_uuid` for `(provider, external)`.
@@ -890,7 +1099,13 @@ mod tests {
         assert_eq!(taste.scope, SeedScope::Own);
         assert_eq!(taste.listening.len(), 1);
         let titles: Vec<&str> = taste.books.iter().map(|b| b.title.as_str()).collect();
-        assert_eq!(titles, vec!["Bob Book"]);
+        assert_eq!(
+            titles,
+            vec!["Bob Book", "Alice Book"],
+            "her own listen first"
+        );
+        assert!(!taste.weights.contains_key(&taste.books[0].uuid));
+        assert!(taste.weights.contains_key(&taste.books[1].uuid));
     }
 
     #[tokio::test]
@@ -912,9 +1127,10 @@ mod tests {
         let fetched = fetch_subject_candidates(&library, &registry, &subject, &opts)
             .await
             .unwrap();
-        // Alice's book seeds one expand call; the deals come regardless.
-        assert_eq!(fetched.seeds, 1);
-        assert_eq!(fetched.candidates, 4);
+        // Alice's book and Bob's blended-in book each seed an expand call;
+        // the deals come regardless.
+        assert_eq!(fetched.seeds, 2);
+        assert_eq!(fetched.candidates, 5);
         let stored = library.list_discover_candidates(&subject).await.unwrap();
         let near = stored
             .iter()
@@ -926,7 +1142,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ranked.scope, SeedScope::Own);
-        assert_eq!(ranked.candidates, 4);
+        assert_eq!(ranked.candidates, 5);
         assert!(ranked.shelves > 0);
 
         let read = stored_subject_feed(&library, &subject, &[])

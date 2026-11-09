@@ -3104,6 +3104,10 @@ export interface Recommendation {
   wishers?: QueueWisher[];
   /** Distinct wisher count (may exceed `wishers.length`). */
   wish_count?: number;
+  /** Title of the book or wish the storefront was asked about to find this card. */
+  seed_title?: string | null;
+  /** Starter genre this card was browsed from while the taste was thin. */
+  starter_genre?: string | null;
 }
 
 /**
@@ -3332,6 +3336,38 @@ export interface CatalogSearchPage {
  *
  * @returns Discover feed payload; `state` says whether shelves are still being prepared.
  */
+/** Stored state of the caller's Discover shelves (`GET /api/discover/status`). */
+export interface DiscoverStatus {
+  subject: string;
+  ready: boolean;
+  scope?: string | null;
+  feed_computed_at?: string | null;
+  candidates_fetched_at?: string | null;
+  /** True while a fetch or ranking for the caller is waiting or running. */
+  updating: boolean;
+}
+
+/**
+ * Queues a storefront fetch and ranking for the caller's shelves now, as
+ * the Refresh button asks. A fetch already waiting absorbs the request.
+ *
+ * @returns The caller's Discover status once the fetch is queued.
+ */
+export async function requestDiscoverRefresh(): Promise<DiscoverStatus> {
+  const res = await fetchWithTimeout(
+    "/api/discover/refresh",
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    },
+    8_000,
+    "Discover refresh",
+  );
+  return parseJson(res);
+}
+
 export async function fetchDiscoverFeed(): Promise<DiscoverFeed> {
   // The daemon only reads stored shelves (queued jobs build them), so this
   // answers quickly; live prices still load viewport-gated per card.

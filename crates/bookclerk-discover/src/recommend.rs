@@ -206,6 +206,25 @@ pub struct Recommendation {
     #[serde(default, skip_serializing_if = "wish_count_is_zero")]
     #[schema(example = 3)]
     pub wish_count: i64,
+    /// Title of the book or wish the storefront was asked about to find this
+    /// card, when it came from such an expansion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Dune")]
+    pub seed_title: Option<String>,
+    /// Starter genre this card was browsed from while the taste was thin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Science Fiction")]
+    pub starter_genre: Option<String>,
+}
+
+/// Per-book multipliers on taste weight, keyed by book uuid; a book that is
+/// not listed counts in full. Household books blended into a member's taste
+/// carry a multiplier below one.
+pub(crate) type TasteWeights = HashMap<String, f64>;
+
+/// The multiplier `weights` gives `book` (one when unlisted).
+fn taste_multiplier(weights: &TasteWeights, book: &BookRecord) -> f64 {
+    weights.get(&book.uuid).copied().unwrap_or(1.0)
 }
 
 /// True when `wish_count` should be omitted from JSON (zero / unset).
@@ -381,7 +400,8 @@ pub async fn recommend_feed(
     let recs = recommend_all(library, registry, opts).await?;
     let books = library.list_books(None).await?;
     let listening = load_listening(library, opts).await?;
-    Ok(feed_from_recommendations(&recs, &books, &listening, opts))
+    let taste = shelf_taste(&books, &TasteWeights::new(), &listening);
+    Ok(feed_from_recommendations(&recs, &taste, opts))
 }
 
 /// Groups ranked recommendations into shelves for one taste.
@@ -389,19 +409,17 @@ pub async fn recommend_feed(
 /// # Arguments
 ///
 /// * `recs` - Ranked recommendations (any order; shelves sort them).
-/// * `taste_books` - Books whose authors, narrators and genres name shelves.
-/// * `listening` - Listening rows that feed the same shelf taste.
+/// * `taste` - The shelf taste, from [`shelf_taste`] plus the subject's
+///   wishes and linked stores.
 /// * `opts` - Supplies the per-shelf limit and hidden shelves.
 pub(crate) fn feed_from_recommendations(
     recs: &[Recommendation],
-    taste_books: &[BookRecord],
-    listening: &[ListeningProgressRecord],
+    taste: &crate::shelves::ShelfTaste,
     opts: &RecommendOptions,
 ) -> crate::shelves::DiscoverFeed {
-    let taste = build_shelf_taste(taste_books, listening);
     crate::shelves::build_discover_feed(
         recs,
-        &taste,
+        taste,
         opts.limit.clamp(12, 48),
         &opts.disabled_shelves,
     )
@@ -444,7 +462,8 @@ pub async fn rank_global_request_queue(
 
     let books = library.list_books(None).await?;
     let listening = load_listening(library, &opts).await?;
-    let profile = build_taste_profile(library, &books, &listening, &opts).await?;
+    let profile =
+        build_taste_profile(library, &books, &TasteWeights::new(), &listening, &opts).await?;
     let mut embedder = open_candidate_embedder(&opts)?;
 
     let mut ranked = Vec::new();
@@ -533,7 +552,14 @@ async fn recommend_all(
         .await?;
     }
     rank_candidates(
-        library, registry, &books, &books, &listening, candidates, opts,
+        library,
+        registry,
+        &books,
+        &books,
+        &TasteWeights::new(),
+        &listening,
+        candidates,
+        opts,
     )
     .await
 }
@@ -596,7 +622,9 @@ pub(crate) fn owned_identity_sets(
 /// * `registry` - Storefronts, used only for live purchase hints when asked.
 /// * `owned_books` - The household library; owned titles are never recommended.
 /// * `taste_books` - Books whose finishes, ratings and series shape the taste
-///   (the subject's own books, or the household's).
+///   (the subject's own books, with the household's blended in while the
+///   subject's own are few).
+/// * `taste_weights` - How much each taste book counts (see [`TasteWeights`]).
 /// * `listening` - The subject's listening rows.
 /// * `candidates` - Unowned storefront candidates, already merged by identity.
 /// * `opts` - Ranking options.
@@ -608,17 +636,19 @@ pub(crate) fn owned_identity_sets(
 /// # Errors
 ///
 /// Returns the library read error.
+#[allow(clippy::too_many_arguments)] // One call per taste; a struct would only rename the slices.
 pub(crate) async fn rank_candidates(
     library: &LibraryStore,
     registry: &SourceRegistry,
     owned_books: &[BookRecord],
     taste_books: &[BookRecord],
+    taste_weights: &TasteWeights,
     listening: &[ListeningProgressRecord],
     candidates: Vec<crate::candidates::StorefrontCandidate>,
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
     let books = owned_books;
-    let profile = build_taste_profile(library, taste_books, listening, opts).await?;
+    let profile = build_taste_profile(library, taste_books, taste_weights, listening, opts).await?;
     let mut embedder = open_candidate_embedder(opts)?;
     let mut scored: HashMap<String, Recommendation> = HashMap::new();
 
@@ -650,6 +680,9 @@ pub(crate) async fn rank_candidates(
         }
         if c.origin.contains("related") {
             push_shelf_category(&mut categories, "because");
+        }
+        if c.starter_genre.is_some() {
+            push_shelf_category(&mut categories, "starter_genre");
         }
         push_shelf_category(&mut categories, "from_store");
 
@@ -707,6 +740,8 @@ pub(crate) async fn rank_candidates(
             published_at: c.published_at,
             genres: c.categories,
             language: c.language,
+            seed_title: c.seed_title,
+            starter_genre: c.starter_genre,
             ..Default::default()
         };
         rec.work_key = recommendation_map_key(&rec);
@@ -828,6 +863,7 @@ struct TasteProfile {
 async fn build_taste_profile(
     library: &LibraryStore,
     books: &[BookRecord],
+    weights: &TasteWeights,
     listening: &[ListeningProgressRecord],
     opts: &RecommendOptions,
 ) -> Result<TasteProfile> {
@@ -853,6 +889,7 @@ async fn build_taste_profile(
         if book.acquire_status == AcquireStatus::Acquired {
             weight += 0.5;
         }
+        weight *= taste_multiplier(weights, book);
         if weight <= 0.0 {
             continue;
         }
@@ -1124,8 +1161,15 @@ fn upsert_recommendation(map: &mut HashMap<String, Recommendation>, rec: Recomme
 }
 
 /// Builds shelf-ranking taste from owned sources, liked people, and listening weights.
-fn build_shelf_taste(
+///
+/// # Arguments
+///
+/// * `books` - Books whose authors, narrators and genres name shelves.
+/// * `weights` - How much each book counts (see [`TasteWeights`]).
+/// * `listening` - Listening rows that add to the liked authors.
+pub(crate) fn shelf_taste(
     books: &[BookRecord],
+    weights: &TasteWeights,
     listening: &[ListeningProgressRecord],
 ) -> crate::shelves::ShelfTaste {
     let mut taste = crate::shelves::ShelfTaste::default();
@@ -1144,6 +1188,7 @@ fn build_shelf_taste(
                 weight += 1.0;
             }
         }
+        weight *= taste_multiplier(weights, book);
         if weight <= 0.0 {
             continue;
         }
@@ -1503,9 +1548,15 @@ mod tests {
     #[tokio::test]
     async fn a_highly_rated_book_makes_its_author_liked() {
         let (store, books) = rated_library().await;
-        let profile = build_taste_profile(&store, &books, &[], &RecommendOptions::default())
-            .await
-            .unwrap();
+        let profile = build_taste_profile(
+            &store,
+            &books,
+            &TasteWeights::new(),
+            &[],
+            &RecommendOptions::default(),
+        )
+        .await
+        .unwrap();
         let weight = profile.liked_authors.get("ada author").copied();
         assert!(
             weight.is_some_and(|w| w >= 2.0),
@@ -1516,7 +1567,7 @@ mod tests {
     #[tokio::test]
     async fn shelf_taste_weights_a_highly_rated_book() {
         let (_store, books) = rated_library().await;
-        let taste = build_shelf_taste(&books, &[]);
+        let taste = shelf_taste(&books, &TasteWeights::new(), &[]);
         assert_eq!(
             taste.authors.get("ada author"),
             Some(&("Ada Author".to_owned(), 2.0))

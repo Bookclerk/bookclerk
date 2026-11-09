@@ -1280,6 +1280,30 @@ impl LibraryStore {
         Ok(newest.is_some_and(|m| parse_dt(&m.created_at) >= since))
     }
 
+    /// True when a job with `dedup_key` is waiting or running.
+    ///
+    /// A Discover page read uses this to say its shelves are being rebuilt
+    /// while an event-queued fetch or ranking has not finished.
+    ///
+    /// # Arguments
+    ///
+    /// * `dedup_key` - The [`JobKind::dedup_key`] of the job.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    pub async fn job_is_active(&self, dedup_key: &str) -> Result<bool> {
+        let active = jobs::Entity::find()
+            .filter(jobs::Column::DedupKey.eq(dedup_key))
+            .filter(
+                jobs::Column::State.is_in([JobState::Pending.as_str(), JobState::Running.as_str()]),
+            )
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(active.is_some())
+    }
+
     /// Rewrite an unreadable command row so it cannot be executed.
     async fn mark_invalid_job(&self, id: &str, reason: &str) -> Result<()> {
         let now = now_str();
