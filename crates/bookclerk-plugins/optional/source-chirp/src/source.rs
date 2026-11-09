@@ -59,16 +59,17 @@ impl ChirpSource {
         opts: &CatalogSearchOpts,
     ) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
         let q = opts.query.trim();
-        if q.is_empty() || opts.limit == 0 {
+        if q.is_empty() {
             return Ok(Vec::new());
         }
+        let limit = opts.effective_limit();
         let preferred_lang = opts
             .language
             .as_deref()
             .and_then(bookclerk_storefront::normalize_language);
         // Slight over-fetch when filtering by language so dropped Spanish
         // (etc.) rows don't starve the page — keep this modest for latency.
-        let fetch_limit = language_fetch_limit(opts.limit, preferred_lang.is_some());
+        let fetch_limit = language_fetch_limit(limit, preferred_lang.is_some());
         let client = ChirpClient::new(&self.graphql_url);
         if opts.field == Some(CatalogSearchField::Series) {
             if let Ok(Some(catalog)) = client.resolve_series_catalog(q).await {
@@ -78,7 +79,7 @@ impl ChirpSource {
                     .into_iter()
                     .map(|b| catalog_hit(&b, origin.clone()))
                     .filter(|h| language_matches(h.language.as_deref(), preferred_lang.as_deref()))
-                    .take(opts.limit)
+                    .take(limit)
                     .collect());
             }
             // Fall through to typeahead/search when slug resolve misses.
@@ -103,7 +104,7 @@ impl ChirpSource {
             .into_iter()
             .map(|b| catalog_hit(&b, String::from("search")))
             .filter(|h| language_matches(h.language.as_deref(), preferred_lang.as_deref()))
-            .take(opts.limit)
+            .take(limit)
             .collect())
     }
 

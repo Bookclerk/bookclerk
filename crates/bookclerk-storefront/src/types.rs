@@ -600,7 +600,8 @@ pub struct CatalogSearchOpts {
     pub query: String,
     /// Marketplace / catalog region (`us`, `uk`, …); empty = plugin default.
     pub region: String,
-    /// Maximum hits to return (`0` = plugin default).
+    /// Maximum hits to return; `0` means [`DEFAULT_CATALOG_SEARCH_LIMIT`]
+    /// (read it through [`CatalogSearchOpts::effective_limit`]).
     pub limit: usize,
     /// 1-based page index for storefronts that support paging (default 1).
     pub page: u32,
@@ -610,6 +611,27 @@ pub struct CatalogSearchOpts {
     pub field: Option<CatalogSearchField>,
     /// Preferred content language (BCP-47 primary or display name); soft-prioritize.
     pub language: Option<String>,
+}
+
+/// Hits a storefront returns from one catalog search when the caller leaves
+/// the limit at `0`.
+pub const DEFAULT_CATALOG_SEARCH_LIMIT: usize = 20;
+
+impl CatalogSearchOpts {
+    /// The number of hits to return: [`CatalogSearchOpts::limit`], or
+    /// [`DEFAULT_CATALOG_SEARCH_LIMIT`] when the caller left it at `0`.
+    ///
+    /// # Returns
+    ///
+    /// A hit count of at least 1.
+    #[must_use]
+    pub fn effective_limit(&self) -> usize {
+        if self.limit == 0 {
+            DEFAULT_CATALOG_SEARCH_LIMIT
+        } else {
+            self.limit
+        }
+    }
 }
 
 impl Default for CatalogSearchOpts {
@@ -643,4 +665,26 @@ pub struct PurchaseHintOpts {
     pub region: String,
     /// When true, resolve live price if the source can.
     pub with_price: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CatalogSearchOpts, DEFAULT_CATALOG_SEARCH_LIMIT};
+
+    #[test]
+    fn a_zero_limit_means_the_default_and_others_pass_through() {
+        let unset = CatalogSearchOpts::default();
+        assert_eq!(unset.limit, 0);
+        assert_eq!(unset.effective_limit(), DEFAULT_CATALOG_SEARCH_LIMIT);
+        let one = CatalogSearchOpts {
+            limit: 1,
+            ..CatalogSearchOpts::default()
+        };
+        assert_eq!(one.effective_limit(), 1);
+        let many = CatalogSearchOpts {
+            limit: 50,
+            ..CatalogSearchOpts::default()
+        };
+        assert_eq!(many.effective_limit(), 50);
+    }
 }
