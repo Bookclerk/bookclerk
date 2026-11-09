@@ -3063,6 +3063,12 @@ export interface PurchaseHint {
 export interface PurchaseHintsResponse {
   hints: PurchaseHint[];
   best: PurchaseHint | null;
+  /**
+   * True when the server's batch deadline cut the lookup short: the hints are
+   * links without prices, so the answer is not cached and should be asked
+   * for again later.
+   */
+  incomplete?: boolean;
 }
 
 /**
@@ -3589,7 +3595,10 @@ export function fetchPurchaseHints(body: PurchaseHintsQuery): Promise<PurchaseHi
     purchaseHintsQueue.push({
       query: body,
       resolve: (value) => {
-        clientCacheSet(purchaseHintsClientCache, key, value, PURCHASE_HINTS_CLIENT_TTL_MS);
+        // An unfinished lookup is not kept, so the next ask reaches the server.
+        if (!value.incomplete) {
+          clientCacheSet(purchaseHintsClientCache, key, value, PURCHASE_HINTS_CLIENT_TTL_MS);
+        }
         resolve(value);
       },
       reject,

@@ -4691,7 +4691,8 @@ async fn discover_status_for_caller(
     responses(
         (status = 200, description = "Stored Discover state of the caller's shelves, with `updating` set once the fetch is queued.", body = DiscoverStatusResponse),
         (status = 401, description = "The caller has no portal identity.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
+        (status = 429, description = "The job queue is full, so the fetch was not queued.", body = String, content_type = "text/plain", example = json!("job queue is full")),
+        (status = 500, description = "The lookup failed, or the fetch could not be queued.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
     ),
 )]
 async fn discover_refresh(
@@ -4699,8 +4700,25 @@ async fn discover_refresh(
     headers: HeaderMap,
 ) -> Result<Json<DiscoverStatusResponse>, (StatusCode, String)> {
     let (subject, _) = discover_status_for_caller(&state, &headers, false).await?;
-    crate::discover_jobs::queue_refresh(&state, &subject, crate::discover_jobs::FeedRefresh::Fetch)
-        .await;
+    // A fetch already waiting absorbs the request, so a duplicate counts as
+    // queued; a full queue or a failed admission is reported.
+    match crate::discover_jobs::enqueue_discover_candidates(
+        &state,
+        &subject,
+        JobTrigger::Api,
+        std::time::Duration::ZERO,
+    )
+    .await
+    .map_err(internal_err)?
+    {
+        AdmitJob::Created(_) | AdmitJob::Duplicate(_) => {}
+        AdmitJob::QueueFull => {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "job queue is full".to_string(),
+            ))
+        }
+    }
     let (_, status) = discover_status_for_caller(&state, &headers, false).await?;
     Ok(Json(status))
 }

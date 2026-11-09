@@ -62,7 +62,8 @@ operator, a household user, or a portal identity) has a **subject key**
    deployed storefront**, not only the stores they have accounts with.
    While a person has fewer than five books and listens of their own, the
    rest of the household's books **blend in** at half weight, behind their
-   own: a first wish or book adds to the shelves they already had instead
+   own, with the household's listening to those books at the same weight:
+   a first wish or book adds to the shelves they already had instead
    of replacing them, and the household drops out once their own taste can
    stand alone. A person with no signal of their own yet (and the operator)
    seeds from the household as it stands. With fewer than five seeds in
@@ -156,7 +157,8 @@ it, since it only reports the caller's own shelves.
 that follows it) for the caller now and answers with the same status. The
 Discover page's **Refresh** button calls it: unchanged store calls answer
 from the day's cache, so a refresh is cheap, and a fetch already waiting
-absorbs the request.
+absorbs the request. When the job queue is full the route answers `429`
+and queues nothing, and the page shows the error.
 
 ### Taste events
 
@@ -318,10 +320,11 @@ taste, Chirp deals, then one **Picked for you on {Store}** shelf per store
 for whatever is left, each title under the store where it costs the person
 least (member price on stores they have an account with, list price
 elsewhere, its own store when no price is known on the card). Wished titles
-are claimed first and shown last, on the wishlist shelf alone. A shelf that
-is not about series keeps at most **two titles of one series**, so a long
-series cannot crowd the others out; the two series shelves instead rotate
-between series, so their first cards show several series rather than one in
+are claimed first and shown last, on the wishlist shelf alone (every wish shows,
+however many share a series; wishes past the shelf's size are claimed too,
+and shown nowhere). A shelf that is not about series keeps at most **two
+titles of one series**, so a long series cannot crowd the others out; the
+two series shelves and the wishlist instead rotate between series, so their first cards show several series rather than one in
 a row.
 
 ## Wishlist (no approval flow)
@@ -500,8 +503,10 @@ effective prices. Client-supplied `preferred_sources` are ignored.
 
 Each store gets 8 seconds per lookup. A batch answers within **10 seconds**
 with what has resolved: a query still waiting then carries only its trusted
-store links, unpriced, and the page asks again later, so one slow store
-never turns a page of cards into a failed request. A store that times out
+store links, unpriced, with `incomplete: true`. The page keeps no copy of
+such an answer and the card asks again after 15 seconds (twice at most),
+without dropping prices it already shows, so one slow store never turns a
+page of cards into a failed request or a card left unpriced. A store that times out
 three lookups in a row is **paused** for five minutes (the breaker logs
 `price lookups paused after repeated timeouts`), then tried again; a store
 that answers, even with an error, closes its breaker. Answers, including

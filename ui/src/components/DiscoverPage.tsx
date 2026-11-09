@@ -94,6 +94,10 @@ const FEED_POLL_LIMIT = 15;
  * and before retrying a live re-read that failed.
  */
 const FEED_POLL_SLOW_MS = 30_000;
+/** Times a card asks again for prices the server had not finished. */
+const PRICING_RETRIES = 2;
+/** Wait before asking again for unfinished prices, in milliseconds. */
+const PRICING_RETRY_MS = 15_000;
 
 const selectClassName =
   "rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
@@ -1446,6 +1450,10 @@ function ShelfCard({
   const [, setHints] = useState<PurchaseHint[]>(rec.purchase_hints);
   const [best, setBest] = useState<PurchaseHint | null>(rec.purchase_hints[0] ?? null);
   const [pricing, setPricing] = useState<"idle" | "loading" | "done">("idle");
+  // Bumped to ask again when the server answered before every store did;
+  // a new `rec` starts again from zero.
+  const [retryState, setRetryState] = useState({ rec, n: 0 });
+  const pricingAttempt = retryState.rec === rec ? retryState.n : 0;
 
   useEffect(() => {
     setTitle(catalogTitleFromRec(rec, wishlistUuid));
@@ -1470,8 +1478,11 @@ function ShelfCard({
   useEffect(() => {
     if (!inView) return;
     let cancelled = false;
-    setHints(rec.purchase_hints);
-    setBest(rec.purchase_hints[0] ?? null);
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    if (pricingAttempt === 0) {
+      setHints(rec.purchase_hints);
+      setBest(rec.purchase_hints[0] ?? null);
+    }
     setPricing("loading");
     void (async () => {
       try {
@@ -1497,13 +1508,23 @@ function ShelfCard({
             : Promise.resolve(null),
         ]);
         if (cancelled) return;
-        setHints(res.hints);
-        setBest(res.best);
-        if (meta) {
-          setTitle((prev) => applyTitleMeta({ ...prev, purchase_hints: res.hints }, meta));
-        } else {
-          setTitle((prev) => ({ ...prev, purchase_hints: res.hints }));
+        if (res.incomplete && pricingAttempt < PRICING_RETRIES) {
+          retry = setTimeout(() => setRetryState({ rec, n: pricingAttempt + 1 }), PRICING_RETRY_MS);
         }
+        // An unfinished answer never replaces prices or links the card
+        // already has: it keeps them when they are priced or when the answer
+        // brings nothing in their place.
+        const priced = (hints: PurchaseHint[]) => hints.some((h) => h.price_cents != null);
+        const keep = <T,>(prev: T, next: T, prevWins: boolean) =>
+          res.incomplete && prevWins ? prev : next;
+        const keepHints = (prev: PurchaseHint[]) =>
+          keep(prev, res.hints, priced(prev) || res.hints.length === 0);
+        setHints(keepHints);
+        setBest((prev) => keep(prev, res.best, prev?.price_cents != null || res.best == null));
+        setTitle((prev) => {
+          const next = { ...prev, purchase_hints: keepHints(prev.purchase_hints ?? []) };
+          return meta ? applyTitleMeta(next, meta) : next;
+        });
       } catch {
         // Keep seed links / sparse catalog fields from the feed.
       } finally {
@@ -1512,8 +1533,9 @@ function ShelfCard({
     })();
     return () => {
       cancelled = true;
+      if (retry) clearTimeout(retry);
     };
-  }, [inView, rec, wishlistUuid]);
+  }, [inView, rec, wishlistUuid, pricingAttempt]);
 
   const blurb = descriptionPlainText(title.description);
   const seriesLabel = formatSeriesLabel(title.series, title.series_index);
