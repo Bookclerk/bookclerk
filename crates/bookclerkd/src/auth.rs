@@ -5240,6 +5240,44 @@ pub(crate) mod tests {
         let job = library.get_job(&job_id).await.unwrap().expect("job");
         assert_eq!(job.payload.account.as_deref(), Some("mine"));
 
+        // A title id from someone else's account is refused too.
+        let foreign = library
+            .scope("pk", "test")
+            .upsert_book(&bookclerk_library::NewBook {
+                uuid: None,
+                product_id: "theirs-book".into(),
+                plugin_key: "pk".into(),
+                source: "test".into(),
+                account_id: "theirs".into(),
+                asin: Some("B0THEIRS".into()),
+                isbn: None,
+                marketplace: "us".into(),
+                title: "Theirs".into(),
+                authors: None,
+                narrators: None,
+                series: None,
+                series_index: None,
+                series_asin: None,
+                purchased_at: None,
+                publisher: None,
+                length_minutes: None,
+                is_abridged: false,
+                content_kind: "book".into(),
+                categories: None,
+                subtitle: None,
+                published_at: None,
+            })
+            .await
+            .unwrap();
+        let (status, body) = send(post(
+            "/api/library/acquire",
+            Some(&cookie),
+            serde_json::json!({ "uuid": foreign.uuid }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], "forbidden");
+
         // The operator token still plans for every account through the
         // same layer.
         let (status, body) = send(
@@ -5272,6 +5310,20 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Disabled with its session still in hand, the Member plans nothing.
+        let member_id = identity.user_id.expect("member user");
+        library
+            .set_user_status(member_id, bookclerk_library::UserStatus::Disabled)
+            .await
+            .unwrap();
+        for uri in ["/api/library/scan", "/api/library/acquire"] {
+            let (status, body) = send(post(uri, Some(&cookie), empty.clone())).await;
+            assert!(
+                matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN),
+                "{uri}: {status} {body}"
+            );
+        }
     }
 
     #[tokio::test]

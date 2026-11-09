@@ -353,11 +353,14 @@ async fn run(s: &Scenario) -> usize {
             !touched.is_empty(),
             "a Member's job reaches no account: {job:?} for {s:?}"
         );
-        for account in touched {
+        for row in touched {
             assert_eq!(
-                account.owner,
+                row.owner,
                 Owner::Member,
-                "a Member's job reaches {account:?}: {job:?} for {s:?}"
+                "a Member's job reaches plugin {} id {:?} owned by {:?}: {job:?} for {s:?}",
+                row.plugin,
+                row.id,
+                row.owner
             );
         }
     }
