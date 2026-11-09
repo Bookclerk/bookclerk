@@ -2076,6 +2076,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bookclerk-config",
+ "bookclerk-db-testkit",
  "bookclerk-plugin-host",
  "bookclerk-plugin-manifest",
  "bookclerk-plugin-sdk",

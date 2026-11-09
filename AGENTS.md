@@ -344,7 +344,7 @@ cargo stage-plugins --optional --examples --skip-build
 cargo stage-plugins --plugin libro --skip-build   # individual guest(s) by plugin.toml id
 cargo test-staged             # describe/health conformance (bookclerk-plugin-e2e) against installed + staged guests
 cargo test-staged --plugin libro                  # platform + only libro
-cargo plugin -- check <dir>   # author CLI (crate bookclerk-plugin-tools)
+cargo plugin -- check <dir>   # author CLI (crate bookclerk-plugin-tools); `test <dir>` runs a plugin's suite under every database profile
 ```
 
 See `docs/plugins/README.md` and `crates/bookclerk-dev/README.md`.

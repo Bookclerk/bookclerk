@@ -37,7 +37,10 @@
  *
  * The binary is found through the `BOOKCLERK_DB_TESTKIT` environment
  * variable or `options.binary`, else as `bookclerk-db-testkit` on `PATH`
- * (`cargo build -p bookclerk-db-testkit` in the workspace builds it). This
+ * (`cargo build -p bookclerk-db-testkit` in the workspace builds it).
+ * `bookclerk-plugin test` (`cargo plugin -- test <dir>` in the workspace)
+ * runs a plugin's suite once per profile, setting both that variable and
+ * `BOOKCLERK_DB_TESTKIT_PROFILE`, which is the default `profile`. This
  * module runs under Node, not inside an isolate.
  *
  * @module testkit
@@ -69,7 +72,10 @@ export type TestDatabaseProfile = (typeof TEST_DATABASE_PROFILES)[number];
  * Options for {@link createTestDatabase}.
  */
 export interface TestDatabaseOptions {
-  /** Capability profile to enforce (default `minimum`, the strictest). */
+  /**
+   * Capability profile to enforce. Defaults to `BOOKCLERK_DB_TESTKIT_PROFILE`
+   * when `bookclerk-plugin test` sets it, else `minimum`, the strictest.
+   */
   profile?: TestDatabaseProfile;
   /**
    * The plugin's `databaseMigrations` registration, applied before the
@@ -246,6 +252,20 @@ function grantedTransport(serving: Serving): AtomicTransport {
 }
 
 /**
+ * The profile a test runs under: the option, else the one
+ * `bookclerk-plugin test` names in `BOOKCLERK_DB_TESTKIT_PROFILE`, else
+ * `minimum`.
+ *
+ * @param option - The caller's `profile` option.
+ * @returns The profile name, unchecked.
+ */
+export function defaultProfile(option: TestDatabaseProfile | undefined): TestDatabaseProfile {
+  if (option !== undefined) return option;
+  const fromEnv = process.env["BOOKCLERK_DB_TESTKIT_PROFILE"];
+  return fromEnv === undefined || fromEnv === "" ? "minimum" : (fromEnv as TestDatabaseProfile);
+}
+
+/**
  * Spawns the kit under `options.profile` with `options.migrations` applied
  * and returns the served binding.
  *
@@ -255,7 +275,7 @@ function grantedTransport(serving: Serving): AtomicTransport {
  *   the registration (the kit's message is included), or exits early.
  */
 export async function createTestDatabase(options: TestDatabaseOptions = {}): Promise<TestDatabase> {
-  const profile = options.profile ?? "minimum";
+  const profile = defaultProfile(options.profile);
   if (!TEST_DATABASE_PROFILES.includes(profile)) {
     throw new Error(
       `unknown test database profile ${JSON.stringify(profile)} (one of ${TEST_DATABASE_PROFILES.join(", ")})`,

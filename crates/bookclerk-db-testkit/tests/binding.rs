@@ -232,6 +232,39 @@ async fn streamed_reads_follow_the_profile() {
     assert_eq!(reply.statements[0].rows.len(), 2);
 }
 
+/// A registration whose seed row is longer, in bytes, than `profile`'s
+/// statement payload cap.
+fn migration_past_the_payload_cap(profile: Profile) -> Vec<PluginMigration> {
+    let cap = usize::try_from(profile.capabilities().max_payload_bytes).unwrap();
+    vec![PluginMigration {
+        id: "seeded-v1".into(),
+        operations: vec![
+            PluginMigrationOp::Schema(
+                "CREATE TABLE IF NOT EXISTS seeded (id INTEGER PRIMARY KEY NOT NULL, body TEXT NOT NULL)"
+                    .into(),
+            ),
+            PluginMigrationOp::Data(format!(
+                "INSERT INTO seeded (id, body) VALUES (1, '{}')",
+                "x".repeat(cap)
+            )),
+        ],
+    }]
+}
+
+#[tokio::test]
+async fn a_migration_past_the_profile_payload_cap_is_refused_as_the_adapter_refuses_it() {
+    let migrations = migration_past_the_payload_cap(Profile::Minimum);
+    let err = BindingDatabase::open(Profile::Minimum, migrations.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, PluginErrorCode::LimitExceeded, "{err}");
+    assert!(err.message.contains("maxPayloadBytes"), "{err}");
+    // The same registration applies where the cap is wider.
+    BindingDatabase::open(Profile::FirstParty, migrations)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn a_registration_that_fails_the_proof_is_refused() {
     let err = BindingDatabase::open(

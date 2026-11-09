@@ -19,17 +19,18 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use bookclerk_db_exec::begin_gate::with_batch_in_progress;
+use bookclerk_db_exec::stamp_adapter_execute;
 use bookclerk_db_exec::{execute_typed_envelope_on_connection, AtomicSession, ExecCaps};
 use bookclerk_library::migrations::{
-    apply_plugin_migrations, plugin_binding_type_env, prove_plugin_migration_sequence,
-    PluginMigrationSequence,
+    load_plugin_migration_history, next_pending_plugin_migration, plugin_apply_statements,
+    plugin_binding_type_env, prove_plugin_migration_sequence, PluginMigrationSequence,
 };
 use bookclerk_library::sql_plan::execute_guest_atomic_with;
-use bookclerk_library::test_support::{engine_error, Profile};
-use bookclerk_library::{apply_binding_bootstrap, GuestSqlPolicy, LibraryError};
+use bookclerk_library::test_support::{engine_error, Profile, ProfileExec};
+use bookclerk_library::{apply_binding_bootstrap, GuestSqlPolicy, LibraryError, TypedAtomicExec};
 use bookclerk_plugin_abi::{
-    DbCapabilities, ExecuteReply, ExecuteRequest, ExecuteStream, GuestDatabase, PluginError,
-    PluginMigration,
+    DbCapabilities, DbPlanStatementKind, DbResultSelection, ExecuteReply, ExecuteRequest,
+    ExecuteStream, GuestDatabase, PluginError, PluginMigration, TypedDbStatement,
 };
 use sea_orm::DatabaseConnection;
 
@@ -55,14 +56,17 @@ pub struct BindingDatabase {
 impl BindingDatabase {
     /// Opens an empty in-memory unit under `profile` and applies
     /// `migrations` the way the host applies a plugin's
-    /// `databaseMigrations` registration at enrollment.
+    /// `databaseMigrations` registration at enrollment: one typed batch per
+    /// migration, stamped with the binding's schema and held to the
+    /// profile's advertisement, as the adapter holds it.
     ///
     /// # Errors
     ///
     /// Returns `invalid_params` when the registration fails the BookclerkSQL
     /// proof (an unsupported statement, a reserved table, a repeated id),
-    /// and the engine's error when the unit cannot be opened or a migration
-    /// cannot be applied.
+    /// `limit_exceeded` when a migration's apply batch breaks one of the
+    /// profile's caps, and the engine's error when the unit cannot be
+    /// opened or a migration cannot be applied.
     pub async fn open(
         profile: Profile,
         migrations: Vec<PluginMigration>,
@@ -73,12 +77,12 @@ impl BindingDatabase {
         apply_binding_bootstrap(&db).await.map_err(library_error)?;
         let registered = prove_plugin_migration_sequence(migrations)
             .map_err(|err| PluginError::invalid_params(err.to_string()))?;
-        apply_plugin_migrations(&db, &registered)
-            .await
-            .map_err(library_error)?;
+        let caps = profile.capabilities();
+        let exec = ProfileExec::new(db.clone(), caps.clone());
+        apply_registration_under_profile(&db, &exec, &registered).await?;
         Ok(Self {
             profile,
-            caps: profile.capabilities(),
+            caps,
             db,
             registered,
             sizes: Mutex::new(Vec::new()),
@@ -170,6 +174,48 @@ impl GuestDatabase for BindingDatabase {
 
     async fn limits(&self) -> Result<DbCapabilities, PluginError> {
         Ok(self.caps.clone())
+    }
+}
+
+/// Applies every pending migration of `registered` on `db`, one apply unit
+/// (serialization slot, the migration's operations, the journal row) per
+/// typed batch through `exec`, which holds the batch to the profile the way
+/// the adapter would. The unit is fresh, so a failure is final: the host's
+/// retry loop over a lost reply has nothing to recover here.
+async fn apply_registration_under_profile(
+    db: &DatabaseConnection,
+    exec: &ProfileExec,
+    registered: &PluginMigrationSequence,
+) -> Result<(), PluginError> {
+    loop {
+        let history = load_plugin_migration_history(db)
+            .await
+            .map_err(library_error)?;
+        let Some((ordinal, migration)) =
+            next_pending_plugin_migration(&history, registered).map_err(library_error)?
+        else {
+            return Ok(());
+        };
+        let ordinal_i64 = i64::try_from(ordinal).unwrap_or(i64::MAX);
+        let request = ExecuteRequest {
+            operation_id: format!("testkit-plugin-migrate-ord{ordinal}-{}", migration.id),
+            request_hash: String::new(),
+            deadline_unix_ms: 0,
+            statements: plugin_apply_statements(ordinal_i64, migration)
+                .into_iter()
+                .map(|sql| TypedDbStatement {
+                    sql,
+                    parameters: Vec::new(),
+                    kind: DbPlanStatementKind::Execute,
+                    max_rows: 0,
+                    result_selection: DbResultSelection::Discard,
+                })
+                .collect(),
+        };
+        let envelope =
+            stamp_adapter_execute(request, &plugin_binding_type_env(registered, ordinal))
+                .map_err(engine_error)?;
+        exec.execute_typed(envelope).await?;
     }
 }
 

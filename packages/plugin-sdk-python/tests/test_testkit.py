@@ -19,7 +19,11 @@ from typing import Any
 from unittest import mock
 
 from bookclerk_plugin_sdk import testkit
-from bookclerk_plugin_sdk.testkit import TEST_DATABASE_PROFILES, create_test_database
+from bookclerk_plugin_sdk.testkit import (
+    TEST_DATABASE_PROFILES,
+    create_test_database,
+    default_profile,
+)
 from bookclerk_plugin_sdk.workerd import PluginError
 
 # Imported under another name: a module-level ``test*`` function is collected as a test.
@@ -79,6 +83,29 @@ def _text(s: str) -> dict[str, Any]:
 def _run(coro: Any) -> Any:
     """Run ``coro`` on a fresh event loop."""
     return asyncio.run(coro)
+
+
+class DefaultProfileTests(unittest.TestCase):
+    """The profile a test runs under when none is passed."""
+
+    def test_argument_then_environment_then_minimum(self) -> None:
+        """An explicit profile wins, then ``bookclerk-plugin test``'s variable, then ``minimum``."""
+        saved = os.environ.pop("BOOKCLERK_DB_TESTKIT_PROFILE", None)
+        try:
+            self.assertEqual(default_profile(None), "minimum")
+            os.environ["BOOKCLERK_DB_TESTKIT_PROFILE"] = ""
+            self.assertEqual(default_profile(None), "minimum")
+            os.environ["BOOKCLERK_DB_TESTKIT_PROFILE"] = "first-party"
+            self.assertEqual(default_profile(None), "first-party")
+            self.assertEqual(default_profile("d1"), "d1")
+            os.environ["BOOKCLERK_DB_TESTKIT_PROFILE"] = "huge"
+            with self.assertRaisesRegex(ValueError, "unknown test database profile 'huge'"):
+                asyncio.run(create_test_database())
+        finally:
+            if saved is None:
+                os.environ.pop("BOOKCLERK_DB_TESTKIT_PROFILE", None)
+            else:
+                os.environ["BOOKCLERK_DB_TESTKIT_PROFILE"] = saved
 
 
 class TestkitBinaryTests(unittest.TestCase):
@@ -208,6 +235,26 @@ class CloseTests(unittest.TestCase):
 @unittest.skipIf(BINARY is None, "bookclerk-db-testkit binary unavailable")
 class TestDatabaseTests(unittest.TestCase):
     """The served binding under every profile."""
+
+    def test_the_variable_profile_reaches_the_kit(self) -> None:
+        """With ``BOOKCLERK_DB_TESTKIT_PROFILE`` set, a no-argument open serves that profile."""
+
+        async def scenario() -> None:
+            async with await create_test_database(profile="d1", migrations=MIGRATIONS) as explicit:
+                d1_limits = await explicit.limits()
+            async with await create_test_database(migrations=MIGRATIONS) as db:
+                self.assertEqual(db.profile, "d1")
+                self.assertEqual(await db.limits(), d1_limits)
+
+        saved = os.environ.pop("BOOKCLERK_DB_TESTKIT_PROFILE", None)
+        os.environ["BOOKCLERK_DB_TESTKIT_PROFILE"] = "d1"
+        try:
+            _run(scenario())
+        finally:
+            if saved is None:
+                os.environ.pop("BOOKCLERK_DB_TESTKIT_PROFILE", None)
+            else:
+                os.environ["BOOKCLERK_DB_TESTKIT_PROFILE"] = saved
 
     def test_schema_batch_and_scope_under_every_profile(self) -> None:
         """Schema applied, a batch is one transaction, the scope is the plugin's."""
