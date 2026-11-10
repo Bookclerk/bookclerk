@@ -1306,7 +1306,10 @@ afterwards: incremental mode reuses the results in it on the next run.
 
 The [`mutation-python.yml`](../../.github/workflows/mutation-python.yml)
 workflow does the same for the Python plugin SDK
-(`packages/plugin-sdk-python`) with [mutmut](https://mutmut.readthedocs.io/):
+(`packages/plugin-sdk-python`) with [mutmut](https://mutmut.readthedocs.io/).
+Before mutmut starts, it installs capnp and builds the
+`bookclerk-db-testkit` binary that `tests/test_testkit.py` drives, as CI's
+`python_sdk` check does, so no test run builds it:
 
 1. It finds the lines changed since the last run under the SDK's `src/`:
    the lines added, placed in the new file, and the lines deleted, placed
