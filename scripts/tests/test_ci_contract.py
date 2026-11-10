@@ -47,7 +47,7 @@ def _load() -> dict:
 
 
 def _emitted_keys() -> set[str]:
-    keys = {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode"}
+    keys = {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs"}
     keys |= {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
     keys |= {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]}
     return keys
@@ -82,8 +82,12 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(job["runs-on"], "macos-latest")
         self.assertEqual(job["needs"], "plan")
         owners = OS_LEG_JOBS["macos"]
+        # Never on a pull request (`os_legs`), only where any owner runs.
+        prefix = "needs.plan.outputs.os_legs == 'true' && ( "
+        self.assertTrue(job["if"].startswith(prefix), job["if"])
+        self.assertTrue(job["if"].endswith(")"), job["if"])
         self.assertEqual(
-            job["if"].split(" || "),
+            job["if"][len(prefix) : -1].split(" || "),
             [f"needs.plan.outputs.job_{o.replace('-', '_')} == 'true'" for o in owners],
         )
         runs = [s for s in job["steps"] if RUN_CHECK.search(s.get("run", ""))]
@@ -208,6 +212,32 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("merge_group", triggers)
         self.assertEqual(triggers["push"]["branches"], ["main"])
 
+    def test_draft_pull_requests_run_the_fast_jobs_and_ready_runs_the_rest(self) -> None:
+        triggers = self.wf.get("on", self.wf.get(True))
+        self.assertEqual(
+            triggers["pull_request"]["types"], ["opened", "synchronize", "reopened", "ready_for_review"]
+        )
+        step = next(s for s in self.jobs["plan"]["steps"] if "ci-exec.py resolve" in s.get("run", ""))
+        self.assertIn('[ "$PR_DRAFT" = "true" ]', step["run"])
+        self.assertIn("--draft", step["run"])
+        # Pull request events only, never a called OSV remediation run.
+        self.assertEqual(
+            step["env"]["PR_DRAFT"],
+            "${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true"
+            " && !inputs.private-head }}",
+        )
+
+    def test_pull_requests_leave_windows_and_macos_to_the_merge_queue(self) -> None:
+        step = next(s for s in self.jobs["plan"]["steps"] if "ci-exec.py resolve" in s.get("run", ""))
+        self.assertIn('[ "$PR_RUN" = "true" ]', step["run"])
+        self.assertIn("--linux-only", step["run"])
+        self.assertEqual(step["env"]["PR_RUN"], "${{ github.event_name == 'pull_request' && !inputs.private-head }}")
+        for name in ("confinement", "native-gateway", "tray"):
+            with self.subTest(job=name):
+                self.assertEqual(
+                    self.jobs[name]["strategy"]["matrix"]["os"], "${{ fromJSON(needs.plan.outputs.os_matrix) }}"
+                )
+
     def test_gate_sees_every_job_and_runs_always(self) -> None:
         gate = self.jobs["ci-gate"]
         self.assertEqual(gate["name"], "CI Gate")
@@ -216,11 +246,11 @@ class WorkflowContractTests(unittest.TestCase):
         run = next(s for s in gate["steps"] if "ci-exec.py gate" in s.get("run", ""))
         self.assertEqual(run["env"]["NEEDS_JSON"], "${{ toJSON(needs) }}")
 
-    def test_native_gateway_runs_on_every_os(self) -> None:
+    def test_native_gateway_runs_on_the_planned_os(self) -> None:
         job = self.jobs["native-gateway"]
         self.assertEqual(job["runs-on"], "${{ matrix.os }}")
         self.assertIs(job["strategy"]["fail-fast"], False)
-        self.assertEqual(job["strategy"]["matrix"], {"os": ["ubuntu-latest", "windows-latest"]})
+        self.assertEqual(job["strategy"]["matrix"], {"os": "${{ fromJSON(needs.plan.outputs.os_matrix) }}"})
         steps = job["steps"]
         capnp = {s.get("if") for s in steps if "capnp" in s.get("run", "") and "ci-exec.py" not in s.get("run", "")}
         self.assertEqual(
@@ -577,6 +607,52 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertLess(guard, head)
         shas = next(s["run"] for s in self.jobs["plan"]["steps"] if s.get("id") == "shas")
         self.assertLess(shas.index("inputs.private-head"), shas.index("pull_request"))
+
+
+class DraftDeferredWorkflowTests(unittest.TestCase):
+    """Heavy pull request workflows wait for `ready_for_review` on a draft."""
+
+    DEFERRED = {
+        "codeql.yml": "languages",
+        "cflite-pr.yml": "pr",
+        "docker-image.yml": "image",
+        "devcontainer-image.yml": "image",
+        "images-publish.yml": "plan",
+        "abs-integration.yml": "abs-smoke",
+    }
+    GATE = "github.event_name != 'pull_request' || !github.event.pull_request.draft"
+
+    def test_heavy_workflows_skip_drafts_and_run_when_ready(self) -> None:
+        for name, root in self.DEFERRED.items():
+            with self.subTest(workflow=name):
+                wf = yaml.safe_load((REPO / ".github" / "workflows" / name).read_text(encoding="utf-8"))
+                on = wf.get("on", wf.get(True))
+                self.assertEqual(
+                    on["pull_request"]["types"], ["opened", "synchronize", "reopened", "ready_for_review"]
+                )
+                self.assertEqual(wf["jobs"][root]["if"], self.GATE)
+                # Every other job depends on the gated one, so none starts on a draft.
+                for job, body in wf["jobs"].items():
+                    if job != root:
+                        needs = body.get("needs", [])
+                        self.assertIn(root, [needs] if isinstance(needs, str) else needs, job)
+
+    def test_superseded_pull_request_runs_are_cancelled(self) -> None:
+        wf_dir = REPO / ".github" / "workflows"
+        osv = yaml.safe_load((wf_dir / "osv-scanner.yml").read_text(encoding="utf-8"))
+        self.assertEqual(osv["concurrency"]["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}")
+        self.assertIn("github.event.pull_request.number", osv["concurrency"]["group"])
+        trigger = yaml.safe_load((wf_dir / "cla-trigger.yml").read_text(encoding="utf-8"))
+        conc = trigger["jobs"]["trigger"]["concurrency"]
+        self.assertIs(conc["cancel-in-progress"], True)
+        self.assertIn("github.event.pull_request.number", conc["group"])
+        # The CLA check ignores a superseded trigger run, never a skipped-only filter.
+        cla = yaml.safe_load((wf_dir / "cla.yml").read_text(encoding="utf-8"))
+        self.assertIn("github.event.workflow_run.conclusion != 'cancelled'", cla["jobs"]["cla"]["if"])
+        upload = yaml.safe_load((wf_dir / "coverage-upload.yml").read_text(encoding="utf-8"))
+        conc = upload["jobs"]["upload"]["concurrency"]
+        self.assertEqual(conc["cancel-in-progress"], "${{ github.event.workflow_run.event == 'pull_request' }}")
+        self.assertIn("github.event.workflow_run.id", conc["group"])
 
 
 class OsvRemediationWorkflowTest(unittest.TestCase):
