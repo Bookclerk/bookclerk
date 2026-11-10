@@ -278,8 +278,15 @@ jobs:
           # holds; name those so the summary is not read as complete.
           outcomes="$RUNNER_TEMP/mutants.out/outcomes.json"
           if [ -r "$outcomes" ]; then
-            jq -r '.outcomes[] | select(.summary == "Failure" and .scenario != "Baseline") | .scenario.Mutant.name // "unnamed mutant"' "$outcomes" \
-              | while read -r name; do echo "::warning title=Unattributed mutant failure::${name}"; done
+            unattributed=$(jq -r '.outcomes[] | select(.summary == "Failure" and .scenario != "Baseline") | .scenario.Mutant.name // "unnamed mutant"' "$outcomes")
+            if [ -n "$unattributed" ]; then
+              while read -r name; do echo "::warning title=Unattributed mutant failure::${name}"; done <<< "$unattributed"
+              {
+                echo "> [!WARNING]"
+                echo "> Incomplete results: $(wc -l <<< "$unattributed") mutant(s) failed in a way cargo-mutants could not classify (see the step's warnings), so they are in no list below."
+                echo
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
           exit 0
 

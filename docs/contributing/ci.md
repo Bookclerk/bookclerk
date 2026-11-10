@@ -1136,7 +1136,8 @@ the starting point of the next scheduled one.
    mutant counts as caught. The log notes the cap and how many processes it
    stopped. When the cgroup cannot be set up, a warning says so and the run
    goes on uncapped. A kill that lands on cargo itself leaves the mutant
-   unclassified; each one gets its own warning, because no list holds it.
+   unclassified; each one gets its own warning, and the job summary says
+   the results are incomplete, because no list holds it.
 
 The job summary shows the share of mutants the tests caught and lists the
 missed ones. The full results, with a log per mutant, are in the
