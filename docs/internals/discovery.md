@@ -111,11 +111,14 @@ operator, a household user, or a portal identity) has a **subject key**
    publisher, length, date, genres, language and narrators) is left out
    and joined back from those rows when the page reads the feed, in pages
    that stay under the inline result limit. A field is left out only when
-   that join gives it back unchanged, so metadata merged in from another
-   store edition stays on the card. A card with no stored candidate, such
-   as a wish, keeps its metadata. If a newer fetch replaced a card's
-   candidate before the page reads it, the card shows without that
-   metadata until the ranking that fetch queues replaces the feed.
+   that join gives it back unchanged: metadata merged in from another
+   store edition is left out when that edition's candidate row gives the
+   same value, and stays on the card when no row does. A card with no
+   stored candidate, such as a wish, keeps its metadata. A fetch that
+   changes candidates before the page reads the feed changes what the join
+   fills in: an updated row shows its new metadata, a removed row lets
+   another edition's row fill the field, and a field no row holds stays
+   empty until the ranking that fetch queues replaces the feed.
    `GET /api/discover/status` needs only whether a feed exists and when it
    was ranked, so it reads the feed without the join.
 
