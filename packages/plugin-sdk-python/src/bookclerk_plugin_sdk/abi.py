@@ -26,6 +26,7 @@ PluginErrorCode = Literal[
     "cancelled",
     "conflict",
     "limit_exceeded",
+    "rate_limited",
 ]
 """Stable `PluginError.code` strings. Unknown future codes are forwarded
 as-is; SDKs surface them as a local `unknown` while keeping the raw wire
@@ -2004,6 +2005,20 @@ class ContentSource(Protocol):
         """
         ...
 
+    async def purchase_hints(self, params: PurchaseHintsParams) -> PurchaseHintsReply:
+        """Purchase links / price hints for several titles in one call, so a guest
+        whose backend prices many products per request makes one request for a
+        page of cards. A guest that cannot batch answers each query as
+        `purchaseHint` would.
+
+        Args:
+            params: The titles to price, in order.
+
+        Returns:
+            ``PurchaseHintsReply``
+        """
+        ...
+
 
 class RemoteLibrary(Protocol):
     """`remoteLibrary` entrypoint: long-running remote-library lifecycle (start /
@@ -3454,6 +3469,63 @@ PurchaseHintReply = Union[
     PurchaseHintReplyErr,
 ]
 """Result union of `ContentSource.purchaseHint`."""
+
+
+class PurchaseHintsParams(TypedDict):
+    """Params of `ContentSource.purchaseHints`: the titles to price together.
+
+    Attributes:
+        queries: One query per title, each as for `purchaseHint`; at most `maxListPage`.
+    """
+
+    queries: list[PurchaseHintParams]
+
+
+class PurchaseHintsResult(TypedDict):
+    """Success payload of `ContentSource.purchaseHints`.
+
+    Attributes:
+        results: One answer per query, in the order the queries were sent.
+    """
+
+    results: list[PurchaseHintResult]
+
+
+class PurchaseHintsReplyOk(TypedDict):
+    """``PurchaseHintsReply`` member ``ok``.
+
+    Success: an answer per query.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: an answer per query.
+    """
+
+    kind: Literal["ok"]
+    value: PurchaseHintsResult
+
+
+class PurchaseHintsReplyErr(TypedDict):
+    """``PurchaseHintsReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+PurchaseHintsReply = Union[
+    PurchaseHintsReplyOk,
+    PurchaseHintsReplyErr,
+]
+"""Result union of `ContentSource.purchaseHints`. A whole-batch `err` (for
+example `rateLimited`) applies to every query in it.
+"""
 
 
 class ScanLibraryParams(TypedDict):
@@ -6095,6 +6167,11 @@ __all__ = [
     "PurchaseHintReplyOk",
     "PurchaseHintReplyErr",
     "PurchaseHintReply",
+    "PurchaseHintsParams",
+    "PurchaseHintsResult",
+    "PurchaseHintsReplyOk",
+    "PurchaseHintsReplyErr",
+    "PurchaseHintsReply",
     "ScanLibraryParams",
     "AuthenticateUserParams",
     "ExternalUser",

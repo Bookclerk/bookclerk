@@ -1396,6 +1396,12 @@ class NamedEntrypoint(WorkerEntrypoint):
         return js(result)
 
 
+PURCHASE_HINTS_BUDGET_SECONDS = 4.0
+"""How long the default ``purchaseHints`` keeps starting one-title lookups
+before answering with what it has. Well under the host's 10 s batch
+deadline, so even a slow last lookup lands before it and a store without a
+bulk endpoint still returns the titles it priced."""
+
 STOREFRONT_METHODS: tuple[str, ...] = (
     "login",
     "scan",
@@ -1406,6 +1412,7 @@ STOREFRONT_METHODS: tuple[str, ...] = (
     "searchCatalog",
     "expandCandidates",
     "purchaseHint",
+    "purchaseHints",
     "listDeals",
     "catalogDetail",
     "revokeAccount",
@@ -1461,6 +1468,37 @@ class StorefrontEntrypoint(NamedEntrypoint):
     async def purchaseHint(self, _params: abi.PurchaseHintParams):
         """Purchase link / price hint (``PurchaseHintParams`` → ``PurchaseHint``)."""
         raise _unsupported("purchaseHint")
+
+    async def purchaseHints(self, params: abi.PurchaseHintsParams):
+        """Purchase links / price hints for several titles at once.
+
+        Asks :meth:`purchaseHint` for each query, those that already name a
+        product id first (one lookup each) and title searches after, and
+        starts nothing once :data:`PURCHASE_HINTS_BUDGET_SECONDS` has passed,
+        so the host's batch gets what the store managed instead of nothing.
+        A store whose catalog prices many products per request overrides
+        this to make one request. Raise a ``rate_limited``
+        :class:`PluginError` (with ``details.retryAfterMs``) when the store
+        asks to slow down.
+
+        Args:
+            params: The titles to price, in order.
+
+        Returns:
+            One ``PurchaseHint`` or ``None`` per query.
+        """
+        started = time.monotonic()
+        queries = params["queries"]
+        out: list[abi.PurchaseHint | None] = [None] * len(queries)
+        order = sorted(
+            range(len(queries)),
+            key=lambda i: not (queries[i].get("productId") or "").strip(),
+        )
+        for i in order:
+            if time.monotonic() - started >= PURCHASE_HINTS_BUDGET_SECONDS:
+                break
+            out[i] = await self.purchaseHint(queries[i])
+        return out
 
     async def listDeals(self, _params: abi.ListDealsParams):
         """Current storefront deals (``ListDealsParams`` → list of ``CatalogHit``)."""

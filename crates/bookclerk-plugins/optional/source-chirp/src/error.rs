@@ -24,6 +24,9 @@ pub enum ChirpError {
     /// Upstream GraphQL / HTTP API error.
     #[error("API error: {0}")]
     Api(String),
+    /// Chirp answered 429; the duration is its `Retry-After`, when sent.
+    #[error("rate limited by Chirp")]
+    RateLimited(Option<std::time::Duration>),
 
     /// Title download or packaging failed.
     #[error("download error: {0}")]
@@ -82,6 +85,7 @@ impl From<ChirpError> for bookclerk_storefront::SourceError {
             ChirpError::NoAccounts(m) => Self::NoAccounts(m),
             ChirpError::Auth(m) | ChirpError::AccountNotFound(m) => Self::Auth(m),
             ChirpError::Api(m) | ChirpError::Download(m) => Self::Api(m),
+            ChirpError::RateLimited(wait) => Self::RateLimited(wait),
             ChirpError::Io(e) => Self::Io(e),
             ChirpError::Other(e) => Self::Other(e),
         }

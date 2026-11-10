@@ -34,6 +34,11 @@ pub const DISCOVER_CONSUMER_ID: &str = "host:discover";
 /// one sync or one browsing session fold into a single job per person.
 pub const EVENT_DEBOUNCE: Duration = Duration::from_secs(30);
 
+/// How long the wish owner's own fetch waits: they are looking at the page,
+/// so their shelves follow their wish quickly, while a few wishes in a row
+/// still fold into one job.
+pub const OWNER_DEBOUNCE: Duration = Duration::from_secs(5);
+
 /// Redeliveries before a delivery is dead-lettered. A delivery is retried
 /// (after [`EVENT_DEBOUNCE`]) only while a job it needs has already started,
 /// so twenty retries cover ten minutes of a slow storefront fetch.
@@ -222,7 +227,7 @@ async fn queue_for(
         Taste::Wishlist { identity_id: None } | Taste::Household => None,
     };
     let with_feeds = library.list_discover_feed_subjects().await?;
-    let plan = plan_refresh(taste, owner, with_feeds);
+    let plan = plan_refresh(taste, owner.clone(), with_feeds);
     let mut outcome = Queued::Done;
     // Host-initiated, like the daily refresh: no person asked for it.
     // A retry skips subjects an earlier attempt already covered, so jobs
@@ -232,9 +237,14 @@ async fn queue_for(
         if covered_since(library, JobKind::DiscoverCandidates, subject, since).await? {
             continue;
         }
+        // The wish owner waits less: they just acted and are watching.
+        let delay = if matches!(taste, Taste::Wishlist { .. }) && Some(subject) == owner.as_ref() {
+            OWNER_DEBOUNCE
+        } else {
+            EVENT_DEBOUNCE
+        };
         let admitted =
-            enqueue_discover_candidates(state, subject, JobTrigger::Scheduler, EVENT_DEBOUNCE)
-                .await?;
+            enqueue_discover_candidates(state, subject, JobTrigger::Scheduler, delay).await?;
         if needs_retry(library, &admitted).await? {
             outcome = Queued::Later;
         }
@@ -642,6 +652,16 @@ mod tests {
         assert!(
             jobs.iter().all(|j| j.run_after > Utc::now()),
             "refreshes wait out the debounce"
+        );
+        let run_after = |kind: JobKind| {
+            jobs.iter()
+                .find(|j| j.kind == kind)
+                .map(|j| j.run_after)
+                .expect("job")
+        };
+        assert!(
+            run_after(JobKind::DiscoverCandidates) < run_after(JobKind::DiscoverFeed),
+            "the wish owner's fetch waits less than the others' ranking"
         );
         let acked = library
             .get_event_delivery(&delivery.id)

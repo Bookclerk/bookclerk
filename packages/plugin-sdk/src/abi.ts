@@ -84,7 +84,7 @@ export const FEATURE_STORAGE_COPY = "storage.copy" as const;
  *
  * Wire strings of `PluginErrorCode` in ordinal order (snake_case `Text` codes).
  */
-export const PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded"] as const;
+export const PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited"] as const;
 
 /** Union of `PLUGIN_ERROR_CODES` wire names. */
 export type PluginErrorCode = (typeof PLUGIN_ERROR_CODES)[number];

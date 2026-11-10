@@ -29,24 +29,26 @@ use crate::generated::{
     read_login_start_reply, read_metadata_chapters_params, read_metadata_chapters_reply,
     read_metadata_lookup_params, read_metadata_records_reply, read_metadata_search_params,
     read_plugin_event, read_publish_reply, read_purchase_hint_params, read_purchase_hint_reply,
-    read_revoke_account_params, read_scan_library_params, read_scan_params, read_scan_reply,
-    read_search_catalog_params, read_source_accounts_reply, read_sync_listening_reply,
-    write_authenticate_user_params, write_brand, write_catalog_detail_params,
-    write_catalog_detail_reply, write_catalog_hits_reply, write_cli_invoke_params,
-    write_cli_invoke_reply, write_cli_schema, write_cli_schema_reply, write_config_option,
-    write_cover_fetch_params, write_cover_images_reply, write_database_adapter_config,
-    write_diagnose_reply, write_event_poll_reply, write_expand_candidates_params,
-    write_external_user_reply, write_fetch_title_params, write_fetch_title_reply, write_invocation,
-    write_list_deals_params, write_login_complete_params, write_login_params, write_login_reply,
-    write_login_start_reply, write_metadata_chapters_params, write_metadata_chapters_reply,
-    write_metadata_lookup_params, write_metadata_records_reply, write_metadata_search_params,
-    write_plugin_event, write_publish_reply, write_purchase_hint_params, write_purchase_hint_reply,
-    write_revoke_account_params, write_scan_library_params, write_scan_params, write_scan_reply,
-    write_search_catalog_params, write_source_accounts_reply, write_sync_listening_reply,
-    CatalogDetail, CatalogHits, CoverFetchParams, CoverImage, CoverImages, DiagnoseResult,
-    EventPollResult, Invocation, MetadataChapters, MetadataChaptersParams, MetadataLookupParams,
-    MetadataRecord, MetadataRecords, MetadataSearchParams, PluginEvent, PublishOk,
-    PurchaseHintResult, SourceAccounts, SyncListeningResult,
+    read_purchase_hints_params, read_purchase_hints_reply, read_revoke_account_params,
+    read_scan_library_params, read_scan_params, read_scan_reply, read_search_catalog_params,
+    read_source_accounts_reply, read_sync_listening_reply, write_authenticate_user_params,
+    write_brand, write_catalog_detail_params, write_catalog_detail_reply, write_catalog_hits_reply,
+    write_cli_invoke_params, write_cli_invoke_reply, write_cli_schema, write_cli_schema_reply,
+    write_config_option, write_cover_fetch_params, write_cover_images_reply,
+    write_database_adapter_config, write_diagnose_reply, write_event_poll_reply,
+    write_expand_candidates_params, write_external_user_reply, write_fetch_title_params,
+    write_fetch_title_reply, write_invocation, write_list_deals_params,
+    write_login_complete_params, write_login_params, write_login_reply, write_login_start_reply,
+    write_metadata_chapters_params, write_metadata_chapters_reply, write_metadata_lookup_params,
+    write_metadata_records_reply, write_metadata_search_params, write_plugin_event,
+    write_publish_reply, write_purchase_hint_params, write_purchase_hint_reply,
+    write_purchase_hints_params, write_purchase_hints_reply, write_revoke_account_params,
+    write_scan_library_params, write_scan_params, write_scan_reply, write_search_catalog_params,
+    write_source_accounts_reply, write_sync_listening_reply, CatalogDetail, CatalogHits,
+    CoverFetchParams, CoverImage, CoverImages, DiagnoseResult, EventPollResult, Invocation,
+    MetadataChapters, MetadataChaptersParams, MetadataLookupParams, MetadataRecord,
+    MetadataRecords, MetadataSearchParams, PluginEvent, PublishOk, PurchaseHintResult,
+    PurchaseHintsResult, SourceAccounts, SyncListeningResult,
 };
 #[cfg(feature = "host")]
 use crate::host_roles::HostAdapterDatabaseSession;
@@ -92,8 +94,8 @@ use crate::{
     CatalogDetailParams, CatalogHit, CliInvokeParams, CliInvokeResult, CliSchema,
     ExpandCandidatesParams, ExternalUser, FetchTitleParams, ListDealsParams, ListeningProgress,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch, PluginError,
-    PluginMigration, PluginMigrationOp, PurchaseHint, PurchaseHintParams, Result,
-    RevokeAccountParams, ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams,
+    PluginMigration, PluginMigrationOp, PurchaseHint, PurchaseHintParams, PurchaseHintsParams,
+    Result, RevokeAccountParams, ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams,
     SourceAccount, MAX_PLUGIN_MIGRATION_ID_BYTES,
 };
 
@@ -2143,6 +2145,28 @@ impl content_source_capnp::Server for ContentSourceServer {
         write_purchase_hint_reply(results.get().init_result(), &outcome)
     }
 
+    async fn purchase_hints(
+        self: Rc<Self>,
+        params: content_source_capnp::PurchaseHintsParams,
+        mut results: content_source_capnp::PurchaseHintsResults,
+    ) -> capnp::Result<()> {
+        let params = read_purchase_hints_params(params.get()?.get_params()?)?;
+        let outcome = self
+            .inner
+            .purchase_hints(params)
+            .await
+            .map(|hints| PurchaseHintsResult {
+                results: hints
+                    .into_iter()
+                    .map(|hint| PurchaseHintResult {
+                        found: hint.is_some(),
+                        hint: hint.unwrap_or_default(),
+                    })
+                    .collect(),
+            });
+        write_purchase_hints_reply(results.get().init_result(), &outcome)
+    }
+
     async fn list_deals(
         self: Rc<Self>,
         params: content_source_capnp::ListDealsParams,
@@ -3676,6 +3700,22 @@ impl ContentSource for ContentSourceClient {
         read_purchase_hint_reply(reply_result!(reply))
             .map_err(from_capnp)?
             .map(|ok| ok.found.then_some(ok.hint))
+    }
+    async fn purchase_hints(
+        &self,
+        params: PurchaseHintsParams,
+    ) -> Result<Vec<Option<PurchaseHint>>> {
+        let mut req = self.client.purchase_hints_request();
+        write_purchase_hints_params(req.get().init_params(), &params).map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_purchase_hints_reply(reply_result!(reply))
+            .map_err(from_capnp)?
+            .map(|ok| {
+                ok.results
+                    .into_iter()
+                    .map(|r| r.found.then_some(r.hint))
+                    .collect()
+            })
     }
     async fn list_deals(&self, params: ListDealsParams) -> Result<Vec<CatalogHit>> {
         let mut req = self.client.list_deals_request();
@@ -5651,6 +5691,75 @@ mod tests {
         ) -> capnp::Result<()> {
             Err(capnp::Error::failed("host exploded".into()))
         }
+    }
+
+    /// Answers from the product id, or asks the caller to slow down.
+    struct PricingStore {
+        /// Fail every batch with a rate limit instead of answering.
+        limited: bool,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl ContentSource for PricingStore {
+        async fn purchase_hint(&self, params: PurchaseHintParams) -> Result<Option<PurchaseHint>> {
+            if self.limited {
+                return Err(PluginError::rate_limited(
+                    "slow down",
+                    Some(std::time::Duration::from_secs(9)),
+                ));
+            }
+            Ok(params.product_id.map(|product_id| PurchaseHint {
+                product_id,
+                ..PurchaseHint::default()
+            }))
+        }
+    }
+
+    /// A batch crosses the wire in order, `None` stays `None`, and a rate
+    /// limit keeps its code.
+    #[tokio::test(flavor = "current_thread")]
+    async fn purchase_hints_round_trip_over_capnp() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let client = ContentSourceClient {
+                    client: capnp_rpc::new_client(ContentSourceServer {
+                        inner: Arc::new(PricingStore { limited: false }),
+                    }),
+                };
+                let queries = vec![
+                    PurchaseHintParams {
+                        product_id: Some("a".into()),
+                        ..PurchaseHintParams::default()
+                    },
+                    PurchaseHintParams::default(),
+                    PurchaseHintParams {
+                        product_id: Some("c".into()),
+                        ..PurchaseHintParams::default()
+                    },
+                ];
+                let hints = client
+                    .purchase_hints(PurchaseHintsParams { queries })
+                    .await
+                    .expect("a batch");
+                let ids: Vec<Option<String>> =
+                    hints.into_iter().map(|h| h.map(|h| h.product_id)).collect();
+                assert_eq!(ids, vec![Some("a".into()), None, Some("c".into())]);
+
+                let limited = ContentSourceClient {
+                    client: capnp_rpc::new_client(ContentSourceServer {
+                        inner: Arc::new(PricingStore { limited: true }),
+                    }),
+                };
+                let err = limited
+                    .purchase_hints(PurchaseHintsParams {
+                        queries: vec![PurchaseHintParams::default()],
+                    })
+                    .await
+                    .expect_err("a rate limit");
+                assert_eq!(err.code, PluginErrorCode::RateLimited, "{err}");
+            })
+            .await;
     }
 
     /// A peer that answers `executeStreamed` with `unimplemented` is reported

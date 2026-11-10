@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
+from bookclerk_plugin_sdk import workerd as workerd_module
 from bookclerk_plugin_sdk.workerd import (
     AdapterDatabaseSession,
     BookclerkEntrypoint,
@@ -16,6 +18,7 @@ from bookclerk_plugin_sdk.workerd import (
     MetadataEntrypoint,
     PluginError,
     ScheduledController,
+    StorefrontEntrypoint,
     cli_args,
     decode_extensible_config,
     event_batch_results,
@@ -232,6 +235,33 @@ class BookclerkEntrypointTests(unittest.IsolatedAsyncioTestCase):
         job.cancel()
         outcome = job_outcome_for(job, None, RuntimeError("stop"))
         self.assertEqual(outcome, {"kind": "cancelled", "message": "stop"})
+
+
+class PurchaseHintsDefaultTests(unittest.IsolatedAsyncioTestCase):
+    async def test_named_products_go_first_and_answers_keep_their_order(self) -> None:
+        asked: list[str] = []
+
+        class Store(StorefrontEntrypoint):
+            async def purchaseHint(self, params):
+                asked.append(params.get("title", ""))
+                return {"productId": params.get("productId") or "searched"}
+
+        store = Store.__new__(Store)
+        out = await store.purchaseHints(
+            {"queries": [{"title": "by-title"}, {"title": "by-id", "productId": "p1"}]}
+        )
+        self.assertEqual(asked, ["by-id", "by-title"])
+        self.assertEqual([h["productId"] for h in out], ["searched", "p1"])
+
+    async def test_nothing_starts_past_the_budget(self) -> None:
+        class Store(StorefrontEntrypoint):
+            async def purchaseHint(self, params):
+                return {"productId": "p"}
+
+        store = Store.__new__(Store)
+        with mock.patch.object(workerd_module, "PURCHASE_HINTS_BUDGET_SECONDS", 0.0):
+            out = await store.purchaseHints({"queries": [{"title": "late"}]})
+        self.assertEqual(out, [None])
 
 
 class NamedEntrypointTests(unittest.IsolatedAsyncioTestCase):

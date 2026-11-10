@@ -17,9 +17,10 @@ use std::time::Duration;
 
 use bookclerk_library::control_plane::{
     current_process_incarnation, load_or_create_node_identity, LeaseFence, SingletonDuty,
-    EVENT_RETENTION_LEASE, JOB_RETENTION_LEASE, KV_EXPIRY_LEASE, SESSION_EXPIRY_LEASE,
+    EVENT_RETENTION_LEASE, JOB_RETENTION_LEASE, KV_EXPIRY_LEASE, RECORD_RETENTION_LEASE,
+    SESSION_EXPIRY_LEASE,
 };
-use bookclerk_library::{EventPruneStep, LibraryStore};
+use bookclerk_library::{EventPruneStep, LibraryStore, RecordPruneStep};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, warn};
 
@@ -47,15 +48,21 @@ pub enum Duty {
     KvExpiry,
     /// Expired operator sessions, OIDC RP states, and WebAuthn challenges.
     SessionExpiry,
+    /// Every [`RecordPruneStep`]: expired OIDC codes and refresh tokens,
+    /// portal sessions, spent claim tickets, invites and enrollment links,
+    /// finished uploads, abandoned storage-scan inventories, and audit rows
+    /// past their windows.
+    RecordRetention,
 }
 
 impl Duty {
     /// Every duty, in the order a pass runs them.
-    pub const ALL: [Duty; 4] = [
+    pub const ALL: [Duty; 5] = [
         Duty::JobRetention,
         Duty::EventRetention,
         Duty::KvExpiry,
         Duty::SessionExpiry,
+        Duty::RecordRetention,
     ];
 
     /// The cluster lease this duty runs under.
@@ -66,6 +73,7 @@ impl Duty {
             Duty::EventRetention => EVENT_RETENTION_LEASE,
             Duty::KvExpiry => KV_EXPIRY_LEASE,
             Duty::SessionExpiry => SESSION_EXPIRY_LEASE,
+            Duty::RecordRetention => RECORD_RETENTION_LEASE,
         }
     }
 }
@@ -184,6 +192,17 @@ async fn run_duty(
             // next one starts.
             removed +=
                 bookclerk_library::control_plane::purge_expired_pending_joins(library).await?;
+            Ok(removed)
+        }
+        Duty::RecordRetention => {
+            let now = chrono::Utc::now();
+            let mut removed = 0;
+            for (index, step) in RecordPruneStep::ALL.into_iter().enumerate() {
+                if index > 0 {
+                    fence.check().await?;
+                }
+                removed += library.prune_record_step(step, now).await?;
+            }
             Ok(removed)
         }
     }

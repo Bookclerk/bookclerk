@@ -60,14 +60,16 @@ pub use metadata_enrich::{
 };
 pub use precompute::{
     fetch_subject_candidates, load_subject_taste, rank_subject_feed, stored_subject_feed,
-    FetchReport, RankReport, StoredSubjectFeed, SubjectTaste, STORE_CALL_MAX_AGE,
+    FetchReport, RankReport, StoredSubjectFeed, SubjectTaste, HOUSEHOLD_BLEND_WEIGHT,
+    OWN_TASTE_THRESHOLD, STARTER_GENRES, STARTER_GENRE_MIN_SEEDS, STORE_CALL_MAX_AGE,
     STORE_CALL_TIMEOUT, STORE_FETCH_DEADLINE,
 };
 pub use purchase::{
     best_purchase_hint, best_purchase_hint_preferring, format_money_label,
     parse_money_label_to_cents, purchase_hints_for, resolve_purchase_hints,
     resolve_purchase_hints_batch, seed_purchase_hint, PurchaseHint, PurchaseHintsQuery,
-    PurchaseHintsResponse,
+    PurchaseHintsResponse, BATCH_DEADLINE, BREAKER_OPEN_FOR, BREAKER_TRIP_TIMEOUTS,
+    RATE_LIMIT_FIRST_PAUSE, RATE_LIMIT_MAX_PAUSE,
 };
 pub use recommend::{
     combine_wishlist_score, listening_engagement, rank_global_request_queue, recommend,
@@ -75,7 +77,7 @@ pub use recommend::{
 };
 pub use shelves::{
     build_discover_feed, flatten_feed, shelf_is_disabled, shelf_kind_catalog, DiscoverFeed,
-    DiscoverShelf, FeedState, ShelfKindInfo, ShelfTaste,
+    DiscoverShelf, FeedState, ShelfKindInfo, ShelfTaste, SERIES_CAP,
 };
 pub use title_meta::{
     resolve_title_meta, resolve_title_meta_batch, resolve_title_reviews, TitleMeta, TitleMetaQuery,

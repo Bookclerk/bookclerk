@@ -1391,7 +1391,10 @@ to make a Worker over budget fail its check.
 ## Branch protection and the merge queue
 
 Configure repository rulesets or branch protection so the **required** CI check is
-**`CI Gate`** (plus the OSV check), **not** every matrix child.
+**`CI Gate`** (plus the OSV check), **not** every matrix child. The
+`Bookclerk CLA` and `Maintainer review` checks are required too, expected
+from the automation App (see [the CLA check](licensing.md#the-cla-check) and
+[maintainer review](automation.md#maintainer-review)).
 
 > [!WARNING]
 > Skipped `release`, `confinement`, `native-gateway`, `tray` and macOS jobs

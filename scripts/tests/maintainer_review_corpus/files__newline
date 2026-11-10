@@ -1,0 +1,7 @@
+[
+ {
+  "filename": "a\nb",
+  "status": "modified",
+  "patch": "@@ -1 +1 @@"
+ }
+]

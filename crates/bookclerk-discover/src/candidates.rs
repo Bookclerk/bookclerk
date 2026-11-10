@@ -46,6 +46,10 @@ pub struct StorefrontCandidate {
     pub origin: String,
     /// Owned-library title that seeded this related / similar candidate.
     pub seed_title: Option<String>,
+    /// Starter genre this candidate was browsed from (display name), set
+    /// only on hits of a starter-genre search for a thin taste.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starter_genre: Option<String>,
     /// Known storefront editions of this work (including the primary source).
     #[serde(default)]
     pub store_editions: Vec<StoreEdition>,
@@ -295,6 +299,7 @@ pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCa
         seed_categories: None,
         origin: hit.origin,
         seed_title: None,
+        starter_genre: None,
         store_editions: Vec::new(),
         subtitle: hit.subtitle,
         description: hit.description,
@@ -650,6 +655,7 @@ mod tests {
                 seed_categories: None,
                 origin: "audible author".into(),
                 seed_title: None,
+                starter_genre: None,
                 store_editions: Vec::new(),
                 subtitle: None,
                 description: None,
@@ -686,6 +692,7 @@ mod tests {
                 seed_categories: None,
                 origin: "libro related".into(),
                 seed_title: None,
+                starter_genre: None,
                 store_editions: Vec::new(),
                 subtitle: None,
                 description: None,
@@ -722,6 +729,7 @@ mod tests {
                 seed_categories: None,
                 origin: "chirp search".into(),
                 seed_title: None,
+                starter_genre: None,
                 store_editions: Vec::new(),
                 subtitle: None,
                 description: None,

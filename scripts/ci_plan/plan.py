@@ -180,8 +180,9 @@ DOC_FILES = frozenset(
 )
 # Tests and fixtures the plan job runs on every event, before any check.
 PLAN_JOB_TEST_PREFIX = "scripts/tests/"
-# Scripts that only plan-job tests exercise (the CLA checker runs in its own
-# workflow, from the default branch, and builds nothing; the coverage gate
+# Scripts that only plan-job tests exercise (the CLA checker and the
+# maintainer review check run in their own workflows, from the default
+# branch, and build nothing; the coverage gate
 # runs in CI Gate on every run, as does the Web API contract report, Codecov reads its settings itself, and the
 # bundle uploader in tools/codecov only runs in coverage-upload.yml; the
 # mutation testing reports, settings and starting commit only run in mutation.yml,
@@ -192,6 +193,7 @@ PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 PLAN_JOB_SCRIPT_FILES = frozenset(
     {
         "scripts/cla_check.py",
+        "scripts/maintainer_review.py",
         "scripts/cla_branch/README.md",
         "scripts/cla_branch/setup-rulesets.sh",
         "scripts/coverage_gate.py",
