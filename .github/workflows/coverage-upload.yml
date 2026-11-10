@@ -50,6 +50,12 @@ jobs:
     if: >-
       contains(fromJSON('["pull_request", "merge_group"]'), github.event.workflow_run.event) &&
       github.event.workflow_run.conclusion != 'cancelled'
+    # A newer CI run of the same pull request branch supersedes an upload
+    # still waiting or running; each merge group keeps its own. Job-level,
+    # so a run this job's `if` skips never cancels a real one.
+    concurrency:
+      group: coverage-upload-${{ github.event.workflow_run.event == 'pull_request' && format('pr-{0}-{1}', github.event.workflow_run.head_repository.id, github.event.workflow_run.head_branch) || format('run-{0}', github.event.workflow_run.id) }}
+      cancel-in-progress: ${{ github.event.workflow_run.event == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
