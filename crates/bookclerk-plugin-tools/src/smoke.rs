@@ -86,7 +86,10 @@ pub fn smoke_plugin(plugin_dir: &Path) -> Result<String, String> {
         Some(state.path()),
     )
     .map_err(|e| format!("materialize config: {e:#}"))?;
-    let base = generated.listen.client_base_url();
+    let base = generated
+        .listen
+        .client_base_url()
+        .ok_or_else(|| "smoke listen spec has no fixed port".to_string())?;
 
     let mut child = Command::new(&workerd_bin)
         .arg("serve")

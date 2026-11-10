@@ -797,8 +797,18 @@ fn process_tmp_root() -> Option<PathBuf> {
 /// How the bridge HTTP socket is exposed to `bookclerk-workerd`.
 #[derive(Debug, Clone)]
 pub enum ListenSpec {
-    /// `127.0.0.1:port` — workerd binds itself (unconfined smoke / Windows).
+    /// `127.0.0.1:port` — workerd binds a port the caller chose (unconfined smoke).
     TcpLoopback(u16),
+    /// workerd binds `127.0.0.1:0` itself and reports the port the operating
+    /// system picked on its control channel (`--control-fd`, read with
+    /// [`crate::control::listen_port`]). Used on Windows, which has no
+    /// `--socket-fd`: reserving a port, releasing it and letting workerd
+    /// rebind it races every other bind on the host (issue #781).
+    ///
+    /// The generated config turns on structured logging with this variant, so
+    /// isolate `console.*` output on the shared stdout cannot pose as a
+    /// control message.
+    ReportedTcp,
     /// Parent already bound `127.0.0.1:0`; workerd inherits via `--socket-fd`.
     /// Required under Linux Landlock `OutboundListen` (only `bind(port=0)` is
     /// allowed — rebinding a concrete ephemeral port is EPERM).
@@ -819,6 +829,10 @@ impl ListenSpec {
                 r#"(name = "rpc", address = "127.0.0.1:{}", http = (capnpConnectHost = "plugin"), service = "bridge")"#,
                 port
             ),
+            Self::ReportedTcp => {
+                r#"(name = "rpc", address = "127.0.0.1:0", http = (capnpConnectHost = "plugin"), service = "bridge")"#
+                    .to_string()
+            }
             Self::InheritedTcp { .. } => {
                 r#"(name = "rpc", http = (capnpConnectHost = "plugin"), service = "bridge")"#
                     .to_string()
@@ -827,20 +841,49 @@ impl ListenSpec {
     }
 
     /// HTTP origin the workerd isolate uses to call back into Bookclerk.
+    ///
+    /// # Returns
+    ///
+    /// `None` for [`Self::ReportedTcp`], whose port is known only once workerd
+    /// reports it.
     #[must_use]
-    pub fn client_base_url(&self) -> String {
-        match self {
-            Self::TcpLoopback(port) | Self::InheritedTcp { port } => {
-                format!("http://127.0.0.1:{port}")
-            }
-        }
+    pub fn client_base_url(&self) -> Option<String> {
+        self.port().map(|port| format!("http://127.0.0.1:{port}"))
     }
 
     /// TCP port the bridge socket binds.
+    ///
+    /// # Returns
+    ///
+    /// `None` for [`Self::ReportedTcp`], whose port is known only once workerd
+    /// reports it on its control channel.
     #[must_use]
-    pub fn port(&self) -> u16 {
+    pub fn port(&self) -> Option<u16> {
         match self {
-            Self::TcpLoopback(port) | Self::InheritedTcp { port } => *port,
+            Self::TcpLoopback(port) | Self::InheritedTcp { port } => Some(*port),
+            Self::ReportedTcp => None,
+        }
+    }
+
+    /// Whether workerd must report the bound port on `--control-fd`.
+    #[must_use]
+    pub fn reports_port(&self) -> bool {
+        match self {
+            Self::ReportedTcp => true,
+            Self::TcpLoopback(_) | Self::InheritedTcp { .. } => false,
+        }
+    }
+
+    /// Top-level config fields this listen mode needs, each ending in a comma.
+    ///
+    /// [`Self::ReportedTcp`] turns on structured logging so every line an
+    /// isolate writes to stdout is a JSON log object, never a bare control
+    /// message (see [`crate::control`]).
+    fn config_preamble(&self) -> &'static str {
+        if self.reports_port() {
+            "\n  logging = (structuredLogging = true),"
+        } else {
+            ""
         }
     }
 }
@@ -1071,6 +1114,7 @@ pub fn materialize_native_backend(
     let policy_escaped = escape_capnp(&policy_json.to_string());
 
     let socket_line = listen.workerd_socket_line();
+    let config_preamble = listen.config_preamble();
     let bridge_token_binding = format!(
         r#"(name = "BRIDGE_TOKEN", text = "{}")"#,
         escape_capnp(bridge_token)
@@ -1114,7 +1158,7 @@ pub fn materialize_native_backend(
     let config = format!(
         r#"using Workerd = import "/workerd/workerd.capnp";
 
-const bookclerkPlugin :Workerd.Config = (
+const bookclerkPlugin :Workerd.Config = ({config_preamble}
   services = [
     (name = "internet", network = (allow = [{internet_allow}], tlsOptions = (trustBrowserCas = true))),
     (name = "blocked", network = (allow = [])),
@@ -1463,6 +1507,7 @@ pub fn materialize(
     ));
 
     let socket_line = listen.workerd_socket_line();
+    let config_preamble = listen.config_preamble();
     // Never force unrestricted `internet` for Python under Deny. Outbound +
     // Python uses the egress proxy with Pyodide CDN hosts auto-allowlisted.
     let plugin_outbound = plugin_global_outbound(egress.mode());
@@ -1507,7 +1552,7 @@ pub fn materialize(
     let config = format!(
         r#"using Workerd = import "/workerd/workerd.capnp";
 
-const bookclerkPlugin :Workerd.Config = (
+const bookclerkPlugin :Workerd.Config = ({config_preamble}
   services = [
     (name = "internet", network = (allow = [{internet_allow}], tlsOptions = (trustBrowserCas = true))),
     (name = "blocked", network = (allow = [])),
@@ -2250,6 +2295,85 @@ mode = "deny"
         }
         .effective();
         assert_eq!(capped.subrequests, WorkerdLimits::MAX_SUBREQUESTS);
+    }
+
+    #[test]
+    fn reported_tcp_binds_port_zero_and_wraps_isolate_output() {
+        let reported = ListenSpec::ReportedTcp;
+        assert!(reported.reports_port());
+        assert_eq!(reported.port(), None);
+        assert_eq!(reported.client_base_url(), None);
+        assert!(reported
+            .workerd_socket_line()
+            .contains(r#"address = "127.0.0.1:0""#));
+        let inherited = ListenSpec::InheritedTcp { port: 9 };
+        assert!(!inherited.reports_port());
+        assert_eq!(inherited.port(), Some(9));
+        assert_eq!(
+            inherited.client_base_url().as_deref(),
+            Some("http://127.0.0.1:9")
+        );
+        assert!(!ListenSpec::TcpLoopback(9).reports_port());
+
+        // Both generated configs turn on structured logging exactly when
+        // workerd reports its port, so isolate output cannot pose as a
+        // control message on the shared stdout.
+        let structured = "logging = (structuredLogging = true),";
+        for (listen, wants_structured) in [
+            (ListenSpec::ReportedTcp, true),
+            (ListenSpec::InheritedTcp { port: 9 }, false),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let generated = materialize_native_backend(
+                dir.path(),
+                &native_manifest(),
+                &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
+                bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
+                listen.clone(),
+                Some("127.0.0.1:9"),
+                "token",
+                None,
+            )
+            .expect("materialize native");
+            let capnp = read_under(&generated.state_dir, &generated.config_path);
+            assert_eq!(capnp.contains(structured), wants_structured, "{capnp}");
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let _modules = create_dir_under(dir.path(), "modules");
+            write_under(
+                dir.path(),
+                Path::new("modules").join("index.js"),
+                "export default {};",
+            );
+            let manifest = bookclerk_plugin_manifest::PluginManifest::parse(
+                r#"
+api_version = 3
+id = "echo"
+runtime = "workerd"
+entrypoints = ["cli"]
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+[capabilities.network]
+mode = "deny"
+"#,
+            )
+            .expect("manifest");
+            let generated = materialize(
+                dir.path(),
+                &manifest,
+                &EgressProxy::from_manifest(&manifest),
+                bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
+                listen,
+                None,
+                "token",
+                None,
+            )
+            .expect("materialize");
+            let capnp = read_under(&generated.state_dir, &generated.config_path);
+            assert_eq!(capnp.contains(structured), wants_structured, "{capnp}");
+        }
     }
 
     #[test]

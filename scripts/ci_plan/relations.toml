@@ -101,7 +101,12 @@ paths = ["fuzz/corpus/mp4_parse/**"]
 
 [[test_input]]
 package = "bookclerk-workerd"
-paths = ["fuzz/corpus/granted_http/**"]
+# The workerd_control oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/granted_http/**",
+    "fuzz/corpus/workerd_control/**",
+    "fuzz/oracles/workerd_control.rs",
+]
 
 [[test_input]]
 package = "bookclerk-plugin-manifest"

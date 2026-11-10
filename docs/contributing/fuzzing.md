@@ -24,6 +24,7 @@ boundary extends it.
 | `sql_lower` | Adapter lowering of canonical SQL | `bookclerk-db-exec` |
 | `mp4_parse` | ISO-BMFF parse and remux of store downloads | `bookclerk-mp4` |
 | `granted_http` | The granted reverse channel | `bookclerk-workerd::granted_http` |
+| `workerd_control` | Lines on workerd's stdout, shared with plugin isolates, that report the bridge RPC port on Windows (`--control-fd`) | `bookclerk-workerd::control` |
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
