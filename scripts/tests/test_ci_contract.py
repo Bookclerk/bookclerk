@@ -47,7 +47,7 @@ def _load() -> dict:
 
 
 def _emitted_keys() -> set[str]:
-    keys = {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode"}
+    keys = {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs"}
     keys |= {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
     keys |= {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]}
     return keys
@@ -82,8 +82,12 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(job["runs-on"], "macos-latest")
         self.assertEqual(job["needs"], "plan")
         owners = OS_LEG_JOBS["macos"]
+        # Never on a pull request (`os_legs`), only where any owner runs.
+        prefix = "needs.plan.outputs.os_legs == 'true' && ( "
+        self.assertTrue(job["if"].startswith(prefix), job["if"])
+        self.assertTrue(job["if"].endswith(")"), job["if"])
         self.assertEqual(
-            job["if"].split(" || "),
+            job["if"][len(prefix) : -1].split(" || "),
             [f"needs.plan.outputs.job_{o.replace('-', '_')} == 'true'" for o in owners],
         )
         runs = [s for s in job["steps"] if RUN_CHECK.search(s.get("run", ""))]
@@ -223,6 +227,17 @@ class WorkflowContractTests(unittest.TestCase):
             " && !inputs.private-head }}",
         )
 
+    def test_pull_requests_leave_windows_and_macos_to_the_merge_queue(self) -> None:
+        step = next(s for s in self.jobs["plan"]["steps"] if "ci-exec.py resolve" in s.get("run", ""))
+        self.assertIn('[ "$PR_RUN" = "true" ]', step["run"])
+        self.assertIn("--linux-only", step["run"])
+        self.assertEqual(step["env"]["PR_RUN"], "${{ github.event_name == 'pull_request' && !inputs.private-head }}")
+        for name in ("confinement", "native-gateway", "tray"):
+            with self.subTest(job=name):
+                self.assertEqual(
+                    self.jobs[name]["strategy"]["matrix"]["os"], "${{ fromJSON(needs.plan.outputs.os_matrix) }}"
+                )
+
     def test_gate_sees_every_job_and_runs_always(self) -> None:
         gate = self.jobs["ci-gate"]
         self.assertEqual(gate["name"], "CI Gate")
@@ -231,11 +246,11 @@ class WorkflowContractTests(unittest.TestCase):
         run = next(s for s in gate["steps"] if "ci-exec.py gate" in s.get("run", ""))
         self.assertEqual(run["env"]["NEEDS_JSON"], "${{ toJSON(needs) }}")
 
-    def test_native_gateway_runs_on_every_os(self) -> None:
+    def test_native_gateway_runs_on_the_planned_os(self) -> None:
         job = self.jobs["native-gateway"]
         self.assertEqual(job["runs-on"], "${{ matrix.os }}")
         self.assertIs(job["strategy"]["fail-fast"], False)
-        self.assertEqual(job["strategy"]["matrix"], {"os": ["ubuntu-latest", "windows-latest"]})
+        self.assertEqual(job["strategy"]["matrix"], {"os": "${{ fromJSON(needs.plan.outputs.os_matrix) }}"})
         steps = job["steps"]
         capnp = {s.get("if") for s in steps if "capnp" in s.get("run", "") and "ci-exec.py" not in s.get("run", "")}
         self.assertEqual(

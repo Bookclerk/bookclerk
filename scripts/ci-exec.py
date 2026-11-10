@@ -88,6 +88,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Draft pull request: run only the lint, docs and unit-test jobs; defer the rest",
     )
+    r.add_argument(
+        "--linux-only",
+        action="store_true",
+        help="Pull request run: leave the Windows and macOS legs to the merge queue",
+    )
     r.add_argument("--selective", default=os.environ.get("SELECTIVE_CI", "0"))
     r.add_argument("--event", default=os.environ.get("GITHUB_EVENT_NAME", "local"))
     r.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", "local"))
@@ -128,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
                 force_full=args.force_full,
                 build_only=args.build_only,
                 draft=args.draft,
+                linux_only=args.linux_only,
                 workspace=WORKSPACE,
                 paths=args.paths,
             )

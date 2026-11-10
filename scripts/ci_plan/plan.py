@@ -1465,14 +1465,20 @@ def _fmt_prereq(p: Mapping[str, Any]) -> str:
     return kind.replace("_", "-")
 
 
+# Why a summary row reads "deferred" (see ``scripts/ci_plan/execute.py``).
+DEFERRED_DRAFT = "draft pull request, runs when ready for review"
+DEFERRED_REASONS = {"windows_cluster": "Windows, runs in the merge queue"}
+
+
 def plan_to_summary(plan: Plan, title: str = "CI plan", deferred: Iterable[str] = ()) -> str:
     """Markdown summary of ``plan``.
 
     Args:
         plan: The plan to describe.
         title: The section heading.
-        deferred: Checks a draft pull request run left for the ready run;
-            they read ``deferred: draft`` rather than ``not affected``.
+        deferred: Checks a pull request run left for later (the ready run
+            or the merge queue); they read ``deferred`` with the reason
+            rather than ``not affected``.
 
     Returns:
         The summary as Markdown.
@@ -1495,7 +1501,7 @@ def plan_to_summary(plan: Plan, title: str = "CI plan", deferred: Iterable[str] 
     lines.append("| --- | --- | --- |")
     for check in ALL_CHECKS:
         if check in waiting:
-            lines.append(f"| `{check}` | deferred: draft pull request, runs when ready for review | |")
+            lines.append(f"| `{check}` | deferred: {DEFERRED_REASONS.get(check, DEFERRED_DRAFT)} | |")
             continue
         if check not in plan.checks:
             lines.append(f"| `{check}` | skip: not affected | |")

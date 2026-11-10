@@ -28,6 +28,7 @@ from ci_plan.execute import (  # noqa: E402
     BUILD_ONLY_JOBS,
     DRAFT_JOBS,
     NEXTEST_RUN,
+    QUEUE_ONLY_CHECKS,
     SCHEMA_VERSION,
     Command,
     Context,
@@ -95,6 +96,7 @@ def artifact(p, mode: str = "selective") -> dict:
         "mode": mode,
         "build_only": False,
         "draft": False,
+        "linux_only": False,
         "deferred": [],
         "predicted": plan_to_dict(p),
         "execution": plan_to_dict(p),
@@ -1347,7 +1349,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(out["check_needs_uv"], "false")
         self.assertEqual(
             set(out),
-            {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode"}
+            {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs"}
             | {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
             | {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]},
         )
@@ -2010,6 +2012,96 @@ class RunnerLayoutTests(unittest.TestCase):
             with self.subTest(missing=key), self.assertRaises(ExecError):
                 validate(broken, run_id="1", checkout_sha="c")
         validate(dict(base, draft=True, deferred=["e2e"]), run_id="1", checkout_sha="c")
+
+    def ready_artifact(self, *paths: str, linux_only: bool = True) -> dict:
+        return resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="pull_request",
+            linux_only=linux_only,
+            paths=list(paths),
+            metadata=META,
+            workspace=REPO,
+        )
+
+    def test_ready_pull_request_leaves_windows_and_macos_to_the_queue(self) -> None:
+        art = self.ready_artifact("Cargo.lock")
+        validate(art, run_id="9", checkout_sha="abc")
+        predicted = plan_from_dict(art["predicted"])
+        execution = plan_from_dict(art["execution"])
+        self.assertEqual(art["deferred"], sorted(QUEUE_ONLY_CHECKS))
+        self.assertEqual(set(execution.checks), set(predicted.checks) - QUEUE_ONLY_CHECKS)
+        out = job_outputs(art)
+        self.assertEqual(json.loads(out["os_matrix"]), ["ubuntu-latest"])
+        self.assertEqual(out["os_legs"], "false")
+        self.assertEqual(out["job_windows_cluster"], "false")
+        for job in ("check", "test", "e2e", "release", "confinement", "native_gateway", "tray", "postgres", "site"):
+            with self.subTest(job=job):
+                self.assertEqual(out[f"job_{job}"], "true")
+        expected = expected_jobs(art)
+        self.assertFalse(expected["macos"])
+        self.assertFalse(expected["windows-cluster"])
+        needs = {"plan": {"result": "success"}}
+        for job, want in expected.items():
+            needs[job] = {"result": "success" if want else "skipped"}
+        self.assertEqual(gate(art, needs), [])
+        self.assertTrue(gate(art, dict(needs, macos={"result": "success"})))
+        summary = execute.artifact_summary(art)
+        self.assertIn("**Linux only**", summary)
+        self.assertIn("| `windows_cluster` | deferred: Windows, runs in the merge queue", summary)
+
+    def test_merge_group_and_main_run_every_platform(self) -> None:
+        for build_only in (False, True):
+            with self.subTest(build_only=build_only):
+                art = resolve(
+                    base=None,
+                    head=None,
+                    selective_ci="1",
+                    run_id="9",
+                    checkout_sha="abc",
+                    event="push" if build_only else "merge_group",
+                    force_full=True,
+                    build_only=build_only,
+                    paths=["Cargo.lock"],
+                    metadata=META,
+                    workspace=REPO,
+                )
+                self.assertFalse(art["linux_only"])
+                self.assertEqual(art["deferred"], [])
+                out = job_outputs(art)
+                self.assertEqual(json.loads(out["os_matrix"]), ["ubuntu-latest", "windows-latest"])
+                self.assertEqual(out["os_legs"], "true")
+                self.assertTrue(expected_jobs(art)["macos"])
+        self.assertEqual(job_outputs(self.ready_artifact("Cargo.lock", linux_only=False))["job_windows_cluster"], "true")
+
+    def test_linux_only_and_build_only_are_exclusive(self) -> None:
+        with self.assertRaises(ExecError):
+            resolve(
+                base=None,
+                head=None,
+                selective_ci="1",
+                run_id="9",
+                checkout_sha="abc",
+                event="push",
+                build_only=True,
+                linux_only=True,
+                paths=["Cargo.lock"],
+                metadata=META,
+                workspace=REPO,
+            )
+        base = artifact(plan("crates/bookclerk-cli/src/main.rs"))
+        for bad in (
+            {"linux_only": 1},
+            {"build_only": True, "linux_only": True},
+            {"deferred": ["windows_cluster"]},
+            {"linux_only": True, "deferred": ["e2e"]},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ExecError):
+                validate(dict(base, **bad), run_id="1", checkout_sha="c")
+        validate(dict(base, linux_only=True, deferred=["windows_cluster"]), run_id="1", checkout_sha="c")
 
     def test_pull_request_and_merge_group_are_never_build_only(self) -> None:
         art = artifact(plan("crates/bookclerk-cli/src/main.rs"))
