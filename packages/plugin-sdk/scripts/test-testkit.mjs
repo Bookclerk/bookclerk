@@ -221,6 +221,15 @@ assert.throws(
   () => kitMigrations([{ id: "odd", operations: [{ kind: "rename", value: "x" }] }]),
   /migration "odd" has an operation without schema or data/,
 );
+// A registration the SDK refuses is refused before any kit starts: the
+// binary does not exist, so the spawn error would win if it ran first.
+await assert.rejects(
+  createTestDatabase({
+    binary: join(root, "no-such-bookclerk-db-testkit"),
+    migrations: [{ id: "odd", operations: [{ kind: "rename", value: "x" }] }],
+  }),
+  /migration "odd" has an operation without schema or data/,
+);
 await assert.rejects(
   createTestDatabase({ binary: join(root, "no-such-bookclerk-db-testkit") }),
   (err) => err instanceof Error,

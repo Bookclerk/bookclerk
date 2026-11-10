@@ -334,6 +334,9 @@ export async function createTestDatabase(options: TestDatabaseOptions = {}): Pro
       `unknown test database profile ${JSON.stringify(profile)} (one of ${TEST_DATABASE_PROFILES.join(", ")})`,
     );
   }
+  // Validated before the kit starts, so a refused registration leaves no
+  // process behind.
+  const migrations = kitMigrations(options.migrations ?? []);
   const child = spawn(testkitBinary(options.binary), ["serve"], {
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -342,9 +345,7 @@ export async function createTestDatabase(options: TestDatabaseOptions = {}): Pro
     child.once("error", () => resolve());
   });
   const announced = readAnnouncement(child);
-  child.stdin?.write(
-    `${JSON.stringify({ profile, migrations: kitMigrations(options.migrations ?? []) })}\n`,
-  );
+  child.stdin?.write(`${JSON.stringify({ profile, migrations })}\n`);
   let serving: Serving;
   try {
     serving = await announced;
