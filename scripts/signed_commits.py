@@ -13,8 +13,9 @@ run (``check_run``), and on ``merge_group``. It reads only pull request
 metadata through the REST API and never checks out or runs pull request
 code.
 
-For every open pull request whose head is the commit the event names, it
-reads the pull request's commits and GitHub's verification of each one, and:
+For every open pull request into the default branch (the one the ruleset
+protects) whose head is the commit the event names, it reads the pull
+request's commits and GitHub's verification of each one, and:
 
 - reports the ``Signed commits`` check run on the head commit, failing when
   any commit is not verified. Like ``Maintainer review``, the check belongs
@@ -27,8 +28,8 @@ reads the pull request's commits and GitHub's verification of each one, and:
   is verified, the comment, if there is one, says so. No comment is posted
   on a pull request whose commits were always verified.
 
-Everything that parses bytes from GitHub (the event payload and the commit
-and comment pages) is sans-IO and fuzzed by
+Everything that parses bytes from GitHub (the event payload, the pull
+request and its commit and comment pages) is sans-IO and fuzzed by
 ``scripts/tests/test_signed_commits.py``; it shares ``cla_check``'s JSON
 readers and ``maintainer_review``'s event and pull request readers, so the
 checks refuse the same malformed documents. Any input outside the expected
@@ -59,7 +60,6 @@ from cla_check import (
     PAGE_SIZE,
     REPOSITORY,
     Account,
-    AccountType,
     ApiError,
     ClaInputError,
     Comment,
@@ -70,7 +70,10 @@ from cla_check import (
     _object,
     _sha,
     _string,
+    own_comment,
     parse_comment_page,
+    parse_pull_refs,
+    parse_pull_request,
     urllib_transport,
 )
 from maintainer_review import GitHub as ReviewGitHub
@@ -122,6 +125,17 @@ MAX_COMMENT_PAGES = 30
 
 #: Characters of a commit SHA-1 the comment shows.
 SHORT_SHA = 7
+
+#: Most pages of open pull requests read when a **Re-run** names a commit
+#: the commit listing does not tie to any pull request (a fork's).
+MAX_OPEN_PULL_PAGES = 5
+
+#: A default branch name the comment may put in a shell command: letters,
+#: digits, ``.``, ``_``, ``-`` and ``/``. Any other name fails closed.
+DEFAULT_BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,255}", re.ASCII)
+
+#: Longest base branch name accepted, in characters.
+MAX_BASE_CHARS = 255
 
 
 class EventKind(Enum):
@@ -176,6 +190,9 @@ class Verdict:
     number: int
     #: The pull request author.
     author: Account
+    #: The branch it merges into, the repository's default branch (the one
+    #: the ruleset protects); matches ``DEFAULT_BRANCH``.
+    base: str
     #: How many commits the pull request has.
     total: int
     #: Its commits GitHub does not verify, oldest first.
@@ -185,6 +202,39 @@ class Verdict:
     def passed(self) -> bool:
         """Whether every commit is verified."""
         return not self.unverified
+
+
+@dataclass(frozen=True)
+class PullTarget:
+    """A pull request and the branch it merges into."""
+
+    #: The pull request.
+    pull: PullRequest
+    #: The name of its base branch.
+    base: str
+    #: The name of the repository's default branch, which the ruleset that
+    #: requires signed commits protects; matches ``DEFAULT_BRANCH``.
+    default_branch: str
+
+
+def parse_pull(raw: bytes) -> PullTarget:
+    """Reads a ``GET /pulls/{n}`` answer with its base and default branch.
+
+    # Errors
+    ``ClaInputError`` when the pull request has the wrong shape, the base
+    name is not 1 to ``MAX_BASE_CHARS`` printable characters, or the default
+    branch does not match ``DEFAULT_BRANCH``.
+    """
+    obj = _object(_load_json(raw), "pull request")
+    pull = parse_pull_request(obj)
+    base = _object(obj.get("base"), "pull request base")
+    ref = _string(base.get("ref"), "base branch")
+    if not 1 <= len(ref) <= MAX_BASE_CHARS or not ref.isprintable():
+        raise ClaInputError("base branch has a bad name")
+    default = _string(_object(base.get("repo"), "base repository").get("default_branch"), "default branch")
+    if DEFAULT_BRANCH.fullmatch(default) is None:
+        raise ClaInputError("default branch has a bad name")
+    return PullTarget(pull=pull, base=ref, default_branch=default)
 
 
 def parse_event(name: str, raw: bytes) -> Event:
@@ -251,12 +301,13 @@ def parse_commit_page(raw: bytes) -> list[SignedCommit]:
     return commits
 
 
-def evaluate(pull: PullRequest, commits: list[SignedCommit]) -> Verdict:
+def evaluate(pull: PullRequest, commits: list[SignedCommit], base: str = "main") -> Verdict:
     """Decides one pull request from its commits.
 
     # Arguments
     * ``pull``: the pull request.
     * ``commits``: all of its commits, oldest first.
+    * ``base``: the default branch it merges into.
 
     # Returns
     The verdict: every commit GitHub does not show as verified is listed,
@@ -266,6 +317,7 @@ def evaluate(pull: PullRequest, commits: list[SignedCommit]) -> Verdict:
     return Verdict(
         number=pull.number,
         author=pull.author,
+        base=base,
         total=len(commits),
         unverified=tuple(c for c in commits if not c.verified),
     )
@@ -281,18 +333,24 @@ def check_title(verdict: Verdict) -> str:
     """Returns the check run's one-line title for ``verdict``."""
     if verdict.passed:
         return "Every commit is signed and verified."
+    noun = "commit" if verdict.total == 1 else "commits"
     if len(verdict.unverified) == 1:
-        return f"1 of {verdict.total} commits is not verified."
-    return f"{len(verdict.unverified)} of {verdict.total} commits are not verified."
+        return f"1 of {verdict.total} {noun} is not verified."
+    return f"{len(verdict.unverified)} of {verdict.total} {noun} are not verified."
 
 
-def render_comment(verdict: Verdict) -> str:
+def render_comment(verdict: Verdict, clone_url: str = "https://github.com/bookclerk/bookclerk.git") -> str:
     """Returns the check's comment on the pull request.
 
     Everything in it comes from validated fields: commit SHA-1s, GitHub's
-    reason (lowercase letters and underscores), the commit count and the
-    author's login, so contributor-chosen text cannot add links or
-    formatting.
+    reason (lowercase letters and underscores), the commit count, the
+    author's login and the default branch name, so contributor-chosen text
+    cannot add links or formatting.
+
+    # Arguments
+    * ``verdict``: the pull request's verdict.
+    * ``clone_url``: the repository's clone URL, which the re-sign steps
+      fetch the base branch from.
     """
     if verdict.passed:
         return "\n".join(
@@ -304,7 +362,7 @@ def render_comment(verdict: Verdict) -> str:
     count = len(verdict.unverified)
     lines = [
         COMMENT_MARKER,
-        f"@{verdict.author.login}, `main` only accepts commits that GitHub shows as **Verified**, and "
+        f"@{verdict.author.login}, `{verdict.base}` only accepts commits that GitHub shows as **Verified**, and "
         + ("1 commit" if count == 1 else f"{count} commits")
         + " on this pull request "
         + ("isn't" if count == 1 else "aren't")
@@ -336,15 +394,15 @@ def render_comment(verdict: Verdict) -> str:
         "",
         "   Then add the same key on GitHub as a **Signing key** (**Settings → SSH and GPG keys**), and make sure "
         "the email in your commits is a verified email on your account.",
-        f"2. Re-sign the {verdict.total} commits of this pull request without changing their content, and force-push:",
+        "2. Re-sign this pull request's commits without changing their content, and force-push. The rebase "
+        f"starts where the branch left `{verdict.base}`, so it touches only your commits (any merge commits "
+        "are flattened away):",
         "",
         "   ```sh",
-        f"   git rebase --exec 'git commit --amend --no-edit --no-verify -S' HEAD~{verdict.total}",
+        f"   git fetch {clone_url} {verdict.base}",
+        "   git rebase --exec 'git commit --amend --no-edit --no-verify -S' \"$(git merge-base HEAD FETCH_HEAD)\"",
         "   git push --force-with-lease",
         "   ```",
-        "",
-        "   If the branch has merge commits, rebase it onto the latest `main` with "
-        "`git rebase --exec 'git commit --amend --no-edit --no-verify -S' <upstream>/main` instead.",
         "",
         "This comment updates when you push. Once every commit shows **Verified**, the `Signed commits` check passes.",
     ]
@@ -365,18 +423,6 @@ def render_summary(verdict: Verdict) -> str:
     return "\n".join(lines)
 
 
-def own_comment(comments: list[Comment], author: str) -> Comment | None:
-    """Finds the check's earlier comment, which only the bot ``author`` can post.
-
-    A marked comment from anyone else is ignored: only its author may edit
-    it, and a contributor could post one to hide the real one.
-    """
-    for comment in comments:
-        if comment.author.login == author and comment.author.type is AccountType.BOT and comment.body.startswith(COMMENT_MARKER):
-            return comment
-    return None
-
-
 class GitHub(ReviewGitHub):
     """The REST calls the check makes, over a ``Transport``.
 
@@ -387,13 +433,17 @@ class GitHub(ReviewGitHub):
     #: The check run this class reports.
     check_name = CHECK_NAME
 
+    #: The repository's clone URL, for the re-sign steps; ``main`` sets it
+    #: from ``GITHUB_SERVER_URL`` and ``GITHUB_REPOSITORY``.
+    clone_url = "https://github.com/bookclerk/bookclerk.git"
+
     def commits(self, pull: PullRequest) -> list[SignedCommit]:
         """Fetches every commit of ``pull`` with its verification.
 
         # Errors
         ``ApiError`` when it has more than ``MAX_COMMITS`` commits (the
         endpoint lists no more), or the pages disagree with its commit
-        count.
+        count or list a commit twice (a push between page reads).
         """
         if pull.commits > MAX_COMMITS:
             raise ApiError(f"pull request has more than {MAX_COMMITS} commits")
@@ -405,9 +455,28 @@ class GitHub(ReviewGitHub):
             if len(batch) < PAGE_SIZE or len(commits) >= MAX_COMMITS:
                 break
             page += 1
-        if len(commits) != pull.commits:
+        if len(commits) != pull.commits or len({c.sha for c in commits}) != len(commits):
             raise ApiError("commit pages do not match the pull request's commit count")
         return commits
+
+    def open_pulls_with_head(self, sha: str) -> list[int]:
+        """Lists the open pull requests whose head commit is ``sha`` by reading every open one.
+
+        The fallback for **Re-run**, whose event names only the commit: the
+        listing of pull requests containing a commit leaves out fork pull
+        requests, and a re-run carries no branch to look them up by.
+
+        # Errors
+        ``ApiError`` when there are more than ``MAX_OPEN_PULL_PAGES`` pages
+        of open pull requests.
+        """
+        numbers: list[int] = []
+        for page in range(1, MAX_OPEN_PULL_PAGES + 1):
+            refs = parse_pull_refs(self.call(f"pulls?state=open&per_page={PAGE_SIZE}&page={page}"))
+            numbers += [r.number for r in refs if r.open and r.head_sha == sha]
+            if len(refs) < PAGE_SIZE:
+                return sorted(set(numbers))
+        raise ApiError("too many open pull requests to look the commit up in")
 
     def comments(self, number: int) -> list[Comment]:
         """Fetches the comments on pull request ``number``, oldest first.
@@ -423,16 +492,19 @@ class GitHub(ReviewGitHub):
                 return comments
         raise ApiError(f"pull request has more than {MAX_COMMENT_PAGES * PAGE_SIZE} comments")
 
-    def decide_signatures(self, number: int) -> Verdict | None:
-        """Reads and decides pull request ``number``.
+    def decide_signatures(self, number: int, sha: str) -> Verdict | None:
+        """Reads and decides pull request ``number`` at head ``sha``.
 
         # Returns
-        The verdict, or ``None`` when the pull request is closed.
+        The verdict, or ``None`` when the pull request is closed, its head
+        moved on from ``sha`` (the newer push's run decides it), or it does
+        not merge into the default branch, the one the ruleset protects.
         """
-        pull = self.pull_request(number)
-        if not pull.open:
+        target = parse_pull(self.call(f"pulls/{number}"))
+        pull = target.pull
+        if not pull.open or pull.head_sha != sha or target.base != target.default_branch:
             return None
-        return evaluate(pull, self.commits(pull))
+        return evaluate(pull, self.commits(pull), target.default_branch)
 
     def comment(self, verdict: Verdict) -> None:
         """Posts, edits or leaves the check's comment for ``verdict``.
@@ -445,8 +517,8 @@ class GitHub(ReviewGitHub):
         is printed as a warning and never fails the check.
         """
         try:
-            existing = own_comment(self.comments(verdict.number), self.reporter.login)
-            body = render_comment(verdict)
+            existing = own_comment(self.comments(verdict.number), self.reporter.login, COMMENT_MARKER)
+            body = render_comment(verdict, self.clone_url)
             if existing is not None:
                 if existing.body == body:
                     return
@@ -466,15 +538,21 @@ def settle(api: GitHub, sha: str, run_url: str, head: RunHead | None = None) -> 
     """Decides every open pull request on ``sha``, comments, and reports the shared check.
 
     The check passes when any of them passes (see the module documentation).
-    Does nothing when no open pull request has ``sha`` as its head.
+    Does nothing when no open pull request into the default branch has
+    ``sha`` as its head. Without ``head`` (a **Re-run**), a commit the
+    commit listing ties to no pull request is looked up among all open
+    ones, so a fork's pull request is found too.
 
     # Errors
     ``ApiError`` or ``ClaInputError`` when the check cannot decide.
     """
     api.head_sha = sha
     verdicts = []
-    for number in api.pulls_on(sha, head):
-        verdict = api.decide_signatures(number)
+    numbers = api.pulls_on(sha, head)
+    if not numbers and head is None:
+        numbers = api.open_pulls_with_head(sha)
+    for number in numbers:
+        verdict = api.decide_signatures(number, sha)
         if verdict is not None:
             verdicts.append(verdict)
     if not verdicts:
@@ -538,6 +616,7 @@ def main(env: dict[str, str]) -> int:
             return 1
         reporter = Reporter(urllib_transport(app_token, api_url), login)
     api = GitHub(send, repository, reporter)
+    api.clone_url = f"{server}/{repository}.git"
     run_url = f"{server}/{repository}/actions/runs/{env.get('GITHUB_RUN_ID', '')}"
     try:
         with open(env.get("GITHUB_EVENT_PATH", ""), "rb") as handle:

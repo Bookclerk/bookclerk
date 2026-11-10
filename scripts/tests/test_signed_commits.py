@@ -27,12 +27,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import ModuleType
+from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = Path(__file__).resolve().parent / "signed_commits_corpus"
 
 
-def _load(name: str, path: Path):
+def _load(name: str, path: Path) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise RuntimeError(path)
@@ -112,6 +114,37 @@ def o_login(login: str) -> bool:
     return 1 <= len(login) <= 39 and login[0] in ALNUM and all(c in ALNUM or c == "-" for c in login)
 
 
+def o_branch(value: object) -> str:
+    """A base branch name: 1 to 255 printable characters."""
+    ref = o_str(value)
+    if not 1 <= len(ref) <= 255 or not ref.isprintable():
+        raise Refused
+    return ref
+
+
+def o_default_branch(value: object) -> str:
+    """A default branch name: 1 to 255 ASCII letters, digits, dots, underscores, hyphens or slashes."""
+    ref = o_str(value)
+    if not 1 <= len(ref) <= 255 or any(c not in ALNUM and c not in "._/-" for c in ref):
+        raise Refused
+    return ref
+
+
+def o_account(value: object) -> tuple:
+    obj = o_obj(value)
+    account_id = o_id(obj.get("id"))
+    login = o_str(obj.get("login"))
+    kind = obj.get("type")
+    if kind not in ("User", "Bot", "Organization", "Mannequin"):
+        raise Refused
+    if kind == "Bot":
+        if not login.endswith("[bot]") or not o_login(login[: -len("[bot]")]):
+            raise Refused
+    elif not o_login(login):
+        raise Refused
+    return (account_id, login, kind)
+
+
 def o_reason(value: object) -> str:
     """A verification reason: a lowercase letter, then up to 63 lowercase letters or underscores."""
     reason = o_str(value)
@@ -147,6 +180,22 @@ def oracle(kind: str, raw: bytes) -> object:
         if o_str(run.get("name")) != "Signed commits":
             return ("rerun", None, None)
         return ("rerun", sha, slug)
+    if kind == "pull":
+        obj = o_obj(doc)
+        head = o_obj(obj.get("head"))
+        commits = obj.get("commits")
+        if isinstance(commits, bool) or not isinstance(commits, int) or commits < 0:
+            raise Refused
+        state = obj.get("state")
+        if state not in ("open", "closed"):
+            raise Refused
+        number = o_id(obj.get("number"))
+        author = o_account(obj.get("user"))
+        sha = o_sha(head.get("sha"))
+        base = o_obj(obj.get("base"))
+        ref = o_branch(base.get("ref"))
+        default = o_default_branch(o_obj(base.get("repo")).get("default_branch"))
+        return (number, author, sha, commits, state == "open", ref, default)
     if kind == "commits":
         if not isinstance(doc, list):
             raise Refused
@@ -173,12 +222,16 @@ def module(kind: str, raw: bytes) -> object:
         if kind == "event_merge_group":
             return ("group", event.merge_group_sha)
         return ("rerun", event.rerun_sha, event.rerun_app)
+    if kind == "pull":
+        t = sc.parse_pull(raw)
+        a = t.pull.author
+        return (t.pull.number, (a.id, a.login, a.type.value), t.pull.head_sha, t.pull.commits, t.pull.open, t.base, t.default_branch)
     if kind == "commits":
         return [(c.sha, c.verified, c.reason) for c in sc.parse_commit_page(raw)]
     raise AssertionError(kind)
 
 
-def outcome(kind: str, raw: bytes, reader) -> tuple:
+def outcome(kind: str, raw: bytes, reader: Callable[[str, bytes], object]) -> tuple:
     """Runs ``reader`` and folds a refusal into ``("refused",)``."""
     try:
         return ("read", reader(kind, raw))
@@ -217,6 +270,7 @@ class CorpusTests(unittest.TestCase):
             "event_workflow_run__not_object", "event_workflow_run__invalid_utf8", "event_merge_group__bad_sha",
             "event_check_run__no_app", "commits__verified_string", "commits__reason_markdown",
             "commits__reason_upper", "commits__no_verification", "commits__bad_sha", "commits__not_list",
+            "pull__bad_default", "pull__empty_base", "pull__no_base",
         ):
             kind = name.partition("__")[0]
             self.assertEqual(outcome(kind, load(name), module), ("refused",), name)
@@ -234,6 +288,8 @@ class CorpusTests(unittest.TestCase):
         )
         self.assertEqual(module("commits", load("commits__new_reason")), [(SHA_A, False, "some_future_reason")])
         self.assertEqual(module("commits", load("commits__empty")), [])
+        self.assertEqual(module("pull", load("pull__basic"))[5:], ("main", "main"))
+        self.assertEqual(module("pull", load("pull__other_base"))[5:], ("release/1.0", "main"))
 
     def test_unknown_event_is_refused(self) -> None:
         with self.assertRaises(cla.ClaInputError):
@@ -253,7 +309,8 @@ VALUES: list[object] = [
     None, True, False, 0, 1, -1, 7.0, 2**53, 2**53 - 1, "", "x", SHA_A, SHA_A.upper(), SHA_A[:39],
     "alice", "-alice", "evil[bot]", "User", "Bot", "valid", "unsigned", "unknown_key", "Unsigned", "a b",
     "a|b", "a`b", "_x", "x" * 65, "x" * 64, "true", "pull_request", "pull_request_review", "push",
-    "Signed commits", "Maintainer review", "[x](https://example.com)", [], {}, [1], {"id": 1},
+    "Signed commits", "Maintainer review", "[x](https://example.com)", "main", "release/1.0", "main; x",
+    "open", "closed", [], {}, [1], {"id": 1},
 ]
 
 #: Byte fragments the raw mutator splices in.
@@ -376,6 +433,8 @@ class FakeGitHub:
         self.fail_paths: set[str] = set()
         self.comment_status = 201
         self.next_comment = 1000
+        self.open_listings = 0
+        self.filler: list[dict] = []
 
     def add_pull(self, number: int, commits: list[dict], author: dict = OUTSIDER_DOC, sha: str = SHA_A, owner: str = "alice", repo_id: int = 700, branch: str = "feature") -> None:
         self.pulls[number] = {
@@ -384,6 +443,7 @@ class FakeGitHub:
             "user": author,
             "commits": len(commits),
             "head": {"sha": sha, "ref": branch, "repo": {"id": repo_id}, "label": f"{owner}:{branch}"},
+            "base": {"ref": "main", "repo": {"id": 555, "default_branch": "main"}},
         }
         self.commits[number] = commits
         self.comments.setdefault(number, [])
@@ -406,6 +466,11 @@ class FakeGitHub:
             return 500, b"{}"
         parts = route.split("/")
         if method == "GET" and parts[0] == "pulls" and len(parts) == 1:
+            if "head" not in params:
+                self.open_listings += 1
+                page, size = int(params.get("page", "1")), int(params["per_page"])
+                refs = [p for p in self.pulls.values() if p["state"] == "open"] + self.filler
+                return 200, json.dumps(refs[(page - 1) * size: page * size]).encode()
             head = params["head"].replace("%3A", ":")
             refs = [p for p in self.pulls.values() if p["head"]["label"] == head and p["state"] == "open"]
             return 200, json.dumps(refs).encode()
@@ -487,7 +552,9 @@ class EndToEndTests(unittest.TestCase):
         [comment] = gh.ours(1)
         self.assertIn("| `ccccccc` | It is not signed. |", comment["body"])
         self.assertNotIn("`bbbbbbb`", comment["body"])
-        self.assertIn("HEAD~2", comment["body"])
+        self.assertIn("git fetch https://github.com/bookclerk/bookclerk.git main", comment["body"])
+        self.assertIn('"$(git merge-base HEAD FETCH_HEAD)"', comment["body"])
+        self.assertIn("`main` only accepts", comment["body"])
         self.assertIn("@alice", comment["body"])
         # Running again with nothing new neither posts nor edits.
         calls = len(gh.calls)
@@ -557,6 +624,64 @@ class EndToEndTests(unittest.TestCase):
         self.assertIn("#2: 1 of 2", self.last(gh)["output"]["summary"])
         self.assertEqual(gh.comments[1], [])
         self.assertEqual(len(gh.ours(2)), 1)
+
+    def test_rerun_finds_a_forks_pull_request(self) -> None:
+        # The commit listing leaves out fork pull requests, and a re-run
+        # carries no branch, so the open pull requests are read instead.
+        gh = FakeGitHub()
+        gh.add_pull(1, [commit(SHA_B, False)])
+        ours = {"name": "Signed commits", "head_sha": SHA_A, "app": {"slug": "bookclerk"}}
+        self.assertEqual(run_event(gh, "check_run", {"check_run": ours}), 0)
+        self.assertEqual(self.last(gh)["conclusion"], "failure")
+        self.assertEqual(gh.open_listings, 1)
+        # A push-triggered run finds it by branch and never lists them all.
+        gh.open_listings = 0
+        trigger(gh)
+        self.assertEqual(gh.open_listings, 0)
+
+    def test_too_many_open_pull_requests_fail_a_rerun_closed(self) -> None:
+        gh = FakeGitHub()
+        filler = {"number": 2, "state": "open", "head": {"sha": SHA_C, "repo": None}}
+        gh.filler = [filler] * (sc.MAX_OPEN_PULL_PAGES * cla.PAGE_SIZE)
+        ours = {"name": "Signed commits", "head_sha": SHA_A, "app": {"slug": "bookclerk"}}
+        self.assertEqual(run_event(gh, "check_run", {"check_run": ours}), 1)
+
+    def test_only_pull_requests_into_the_default_branch_are_judged(self) -> None:
+        gh = FakeGitHub()
+        gh.add_pull(1, [commit(SHA_B, False)])
+        gh.pulls[1]["base"]["ref"] = "release/1.0"
+        self.assertEqual(trigger(gh), 0)
+        self.assertEqual((gh.checks, gh.comments[1]), ([], []))
+
+    def test_a_head_that_moved_on_is_left_to_the_newer_run(self) -> None:
+        # The branch listing still shows the event's head, but the pull
+        # request's own read shows a newer push.
+        gh = FakeGitHub()
+        gh.add_pull(1, [commit(SHA_B)])
+        original = gh.send
+
+        def moved(method: str, path: str, body: dict | None) -> tuple[int, bytes]:
+            status, data = original(method, path, body)
+            if path.endswith("pulls/1"):
+                doc = json.loads(data)
+                doc["head"]["sha"] = SHA_C
+                data = json.dumps(doc).encode()
+            return status, data
+
+        gh.send = moved  # type: ignore[method-assign]
+        self.assertEqual(trigger(gh), 0)
+        self.assertEqual(gh.checks, [])
+
+    def test_a_commit_listed_twice_fails_closed(self) -> None:
+        gh = FakeGitHub()
+        gh.add_pull(1, [commit(SHA_B), commit(SHA_B)])
+        self.assertEqual(trigger(gh), 1)
+
+    def test_singular_titles_read_right(self) -> None:
+        gh = FakeGitHub()
+        gh.add_pull(1, [commit(SHA_B, False)])
+        trigger(gh)
+        self.assertEqual(self.last(gh)["output"]["title"], "1 of 1 commit is not verified.")
 
     def test_reviews_and_other_forks_are_ignored(self) -> None:
         gh = FakeGitHub()

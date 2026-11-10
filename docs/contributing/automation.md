@@ -282,12 +282,15 @@ can be approved, but GitHub never lets it into the merge queue, and
 nothing on the pull request says why. The `Signed commits` check says why:
 
 - It fails while any of the pull request's commits isn't verified, whoever
-  wrote it. The ruleset exempts nobody, so neither does the check.
+  wrote it. The ruleset exempts nobody, so neither does the check. It
+  judges only pull requests into the default branch, the one the ruleset
+  protects.
 - It keeps one comment on such a pull request, posted as the automation
   App and edited in place on every push. The comment lists each unverified
   commit with GitHub's reason (not signed, a key that isn't a signing key,
   an unverified email, and so on), then the steps to set up SSH signing,
-  re-sign the commits without changing them, and force-push.
+  re-sign the commits without changing them (a rebase from where the branch
+  left the default branch), and force-push.
 - Once every commit is verified, the check passes and the comment says so.
   A pull request whose commits were always verified gets no comment.
 - The check belongs to the head commit and passes while any open pull

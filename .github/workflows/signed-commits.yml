@@ -54,10 +54,12 @@ jobs:
         github.event.check_run.name == 'Signed commits')
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Runs for one head branch wait for each other, so the newest event's
-    # verdict and comment are the ones posted last.
+    # Runs for one head branch wait for each other, pushes and **Re-run**
+    # alike, so two runs never both post the comment and the newest event's
+    # verdict is the one posted last. Forks with a branch of the same name
+    # share a group too, which only serializes them.
     concurrency:
-      group: signed-commits-${{ github.event_name }}-${{ github.event.workflow_run.head_repository.id || github.ref }}-${{ github.event.workflow_run.head_branch || github.event.check_run.head_sha }}
+      group: signed-commits-${{ github.event.workflow_run.head_branch || github.event.check_run.check_suite.head_branch || github.ref }}
       cancel-in-progress: false
     env:
       # Whether the automation App is configured (a fork may not have it).

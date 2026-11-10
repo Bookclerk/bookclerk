@@ -469,17 +469,18 @@ The tests live in `scripts/tests/`, and each corpus beside them.
 
 - **Signed commits check** (`scripts/signed_commits.py`). It reads the
   workflow event (the head a `workflow_run` names, a merge group's head,
-  the check a `check_run` re-run names) and the pull request's commit
-  pages with GitHub's verification of each commit, and writes a comment
-  from them. Branch names, logins and commit messages in them are chosen
-  by contributors. It shares the CLA checker's JSON readers and comment
+  the check a `check_run` re-run names), the pull request with its base
+  and default branch, and its commit pages with GitHub's verification of
+  each commit, and writes a comment from them. Branch names, logins, titles
+  and commit messages in them are chosen by contributors. It shares the CLA checker's JSON readers and comment
   page parser and the maintainer review check's event and pull request
   readers.
   - Test and corpus: `scripts/tests/test_signed_commits.py`,
     `scripts/tests/signed_commits_corpus/` (files named `<kind>__<case>`).
   - Oracle: an independent field-by-field reading of each document, which
-    refuses a `verified` that isn't a boolean and a `reason` that isn't
-    lowercase letters and underscores. For fuzzed commit pages, the comment
+    refuses a `verified` that isn't a boolean, a `reason` that isn't
+    lowercase letters and underscores, and a default branch name the
+    re-sign command could not quote safely. For fuzzed commit pages, the comment
     lists exactly the commits the independent reading finds unverified,
     each table row keeps its two cells, and the only link is GitHub's
     signing guide.
