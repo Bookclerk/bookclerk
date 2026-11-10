@@ -20,6 +20,24 @@ pub enum AcquireStatus {
     Error,
 }
 
+/// `books` row counts per [`AcquireStatus`], read in one grouped query
+/// (see `LibraryStore::count_books_by_status`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AcquireStatusCounts {
+    /// Every row, including any with a status this build does not know.
+    pub total: i64,
+    /// Rows in [`AcquireStatus::NotAcquired`].
+    pub not_acquired: i64,
+    /// Rows in [`AcquireStatus::Queued`].
+    pub queued: i64,
+    /// Rows in [`AcquireStatus::Downloading`].
+    pub downloading: i64,
+    /// Rows in [`AcquireStatus::Acquired`].
+    pub acquired: i64,
+    /// Rows in [`AcquireStatus::Error`].
+    pub error: i64,
+}
+
 impl AcquireStatus {
     /// Returns the canonical snake_case / lowercase wire string.
     #[must_use]
@@ -1371,6 +1389,21 @@ pub enum JobKind {
 }
 
 impl JobKind {
+    /// Every kind, in declaration order; the SQL plans derive their kind
+    /// lists from it so a new kind cannot be left unclaimable.
+    pub const ALL: [Self; 10] = [
+        Self::Scan,
+        Self::Acquire,
+        Self::ListenSync,
+        Self::IntegrationScan,
+        Self::PluginCopy,
+        Self::PluginScheduled,
+        Self::DiscoverCandidates,
+        Self::DiscoverFeed,
+        Self::CacheSweep,
+        Self::Invalid,
+    ];
+
     /// Returns the canonical snake_case wire string.
     #[must_use]
     pub fn as_str(self) -> &'static str {

@@ -42,6 +42,7 @@ boundary extends it.
 | `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
+| `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 
 Some boundaries need more than a cell:
 
@@ -169,6 +170,15 @@ only that. The others check:
   library id in `acquire.targets` is 1 to 16 ASCII letters and digits,
   checked byte by byte. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
+- **`plan_authz`**: decodes a small library (store accounts on two plugins
+  whose ids and labels collide, who each is linked to, library rows and
+  plugin instances) and one Member's scan or acquire request into an
+  in-memory database, then plans it. Every planned job names an account,
+  and every account its needle reaches at run time (id or label, ignoring
+  ASCII case, within the pinned instance's plugin) is linked to that
+  Member, checked against the oracle's own model rather than the planner's
+  queries. A refusal is `Forbidden` or `Invalid`. The shared oracle is
+  `fuzz/oracles/plan_authz.rs`, replayed from `bookclerk-library`.
 
 ## Boundaries outside the Rust workspace
 
@@ -435,6 +445,25 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     are exactly the pull request author and linked commit authors and
     co-authors, minus the allowlisted bots, the assistant accounts and the
     signed ids. The comment mentions only them and links only to the CLA.
+
+### Maintainer review (Python)
+
+- **Maintainer review check** (`scripts/maintainer_review.py`). It reads
+  the workflow event (the head a `workflow_run` names, a merge group's
+  head, the check a `check_run` re-run names), collaborator permission
+  answers, and the pull request's review and changed-file pages, and
+  decides whether an outside pull request may merge. Logins, branch names
+  and file paths in them are chosen by contributors. It shares the CLA
+  checker's JSON readers and pull request parsers.
+  - Test and corpus: `scripts/tests/test_maintainer_review.py`,
+    `scripts/tests/maintainer_review_corpus/` (files named
+    `<kind>__<case>`).
+  - Oracle: an independent field-by-field reading of each document, which
+    refuses absolute paths, `..` segments and accounts whose login does not
+    fit their type. For fuzzed file pages, the flagged paths are exactly
+    those an independent reading of the sensitive prefixes, names and
+    missing diffs selects, and each listed path stays inside one code span
+    in the summary.
 
 ### Coverage gate (Python)
 

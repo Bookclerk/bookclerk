@@ -2837,6 +2837,53 @@ mod tests {
         .expect("retry after crash");
     }
 
+    /// A binding-open D1 adapter on the executing mock, serving the
+    /// guest's own [`crate::adapter::D1Session`].
+    struct MockD1Database(D1Proxy);
+
+    #[async_trait::async_trait(?Send)]
+    impl bookclerk_plugin_abi::Database for MockD1Database {
+        async fn open_session(
+            &self,
+        ) -> Result<
+            Box<dyn bookclerk_plugin_abi::AdapterDatabaseSession>,
+            bookclerk_plugin_abi::PluginError,
+        > {
+            Ok(Box::new(crate::adapter::D1Session::new(Some(
+                self.0.clone(),
+            ))))
+        }
+    }
+
+    /// The D1 session passes the shared adapter conformance suite on an
+    /// empty mocked unit, except where it reports an over-cap read on a
+    /// binding as retryable `unavailable`: the receipt-wrapped batch has
+    /// committed by the time D1 returns the result, so the adapter keeps
+    /// the cap failure ambiguous (#847). This pins those three cases, so
+    /// the test fails when #847 is fixed and the expectation can go.
+    #[tokio::test]
+    async fn executing_mock_passes_the_adapter_conformance_suite() {
+        use bookclerk_db_testkit::adapter::{run_adapter_suite, Case, Outcome};
+
+        let (_server, proxy, _conn, _interrupt, _drop, _oversize) = executing_proxy().await;
+        let report = run_adapter_suite(&MockD1Database(proxy)).await;
+        let known = [Case::ResultRows, Case::CellBytes, Case::ResultBytes];
+        for (case, outcome) in &report.outcomes {
+            match outcome {
+                Outcome::Passed => {
+                    assert!(!known.contains(case), "{case} passes now (#847):\n{report}")
+                }
+                Outcome::Failed(reason) => assert!(
+                    known.contains(case)
+                        && reason.contains("got unavailable")
+                        && reason.contains("D1 ambiguous response"),
+                    "{case} broke:\n{report}"
+                ),
+                Outcome::Skipped(reason) => panic!("{case} skipped ({reason}):\n{report}"),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn executing_mock_typed_shared_vectors() {
         let (_server, proxy, _conn, _interrupt, _drop, _oversize) = executing_proxy().await;

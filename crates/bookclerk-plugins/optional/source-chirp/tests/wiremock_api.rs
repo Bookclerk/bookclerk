@@ -9,7 +9,9 @@ use bookclerk_plugin_source_chirp::{
     fetch_title_materials, guest_fetch_title, guest_login, guest_scan, ChirpAuthFile, ChirpClient,
     ChirpSource,
 };
-use bookclerk_storefront::{LoginOptions, PurchaseHintOpts, SourceError};
+use bookclerk_storefront::{
+    CatalogSearchOpts, LoginOptions, PurchaseHintOpts, SourceError, DEFAULT_CATALOG_SEARCH_LIMIT,
+};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -321,6 +323,33 @@ async fn a_429_reaches_the_host_with_its_wait() {
     }
 }
 
+/// A 429 on the title lookup (typeahead) reaches the host too, and stops
+/// the batch at once.
+#[tokio::test]
+async fn a_429_on_a_title_lookup_reaches_the_host() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "20"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let by_title = |title: &str| PurchaseHintOpts {
+        title: Some(title.into()),
+        region: "us".into(),
+        with_price: true,
+        ..PurchaseHintOpts::default()
+    };
+    let result = ChirpSource::with_graphql_url(server.uri())
+        .purchase_hints(&[by_title("First"), by_title("Second")])
+        .await;
+    assert!(
+        matches!(result, Err(SourceError::RateLimited(Some(w))) if w.as_secs() == 20),
+        "{:?}",
+        result.map(|h| h.len())
+    );
+}
+
 #[tokio::test]
 async fn a_failed_pricing_query_leaves_the_titles_unpriced() {
     let server = MockServer::start().await;
@@ -340,4 +369,46 @@ async fn a_failed_pricing_query_leaves_the_titles_unpriced() {
         ..priced("1")
     };
     assert_eq!(source.purchase_hints(&[unpriced]).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn search_with_a_zero_limit_returns_the_default_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(|req: &Request| {
+            assert_eq!(op_name(req).as_deref(), Some("BookclerkCatalogSearch"));
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            assert_eq!(
+                body.pointer("/variables/pageSize"),
+                Some(&serde_json::json!(DEFAULT_CATALOG_SEARCH_LIMIT))
+            );
+            let objects: Vec<serde_json::Value> = (0..25)
+                .map(|i| {
+                    serde_json::json!({
+                        "id": format!("book-{i}"),
+                        "displayTitle": format!("Title {i}"),
+                    })
+                })
+                .collect();
+            graphql_response(serde_json::json!({
+                "data": { "audiobooks": { "totalCount": 25, "objects": objects } }
+            }))
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Page 2 skips typeahead, so the single request is the catalog search.
+    let hits = ChirpSource::with_graphql_url(server.uri())
+        .search_catalog(&CatalogSearchOpts {
+            query: "title".into(),
+            limit: 0,
+            page: 2,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), DEFAULT_CATALOG_SEARCH_LIMIT);
+    assert_eq!(hits[0].title, "Title 0");
 }

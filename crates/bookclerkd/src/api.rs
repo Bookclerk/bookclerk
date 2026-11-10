@@ -1074,8 +1074,6 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(ack_event_delivery))
         .routes(routes!(cancel_event_delivery))
         .routes(routes!(resume_event_delivery))
-        .routes(routes!(trigger_scan))
-        .routes(routes!(trigger_acquire))
         .routes(routes!(sync_listening));
 
     let operator_only = OpenApiRouter::new()
@@ -1153,6 +1151,10 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
     // Host enrollment links: any signed-in user acts for themselves; the
     // library lets the operator or an Owner act for others.
     let user_scoped = OpenApiRouter::new()
+        // Any active user queues scans and acquires; the planner limits a
+        // Member or Host to the store accounts linked to them.
+        .routes(routes!(trigger_scan))
+        .routes(routes!(trigger_acquire))
         .routes(routes!(
             crate::node_api::get_node_invites,
             crate::node_api::post_node_invite
@@ -3937,31 +3939,15 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
         .count_accounts()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? as usize;
-    let books = library
-        .count_books(None)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? as usize;
-    let acquired = library
-        .count_by_status(AcquireStatus::Acquired)
+    let counts = library
+        .count_books_by_status()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let pending = library
-        .count_by_status(AcquireStatus::NotAcquired)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let error = library
-        .count_by_status(AcquireStatus::Error)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let queued = library
-        .count_by_status(AcquireStatus::Queued)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let downloading = library
-        .count_by_status(AcquireStatus::Downloading)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let in_progress = queued + downloading;
+    let books = usize::try_from(counts.total).unwrap_or(0);
+    let acquired = counts.acquired;
+    let pending = counts.not_acquired;
+    let error = counts.error;
+    let in_progress = counts.queued + counts.downloading;
     let (listen, storage_backend) = {
         let cfg = state.config.read().await;
         let destinations = state.destinations.read().await;
@@ -4691,7 +4677,8 @@ async fn discover_status_for_caller(
     responses(
         (status = 200, description = "Stored Discover state of the caller's shelves, with `updating` set once the fetch is queued.", body = DiscoverStatusResponse),
         (status = 401, description = "The caller has no portal identity.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
+        (status = 429, description = "The job queue is full, so the fetch was not queued.", body = String, content_type = "text/plain", example = json!("job queue is full")),
+        (status = 500, description = "The lookup failed, or the fetch could not be queued.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
     ),
 )]
 async fn discover_refresh(
@@ -4699,8 +4686,25 @@ async fn discover_refresh(
     headers: HeaderMap,
 ) -> Result<Json<DiscoverStatusResponse>, (StatusCode, String)> {
     let (subject, _) = discover_status_for_caller(&state, &headers, false).await?;
-    crate::discover_jobs::queue_refresh(&state, &subject, crate::discover_jobs::FeedRefresh::Fetch)
-        .await;
+    // A fetch already waiting absorbs the request, so a duplicate counts as
+    // queued; a full queue or a failed admission is reported.
+    match crate::discover_jobs::enqueue_discover_candidates(
+        &state,
+        &subject,
+        JobTrigger::Api,
+        std::time::Duration::ZERO,
+    )
+    .await
+    .map_err(internal_err)?
+    {
+        AdmitJob::Created(_) | AdmitJob::Duplicate(_) => {}
+        AdmitJob::QueueFull => {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "job queue is full".to_string(),
+            ))
+        }
+    }
     let (_, status) = discover_status_for_caller(&state, &headers, false).await?;
     Ok(Json(status))
 }

@@ -1,0 +1,20 @@
+# Clippy lint configuration for bookclerk-library.
+#
+# Clippy reads the first clippy.toml it finds walking up from the crate, so
+# this file repeats the workspace settings (root `clippy.toml`) and adds the
+# host-side transaction rule.
+
+# Tests may unwrap/expect; production code states its invariant or propagates.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+# Host writes reach the database through an external adapter guest that
+# refuses interactive transactions, so a `begin()` on the store connection
+# fails on every production deployment. Write a canonical batch through
+# `LibraryStore::execute_host_batch` (or a named atomic operation) instead.
+# The native-connection tools (backend migration, backup restore) and the
+# in-process engine executor are allowed one site each, with the reason
+# beside the allow.
+disallowed-methods = [
+    { path = "sea_orm::TransactionTrait::begin", reason = "host writes go to the database plugin as one atomic batch; see docs/plugins/database-limits.md#interactive-transactions" },
+]

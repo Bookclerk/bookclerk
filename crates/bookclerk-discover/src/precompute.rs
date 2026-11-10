@@ -139,7 +139,9 @@ pub struct SubjectTaste {
     /// How much each book in `books` counts; a blended household book is
     /// listed at [`HOUSEHOLD_BLEND_WEIGHT`], the subject's own count in full.
     pub weights: TasteWeights,
-    /// The subject's listening rows (all rows for the household).
+    /// The subject's listening rows (all rows for the household). While
+    /// household books blend in, the household's rows for those books are
+    /// added too, and count at their book's weight.
     pub listening: Vec<ListeningProgressRecord>,
     /// The subject's open wishlist titles, newest first, used as extra seeds.
     pub wishlist: Vec<SeedTitle>,
@@ -307,11 +309,20 @@ pub async fn load_subject_taste(
     let own_signal = own.len();
     let mut books = own;
     let mut weights = TasteWeights::new();
+    let mut listening = listening;
     if own_signal < OWN_TASTE_THRESHOLD {
         for book in rest {
             weights.insert(book.uuid.clone(), HOUSEHOLD_BLEND_WEIGHT);
             books.push(book);
         }
+        // The household's listening to the blended books blends in with
+        // them, at their weight. The subject's own rows are for books in
+        // `own`, which carry no weight, so they still count in full.
+        listening.extend(all_listening.into_iter().filter(|r| {
+            r.book_uuid
+                .as_ref()
+                .is_some_and(|u| weights.contains_key(u))
+        }));
     }
     Ok(SubjectTaste {
         scope: SeedScope::Own,
@@ -1202,6 +1213,19 @@ mod tests {
             })
             .await
             .unwrap();
+        // Alice's listening to her own book blends in with that book.
+        let alice_book = library
+            .list_books(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|b| b.title == "Alice Book")
+            .unwrap()
+            .uuid;
+        library
+            .upsert_listening_progress(&listen(None, "oidc", "alice", "i1", &alice_book))
+            .await
+            .unwrap();
         let taste = load_subject_taste(
             &library,
             &DiscoverSubject::Portal(carol.id),
@@ -1211,6 +1235,11 @@ mod tests {
         .unwrap();
         assert_eq!(taste.scope, SeedScope::Own);
         assert_eq!(taste.books.len(), 2, "both household books blend in");
+        assert_eq!(taste.listening.len(), 1, "household listening blends in");
+        assert_eq!(
+            taste.listening[0].book_uuid.as_deref(),
+            Some(alice_book.as_str())
+        );
         assert!(taste
             .books
             .iter()

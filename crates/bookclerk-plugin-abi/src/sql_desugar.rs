@@ -311,9 +311,19 @@ fn rewrite_order_by_items(sql: &str, mut i: usize, out: &mut String) -> usize {
 }
 
 /// Byte offset after one `ORDER BY` expression (balanced parens, literals skipped).
+///
+/// Trivia (whitespace and comments) that only separates the expression from
+/// what ends the item (a terminator keyword, `,`, `;`, `)` or the end of the
+/// statement) is left out of the expression, so the rewrite emits exactly one
+/// space before the ordering keywords and a second pass over its output
+/// reproduces it byte for byte. The launcher hashes the desugared request and
+/// the host session desugars it again before checking that hash.
 fn skip_order_by_expr(sql: &str, mut i: usize) -> usize {
     let mut depth = 0i32;
     while i < sql.len() {
+        if depth == 0 && order_by_expr_ends_before_trivia(sql, i) {
+            return i;
+        }
         if let Some(len) = literal_or_comment_len(&sql[i..]) {
             i += len;
             continue;
@@ -336,12 +346,6 @@ fn skip_order_by_expr(sql: &str, mut i: usize) -> usize {
             if ch == ',' || ch == ';' {
                 return i;
             }
-            if ch.is_whitespace() {
-                let next = skip_trivia_idx(sql, i);
-                if order_by_item_terminator(sql, next) {
-                    return i;
-                }
-            }
             if order_by_item_terminator(sql, i) {
                 return i;
             }
@@ -349,6 +353,21 @@ fn skip_order_by_expr(sql: &str, mut i: usize) -> usize {
         i += ch.len_utf8();
     }
     i
+}
+
+/// True when trivia starts at `i` and nothing but trivia separates it from
+/// the end of the `ORDER BY` item: a terminator keyword, `,`, `;`, `)` or the
+/// end of the statement.
+fn order_by_expr_ends_before_trivia(sql: &str, i: usize) -> bool {
+    let starts_trivia = sql[i..].chars().next().is_some_and(char::is_whitespace)
+        || comment_len(&sql[i..]).is_some();
+    if !starts_trivia {
+        return false;
+    }
+    let next = skip_trivia_idx(sql, i);
+    next >= sql.len()
+        || matches!(sql.as_bytes()[next], b',' | b';' | b')')
+        || order_by_item_terminator(sql, next)
 }
 
 /// True when `ORDER BY` item parsing should stop (`ASC`/`LIMIT`/…).
@@ -539,6 +558,44 @@ mod tests {
             desugar_canonical_sql("SELECT a FROM t ORDER BY a LIMIT 1"),
             "SELECT a FROM t ORDER BY a NULLS FIRST LIMIT 1"
         );
+    }
+
+    #[test]
+    fn trivia_before_the_end_of_an_item_rewrites_the_same_way_twice() {
+        // The launcher hashes the desugared request and the host session
+        // desugars it again before checking that hash, so the rewrite has to
+        // be a fixed point on its own output whatever trivia the author left
+        // between an expression and the end of the item.
+        for (sql, expected) in [
+            (
+                "SELECT a FROM t ORDER BY a ",
+                "SELECT a FROM t ORDER BY a NULLS FIRST",
+            ),
+            (
+                "SELECT a FROM t ORDER BY a , b",
+                "SELECT a FROM t ORDER BY a NULLS FIRST, b NULLS FIRST",
+            ),
+            (
+                "SELECT a FROM t ORDER BY (a + 1) , b DESC LIMIT 2",
+                "SELECT a FROM t ORDER BY (a + 1) NULLS FIRST, b DESC NULLS LAST LIMIT 2",
+            ),
+            (
+                "SELECT a FROM t ORDER BY a -- c\n",
+                "SELECT a FROM t ORDER BY a NULLS FIRST",
+            ),
+            (
+                "SELECT a FROM t ORDER BY a/* c */, b /* d */ DESC ;",
+                "SELECT a FROM t ORDER BY a NULLS FIRST, b DESC NULLS LAST;",
+            ),
+            (
+                "SELECT a FROM (SELECT a FROM t ORDER BY a ) ORDER BY a\t",
+                "SELECT a FROM (SELECT a FROM t ORDER BY a NULLS FIRST) ORDER BY a NULLS FIRST",
+            ),
+        ] {
+            let once = desugar_canonical_sql(sql);
+            assert_eq!(once, expected, "{sql:?}");
+            assert_eq!(desugar_canonical_sql(&once), once, "{sql:?} second pass");
+        }
     }
 
     #[test]

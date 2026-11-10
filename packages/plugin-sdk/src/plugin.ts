@@ -448,6 +448,8 @@ export class AdapterDatabaseSession extends RpcTarget {
    * `unsupported`. An isolate adapter's frames travel inside one invoke
    * reply, so its streamed budget is clamped to `MAX_SCALAR_BYTES` (256 KiB)
    * and larger frames are a `limit_exceeded` (`maxScalarBytes`) error.
+   * `executeAdapterBatchStreamed` runs the batch, stores the replay receipt
+   * and checks that bound before it commits.
    *
    * @param _request - Proven statements plus isolation and receipt.
    * @returns Every frame of the committed reply, concatenated.

@@ -298,12 +298,14 @@ export function AccountsPage({
                         </p>
                       </div>
                     </div>
-                    {c.connection_status !== "revoked" ? (
-                      <Button variant="ghost" disabled={busy} onClick={() => void onRevoke(c)}>
-                        <Unlink className="h-4 w-4" />
-                        Revoke
-                      </Button>
-                    ) : null}
+                    {/* Every listed connection is still linked, so Revoke stays
+                        available: a revoke whose cleanup failed leaves the
+                        account marked revoked but linked, and retrying it
+                        finishes the cleanup. */}
+                    <Button variant="ghost" disabled={busy} onClick={() => void onRevoke(c)}>
+                      <Unlink className="h-4 w-4" />
+                      Revoke
+                    </Button>
                   </li>
                 ))}
               </ul>

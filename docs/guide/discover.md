@@ -20,8 +20,15 @@ Discover shows rows of suggestions, each with its reason, for example:
 - **Picked for you on** a store: the rest of your matches, each under the
   store where it costs you least, and **Chirp deals**.
 
-Each book appears on one row only, and no row shows more than two books of
-the same series, so one long series cannot crowd out the rest.
+Each book appears on one row only. Most rows show no more than two books
+of the same series, so one long series cannot crowd out the rest. **Finish
+these series**, **Pick up where you left off** and **Wishlist** may show
+more, taking turns between series, and so may **Top picks for you**.
+
+Each book appears on one row only. Most rows show no more than two books
+of the same series, so one long series cannot crowd out the rest. **Finish
+these series**, **Pick up where you left off** and **Wishlist** may show
+more, taking turns between series, and so may **Top picks for you**.
 
 Suggestions come from the stores' catalogs, so they include books nobody in
 your library owns yet. The more you rate and finish, the better they get.

@@ -11,6 +11,9 @@ on:
   release:
     types: [published]
   pull_request:
+    # Drafts skip this workflow's jobs; `ready_for_review` runs them
+    # (docs/contributing/ci.md#draft-pull-requests).
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/abs-integration.yml"
       - "tests/abs-integration/**"
@@ -27,6 +30,8 @@ concurrency:
 jobs:
   abs-smoke:
     name: Audiobookshelf + bookclerkd
+    # Deferred on a draft pull request until it is ready for review.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:

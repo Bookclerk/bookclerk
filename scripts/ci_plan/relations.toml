@@ -79,7 +79,12 @@ paths = [
 # bookclerk-library replay test through `#[path]`.
 [[test_input]]
 package = "bookclerk-library"
-paths = ["fuzz/corpus/guest_sql_authz/**", "fuzz/oracles/guest_sql_authz.rs"]
+paths = [
+    "fuzz/corpus/guest_sql_authz/**",
+    "fuzz/oracles/guest_sql_authz.rs",
+    "fuzz/corpus/plan_authz/**",
+    "fuzz/oracles/plan_authz.rs",
+]
 
 # The mux peer oracle is shared the same way with the plugin-sdk replay test.
 [[test_input]]
@@ -177,6 +182,14 @@ paths = ["crates/bookclerk-plugin-abi/fixtures/**"]
 # TS (`npm run test:tools`) and Python SDK author-tools conformance.
 checks = ["plugin_sdk_abi", "python_sdk"]
 
+# Workspace executables a non-Cargo check launches at run time. The check
+# builds the executable and re-runs when its package changes, on top of the
+# package's own selection (unlike `fixture`, ownership still applies).
+[[check_input]]
+# The TS and Python `createTestDatabase` wrappers spawn `bookclerk-db-testkit`.
+paths = ["crates/bookclerk-db-testkit/**"]
+checks = ["plugin_sdk_abi", "python_sdk"]
+
 # Workspace executables launched by a package's tests. Built before the tests
 # run; a change to one re-runs the launching package's tests (no further
 # propagation). Prerequisites never select their owners' own checks.
@@ -243,6 +256,7 @@ library_totp = "bookclerk-library"
 library_vectors = "bookclerk-library"
 db_guest = "bookclerk-db-guest"
 binding_schema = "bookclerk-plugin-database-postgres"
+adapter_conformance = "bookclerk-plugin-database-postgres"
 rpc_like = "bookclerk-plugin-host"
 
 [staged_e2e]

@@ -20,6 +20,7 @@ use sea_orm::{
 use uuid::Uuid;
 
 use crate::atomic_txn::AtomicTxnBackend;
+use crate::control_plane::batch;
 use crate::entities::{
     account_links, accounts, books, claim_tickets, embeddings, encrypted_secrets, ignored_titles,
     listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states,
@@ -29,10 +30,10 @@ use crate::entities::{
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{
-    user_prefs_key, AccountRecord, AcquireStatus, BookRecord, GlobalQueueEntry,
-    ListeningProgressRecord, OidcClientRecord, PortalIdentity, QueueWisher, RequestStatus,
-    StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord, UserPreferences, UserRecord,
-    UserRole, UserStatus,
+    user_prefs_key, AccountRecord, AcquireStatus, AcquireStatusCounts, BookRecord,
+    GlobalQueueEntry, ListeningProgressRecord, OidcClientRecord, PortalIdentity, QueueWisher,
+    RequestStatus, StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord, UserPreferences,
+    UserRecord, UserRole, UserStatus,
 };
 use crate::wishlist_merge::apply_merged_sources;
 use library_model::{holding_from_book, listing_from_book, WorkEnrichment};
@@ -3033,25 +3034,27 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::NotFound`] when the user does not exist.
     pub async fn set_user_totp_enabled(&self, user_id: i64, enabled: bool) -> Result<()> {
-        let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        match Self::set_user_totp_enabled_on(&txn, user_id, enabled).await {
-            Ok(()) => {
-                txn.commit().await.map_err(LibraryError::Orm)?;
-                if let Some(fault) = crate::take_txn_fault() {
-                    return Err(LibraryError::Orm(sea_orm::DbErr::Custom(fault)));
-                }
-                Ok(())
-            }
-            Err(err) => {
-                let _ = txn.rollback().await;
-                let _ = crate::take_txn_fault();
-                Err(err)
-            }
+        let operation_id = format!("user-totp-enabled-{}", Uuid::new_v4());
+        let reply = self
+            .execute_host_batch(batch::request(
+                &operation_id,
+                vec![batch::exec(
+                    "UPDATE users SET totp_enabled = ?, updated_at = ? WHERE id = ?",
+                    vec![
+                        batch::int(i64::from(enabled)),
+                        batch::text(&now_str()),
+                        batch::int(user_id),
+                    ],
+                )],
+            ))
+            .await?;
+        if batch::rows_affected(&reply, 0) == 0 {
+            return Err(LibraryError::NotFound("user".into()));
         }
+        Ok(())
     }
 
     /// Sets `users.totp_enabled` inside an open transaction.
-    #[allow(dead_code)]
     pub(crate) async fn set_user_totp_enabled_on<C: ConnectionTrait>(
         txn: &C,
         user_id: i64,
@@ -4560,6 +4563,10 @@ impl LibraryStore {
                 .set_acquire_status(&model.uuid, status, storage_key, error_message, event)
                 .await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match event_outbox::set_acquire_status_on(&txn, model, status, storage_key, error_message)
             .await
@@ -4749,6 +4756,58 @@ impl LibraryStore {
                 .await
                 .map_err(LibraryError::from_db_err)?;
             Ok(count as i64)
+        })
+        .await
+    }
+
+    /// Counts `books` rows per acquire status in one grouped read.
+    ///
+    /// # Returns
+    ///
+    /// The count for each [`AcquireStatus`] and the table total. A row with
+    /// a status this build does not know is counted in the total only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn count_books_by_status(&self) -> Result<AcquireStatusCounts> {
+        /// One group of the read, decoded by column name: the host database
+        /// proxy does not keep the select order, so a positional tuple
+        /// read could swap the columns.
+        #[derive(Debug, sea_orm::FromQueryResult)]
+        struct StatusCount {
+            /// The group's `acquire_status` wire string.
+            acquire_status: String,
+            /// Rows in the group.
+            n: i64,
+        }
+        lock_retry::retry_read_lock(|| async {
+            let rows = books::Entity::find()
+                .select_only()
+                .column(books::Column::AcquireStatus)
+                .column_as(books::Column::Id.count(), "n")
+                .group_by(books::Column::AcquireStatus)
+                .into_model::<StatusCount>()
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::from_db_err)?;
+            let mut counts = AcquireStatusCounts::default();
+            for StatusCount {
+                acquire_status: status,
+                n,
+            } in rows
+            {
+                counts.total += n;
+                match AcquireStatus::parse(&status) {
+                    Some(AcquireStatus::NotAcquired) => counts.not_acquired += n,
+                    Some(AcquireStatus::Queued) => counts.queued += n,
+                    Some(AcquireStatus::Downloading) => counts.downloading += n,
+                    Some(AcquireStatus::Acquired) => counts.acquired += n,
+                    Some(AcquireStatus::Error) => counts.error += n,
+                    None => {}
+                }
+            }
+            Ok(counts)
         })
         .await
     }
@@ -7145,9 +7204,12 @@ pub(crate) mod discover;
 pub(crate) mod edition_files;
 pub(crate) mod event_outbox;
 pub(crate) mod library_model;
+pub(crate) mod listening;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
+pub(crate) mod retention;
 pub(crate) mod storage_scan;
+pub(crate) mod write_batches;
 pub use discover::{DiscoverSubject, SeedScope, StoredCandidate, StoredFeed};
 pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
@@ -7157,5 +7219,7 @@ mod books_page;
 mod lock_retry;
 pub use books_page::{BookPage, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT};
 
+#[cfg(test)]
+mod paging_tests;
 #[cfg(test)]
 mod tests;

@@ -159,6 +159,18 @@ async fn connect_from_bindings(values: &BindingValues) -> Result<()> {
     Ok(())
 }
 
+/// The adapter a plugin database binding gets, on its own connection.
+///
+/// This is the `databaseAdapter` entrypoint the guest serves for a binding
+/// open, without the RPC transport, so a test can run the adapter
+/// conformance suite (`bookclerk-db-testkit`) on it in process.
+#[must_use]
+pub fn binding_database(conn: DatabaseConnection) -> Box<dyn Database> {
+    Box::new(SqliteDatabase {
+        dedicated: Some(conn),
+    })
+}
+
 /// SQLite database factory: shared library connection, or a dedicated
 /// per-binding connection for named plugin database bindings.
 struct SqliteDatabase {

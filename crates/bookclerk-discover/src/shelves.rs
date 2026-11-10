@@ -185,8 +185,8 @@ enum SeriesRule {
 /// title under the store where it costs the subject least (member price on
 /// stores they have an account with, list price elsewhere, its own store
 /// when no price is known). A wished title shows on the wishlist shelf alone.
-/// Shelves other than the series shelves keep at most [`SERIES_CAP`] titles
-/// of one series; the series shelves rotate between series instead.
+/// Shelves other than the series shelves and the wishlist keep at most
+/// [`SERIES_CAP`] titles of one series; those rotate between series instead.
 ///
 /// # Arguments
 ///
@@ -217,11 +217,16 @@ pub fn build_discover_feed(
     // The wishlist opens the page: what people want comes before what the
     // stores suggest, and a wished title shows there alone. The row is in
     // the viewer's own taste order: the shared wish-count boost orders the
-    // Wishlist page's global queue, not this person's Discover.
-    let wishlist = builder.take_by(
-        |r| has_category(r, "requests") || r.from_request,
-        SeriesRule::Cap,
-        taste_only_score,
+    // Wishlist page's global queue, not this person's Discover. Every wish
+    // shows, however many share a series: the series take turns. Wished
+    // titles past the shelf's size are claimed too, so they never reach
+    // another shelf.
+    let wished = |r: &Recommendation| has_category(r, "requests") || r.from_request;
+    let wishlist = builder.take_by(wished, SeriesRule::Interleave, taste_only_score);
+    builder.claimed.extend(
+        recs.iter()
+            .filter(|r| wished(r))
+            .map(recommendation_map_key),
     );
     builder.push_items(
         "requests",
@@ -377,8 +382,14 @@ pub fn build_discover_feed(
 
     let FeedBuilder { mut shelves, .. } = builder;
     // Keep at least a "Top picks" dump if everything is empty but recs exist.
-    if shelves.is_empty() && !recs.is_empty() && !shelf_is_disabled("top_picks", disabled_shelves) {
-        let mut top = recs.to_vec();
+    // Wished titles stay off it: they belong to the wishlist shelf alone,
+    // even when that shelf is hidden.
+    let mut top: Vec<Recommendation> = if shelves.is_empty() {
+        recs.iter().filter(|r| !wished(r)).cloned().collect()
+    } else {
+        Vec::new()
+    };
+    if !top.is_empty() && !shelf_is_disabled("top_picks", disabled_shelves) {
         top.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -1026,6 +1037,38 @@ mod tests {
         fitting.wish_count = 1;
         let feed = build_discover_feed(&[popular, fitting], &ShelfTaste::default(), 8, &[]);
         assert_eq!(titles(&feed, "requests"), vec!["Fitting", "Popular"]);
+    }
+
+    #[test]
+    fn a_hidden_wishlist_keeps_wished_titles_off_top_picks() {
+        let wished = Recommendation {
+            from_request: true,
+            ..rec("Wanted", 50.0, &["requests"])
+        };
+        let hidden = vec![String::from("requests")];
+        let feed = build_discover_feed(&[wished], &ShelfTaste::default(), 8, &hidden);
+        assert!(feed.shelves.is_empty(), "{:?}", ids(&feed));
+    }
+
+    #[test]
+    fn every_wish_in_one_series_shows_on_the_wishlist_alone() {
+        let wished = |title: &str| Recommendation {
+            from_request: true,
+            ..rec(title, 50.0, &["author", "requests"])
+        };
+        let recs = vec![
+            wished("Book One"),
+            wished("Book Two"),
+            wished("Book Three"),
+            rec("By Ada", 2.0, &["author"]),
+        ];
+        let feed = build_discover_feed(&recs, &ada_taste(), 8, &[]);
+        assert_eq!(titles(&feed, "requests").len(), 3);
+        for shelf in feed.shelves.iter().filter(|s| s.id != "requests") {
+            for item in &shelf.items {
+                assert!(!item.from_request, "{} on {}", item.title, shelf.id);
+            }
+        }
     }
 
     #[test]

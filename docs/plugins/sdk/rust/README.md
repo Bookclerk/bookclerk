@@ -61,15 +61,17 @@ the host and fail closed; rebuild guests against this SDK. Pathname,
 ## Author tools
 
 The `bookclerk-plugin` author CLI (`check`, `fmt`, `sync-embed`,
-`package` and `smoke`) lives in the separate `bookclerk-plugin-tools`
+`package`, `smoke` and `test`) lives in the separate `bookclerk-plugin-tools`
 crate, so a guest that depends on this SDK never links
 `bookclerk-workerd`. Install it once, then run it from the plugin's
 directory:
 
 ```bash
 cargo install --git https://github.com/Bookclerk/bookclerk bookclerk-plugin-tools
+cargo install --git https://github.com/Bookclerk/bookclerk bookclerk-db-testkit  # the kit `test` serves
 bookclerk-plugin check .
 bookclerk-plugin smoke .
+bookclerk-plugin test .    # the plugin's suite under every database profile
 ```
 
 Inside a Bookclerk checkout, `cargo plugin -- check <dir>` is an alias

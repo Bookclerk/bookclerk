@@ -10,9 +10,10 @@ authors.workspace = true
 
 [features]
 # Test-only helpers shared with sibling crates' test suites: the typed
-# conformance vector runners and the in-process SQLite atomic backend.
-# Never enabled by product binaries.
-test-support = []
+# conformance vector runners, the in-process SQLite atomic backend and the
+# capability-profile store (`test_support`). Never enabled by product
+# binaries.
+test-support = ["bookclerk-db-exec/test-support"]
 
 [dependencies]
 anyhow.workspace = true
@@ -47,6 +48,7 @@ uuid.workspace = true
 utoipa.workspace = true
 
 [dev-dependencies]
+bookclerk-db-exec = { workspace = true, features = ["test-support"] }
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 rusqlite.workspace = true
 tempfile.workspace = true

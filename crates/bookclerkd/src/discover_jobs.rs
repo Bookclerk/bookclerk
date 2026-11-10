@@ -626,6 +626,10 @@ mod tests {
         );
         let (_, feed) = get(&app, "/api/discover/recommendations").await;
         assert_eq!(feed["state"], "refreshing");
+        // A second press finds the fetch waiting, which counts as queued.
+        let (status, report) = post(&app, "/api/discover/refresh").await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{report}");
+        assert_eq!(queued(&library).await.len(), 1);
         {
             use sea_orm::ConnectionTrait;
             library
@@ -634,6 +638,12 @@ mod tests {
                 .await
                 .unwrap();
         }
+        // A full job queue is reported, not answered as queued.
+        let max_pending = std::mem::replace(&mut state.config.write().await.jobs.max_pending, 0);
+        let (status, _) = post(&app, "/api/discover/refresh").await;
+        assert_eq!(status, axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert!(queued(&library).await.is_empty());
+        state.config.write().await.jobs.max_pending = max_pending;
 
         // A feed another release wrote, which does not decode, counts as
         // missing, so the page shows placeholders until a ranking replaces it.

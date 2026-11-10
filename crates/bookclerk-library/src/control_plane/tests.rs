@@ -722,11 +722,14 @@ async fn begin_waits_for_a_peer_sqlite_writer() {
     let path = dir.path().join("library.db");
     let holder = bookclerk_plugin_database_sqlite::open(&path).await.unwrap();
     let waiter = bookclerk_plugin_database_sqlite::open(&path).await.unwrap();
+    // Native engine connections contend on the file lock the host retries on.
+    #[allow(clippy::disallowed_methods)]
     let txn = holder.begin().await.expect("holder begin");
     txn.execute_unprepared("CREATE TABLE hold_lock (id INTEGER PRIMARY KEY)")
         .await
         .unwrap();
     let waiting = tokio::spawn(async move {
+        #[allow(clippy::disallowed_methods)]
         let txn = waiter.begin().await.expect("waiter begin");
         txn.execute_unprepared("CREATE TABLE IF NOT EXISTS waiter_seen (id INTEGER PRIMARY KEY)")
             .await
