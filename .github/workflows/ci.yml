@@ -3,7 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
+  # A draft pull request runs the fast jobs only; `ready_for_review` starts
+  # the full run, which every later push repeats (see DRAFT_JOBS in
+  # scripts/ci_plan/execute.py and docs/contributing/ci.md#draft-pull-requests).
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
     types: [checks_requested]
   # The OSV remediation workflow runs the whole suite on a lockfile bump it
@@ -99,6 +103,8 @@ jobs:
       check_needs_node: ${{ steps.resolve.outputs.check_needs_node }}
       check_needs_uv: ${{ steps.resolve.outputs.check_needs_uv }}
       release_mode: ${{ steps.resolve.outputs.release_mode }}
+      os_matrix: ${{ steps.resolve.outputs.os_matrix }}
+      os_legs: ${{ steps.resolve.outputs.os_legs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -211,6 +217,10 @@ jobs:
 
       - name: Resolve CI plan
         id: resolve
+        env:
+          # Never for a called OSV remediation run, which is always full.
+          PR_DRAFT: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && !inputs.private-head }}
+          PR_RUN: ${{ github.event_name == 'pull_request' && !inputs.private-head }}
         run: |
           set -euo pipefail
           EXTRA=()
@@ -223,6 +233,17 @@ jobs:
           # tested this exact commit: the push run compiles and saves caches.
           if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
             EXTRA+=(--build-only)
+          fi
+          # A draft pull request runs lints, docs and unit tests; the other
+          # jobs wait for `ready_for_review`. The merge queue never takes a
+          # draft and always runs the full suite.
+          if [ "$PR_DRAFT" = "true" ]; then
+            EXTRA+=(--draft)
+          fi
+          # A pull request run tests on Linux; the Windows legs and the macOS
+          # job run in the merge queue, which CI Gate requires before a merge.
+          if [ "$PR_RUN" = "true" ]; then
+            EXTRA+=(--linux-only)
           fi
           python3 scripts/ci-exec.py resolve \
             --base "${{ steps.shas.outputs.base }}" \
@@ -752,7 +773,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Windows joins Linux in the merge queue and on main (`os_matrix`).
+        os: ${{ fromJSON(needs.plan.outputs.os_matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -803,7 +825,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Windows joins Linux in the merge queue and on main (`os_matrix`).
+        os: ${{ fromJSON(needs.plan.outputs.os_matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -904,7 +927,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Windows joins Linux in the merge queue and on main (`os_matrix`).
+        os: ${{ fromJSON(needs.plan.outputs.os_matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -957,10 +981,12 @@ jobs:
     needs: plan
     # The three legs run one after another, so they share one budget.
     timeout-minutes: 150
+    # Not on pull requests (`os_legs`): the merge queue runs it.
     if: >-
+      needs.plan.outputs.os_legs == 'true' && (
       needs.plan.outputs.job_confinement == 'true' ||
       needs.plan.outputs.job_native_gateway == 'true' ||
-      needs.plan.outputs.job_tray == 'true'
+      needs.plan.outputs.job_tray == 'true')
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
