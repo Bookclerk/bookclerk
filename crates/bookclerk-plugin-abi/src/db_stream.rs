@@ -1342,6 +1342,19 @@ mod tests {
         }
     }
 
+    /// A streaming decoder returns an adapter's `err` frame like any other
+    /// final frame, and `finish` reports it.
+    #[test]
+    fn a_streaming_decoder_returns_the_error_frame() {
+        let refused = PluginError::unsupported("no stream");
+        let frames = encode_execute_stream_error(&refused).unwrap_or_else(|err| panic!("{err}"));
+        let mut decoder = ExecuteStreamDecoder::streaming(limits());
+        let (rows, kinds) = drive(&mut decoder, &frames, 3);
+        assert!(rows.is_empty());
+        assert_eq!(kinds, ["err"]);
+        assert_eq!(decoder.finish().expect_err("adapter error"), refused);
+    }
+
     /// A retaining decoder's `push_frames` returns copies of the rows it
     /// keeps, so both modes see the same frames.
     #[test]

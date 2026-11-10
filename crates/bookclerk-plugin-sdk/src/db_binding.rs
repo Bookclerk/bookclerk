@@ -672,8 +672,10 @@ struct StreamedRows {
     body: StreamedBody,
     /// Read buffer for a reader body.
     buf: Vec<u8>,
-    /// Streaming decoder; `None` once it has finished.
-    decoder: Option<ExecuteStreamDecoder>,
+    /// Budget the stream is held to.
+    limits: ExecuteStreamLimits,
+    /// Streaming decoder.
+    decoder: ExecuteStreamDecoder,
     /// Columns of the statement whose rows are arriving.
     columns: Vec<DbColumn>,
     /// Rows decoded but not yet handed out.
@@ -782,13 +784,13 @@ impl RowStream {
             ExecuteStreamBody::Inline(bytes) => StreamedBody::Inline { bytes, at: 0 },
             ExecuteStreamBody::Reader(reader) => StreamedBody::Reader(reader),
         };
+        let limits = ExecuteStreamLimits::from_capabilities(&caps);
         Ok(RowStreamState::Streamed(Box::new(StreamedRows {
             request,
             body,
             buf: Vec::new(),
-            decoder: Some(ExecuteStreamDecoder::streaming(
-                ExecuteStreamLimits::from_capabilities(&caps),
-            )),
+            limits,
+            decoder: ExecuteStreamDecoder::streaming(limits),
             columns: Vec::new(),
             pending: VecDeque::new(),
             yielded: 0,
@@ -807,9 +809,8 @@ impl RowStream {
             &request,
             self.binding.session.execute(request.clone()).await?,
         )?;
-        let Some(result) = reply.statements.into_iter().next() else {
-            return Ok(RowStreamState::Done);
-        };
+        // `reply_for` checked there is exactly one result.
+        let result = reply.statements.into_iter().next().unwrap_or_default();
         Ok(RowStreamState::Inline {
             columns: result.columns,
             rows: result.rows.into_iter(),
@@ -831,9 +832,6 @@ impl StreamedRows {
         if let Some(err) = self.failure.take() {
             return Err(err);
         }
-        let Some(decoder) = self.decoder.as_mut() else {
-            return Ok(StreamStep::End);
-        };
         // The body is read to its end even after the final frame, so bytes
         // trailing it are refused as `collect()` refuses them.
         let chunk: &[u8] = match &mut self.body {
@@ -854,14 +852,17 @@ impl StreamedRows {
         if chunk.is_empty() {
             // The body is exhausted: the decoder reports whether the reply
             // was whole.
-            let Some(decoder) = self.decoder.take() else {
-                return Ok(StreamStep::End);
-            };
-            decoder.finish()?;
+            // The stream ends here (`next` never steps again after `End`),
+            // so the spent decoder is swapped for an idle one.
+            let spent = std::mem::replace(
+                &mut self.decoder,
+                ExecuteStreamDecoder::streaming(self.limits),
+            );
+            spent.finish()?;
             return Ok(StreamStep::End);
         }
         let mut frames = Vec::new();
-        let pushed = decoder.push_frames(chunk, &mut frames);
+        let pushed = self.decoder.push_frames(chunk, &mut frames);
         for frame in frames {
             match frame {
                 ExecuteStreamFrame::Head {
@@ -879,7 +880,7 @@ impl StreamedRows {
             if self.pending.is_empty() {
                 return Err(err);
             }
-            self.decoder = None;
+            // The decoder latched the failure; it is not fed again.
             self.failure = Some(err);
         }
         Ok(StreamStep::Continue)
@@ -1283,6 +1284,9 @@ mod tests {
         UnsupportedAfter(usize),
         /// A reader that fails.
         BrokenReader,
+        /// A stream whose `err` frame is `unsupported`, and an inline read
+        /// that fails.
+        UnsupportedFrameInlineFails,
     }
 
     /// A reader that always fails.
@@ -1368,6 +1372,9 @@ mod tests {
     impl GuestDatabase for StreamingSession {
         async fn execute(&self, request: ExecuteRequest) -> Result<ExecuteReply> {
             self.inline.fetch_add(1, Ordering::SeqCst);
+            if matches!(self.answer, StreamAnswer::UnsupportedFrameInlineFails) {
+                return Err(PluginError::unavailable("inline read failed"));
+            }
             Ok(reply_with_rows(&request, 1))
         }
 
@@ -1386,7 +1393,7 @@ mod tests {
                     &reply_with_rows(&request, *rows),
                 ),
                 StreamAnswer::Err(code) => Err(PluginError::new(*code, "streamed answer")),
-                StreamAnswer::UnsupportedFrame => {
+                StreamAnswer::UnsupportedFrame | StreamAnswer::UnsupportedFrameInlineFails => {
                     Ok(bookclerk_plugin_abi::ExecuteStream::from_frames(
                         bookclerk_plugin_abi::encode_execute_stream_error(
                             &PluginError::unsupported("no stream"),
@@ -2160,6 +2167,40 @@ mod tests {
             assert_eq!(rows.len(), handed, "{err}");
             assert_eq!(session.counts().0, 0, "no inline retry: {err}");
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn iterate_reports_a_failing_inline_fallback_and_its_state() {
+        // The stream answers `unsupported` before any row, and the inline
+        // read it falls back to fails: that failure is the caller's.
+        let session = StreamingSession::new(
+            DbCapabilities::advertised_sqlite(),
+            StreamAnswer::UnsupportedFrameInlineFails,
+        );
+        let (rows, failure) = drain(
+            DatabaseBinding::from_session(session.clone())
+                .prepare("SELECT id FROM books")
+                .iterate(None),
+        )
+        .await;
+        assert!(rows.is_empty());
+        assert_eq!(
+            failure.expect("inline failure").code,
+            PluginErrorCode::Unavailable
+        );
+        assert_eq!(session.counts(), (1, 1, 1));
+
+        // Mid-read, the stream reports that it is streaming.
+        let session =
+            StreamingSession::new(DbCapabilities::advertised_sqlite(), StreamAnswer::Rows(2));
+        let mut stream = DatabaseBinding::from_session(session)
+            .prepare("SELECT id FROM books")
+            .iterate(None);
+        stream.next().await.expect("a row").expect("first row");
+        assert_eq!(format!("{stream:?}"), r#"RowStream { state: "streamed" }"#);
+        let (rest, failure) = drain(stream).await;
+        assert_eq!(rest.len(), 1);
+        assert!(failure.is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
