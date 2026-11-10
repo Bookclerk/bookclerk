@@ -38,12 +38,12 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use bookclerk_plugin_manifest::PluginManifest;
 use bookclerk_workerd::config::{self, ListenSpec};
+use bookclerk_workerd::control;
 use bookclerk_workerd::egress::EgressProxy;
 use bookclerk_workerd::ensure::ensure_workerd;
 use bookclerk_workerd::generate_bridge_token;
 use bookclerk_workerd::grant::OperatorGrantEnv;
 use bookclerk_workerd::pin::{binary_name, WORKERD_RELEASE_TAG};
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 
 /// Deletes a per-session workerd state directory when the isolate function returns.
@@ -632,7 +632,6 @@ fn bridge_rpc_socket() -> Result<(ListenSpec, Option<std::net::TcpListener>)> {
 ///
 /// Never; the signature matches the Unix variant.
 #[cfg(not(unix))]
-#[allow(clippy::unnecessary_wraps)] // Same signature as the Unix variant.
 fn bridge_rpc_socket() -> Result<(ListenSpec, Option<std::net::TcpListener>)> {
     Ok((ListenSpec::ReportedTcp, None))
 }
@@ -668,7 +667,7 @@ async fn spawn_and_find_bridge(
         use std::os::fd::AsRawFd;
         cmd.arg(format!(
             "--socket-fd={}={}",
-            bookclerk_workerd::control::RPC_SOCKET,
+            control::RPC_SOCKET,
             listener.as_raw_fd()
         ));
     }
@@ -682,77 +681,9 @@ async fn spawn_and_find_bridge(
     // workerd now owns the listening socket; close our copy after spawn.
     drop(rpc_listener);
 
-    forward_lines(child.stderr.take());
-    let stdout = child.stdout.take();
-    let port = match listen.port() {
-        Some(port) => {
-            forward_lines(stdout);
-            port
-        }
-        None => {
-            let stdout = stdout.context("workerd stdout is not piped")?;
-            read_reported_port(stdout).await?
-        }
-    };
+    control::forward_lines(child.stderr.take());
+    let port = control::bridge_port(listen, child.stdout.take(), BRIDGE_READY_TIMEOUT).await?;
     Ok((child, port))
-}
-
-/// Reads workerd's stdout until it reports the bridge RPC port, then forwards the rest.
-///
-/// # Arguments
-///
-/// * `stdout` - workerd's stdout, which carries `--control-fd=1` messages and
-///   structured log lines.
-///
-/// # Returns
-///
-/// The port workerd reported for [`bookclerk_workerd::control::RPC_SOCKET`].
-///
-/// # Errors
-///
-/// When stdout ends (workerd exited, for example because the bind failed) or
-/// nothing arrives within [`BRIDGE_READY_TIMEOUT`].
-async fn read_reported_port(stdout: tokio::process::ChildStdout) -> Result<u16> {
-    use bookclerk_workerd::control::{listen_port, RPC_SOCKET};
-
-    let mut lines = BufReader::new(stdout).lines();
-    let port = tokio::time::timeout(BRIDGE_READY_TIMEOUT, async {
-        while let Some(line) = lines.next_line().await? {
-            if let Some(port) = listen_port(line.as_bytes(), RPC_SOCKET) {
-                return Ok(port.get());
-            }
-            tracing::info!(target: "workerd", "{line}");
-        }
-        bail!("workerd exited before reporting the bridge RPC port; its log above says why")
-    })
-    .await
-    .context("timeout waiting for workerd to report the bridge RPC port")??;
-    tokio::spawn(async move {
-        while let Ok(Some(line)) = lines.next_line().await {
-            tracing::info!(target: "workerd", "{line}");
-        }
-    });
-    Ok(port)
-}
-
-/// Forwards one workerd output stream through tracing, line by line (JSON when
-/// the parent is bookclerkd).
-///
-/// # Arguments
-///
-/// * `stream` - The child's stdout or stderr; `None` when it was not piped.
-fn forward_lines<R>(stream: Option<R>)
-where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-{
-    if let Some(stream) = stream {
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stream).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                tracing::info!(target: "workerd", "{line}");
-            }
-        });
-    }
 }
 
 /// Polls bridge `/health` for up to [`BRIDGE_READY_TIMEOUT`] before mediating RPC.

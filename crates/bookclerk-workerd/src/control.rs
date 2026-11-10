@@ -18,8 +18,13 @@
 //! message. The `workerd_control` fuzz target checks both properties.
 
 use std::num::NonZeroU16;
+use std::time::Duration;
 
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader, Lines};
+
+use crate::config::ListenSpec;
 
 /// Name of the bridge RPC socket in the generated workerd config.
 pub const RPC_SOCKET: &str = "rpc";
@@ -72,9 +77,185 @@ pub fn listen_port(line: &[u8], socket: &str) -> Option<NonZeroU16> {
     NonZeroU16::new(message.port)
 }
 
+/// Learns the bridge RPC port of one workerd child and forwards its stdout to tracing.
+///
+/// # Arguments
+///
+/// * `listen` - Listen mode the child's config was generated with.
+/// * `stdout` - The child's stdout; it carries the control channel when
+///   `listen` is [`ListenSpec::ReportedTcp`].
+/// * `timeout` - How long workerd gets to report its port.
+///
+/// # Returns
+///
+/// The port from `listen` when it is fixed, otherwise the port workerd
+/// reported for [`RPC_SOCKET`]. Every other stdout line, before and after the
+/// report, is logged under the `workerd` target.
+///
+/// # Errors
+///
+/// For [`ListenSpec::ReportedTcp`]: when `stdout` is `None`, when it ends or
+/// fails before the report (workerd exited, for example because its bind
+/// failed), or when nothing arrives within `timeout`.
+pub async fn bridge_port<R>(
+    listen: &ListenSpec,
+    stdout: Option<R>,
+    timeout: Duration,
+) -> Result<u16>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    if let Some(port) = listen.port() {
+        forward_lines(stdout);
+        return Ok(port);
+    }
+    let stdout = stdout.context("workerd stdout is not piped")?;
+    let mut lines = BufReader::new(stdout).lines();
+    let port = tokio::time::timeout(timeout, read_listen_port(&mut lines))
+        .await
+        .context("timeout waiting for workerd to report the bridge RPC port")??;
+    tokio::spawn(forward_remaining(lines));
+    Ok(port)
+}
+
+/// Forwards one workerd output stream to tracing, line by line, on a spawned task.
+///
+/// # Arguments
+///
+/// * `stream` - The child's stdout or stderr; `None` when it was not piped.
+pub fn forward_lines<R>(stream: Option<R>)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    if let Some(stream) = stream {
+        tokio::spawn(forward_remaining(BufReader::new(stream).lines()));
+    }
+}
+
+/// Logs every remaining line of `lines` under the `workerd` target until it ends.
+async fn forward_remaining<R>(mut lines: Lines<BufReader<R>>)
+where
+    R: AsyncRead + Unpin,
+{
+    while let Ok(Some(line)) = lines.next_line().await {
+        tracing::info!(target: "workerd", "{line}");
+    }
+}
+
+/// Reads lines until one reports the [`RPC_SOCKET`] port, logging the others.
+///
+/// # Errors
+///
+/// When the stream ends or fails first.
+async fn read_listen_port<R>(lines: &mut Lines<BufReader<R>>) -> Result<u16>
+where
+    R: AsyncRead + Unpin,
+{
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .context("read workerd control output")?
+    {
+        if let Some(port) = listen_port(line.as_bytes(), RPC_SOCKET) {
+            return Ok(port.get());
+        }
+        tracing::info!(target: "workerd", "{line}");
+    }
+    bail!("workerd exited before reporting the bridge RPC port; its log above says why")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Generous bound for tests whose stream already holds the report.
+    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+    fn stream(text: &str) -> std::io::Cursor<Vec<u8>> {
+        std::io::Cursor::new(text.as_bytes().to_vec())
+    }
+
+    #[tokio::test]
+    async fn fixed_ports_need_no_report() {
+        let port = bridge_port(
+            &ListenSpec::InheritedTcp { port: 9 },
+            Some(stream("not a control line\n")),
+            TEST_TIMEOUT,
+        )
+        .await
+        .expect("fixed port");
+        assert_eq!(port, 9);
+        let port = bridge_port(
+            &ListenSpec::TcpLoopback(10),
+            None::<std::io::Cursor<Vec<u8>>>,
+            TEST_TIMEOUT,
+        )
+        .await
+        .expect("fixed port without stdout");
+        assert_eq!(port, 10);
+    }
+
+    #[tokio::test]
+    async fn reported_port_comes_after_log_lines() {
+        let output = concat!(
+            r#"{"timestamp":0,"level":"log","message":"{\"event\":\"listen\",\"socket\":\"rpc\",\"port\":1}"}"#,
+            "\n",
+            r#"{"event":"listen","socket":"granted","port":2}"#,
+            "\r\n",
+            r#"{"event":"listen","socket":"rpc","port":53117}"#,
+            "\n",
+            "trailing log line\n",
+        );
+        let port = bridge_port(&ListenSpec::ReportedTcp, Some(stream(output)), TEST_TIMEOUT)
+            .await
+            .expect("reported port");
+        assert_eq!(port, 53117);
+    }
+
+    #[tokio::test]
+    async fn exit_before_the_report_fails_at_once() {
+        let output = "Socket \"rpc\": bind(): forbidden (os error 10013)\n";
+        let err = bridge_port(&ListenSpec::ReportedTcp, Some(stream(output)), TEST_TIMEOUT)
+            .await
+            .expect_err("no report");
+        assert!(
+            format!("{err:#}").contains("exited before reporting"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn silence_times_out() {
+        // The write half stays open, so the read neither ends nor yields.
+        let (_writer, reader) = tokio::io::duplex(64);
+        let err = bridge_port(
+            &ListenSpec::ReportedTcp,
+            Some(reader),
+            Duration::from_millis(20),
+        )
+        .await
+        .expect_err("timeout");
+        assert!(format!("{err:#}").contains("timeout waiting"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn reported_port_needs_stdout() {
+        let err = bridge_port(
+            &ListenSpec::ReportedTcp,
+            None::<std::io::Cursor<Vec<u8>>>,
+            TEST_TIMEOUT,
+        )
+        .await
+        .expect_err("no stdout");
+        assert!(format!("{err:#}").contains("not piped"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn forward_lines_drains_a_stream() {
+        forward_lines(Some(stream("one\ntwo\n")));
+        forward_lines(None::<std::io::Cursor<Vec<u8>>>);
+        tokio::task::yield_now().await;
+    }
 
     #[test]
     fn reads_the_listen_event_for_the_named_socket() {
