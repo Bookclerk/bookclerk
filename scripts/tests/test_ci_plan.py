@@ -575,7 +575,7 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(GUESTS["echo_workerd_ts"].plugin_tests, "npm")
         self.assertIn("path examples/plugins-echo-workerd-ts/src/notes.ts", p.checks["plugin_examples"]["why"])
         self.assertEqual(p.params("e2e")["scope"], ["echo_workerd_ts"])
-        self.assertEqual(p.params("plugin_examples")["runners"], ["npm", "pytest"])
+        self.assertEqual(p.params("plugin_examples")["runners"], ["cargo", "npm", "pytest"])
 
     def test_python_database_example_selects_plugin_examples(self) -> None:
         p = plan("examples/plugins-echo-workerd-python/modules/notes.py")
@@ -587,9 +587,21 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(outputs["check_needs_uv"], "true")
         self.assertEqual(outputs["check_needs_node"], "true")
 
+    def test_rust_database_example_selects_plugin_examples_when_it_compiles(self) -> None:
+        self.assertEqual(GUESTS["echo_native_rust"].plugin_tests, "cargo")
+        for path in (
+            "examples/plugins-echo-native-rust/src/notes.rs",
+            "crates/bookclerk-plugin-sdk/src/db_binding.rs",
+        ):
+            p = plan(path)
+            self.assertIn(
+                "database example compiled bookclerk-plugin-echo-native-rust",
+                p.checks["plugin_examples"]["why"],
+                path,
+            )
+
     def test_example_without_a_database_suite_skips_plugin_examples(self) -> None:
-        # Declares `[[databases]]` but has no `package.json` test script.
-        self.assertFalse(GUESTS["echo_native_rust"].plugin_tests)
+        self.assertIsNone(GUESTS["echo_workerd_fetch"].plugin_tests)
         self.assertFalse(plan("examples/plugins-echo-workerd-fetch/README.md").selected("plugin_examples"))
         self.assertFalse(
             plan("crates/bookclerk-plugins/optional/metadata-openlibrary/src/client.ts").selected("plugin_examples")
@@ -608,13 +620,13 @@ class ScenarioTests(unittest.TestCase):
             p = plan(path)
             self.assertTrue(p.selected("plugin_examples"), path)
             # Selected by the kit alone, the job still installs both runners.
-            self.assertEqual(p.params("plugin_examples")["runners"], ["npm", "pytest"], path)
+            self.assertEqual(p.params("plugin_examples")["runners"], ["cargo", "npm", "pytest"], path)
             self.assertEqual(job_outputs(artifact(p))["check_needs_uv"], "true", path)
 
     def test_full_plan_records_the_example_runners(self) -> None:
         p = plan("Cargo.lock")
         self.assertTrue(p.full_suite)
-        self.assertEqual(p.params("plugin_examples")["runners"], ["npm", "pytest"])
+        self.assertEqual(p.params("plugin_examples")["runners"], ["cargo", "npm", "pytest"])
 
     def test_example_runners_default_to_npm_for_an_older_artifact(self) -> None:
         p = plan("examples/plugins-echo-workerd-ts/src/notes.ts")
@@ -641,6 +653,11 @@ class ScenarioTests(unittest.TestCase):
             self.assertEqual(plugin_test_runner(d, db), "pytest")
             (d / "package.json").write_text('{"scripts": {"test": "node --test"}}', encoding="utf-8")
             self.assertEqual(plugin_test_runner(d, db), "npm")
+            (d / "package.json").unlink()
+            (d / "pyproject.toml").unlink()
+            (d / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
+            self.assertEqual(plugin_test_runner(d, db), "cargo")
+            (d / "package.json").write_text('{"scripts": {"test": "node --test"}}', encoding="utf-8")
             self.assertIsNone(plugin_test_runner(d, {}))
             (d / "package.json").write_text("{", encoding="utf-8")
             with self.assertRaises(PlanError):
@@ -993,11 +1010,28 @@ class CoverageCommandTests(unittest.TestCase):
         self.assertEqual(run.env["PYTHONPATH"], str(CTX.workspace / "packages" / "plugin-sdk-python" / "src"))
         self.assertEqual(run.env["BOOKCLERK_DB_TESTKIT"], str(CTX.bin_dir / "bookclerk-db-testkit"))
 
+    def test_rust_plugin_examples_only_run(self) -> None:
+        example = Path("/ws/examples/plugins-echo-native-rust")
+        rel = "examples/plugins-echo-native-rust"
+        p = plan("examples/plugins-echo-native-rust/src/notes.rs")
+        with mock.patch.object(execute, "plugin_example_dirs", return_value=[(example, "cargo")]):
+            planned = [c for _, c in planned_commands(artifact(p), "plugin_examples", CTX)]
+        argv = [c.argv for c in planned]
+        self.assertNotIn(["npm", "ci"], argv)
+        self.assertNotIn("uv", [a[0] for a in argv])
+        run = planned[-1]
+        self.assertEqual(run.argv, [str(CTX.bin_dir / "bookclerk-plugin"), "test", rel])
+        self.assertEqual(run.env["BOOKCLERK_DB_TESTKIT"], str(CTX.bin_dir / "bookclerk-db-testkit"))
+
     def test_plugin_example_dirs_finds_the_database_examples(self) -> None:
         found = [(d.relative_to(REPO).as_posix(), r) for d, r in execute.plugin_example_dirs(REPO)]
         self.assertEqual(
             found,
-            [("examples/plugins-echo-workerd-python", "pytest"), ("examples/plugins-echo-workerd-ts", "npm")],
+            [
+                ("examples/plugins-echo-native-rust", "cargo"),
+                ("examples/plugins-echo-workerd-python", "pytest"),
+                ("examples/plugins-echo-workerd-ts", "npm"),
+            ],
         )
 
     def test_workerd_guest_dirs_finds_the_typescript_guests(self) -> None:

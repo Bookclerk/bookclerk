@@ -2,46 +2,27 @@
 //!
 //! Speaks Cap'n Proto `api_version = 3` via [`PluginWorker`]: `open` exports the
 //! `eventConsumer` and `queueConsumer` triggers plus the `remoteLibrary` and
-//! `cli` entrypoints.
+//! `cli` entrypoints, the last over the `DB` binding, whose `notes` table
+//! `database_migrations` registers.
 
 #![allow(clippy::missing_docs_in_private_items)]
 
 use async_trait::async_trait;
-use bookclerk_plugin_abi::{
-    CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
-};
+use bookclerk_plugin_echo_native_rust::cli::{cli_schema, NotesCli};
+use bookclerk_plugin_echo_native_rust::notes::{migrations_for, NOTES_BINDING};
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{serve, PluginError};
 use bookclerk_plugin_sdk::{
-    Bindings, DomainEvent, Entrypoints, EventConsumer, EventResult, HealthOk, Invocation,
-    PluginCli, PluginDescribe, PluginWorker, QueueBatch, QueueConsumer, QueueMessage, QueueResult,
-    QueueRetry, RemoteLibrary, ScalarLimits, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    Bindings, DatabaseBinding, DomainEvent, Entrypoints, EventConsumer, EventResult, HealthOk,
+    Invocation, PluginDescribe, PluginMigration, PluginWorker, QueueBatch, QueueConsumer,
+    QueueMessage, QueueResult, QueueRetry, RemoteLibrary, ScalarLimits, FEATURE_SCALAR_LIMITS,
+    PRODUCT_API_VERSION,
 };
 
 /// Manifest / describe id for the reference Echo integration (`echo_native_rust`).
 const PLUGIN_ID: &str = "echo_native_rust";
 
-/// CLI schema advertised at `PluginCli.describe` (`ping --message`).
-fn cli_schema() -> CliSchema {
-    CliSchema {
-        commands: vec![CliCommandSpec {
-            name: "ping".into(),
-            about: Some("Probe echo plugin".into()),
-            args: vec![CliArgSpec {
-                name: "message".into(),
-                long: Some("message".into()),
-                short: Some("m".into()),
-                kind: CliArgKind::String,
-                required: false,
-                default: Some("hi".into()),
-                about: Some("Message to echo".into()),
-                positional: false,
-            }],
-        }],
-    }
-}
-
-/// Reference Echo integration guest (health, diagnose, events, and `ping`).
+/// Reference Echo integration guest (health, diagnose, events, queues and the notes CLI).
 struct EchoRoot;
 
 #[async_trait(?Send)]
@@ -62,47 +43,28 @@ impl PluginWorker for EchoRoot {
     async fn open(
         &self,
         _invocation: Invocation,
-        _bindings: Bindings,
+        mut bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
+        let db = DatabaseBinding::take_named_from_bindings(&mut bindings, NOTES_BINDING);
         Ok(Entrypoints {
             event_consumer: Some(Box::new(EchoIntegration)),
             queue_consumer: Some(Box::new(EchoIntegration)),
             remote_library: Some(Box::new(EchoIntegration)),
-            cli: Some(Box::new(EchoIntegration)),
+            cli: Some(Box::new(NotesCli::new(db))),
             ..Entrypoints::default()
         })
     }
+
+    async fn database_migrations(
+        &self,
+        binding: &str,
+    ) -> Result<Vec<PluginMigration>, PluginError> {
+        Ok(migrations_for(binding))
+    }
 }
 
-/// Echo integration capability (health, diagnose, events, `ping`).
+/// Echo integration capability (health, diagnose, events, queues).
 struct EchoIntegration;
-
-#[async_trait(?Send)]
-impl PluginCli for EchoIntegration {
-    async fn describe(&self) -> Result<CliSchema, PluginError> {
-        Ok(cli_schema())
-    }
-
-    async fn invoke(&self, params: CliInvokeParams) -> Result<CliInvokeResult, PluginError> {
-        if params.command != "ping" {
-            return Ok(CliInvokeResult {
-                exit_code: 2,
-                stderr: format!("unknown command {}", params.command),
-                ..CliInvokeResult::default()
-            });
-        }
-        let message = params
-            .args
-            .iter()
-            .find(|arg| arg.name == "message")
-            .map_or("hi", |arg| arg.value.as_str());
-        Ok(CliInvokeResult {
-            exit_code: 0,
-            stdout: format!("pong: {message}\n"),
-            ..CliInvokeResult::default()
-        })
-    }
-}
 
 #[async_trait(?Send)]
 impl RemoteLibrary for EchoIntegration {

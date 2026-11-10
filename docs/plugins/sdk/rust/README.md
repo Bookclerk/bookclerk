@@ -49,6 +49,8 @@ tests open the same binding with `bookclerk_db_testkit::BindingDatabase`
 under `bookclerk_db_testkit::selected_profile()`, so `bookclerk-plugin test .`
 runs them under every profile (see
 [Testing against the limits](../../database-limits.md#testing-against-the-limits)).
+[`examples/plugins-echo-native-rust`](../../../../examples/plugins-echo-native-rust)
+does all of this end to end in its `notes` table.
 
 ## The socket proxy
 

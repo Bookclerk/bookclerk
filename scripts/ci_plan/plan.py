@@ -669,14 +669,16 @@ def plugin_test_runner(plugin_dir: Path, manifest: Mapping[str, Any]) -> str | N
 
     The plugin must declare a ``[[databases]]`` binding. The runner then
     follows ``bookclerk-plugin``'s own choice: ``npm`` when ``package.json``
-    has a ``test`` script, else ``pytest`` when there is a ``pyproject.toml``.
+    has a ``test`` script, else ``pytest`` when there is a ``pyproject.toml``,
+    else ``cargo`` when there is a ``Cargo.toml``.
 
     Args:
         plugin_dir: Directory holding ``plugin.toml``.
         manifest: The parsed ``plugin.toml``.
 
     Returns:
-        ``"npm"``, ``"pytest"``, or ``None`` when there is no database suite.
+        ``"npm"``, ``"pytest"``, ``"cargo"``, or ``None`` when there is no
+        database suite.
 
     Raises:
         PlanError: When ``package.json`` exists but is not valid JSON.
@@ -693,6 +695,8 @@ def plugin_test_runner(plugin_dir: Path, manifest: Mapping[str, Any]) -> str | N
             return "npm"
     if (plugin_dir / "pyproject.toml").is_file():
         return "pytest"
+    if (plugin_dir / "Cargo.toml").is_file():
+        return "cargo"
     return None
 
 
@@ -1139,13 +1143,17 @@ def _select_checks(
     if guests_why and any(g.tier != "example" and g.runtime == "workerd" for g in guest_map.values()):
         _select(plan, "workerd_guests", guests_why)
     # Database examples run their suites against their SDK's test kit: the
-    # TypeScript SDK for `npm` suites, the Python SDK for `pytest` ones.
+    # TypeScript SDK for `npm` suites, the Python SDK for `pytest` ones. A
+    # `cargo` example is a workspace package, so it is selected whenever it
+    # compiles: its own files, the Rust SDK or the kit changed.
     runners = example_runners(guest_map)
     examples_why = [f"path {p}" for p in surf.plugin_examples]
     if "npm" in runners:
         examples_why += [f"path {p}" for p in surf.ts_sdk]
     if "pytest" in runners:
         examples_why += [f"path {p}" for p in surf.python_sdk]
+    cargo_examples = {g.package for g in guest_map.values() if g.plugin_tests == "cargo" and g.package}
+    examples_why += _why(sel, compiled & cargo_examples, "database example compiled")
     if examples_why:
         _select(plan, "plugin_examples", examples_why)
     for check, paths in surf.fixture_checks.items():
