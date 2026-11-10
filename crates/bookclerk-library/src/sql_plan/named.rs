@@ -4204,6 +4204,7 @@ mod tests {
                 | JobKind::PluginScheduled
                 | JobKind::DiscoverCandidates
                 | JobKind::DiscoverFeed
+                | JobKind::DiscoverRequestQueue
                 | JobKind::CacheSweep
                 | JobKind::SearchIndexRebuild
                 | JobKind::Invalid => [
@@ -4215,6 +4216,7 @@ mod tests {
                     JobKind::PluginScheduled,
                     JobKind::DiscoverCandidates,
                     JobKind::DiscoverFeed,
+                    JobKind::DiscoverRequestQueue,
                     JobKind::CacheSweep,
                     JobKind::SearchIndexRebuild,
                     JobKind::Invalid,

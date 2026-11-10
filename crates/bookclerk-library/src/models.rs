@@ -1413,6 +1413,7 @@ impl JobKind {
         Self::PluginScheduled,
         Self::DiscoverCandidates,
         Self::DiscoverFeed,
+        Self::DiscoverRequestQueue,
         Self::CacheSweep,
         Self::SearchIndexRebuild,
         Self::Invalid,
