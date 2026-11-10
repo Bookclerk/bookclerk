@@ -208,6 +208,21 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("merge_group", triggers)
         self.assertEqual(triggers["push"]["branches"], ["main"])
 
+    def test_draft_pull_requests_run_the_fast_jobs_and_ready_runs_the_rest(self) -> None:
+        triggers = self.wf.get("on", self.wf.get(True))
+        self.assertEqual(
+            triggers["pull_request"]["types"], ["opened", "synchronize", "reopened", "ready_for_review"]
+        )
+        step = next(s for s in self.jobs["plan"]["steps"] if "ci-exec.py resolve" in s.get("run", ""))
+        self.assertIn('[ "$PR_DRAFT" = "true" ]', step["run"])
+        self.assertIn("--draft", step["run"])
+        # Pull request events only, never a called OSV remediation run.
+        self.assertEqual(
+            step["env"]["PR_DRAFT"],
+            "${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true"
+            " && !inputs.private-head }}",
+        )
+
     def test_gate_sees_every_job_and_runs_always(self) -> None:
         gate = self.jobs["ci-gate"]
         self.assertEqual(gate["name"], "CI Gate")
@@ -577,6 +592,52 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertLess(guard, head)
         shas = next(s["run"] for s in self.jobs["plan"]["steps"] if s.get("id") == "shas")
         self.assertLess(shas.index("inputs.private-head"), shas.index("pull_request"))
+
+
+class DraftDeferredWorkflowTests(unittest.TestCase):
+    """Heavy pull request workflows wait for `ready_for_review` on a draft."""
+
+    DEFERRED = {
+        "codeql.yml": "languages",
+        "cflite-pr.yml": "pr",
+        "docker-image.yml": "image",
+        "devcontainer-image.yml": "image",
+        "images-publish.yml": "plan",
+        "abs-integration.yml": "abs-smoke",
+    }
+    GATE = "github.event_name != 'pull_request' || !github.event.pull_request.draft"
+
+    def test_heavy_workflows_skip_drafts_and_run_when_ready(self) -> None:
+        for name, root in self.DEFERRED.items():
+            with self.subTest(workflow=name):
+                wf = yaml.safe_load((REPO / ".github" / "workflows" / name).read_text(encoding="utf-8"))
+                on = wf.get("on", wf.get(True))
+                self.assertEqual(
+                    on["pull_request"]["types"], ["opened", "synchronize", "reopened", "ready_for_review"]
+                )
+                self.assertEqual(wf["jobs"][root]["if"], self.GATE)
+                # Every other job depends on the gated one, so none starts on a draft.
+                for job, body in wf["jobs"].items():
+                    if job != root:
+                        needs = body.get("needs", [])
+                        self.assertIn(root, [needs] if isinstance(needs, str) else needs, job)
+
+    def test_superseded_pull_request_runs_are_cancelled(self) -> None:
+        wf_dir = REPO / ".github" / "workflows"
+        osv = yaml.safe_load((wf_dir / "osv-scanner.yml").read_text(encoding="utf-8"))
+        self.assertEqual(osv["concurrency"]["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}")
+        self.assertIn("github.event.pull_request.number", osv["concurrency"]["group"])
+        trigger = yaml.safe_load((wf_dir / "cla-trigger.yml").read_text(encoding="utf-8"))
+        conc = trigger["jobs"]["trigger"]["concurrency"]
+        self.assertIs(conc["cancel-in-progress"], True)
+        self.assertIn("github.event.pull_request.number", conc["group"])
+        # The CLA check ignores a superseded trigger run, never a skipped-only filter.
+        cla = yaml.safe_load((wf_dir / "cla.yml").read_text(encoding="utf-8"))
+        self.assertIn("github.event.workflow_run.conclusion != 'cancelled'", cla["jobs"]["cla"]["if"])
+        upload = yaml.safe_load((wf_dir / "coverage-upload.yml").read_text(encoding="utf-8"))
+        conc = upload["jobs"]["upload"]["concurrency"]
+        self.assertEqual(conc["cancel-in-progress"], "${{ github.event.workflow_run.event == 'pull_request' }}")
+        self.assertIn("github.event.workflow_run.id", conc["group"])
 
 
 class OsvRemediationWorkflowTest(unittest.TestCase):

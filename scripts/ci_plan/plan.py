@@ -1465,7 +1465,19 @@ def _fmt_prereq(p: Mapping[str, Any]) -> str:
     return kind.replace("_", "-")
 
 
-def plan_to_summary(plan: Plan, title: str = "CI plan") -> str:
+def plan_to_summary(plan: Plan, title: str = "CI plan", deferred: Iterable[str] = ()) -> str:
+    """Markdown summary of ``plan``.
+
+    Args:
+        plan: The plan to describe.
+        title: The section heading.
+        deferred: Checks a draft pull request run left for the ready run;
+            they read ``deferred: draft`` rather than ``not affected``.
+
+    Returns:
+        The summary as Markdown.
+    """
+    waiting = frozenset(deferred)
     lines = [f"## {title}", "", f"- **full_suite:** `{plan.full_suite}`"]
     for r in plan.reasons:
         lines.append(f"  - {r}")
@@ -1482,6 +1494,9 @@ def plan_to_summary(plan: Plan, title: str = "CI plan") -> str:
     lines.append("| Check | Why | Prerequisites |")
     lines.append("| --- | --- | --- |")
     for check in ALL_CHECKS:
+        if check in waiting:
+            lines.append(f"| `{check}` | deferred: draft pull request, runs when ready for review | |")
+            continue
         if check not in plan.checks:
             lines.append(f"| `{check}` | skip: not affected | |")
             continue

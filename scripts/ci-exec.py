@@ -83,6 +83,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Compile every check's targets (cache warming) but run no tests",
     )
+    r.add_argument(
+        "--draft",
+        action="store_true",
+        help="Draft pull request: run only the lint, docs and unit-test jobs; defer the rest",
+    )
     r.add_argument("--selective", default=os.environ.get("SELECTIVE_CI", "0"))
     r.add_argument("--event", default=os.environ.get("GITHUB_EVENT_NAME", "local"))
     r.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", "local"))
@@ -122,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
                 event=args.event,
                 force_full=args.force_full,
                 build_only=args.build_only,
+                draft=args.draft,
                 workspace=WORKSPACE,
                 paths=args.paths,
             )
@@ -130,7 +136,10 @@ def main(argv: list[str] | None = None) -> int:
             outputs = job_outputs(artifact)
             write_github_output(outputs)
             write_step_summary(artifact_summary(artifact))
-            print(f"wrote {args.plan} (mode={artifact['mode']}, build_only={artifact['build_only']})")
+            print(
+                f"wrote {args.plan} (mode={artifact['mode']}, build_only={artifact['build_only']},"
+                f" draft={artifact['draft']})"
+            )
             for k, v in outputs.items():
                 print(f"  {k}={v}")
             return 0

@@ -5,8 +5,8 @@ modes, the planner, each job, and the branch protection that ties them
 together.
 
 The workflow is `.github/workflows/ci.yml`. A **dependency-aware planner**
-lets pull requests skip unrelated work, while `merge_group` always runs the
-full suite. A push to `main`, which only advances through the merge queue,
+lets pull requests skip unrelated work, a draft pull request runs only the
+fast jobs, and `merge_group` always runs the full suite. A push to `main`, which only advances through the merge queue,
 compiles the full suite to refresh the dependency caches and runs no tests.
 
 Fuzzing has its own page, [Fuzzing](fuzzing.md). The workflows outside the
@@ -26,6 +26,34 @@ Worker deploys) are in [Repository automation](automation.md).
 Full-suite `merge_group` runs audit the selective coverage. A check that
 fails there but was skipped on the pull request is a planner bug, and it
 keeps the pull request out of `main`.
+
+### Draft pull requests
+
+A draft pull request gets fast feedback without holding the shared runners
+(the organization's plan caps how many Actions jobs run at once). Its plan
+resolves with `--draft` (`draft: true` in the artifact):
+
+- Only the `check` job (formatting, Clippy, docs and lint) and the `test`
+  job (Rust unit and integration tests, with coverage) run, at the scope
+  the planner predicted (`DRAFT_JOBS` in `scripts/ci_plan/execute.py`).
+- Every other check the planner selected is listed under `deferred` in the
+  artifact and reads "deferred: draft pull request" in the plan summary.
+  `CI Gate` expects the deferred jobs to be skipped, so it reports on the
+  draft instead of waiting.
+- CodeQL, ClusterFuzzLite, the Docker, Dev Container and image publishing
+  builds and ABS Integration skip their jobs on a draft too.
+- OSV scanning and the CLA check still run, so their required checks report.
+
+Nothing is dropped, only deferred. Marking the pull request **ready for
+review** (`ready_for_review`) starts the full selective run of every one of
+these workflows, and each later push repeats it. GitHub keeps drafts out of
+the merge queue, and the queue always runs the full suite, so no deferred
+check can be skipped before a merge.
+
+> [!NOTE]
+> On a draft, the CodeQL results merge rule waits for analyses that arrive
+> once the pull request is ready. Coverage covers only the areas the `test`
+> and `check` jobs measure; Worker coverage arrives with the ready run.
 
 ### Build-only `main` pushes
 
@@ -571,7 +599,8 @@ These run outside `CI Gate`:
 
 - **CodeQL** (see [CodeQL](#codeql) below) feeds the repository's code
   scanning merge rule.
-- **OSV scanning** is a separate workflow and gate. A green OSV job that
+- **OSV scanning** is a separate workflow and gate. A new push cancels a
+  pull request's scan still in progress. A green OSV job that
   applies [`osv-scanner.toml`](../../osv-scanner.toml) `IgnoredVulns`
   means **zero unignored, actionable** findings, not that ignored
   advisories have left the dependency graph. Each ignore must record
@@ -595,7 +624,9 @@ These run outside `CI Gate`:
 [`.github/workflows/codeql.yml`](../../.github/workflows/codeql.yml) runs
 CodeQL's default query suite on GitHub Actions workflows,
 JavaScript/TypeScript, Python and Rust, each in build mode `none`. The
-repository's "CodeQL results" merge rule reads its analyses. GitHub's
+repository's "CodeQL results" merge rule reads its analyses. It skips a
+[draft pull request](#draft-pull-requests) and runs when the pull request is
+marked ready for review. GitHub's
 default setup for code scanning must be off, or the uploads are refused.
 
 Rust takes about 20 minutes on a hosted runner, and CodeQL has no
@@ -955,6 +986,9 @@ each CI run of a pull request or merge group finishes:
 3. It uploads each area under its own flag, signing in to Codecov with
    OIDC, so there is no Codecov token secret. The commit, branch and pull
    request come from the CI run GitHub recorded, never from an artifact.
+
+A newer CI run on the same pull request branch cancels an upload still
+waiting or running; each merge group's upload runs to the end.
 
 The upload never checks out the pull request. Its checkout is the default
 branch, so it sends Codecov no file list and no line fixes from it. The
@@ -1461,8 +1495,10 @@ With `SELECTIVE_CI=1`, a pull request should see these jobs after `plan`:
 | One optional guest (such as Libro) | check, test (guest tests), e2e (`libro` only) | Other storefronts are neither built nor staged |
 | `packages/plugin-sdk/embed/**` | check (SDK ABI), test (workerd tests), e2e (workerd-runtime subset), release (launcher), native gateway (3 OS) | Not the full installation |
 
-For `merge_group`, `--force-full` runs every job and check. A `main` push
-adds `--build-only`.
+A draft pull request runs only the `fmt / clippy / docs` and test jobs from
+this table; the rest wait until it is ready for review (see
+[Draft pull requests](#draft-pull-requests)). For `merge_group`,
+`--force-full` runs every job and check. A `main` push adds `--build-only`.
 
 ## Next steps
 

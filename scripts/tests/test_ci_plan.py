@@ -26,6 +26,7 @@ sys.path.insert(0, str(SCRIPTS))
 from ci_plan import execute  # noqa: E402
 from ci_plan.execute import (  # noqa: E402
     BUILD_ONLY_JOBS,
+    DRAFT_JOBS,
     NEXTEST_RUN,
     SCHEMA_VERSION,
     Command,
@@ -93,6 +94,8 @@ def artifact(p, mode: str = "selective") -> dict:
         "selective_ci": "1",
         "mode": mode,
         "build_only": False,
+        "draft": False,
+        "deferred": [],
         "predicted": plan_to_dict(p),
         "execution": plan_to_dict(p),
     }
@@ -1906,6 +1909,107 @@ class RunnerLayoutTests(unittest.TestCase):
         assert kept is not None
         self.assertEqual(kept.argv, bench)
         self.assertIsNone(build_only_command(Command("bench run", bench[:-1])))
+
+    def draft_artifact(self, *paths: str, force_full: bool = False) -> dict:
+        return resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="pull_request",
+            force_full=force_full,
+            draft=True,
+            paths=list(paths),
+            metadata=META,
+            workspace=REPO,
+        )
+
+    def test_draft_runs_only_the_fast_jobs_and_defers_the_rest(self) -> None:
+        art = self.draft_artifact("Cargo.lock")
+        self.assertTrue(art["draft"])
+        validate(art, run_id="9", checkout_sha="abc")
+        predicted = plan_from_dict(art["predicted"])
+        execution = plan_from_dict(art["execution"])
+        self.assertTrue(predicted.full_suite)
+        on = {job for job, run in execution.jobs.items() if run}
+        self.assertEqual(on, set(DRAFT_JOBS))
+        self.assertEqual(set(execution.checks), {c for j in DRAFT_JOBS for c in JOB_CHECKS[j]})
+        # Every check the prediction selected either runs or is deferred.
+        self.assertEqual(set(execution.checks) | set(art["deferred"]), set(predicted.checks))
+        self.assertTrue(set(art["deferred"]).isdisjoint(execution.checks))
+        self.assertIn("e2e", art["deferred"])
+        self.assertIn("site_test", art["deferred"])
+        # The fast jobs keep their full-suite scope.
+        self.assertIs(execution.params("rust_test").get("workspace"), True)
+        out = job_outputs(art)
+        for job in JOB_CHECKS:
+            with self.subTest(job=job):
+                self.assertEqual(out[f"job_{job.replace('-', '_')}"], "true" if job in DRAFT_JOBS else "false")
+        needs = {"plan": {"result": "success"}}
+        for job in [*JOB_CHECKS, "macos"]:
+            needs[job] = {"result": "success" if job in DRAFT_JOBS else "skipped"}
+        self.assertEqual(gate(art, needs), [])
+        # A deferred job that ran anyway is a mismatch the gate reports.
+        self.assertTrue(gate(art, dict(needs, e2e={"result": "success"})))
+        self.assertIn("Draft pull request", execute.artifact_summary(art))
+
+    def test_draft_of_a_worker_change_runs_only_the_lint(self) -> None:
+        art = self.draft_artifact("tools/site/src/worker.ts")
+        self.assertIn("site_test", plan_from_dict(art["predicted"]).checks)
+        on = {job for job, run in plan_from_dict(art["execution"]).jobs.items() if run}
+        self.assertEqual(on, {"check"})
+        self.assertIn("site_test", art["deferred"])
+        self.assertIn("| `site_test` | deferred: draft", execute.artifact_summary(art))
+
+    def test_ready_pull_request_defers_nothing(self) -> None:
+        art = resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="pull_request",
+            paths=["Cargo.lock"],
+            metadata=META,
+            workspace=REPO,
+        )
+        self.assertFalse(art["draft"])
+        self.assertEqual(art["deferred"], [])
+        self.assertEqual(art["execution"], art["predicted"])
+
+    def test_draft_and_build_only_are_exclusive(self) -> None:
+        with self.assertRaises(ExecError):
+            resolve(
+                base=None,
+                head=None,
+                selective_ci="1",
+                run_id="9",
+                checkout_sha="abc",
+                event="push",
+                build_only=True,
+                draft=True,
+                paths=["Cargo.lock"],
+                metadata=META,
+                workspace=REPO,
+            )
+
+    def test_validate_rejects_a_malformed_draft_record(self) -> None:
+        base = artifact(plan("crates/bookclerk-cli/src/main.rs"))
+        for bad in (
+            {"draft": "yes"},
+            {"deferred": "e2e"},
+            {"deferred": ["no_such_check"]},
+            {"deferred": ["e2e"]},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ExecError):
+                validate(dict(base, **bad), run_id="1", checkout_sha="c")
+        for key in ("draft", "deferred"):
+            broken = dict(base)
+            del broken[key]
+            with self.subTest(missing=key), self.assertRaises(ExecError):
+                validate(broken, run_id="1", checkout_sha="c")
+        validate(dict(base, draft=True, deferred=["e2e"]), run_id="1", checkout_sha="c")
 
     def test_pull_request_and_merge_group_are_never_build_only(self) -> None:
         art = artifact(plan("crates/bookclerk-cli/src/main.rs"))
