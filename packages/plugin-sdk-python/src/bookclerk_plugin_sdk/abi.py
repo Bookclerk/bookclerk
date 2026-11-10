@@ -305,6 +305,8 @@ class PluginDescribe(TypedDict):
         configOptions: Discoverable config option groups for source UIs.
         cli: Embedded CLI schema (same shape as `PluginCli.describe`); empty when
             unused.
+        catalog: Catalog behaviours a storefront declares so the host can use any store
+            for catalog search without naming it; all false for other kinds.
     """
 
     apiVersion: int
@@ -320,6 +322,7 @@ class PluginDescribe(TypedDict):
     brand: Brand
     configOptions: list[ConfigOption]
     cli: CliSchema
+    catalog: CatalogCapabilities
 
 
 class OidcClientTemplate(TypedDict):
@@ -2262,6 +2265,21 @@ class PluginCapabilities(TypedDict):
     crons: list[str]
 
 
+class CatalogCapabilities(TypedDict):
+    """Catalog behaviours a storefront declares in `describe()`. Catalog search
+    reads them instead of special-casing plugin ids; every flag defaults to
+    false, so a guest that says nothing keeps the plain behaviour.
+
+    Attributes:
+        detailByIsbn: True when `catalogDetail` resolves a bare ISBN (sent in both
+            `productId` and `isbn`) to a full bibliographic record. Catalog search then
+            asks this store to fill description, narrators, runtime and genres on lean
+            result rows from any store that carry an ISBN.
+    """
+
+    detailByIsbn: bool
+
+
 class Brand(TypedDict):
     """Portal brand crossing the RPC boundary. Distinct from `plugin.toml`
     `logo`: `iconUrl` is the live URL or data URI the SPA renders.
@@ -3271,6 +3289,12 @@ class CatalogHit(TypedDict):
         seriesEntries: Series the work belongs to.
         parentProductId: Product id of the parent podcast show, for a podcast episode.
             Omitted when absent (wire zero value).
+        rankHint: The storefront's own rank for this hit in `searchCatalog` results:
+            1-based position in the store's ordering for the requested sort across all
+            pages (page 2 of 20-hit pages starts at 21), or a store-wide popularity rank
+            when the store has one. 0 means unranked. Catalog search merges stores by it
+            for relevance and popularity sorts and puts unranked hits after ranked ones.
+            Other catalog methods leave it 0. Omitted when absent (wire zero value).
     """
 
     productId: str
@@ -3298,6 +3322,7 @@ class CatalogHit(TypedDict):
     credits: list[Credit]
     seriesEntries: list[SeriesEntry]
     parentProductId: NotRequired[str]
+    rankHint: NotRequired[int]
 
 
 class CatalogHits(TypedDict):
@@ -6094,6 +6119,7 @@ __all__ = [
     "CoverFetcher",
     "EventConsumerSpec",
     "PluginCapabilities",
+    "CatalogCapabilities",
     "Brand",
     "ConfigOption",
     "ConfigOptionValue",

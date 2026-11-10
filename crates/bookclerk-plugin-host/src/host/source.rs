@@ -77,6 +77,8 @@ pub struct ExternalSource {
     aliases: &'static [&'static str],
     /// Registry sort order from `describe()` (`200` when the guest omits it).
     sort_key: u32,
+    /// Declared `CatalogCapabilities.detailByIsbn` from `describe()`.
+    detail_by_isbn: bool,
     /// Scoped data directory for this plugin only.
     plugin_data_dir: PathBuf,
     /// `CONFIG` object delivered to the guest (also the spawn config table).
@@ -158,6 +160,7 @@ impl ExternalSource {
         } else {
             describe.sort_key
         };
+        let detail_by_isbn = describe.catalog.detail_by_isbn;
         let plugin_data_dir = plugin_data_dir(config, plugin)?;
         session.open(prepared.bindings).await?;
         Ok(Self {
@@ -169,6 +172,7 @@ impl ExternalSource {
             auth_mode,
             aliases,
             sort_key,
+            detail_by_isbn,
             plugin_data_dir,
             source_config,
             plugin_instance_id: None,
@@ -455,6 +459,10 @@ impl ContentSource for ExternalSource {
         self.sort_key
     }
 
+    fn answers_catalog_detail_by_isbn(&self) -> bool {
+        self.detail_by_isbn
+    }
+
     async fn login(
         &self,
         scope: &SourceScope,
@@ -653,24 +661,26 @@ impl ContentSource for ExternalSource {
         &self,
         product_id: &str,
     ) -> bookclerk_source::Result<Option<CatalogHit>> {
-        let params = CatalogDetailParams {
+        self.catalog_detail_call(CatalogDetailParams {
             product_id: product_id.to_string(),
             isbn: None,
-        };
-        match self
-            .cs_call(move |src| async move { src.catalog_detail(params).await })
-            .await
-        {
-            Ok(hit) => Ok(hit.map(catalog_hit_from_abi)),
-            Err(err) => {
-                tracing::debug!(
-                    plugin = %self.id(),
-                    error = %err,
-                    "external catalog_detail soft-failed"
-                );
-                Ok(None)
-            }
+        })
+        .await
+    }
+
+    async fn catalog_detail_by_isbn(
+        &self,
+        isbn: &str,
+    ) -> bookclerk_source::Result<Option<CatalogHit>> {
+        if !self.detail_by_isbn {
+            return Ok(None);
         }
+        // The capability contract: a bare ISBN travels in both fields.
+        self.catalog_detail_call(CatalogDetailParams {
+            product_id: isbn.to_string(),
+            isbn: Some(isbn.to_string()),
+        })
+        .await
     }
 
     async fn expand_candidates(
@@ -778,6 +788,34 @@ impl ContentSource for ExternalSource {
                     "external list_deals soft-failed"
                 );
                 Ok(Vec::new())
+            }
+        }
+    }
+}
+
+impl ExternalSource {
+    /// Calls the guest's `catalogDetail`, soft-failing to `None` so one slow
+    /// or broken store never fails a search or a detail dialog.
+    ///
+    /// # Errors
+    ///
+    /// Never returns an error today; the `Result` matches the trait methods.
+    async fn catalog_detail_call(
+        &self,
+        params: CatalogDetailParams,
+    ) -> bookclerk_source::Result<Option<CatalogHit>> {
+        match self
+            .cs_call(move |src| async move { src.catalog_detail(params).await })
+            .await
+        {
+            Ok(hit) => Ok(hit.map(catalog_hit_from_abi)),
+            Err(err) => {
+                tracing::debug!(
+                    plugin = %self.id(),
+                    error = %err,
+                    "external catalog_detail soft-failed"
+                );
+                Ok(None)
             }
         }
     }

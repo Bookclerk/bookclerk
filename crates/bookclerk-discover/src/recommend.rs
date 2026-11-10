@@ -1610,7 +1610,7 @@ mod tests {
                 rating_overall: None,
                 rating_count: None,
                 is_abridged: None,
-                audible_rank: None,
+                store_rank: None,
             };
         let opts = RecommendOptions {
             include_purchase_hints: false,
