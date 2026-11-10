@@ -171,6 +171,18 @@ impl D1Proxy {
         // pack for the SQLite family and collapses results back to the wire
         // request shape after parsing.
         let wire_len = req.statements.len();
+        // Whether the caller asked for reads only: the guest slice under a
+        // receipt wrap, otherwise the whole batch, judged on the wire request
+        // before any companion expansion. An over-cap result on such a batch
+        // committed nothing the caller asked for, so it is a typed cap
+        // failure rather than an ambiguous one.
+        let read_only_work = if guest_receipt.is_absent() {
+            typed_is_read_only(&req.statements)
+        } else {
+            let guest_len =
+                usize::try_from(guest_receipt.guest_statement_len).unwrap_or(usize::MAX);
+            bookclerk_db_exec::guest_batch_is_read_only(&req, guest_len)
+        };
         let (expanded, schema_groups) =
             bookclerk_db_exec::expand_host_schema_execute_request_grouped(
                 sea_orm::DatabaseBackend::Sqlite,
@@ -201,17 +213,6 @@ impl D1Proxy {
         let retry_safe = !guest_receipt.is_absent()
             || typed_is_read_only(&req.statements)
             || typed_is_receipt_gated(&req.statements);
-        // Whether the caller asked for reads only: the guest slice under a
-        // receipt wrap, otherwise the whole batch. An over-cap result on
-        // such a batch committed nothing the caller asked for, so it is a
-        // typed cap failure rather than an ambiguous one.
-        let read_only_work = if guest_receipt.is_absent() {
-            typed_is_read_only(&req.statements)
-        } else {
-            let guest_len =
-                usize::try_from(guest_receipt.guest_statement_len).unwrap_or(usize::MAX);
-            bookclerk_db_exec::guest_batch_is_read_only(req, guest_len)
-        };
         let d1_caps = caps.clone();
         let cap = d1_caps.max_result_rows;
         if proofs.len() != wire_len {
@@ -345,7 +346,7 @@ impl D1Proxy {
                     let err = DbErr::from(err);
                     if let Some(limit) = read_only_cap_failure(&err, read_only_work) {
                         return self
-                            .refuse_read_only_over_cap(req, &guest_receipt, &limit, timeout)
+                            .refuse_read_only_over_cap(req, &guest_receipt, &limit, deadline)
                             .await;
                     }
                     if retryable && retry_safe && attempt + 1 < ATOMIC_HTTP_ATTEMPTS {
@@ -372,7 +373,7 @@ impl D1Proxy {
                             &reply,
                             guest_len,
                             &hint.guest_request_hash,
-                            bookclerk_db_exec::guest_batch_is_read_only(req, guest_len),
+                            read_only_work,
                         )?;
                         if !finalize.is_empty() {
                             let fin_stmts: Vec<SqlStmt> = finalize
@@ -396,7 +397,7 @@ impl D1Proxy {
                 Err(err) => {
                     if let Some(limit) = read_only_cap_failure(&err, read_only_work) {
                         return self
-                            .refuse_read_only_over_cap(req, &guest_receipt, &limit, timeout)
+                            .refuse_read_only_over_cap(req, &guest_receipt, &limit, deadline)
                             .await;
                     }
                     if is_ambiguous_d1(&err) && retry_safe && attempt + 1 < ATOMIC_HTTP_ATTEMPTS {
@@ -420,22 +421,40 @@ impl D1Proxy {
     ///
     /// # Errors
     ///
-    /// Always: the cap failure, or the finalize batch's failure when the
-    /// receipt could not be finalized (then still ambiguous, so retryable).
+    /// Always: the cap failure, or, when the receipt could not be finalized
+    /// (the finalize batch failed, the session was interrupted or the
+    /// deadline passed), the cap failure marked ambiguous so the caller may
+    /// retry.
     async fn refuse_read_only_over_cap(
         &self,
         req: &ExecuteRequest,
         guest_receipt: &bookclerk_plugin_abi::GuestReceiptPersist,
         limit: &LimitExceeded,
-        timeout: Duration,
+        deadline: Option<u64>,
     ) -> std::result::Result<ExecuteReply, DbErr> {
         if !guest_receipt.is_absent() {
-            let finalize = bookclerk_db_exec::guest_receipt_read_only_finalize_stmt(
-                &req.operation_id,
-                &guest_receipt.guest_request_hash,
-            );
-            let stmt = d1_typed_statement(&finalize.sql, &finalize.parameters, None)?;
-            self.run_batch_with_timeout(&[stmt], timeout).await?;
+            let finalize = async {
+                check_d1_session(
+                    bookclerk_db_exec::AtomicInterruptPhase::BeforeBegin,
+                    deadline,
+                )?;
+                let timeout = d1_http_timeout(deadline)?;
+                let stmt = bookclerk_db_exec::guest_receipt_read_only_finalize_stmt(
+                    &req.operation_id,
+                    &guest_receipt.guest_request_hash,
+                );
+                let stmt = d1_typed_statement(&stmt.sql, &stmt.parameters, None)?;
+                self.run_batch_with_timeout(&[stmt], timeout)
+                    .await
+                    .map_err(DbErr::from)?;
+                Ok::<(), DbErr>(())
+            };
+            if let Err(err) = finalize.await {
+                return Err(ambiguous_d1(format!(
+                    "{}; the read-only receipt was not finalized: {err}",
+                    limit.to_message()
+                )));
+            }
         }
         Err(DbErr::Custom(limit.to_message()))
     }

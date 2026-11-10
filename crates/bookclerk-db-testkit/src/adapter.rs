@@ -909,11 +909,7 @@ impl SuiteRun {
         if let Err(err) = self.relabel_rows("r", "s").await {
             return failed(err);
         }
-        let retry = self.guest_with_id(operation_id, vec![over]).await;
-        if let Err(err) = self.relabel_rows("s", "r").await {
-            return failed(err);
-        }
-        match retry {
+        let retry = match self.guest_with_id(operation_id, vec![over]).await {
             Ok(reply) if reply.statements.first().is_some_and(|s| s.rows.is_empty()) => {
                 Outcome::Passed
             }
@@ -924,6 +920,11 @@ impl SuiteRun {
             Err(err) => failed(format!(
                 "a retry of the refused read after its rows changed under {cap}: {err}"
             )),
+        };
+        match (retry, self.relabel_rows("s", "r").await) {
+            (retry, Ok(())) => retry,
+            (Outcome::Failed(reason), Err(restore)) => failed(format!("{reason}; then {restore}")),
+            (Outcome::Passed | Outcome::Skipped(_), Err(restore)) => failed(restore),
         }
     }
 
