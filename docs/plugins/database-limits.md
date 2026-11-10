@@ -318,12 +318,14 @@ opens a fixed profile passes all three runs while testing only that one:
 ```sh
 cargo build -p bookclerk-db-testkit
 cargo plugin -- test examples/plugins-echo-workerd-ts
+cargo plugin -- test examples/plugins-echo-workerd-python   # pytest, with the Python SDK importable
 cargo plugin -- test . --profile minimum -- --grep notes   # one profile, runner arguments after --
 ```
 
 Every profile runs even after one fails, and the report names the ones
 that did. CI runs `bookclerk-plugin test` on every example that declares
-`[[databases]]` and has a `test` script (the `plugin_examples` check; see
+`[[databases]]` and has a suite the command can run, a `test` script in
+`package.json` or a `pyproject.toml` (the `plugin_examples` check; see
 [CI](../contributing/ci.md)).
 
 `cargo test-staged` covers the migrations of every staged plugin
@@ -349,6 +351,13 @@ binding and follows this page end to end:
 - `test/notes.test.ts` and `test/index.test.ts` open the binding with
   `createTestDatabase()` and size every assertion from `db.limits()`, so
   the same suite passes under `first-party`, `d1` and `minimum`.
+
+`examples/plugins-echo-workerd-python/` is the same example in Python:
+`modules/notes.py` registers the table through `database_migrations`,
+handles a refusal by `PluginError.limit`, and reads with `iterate()` or
+the same key-paged walk. Its `tests/` open the binding with
+`create_test_database()` and run under pytest, which `bookclerk-plugin
+test` picks from its `pyproject.toml`.
 
 ### A database adapter's own suite
 
