@@ -48,7 +48,10 @@ try {
 
 In Python the same error is `PluginError` with `err.code == "limit_exceeded"`
 and `err.limit.limit`; in Rust it is `PluginError` with
-`err.code == PluginErrorCode::LimitExceeded` and `err.limit()`.
+`err.code == PluginErrorCode::LimitExceeded` and `err.limit()`. A workerd
+author isolate gets the same typed error even though its binding crosses
+Workers RPC to the adapter isolate: the error travels inside the reply (see
+[Database errors between the isolates](../internals/workerd-bridge.md#database-errors-between-the-isolates)).
 
 ## Reads: `all()` streams when the session can
 
@@ -94,10 +97,20 @@ async for row in self.env.DB.prepare("SELECT id, path FROM edition_files").itera
     await check(row["path"]["value"])
 ```
 
+```rust
+let mut rows = db.prepare("SELECT id, path FROM edition_files").iterate(None);
+while let Some(row) = rows.next().await {
+    check(&row?["path"]).await?;
+}
+```
+
 The loop fails with the same `limit_exceeded` as `all()` when the result
-passes the streamed budget. On a session that does not stream the rows come
-from one inline `all()`. `iterate()` is available in the TypeScript and
-Python SDKs; a Rust guest reads with `all()` or `raw()`.
+passes the streamed budget, after handing out the rows that fit. On a
+session that does not stream the rows come from one inline `all()`.
+`iterate()` is available in all three SDKs. In Rust it returns a
+`RowStream` whose `next()` yields each row as a column name to value map;
+nothing is sent until the first `next()`, and dropping the stream stops the
+read.
 
 ## Writes: `batch()` is one transaction, `chunk()` splits a list
 
@@ -369,7 +382,7 @@ that returns an oversized result and leaves the refusal to the host:
 | `values` | Return every value as the variant it was written: `Int64` extremes, `Float64`, multibyte and `b64:` text, bytes, `Boolean` and typed NULL |
 | `atomic_batch` | Leave nothing of a batch whose last statement fails |
 | `max_statements` / `max_binds` | Accept a batch of exactly `maxStatements` statements, and a statement with `maxBinds` binds, or with as many as `maxPayloadBytes` / `maxRequestBytes` admit when that is fewer (as on every first-party adapter) |
-| `result_rows` | Return `maxResultRows` rows, and refuse one more with `limit_exceeded` (`maxResultRows`) instead of truncating or returning it |
+| `result_rows` | Return `maxResultRows` rows, refuse one more with `limit_exceeded` (`maxResultRows`) instead of truncating or returning it, refuse a retry under the same operation id the same way, and serve that retry once the data fits |
 | `cell_bytes` / `result_bytes` | Round-trip a cell as wide as one bind can carry (up to 32 KiB), and refuse a cell built past `maxCellBytes` or a result past the inline byte caps with `limit_exceeded` |
 | `streamed` | Answer `executeStreamed` with the same rows as `execute`, and with a result past `maxResultRows`, when it advertises a streamed budget; answer `unsupported` when it does not |
 | `receipt_replay` / `receipt_conflict` | Replay a retried batch's first reply without applying it again (the retry after a lost reply), and refuse the same operation id with another request as `conflict` |
@@ -385,10 +398,15 @@ so it is for tests only.
 The first-party adapters run the suite in CI: sqlite in process and as its
 guest binary, Postgres as its guest binary against every supported major
 (the `postgres` check's `adapter_conformance` step), and D1 against its
-mocked HTTP API. The D1 run pins one known gap: on a binding, D1 answers an
-over-cap read as retryable `unavailable` because the receipt-wrapped batch
-has committed before the size is known
-([#847](https://github.com/Bookclerk/bookclerk/issues/847)).
+mocked HTTP API.
+
+> [!NOTE]
+> D1 commits a batch before it can size the result. A batch that only reads
+> (on a binding, a guest batch whose own statements are all reads) answers a
+> result past a cap with `limit_exceeded`, because nothing it asked for was
+> written; D1 finalizes the host's receipt as a read-only one, so a retry runs
+> the read again. A batch that also writes answers the same cap failure as
+> retryable `unavailable`, since its writes may have committed.
 
 ## Checklist
 

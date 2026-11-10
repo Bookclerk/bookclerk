@@ -803,6 +803,26 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError`] when a read fails.
     pub async fn owned_work_for(&self, query: &TitleQuery<'_>) -> Result<Option<String>> {
+        let Some(work_id) = self.work_for(query).await? else {
+            return Ok(None);
+        };
+        if self.book_uuids_for_work(&work_id).await?.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(work_id))
+    }
+
+    /// The existing work `query` belongs to, held by a library title or
+    /// not, when the resolver finds one; `None` when it would make a new
+    /// work. Nothing is written. A wish stores this id when it is created,
+    /// so the queue and the shelves compare works, not words.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when a read fails. A query that cannot form
+    /// a valid listing (a blank title, or a field over the listing limits)
+    /// names no work.
+    pub async fn work_for(&self, query: &TitleQuery<'_>) -> Result<Option<String>> {
         let Some(listing) = listing_from_query(query) else {
             return Ok(None);
         };
@@ -814,13 +834,7 @@ impl LibraryStore {
         };
         let snapshot = self.listing_snapshot(&listing, &holder).await?;
         let plan = resolve::resolve(&listing, &holding, &snapshot, &mut UuidIds::default());
-        let Some(work_id) = planned_work_id(&plan, &snapshot) else {
-            return Ok(None);
-        };
-        if self.book_uuids_for_work(&work_id).await?.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(work_id))
+        Ok(planned_work_id(&plan, &snapshot))
     }
 
     /// Resolves `listing` into the library and records `holding` of it.
@@ -1947,6 +1961,60 @@ mod store_tests {
                 .unwrap()
                 .is_none());
         }
+        // `work_for` names the work whether or not it is held, and nothing
+        // for a title the library has never seen.
+        let dune_work = store
+            .work_for(&TitleQuery {
+                title: "Dune",
+                authors: herbert,
+                ..TitleQuery::default()
+            })
+            .await
+            .unwrap()
+            .expect("an existing work");
+        assert!(store
+            .work_for(&TitleQuery {
+                title: "Project Hail Mary",
+                authors: Some("Andy Weir"),
+                ..TitleQuery::default()
+            })
+            .await
+            .unwrap()
+            .is_none());
+
+        // Two wishes for that work from two stores' identifiers are one
+        // queue entry, and the entry carries the work.
+        for (title, asin, isbn) in [
+            ("Dune", Some("B002V1OF70"), None),
+            ("Dune (Unabridged)", None, Some("9781427201447")),
+        ] {
+            store
+                .create_title_request(&crate::NewTitleRequest {
+                    uuid: None,
+                    identity_id: None,
+                    title: title.into(),
+                    authors: Some("Frank Herbert".into()),
+                    asin: asin.map(str::to_string),
+                    isbn: isbn.map(str::to_string),
+                    notes: None,
+                    status: crate::RequestStatus::Open,
+                    work_key: String::new(),
+                    work_id: Some(dune_work.clone()),
+                    resolved_book_uuid: None,
+                    cover_url: None,
+                })
+                .await
+                .unwrap();
+        }
+        let queue = store.list_global_request_queue().await.unwrap();
+        assert_eq!(queue.len(), 1, "{queue:?}");
+        assert_eq!(queue[0].work_id.as_deref(), Some(dune_work.as_str()));
+        assert!(
+            !queue[0].work_key.starts_with("work:"),
+            "clients match on the bibliographic key: {}",
+            queue[0].work_key
+        );
+        assert_eq!(queue[0].wish_count, 2);
     }
 
     #[tokio::test]

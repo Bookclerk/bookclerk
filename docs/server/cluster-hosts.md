@@ -403,7 +403,10 @@ The HTTP routes behind it are operator-only:
   outside what was approved is `awaiting_host_reapproval` and doesn't run
   until approved. That covers a domain, TCP target, address range,
   binding, compatibility flag, entrypoint, a larger budget, or network at
-  all. Asking for less needs nothing.
+  all. Asking for less needs nothing. `clusters consents`, the web UI
+  and the API (`pending` on each consent) list what changed since the
+  approval, in the same words the
+  [local consent flow](../plugins/capabilities.md#upgrades) uses.
 - **Platform plugins** are approved automatically
   (`approved_by = "platform"`) only when this host's own install of the
   same platform key is bundled with the same payload digest as the

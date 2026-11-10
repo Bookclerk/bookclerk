@@ -19,6 +19,9 @@ paths = [
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_abi.py",
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/guest_sql.py",
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/limits.py",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_capnp.py",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_wire.py",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/plugin_migration.py",
 ]
 # Injected into every workerd isolate: check the workerd-runtime guests,
 # not the whole installation.
@@ -101,7 +104,12 @@ paths = ["fuzz/corpus/mp4_parse/**"]
 
 [[test_input]]
 package = "bookclerk-workerd"
-paths = ["fuzz/corpus/granted_http/**"]
+# The workerd_control oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/granted_http/**",
+    "fuzz/corpus/workerd_control/**",
+    "fuzz/oracles/workerd_control.rs",
+]
 
 [[test_input]]
 package = "bookclerk-plugin-manifest"

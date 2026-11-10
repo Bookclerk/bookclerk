@@ -342,9 +342,17 @@ title is **not** in the household library.
   weight. Each row includes `wishers` (tiny profile pictures: upload /
   Gravatar / SSO / monogram) for the people who have the title open. Discover's
   `requests` shelf (the first row) carries the same `wishers` / `wish_count` fields.
-- Identity merge: canonical ISBN-10↔13 when present, else ASIN, else soft
-  title+author; ASIN-keyed and ISBN-keyed rows for the same work are merged
-  (ISBN is **not** universal across Chirp / GA / Audible public search)
+- Identity merge: a wish is resolved to a library work when it is created
+  (`LibraryStore::work_for`, the same resolution a scanned listing gets)
+  and stores the `work_id`; wishes with the same work are one queue entry,
+  and Discover treats such an entry as owned when a library title resolves
+  to that work. The entry (`GET /api/request-queue`) carries that `work_id`,
+  and the Wishlist and Discover pages match the viewer's own wish on it
+  before the bibliographic key, since the entry keeps only one wisher's key.
+  Wishes the library could not place fall back to canonical ISBN-10↔13 when
+  present, else ASIN, else soft title+author; ASIN-keyed and ISBN-keyed rows
+  for the same work are merged (ISBN is **not** universal across Chirp / GA /
+  Audible public search)
 - **Per-source snapshots:** `POST /api/wishlist` persists storefront editions,
   HTML description, and purchase hints into `title_request_sources` (one row per
   `source` + `product_id`), then soft-resolves live prices to fill additional
@@ -514,11 +522,17 @@ without dropping prices it already shows, so one slow store never turns a
 page of cards into a failed request or a card left unpriced. Queries a
 store answered with a hint are cached for 10 minutes.
 
-Cards show a price before any lookup: the list price the catalog reported
-when the candidate was fetched is stored on the card as the store's list
-price, and the live lookup refreshes it when the card scrolls into view.
-Member prices are applied only for stores the viewer has an account with,
-decided server-side as before.
+Cards show a price before any lookup: at the end of each store's fetch the
+`discover_candidates` job fills in prices the store answered in the last
+day from one row per store in the store-call cache, shared by everyone, and
+prices up to 120 distinct titles of the rest in one `purchase_hints` call, so a refresh after
+a wish asks the store only about titles it has not priced. The list price is
+stored on the candidate. The card shows it as the store's list price and the
+live lookup refreshes it when the card scrolls into view. Member prices are
+applied only for stores the viewer has an account with, decided server-side
+as before. A store paused for rate limiting is not asked, a 429 here pauses
+its live lookups too, and a failure or timeout leaves the rest unpriced until
+a card asks.
 
 Stores are paused in two ways. A store that answers **429** returns
 `rate_limited` with its `Retry-After`, and its price lookups are left alone

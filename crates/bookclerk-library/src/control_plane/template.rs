@@ -81,6 +81,7 @@ pub async fn strip_install_state(store: &LibraryStore) -> Result<TemplateStrip> 
                 exec("DELETE FROM cluster_identity", Vec::new()),
                 exec("DELETE FROM cluster_leases", Vec::new()),
                 exec("DELETE FROM node_status", Vec::new()),
+                super::bump(super::LiveTopic::Nodes),
             ],
         ))
         .await?;

@@ -511,6 +511,11 @@ hashed.
   have committed stays `unavailable` even when it reports a
   `limit exceeded: …` failure, and the canonical limit text stays in the
   message for the host to read back.
+- On D1, a batch that only reads (on a binding, a guest batch whose own
+  statements are all reads) has committed nothing it asked for, so a
+  result past a cap there is `limit_exceeded`. D1 finalizes the host's
+  receipt as a read-only one first; if it cannot, the answer stays
+  `unavailable`.
 
 ### Schema versions
 

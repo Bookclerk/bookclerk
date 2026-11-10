@@ -693,6 +693,9 @@ batch as its rows:
   account for an account holder.
 
 Their `source` is the storefront plugin that reported the listing.
+Each daemon's search index consumes them, with `book_acquired`, to keep its
+node-local index current (see
+[Search index](../internals/jobs.md#search-index)).
 
 **Taste events.** The library publishes these after the write they
 describe, best effort (a failed publish is logged, and the write stands):

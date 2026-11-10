@@ -38,6 +38,22 @@ SDK_PY_WORKERD_MODULE = "bookclerk_plugin_sdk/workerd.py"
 """Isolate module path for the Python workerd ``BookclerkEntrypoint`` base."""
 SDK_PY_INIT_MODULE = "bookclerk_plugin_sdk/__init__.py"
 """Isolate module path for the package ``__init__`` stub."""
+SDK_PY_SIBLING_MODULES = (
+    ("bookclerk_plugin_sdk/_abi.py", "_abi.py", "sdk-product-abi.py"),
+    ("bookclerk_plugin_sdk/_capnp.py", "_capnp.py", "sdk-capnp.py"),
+    ("bookclerk_plugin_sdk/_wire.py", "_wire.py", "sdk-wire.py"),
+    ("bookclerk_plugin_sdk/guest_sql.py", "guest_sql.py", "sdk-guest-sql.py"),
+    ("bookclerk_plugin_sdk/limits.py", "limits.py", "sdk-limits.py"),
+    ("bookclerk_plugin_sdk/plugin_migration.py", "plugin_migration.py", "sdk-plugin-migration.py"),
+    ("bookclerk_plugin_sdk/db_value.py", "db_value.py", "sdk-db-value.py"),
+)
+"""SDK modules ``workerd.py`` imports inside the isolate, injected beside it.
+
+Each entry is ``(isolate module path, source file name, embedded file name)``.
+Together with ``__init__.py`` and ``workerd.py`` this is the SDK's in-package
+import closure, lazy imports included; the launcher (``bookclerk-workerd``)
+and the TypeScript sparse config inject the same list.
+"""
 PYODIDE_EGRESS_HOSTS = ("cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org")
 """Extra egress hosts allowed for Python Workers / Pyodide package fetch."""
 
@@ -177,12 +193,9 @@ def is_legacy_sdk_embed(name: str) -> bool:
         "@bookclerk/plugin-sdk",
         "@bookclerk/plugin-sdk/workerd",
         "@bookclerk/plugin-sdk/workerd.js",
-        "bookclerk_plugin_sdk/workerd.py",
-        "bookclerk_plugin_sdk/db_value.py",
-        "bookclerk_plugin_sdk/_abi.py",
-        "bookclerk_plugin_sdk/guest_sql.py",
-        "bookclerk_plugin_sdk/limits.py",
-        "bookclerk_plugin_sdk/__init__.py",
+        SDK_PY_WORKERD_MODULE,
+        SDK_PY_INIT_MODULE,
+        *(mod_name for mod_name, _, _ in SDK_PY_SIBLING_MODULES),
     }
 
 
@@ -524,13 +537,7 @@ def materialize_config(
         write_generated("sdk-workerd.py", sdk_py.read_text(encoding="utf-8"))
         write_generated("sdk-init.py", SDK_PY_INIT)
         # Modules imported by workerd.py / db_value.py inside the isolate.
-        py_siblings = (
-            ("bookclerk_plugin_sdk/_abi.py", "_abi.py", "sdk-product-abi.py"),
-            ("bookclerk_plugin_sdk/guest_sql.py", "guest_sql.py", "sdk-guest-sql.py"),
-            ("bookclerk_plugin_sdk/limits.py", "limits.py", "sdk-limits.py"),
-            ("bookclerk_plugin_sdk/db_value.py", "db_value.py", "sdk-db-value.py"),
-        )
-        for mod_name, src_name, embed_file in py_siblings:
+        for mod_name, src_name, embed_file in SDK_PY_SIBLING_MODULES:
             src = resolve_under(sdk_root, src_name)
             if not src.is_file():
                 raise FileNotFoundError(f"missing Python workerd SDK module at {src}")

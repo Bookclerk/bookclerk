@@ -1053,6 +1053,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The password could not be hashed, or the library could not be read or written.",
             "content": {
@@ -14165,7 +14180,7 @@
           {
             "name": "q",
             "in": "query",
-            "description": "Full-text search query; empty skips the search index.",
+            "description": "Full-text search over this node's search index. Hits are sorted by\ntitle and every hit counts toward `total` (there is no hit cap); an\nempty value skips the index.",
             "required": false,
             "schema": {
               "type": "string"
@@ -19267,6 +19282,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_client",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The client could not be read or stored, or an Owner's current password could not be read or checked (`oidc_client`).",
             "content": {
@@ -19507,6 +19537,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_client",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The client could not be read or stored, or an Owner's current password could not be read or checked (`oidc_client`).",
             "content": {
@@ -19739,6 +19784,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_client",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The client could not be read or removed, or an Owner's current password could not be read or checked (`oidc_client`).",
             "content": {
@@ -19961,6 +20021,21 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_client",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
               }
             }
           },
@@ -21052,6 +21127,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_config`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_config",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The configuration file or the sealed secrets could not be written, or an Owner's current password could not be read or checked (`oidc_config`).",
             "content": {
@@ -21297,6 +21387,21 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
               }
             }
           },
@@ -21601,6 +21706,21 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
               }
             }
           },
@@ -22423,6 +22543,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The secret could not be sealed and stored, or the library could not be read.",
             "content": {
@@ -22779,6 +22914,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The library could not be read or written.",
             "content": {
@@ -23038,6 +23188,21 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: missing field `require_second_factor` at line 1 column 2"
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`too_many_requests`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many wrong passwords for this account. Try again later.",
+                  "status": 429
+                }
               }
             }
           },
@@ -29499,6 +29664,7 @@
           "discover_candidates",
           "discover_feed",
           "cache_sweep",
+          "search_index_rebuild",
           "invalid"
         ]
       },
@@ -32803,6 +32969,62 @@
           }
         }
       },
+      "PluginConsentPending": {
+        "type": "object",
+        "description": "The difference between a plugin's request and its stored grant.",
+        "required": [
+          "lines",
+          "domains",
+          "tcp",
+          "addressCidrs",
+          "allowUndeclaredPublicRedirects"
+        ],
+        "properties": {
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Operator-facing lines naming every capability awaiting consent, the\nsame lines `bookclerk plugins info` and `bookclerk plugins approve`\nprint; empty when the stored grant covers the request.",
+            "example": [
+              "Awaiting consent (not automatically approved):",
+              "  fetch hosts: any public website (*)"
+            ]
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fetch host patterns the request adds (`*` is any public host).",
+            "example": [
+              "*"
+            ]
+          },
+          "tcp": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TcpGrantView"
+            },
+            "description": "TCP `host:ports` the request adds, narrowed to the new ports."
+          },
+          "addressCidrs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "CIDRs the request adds.",
+            "example": [
+              "192.168.1.0/24"
+            ]
+          },
+          "allowUndeclaredPublicRedirects": {
+            "type": "boolean",
+            "description": "Whether the request newly asks to follow undeclared public redirects.",
+            "example": false
+          }
+        }
+      },
       "PluginConsentResponse": {
         "type": "object",
         "description": "Consent dialog payload for one plugin.",
@@ -32865,6 +33087,17 @@
               {
                 "$ref": "#/components/schemas/PluginGrantView",
                 "description": "Previously approved grant, when one is stored."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PluginConsentPending",
+                "description": "What the request asks for beyond the stored grant (a plugin upgrade\nthat widened its capabilities); absent when no grant is stored. The\nplugin keeps running under the stored grant until these are approved."
               },
               {
                 "type": "null"
@@ -35205,6 +35438,14 @@
             "description": "Stable map key for this work (`isbn:…`, `asin:…`, or soft title+author).",
             "example": "isbn:9780441478125"
           },
+          "work_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Library work the entry's wishes resolve to, when the library could\nplace them. Wishes for one work are one entry even when their\n`work_key`s differ, so a client matches its own wishes on this id\nfirst and on `work_key` otherwise.",
+            "example": "0b7e2c1d-5f3a-4e6b-9c8d-1a2b3c4d5e6f"
+          },
           "title": {
             "type": "string",
             "description": "Display title as shown on the storefront or library card.",
@@ -35610,7 +35851,8 @@
           "request_digest",
           "grant",
           "updated_at",
-          "state"
+          "state",
+          "pending"
         ],
         "properties": {
           "cluster_id": {
@@ -35762,6 +36004,17 @@
             "type": "string",
             "description": "How this host stands on the request: `consented`, `awaiting_host_consent` (no approval, or a revoked one), `awaiting_host_reapproval` (the owner changed the request or the archive since the approval), or `invalid_grant` (a grant that does not parse).",
             "example": "consented"
+          },
+          "pending": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What the owner's current request asks for beyond the request the operator approved, as the operator-facing lines the CLI prints; empty when nothing was approved yet or the request stays within the approval.",
+            "example": [
+              "Awaiting consent (not automatically approved):",
+              "  fetch hosts: any public website (*)"
+            ]
           }
         }
       },
