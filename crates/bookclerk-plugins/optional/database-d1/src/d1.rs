@@ -2693,9 +2693,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn executing_mock_row_cap_fails_closed() {
-        let (_server, proxy, conn, _interrupt, _drop, _oversize) = executing_proxy().await;
+    /// A mocked unit with one row past `maxResultRows` in `rowcap`.
+    async fn executing_proxy_past_row_cap() -> (
+        MockServer,
+        D1Proxy,
+        std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+    ) {
+        let (server, proxy, conn, _interrupt, _drop, _oversize) = executing_proxy().await;
         let cap = bookclerk_plugin_abi::DbCapabilities::advertised_d1().max_result_rows as usize;
         {
             let db = conn.lock().expect("sqlite mutex");
@@ -2705,6 +2709,12 @@ mod tests {
                     .unwrap();
             }
         }
+        (server, proxy, conn)
+    }
+
+    #[tokio::test]
+    async fn executing_mock_row_cap_on_a_read_is_a_typed_limit() {
+        let (_server, proxy, _conn) = executing_proxy_past_row_cap().await;
         let req = typed_sql_req(
             "row-cap",
             vec![(
@@ -2721,13 +2731,57 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.to_string().contains("maxResultRows"),
-            "row cap must fail closed: {err}"
+            !crate::atomic::is_ambiguous_d1(&err),
+            "a read past the row cap committed nothing and is not ambiguous: {err}"
         );
+        let mapped = crate::atomic::plugin_error_from_d1(err);
+        assert_eq!(
+            mapped.code,
+            bookclerk_plugin_sdk::PluginErrorCode::LimitExceeded,
+            "{mapped}"
+        );
+        assert_eq!(
+            mapped.limit().map(|l| l.limit),
+            Some("maxResultRows".into()),
+            "{mapped}"
+        );
+    }
+
+    #[tokio::test]
+    async fn executing_mock_row_cap_after_a_write_stays_ambiguous() {
+        let (_server, proxy, conn) = executing_proxy_past_row_cap().await;
+        let req = typed_sql_req(
+            "row-cap-write",
+            vec![
+                (
+                    "INSERT INTO rowcap (x) VALUES (-1)",
+                    bookclerk_plugin_sdk::DbPlanStatementKind::Execute,
+                ),
+                (
+                    "SELECT x FROM rowcap",
+                    bookclerk_plugin_sdk::DbPlanStatementKind::Select,
+                ),
+            ],
+            0,
+        );
+        let err = run_named_atomic_catalog(
+            &proxy,
+            req,
+            &stamp_catalog(&["CREATE TABLE rowcap (x INTEGER)"]),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("maxResultRows"), "{err}");
         assert!(
             crate::atomic::is_ambiguous_d1(&err),
-            "over-cap rows after HTTP commit must be ambiguous: {err}"
+            "over-cap rows after a committed write must stay ambiguous: {err}"
         );
+        let written: i64 = conn
+            .lock()
+            .expect("sqlite mutex")
+            .query_row("SELECT COUNT(*) FROM rowcap WHERE x = -1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(written, 1, "the write committed before the size check");
     }
 
     #[tokio::test]
@@ -2855,32 +2909,17 @@ mod tests {
         }
     }
 
-    /// The D1 session passes the shared adapter conformance suite on an
-    /// empty mocked unit, except where it reports an over-cap read on a
-    /// binding as retryable `unavailable`: the receipt-wrapped batch has
-    /// committed by the time D1 returns the result, so the adapter keeps
-    /// the cap failure ambiguous (#847). This pins those three cases, so
-    /// the test fails when #847 is fixed and the expectation can go.
+    /// The D1 session passes every case of the shared adapter conformance
+    /// suite on an empty mocked unit, including the over-cap reads on a
+    /// binding, which answer a typed `limit_exceeded` (#847).
     #[tokio::test]
     async fn executing_mock_passes_the_adapter_conformance_suite() {
-        use bookclerk_db_testkit::adapter::{run_adapter_suite, Case, Outcome};
+        use bookclerk_db_testkit::adapter::{run_adapter_suite, Outcome};
 
         let (_server, proxy, _conn, _interrupt, _drop, _oversize) = executing_proxy().await;
         let report = run_adapter_suite(&MockD1Database(proxy)).await;
-        let known = [Case::ResultRows, Case::CellBytes, Case::ResultBytes];
         for (case, outcome) in &report.outcomes {
-            match outcome {
-                Outcome::Passed => {
-                    assert!(!known.contains(case), "{case} passes now (#847):\n{report}")
-                }
-                Outcome::Failed(reason) => assert!(
-                    known.contains(case)
-                        && reason.contains("got unavailable")
-                        && reason.contains("D1 ambiguous response"),
-                    "{case} broke:\n{report}"
-                ),
-                Outcome::Skipped(reason) => panic!("{case} skipped ({reason}):\n{report}"),
-            }
+            assert_eq!(outcome, &Outcome::Passed, "{case}:\n{report}");
         }
     }
 
@@ -3047,8 +3086,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn executing_mock_oversized_2xx_body_after_commit_is_ambiguous() {
+    async fn executing_mock_oversized_2xx_body_on_a_read_is_a_typed_limit() {
         let err = oversized_after_commit(200).await;
+        assert!(!crate::atomic::is_ambiguous_d1(&err), "{err}");
+        let mapped = crate::atomic::plugin_error_from_d1(err);
+        assert_eq!(
+            mapped.code,
+            bookclerk_plugin_sdk::PluginErrorCode::LimitExceeded,
+            "{mapped}"
+        );
+    }
+
+    #[tokio::test]
+    async fn executing_mock_oversized_2xx_body_after_a_write_is_ambiguous() {
+        let (_server, proxy, conn, _interrupt, _drop, oversized) = executing_proxy().await;
+        conn.lock()
+            .expect("sqlite mutex")
+            .execute_batch("CREATE TABLE big (x INTEGER)")
+            .unwrap();
+        oversized.store(200, std::sync::atomic::Ordering::SeqCst);
+        let req = typed_sql_req(
+            "big-write",
+            vec![(
+                "INSERT INTO big (x) VALUES (1)",
+                bookclerk_plugin_sdk::DbPlanStatementKind::Execute,
+            )],
+            0,
+        );
+        let err = run_named_atomic_catalog(
+            &proxy,
+            req,
+            &stamp_catalog(&["CREATE TABLE big (x INTEGER)"]),
+        )
+        .await
+        .expect_err("oversized post-commit body must fail");
         assert!(crate::atomic::is_ambiguous_d1(&err), "{err}");
         let mapped = crate::atomic::plugin_error_from_d1(err);
         assert_eq!(
