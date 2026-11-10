@@ -19,6 +19,7 @@
 pub mod bridge_http;
 pub mod bridge_stdio;
 pub mod config;
+pub mod control;
 pub mod egress;
 pub mod ensure;
 pub mod grant;

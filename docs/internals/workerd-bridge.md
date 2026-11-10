@@ -35,6 +35,34 @@ gateway ends) so a blocking stdin read cannot lock stdout.
 cannot read gateway state. See [guest-jail.md](guest-jail.md) and
 the [Workers RPC ADR](../adr/plugin-workers-rpc-workerd.md).
 
+## The bridge socket
+
+The bridge listens on an ephemeral loopback port that only the launcher
+dials. The launcher never picks a port number for workerd to bind:
+
+- **Unix:** the launcher binds `127.0.0.1:0` and hands the listener to
+  workerd with `--socket-fd=rpc=<fd>`. Linux Landlock `OutboundListen`
+  allows `bind(port=0)` only, so workerd could not bind a chosen port.
+- **Windows:** workerd has no `--socket-fd`, so it binds `127.0.0.1:0`
+  itself and reports the port with `--control-fd=1`, one JSON line on its
+  stdout: `{"event":"listen","socket":"rpc","port":53117}`. Isolates write
+  `console.*` output to the same stdout, so the generated config turns on
+  structured logging, and `bookclerk_workerd::control::listen_port` accepts
+  only an object with exactly the three control keys. The `workerd_control`
+  fuzz target checks that no log line reads as a control message.
+
+The launcher forwards workerd's stdout and stderr to its own log line by
+line. It keeps at most 16 KiB of each line and drops the rest, so isolate
+output cannot make it buffer or log an unbounded line.
+
+> [!NOTE]
+> The launcher used to reserve a port on Windows, release it and pass it to
+> workerd. Another process could take the port in between, and because
+> workerd runs in a different AppContainer the bind then failed with
+> `WSAEACCES` (10013) instead of "address in use" (issue #781). If workerd
+> exits before it reports a port, the launcher fails at once with workerd's
+> log rather than waiting out the readiness timeout.
+
 The launcher is a `PluginWorker` toward the host. Every host call is turned
 into exactly one HTTP request to the isolate; the isolate keeps no cross-request
 state except database-adapter sessions (below). Three route families exist:
