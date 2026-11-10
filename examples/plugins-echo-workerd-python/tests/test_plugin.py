@@ -136,6 +136,10 @@ class CliTests(unittest.IsolatedAsyncioTestCase):
                 _FailingBatches(self.db.binding, broken, 2), "notes-add", body="b", count=count
             )
         self.assertIs(wrapped.exception.__cause__, broken)
+        # Still typed, so the host reports it as `unavailable`.
+        self.assertIsInstance(wrapped.exception, PluginError)
+        assert isinstance(wrapped.exception, PluginError)
+        self.assertEqual(wrapped.exception.code, "unavailable")
         with self.assertRaises(PluginError) as plain:
             await run(_FailingBatches(self.db.binding, broken, 1), "notes-add", body="b")
         self.assertIs(plain.exception, broken)

@@ -20,6 +20,7 @@ from contextlib import aclosing
 from dataclasses import dataclass
 from typing import Any, cast
 
+from bookclerk_plugin_sdk.db_value import streams_results
 from bookclerk_plugin_sdk.limits import LimitExceeded
 from bookclerk_plugin_sdk.workerd import PluginError
 
@@ -184,33 +185,38 @@ async def count_notes(db: Any) -> int:
     return int(n["value"])
 
 
-async def list_notes(db: Any) -> AsyncGenerator[Note, None]:
-    """Yield every note in id order without holding them all in memory.
+async def list_notes(db: Any, limit: int | None = None) -> AsyncGenerator[Note, None]:
+    """Yield the notes in id order without holding them all in memory.
 
-    When the session streams (``maxStreamedResultBytes > 0``), one
+    When the session streams (``streams_results(limits())``), one
     ``iterate()`` reads the whole table as a single snapshot, a frame at a
     time. When it does not, every read is held to the inline caps, so the
     notes are read in pages keyed on ``id`` (never ``OFFSET``), each sized
     from ``maxResultRows``, halved whenever a page's bytes pass
     ``maxResultBytes``, and doubled again (up to ``maxResultRows``) after
     each full page, so one run of wide notes does not slow the rest of the
-    walk.
+    walk. With ``limit``, no page asks for more rows than are still
+    wanted.
 
     Stopping early (``break``, or ``aclose()`` on the generator) ends the read.
 
     Args:
         db: The plugin's notes binding.
+        limit: The most notes to yield, or ``None`` for all of them.
 
     Yields:
-        The notes, oldest first.
+        The notes, oldest first, at most ``limit`` of them.
 
     Raises:
         PluginError: From the binding: ``limit_exceeded`` when even the
             streamed budget is too small, or one note alone passes the
             inline caps.
     """
+    left = limit
+    if left is not None and left <= 0:
+        return
     caps = await db.limits()
-    if caps["maxStreamedResultBytes"] > 0:
+    if streams_results(caps):
         # Closing the read when the caller stops early ends the stream.
         streamed = cast(
             AsyncGenerator[dict[str, Any], None],
@@ -219,11 +225,17 @@ async def list_notes(db: Any) -> AsyncGenerator[Note, None]:
         async with aclosing(streamed) as rows:
             async for row in rows:
                 yield note_from_row(row)
+                if left is not None:
+                    left -= 1
+                    if left == 0:
+                        return
         return
     max_page = max(1, caps["maxResultRows"])
     page_size = max_page
     after = 0
     while True:
+        if left is not None:
+            page_size = min(page_size, left)
         try:
             page = (
                 await db.prepare("SELECT id, body FROM notes WHERE id > ? ORDER BY id LIMIT ?")
@@ -241,6 +253,10 @@ async def list_notes(db: Any) -> AsyncGenerator[Note, None]:
             note = note_from_row(row)
             after = note.id
             yield note
+        if left is not None:
+            left -= len(rows)
+            if left <= 0:
+                return
         if len(rows) < page_size:
             return
         page_size = min(max_page, page_size * 2)

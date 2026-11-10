@@ -21,6 +21,7 @@ from bookclerk_plugin_sdk.workerd import (
     BookclerkEntrypoint,
     CliEntrypoint,
     EventBatch,
+    PluginError,
     QueueBatch,
     cli_args,
     json_payload,
@@ -158,14 +159,18 @@ def database_failure(err: Exception, committed: int) -> dict[str, Any]:
 
     Raises:
         Exception: ``err`` itself when it is not a ``limit_exceeded`` error
-            and nothing was stored; otherwise a ``RuntimeError`` that says
-            how many notes were.
+            and nothing was stored; otherwise an error that says how many
+            notes were: a ``PluginError`` with ``err``'s code and details
+            when ``err`` is one, so the host still reports it typed, else a
+            ``RuntimeError``.
     """
     limit = exceeded_limit(err)
     kept = f"{committed} notes were stored before the failure" if committed > 0 else ""
     if limit is None:
         if committed == 0:
             raise err
+        if isinstance(err, PluginError):
+            raise PluginError(err.wire_code, f"{kept}: {err}", err.details) from err
         raise RuntimeError(f"{kept}: {err}") from err
     stderr = (
         f"the database refused the request: {limit.limit} is {limit.cap}, it needed {limit.used}\n"
@@ -231,12 +236,10 @@ class Cli(CliEntrypoint):
         if limit is None:
             return reply(2, "", f"--limit must be 1 to {MAX_NOTES_PER_LIST}\n", None)
         lines: list[str] = []
-        notes = list_notes(self.env.DB)
+        notes = list_notes(self.env.DB, limit)
         try:
             async for note in notes:
                 lines.append(f"{note.id}: {note.body}")
-                if len(lines) == limit:
-                    break
         except Exception as err:  # noqa: BLE001 - database_failure re-raises what it does not report
             return database_failure(err, 0)
         finally:

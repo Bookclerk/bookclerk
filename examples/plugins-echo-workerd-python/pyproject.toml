@@ -6,7 +6,7 @@
 name = "echo-workerd-python"
 version = "1.0.0"
 description = "Echo workerd Python guest: tests for its notes database"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 license = "MIT"
 
 [tool.pytest.ini_options]
@@ -15,7 +15,7 @@ pythonpath = ["modules"]
 
 # The Python SDK's lint and format settings, so the example reads like it.
 [tool.ruff]
-target-version = "py312"
+target-version = "py311"
 src = ["modules", "tests"]
 line-length = 100
 

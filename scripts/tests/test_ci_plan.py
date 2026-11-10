@@ -57,7 +57,6 @@ from ci_plan.plan import (  # noqa: E402
     STEP_GATED_JOBS,
     build_plan,
     discover_guests,
-    has_plugin_tests,
     plugin_test_runner,
     glob_match,
     list_changed_paths,
@@ -622,13 +621,19 @@ class ScenarioTests(unittest.TestCase):
         del p.checks["plugin_examples"]["params"]["runners"]
         p.checks.pop("python_sdk", None)
         self.assertEqual(execute._example_runners(p), ["npm"])
+        # The commands follow the same list, so no pytest example runs
+        # without the uv the job then skips installing.
+        python = (Path("/ws/examples/plugins-echo-workerd-python"), "pytest")
+        with mock.patch.object(execute, "plugin_example_dirs", return_value=[python]):
+            argv = [c.argv for _, c in planned_commands(artifact(p), "plugin_examples", CTX)]
+        self.assertNotIn("uv", [a[0] for a in argv])
+        self.assertNotIn([str(CTX.bin_dir / "bookclerk-plugin"), "test", "examples/plugins-echo-workerd-python"], argv)
 
     def test_plugin_test_runner_needs_a_binding_and_a_suite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
             db = {"databases": [{"binding": "DB"}]}
             self.assertIsNone(plugin_test_runner(d, db))
-            self.assertFalse(has_plugin_tests(d, db))
             (d / "package.json").write_text('{"scripts": {"build": "tsc"}}', encoding="utf-8")
             self.assertIsNone(plugin_test_runner(d, db))
             # Without a `test` script, `bookclerk-plugin test` falls through to pytest.
@@ -636,7 +641,6 @@ class ScenarioTests(unittest.TestCase):
             self.assertEqual(plugin_test_runner(d, db), "pytest")
             (d / "package.json").write_text('{"scripts": {"test": "node --test"}}', encoding="utf-8")
             self.assertEqual(plugin_test_runner(d, db), "npm")
-            self.assertTrue(has_plugin_tests(d, db))
             self.assertIsNone(plugin_test_runner(d, {}))
             (d / "package.json").write_text("{", encoding="utf-8")
             with self.assertRaises(PlanError):

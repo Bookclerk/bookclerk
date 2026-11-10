@@ -78,7 +78,11 @@ class _ScriptedBinding:
 
     async def limits(self) -> dict[str, int]:
         """The advertised caps the helper reads."""
-        return {"maxStreamedResultBytes": 0, "maxResultRows": self._max_rows}
+        return {
+            "maxStreamedResultBytes": 0,
+            "maxStreamedResultRows": 0,
+            "maxResultRows": self._max_rows,
+        }
 
     def prepare(self, _sql: str) -> _ScriptedStatement:
         """A statement answered from the script."""
@@ -203,6 +207,37 @@ class PagingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([n.id for n in notes], [1, 2, 3, 4, 5])
         # Halved to fit note 2, then doubled back to the row cap after it.
         self.assertEqual(page_sizes, [4, 2, 1, 2, 1, 2, 4])
+
+    async def test_list_notes_reads_no_page_after_the_caller_stops(self) -> None:
+        stored = [{"id": _int64(i), "body": _text(f"note {i}")} for i in range(1, 6)]
+        reads: list[int] = []
+
+        def answer(after: dict[str, Any], size: dict[str, Any]) -> dict[str, Any]:
+            reads.append(size["value"])
+            return {
+                "results": [r for r in stored if r["id"]["value"] > after["value"]][: size["value"]]
+            }
+
+        notes = list_notes(_ScriptedBinding(answer, max_rows=2))
+        first = await anext(notes)
+        await notes.aclose()
+        self.assertEqual(first.id, 1)
+        self.assertEqual(reads, [2])
+
+    async def test_list_notes_asks_for_no_more_rows_than_the_limit(self) -> None:
+        stored = [{"id": _int64(i), "body": _text(f"note {i}")} for i in range(1, 11)]
+        reads: list[int] = []
+
+        def answer(after: dict[str, Any], size: dict[str, Any]) -> dict[str, Any]:
+            reads.append(size["value"])
+            return {
+                "results": [r for r in stored if r["id"]["value"] > after["value"]][: size["value"]]
+            }
+
+        notes = [n async for n in list_notes(_ScriptedBinding(answer, max_rows=4), limit=6)]
+        self.assertEqual([n.id for n in notes], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(reads, [4, 2])
+        self.assertEqual([n async for n in list_notes(_ScriptedBinding(answer), limit=0)], [])
 
     async def test_one_row_past_the_cap_or_any_other_error_is_not_retried(self) -> None:
         def refuse(*_values: Any) -> dict[str, Any]:

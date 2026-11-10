@@ -696,20 +696,16 @@ def plugin_test_runner(plugin_dir: Path, manifest: Mapping[str, Any]) -> str | N
     return None
 
 
-def has_plugin_tests(plugin_dir: Path, manifest: Mapping[str, Any]) -> bool:
-    """Whether ``bookclerk-plugin test`` has a database suite to run here.
+def example_runners(guest_map: Mapping[str, Guest]) -> list[str]:
+    """The runners the database examples' suites need, sorted.
 
     Args:
-        plugin_dir: Directory holding ``plugin.toml``.
-        manifest: The parsed ``plugin.toml``.
+        guest_map: Every discovered guest.
 
     Returns:
-        ``True`` when :func:`plugin_test_runner` names a runner.
-
-    Raises:
-        PlanError: When ``package.json`` exists but is not valid JSON.
+        Each distinct :attr:`Guest.plugin_tests` runner (``"npm"``, ``"pytest"``).
     """
-    return plugin_test_runner(plugin_dir, manifest) is not None
+    return sorted({g.plugin_tests for g in guest_map.values() if g.plugin_tests})
 
 
 def list_changed_paths(
@@ -1144,7 +1140,7 @@ def _select_checks(
         _select(plan, "workerd_guests", guests_why)
     # Database examples run their suites against their SDK's test kit: the
     # TypeScript SDK for `npm` suites, the Python SDK for `pytest` ones.
-    runners = sorted({g.plugin_tests for g in guest_map.values() if g.plugin_tests})
+    runners = example_runners(guest_map)
     examples_why = [f"path {p}" for p in surf.plugin_examples]
     if "npm" in runners:
         examples_why += [f"path {p}" for p in surf.ts_sdk]
@@ -1297,8 +1293,7 @@ def _record_example_runners(plan: Plan, guest_map: Mapping[str, Guest]) -> None:
         guest_map: Every discovered guest.
     """
     if plan.selected("plugin_examples"):
-        runners = sorted({g.plugin_tests for g in guest_map.values() if g.plugin_tests})
-        plan.checks["plugin_examples"]["params"]["runners"] = runners
+        plan.checks["plugin_examples"]["params"]["runners"] = example_runners(guest_map)
 
 
 def _finalize_full(

@@ -720,7 +720,7 @@ def plugin_example_dirs(workspace: Path) -> list[tuple[Path, str]]:
     return out
 
 
-def _plugin_example_commands(ctx: "Context") -> list[Command]:
+def _plugin_example_commands(ctx: "Context", runners: list[str]) -> list[Command]:
     """Check, rebuild and run every database example under each profile.
 
     TypeScript (``npm``) examples build against the TypeScript SDK, so it is
@@ -732,14 +732,18 @@ def _plugin_example_commands(ctx: "Context") -> list[Command]:
     ``bookclerk-plugin test`` then runs each example's own suite once per
     database profile with the kit executable named.
 
+    Only examples whose runner the plan recorded run, so the commands never
+    need a tool (Node, uv) the job did not install for them.
+
     Args:
         ctx: Paths and platform facts.
+        runners: The runners the plan recorded (:func:`_example_runners`).
 
     Returns:
         The commands, in order.
     """
-    examples = plugin_example_dirs(ctx.workspace)
-    runners = {runner for _, runner in examples}
+    examples = [(d, r) for d, r in plugin_example_dirs(ctx.workspace) if r in runners]
+    used = {runner for _, runner in examples}
     sdk = str(ctx.workspace / "packages" / "plugin-sdk")
     kit_build, kit_env = _db_testkit(ctx)
     tool = str(ctx.bin_dir / ("bookclerk-plugin" + (".exe" if ctx.os_name == "Windows" else "")))
@@ -747,12 +751,12 @@ def _plugin_example_commands(ctx: "Context") -> list[Command]:
     venv_bin = venv / ("Scripts" if ctx.os_name == "Windows" else "bin")
     py = str(venv_bin / "python")
     cmds: list[Command] = []
-    if "npm" in runners:
+    if "npm" in used:
         cmds += [
             Command("npm ci (plugin-sdk)", ["npm", "ci"], cwd=sdk),
             Command("npm run build (plugin-sdk)", ["npm", "run", "build"], cwd=sdk),
         ]
-    if "pytest" in runners:
+    if "pytest" in used:
         # The same locked environment as the `python_sdk` check: pytest and
         # ruff at the versions in uv.lock, the SDK itself from its sources.
         cmds.append(
@@ -1010,7 +1014,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
     if check == "workerd_guests":
         return _workerd_guest_commands(ctx)
     if check == "plugin_examples":
-        return _plugin_example_commands(ctx)
+        return _plugin_example_commands(ctx, _example_runners(plan))
     if check == "site_test":
         site = str(ctx.workspace / "tools" / "site")
         return [
