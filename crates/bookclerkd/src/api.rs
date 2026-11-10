@@ -1074,8 +1074,6 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(ack_event_delivery))
         .routes(routes!(cancel_event_delivery))
         .routes(routes!(resume_event_delivery))
-        .routes(routes!(trigger_scan))
-        .routes(routes!(trigger_acquire))
         .routes(routes!(sync_listening));
 
     let operator_only = OpenApiRouter::new()
@@ -1153,6 +1151,10 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
     // Host enrollment links: any signed-in user acts for themselves; the
     // library lets the operator or an Owner act for others.
     let user_scoped = OpenApiRouter::new()
+        // Any active user queues scans and acquires; the planner limits a
+        // Member or Host to the store accounts linked to them.
+        .routes(routes!(trigger_scan))
+        .routes(routes!(trigger_acquire))
         .routes(routes!(
             crate::node_api::get_node_invites,
             crate::node_api::post_node_invite

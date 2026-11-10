@@ -21,6 +21,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", 
 
 [dev-dependencies]
 bookclerk-config.workspace = true
+bookclerk-db-testkit.workspace = true
 bookclerk-plugin-host.workspace = true
 bookclerk-sandbox.workspace = true
 bookclerk-workerd.workspace = true

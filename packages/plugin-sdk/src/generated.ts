@@ -1909,7 +1909,7 @@ export interface SearchCatalogParams {
   query: string;
   /** Storefront region / marketplace code; empty means the guest default. */
   region: string;
-  /** Maximum hits to return; the host always sends an explicit value. */
+  /** Maximum hits to return; 0 means the storefront default (20 hits). */
   limit: number;
   /** 1-based page for storefronts that page. */
   page: number;

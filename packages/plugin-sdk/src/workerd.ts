@@ -198,6 +198,30 @@ export {
 } from "./db-stream.js";
 export type { ExecuteStreamLimits } from "./db-stream.js";
 export {
+  GUEST_READ_ONLY_REPLAY_PAYLOAD,
+  GUEST_RECEIPT_CLAIM_LOST,
+  GUEST_RECEIPT_RESULT_LOST,
+  GUEST_RECEIPT_STUB_SUFFIX,
+  GUEST_RECEIPT_WRAP_PREFIX,
+  GUEST_REPLAY_PAYLOAD_MAX_BYTES,
+  STREAM_FRAME_TARGET_BYTES,
+  encodeExecuteStream,
+  executeAdapterBatch,
+  executeAdapterBatchStreamed,
+  guestBatchIsReadOnly,
+  guestReceiptFinalizeStatements,
+  guestReplayPayload,
+  runAdapterBatch,
+  shouldSkipRemainingGuestWork,
+} from "./db-adapter.js";
+export type {
+  AdapterBatchOptions,
+  AdapterBatchStreamedOptions,
+  AdapterBatchRequest,
+  AdapterBatchStatement,
+  AdapterTransaction,
+} from "./db-adapter.js";
+export {
   canonicalExecuteRequestHash,
   chunkIndexes,
   createDatabaseBinding,

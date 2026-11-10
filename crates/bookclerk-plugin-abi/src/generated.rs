@@ -1592,7 +1592,7 @@ pub struct SearchCatalogParams {
     /// Storefront region / marketplace code; empty means the guest default.
     #[serde(default)]
     pub region: String,
-    /// Maximum hits to return; the host always sends an explicit value.
+    /// Maximum hits to return; 0 means the storefront default (20 hits).
     #[serde(default)]
     pub limit: u32,
     /// 1-based page for storefronts that page.

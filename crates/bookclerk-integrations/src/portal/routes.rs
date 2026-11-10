@@ -857,13 +857,20 @@ struct ConnectionInfo {
     brand: Option<BrandInfo>,
 }
 
-/// Unlinks a store account from this identity and deletes secrets when no other identity remains.
+/// Marks a store account revoked, signs it out, deletes its stored credentials, then unlinks it.
 ///
 /// The account is addressed by `(source, account_id)`: the same store id may
 /// exist under two plugins. `source` is the alias or plugin key of the link.
 ///
-/// When the last link goes, the plugin first signs the account out at the
-/// store (for example, Audible deregisters its device), best effort.
+/// Links are exclusive (one identity per account), so the caller's link is
+/// the account's only one and revoking it always clears the credentials.
+/// Every step runs while the link still exists, in this order: the account
+/// is marked revoked (which also turns scanning off, so no job picks it up
+/// half-cleaned); the plugin signs it out at the store (for example, Audible
+/// deregisters its device), best effort; its `encrypted_secrets` rows are
+/// deleted; only then is the link removed. Any failed library step answers
+/// 503 and keeps the link, so the same request retries the cleanup.
+/// Already-acquired library rows stay (product policy).
 #[utoipa::path(
     operation_id = "portal_revoke_connection",
     post,
@@ -871,16 +878,19 @@ struct ConnectionInfo {
     params(("source" = String, Path, description = "Source plugin id."), ("account_id" = String, Path, description = "Store account id.")),
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "The account was unlinked.", body = PortalOk),
-        (status = 400, description = "The account is not linked to this identity, or the library database refused the unlink or the credential revoke (the body carries its message).", body = PortalErrorBody, examples(
+        (status = 200, description = "The account was marked revoked, its stored credentials were deleted, and it was unlinked.", body = PortalOk),
+        (status = 400, description = "The account is not linked to this identity, or the library database refused to read this identity's links (the body carries its message).", body = PortalErrorBody, examples(
             ("not_linked" = (summary = "No link between this identity and the account.", value = json!({"error": "account not linked to this identity"}))),
-            ("library_failed" = (summary = "The library database refused the step.", value = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
+            ("library_failed" = (summary = "The library database refused the read.", value = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
         )),
         (status = 401, description = "The caller is not signed in, or the portal session expired.", body = PortalErrorBody, examples(
             ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
             ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
         )),
-        (status = 503, description = "The store sign-out task that follows the last unlink stopped. The link is already gone (a retry answers 400 `account not linked to this identity`) and the account's stored credentials may remain; the daemon log names the task.", body = PortalErrorBody, example = json!({"error": "revoke cleanup failed: task 12 panicked"})),
+        (status = 503, description = "A cleanup step failed: marking the account revoked, deleting its stored credentials, or removing the link. The account stays linked, so repeating the request runs the cleanup again. When the cleanup task itself stopped, the daemon log names it; a repeat either finishes the cleanup or, if the unlink had already run, answers 400 `account not linked to this identity`.", body = PortalErrorBody, examples(
+            ("step_failed" = (summary = "The library database refused a cleanup step.", value = json!({"error": "revoke cleanup failed: ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
+            ("task_stopped" = (summary = "The cleanup task panicked.", value = json!({"error": "revoke cleanup failed: task 12 panicked"}))),
+        )),
     ),
 )]
 async fn revoke_connection(
@@ -898,50 +908,56 @@ async fn revoke_connection(
         return Err(PortalError::bad("account not linked to this identity"));
     };
     let plugin_key = link.plugin_key.clone();
-    library
-        .unlink_account(identity.id, &plugin_key, &account_id)
-        .await?;
-    // Exclusive-link invariant: only delete secrets when no other identity
-    // still references this account. Propagate count failures — do not
-    // treat them as "still linked" (that would skip secret cleanup).
-    // Revoking credentials keeps already-acquired library rows (product policy).
-    let remaining = library
-        .count_account_links_for_account(&plugin_key, &account_id)
-        .await?;
-    if remaining == 0 {
-        let content = find_source(&state, &plugin_key).await;
-        // Runs as its own task so the API deadline cancelling this handler
-        // can never leave an unlinked account with its secrets still stored.
-        let cleanup = tokio::spawn(async move {
-            // Let the plugin sign the account out at the store (for example,
-            // deregister the login device) while its credentials still
-            // exist. Best effort and time-bounded by the plugin host: a
-            // missing plugin or store error never blocks revoke.
-            if let Some(content) = content {
-                let scope = bookclerk_source::source_scope(&library, content.as_ref());
-                if let Err(err) = content.revoke_credentials(&scope, &account_id).await {
-                    warn!(%account_id, %err, "store sign-out failed on revoke");
-                }
-            } else {
-                warn!(
-                    %account_id,
-                    %plugin_key,
-                    "plugin not deployed on this host; revoking without store sign-out"
-                );
-            }
-            if let Err(err) = library
-                .delete_account_secrets(&plugin_key, &account_id)
-                .await
-            {
-                warn!(%account_id, %err, "failed to delete encrypted_secrets on revoke");
-            }
-            library.revoke_credentials(&plugin_key, &account_id).await
-        });
-        cleanup
+    let content = find_source(&state, &plugin_key).await;
+    // Runs as its own task so the API deadline cancelling this handler can
+    // never stop the cleanup between two of its steps.
+    let cleanup = tokio::spawn(async move {
+        // Mark the account revoked first: scanning goes off before its
+        // credentials do, so no job runs against a half-cleaned account.
+        library
+            .revoke_credentials(&plugin_key, &account_id)
             .await
-            .map_err(|err| PortalError::unavailable(format!("revoke cleanup failed: {err}")))??;
-    }
+            .map_err(cleanup_failed)?;
+        // Let the plugin sign the account out at the store (for example,
+        // deregister the login device) while its credentials still exist.
+        // Best effort and time-bounded by the plugin host: a missing plugin
+        // or store error never blocks revoke.
+        if let Some(content) = content {
+            let scope = bookclerk_source::source_scope(&library, content.as_ref());
+            if let Err(err) = content.revoke_credentials(&scope, &account_id).await {
+                warn!(%account_id, %err, "store sign-out failed on revoke");
+            }
+        } else {
+            warn!(
+                %account_id,
+                %plugin_key,
+                "plugin not deployed on this host; revoking without store sign-out"
+            );
+        }
+        // The link goes last: until the sealed credentials are gone the
+        // account stays linked, so a failed step can be retried.
+        library
+            .delete_account_secrets(&plugin_key, &account_id)
+            .await
+            .map_err(cleanup_failed)?;
+        library
+            .unlink_account(identity.id, &plugin_key, &account_id)
+            .await
+            .map_err(cleanup_failed)
+    });
+    cleanup
+        .await
+        .map_err(|err| PortalError::unavailable(format!("revoke cleanup failed: {err}")))??;
     Ok(Json(PortalOk { ok: true }))
+}
+
+/// Maps a failed revoke cleanup step to a retryable 503 and logs it.
+///
+/// The account is still linked when a step fails, so the same request can
+/// run the cleanup again.
+fn cleanup_failed(err: bookclerk_library::LibraryError) -> PortalError {
+    warn!(%err, "revoke cleanup step failed; account stays linked");
+    PortalError::unavailable(format!("revoke cleanup failed: {err}"))
 }
 
 /// Resolves the portal identity from the session cookie, or returns 401.

@@ -188,3 +188,10 @@ boundary = "Node-to-node frames on the cluster socket"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
+
+[targets.plan_authz]
+crate = "bookclerk-library"
+boundary = "Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them"
+input_from = "signed-in user"
+side = "host"
+artifacts = ["bookclerk"]

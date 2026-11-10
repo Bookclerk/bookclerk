@@ -16,11 +16,11 @@
     "coverage": "vitest run --coverage"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.4.10",
+    "@cloudflare/vitest-plugin": "^1.4.12",
     "@cloudflare/workers-types": "^5.20261029.1",
-    "@shikijs/core": "4.5.0",
+    "@shikijs/core": "4.6.0",
     "@shikijs/engine-javascript": "4.5.0",
-    "@shikijs/langs": "4.5.0",
+    "@shikijs/langs": "4.6.0",
     "@types/markdown-it": "^14.2.0",
     "@types/node": "^26.6.6",
     "@vitest/coverage-v8": "^5.0.5",
@@ -29,6 +29,6 @@
     "oxlint": "^1.90.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5",
-    "wrangler": "^4.155.0"
+    "wrangler": "^4.156.1"
   }
 }

@@ -27,6 +27,9 @@ bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
 bookclerk-config = { path = "../crates/bookclerk-config" }
 bookclerk-plugin-source-libro = { path = "../crates/bookclerk-plugins/optional/source-libro" }
+# plan_authz drives the scan and acquire planners over an in-memory library.
+bookclerk-library = { path = "../crates/bookclerk-library" }
+bookclerk-plugin-database-sqlite = { path = "../crates/bookclerk-plugins/platform/database-sqlite", features = ["host-helpers"] }
 bookclerk-storefront = { path = "../crates/bookclerk-storefront" }
 # Independent re-signing oracle for cover_token.
 base64 = "0.23"
@@ -192,6 +195,13 @@ bench = false
 [[bin]]
 name = "libro_catalog"
 path = "fuzz_targets/libro_catalog.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plan_authz"
+path = "fuzz_targets/plan_authz.rs"
 test = false
 doc = false
 bench = false

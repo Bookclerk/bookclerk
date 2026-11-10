@@ -12,17 +12,14 @@
 //!   from the library's node list, the way any owner node leaves.
 
 use chrono::Utc;
-use sea_orm::sea_query::Query;
-use sea_orm::{ColumnTrait, Condition, EntityTrait, PaginatorTrait, QueryFilter, TransactionTrait};
+use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use serde::Serialize;
 
+use super::batch;
 use super::cluster_links::CLUSTER_LINK_LEFT;
 use super::enrollment::EnrollmentActor;
 use super::identity::{list_nodes, load_node, NodeKind, NodeRecord};
-use crate::entities::{
-    accounts, books, cluster_links, event_subscriber_nodes, job_secret_handoffs, node_status,
-    nodes, plugin_deployment_observations, plugin_deployments, users,
-};
+use crate::entities::{accounts, books, cluster_links, users};
 use crate::error::{LibraryError, Result};
 use crate::models::{UserRole, UserStatus};
 use crate::store::LibraryStore;
@@ -207,62 +204,78 @@ pub async fn remove_owner_node(
     // heartbeat, event-subscriber registrations, secret handoffs, plugin
     // deployments and their observations (its own, and other nodes' of its
     // deployments). Node-scoped configuration documents and their audit
-    // history are kept, as the configuration audit trail is. Dropping the
-    // transaction on an error rolls it back.
-    let txn = store.db().begin().await.map_err(LibraryError::Orm)?;
-    // Compare and delete: the status row goes only while it still holds the
-    // heartbeat checked above, so a node that beat in the meantime stays.
-    let mut stale_status =
-        node_status::Entity::delete_many().filter(node_status::Column::NodeId.eq(node_id));
+    // history are kept, as the configuration audit trail is.
+    //
+    // The deletes go to the database plugin as one atomic batch, ordered so
+    // that a heartbeat landing between two statements (statements see
+    // committed writes one at a time under READ COMMITTED) cannot leave a
+    // partial cleanup behind:
+    //
+    // 1. Compare and delete the status row while it still holds the
+    //    heartbeat checked above. The delete takes the row, so a heartbeat
+    //    racing it waits and then finds no row to update.
+    // 2. Delete the `nodes` row only while no status row exists, which in
+    //    this transaction means step 1 succeeded (or none had appeared).
+    // 3. Delete the dependent rows only while the `nodes` row is gone. Only
+    //    this batch deletes `nodes` rows, so the guard is decided by step 2
+    //    alone, whatever a heartbeat does meanwhile.
+    //
+    // A node that beat before step 1 keeps its status row, so steps 2 and 3
+    // delete nothing and the node stays.
+    let mut statements = Vec::with_capacity(6);
     if let Some(status) = &checked {
-        stale_status =
-            stale_status.filter(node_status::Column::HeartbeatMs.eq(status.heartbeat_ms));
+        statements.push(batch::exec(
+            "DELETE FROM node_status WHERE node_id = ? AND heartbeat_ms = ?",
+            vec![batch::text(node_id), batch::int(status.heartbeat_ms)],
+        ));
     }
-    let deleted = stale_status.exec(&txn).await.map_err(LibraryError::Orm)?;
-    // With a checked row it must be the one deleted; with none, a row that
-    // appeared since is a first heartbeat, so the node is starting.
-    if deleted.rows_affected != u64::from(checked.is_some()) {
+    let nodes_delete = statements.len();
+    statements.push(batch::exec(
+        "DELETE FROM nodes WHERE node_id = ? AND kind = ? \
+         AND NOT EXISTS (SELECT 1 FROM node_status WHERE node_id = ?)",
+        vec![
+            batch::text(node_id),
+            batch::text(NodeKind::Owner.as_str()),
+            batch::text(node_id),
+        ],
+    ));
+    let cascade = |sql: &str, mut binds: Vec<bookclerk_plugin_abi::DbValue>| {
+        binds.push(batch::text(node_id));
+        batch::exec(
+            &format!("{sql} AND NOT EXISTS (SELECT 1 FROM nodes WHERE node_id = ?)"),
+            binds,
+        )
+    };
+    statements.extend([
+        cascade(
+            "DELETE FROM event_subscriber_nodes WHERE node_id = ?",
+            vec![batch::text(node_id)],
+        ),
+        cascade(
+            "DELETE FROM job_secret_handoffs WHERE node_id = ?",
+            vec![batch::text(node_id)],
+        ),
+        cascade(
+            "DELETE FROM plugin_deployment_observations \
+             WHERE (node_id = ? OR deployment_id IN \
+                 (SELECT deployment_id FROM plugin_deployments WHERE node_id = ?))",
+            vec![batch::text(node_id), batch::text(node_id)],
+        ),
+        cascade(
+            "DELETE FROM plugin_deployments WHERE node_id = ?",
+            vec![batch::text(node_id)],
+        ),
+    ]);
+    let operation_id = format!("owner-node-remove-{}", uuid::Uuid::new_v4());
+    let reply = store
+        .execute_host_batch(batch::request(&operation_id, statements))
+        .await?;
+    // The `nodes` delete decides the whole batch: it went through only when
+    // the status row was taken (or none had appeared), and the dependent
+    // deletes went through only when it did.
+    if batch::rows_affected(&reply, nodes_delete) != 1 {
         return Err(running());
     }
-    event_subscriber_nodes::Entity::delete_many()
-        .filter(event_subscriber_nodes::Column::NodeId.eq(node_id))
-        .exec(&txn)
-        .await
-        .map_err(LibraryError::Orm)?;
-    job_secret_handoffs::Entity::delete_many()
-        .filter(job_secret_handoffs::Column::NodeId.eq(node_id))
-        .exec(&txn)
-        .await
-        .map_err(LibraryError::Orm)?;
-    plugin_deployment_observations::Entity::delete_many()
-        .filter(
-            Condition::any()
-                .add(plugin_deployment_observations::Column::NodeId.eq(node_id))
-                .add(
-                    plugin_deployment_observations::Column::DeploymentId.in_subquery(
-                        Query::select()
-                            .column(plugin_deployments::Column::DeploymentId)
-                            .from(plugin_deployments::Entity)
-                            .and_where(plugin_deployments::Column::NodeId.eq(node_id))
-                            .to_owned(),
-                    ),
-                ),
-        )
-        .exec(&txn)
-        .await
-        .map_err(LibraryError::Orm)?;
-    plugin_deployments::Entity::delete_many()
-        .filter(plugin_deployments::Column::NodeId.eq(node_id))
-        .exec(&txn)
-        .await
-        .map_err(LibraryError::Orm)?;
-    nodes::Entity::delete_many()
-        .filter(nodes::Column::NodeId.eq(node_id))
-        .filter(nodes::Column::Kind.eq(NodeKind::Owner.as_str()))
-        .exec(&txn)
-        .await
-        .map_err(LibraryError::Orm)?;
-    txn.commit().await.map_err(LibraryError::Orm)?;
     let detail = serde_json::json!({ "node_id": node_id }).to_string();
     if let Err(err) = store
         .insert_security_audit_event(&audit, "owner_node_removed", Some(&detail))

@@ -5,8 +5,9 @@ modes, the planner, each job, and the branch protection that ties them
 together.
 
 The workflow is `.github/workflows/ci.yml`. A **dependency-aware planner**
-lets pull requests skip unrelated work, while `merge_group` always runs the
-full suite. A push to `main`, which only advances through the merge queue,
+lets pull requests skip unrelated work, a draft pull request runs only the
+fast jobs, pull requests test on Linux only, and `merge_group` always runs
+the full suite on every platform. A push to `main`, which only advances through the merge queue,
 compiles the full suite to refresh the dependency caches and runs no tests.
 
 Fuzzing has its own page, [Fuzzing](fuzzing.md). The workflows outside the
@@ -26,6 +27,58 @@ Worker deploys) are in [Repository automation](automation.md).
 Full-suite `merge_group` runs audit the selective coverage. A check that
 fails there but was skipped on the pull request is a planner bug, and it
 keeps the pull request out of `main`.
+
+### Draft pull requests
+
+A draft pull request gets fast feedback without holding the shared runners
+(the organization's plan caps how many Actions jobs run at once). Its plan
+resolves with `--draft` (`draft: true` in the artifact):
+
+- Only the `check` job (formatting, Clippy, docs and lint) and the `test`
+  job (Rust unit and integration tests, with coverage) run, at the scope
+  the planner predicted (`DRAFT_JOBS` in `scripts/ci_plan/execute.py`).
+- Every other check the planner selected is listed under `deferred` in the
+  artifact and reads "deferred: draft pull request" in the plan summary.
+  `CI Gate` expects the deferred jobs to be skipped, so it reports on the
+  draft instead of waiting.
+- CodeQL, ClusterFuzzLite, the Docker, Dev Container and image publishing
+  builds and ABS Integration skip their jobs on a draft too.
+- OSV scanning and the CLA check still run, so their required checks report.
+
+Nothing is dropped, only deferred. Marking the pull request **ready for
+review** (`ready_for_review`) starts the full selective run of every one of
+these workflows, and each later push repeats it. GitHub keeps drafts out of
+the merge queue, and the queue always runs the full suite, so no deferred
+check can be skipped before a merge.
+
+> [!NOTE]
+> On a draft, the CodeQL results merge rule waits for analyses that arrive
+> once the pull request is ready. Coverage covers only the areas the `test`
+> and `check` jobs measure; Worker coverage arrives with the ready run.
+
+### Platform legs in the merge queue
+
+Every pull request run, draft or ready, also resolves with `--linux-only`
+(`linux_only: true` in the artifact). The Windows and macOS runs are the
+slowest jobs and rarely fail where Linux passes, so they wait for the merge
+queue:
+
+- The `confinement`, `native-gateway` and `tray` matrices take their `os`
+  legs from the plan's `os_matrix` output: `ubuntu-latest` on a pull
+  request, `ubuntu-latest` and `windows-latest` in the merge queue and on a
+  `main` push (which saves the Windows cache).
+- The [macOS job](#macos-job) runs only where `os_legs` is true, which is
+  never on a pull request.
+- The Windows-only checks (`QUEUE_ONLY_CHECKS` in
+  `scripts/ci_plan/execute.py`, today `windows_cluster`) are listed under
+  `deferred` with the reason "Windows, runs in the merge queue".
+- The release build already links thin LTO on pull requests and fat LTO in
+  the queue (see [Release build](#release-build)).
+
+Every Linux job, coverage, CodeQL, OSV and fuzzing still run on the pull
+request, so reviewers and Codecov see their results before it is queued.
+`CI Gate` in the merge group requires every platform, so a Windows or macOS
+failure ejects the pull request from the queue and keeps it out of `main`.
 
 ### Build-only `main` pushes
 
@@ -216,6 +269,7 @@ paths):
 | A declared `embed` (such as the TS or Python SDK runtime in `bookclerk-workerd`) | The package is compiled-affected |
 | A declared `test_input` | The consumer's tests |
 | A declared `fixture` | The checks declared for that fixture |
+| A declared `check_input` (a workspace executable a non-Cargo check launches, such as the `bookclerk-db-testkit` kit the SDK test wrappers spawn) | The checks declared for it, on top of the owner's own selection |
 | A declared `test_guests` executable | The launching package's tests re-run, with no propagation |
 | `ui/`, `packages/plugin-sdk*/`, ABI scripts | The UI, SDK ABI and API-doc checks |
 | A first-party workerd guest without a Cargo package (`crates/bookclerk-plugins/<tier>/<name>/`) | Its type-check, build and tests (`workerd_guests`) and its staged E2E. `packages/plugin-sdk/` also selects `workerd_guests`, because the guests type-check against it |
@@ -358,12 +412,12 @@ when a step matches no test. Name such tests `postgres_*`.
 | `unit + integration tests` | `rust_test` is selected | nextest over the affected packages (the workspace on the full suite), custom-harness targets, feature test runs, bench and example builds |
 | `staged plugin installation (e2e)` | `e2e` is selected | Builds, installs and stages the guests in scope, then the `bookclerk-plugin-e2e` staged targets |
 | `release build + small-VPS envelope (<lto> LTO)` | A shipped binary (hosts, helpers, platform guests) is compiled-affected (`release`), or an `[envelope].paths` input changed, an `[envelope].packages` member is compiled-affected, or the full suite (`envelope`) | Each selected check as its own step; see [Release build](#release-build) and [Small-VPS envelope](#small-vps-envelope) |
-| `sandbox + jailed tiers` (Linux, Windows) | sandbox, jail, media or media-worker is affected | Clippy and enforcement tests (Windows `--test-threads=1`) |
-| `native-behind-workerd gateway` (Linux, Windows) | See [the gateway job](#native-behind-workerd-gateway-job) | The four `native_gateway` targets, plus per-OS extras |
-| `tray` (Linux, Windows) | `bookclerk-tray` is affected | Clippy and tests |
-| `macOS (sandbox, gateway, tray)` | Any of the three jobs above runs | The macOS run of each of them, one step each; see [macOS job](#macos-job) |
+| `sandbox + jailed tiers` (Linux; Windows in the [queue](#platform-legs-in-the-merge-queue)) | sandbox, jail, media or media-worker is affected | Clippy and enforcement tests (Windows `--test-threads=1`) |
+| `native-behind-workerd gateway` (Linux; Windows in the queue) | See [the gateway job](#native-behind-workerd-gateway-job) | The four `native_gateway` targets, plus per-OS extras |
+| `tray` (Linux; Windows in the queue) | `bookclerk-tray` is affected | Clippy and tests |
+| `macOS (sandbox, gateway, tray)` | Any of the three jobs above runs, outside a pull request | The macOS run of each of them, one step each; see [macOS job](#macos-job) |
 | `postgres 16/17/18` | An owning package's unit tests are affected | Only the owners' steps, on every supported major |
-| `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite | See [Windows cluster](#windows-cluster-startup-and-identity) |
+| `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite; never on a pull request | See [Windows cluster](#windows-cluster-startup-and-identity) |
 | `website + collector Workers` | See [Workers](#website-and-collector-workers) | `site_test`, `site_audit`, `collector_test`, `demo_test`; no Rust toolchain |
 | `CI Gate` | Always | The stable required check (see the [contract](#plan--execution-contract)) |
 
@@ -424,6 +478,12 @@ Prettier and markdownlint-cli2) and runs both from the repository root:
 Each language's own linter runs in its own check: oxlint in `ui`, the
 TypeScript SDK and the three Workers, and `ruff check` plus
 `ruff format --check` in `python_sdk`.
+
+The `plugin_sdk_abi` and `python_sdk` checks build the `bookclerk-db-testkit`
+executable first (`cargo build -p bookclerk-db-testkit`) and name it to the
+SDK tests as `BOOKCLERK_DB_TESTKIT`: the SDKs' `createTestDatabase` wrappers
+spawn it (see [Working within database limits](../plugins/database-limits.md#a-plugins-own-binding)),
+so both checks need the Rust toolchain.
 
 To fix formatting locally:
 
@@ -564,7 +624,8 @@ These run outside `CI Gate`:
 
 - **CodeQL** (see [CodeQL](#codeql) below) feeds the repository's code
   scanning merge rule.
-- **OSV scanning** is a separate workflow and gate. A green OSV job that
+- **OSV scanning** is a separate workflow and gate. A new push cancels a
+  pull request's scan still in progress. A green OSV job that
   applies [`osv-scanner.toml`](../../osv-scanner.toml) `IgnoredVulns`
   means **zero unignored, actionable** findings, not that ignored
   advisories have left the dependency graph. Each ignore must record
@@ -588,7 +649,9 @@ These run outside `CI Gate`:
 [`.github/workflows/codeql.yml`](../../.github/workflows/codeql.yml) runs
 CodeQL's default query suite on GitHub Actions workflows,
 JavaScript/TypeScript, Python and Rust, each in build mode `none`. The
-repository's "CodeQL results" merge rule reads its analyses. GitHub's
+repository's "CodeQL results" merge rule reads its analyses. It skips a
+[draft pull request](#draft-pull-requests) and runs when the pull request is
+marked ready for review. GitHub's
 default setup for code scanning must be off, or the uploads are refused.
 
 Rust takes about 20 minutes on a hosted runner, and CodeQL has no
@@ -949,6 +1012,9 @@ each CI run of a pull request or merge group finishes:
    OIDC, so there is no Codecov token secret. The commit, branch and pull
    request come from the CI run GitHub recorded, never from an artifact.
 
+A newer CI run on the same pull request branch cancels an upload still
+waiting or running; each merge group's upload runs to the end.
+
 The upload never checks out the pull request. Its checkout is the default
 branch, so it sends Codecov no file list and no line fixes from it. The
 reports' paths are already repository-relative. A head branch name outside
@@ -1250,6 +1316,9 @@ workflow does the same for the Python plugin SDK
    cannot find a node id again once it has escaped a backslash or a
    non-ASCII character in it, so `tests/conftest.py` refuses such test ids.
    Give a parametrized case an ASCII id instead of `repr` of its input.
+   mutmut also runs the tests from a copy one folder deeper, under
+   `mutants/`, so a test finds the repository root by a folder it holds,
+   never by a fixed `parents[N]`; `tests/test_conventions.py` checks that.
 6. The run stops after 60 minutes. mutmut records each result as it lands,
    so the summary then counts the mutants tested before the limit and says
    the run was stopped. If mutmut fails or stops before testing any
@@ -1350,7 +1419,9 @@ check as its own step once setup succeeded, and a check still runs after
 an earlier check failed, so one round shows every failure. It saves the macOS `debug` cache on
 `main`, as `native-gateway` does on Windows. In `OS_LEG_JOBS` in
 [`scripts/ci_plan/plan.py`](../../scripts/ci_plan/plan.py), `CI Gate`
-expects the job whenever it expects any of the three.
+expects the job whenever it expects any of the three, except on a pull
+request, where it waits for the merge queue (see
+[Platform legs in the merge queue](#platform-legs-in-the-merge-queue)).
 
 GitHub sometimes never gives the job a runner. It cancels the job with the
 not-acquired annotation (see [re-enqueue](#merge-queue-re-enqueue) below),
@@ -1447,11 +1518,14 @@ With `SELECTIVE_CI=1`, a pull request should see these jobs after `plan`:
 | `README.md`, `AGENTS.md`, other top-level prose, `config/config.example.toml`, `scripts/tests/**` | `fmt / clippy / docs` (`lint` only) for Markdown and JSON | The plan job runs the planner and lint tests on every event |
 | `ui/**` only | `fmt / clippy / docs` (UI, UI API docs and `lint`) | No Rust toolchain checks |
 | `crates/bookclerk-cli/src/**` | check, test (`-p bookclerk-cli`), release (`bookclerk-cli`) | No postgres, no E2E |
-| `crates/bookclerk-plugin-host/src/**` | check, test (host and dependents), e2e (runtime smoke), release (hosts), native gateway (3 OS), postgres (`rpc_like` only) | No sandbox matrix |
+| `crates/bookclerk-plugin-host/src/**` | check, test (host and dependents), e2e (runtime smoke), release (hosts), native gateway (Linux; Windows and macOS in the queue), postgres (`rpc_like` only) | No sandbox matrix |
 | One optional guest (such as Libro) | check, test (guest tests), e2e (`libro` only) | Other storefronts are neither built nor staged |
-| `packages/plugin-sdk/embed/**` | check (SDK ABI), test (workerd tests), e2e (workerd-runtime subset), release (launcher), native gateway (3 OS) | Not the full installation |
+| `packages/plugin-sdk/embed/**` | check (SDK ABI), test (workerd tests), e2e (workerd-runtime subset), release (launcher), native gateway (Linux; Windows and macOS in the queue) | Not the full installation |
 
-For `merge_group`, `--force-full` runs every job and check. A `main` push
+A draft pull request runs only the `fmt / clippy / docs` and test jobs from
+this table; the rest wait until it is ready for review (see
+[Draft pull requests](#draft-pull-requests)). For `merge_group`,
+`--force-full` runs every job and check on every platform. A `main` push
 adds `--build-only`.
 
 ## Next steps

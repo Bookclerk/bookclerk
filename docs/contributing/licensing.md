@@ -96,6 +96,11 @@ repositories:
    repository that GitHub records for the trigger run, and takes nothing
    else from it.
 
+A newer event on the same pull request cancels a trigger run still waiting
+or running, and the `CLA` workflow ignores a cancelled trigger run, because
+the newer one starts the check again. A trigger run cancelled by hand leaves
+no check until someone comments a recheck.
+
 A pull request that edits or deletes the trigger can only delay the check
 or keep it from running, and a required **Bookclerk CLA** check that never arrives
 keeps the pull request from merging.

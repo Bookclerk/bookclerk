@@ -199,7 +199,7 @@ cargo build-app --optional --examples   # optional + Cargo examples
 cargo install-platform                  # sqlite + local → FILES_DIR/plugins
 cargo stage-plugins --optional          # optional → target/plugin-artifacts
 cargo stage-plugins --examples --skip-build
-cargo test-staged                       # describe/health conformance smoke (bookclerk-plugin-e2e)
+cargo test-staged                       # describe/health/migrations conformance smoke (bookclerk-plugin-e2e)
 ```
 
 - Add `--release` to any alias for release builds.
