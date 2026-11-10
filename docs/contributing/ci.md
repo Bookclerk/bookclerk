@@ -1402,7 +1402,7 @@ Queue settings:
 - "only merge non-failing pull requests";
 - build concurrency 1;
 - merge limits: minimum 1, maximum 5, wait time 5 minutes;
-- status check timeout 120 minutes.
+- status check timeout 300 minutes.
 
 With a queue required, "require branches to be up to date" no longer
 matters. The queue tests each entry against the current `main`, stacked on
@@ -1453,6 +1453,12 @@ It also makes a failure cheap. With several groups building, a failure
 behind it. With one group, nothing else was building, so nothing is
 rebuilt. "Jump to the front" likewise restarts only the one group in
 progress.
+
+The status check timeout counts from the moment a group requests its
+checks, including the time its jobs wait for runners. On 10 November 2026,
+with pull request jobs holding most of the pool, a green group ran past the
+earlier 120-minute timeout and was ejected, so the timeout is now 300
+minutes.
 
 Raise build concurrency again only when the pool grows, for example a paid
 plan or a self-hosted runner reserved for `merge_group`.
