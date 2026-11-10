@@ -3016,7 +3016,7 @@ mod tests {
         let exact = lower_pg("SELECT 1 FROM books WHERE uuid IN (?, ?)", &books);
         assert!(
             exact.contains("WHERE uuid IN ($1, $2)"),
-            "placeholder IN must stay bare so idx_books_uuid matches: {exact}"
+            "placeholder IN must stay bare so the UNIQUE(uuid) index matches: {exact}"
         );
         assert!(
             !exact.contains("WHERE (uuid COLLATE"),
