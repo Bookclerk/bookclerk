@@ -653,6 +653,38 @@ struct MfaPolicyPut {
     current_password: Option<String>,
 }
 
+/// JSON error for a failed step-up check on `PUT /api/auth/mfa-policy`.
+///
+/// # Arguments
+///
+/// * `status` - The status [`require_operator_or_recent_owner`] returned.
+///
+/// # Returns
+///
+/// `reauth_required` for a 401, `internal_error` for a 500,
+/// `too_many_requests` for a 429 (the account is locked out) and `forbidden`
+/// for everything else, each with that status.
+fn mfa_policy_gate_error(status: StatusCode) -> Response {
+    let (error, message) = if status == StatusCode::UNAUTHORIZED {
+        (
+            "reauth_required",
+            "Recent authentication is required to change the MFA policy.",
+        )
+    } else if status == StatusCode::INTERNAL_SERVER_ERROR {
+        (
+            "internal_error",
+            "The current password could not be checked.",
+        )
+    } else if status == StatusCode::TOO_MANY_REQUESTS {
+        (
+            "too_many_requests",
+            "Too many wrong passwords for this account. Try again later.",
+        )
+    } else {
+        ("forbidden", "You cannot change the MFA policy.")
+    };
+    crate::auth::json_auth_error(status, error, message)
+}
 /// Persists `daemon.auth.require_second_factor` to `config.toml`.
 #[utoipa::path(
     put,
@@ -682,27 +714,7 @@ async fn put_mfa_policy(
 ) -> Result<Json<MfaPolicy>, Response> {
     require_operator_or_recent_owner(&state, &headers, body.current_password.as_deref())
         .await
-        .map_err(|status| {
-            let (error, message) = if status == StatusCode::UNAUTHORIZED {
-                (
-                    "reauth_required",
-                    "Recent authentication is required to change the MFA policy.",
-                )
-            } else if status == StatusCode::INTERNAL_SERVER_ERROR {
-                (
-                    "internal_error",
-                    "The current password could not be checked.",
-                )
-            } else if status == StatusCode::TOO_MANY_REQUESTS {
-                (
-                    "too_many_requests",
-                    "Too many wrong passwords for this account. Try again later.",
-                )
-            } else {
-                ("forbidden", "You cannot change the MFA policy.")
-            };
-            crate::auth::json_auth_error(status, error, message)
-        })?;
+        .map_err(mfa_policy_gate_error)?;
     let auth = state.auth_snapshot().await;
     let operator_recovery = authorize_operator_bearer_only(&auth, &headers)
         || resolve_operator_session(&state, &auth, &headers)
@@ -757,6 +769,17 @@ async fn put_mfa_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn mfa_policy_lockout_answers_too_many_requests() {
+        use http_body_util::BodyExt;
+
+        let res = mfa_policy_gate_error(StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "too_many_requests");
+    }
     use axum::body::Body;
     use axum::http::{header, Request, StatusCode};
     use http_body_util::BodyExt;

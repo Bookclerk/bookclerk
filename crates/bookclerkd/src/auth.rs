@@ -2416,13 +2416,6 @@ pub async fn elevate(
     let Some(user) = user else {
         return Err(StatusCode::FORBIDDEN);
     };
-    // A locked account is refused before the body is even looked at.
-    if let Some(retry_after) = auth
-        .login_throttle_check(&password_throttle_key(user.id))
-        .await
-    {
-        return Ok(too_many_requests(retry_after));
-    }
     let password = body.password.trim();
     if password.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
@@ -5729,6 +5722,18 @@ pub(crate) mod tests {
         assert!(results
             .iter()
             .any(|r| matches!(r, Ok(PasswordRecheck::Locked(_)))));
+    }
+
+    #[test]
+    fn recent_owner_gate_message_names_the_lockout() {
+        assert_eq!(
+            recent_owner_gate_message(StatusCode::TOO_MANY_REQUESTS, "reauth"),
+            "too many wrong passwords for this account; try again later"
+        );
+        assert_eq!(
+            recent_owner_gate_message(StatusCode::UNAUTHORIZED, "reauth"),
+            "reauth"
+        );
     }
 
     #[tokio::test]
