@@ -43,7 +43,7 @@ After registration, hosts talk **only**
 through `ContentSource` /
 `Integration` (login, scan, fetch, import, revoke, inspect, plus catalog
 `searchCatalog` / `catalogDetail` / `expandCandidates` / `purchaseHint` /
-`listDeals` for Discover). Sources always return `PlainFetch` (`SourceFetch` is
+`purchaseHints` / `listDeals` for Discover). Sources always return `PlainFetch` (`SourceFetch` is
 an alias) —
 DRM (Adrm/CENC) is decrypted inside the Audible plugin before the host sees
 media. Guest `fetchTitle` carries optional `pdfUrl`; catalog methods are on the

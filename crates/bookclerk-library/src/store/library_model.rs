@@ -647,6 +647,118 @@ pub fn listing_from_book(
     resolve::Listing::from_draft(&draft)
 }
 
+/// A title someone asks about (a wish, a catalog card): what the resolver
+/// needs to say which work it belongs to.
+#[derive(Debug, Clone, Default)]
+pub struct TitleQuery<'a> {
+    /// Display title.
+    pub title: &'a str,
+    /// Comma-separated authors, when known.
+    pub authors: Option<&'a str>,
+    /// Audible ASIN, when known.
+    pub asin: Option<&'a str>,
+    /// ISBN, when known.
+    pub isbn: Option<&'a str>,
+    /// Series name, when known.
+    pub series: Option<&'a str>,
+    /// Position in the series, when known.
+    pub series_index: Option<&'a str>,
+}
+
+/// Plugin key of the synthetic listing a [`TitleQuery`] is resolved as. It
+/// names no plugin, so it never matches a stored listing.
+const TITLE_QUERY_PLUGIN: &str = "bookclerk-query";
+
+/// The listing the resolver sees for a [`TitleQuery`]: a book, with the
+/// query's identifiers, author credits and series. Kind, language and
+/// abridgement are left unknown, so the resolver only joins an existing
+/// edition through a shared identifier and otherwise finds the work by its
+/// identifiers or its title-and-author match key.
+///
+/// # Returns
+///
+/// `None` when the query cannot form a valid listing (a blank title, or a
+/// field over the listing limits): no stored work can match it.
+fn listing_from_query(query: &TitleQuery<'_>) -> Option<resolve::Listing> {
+    let mut identifiers = Vec::new();
+    if let Some(asin) = query.asin.map(str::trim).filter(|a| !a.is_empty()) {
+        identifiers.push((resolve::IdentifierScheme::Asin, asin.to_string(), None));
+    }
+    if let Some(isbn) = query.isbn.map(str::trim).filter(|i| !i.is_empty()) {
+        identifiers.push((resolve::IdentifierScheme::Isbn, isbn.to_string(), None));
+    }
+    let credits = query
+        .authors
+        .map(resolve::names::split_display_names)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|name| (name, resolve::CreditRole::Author, None))
+        .collect();
+    let product_id = query
+        .asin
+        .or(query.isbn)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("title:{}", query.title.trim().to_lowercase()));
+    let draft = resolve::ListingDraft {
+        plugin_key: TITLE_QUERY_PLUGIN.to_string(),
+        marketplace: None,
+        product_id,
+        work_kind: Some(resolve::WorkKind::Book),
+        expression_kind: None,
+        media_kind: None,
+        language: None,
+        abridgement: None,
+        title: query.title.to_string(),
+        subtitle: None,
+        published_at: None,
+        duration_minutes: None,
+        categories: None,
+        identifiers,
+        credits,
+        series: query
+            .series
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| (s.to_string(), query.series_index.map(str::to_string)))
+            .into_iter()
+            .collect(),
+        parent_product_id: None,
+    };
+    match resolve::Listing::from_draft(&draft) {
+        Ok(listing) => Some(listing),
+        Err(err) => {
+            tracing::debug!(error = %err, "title query is not a valid listing; it matches no work");
+            None
+        }
+    }
+}
+
+/// The work a dry-run plan reached, or `None` when it would make a new one.
+fn planned_work_id(plan: &resolve::Plan, snapshot: &resolve::Snapshot) -> Option<String> {
+    if plan.new_work.is_some() {
+        return None;
+    }
+    if let Some(expression) = &plan.new_expression {
+        return Some(expression.work_id.clone());
+    }
+    let expression_id = match &plan.new_edition {
+        Some(edition) => edition.expression_id.clone(),
+        None => snapshot
+            .editions
+            .iter()
+            .find(|e| e.id == plan.listing.edition_id)?
+            .expression_id
+            .clone(),
+    };
+    snapshot
+        .expressions
+        .iter()
+        .find(|e| e.id == expression_id)
+        .map(|e| e.work_id.clone())
+}
+
 /// The holding a flat library row describes.
 #[must_use]
 pub fn holding_from_book(book: &NewBook) -> resolve::HoldingDraft {
@@ -659,7 +771,7 @@ pub fn holding_from_book(book: &NewBook) -> resolve::HoldingDraft {
 
 impl LibraryStore {
     /// Ids bound per `IN (...)` lookup on this store's backend.
-    fn lookup_chunk(&self) -> usize {
+    pub(super) fn lookup_chunk(&self) -> usize {
         lookup_chunk(self.max_binds)
     }
 
@@ -675,6 +787,41 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         Ok(found > 0)
+    }
+
+    /// The work in the library that `query` belongs to, when the library
+    /// holds one.
+    ///
+    /// The query is resolved exactly as a scanned listing would be (shared
+    /// identifiers first, then the work's identifiers, then the work-level
+    /// title-and-author match), but nothing is written. A query that would
+    /// make a new work, or whose work no library title resolves to, is not
+    /// owned: *Dune Messiah* is its own work beside *Dune*. A query that
+    /// cannot form a valid listing (a blank title, or a field over the
+    /// listing limits) matches no work, so it is not owned either.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when a read fails.
+    pub async fn owned_work_for(&self, query: &TitleQuery<'_>) -> Result<Option<String>> {
+        let Some(listing) = listing_from_query(query) else {
+            return Ok(None);
+        };
+        let holder = resolve::Holder::Account(String::from("query"));
+        let holding = resolve::HoldingDraft {
+            holder: holder.clone(),
+            entitlement: resolve::Entitlement::Purchase,
+            purchased_at: None,
+        };
+        let snapshot = self.listing_snapshot(&listing, &holder).await?;
+        let plan = resolve::resolve(&listing, &holding, &snapshot, &mut UuidIds::default());
+        let Some(work_id) = planned_work_id(&plan, &snapshot) else {
+            return Ok(None);
+        };
+        if self.book_uuids_for_work(&work_id).await?.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(work_id))
     }
 
     /// Resolves `listing` into the library and records `holding` of it.
@@ -774,7 +921,6 @@ impl LibraryStore {
 
     /// Reads the stored rows that bear on `listing`, as the resolver's
     /// [`resolve::Snapshot`] contract describes.
-    #[cfg(test)]
     async fn listing_snapshot(
         &self,
         listing: &resolve::Listing,
@@ -1290,7 +1436,7 @@ impl LibraryStore {
     }
 
     /// Each edition's work, through its expression.
-    async fn works_of_editions(
+    pub(super) async fn works_of_editions(
         &self,
         edition_ids: BTreeSet<String>,
     ) -> Result<std::collections::BTreeMap<String, String>> {
@@ -1708,6 +1854,95 @@ mod store_tests {
             holder: resolve::Holder::Account(id.into()),
             entitlement: resolve::Entitlement::Purchase,
             purchased_at: None,
+        }
+    }
+
+    /// A wish is owned only when the resolver puts it in a work the library
+    /// holds: the sequel of an owned book is its own work.
+    #[tokio::test]
+    async fn a_title_query_is_owned_through_its_work_not_its_words() {
+        let store = self::store().await;
+        store
+            .upsert_account("audible", "acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let mut dune = crate::NewBook::minimal("B002V1OF70", "acct", "us", "Dune");
+        dune.authors = Some("Frank Herbert".into());
+        dune.asin = Some("B002V1OF70".into());
+        dune.isbn = Some("9780593288368".into());
+        dune.series = Some("Dune".into());
+        dune.series_index = Some("1".into());
+        store.upsert_book(&dune).await.unwrap();
+        let herbert = Some("Frank Herbert");
+
+        // The same ASIN, or the same title and author (a wish's ISBN alone
+        // is a weak identifier, which never joins an edition whose
+        // expression the query knows nothing about): owned.
+        for query in [
+            TitleQuery {
+                title: "Dune",
+                asin: Some("B002V1OF70"),
+                ..TitleQuery::default()
+            },
+            TitleQuery {
+                title: "Dune",
+                authors: herbert,
+                isbn: Some("978-0-593-28836-8"),
+                ..TitleQuery::default()
+            },
+            TitleQuery {
+                title: "Dune",
+                authors: herbert,
+                ..TitleQuery::default()
+            },
+        ] {
+            assert!(
+                store.owned_work_for(&query).await.unwrap().is_some(),
+                "{query:?}"
+            );
+        }
+        // The sequel, by title or by its own ISBN, is another work.
+        for query in [
+            TitleQuery {
+                title: "Dune Messiah",
+                authors: herbert,
+                isbn: Some("9781427202376"),
+                ..TitleQuery::default()
+            },
+            TitleQuery {
+                title: "Children of Dune",
+                authors: herbert,
+                ..TitleQuery::default()
+            },
+        ] {
+            assert!(
+                store.owned_work_for(&query).await.unwrap().is_none(),
+                "{query:?}"
+            );
+        }
+        // A work nobody holds is not owned even when it exists.
+        assert!(store
+            .owned_work_for(&TitleQuery {
+                title: "Project Hail Mary",
+                authors: Some("Andy Weir"),
+                ..TitleQuery::default()
+            })
+            .await
+            .unwrap()
+            .is_none());
+        // A query that is not a valid listing (a title over the listing
+        // limit, or a blank one) matches no work instead of failing.
+        let long_title = "Dune ".repeat(1000);
+        for title in [long_title.as_str(), "  "] {
+            assert!(store
+                .owned_work_for(&TitleQuery {
+                    title,
+                    authors: herbert,
+                    ..TitleQuery::default()
+                })
+                .await
+                .unwrap()
+                .is_none());
         }
     }
 

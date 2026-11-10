@@ -19,7 +19,7 @@ use crate::embed::{bytes_to_vector, cosine, open_embedder, Embedder};
 use crate::error::Result;
 use crate::identity::{
     identities_match, merge_global_queue_entries, merge_recommendation, push_edition,
-    push_shelf_category, recommendation_map_key, works_match, StoreEdition, WorkIdentity,
+    push_shelf_category, recommendation_map_key, StoreEdition, WorkIdentity,
 };
 use crate::purchase::{
     purchase_hints_for, seed_purchase_hint, seed_source_is_trusted, PurchaseHint,
@@ -206,6 +206,36 @@ pub struct Recommendation {
     #[serde(default, skip_serializing_if = "wish_count_is_zero")]
     #[schema(example = 3)]
     pub wish_count: i64,
+    /// Title of the book or wish the storefront was asked about to find this
+    /// card, when it came from such an expansion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Dune")]
+    pub seed_title: Option<String>,
+    /// Starter genre this card was browsed from while the taste was thin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Science Fiction")]
+    pub starter_genre: Option<String>,
+}
+
+/// Per-book multipliers on taste weight, keyed by book uuid; a book that is
+/// not listed counts in full. Household books blended into a member's taste
+/// carry a multiplier below one.
+pub(crate) type TasteWeights = HashMap<String, f64>;
+
+/// The multiplier `weights` gives `book` (one when unlisted).
+fn taste_multiplier(weights: &TasteWeights, book: &BookRecord) -> f64 {
+    weights.get(&book.uuid).copied().unwrap_or(1.0)
+}
+
+/// The multiplier `weights` gives a listening `row`: its book's multiplier,
+/// so a blended household listen counts as much as the book it is for (one
+/// when the row names no listed book).
+fn listening_multiplier(weights: &TasteWeights, row: &ListeningProgressRecord) -> f64 {
+    row.book_uuid
+        .as_deref()
+        .and_then(|uuid| weights.get(uuid))
+        .copied()
+        .unwrap_or(1.0)
 }
 
 /// True when `wish_count` should be omitted from JSON (zero / unset).
@@ -381,7 +411,8 @@ pub async fn recommend_feed(
     let recs = recommend_all(library, registry, opts).await?;
     let books = library.list_books(None).await?;
     let listening = load_listening(library, opts).await?;
-    Ok(feed_from_recommendations(&recs, &books, &listening, opts))
+    let taste = shelf_taste(&books, &TasteWeights::new(), &listening);
+    Ok(feed_from_recommendations(&recs, &taste, opts))
 }
 
 /// Groups ranked recommendations into shelves for one taste.
@@ -389,19 +420,17 @@ pub async fn recommend_feed(
 /// # Arguments
 ///
 /// * `recs` - Ranked recommendations (any order; shelves sort them).
-/// * `taste_books` - Books whose authors, narrators and genres name shelves.
-/// * `listening` - Listening rows that feed the same shelf taste.
+/// * `taste` - The shelf taste, from [`shelf_taste`] plus the subject's
+///   wishes and linked stores.
 /// * `opts` - Supplies the per-shelf limit and hidden shelves.
 pub(crate) fn feed_from_recommendations(
     recs: &[Recommendation],
-    taste_books: &[BookRecord],
-    listening: &[ListeningProgressRecord],
+    taste: &crate::shelves::ShelfTaste,
     opts: &RecommendOptions,
 ) -> crate::shelves::DiscoverFeed {
-    let taste = build_shelf_taste(taste_books, listening);
     crate::shelves::build_discover_feed(
         recs,
-        &taste,
+        taste,
         opts.limit.clamp(12, 48),
         &opts.disabled_shelves,
     )
@@ -444,18 +473,13 @@ pub async fn rank_global_request_queue(
 
     let books = library.list_books(None).await?;
     let listening = load_listening(library, &opts).await?;
-    let profile = build_taste_profile(library, &books, &listening, &opts).await?;
+    let profile =
+        build_taste_profile(library, &books, &TasteWeights::new(), &listening, &opts).await?;
     let mut embedder = open_candidate_embedder(&opts)?;
 
     let mut ranked = Vec::new();
     for entry in queue {
-        if library_owns_identity(
-            &books,
-            entry.asin.as_deref(),
-            entry.isbn.as_deref(),
-            &entry.title,
-            entry.authors.as_deref(),
-        ) {
+        if library_owns_work(library, &entry).await? {
             continue;
         }
         let (taste_score, reasons, _) = score_work_against_taste(
@@ -533,7 +557,13 @@ async fn recommend_all(
         .await?;
     }
     rank_candidates(
-        library, registry, &books, &books, &listening, candidates, opts,
+        library,
+        registry,
+        &books,
+        &TasteWeights::new(),
+        &listening,
+        candidates,
+        opts,
     )
     .await
 }
@@ -594,9 +624,10 @@ pub(crate) fn owned_identity_sets(
 ///
 /// * `library` - Library store (wishlist queue, stored embeddings).
 /// * `registry` - Storefronts, used only for live purchase hints when asked.
-/// * `owned_books` - The household library; owned titles are never recommended.
 /// * `taste_books` - Books whose finishes, ratings and series shape the taste
-///   (the subject's own books, or the household's).
+///   (the subject's own books, with the household's blended in while the
+///   subject's own are few).
+/// * `taste_weights` - How much each taste book counts (see [`TasteWeights`]).
 /// * `listening` - The subject's listening rows.
 /// * `candidates` - Unowned storefront candidates, already merged by identity.
 /// * `opts` - Ranking options.
@@ -611,14 +642,13 @@ pub(crate) fn owned_identity_sets(
 pub(crate) async fn rank_candidates(
     library: &LibraryStore,
     registry: &SourceRegistry,
-    owned_books: &[BookRecord],
     taste_books: &[BookRecord],
+    taste_weights: &TasteWeights,
     listening: &[ListeningProgressRecord],
     candidates: Vec<crate::candidates::StorefrontCandidate>,
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
-    let books = owned_books;
-    let profile = build_taste_profile(library, taste_books, listening, opts).await?;
+    let profile = build_taste_profile(library, taste_books, taste_weights, listening, opts).await?;
     let mut embedder = open_candidate_embedder(opts)?;
     let mut scored: HashMap<String, Recommendation> = HashMap::new();
 
@@ -651,6 +681,9 @@ pub(crate) async fn rank_candidates(
         if c.origin.contains("related") {
             push_shelf_category(&mut categories, "because");
         }
+        if c.starter_genre.is_some() {
+            push_shelf_category(&mut categories, "starter_genre");
+        }
         push_shelf_category(&mut categories, "from_store");
 
         let mut store_editions = c.store_editions;
@@ -660,24 +693,36 @@ pub(crate) async fn rank_candidates(
         );
 
         let mut purchase_hints = Vec::new();
-        // Card seeds must match resolve_purchase_hints: Audible-only URL
-        // seeds. Soft Magento/Chirp ids need live title-matched verification.
-        if seed_source_is_trusted(&c.source) {
-            if let Some(label) = c.price_label.clone().filter(|s| !s.is_empty()) {
-                if let Some(hint) = seed_purchase_hint(
+        // The price the catalog listed when the candidate was fetched shows
+        // on the card at once, as the store's list price, until the live
+        // lookup refreshes it. Only Audible is linked from its id without a
+        // live check (see `resolve_purchase_hints`); the others carry the
+        // price alone and get their link from the live lookup.
+        if let Some(label) = c.price_label.clone().filter(|s| !s.is_empty()) {
+            let mut hint = if seed_source_is_trusted(&c.source) {
+                seed_purchase_hint(
                     &c.source,
                     &c.product_id,
                     Some(c.title.clone()),
                     &opts.region,
-                ) {
-                    purchase_hints.push(PurchaseHint {
-                        price_cents: c.price_cents,
-                        currency: c.currency.clone(),
-                        price_label: Some(label),
-                        ..hint
-                    });
-                }
+                )
+            } else {
+                None
             }
+            .unwrap_or_else(|| {
+                PurchaseHint::link(
+                    c.source.as_str(),
+                    c.product_id.as_str(),
+                    Some(c.title.clone()),
+                    None,
+                )
+            });
+            hint.price_cents = c.price_cents;
+            hint.list_price_cents = c.price_cents;
+            hint.currency = c.currency.clone();
+            hint.list_price_label = Some(label.clone());
+            hint.price_label = Some(label);
+            purchase_hints.push(hint);
         }
         let mut rec = Recommendation {
             work_id: None,
@@ -707,6 +752,8 @@ pub(crate) async fn rank_candidates(
             published_at: c.published_at,
             genres: c.categories,
             language: c.language,
+            seed_title: c.seed_title,
+            starter_genre: c.starter_genre,
             ..Default::default()
         };
         rec.work_key = recommendation_map_key(&rec);
@@ -715,13 +762,7 @@ pub(crate) async fn rank_candidates(
 
     // Global wishlist works: recommend taste + heavy multi-user wish boost.
     for entry in merge_global_queue_entries(library.list_global_request_queue().await?) {
-        if library_owns_identity(
-            books,
-            entry.asin.as_deref(),
-            entry.isbn.as_deref(),
-            &entry.title,
-            entry.authors.as_deref(),
-        ) {
+        if library_owns_work(library, &entry).await? {
             continue;
         }
         let (taste_score, mut reasons, mut categories) = score_work_against_taste(
@@ -828,6 +869,7 @@ struct TasteProfile {
 async fn build_taste_profile(
     library: &LibraryStore,
     books: &[BookRecord],
+    weights: &TasteWeights,
     listening: &[ListeningProgressRecord],
     opts: &RecommendOptions,
 ) -> Result<TasteProfile> {
@@ -853,6 +895,7 @@ async fn build_taste_profile(
         if book.acquire_status == AcquireStatus::Acquired {
             weight += 0.5;
         }
+        weight *= taste_multiplier(weights, book);
         if weight <= 0.0 {
             continue;
         }
@@ -888,7 +931,7 @@ async fn build_taste_profile(
     }
 
     for row in listening {
-        let weight = listening_engagement(row);
+        let weight = listening_engagement(row) * listening_multiplier(weights, row);
         if weight <= 0.0 {
             continue;
         }
@@ -1058,30 +1101,26 @@ async fn attach_purchase_hints(
     }
 }
 
-/// Whether the household library already owns this bibliographic identity.
-fn library_owns_identity(
-    books: &[BookRecord],
-    asin: Option<&str>,
-    isbn: Option<&str>,
-    title: &str,
-    authors: Option<&str>,
-) -> bool {
-    let want = WorkIdentity::new(asin, isbn, title, authors);
-    books.iter().any(|b| {
-        identities_match(
-            want,
-            WorkIdentity::new(
-                b.asin.as_deref(),
-                b.isbn.as_deref(),
-                &b.title,
-                b.authors.as_deref(),
-            )
-            .with_series(b.series.as_deref())
-            .with_series_index(b.series_index.as_deref()),
-        ) || (asin.is_none()
-            && isbn.is_none()
-            && works_match(title, authors, &b.title, b.authors.as_deref()))
-    })
+/// Whether the household library holds the work a wishlist entry is for.
+///
+/// The library's resolver decides, as it does for a scanned listing
+/// (shared identifiers, then the work's identifiers, then the work-level
+/// title-and-author match), so a sequel that shares its series' name with
+/// an owned book is its own work and stays on the queue.
+///
+/// # Errors
+///
+/// Returns the library read error.
+async fn library_owns_work(library: &LibraryStore, entry: &GlobalQueueEntry) -> Result<bool> {
+    let query = bookclerk_library::TitleQuery {
+        title: &entry.title,
+        authors: entry.authors.as_deref(),
+        asin: entry.asin.as_deref(),
+        isbn: entry.isbn.as_deref(),
+        series: entry.series.as_deref(),
+        series_index: entry.series_index.as_deref(),
+    };
+    Ok(library.owned_work_for(&query).await?.is_some())
 }
 
 /// Inserts or merges a recommendation when ASIN/ISBN/title identity already exists.
@@ -1124,8 +1163,15 @@ fn upsert_recommendation(map: &mut HashMap<String, Recommendation>, rec: Recomme
 }
 
 /// Builds shelf-ranking taste from owned sources, liked people, and listening weights.
-fn build_shelf_taste(
+///
+/// # Arguments
+///
+/// * `books` - Books whose authors, narrators and genres name shelves.
+/// * `weights` - How much each book counts (see [`TasteWeights`]).
+/// * `listening` - Listening rows that add to the liked authors.
+pub(crate) fn shelf_taste(
     books: &[BookRecord],
+    weights: &TasteWeights,
     listening: &[ListeningProgressRecord],
 ) -> crate::shelves::ShelfTaste {
     let mut taste = crate::shelves::ShelfTaste::default();
@@ -1144,6 +1190,7 @@ fn build_shelf_taste(
                 weight += 1.0;
             }
         }
+        weight *= taste_multiplier(weights, book);
         if weight <= 0.0 {
             continue;
         }
@@ -1176,7 +1223,7 @@ fn build_shelf_taste(
         }
     }
     for row in listening {
-        let weight = listening_engagement(row);
+        let weight = listening_engagement(row) * listening_multiplier(weights, row);
         if weight <= 0.0 {
             continue;
         }
@@ -1473,6 +1520,83 @@ mod tests {
         assert!(open_candidate_embedder(&opts).unwrap().is_none());
     }
 
+    /// The price a catalog listed shows on the card as the store's list
+    /// price: an Audible card is linked from its id, while another store's
+    /// card carries the price and waits for the live lookup for its link.
+    #[tokio::test]
+    async fn a_listed_price_shows_on_the_card() {
+        let (store, books) = rated_library().await;
+        let candidate =
+            |source: &str, product_id: &str, title: &str| crate::candidates::StorefrontCandidate {
+                source: source.into(),
+                product_id: product_id.into(),
+                title: title.into(),
+                authors: Some("Ada Author".into()),
+                narrators: None,
+                series: None,
+                series_index: None,
+                asin: None,
+                isbn: None,
+                cover_url: None,
+                seed_categories: None,
+                origin: "author search".into(),
+                seed_title: None,
+                starter_genre: None,
+                store_editions: Vec::new(),
+                subtitle: None,
+                description: None,
+                publisher: None,
+                length_minutes: None,
+                published_at: None,
+                categories: None,
+                language: None,
+                price_cents: Some(1499),
+                currency: Some("USD".into()),
+                price_label: Some("$14.99".into()),
+                rating_overall: None,
+                rating_count: None,
+                is_abridged: None,
+                audible_rank: None,
+            };
+        let opts = RecommendOptions {
+            include_purchase_hints: false,
+            embeddings_enabled: false,
+            ..RecommendOptions::default()
+        };
+        let recs = rank_candidates(
+            &store,
+            &SourceRegistry::new(),
+            &books,
+            &TasteWeights::new(),
+            &[],
+            vec![
+                candidate("audible", "B0AUDIBLE1", "Audible Pick"),
+                candidate("chirp", "chirp-42", "Chirp Pick"),
+            ],
+            &opts,
+        )
+        .await
+        .unwrap();
+        for (title, source) in [("Audible Pick", "audible"), ("Chirp Pick", "chirp")] {
+            let rec = recs
+                .iter()
+                .find(|r| r.title == title)
+                .unwrap_or_else(|| panic!("{title} missing: {recs:?}"));
+            let hint = rec
+                .purchase_hints
+                .iter()
+                .find(|h| h.source == source)
+                .unwrap_or_else(|| panic!("{title} has no {source} hint"));
+            assert_eq!(hint.price_cents, Some(1499));
+            assert_eq!(hint.list_price_cents, Some(1499));
+            assert_eq!(hint.currency.as_deref(), Some("USD"));
+            assert_eq!(hint.price_label.as_deref(), Some("$14.99"));
+            assert_eq!(hint.list_price_label.as_deref(), Some("$14.99"));
+        }
+        let audible = recs.iter().find(|r| r.title == "Audible Pick").unwrap();
+        assert!(audible.purchase_hints[0].url.is_some(), "{audible:?}");
+    }
+
     /// A store holding one unfinished book rated 5 by "Ada Author", and its rows.
     async fn rated_library() -> (LibraryStore, Vec<BookRecord>) {
         let store = bookclerk_plugin_database_sqlite::open_store_memory()
@@ -1500,12 +1624,73 @@ mod tests {
         (store, books)
     }
 
+    /// Owning the first book of a series does not count as owning its
+    /// sequel, so a wish for the sequel reaches the queue and the shelves.
+    #[tokio::test]
+    async fn owning_a_series_namesake_does_not_own_its_sequel() {
+        let store = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        store
+            .upsert_account("audible", "acct", "us", Some("Main"), true, "audible")
+            .await
+            .unwrap();
+        let mut dune = bookclerk_library::NewBook::minimal("B002V1OF70", "acct", "us", "Dune");
+        dune.authors = Some("Frank Herbert".into());
+        dune.asin = Some("B002V1OF70".into());
+        dune.series = Some("Dune".into());
+        dune.series_index = Some("1".into());
+        store.upsert_book(&dune).await.unwrap();
+        let entry = |title: &str, isbn: Option<&str>| GlobalQueueEntry {
+            work_key: String::new(),
+            title: title.into(),
+            authors: Some("Frank Herbert".into()),
+            asin: None,
+            isbn: isbn.map(str::to_string),
+            cover_url: None,
+            description: None,
+            subtitle: None,
+            narrators: None,
+            series: None,
+            series_index: None,
+            publisher: None,
+            length_minutes: None,
+            published_at: None,
+            genres: None,
+            language: None,
+            store_editions: Vec::new(),
+            purchase_hints: Vec::new(),
+            wish_count: 1,
+            wishers: Vec::new(),
+            sample_uuids: Vec::new(),
+            first_requested_at: chrono::Utc::now(),
+            last_requested_at: chrono::Utc::now(),
+        };
+        assert!(library_owns_work(&store, &entry("Dune", None))
+            .await
+            .unwrap());
+        assert!(
+            !library_owns_work(&store, &entry("Dune Messiah", Some("9781427202376")))
+                .await
+                .unwrap()
+        );
+        assert!(!library_owns_work(&store, &entry("Children of Dune", None))
+            .await
+            .unwrap());
+    }
+
     #[tokio::test]
     async fn a_highly_rated_book_makes_its_author_liked() {
         let (store, books) = rated_library().await;
-        let profile = build_taste_profile(&store, &books, &[], &RecommendOptions::default())
-            .await
-            .unwrap();
+        let profile = build_taste_profile(
+            &store,
+            &books,
+            &TasteWeights::new(),
+            &[],
+            &RecommendOptions::default(),
+        )
+        .await
+        .unwrap();
         let weight = profile.liked_authors.get("ada author").copied();
         assert!(
             weight.is_some_and(|w| w >= 2.0),
@@ -1516,12 +1701,41 @@ mod tests {
     #[tokio::test]
     async fn shelf_taste_weights_a_highly_rated_book() {
         let (_store, books) = rated_library().await;
-        let taste = build_shelf_taste(&books, &[]);
+        let taste = shelf_taste(&books, &TasteWeights::new(), &[]);
         assert_eq!(
             taste.authors.get("ada author"),
             Some(&("Ada Author".to_owned(), 2.0))
         );
         assert!(!taste.owned_sources.is_empty());
+    }
+
+    #[test]
+    fn a_blended_listen_counts_at_its_book_weight() {
+        let row = |book_uuid: &str| bookclerk_library::ListeningProgressRecord {
+            id: 1,
+            identity_id: None,
+            provider: String::from("abs"),
+            external_user_id: String::from("u1"),
+            book_uuid: Some(book_uuid.to_owned()),
+            work_id: None,
+            external_item_id: String::from("item"),
+            title: None,
+            authors: Some(String::from("Ann Author")),
+            asin: None,
+            isbn: None,
+            progress: Some(0.5),
+            current_time_seconds: Some(3_600.0),
+            duration_seconds: Some(7_200.0),
+            is_finished: false,
+            last_listened_at: None,
+            updated_at: chrono::Utc::now(),
+        };
+        let full = listening_engagement(&row("mine"));
+        let mut weights = TasteWeights::new();
+        weights.insert(String::from("household"), 0.5);
+        let taste = shelf_taste(&[], &weights, &[row("mine"), row("household")]);
+        let weight = taste.authors.get("ann author").map(|(_, w)| *w);
+        assert_eq!(weight, Some(full * 1.5));
     }
 
     #[test]

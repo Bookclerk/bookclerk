@@ -1202,6 +1202,7 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(crate::covers::get_gravatar))
         .routes(routes!(crate::covers::get_store_icon))
         .routes(routes!(discover_status))
+        .routes(routes!(discover_refresh))
         .routes(routes!(discover_recommendations))
         .routes(routes!(discover_purchase_hints))
         .routes(routes!(discover_purchase_hints_batch))
@@ -3938,31 +3939,15 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
         .count_accounts()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? as usize;
-    let books = library
-        .count_books(None)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? as usize;
-    let acquired = library
-        .count_by_status(AcquireStatus::Acquired)
+    let counts = library
+        .count_books_by_status()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let pending = library
-        .count_by_status(AcquireStatus::NotAcquired)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let error = library
-        .count_by_status(AcquireStatus::Error)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let queued = library
-        .count_by_status(AcquireStatus::Queued)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let downloading = library
-        .count_by_status(AcquireStatus::Downloading)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let in_progress = queued + downloading;
+    let books = usize::try_from(counts.total).unwrap_or(0);
+    let acquired = counts.acquired;
+    let pending = counts.not_acquired;
+    let error = counts.error;
+    let in_progress = counts.queued + counts.downloading;
     let (listen, storage_backend) = {
         let cfg = state.config.read().await;
         let destinations = state.destinations.read().await;
@@ -4633,6 +4618,95 @@ struct DiscoverStatusResponse {
     /// RFC 3339 time the caller's last storefront fetch finished, when any.
     #[schema(example = "2026-11-06T00:29:41+00:00")]
     candidates_fetched_at: Option<String>,
+    /// True while a fetch or ranking for the caller is waiting or running.
+    #[schema(example = false)]
+    updating: bool,
+}
+
+/// Reads the caller's Discover subject and reports its stored state.
+///
+/// When `queue` is set, the caller's fetch or ranking is queued when the
+/// stored data is missing or stale, as a page read does; the refresh route
+/// queues a fetch itself instead.
+async fn discover_status_for_caller(
+    state: &AppState,
+    headers: &HeaderMap,
+    queue: bool,
+) -> Result<(bookclerk_library::DiscoverSubject, DiscoverStatusResponse), (StatusCode, String)> {
+    let library = state.library_snapshot().await;
+    let (subject_key, _) = auth::prefs_subject_for_caller(state, headers)
+        .await
+        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
+    let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
+        .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
+    // A feed that does not decode (another release wrote it) counts as
+    // missing, so it is ranked again and not reported ready.
+    let feed = bookclerk_discover::stored_subject_feed(&library, &subject, &[])
+        .await
+        .map_err(internal_err)?;
+    let fetched = library
+        .newest_discover_candidate_fetch(&subject)
+        .await
+        .map_err(internal_err)?;
+    if queue {
+        let refresh =
+            crate::discover_jobs::refresh_needed(feed.as_ref(), fetched, chrono::Utc::now());
+        crate::discover_jobs::queue_refresh(state, &subject, refresh).await;
+    }
+    let updating = crate::discover_jobs::subject_refresh_active(&library, &subject)
+        .await
+        .map_err(internal_err)?;
+    let status = DiscoverStatusResponse {
+        subject: subject.key(),
+        ready: feed.is_some(),
+        scope: feed.as_ref().map(|f| f.scope.as_str().to_string()),
+        feed_computed_at: feed.as_ref().map(|f| f.computed_at.to_rfc3339()),
+        candidates_fetched_at: fetched.map(|t| t.to_rfc3339()),
+        updating,
+    };
+    Ok((subject, status))
+}
+
+/// Queues a storefront fetch and ranking for the caller's shelves now, as
+/// the Discover page's Refresh button asks. Unchanged store calls answer
+/// from the day's cache, so a refresh is cheap; a fetch already waiting
+/// absorbs the request.
+#[utoipa::path(
+    post,
+    path = "/api/discover/refresh",
+    responses(
+        (status = 200, description = "Stored Discover state of the caller's shelves, with `updating` set once the fetch is queued.", body = DiscoverStatusResponse),
+        (status = 401, description = "The caller has no portal identity.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
+        (status = 429, description = "The job queue is full, so the fetch was not queued.", body = String, content_type = "text/plain", example = json!("job queue is full")),
+        (status = 500, description = "The lookup failed, or the fetch could not be queued.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
+    ),
+)]
+async fn discover_refresh(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<DiscoverStatusResponse>, (StatusCode, String)> {
+    let (subject, _) = discover_status_for_caller(&state, &headers, false).await?;
+    // A fetch already waiting absorbs the request, so a duplicate counts as
+    // queued; a full queue or a failed admission is reported.
+    match crate::discover_jobs::enqueue_discover_candidates(
+        &state,
+        &subject,
+        JobTrigger::Api,
+        std::time::Duration::ZERO,
+    )
+    .await
+    .map_err(internal_err)?
+    {
+        AdmitJob::Created(_) | AdmitJob::Duplicate(_) => {}
+        AdmitJob::QueueFull => {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "job queue is full".to_string(),
+            ))
+        }
+    }
+    let (_, status) = discover_status_for_caller(&state, &headers, false).await?;
+    Ok(Json(status))
 }
 
 /// Reports whether the caller's Discover shelves are stored yet, so
@@ -4653,30 +4727,8 @@ async fn discover_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<DiscoverStatusResponse>, (StatusCode, String)> {
-    let library = state.library_snapshot().await;
-    let (subject_key, _) = auth::prefs_subject_for_caller(&state, &headers)
-        .await
-        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
-    let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
-        .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
-    // A feed that does not decode (another release wrote it) counts as
-    // missing, so it is ranked again and not reported ready.
-    let feed = bookclerk_discover::stored_subject_feed(&library, &subject, &[])
-        .await
-        .map_err(internal_err)?;
-    let fetched = library
-        .newest_discover_candidate_fetch(&subject)
-        .await
-        .map_err(internal_err)?;
-    let refresh = crate::discover_jobs::refresh_needed(feed.as_ref(), fetched, chrono::Utc::now());
-    crate::discover_jobs::queue_refresh(&state, &subject, refresh).await;
-    Ok(Json(DiscoverStatusResponse {
-        subject: subject.key(),
-        ready: feed.is_some(),
-        scope: feed.as_ref().map(|f| f.scope.as_str().to_string()),
-        feed_computed_at: feed.as_ref().map(|f| f.computed_at.to_rfc3339()),
-        candidates_fetched_at: fetched.map(|t| t.to_rfc3339()),
-    }))
+    let (_, status) = discover_status_for_caller(&state, &headers, true).await?;
+    Ok(Json(status))
 }
 
 /// Delivery counters plus live consumers for one queue.
@@ -5429,13 +5481,19 @@ async fn discover_recommendations(
         .map_err(internal_err)?;
     let refresh = crate::discover_jobs::refresh_needed(read.as_ref(), newest, chrono::Utc::now());
     crate::discover_jobs::queue_refresh(&state, &subject, refresh).await;
+    // A fetch or ranking queued by a taste event or the Refresh button is
+    // also a rebuild the page should show.
+    let updating = refresh != crate::discover_jobs::FeedRefresh::None
+        || crate::discover_jobs::subject_refresh_active(&library, &subject)
+            .await
+            .map_err(internal_err)?;
     let mut feed = match read {
         Some(stored) => {
             let mut feed = stored.feed;
-            feed.state = Some(if refresh == crate::discover_jobs::FeedRefresh::None {
-                bookclerk_discover::FeedState::Ready
-            } else {
+            feed.state = Some(if updating {
                 bookclerk_discover::FeedState::Refreshing
+            } else {
+                bookclerk_discover::FeedState::Ready
             });
             feed.computed_at = Some(stored.computed_at.to_rfc3339());
             feed

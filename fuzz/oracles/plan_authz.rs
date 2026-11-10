@@ -84,7 +84,8 @@ struct Account {
 struct Book {
     /// Index into [`PLUGINS`].
     plugin: usize,
-    /// Account id the row is under (it may name no account).
+    /// Account id the row is under; always a store account on the same
+    /// plugin, since library rows reference their account.
     account: &'static str,
     /// Product id.
     product_id: &'static str,
@@ -162,12 +163,20 @@ fn decode(data: &[u8]) -> Scenario {
     let mut books = Vec::new();
     for _ in 0..b.next() % 5 {
         let shape = b.next();
-        books.push(Book {
+        let book = Book {
             plugin: shape & 1,
             account: IDS[(shape >> 1) % IDS.len()],
             product_id: TITLES[(shape >> 3) % 4],
             asin: TITLES[(shape >> 5) % 4],
-        });
+        };
+        // A library row needs its account to exist (the database enforces
+        // it), so a row under an account the scenario never made is dropped.
+        if accounts
+            .iter()
+            .any(|a| a.plugin == book.plugin && a.id == book.account)
+        {
+            books.push(book);
+        }
     }
     let flags = b.next();
     let instances = [flags & 1 == 1, flags & 2 == 2];

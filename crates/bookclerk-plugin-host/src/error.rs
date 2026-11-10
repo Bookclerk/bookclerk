@@ -42,6 +42,15 @@ pub enum PluginError {
     /// Catch-all for otherwise unclassified failures.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+    /// The guest's backend asked it to slow down (ABI `rate_limited`);
+    /// `retry_after` is how long it said, when it did.
+    #[error("rate limited: {message}")]
+    RateLimited {
+        /// Operator-facing explanation (which backend, which call).
+        message: String,
+        /// How long the backend asked to be left alone, when it said.
+        retry_after: Option<std::time::Duration>,
+    },
     /// Guest ABI error with a preserved wire `code` (including `unknown`).
     #[error("{code}: {message}")]
     Abi {

@@ -1,0 +1,12 @@
+{
+ "repository": {
+  "id": 555
+ },
+ "check_run": {
+  "name": "CI Gate",
+  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "app": {
+   "slug": "github-actions"
+  }
+ }
+}

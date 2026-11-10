@@ -97,6 +97,68 @@ async fn account_and_book_roundtrip() {
 }
 
 #[tokio::test]
+async fn status_counts_come_from_one_grouped_read_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        assert_eq!(
+            store.count_books_by_status().await.unwrap(),
+            crate::models::AcquireStatusCounts::default()
+        );
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        for (asin, status) in [
+            ("B001", AcquireStatus::NotAcquired),
+            ("B002", AcquireStatus::NotAcquired),
+            ("B003", AcquireStatus::Queued),
+            ("B004", AcquireStatus::Downloading),
+            ("B005", AcquireStatus::Acquired),
+            ("B006", AcquireStatus::Error),
+            ("B007", AcquireStatus::Error),
+            ("B008", AcquireStatus::Error),
+        ] {
+            store
+                .upsert_book(&NewBook::minimal(asin, "user-1", "us", asin))
+                .await
+                .unwrap();
+            if status != AcquireStatus::NotAcquired {
+                store
+                    .set_acquire_status(asin, "user-1", status, None, None)
+                    .await
+                    .unwrap();
+            }
+        }
+        // A status written by a newer build is counted in the total only.
+        kit.connection()
+            .execute_unprepared("UPDATE books SET acquire_status = 'future' WHERE asin = 'B008'")
+            .await
+            .unwrap();
+        let counts = store.count_books_by_status().await.unwrap();
+        assert_eq!(
+            counts,
+            crate::models::AcquireStatusCounts {
+                total: 8,
+                not_acquired: 2,
+                queued: 1,
+                downloading: 1,
+                acquired: 1,
+                error: 2,
+            },
+            "{}",
+            profile.name()
+        );
+        assert_eq!(
+            counts.total,
+            store.count_books(None).await.unwrap(),
+            "{}",
+            profile.name()
+        );
+    }
+}
+
+#[tokio::test]
 async fn same_isbn_multi_account_and_source() {
     let store = kit_store().await;
     store
@@ -7380,4 +7442,45 @@ mod every_profile {
                 .unwrap();
         }
     }
+}
+
+/// The plan SQLite picks for `sql`, joined from `EXPLAIN QUERY PLAN` rows.
+async fn query_plan(store: &LibraryStore, sql: &str) -> String {
+    let backend = store.db.get_database_backend();
+    let rows = store
+        .db
+        .query_all_raw(sea_orm::Statement::from_string(
+            backend,
+            format!("EXPLAIN QUERY PLAN {sql}"),
+        ))
+        .await
+        .expect("explain");
+    let mut lines = Vec::new();
+    for row in rows {
+        for column in row.column_names() {
+            if let Ok(text) = row.try_get::<String>("", &column) {
+                lines.push(text);
+            }
+        }
+    }
+    lines.join("\n")
+}
+
+#[tokio::test]
+async fn job_retention_and_listing_read_through_their_indexes() {
+    let store = kit_store().await;
+    let prune = query_plan(
+        &store,
+        "DELETE FROM jobs WHERE state IN ('succeeded', 'failed', 'cancelled') \
+         AND finished_at <= '2026-01-01T00:00:00+00:00'",
+    )
+    .await;
+    assert!(prune.contains("idx_jobs_state_finished"), "{prune}");
+    let list = query_plan(
+        &store,
+        "SELECT id FROM jobs ORDER BY created_at DESC LIMIT 50",
+    )
+    .await;
+    assert!(list.contains("idx_jobs_created"), "{list}");
+    assert!(!list.contains("TEMP B-TREE"), "{list}");
 }

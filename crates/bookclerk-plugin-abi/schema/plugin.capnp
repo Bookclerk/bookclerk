@@ -995,6 +995,13 @@ interface ContentSource {
   revokeAccount @13 (
       params :RevokeAccountParams  # Account id and its stored credentials.
   ) -> (result :EmptyReply);
+  # Purchase links / price hints for several titles in one call, so a guest
+  # whose backend prices many products per request makes one request for a
+  # page of cards. A guest that cannot batch answers each query as
+  # `purchaseHint` would.
+  purchaseHints @14 (
+      params :PurchaseHintsParams  # The titles to price, in order.
+  ) -> (result :PurchaseHintsReply);
 }
 
 # `remoteLibrary` entrypoint: long-running remote-library lifecycle (start /
@@ -1117,6 +1124,10 @@ enum PluginErrorCode $jsonEnum {
   # `maxRequestBytes`, ...). `details` names the limit, its cap and the value
   # that exceeded it.
   limitExceeded @12;
+  # The backend asked the guest to slow down (HTTP 429 or its equivalent).
+  # `details.retryAfterMs` says how long the host should leave this
+  # backend alone, when the backend said so.
+  rateLimited @13;
 }
 
 #############################################################################
@@ -2054,6 +2065,29 @@ struct PurchaseHintReply {
   union {
     # Success: hint or not-found marker.
     ok @0 :PurchaseHintResult;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Params of `ContentSource.purchaseHints`: the titles to price together.
+struct PurchaseHintsParams {
+  # One query per title, each as for `purchaseHint`; at most `maxListPage`.
+  queries @0 :List(PurchaseHintParams);
+}
+
+# Success payload of `ContentSource.purchaseHints`.
+struct PurchaseHintsResult {
+  # One answer per query, in the order the queries were sent.
+  results @0 :List(PurchaseHintResult);
+}
+
+# Result union of `ContentSource.purchaseHints`. A whole-batch `err` (for
+# example `rateLimited`) applies to every query in it.
+struct PurchaseHintsReply {
+  union {
+    # Success: an answer per query.
+    ok @0 :PurchaseHintsResult;
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }
