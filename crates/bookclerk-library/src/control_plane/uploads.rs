@@ -1698,6 +1698,14 @@ pub async fn commit_upload(
         ));
         statements.len() - 1
     });
+    // Last, so no index above moves: each bump fires only when its rows
+    // took this commit's stamp.
+    if model.is_some() {
+        statements.push(super::bump_if_stamped(super::LiveTopic::Library, &now)?);
+    }
+    if job_index.is_some() {
+        statements.push(super::bump_if_stamped(super::LiveTopic::Jobs, &now)?);
+    }
     let reply = batch::execute_host_batch(
         store,
         request(&format!("node-upload-commit:{upload_id}:{now}"), statements),

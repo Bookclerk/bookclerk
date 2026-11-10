@@ -602,3 +602,206 @@ class WorkerdTransportDbTests(unittest.IsolatedAsyncioTestCase):
             {}, {"databases": [{"name": "DB", "database": marker, "transport": 1}]}
         )
         self.assertIs(env.DB, marker)
+
+
+# The canonical `limit_exceeded` the adapter's channel answers with `413`.
+_REQUEST_LIMIT = ("maxRequestBytes", 100, 200)
+
+
+def _channel_error(status: int) -> tuple[str, str, str]:
+    """The wire error the adapter's `*Bytes` transport encodes for a status.
+
+    Mirrors `grantedDatabaseBody` + `wirePluginError` in the TypeScript SDK
+    (`packages/plugin-sdk/src/plugin.ts`): `404` is `unsupported`, `413`
+    is `limit_exceeded` with the parsed cap in `details`, anything else is
+    `unavailable`.
+    """
+    import json
+
+    from bookclerk_plugin_sdk.limits import LimitExceeded, limit_exceeded_message
+
+    if status == 413:
+        limit = LimitExceeded(*_REQUEST_LIMIT)
+        message = f"database grant: 413 {limit_exceeded_message(limit)}"
+        details = json.dumps({"limit": limit.limit, "cap": limit.cap, "used": limit.used})
+        return ("limit_exceeded", message, details)
+    if status == 404:
+        return ("unsupported", "GuestDatabase.execute is not served by this host", "")
+    return ("unavailable", f"database grant: {status} adapter restarting", "")
+
+
+def _err_frame(status: int) -> bytes:
+    """A streamed reply that is one `err` frame, as the adapter answers a failure."""
+    from bookclerk_plugin_sdk._wire import _encode_message, _execute_stream_frame_codec
+
+    code, message, details = _channel_error(status)
+    return _encode_message(
+        _execute_stream_frame_codec,
+        {"kind": "err", "value": {"code": code, "message": message, "details": details}},
+    )
+
+
+class _ChannelErrorTransport(_MockTransport):
+    """A transport whose channel answers fixed statuses, reported in-band.
+
+    `None` means the route works (the `_MockTransport` answer).
+    """
+
+    def __init__(
+        self,
+        *,
+        limits: int | None = None,
+        execute: int | None = None,
+        streamed: int | None = None,
+    ) -> None:
+        super().__init__()
+        self._limits = limits
+        self._execute = execute
+        self._streamed = streamed
+
+    async def limitsBytes(self) -> bytes:  # noqa: N802  (Workers RPC method name)
+        from bookclerk_plugin_sdk.db_value import encode_db_capabilities_reply
+
+        if self._limits is None:
+            return await super().limitsBytes()
+        self.methods.append(("limitsBytes", None))
+        return encode_db_capabilities_reply(_channel_error(self._limits))
+
+    async def executeBytes(self, body: bytes) -> bytes:  # noqa: N802  (Workers RPC method name)
+        from bookclerk_plugin_sdk.db_value import encode_execute_result_reply
+
+        self.methods.append(("executeBytes", bytes(body)))
+        if self._execute is None:
+            return await super().executeBytes(body)
+        return encode_execute_result_reply(_channel_error(self._execute))
+
+    async def openStreamedBytes(self, body: bytes) -> bytes:  # noqa: N802  (Workers RPC method name)
+        if self._streamed is None:
+            return await self.executeStreamedBytes(body)
+        self.methods.append(("openStreamedBytes", bytes(body)))
+        return _err_frame(self._streamed)
+
+
+class GrantedChannelErrorTests(unittest.IsolatedAsyncioTestCase):
+    """#771: channel failures keep their type across the adapter → author hop."""
+
+    def _env(self, transport: Any) -> Any:
+        from bookclerk_plugin_sdk.workerd import _invocation_env
+
+        return _invocation_env({}, {"databases": [{"name": "DB", "transport": transport}]})
+
+    async def test_inline_413_keeps_its_limit(self) -> None:
+        from bookclerk_plugin_sdk.limits import LimitExceeded
+        from bookclerk_plugin_sdk.workerd import PluginError
+
+        env = self._env(_ChannelErrorTransport(limits=404, execute=413))
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.prepare("INSERT INTO t VALUES (1)").run()
+        self.assertEqual(ctx.exception.code, "limit_exceeded")
+        self.assertEqual(ctx.exception.limit, LimitExceeded(*_REQUEST_LIMIT))
+        self.assertEqual(
+            ctx.exception.details, dict(zip(("limit", "cap", "used"), _REQUEST_LIMIT, strict=True))
+        )
+
+    async def test_inline_503_is_unavailable(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError
+
+        env = self._env(_ChannelErrorTransport(limits=404, execute=503))
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.prepare("SELECT 1").all()
+        self.assertEqual(ctx.exception.code, "unavailable")
+        self.assertIn("503", str(ctx.exception))
+
+    async def test_limits_404_is_unsupported_and_reads_go_inline(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError
+
+        transport = _ChannelErrorTransport(limits=404)
+        env = self._env(transport)
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.limits()
+        self.assertEqual(ctx.exception.code, "unsupported")
+        row = await env.DB.prepare("SELECT 1").first()
+        self.assertEqual(row["n"]["value"], 7)
+        self.assertNotIn("openStreamedBytes", [name for name, _ in transport.methods])
+
+    async def test_streamed_404_falls_back_inline(self) -> None:
+        transport = _ChannelErrorTransport(streamed=404)
+        env = self._env(transport)
+        result = await env.DB.prepare("SELECT 1").all()
+        self.assertEqual(result["results"][0]["n"]["value"], 7)
+        rows = [row async for row in env.DB.prepare("SELECT 1").iterate()]
+        self.assertEqual(rows[0]["n"]["value"], 7)
+        names = [name for name, _ in transport.methods]
+        self.assertEqual(names.count("openStreamedBytes"), 2)
+        self.assertEqual(names.count("executeBytes"), 2, "each read fell back inline")
+
+    async def test_streamed_413_keeps_its_limit(self) -> None:
+        from bookclerk_plugin_sdk.limits import LimitExceeded
+        from bookclerk_plugin_sdk.workerd import PluginError
+
+        env = self._env(_ChannelErrorTransport(streamed=413))
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.prepare("SELECT 1").all()
+        self.assertEqual(ctx.exception.code, "limit_exceeded")
+        self.assertEqual(ctx.exception.limit, LimitExceeded(*_REQUEST_LIMIT))
+        with self.assertRaises(PluginError) as ctx:
+            [row async for row in env.DB.prepare("SELECT 1").iterate()]
+        self.assertEqual(ctx.exception.limit, LimitExceeded(*_REQUEST_LIMIT))
+
+    async def test_streamed_503_is_unavailable(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError
+
+        env = self._env(_ChannelErrorTransport(streamed=503))
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.prepare("SELECT 1").all()
+        self.assertEqual(ctx.exception.code, "unavailable")
+
+    async def test_a_raising_stub_is_unavailable(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError
+
+        class _Broken(_MockTransport):
+            async def limitsBytes(self) -> bytes:  # noqa: N802  (Workers RPC method name)
+                raise RuntimeError("Error: RPC peer disconnected")
+
+            async def executeBytes(self, body: bytes) -> bytes:  # noqa: N802
+                raise RuntimeError("Error: RPC peer disconnected")
+
+        env = self._env(_Broken())
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.limits()
+        self.assertEqual(ctx.exception.code, "unavailable")
+        self.assertIn("limitsBytes", str(ctx.exception))
+        self.assertIsInstance(ctx.exception.__cause__, RuntimeError)
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.prepare("SELECT 1").all()
+        self.assertEqual(ctx.exception.code, "unavailable")
+        self.assertIn("executeBytes", str(ctx.exception))
+
+    async def test_a_stub_plugin_error_passes_through_unchanged(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError
+
+        raised = PluginError.from_wire("unauthorized", "database grant: 401 expired")
+
+        class _Typed(_MockTransport):
+            async def limitsBytes(self) -> bytes:  # noqa: N802  (Workers RPC method name)
+                raise raised
+
+        env = self._env(_Typed())
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.limits()
+        self.assertIs(ctx.exception, raised)
+
+    async def test_transport_inline_reply_without_a_body_is_internal(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError
+
+        class _Silent(_ChannelErrorTransport):
+            async def executeBytes(self, body: Any) -> bytes:  # noqa: N802  (Workers RPC method name)
+                self.methods.append(("executeBytes", bytes(body)))
+                return b""
+
+        # Without limits the read goes inline, through `executeBytes`.
+        env = self._env(_Silent(limits=404))
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.prepare("SELECT 1").all()
+        self.assertEqual(ctx.exception.code, "internal")
+        self.assertIn("granted execute reply missing body", str(ctx.exception))

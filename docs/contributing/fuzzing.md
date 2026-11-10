@@ -24,6 +24,7 @@ boundary extends it.
 | `sql_lower` | Adapter lowering of canonical SQL | `bookclerk-db-exec` |
 | `mp4_parse` | ISO-BMFF parse and remux of store downloads | `bookclerk-mp4` |
 | `granted_http` | The granted reverse channel | `bookclerk-workerd::granted_http` |
+| `workerd_control` | Lines on workerd's stdout, shared with plugin isolates, that report the bridge RPC port on Windows (`--control-fd`) | `bookclerk-workerd::control` |
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
@@ -69,6 +70,12 @@ only that. The others check:
   an `httparse` reference decoder. The route body reader (framing dispatch,
   byte cap, end of stream) is split-invariant and yields what the declared
   framing promises.
+- **`workerd_control`**: a port the parser accepts agrees with an
+  independent `serde_json::Value` reading, every listen object that reading
+  accepts is accepted once re-encoded canonically, and no structured log
+  line (the input wrapped as a `console.*` message) yields a port. The
+  shared oracle is `fuzz/oracles/workerd_control.rs`, replayed from
+  `bookclerk-workerd`.
 - **`egress_policy`**: deny allows nothing. Loopback, private and metadata
   addresses need a CIDR in every spelling (trailing dot, fullwidth digits,
   legacy `127.1`, hex and octal IPv4). `*.suffix` never matches `xsuffix`,
@@ -96,7 +103,11 @@ only that. The others check:
 - **`db_stream`**: decoding a frame stream in one push and in chunks of
   any size agree (both the same reply, or both refused), an accepted
   reply has no statement over the row cap, and it re-encodes to frames
-  that decode to the same reply. The shared oracle is
+  that decode to the same reply. A streaming decoder (the one the Rust
+  SDK's `iterate()` reads with, which keeps no rows) fed the same chunks
+  accepts exactly what one push accepts, hands out every row of it once
+  and in order, and finishes with the same reply minus its rows. The
+  shared oracle is
   `fuzz/oracles/db_stream.rs`, replayed from `bookclerk-plugin-abi`. The
   TypeScript and Python SDK decoders replay the same seeds and, on every
   run, a fixed set of mutants derived from them with a seeded generator
@@ -464,6 +475,26 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     those an independent reading of the sensitive prefixes, names and
     missing diffs selects, and each listed path stays inside one code span
     in the summary.
+
+### Signed commits (Python)
+
+- **Signed commits check** (`scripts/signed_commits.py`). It reads the
+  workflow event (the head a `workflow_run` names, a merge group's head,
+  the check a `check_run` re-run names), the pull request with its base
+  and default branch, and its commit pages with GitHub's verification of
+  each commit, and writes a comment from them. Branch names, logins, titles
+  and commit messages in them are chosen by contributors. It shares the CLA checker's JSON readers and comment
+  page parser and the maintainer review check's event and pull request
+  readers.
+  - Test and corpus: `scripts/tests/test_signed_commits.py`,
+    `scripts/tests/signed_commits_corpus/` (files named `<kind>__<case>`).
+  - Oracle: an independent field-by-field reading of each document, which
+    refuses a `verified` that isn't a boolean, a `reason` that isn't
+    lowercase letters and underscores, and a default branch name the
+    re-sign command could not quote safely. For fuzzed commit pages, the comment
+    lists exactly the commits the independent reading finds unverified,
+    each table row keeps its two cells, and the only link is GitHub's
+    signing guide.
 
 ### Coverage gate (Python)
 

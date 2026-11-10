@@ -1666,14 +1666,21 @@ def settle(api: GitHub, sha: str, book: SignatureBook, run_url: str) -> None:
         api.set_check(sha, CheckState.SUCCESS, check_title(verdicts[0][1]), run_url)
 
 
-def own_comment(comments: list[Comment], author: str) -> Comment | None:
+def own_comment(comments: list[Comment], author: str, marker: str = COMMENT_MARKER) -> Comment | None:
     """Finds the check's earlier comment, which only the bot ``author`` can post.
 
     A comment another bot posted (the workflow's, from before an App was
-    configured) is left alone, since only its author may edit it.
+    configured) is left alone, since only its author may edit it, and a
+    marked comment from a person is ignored, since anyone can post one.
+
+    # Arguments
+    * ``comments``: the pull request's comments, oldest first.
+    * ``author``: the reporting bot's login.
+    * ``marker``: the first line that marks the check's comment; the signed
+      commits check passes its own.
     """
     for comment in comments:
-        if comment.author.login == author and comment.author.type is AccountType.BOT and comment.body.startswith(COMMENT_MARKER):
+        if comment.author.login == author and comment.author.type is AccountType.BOT and comment.body.startswith(marker):
             return comment
     return None
 

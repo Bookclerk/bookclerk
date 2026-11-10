@@ -262,7 +262,8 @@ pub struct OperatorAuthState {
     /// How long a client stays locked after exceeding `login_max_failures`.
     login_lockout: Duration,
     /// Sign-in throttle buckets: one per resolved client IP, plus per-account
-    /// buckets such as `elevate:<user_id>` (password elevation) and
+    /// buckets such as `password:<user_id>` (password re-checks by a signed-in
+    /// user: elevation, step-up re-auth, password change) and
     /// `clerk-step-up:<user_id>` (clerk join step-up).
     login_attempts: Mutex<HashMap<String, LoginThrottleBucket>>,
 }
@@ -2415,11 +2416,6 @@ pub async fn elevate(
     let Some(user) = user else {
         return Err(StatusCode::FORBIDDEN);
     };
-    // A second bucket per Owner catches guesses spread across addresses.
-    let owner_key = elevate_throttle_key(user.id);
-    if let Some(retry_after) = auth.login_throttle_check(&owner_key).await {
-        return Ok(too_many_requests(retry_after));
-    }
     let password = body.password.trim();
     if password.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
@@ -2438,44 +2434,120 @@ pub async fn elevate(
             .await;
         return Err(StatusCode::FORBIDDEN);
     };
-    let password_ok = bookclerk_library::verify_password(password, &hash).unwrap_or(false);
-    if !password_ok {
-        let _ = library
-            .insert_security_audit_event(
-                &format!("user:{}", user.id),
-                "elevate_failed",
-                Some(r#"{"reason":"bad_password"}"#),
-            )
-            .await;
-        let client_locked = auth.record_login_failure(&client_key).await;
-        let owner_locked = auth.record_login_failure(&owner_key).await;
-        if let Some(retry_after) = client_locked.max(owner_locked) {
-            return Ok(too_many_requests(retry_after));
+    // The account bucket (shared with every other password re-check) catches
+    // guesses spread across addresses; the client bucket is checked above.
+    // Only the account bucket is cleared on success: the client bucket is
+    // shared with the other sign-in routes, and a successful elevation must
+    // not reset their count for this address.
+    match recheck_account_password(&auth, user.id, password, &hash).await? {
+        PasswordRecheck::Matched => {}
+        PasswordRecheck::Locked(retry_after) => return Ok(too_many_requests(retry_after)),
+        PasswordRecheck::Wrong { locked } => {
+            let _ = library
+                .insert_security_audit_event(
+                    &format!("user:{}", user.id),
+                    "elevate_failed",
+                    Some(r#"{"reason":"bad_password"}"#),
+                )
+                .await;
+            let client_locked = auth.record_login_failure(&client_key).await;
+            if let Some(retry_after) = client_locked.max(locked) {
+                return Ok(too_many_requests(retry_after));
+            }
+            return Err(StatusCode::UNAUTHORIZED);
         }
-        return Err(StatusCode::UNAUTHORIZED);
     }
-    // Only the Owner bucket is cleared: the client bucket is shared with the
-    // other sign-in routes, and a successful elevation must not reset their
-    // count for this address.
-    auth.clear_login_failures(&owner_key).await;
     issue_elevation(&state, &library, user.id, &headers).await
 }
 
-/// Throttle bucket for password elevation guesses against one Owner.
+/// Result of re-checking a signed-in user's password under the account throttle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PasswordRecheck {
+    /// The password matched; the account's failure count was cleared.
+    Matched,
+    /// The password was wrong and the failure was counted.
+    Wrong {
+        /// Lockout length when this failure reached the cap, `None` while under it.
+        locked: Option<Duration>,
+    },
+    /// The account is locked out; the password was not checked.
+    Locked(Duration),
+}
+
+impl PasswordRecheck {
+    /// The plain status a re-check gate answers with.
+    ///
+    /// # Errors
+    ///
+    /// Returns 401 for a wrong password under the cap and 429 once the account
+    /// is locked (by this miss or an earlier one).
+    pub(crate) fn into_gate_result(self) -> Result<(), StatusCode> {
+        match self {
+            Self::Matched => Ok(()),
+            Self::Wrong { locked: None } => Err(StatusCode::UNAUTHORIZED),
+            Self::Wrong { locked: Some(_) } | Self::Locked(_) => Err(StatusCode::TOO_MANY_REQUESTS),
+        }
+    }
+}
+
+/// Throttle bucket for password re-checks against one account.
 ///
 /// Kept apart from the per-client buckets (which are keyed by IP address) so
-/// wrong passwords for the same Owner count together whichever address they
-/// come from.
+/// wrong passwords for the same account count together whichever address and
+/// whichever route (elevation, step-up re-auth, password change) they come
+/// through.
 ///
 /// # Arguments
 ///
-/// * `user_id` - The Owner's `users.id`.
+/// * `user_id` - The account's `users.id`.
 ///
 /// # Returns
 ///
-/// The key passed to the login throttle, `elevate:<user_id>`.
-fn elevate_throttle_key(user_id: i64) -> String {
-    format!("elevate:{user_id}")
+/// The key passed to the login throttle, `password:<user_id>`.
+fn password_throttle_key(user_id: i64) -> String {
+    format!("password:{user_id}")
+}
+
+/// Verifies a signed-in user's password against `hash` under the account throttle.
+///
+/// A locked account is refused before the (slow) hash comparison. Each
+/// attempt is counted before the comparison runs, so concurrent guesses
+/// cannot all slip past the cap while the hash is being checked; a match then
+/// clears the account's count.
+///
+/// # Arguments
+///
+/// * `auth` - Operator auth state holding the throttle buckets.
+/// * `user_id` - The account whose password is checked.
+/// * `password` - The password the caller presented.
+/// * `hash` - The account's stored password hash.
+///
+/// # Returns
+///
+/// Whether the password matched, was wrong, or was not checked because the
+/// account is locked out.
+///
+/// # Errors
+///
+/// Returns 500 when the stored hash cannot be parsed; the attempt stays
+/// counted.
+pub(crate) async fn recheck_account_password(
+    auth: &OperatorAuthState,
+    user_id: i64,
+    password: &str,
+    hash: &str,
+) -> Result<PasswordRecheck, StatusCode> {
+    let key = password_throttle_key(user_id);
+    if let Some(retry_after) = auth.login_throttle_check(&key).await {
+        return Ok(PasswordRecheck::Locked(retry_after));
+    }
+    let locked = auth.record_login_failure(&key).await;
+    if verify_password(password, hash).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? {
+        auth.clear_login_failures(&key).await;
+        Ok(PasswordRecheck::Matched)
+    } else {
+        Ok(PasswordRecheck::Wrong { locked })
+    }
 }
 
 /// Mint a short-lived elevated operator cookie for an Owner.
@@ -3627,6 +3699,7 @@ pub struct SetPasswordRequest {
     responses(
         (status = 200, description = "The password was set and other sessions revoked.", body = PasswordSet),
         (status = 401, description = "The caller is not signed in, or the caller already has a password and `current_password` is missing or wrong."),
+        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout."),
         (status = 403, description = "The caller may not set that user's password: not a provisioner, or a role the caller cannot manage."),
         (status = 400, description = "The password is empty (the standard error body)."),
         (status = 404, description = "No such user."),
@@ -3679,11 +3752,9 @@ pub async fn set_password(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .ok_or(StatusCode::UNAUTHORIZED)?;
-            let ok =
-                verify_password(current, &hash).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            if !ok {
-                return Err(StatusCode::UNAUTHORIZED);
-            }
+            recheck_account_password(&auth, target_id, current, &hash)
+                .await?
+                .into_gate_result()?;
         }
     }
     let hash = hash_password(password).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -3706,6 +3777,9 @@ pub async fn set_password(
             | LibraryError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
             LibraryError::LimitExceeded(_) => StatusCode::UNPROCESSABLE_ENTITY,
         })?;
+    // A new password (including a provisioner's reset) lifts the account lockout.
+    auth.clear_login_failures(&password_throttle_key(target_id))
+        .await;
     let revoked = library
         .delete_portal_sessions_for_user(target_id)
         .await
@@ -4303,12 +4377,15 @@ pub(crate) const RECENT_AUTH_WINDOW: ChronoDuration = ChronoDuration::minutes(15
 /// # Returns
 ///
 /// `reauth` for a 401, a fixed note for a 500 (the current password could
-/// not be read or verified) and `forbidden` for everything else.
+/// not be read or verified), a lockout note for a 429 (too many wrong
+/// passwords for the account) and `forbidden` for everything else.
 pub(crate) fn recent_owner_gate_message(status: StatusCode, reauth: &'static str) -> &'static str {
     if status == StatusCode::UNAUTHORIZED {
         reauth
     } else if status == StatusCode::INTERNAL_SERVER_ERROR {
         "the current password could not be checked"
+    } else if status == StatusCode::TOO_MANY_REQUESTS {
+        "too many wrong passwords for this account; try again later"
     } else {
         "forbidden"
     }
@@ -4369,12 +4446,10 @@ pub(crate) async fn require_recent_portal_reauth(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    let ok = verify_password(current, &hash).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if ok {
-        Ok(())
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
-    }
+    let auth = state.auth_snapshot().await;
+    recheck_account_password(&auth, user_id, current, &hash)
+        .await?
+        .into_gate_result()
 }
 
 /// Raw operator session id from the session cookie (hashed before any DB lookup).
@@ -5581,6 +5656,155 @@ pub(crate) mod tests {
         // The first address kept its count, so its fifth miss locks it.
         let (status, _) = elevate_from(&app, &cookie, "192.0.2.4", &wrong_elevate_password()).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// The `users.id` behind the seeded Owner portal identity (`test` / `admin-ext`).
+    async fn seeded_owner_id(library: &bookclerk_library::LibraryStore) -> i64 {
+        library
+            .upsert_portal_identity("test", "admin-ext", Some("Owner"))
+            .await
+            .unwrap()
+            .user_id
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn recent_reauth_locks_the_account_after_repeated_wrong_passwords() {
+        let (state, _app, library) = phase2_harness("op-token-reauth-throttle").await;
+        let uid = seeded_owner_id(&library).await;
+        // No portal cookie, so the session is never "recent" and the password decides.
+        let headers = HeaderMap::new();
+        let wrong = wrong_elevate_password();
+        for _ in 0..4 {
+            let res = require_recent_portal_reauth(&state, &headers, uid, Some(&wrong)).await;
+            assert_eq!(res, Err(StatusCode::UNAUTHORIZED));
+        }
+        let res = require_recent_portal_reauth(&state, &headers, uid, Some(&wrong)).await;
+        assert_eq!(res, Err(StatusCode::TOO_MANY_REQUESTS));
+        // Locked: the right password is refused without being checked.
+        let right = phase2_owner_password();
+        let res = require_recent_portal_reauth(&state, &headers, uid, Some(&right)).await;
+        assert_eq!(res, Err(StatusCode::TOO_MANY_REQUESTS));
+    }
+
+    #[tokio::test]
+    async fn recent_reauth_success_clears_the_account_count() {
+        let (state, _app, library) = phase2_harness("op-token-reauth-clear").await;
+        let uid = seeded_owner_id(&library).await;
+        let headers = HeaderMap::new();
+        let wrong = wrong_elevate_password();
+        for _ in 0..4 {
+            let res = require_recent_portal_reauth(&state, &headers, uid, Some(&wrong)).await;
+            assert_eq!(res, Err(StatusCode::UNAUTHORIZED));
+        }
+        let right = phase2_owner_password();
+        let res = require_recent_portal_reauth(&state, &headers, uid, Some(&right)).await;
+        assert_eq!(res, Ok(()));
+        let res = require_recent_portal_reauth(&state, &headers, uid, Some(&wrong)).await;
+        assert_eq!(res, Err(StatusCode::UNAUTHORIZED));
+    }
+
+    #[tokio::test]
+    async fn concurrent_rechecks_cannot_exceed_the_account_cap() {
+        let (state, _app, library) = phase2_harness("op-token-recheck-burst").await;
+        let uid = seeded_owner_id(&library).await;
+        let hash = library.get_user_password_hash(uid).await.unwrap().unwrap();
+        let auth = state.auth_snapshot().await;
+        let wrong = wrong_elevate_password();
+        let attempts = (0..20).map(|_| recheck_account_password(&auth, uid, &wrong, &hash));
+        let results = futures::future::join_all(attempts).await;
+        // The harness allows five failures, so at most five guesses are compared.
+        let checked = results
+            .iter()
+            .filter(|r| matches!(r, Ok(PasswordRecheck::Wrong { .. })))
+            .count();
+        assert!(checked <= 5, "{checked} guesses were compared");
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, Ok(PasswordRecheck::Locked(_)))));
+    }
+
+    #[test]
+    fn recent_owner_gate_message_names_the_lockout() {
+        assert_eq!(
+            recent_owner_gate_message(StatusCode::TOO_MANY_REQUESTS, "reauth"),
+            "too many wrong passwords for this account; try again later"
+        );
+        assert_eq!(
+            recent_owner_gate_message(StatusCode::UNAUTHORIZED, "reauth"),
+            "reauth"
+        );
+    }
+
+    #[tokio::test]
+    async fn reauth_misses_count_toward_the_elevation_lockout() {
+        use axum::http::StatusCode;
+
+        let (state, app, library) = phase2_harness("op-token-reauth-elevate").await;
+        let uid = seeded_owner_id(&library).await;
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        let wrong = wrong_elevate_password();
+        for _ in 0..4 {
+            let res =
+                require_recent_portal_reauth(&state, &HeaderMap::new(), uid, Some(&wrong)).await;
+            assert_eq!(res, Err(StatusCode::UNAUTHORIZED));
+        }
+        // The fifth miss for this account, via elevation from a fresh address, locks it.
+        let (status, retry_after) = elevate_from(&app, &cookie, "198.51.100.40", &wrong).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(retry_after.is_some());
+    }
+
+    #[tokio::test]
+    async fn password_change_locks_after_repeated_wrong_current_passwords() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (_state, app, library) = phase2_harness("op-token-password-throttle").await;
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        let next = ["next", "-", "pass", "-", "word"].concat();
+        let change = |current: String| {
+            let app = app.clone();
+            let cookie = cookie.clone();
+            let next = next.clone();
+            async move {
+                let res = app
+                    .oneshot(
+                        Request::builder()
+                            .method("PUT")
+                            .uri("/api/auth/password")
+                            .header(header::CONTENT_TYPE, "application/json")
+                            .header(header::COOKIE, &cookie)
+                            .body(Body::from(
+                                serde_json::json!({ "password": next, "current_password": current })
+                                    .to_string(),
+                            ))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = res.status();
+                let _ = res.into_body().collect().await;
+                status
+            }
+        };
+        for _ in 0..4 {
+            assert_eq!(
+                change(wrong_elevate_password()).await,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert_eq!(
+            change(wrong_elevate_password()).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        // Locked: the right current password does not change it either.
+        assert_eq!(
+            change(phase2_owner_password()).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
     }
 
     #[tokio::test]

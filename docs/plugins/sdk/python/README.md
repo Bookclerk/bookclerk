@@ -3,8 +3,9 @@
 This page shows how to write a Bookclerk plugin in Python with
 `bookclerk-plugin-sdk` (`api_version = 3`). A Python plugin is a Python
 Worker in a workerd isolate; `bookclerk-workerd` injects
-`bookclerk_plugin_sdk.workerd` into the isolate, so you import it rather
-than vendor a path.
+`bookclerk_plugin_sdk.workerd` and the modules it uses (including
+`bookclerk_plugin_sdk.db_value` for database bindings) into the isolate, so
+you import them rather than vendor a path.
 
 | Import | What it holds |
 | --- | --- |

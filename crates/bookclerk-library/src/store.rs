@@ -20,7 +20,7 @@ use sea_orm::{
 use uuid::Uuid;
 
 use crate::atomic_txn::AtomicTxnBackend;
-use crate::control_plane::batch;
+use crate::control_plane::{batch, sea_probe, Bump, LiveTopic};
 use crate::entities::{
     account_links, accounts, books, claim_tickets, embeddings, encrypted_secrets, ignored_titles,
     listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states,
@@ -232,13 +232,14 @@ impl LibraryStore {
         .await
     }
 
-    /// Subscribers packed into one dispatch plan (receipt overhead is ~12 statements).
+    /// Subscribers packed into one dispatch plan (receipt overhead and the
+    /// live counter bump are ~13 statements).
     #[must_use]
     pub fn dispatch_chunk_size(&self) -> usize {
         if let Some(n) = crate::store::event_outbox::dispatch_chunk_override() {
             return n.max(1);
         }
-        const OVERHEAD: u32 = 12;
+        const OVERHEAD: u32 = 13;
         const BINDS_PER_INSERT: u32 = 9;
         let by_stmts = self.max_statements.saturating_sub(OVERHEAD).max(1);
         let by_binds = self.max_binds.saturating_sub(16) / BINDS_PER_INSERT;
@@ -513,16 +514,21 @@ impl LibraryStore {
             let mut am: books::ActiveModel = book.into();
             am.account_id = Set(to.to_string());
             am.updated_at = Set(now.clone());
-            am.update(&self.db).await.map_err(LibraryError::Orm)?;
+            self.update_book_bumped(am).await?;
         }
 
         // Drop duplicate product rows left on the old id, then the account.
-        books::Entity::delete_many()
+        let probe = books::Entity::find()
             .filter(books::Column::PluginKey.eq(plugin_key))
-            .filter(books::Column::AccountId.eq(from))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+            .filter(books::Column::AccountId.eq(from));
+        self.exec_bumped(
+            books::Entity::delete_many()
+                .filter(books::Column::PluginKey.eq(plugin_key))
+                .filter(books::Column::AccountId.eq(from)),
+            LiveTopic::Library,
+            Bump::IfAny(sea_probe(&probe)?),
+        )
+        .await?;
         accounts::Entity::delete_many()
             .filter(accounts::Column::PluginKey.eq(plugin_key))
             .filter(accounts::Column::AccountId.eq(from))
@@ -900,8 +906,74 @@ impl LibraryStore {
             avatar_source: Set(None),
             totp_enabled: Set(0),
         };
-        let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(map_user(model))
+        let id = self
+            .insert_bumped(users::Entity::insert(am), LiveTopic::Users)
+            .await?;
+        self.get_user(id)
+            .await?
+            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))
+    }
+
+    /// Writes a loaded title's changed columns and bumps the library topic
+    /// in one batch, and answers the row as written.
+    ///
+    /// # Errors
+    ///
+    /// Returns the write or read error, or [`LibraryError::NotFound`] when
+    /// the row is gone.
+    pub(crate) async fn update_book_bumped(&self, am: books::ActiveModel) -> Result<books::Model> {
+        let id = match &am.id {
+            sea_orm::ActiveValue::Set(id) | sea_orm::ActiveValue::Unchanged(id) => *id,
+            sea_orm::ActiveValue::NotSet => {
+                return Err(LibraryError::Other(anyhow::anyhow!(
+                    "a title update needs the row id"
+                )))
+            }
+        };
+        // A row loaded whole has every column, so the written row is known
+        // without reading it back.
+        let written = sea_orm::TryIntoModel::try_into_model(am.clone()).ok();
+        let update = books::Entity::update(am)
+            .validate()
+            .map_err(LibraryError::Orm)?;
+        let changed = self
+            .exec_bumped(update, LiveTopic::Library, Bump::Always)
+            .await?;
+        match written {
+            Some(model) if changed == 1 => Ok(model),
+            _ => self.book_model_by_id(id).await,
+        }
+    }
+
+    /// One title row by its row id.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read error, or [`LibraryError::NotFound`] when it is gone.
+    pub(crate) async fn book_model_by_id(&self, id: i64) -> Result<books::Model> {
+        books::Entity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound(format!("title row {id}")))
+    }
+
+    /// Writes a loaded user's changed columns and bumps the users topic in
+    /// one batch, then reads the row back.
+    ///
+    /// # Errors
+    ///
+    /// Returns the write or read error, or [`LibraryError::NotFound`] when
+    /// the user is gone.
+    async fn update_user_bumped(&self, am: users::ActiveModel, id: i64) -> Result<UserRecord> {
+        let update = users::Entity::update(am)
+            .validate()
+            .map_err(LibraryError::Orm)?;
+        self.exec_bumped(update, LiveTopic::Users, Bump::Always)
+            .await?;
+        self.get_user(id)
+            .await?
+            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))
     }
 
     /// Look up a first-party user by id.
@@ -1380,8 +1452,7 @@ impl LibraryStore {
             .filter(|s| !s.is_empty())
             .map(str::to_string));
         am.updated_at = Set(now_str());
-        let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(map_user(model))
+        self.update_user_bumped(am, id).await
     }
 
     /// Set or clear Argon2id password hash; bumps `security_version`.
@@ -1440,8 +1511,7 @@ impl LibraryStore {
         let mut am: users::ActiveModel = model.into();
         am.login_name = Set(normalize_login_name(login_name));
         am.updated_at = Set(now_str());
-        let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(map_user(model))
+        self.update_user_bumped(am, id).await
     }
 
     /// Set contact email (unique when set); does not bump security_version.
@@ -1458,8 +1528,7 @@ impl LibraryStore {
         let mut am: users::ActiveModel = model.into();
         am.email = Set(crate::email::normalize_user_email(email)?);
         am.updated_at = Set(now_str());
-        let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(map_user(model))
+        self.update_user_bumped(am, id).await
     }
 
     /// Set the user's picture source (`monogram` / `gravatar` / `upload` / `sso:{id}` / auto).
@@ -1485,8 +1554,7 @@ impl LibraryStore {
             .filter(|s| !s.is_empty())
             .map(str::to_string));
         am.updated_at = Set(now_str());
-        let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(map_user(model))
+        self.update_user_bumped(am, id).await
     }
 
     /// Store or clear the HTTPS picture URL on a portal identity.
@@ -3038,14 +3106,24 @@ impl LibraryStore {
         let reply = self
             .execute_host_batch(batch::request(
                 &operation_id,
-                vec![batch::exec(
-                    "UPDATE users SET totp_enabled = ?, updated_at = ? WHERE id = ?",
-                    vec![
-                        batch::int(i64::from(enabled)),
-                        batch::text(&now_str()),
-                        batch::int(user_id),
-                    ],
-                )],
+                vec![
+                    batch::exec(
+                        "UPDATE users SET totp_enabled = ?, updated_at = ? WHERE id = ?",
+                        vec![
+                            batch::int(i64::from(enabled)),
+                            batch::text(&now_str()),
+                            batch::int(user_id),
+                        ],
+                    ),
+                    crate::control_plane::bump_if_any(
+                        LiveTopic::Users,
+                        batch::query(
+                            "SELECT 1 FROM users WHERE id = ?",
+                            vec![batch::int(user_id)],
+                            1,
+                        ),
+                    ),
+                ],
             ))
             .await?;
         if batch::rows_affected(&reply, 0) == 0 {
@@ -4133,7 +4211,7 @@ impl LibraryStore {
                 existing.published_at.clone()
             });
             am.updated_at = Set(now);
-            am.update(&self.db).await.map_err(LibraryError::Orm)?
+            self.update_book_bumped(am).await?
         } else {
             let uuid = book
                 .uuid
@@ -4183,7 +4261,17 @@ impl LibraryStore {
                 created_at: Set(now.clone()),
                 updated_at: Set(now),
             };
-            am.insert(&self.db).await.map_err(LibraryError::Orm)?
+            let mut written = am.clone();
+            let id = self
+                .insert_bumped(books::Entity::insert(am), LiveTopic::Library)
+                .await?;
+            // Every column was set, so the new row is known without
+            // reading it back.
+            written.id = Set(id);
+            match sea_orm::TryIntoModel::try_into_model(written) {
+                Ok(model) => model,
+                Err(_) => self.book_model_by_id(id).await?,
+            }
         };
         map_book(model)
     }
@@ -4386,7 +4474,7 @@ impl LibraryStore {
             am.is_finished = Set(i64::from(v));
         }
         am.updated_at = Set(now_str());
-        am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        self.update_book_bumped(am).await?;
         Ok(())
     }
 
@@ -4418,7 +4506,7 @@ impl LibraryStore {
         am.pdf_status = Set(status.as_str().to_string());
         am.pdf_storage_key = Set(pdf_storage_key.map(str::to_string));
         am.updated_at = Set(now_str());
-        am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        self.update_book_bumped(am).await?;
         Ok(())
     }
 
@@ -4854,7 +4942,7 @@ impl LibraryStore {
             am.enrich_updated_at = Set(Some(v.to_rfc3339()));
         }
         am.updated_at = Set(now_str());
-        let updated = am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        let updated = self.update_book_bumped(am).await?;
         // The title's work takes the enrichment where it has none yet.
         if let Some(edition_id) = self.edition_id_for_book(&updated).await? {
             let fill = WorkEnrichment {

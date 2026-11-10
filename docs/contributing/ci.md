@@ -135,7 +135,8 @@ A merge group only needs to know whether it can land, so it fails fast.
 nextest stops at the first test that fails its retry. The
 `merge-queue-fail-fast` job cancels the rest of the run as soon as any job
 fails, so `CI Gate` reports at once and the queue ejects the group without
-waiting for the slowest job.
+waiting for the slowest job. It also cancels the run of a group the queue
+has dropped (see [Superseded merge groups](#superseded-merge-groups)).
 
 That job runs no repository code and is the only one with
 `actions: write`. Pull requests run every selected test and job to the
@@ -1188,6 +1189,17 @@ the starting point of the next scheduled one.
    retry an even larger range. The job frees the preinstalled SDKs it never
    uses before it builds, logs the disk and memory left every 10 minutes,
    and the summary says why a run stopped early.
+6. Those checks are too slow for a mutant that allocates without bound, so
+   cargo-mutants also runs in a cgroup capped at all but 1.5 GiB of the
+   runner's memory. The kernel then kills the largest process in it,
+   normally that mutant's test, instead of starving the runner, and the
+   mutant counts as caught. The log notes the cap and how many processes it
+   stopped. When the cgroup cannot be set up, a warning says so and the run
+   goes on uncapped. A kill that lands on cargo itself leaves the mutant
+   unclassified; each one gets its own warning, and the job summary says
+   the results are incomplete, because no list holds it. A kill that lands
+   on cargo-mutants itself, before the time limit and without the
+   watchdog, fails the run, so the next run retries the same range.
 
 The job summary shows the share of mutants the tests caught and lists the
 missed ones. The full results, with a log per mutant, are in the
@@ -1386,7 +1398,10 @@ Configure repository rulesets or branch protection so the **required** CI check 
 **`CI Gate`** (plus the OSV check), **not** every matrix child. The
 `Bookclerk CLA` and `Maintainer review` checks are required too, expected
 from the automation App (see [the CLA check](licensing.md#the-cla-check) and
-[maintainer review](automation.md#maintainer-review)).
+[maintainer review](automation.md#maintainer-review)). The ruleset also
+requires signed commits; the `Signed commits` check explains a pull request
+that its unsigned commits keep out of the queue (see
+[signed commits](automation.md#signed-commits)).
 
 > [!WARNING]
 > Skipped `release`, `confinement`, `native-gateway`, `tray` and macOS jobs
@@ -1402,11 +1417,88 @@ Queue settings:
 
 - squash;
 - "only merge non-failing pull requests";
-- build concurrency around 5.
+- build concurrency 1;
+- merge limits: minimum 1, maximum 5, wait time 5 minutes;
+- status check timeout 300 minutes.
 
 With a queue required, "require branches to be up to date" no longer
 matters. The queue tests each entry against the current `main`, stacked on
 the entries ahead of it.
+
+### Sizing the queue to the runner pool
+
+The organization runs on GitHub Free, which allows 20 hosted jobs at once
+across every workflow, and hosted runners serve queued jobs first come,
+first served. A job from a pull request gets no priority over one from a
+merge group, or the other way round.
+
+The merge queue starts one `merge_group` run per entry it builds, each
+holding the entries ahead of it. Merge limits don't change that: GitHub
+documents that they "do not combine `merge_group` builds" and only decide
+how many passing entries land at once. Build concurrency is the only
+setting that caps how many groups test at the same time.
+
+One merge group asks for about 22 jobs: the 19 CI jobs (17 of them start
+together right after `plan`), plus OSV-Scanner, the CLA check and the
+coverage upload. Most finish within 10 minutes. The unit tests (about
+30 minutes), the fat-LTO release build (about 23), `fmt / clippy / docs`
+(about 16), the two long Windows jobs and `merge-queue fail-fast`, which
+holds a runner until the run ends, keep going. Uncontended, a group takes
+about 35 minutes and averages about 6 runners.
+
+| Build concurrency | Merge-group runners (peak, typical) | Left for pull requests |
+| --- | --- | --- |
+| 1 | about 19, then about 6 after 10 minutes | about 14 most of the time |
+| 2 | up to 20 when fan-outs overlap, about 12 typical | about 8, none at overlaps |
+| 3 or more | the whole pool | none until the groups drain |
+
+Build concurrency was 2 on 9 to 10 November 2026, yet up to three runs
+built at once: the third was the leftover run of a group the queue had
+already dropped (see [Superseded merge groups](#superseded-merge-groups)).
+
+Build concurrency 1 keeps about two thirds of the pool for pull request
+checks. It caps the queue at one landing about every 35 minutes, about
+1.7 pull requests an hour, so a queue 10 deep takes about 6 hours to drain.
+More concurrency helps only while the pool is idle: on a quiet 9 November
+2026, overlapping groups landed about 3 an hour. On the busy night of
+9 to 10 November, with two groups and leftover runs building, merge-group jobs waited
+10 to 25 minutes for a runner, runs took about 65 minutes, and the queue
+landed about 1.3 an hour while pull request checks waited behind it.
+
+It also makes a failure cheap. With several groups building, a failure
+(including a flaky test) ejects the head entry and rebuilds every group
+behind it. With one group, nothing else was building, so nothing is
+rebuilt. "Jump to the front" likewise restarts only the one group in
+progress.
+
+The status check timeout counts from the moment a group requests its
+checks, including the time its jobs wait for runners. On 10 November 2026,
+with pull request jobs holding most of the pool, a green group ran past the
+earlier 120-minute timeout and was ejected, so the timeout is now 300
+minutes.
+
+Raise build concurrency again only when the pool grows, for example a paid
+plan or a self-hosted runner reserved for `merge_group`.
+
+### Superseded merge groups
+
+The queue rebuilds its groups when an entry ahead fails or leaves, when a
+pull request jumps to the front, or when one is dequeued. It deletes each
+dropped group's `gh-readonly-queue/main/pr-<number>-<sha>` branch, but
+GitHub doesn't cancel that group's run, and the workflow's `concurrency`
+never cancels a `merge_group` run. The run would keep asking for its
+22 jobs although nothing can merge from it.
+
+`merge-queue-fail-fast` therefore checks the group's branch
+(`github.event.merge_group.head_ref`) with `git ls-remote --exit-code` on
+every pass and cancels the run once the branch is gone. It starts with the
+run, so it gets a runner before the jobs that fan out after `plan`. The
+queue also deletes a group's branch after merging it, so the check comes
+after the job's `CI Gate` test, and the job looks again for a started
+`CI Gate` just before it cancels. A transport error counts as the branch
+being present. A cancelled run doesn't trigger
+[re-enqueue](#merge-queue-re-enqueue), because its jobs carry no
+not-acquired annotation.
 
 ### macOS job
 

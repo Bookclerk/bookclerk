@@ -30,7 +30,8 @@ use bookclerk_library::control_plane::{
     RemotePluginConsent,
 };
 use bookclerk_plugin_host::{
-    approve_remote_request, remote_consent_view, remote_row_consent_state, RemoteNarrowing,
+    approve_remote_request, remote_consent_view, remote_row_changes, remote_row_consent_state,
+    RemoteNarrowing,
 };
 use clap::Subcommand;
 use serde_json::json;
@@ -447,6 +448,11 @@ pub async fn run(
                         // The capabilities the digest covers, so an approval
                         // by digest names something the operator saw.
                         println!("  grant: {}", printable(&row.requested_grant_json));
+                        // What changed since the approval, as the local
+                        // consent flow and the web UI show it.
+                        for line in remote_row_changes(row) {
+                            println!("  {}", printable(&line));
+                        }
                     }
                 },
             )

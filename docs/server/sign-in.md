@@ -50,6 +50,13 @@ misses, `POST /api/auth/elevate` answers `429` with a `Retry-After` header,
 even from another address, until the lockout ends. A passkey or IdP step-up
 still works meanwhile.
 
+The Owner's count is the account's password lockout, which every password
+re-check by a signed-in user shares: elevation, changing your password, and
+the `current_password` that sensitive changes ask for once a session is
+more than fifteen minutes old (authenticator, passkey, sign-in provider and
+OIDC client changes). Misses on any of them add up, and while the account
+is locked each answers `429`. A correct password clears the count.
+
 ## Sign-in methods
 
 ### Passwords and second factors
