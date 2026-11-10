@@ -52,6 +52,9 @@ This vendored tree is identical to the pinned upstream revision except:
    proto codegen), the versions the rest of the workspace uses, so a
    workspace build compiles one HTML parser stack and one `logos`
    (#756). No source change was needed.
+9. `api::paginator::page_at` fetches one library page from a continuation
+   token and returns the next one, so the storefront plugin can answer a
+   paged host scan one page per call instead of walking the whole library.
 
 Re-vendor when bumping the `audible-rs` git rev in the workspace
 `Cargo.toml`, then re-apply these patches.

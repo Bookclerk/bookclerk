@@ -2016,10 +2016,16 @@ async fn collect_streamed(
     stream.collect(limits).await.map_err(map_abi)
 }
 
-fn host_err_to_abi(err: PluginError) -> bookclerk_plugin_abi::PluginError {
+/// Maps a host-side [`PluginError`] back to the guest ABI error, keeping the
+/// wire code (and `unavailable`) so callers can branch on
+/// [`bookclerk_plugin_abi::PluginErrorCode`].
+pub(crate) fn host_err_to_abi(err: PluginError) -> bookclerk_plugin_abi::PluginError {
     match err {
         PluginError::Abi { code, message } => {
             bookclerk_plugin_abi::PluginError::from_wire(&code, message)
+        }
+        PluginError::Unavailable(message) => {
+            bookclerk_plugin_abi::PluginError::unavailable(message)
         }
         other => bookclerk_plugin_abi::PluginError::internal(other.to_string()),
     }

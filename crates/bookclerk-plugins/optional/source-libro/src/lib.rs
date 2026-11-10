@@ -39,8 +39,8 @@ pub use container::LibroContainer;
 pub use download::{chapters_from_tracks, fetch_title_materials};
 pub use error::{LibroError, Result};
 pub use guest::{
-    guest_fetch_title, guest_fetch_title_rpc, guest_login, guest_login_rpc, guest_scan,
-    guest_scan_rpc, resolve_base_url, resolve_container,
+    guest_fetch_title, guest_fetch_title_rpc, guest_login, guest_login_rpc, guest_scan_page,
+    resolve_base_url, resolve_container,
 };
 pub use source::{LibroSource, ID as LIBRO_SOURCE_ID};
-pub use sync::{audiobook_to_scan_book, collect_account_books};
+pub use sync::{audiobook_to_scan_book, collect_account_books, fetch_account_page};

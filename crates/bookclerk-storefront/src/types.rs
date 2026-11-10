@@ -159,6 +159,9 @@ pub struct ScanSummary {
     pub pages: u32,
     /// Accounts skipped because [`crate::SourceAccount::scan_enabled`] was false.
     pub skipped_disabled: usize,
+    /// Titles the storefronts reported gone from their accounts (delta
+    /// passes). Counted only; holdings are not removed yet.
+    pub removed: usize,
     /// Plugin keys skipped because more than one instance is registered.
     ///
     /// Other sources in the same scan still run. Accounts stay keyed by
@@ -173,6 +176,7 @@ impl ScanSummary {
         self.books_upserted += other.books_upserted;
         self.pages += other.pages;
         self.skipped_disabled += other.skipped_disabled;
+        self.removed += other.removed;
         self.warnings.extend(other.warnings.iter().cloned());
     }
 }

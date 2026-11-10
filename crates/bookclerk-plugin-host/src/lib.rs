@@ -88,7 +88,7 @@ pub use bookclerk_plugin_sdk::{
     CliInvokeResult, CliSchema, EventPollResult, ExpandCandidatesParams, ExternalUser,
     FetchTitleParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
     LoginStartResult, PlainFetch, PlainPart, PluginDescribe, PurchaseHint, PurchaseHintParams,
-    ScanBook, ScanParams, ScanSummary, SearchCatalogParams, SourceAccount, SyncListeningResult,
+    ScanBook, ScanPage, ScanParams, SearchCatalogParams, SourceAccount, SyncListeningResult,
     PRODUCT_API_VERSION, PROTOCOL_NAME,
 };
 

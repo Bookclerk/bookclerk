@@ -4,16 +4,14 @@
 //! upserts scan rows via `bookclerk_plugin_host::ExternalSource`. Conversions
 //! between storefront types and the typed ABI live in [`bookclerk_storefront::abi`].
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
-use bookclerk_plugin_sdk::ScanBook;
 use bookclerk_plugin_sdk::{
-    FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch, ScanParams,
-    ScanSummary, SourceAccount,
+    FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch, ScanPage, ScanParams,
+    SourceAccount,
 };
 use bookclerk_storefront::abi::{
-    account_credentials_json, credentials_from_bytes, credentials_to_bytes, scan_summary,
+    credentials_from_bytes, credentials_to_bytes, full_pass_page, page_cursor, scan_credential,
 };
 use bookclerk_storefront::{LoginOptions, PlainFetch};
 use serde_json::Value;
@@ -23,7 +21,7 @@ use crate::client::{ChirpClient, DEFAULT_GRAPHQL_URL};
 use crate::download::fetch_title_materials;
 use crate::error::{ChirpError, Result};
 use crate::source::ID;
-use crate::sync::collect_account_books;
+use crate::sync::fetch_account_page;
 
 /// Default GraphQL page size used when the host does not specify one.
 const DEFAULT_GUEST_PAGE_SIZE: u32 = 20;
@@ -97,75 +95,49 @@ pub async fn guest_login_rpc(graphql_url: &str, params: LoginParams) -> Result<L
     })
 }
 
-/// Scan libraries for the credential blobs the host injected.
+/// RPC scan: one page of one account's full pass (the host upserts books).
+///
+/// Chirp has no delta API, so every pass lists the whole library and ends
+/// `complete`.
+///
+/// # Arguments
+///
+/// * `graphql_url` - Chirp GraphQL endpoint.
+/// * `params` - The pass's account, credential, page size and cursor.
+/// * `page` - The store page the cursor names
+///   ([`bookclerk_storefront::abi::page_from_cursor`]).
 ///
 /// # Errors
 ///
-/// Returns an error when the operation fails.
-pub async fn guest_scan(
+/// Returns an error when the credential is missing or invalid, or the page
+/// request fails.
+pub async fn guest_scan_page(
     graphql_url: &str,
-    credentials: &BTreeMap<String, Value>,
-    account_filter: &[String],
-    page_size: u32,
-) -> Result<(Vec<ScanBook>, usize, u32)> {
-    if credentials.is_empty() {
-        return Err(ChirpError::no_accounts(
-            "no Chirp credentials from host — run login first",
-        ));
-    }
-    let explicit = !account_filter.is_empty();
-    let page_size = if page_size == 0 {
+    params: &ScanParams,
+    page: u32,
+) -> Result<ScanPage> {
+    let creds = scan_credential(params).map_err(|e| ChirpError::auth(e.to_string()))?;
+    let auth: ChirpAuthFile = serde_json::from_value(creds).map_err(|e| {
+        ChirpError::auth(format!(
+            "invalid Chirp credentials for {}: {e}",
+            params.account_id
+        ))
+    })?;
+    let page_size = if params.page_size == 0 {
         DEFAULT_GUEST_PAGE_SIZE
     } else {
-        page_size
+        params.page_size
     };
-    let mut books = Vec::new();
-    let mut accounts = 0usize;
-    let mut pages = 0u32;
-
-    for (account_id, creds) in credentials {
-        if explicit
-            && !account_filter
-                .iter()
-                .any(|n| n.eq_ignore_ascii_case(account_id))
-        {
-            continue;
-        }
-        let auth: ChirpAuthFile = serde_json::from_value(creds.clone()).map_err(|e| {
-            ChirpError::auth(format!("invalid Chirp credentials for {account_id}: {e}"))
-        })?;
-        let client = ChirpClient::new(graphql_url).with_token(&auth.access_token);
-        let (batch, p) =
-            collect_account_books(&client, account_id, &auth.marketplace, page_size).await?;
-        pages = pages.saturating_add(p);
-        accounts += 1;
-        books.extend(batch);
-    }
-
-    if accounts == 0 {
-        return Err(ChirpError::no_accounts(
-            "no matching Chirp accounts in host credentials",
-        ));
-    }
-    Ok((books, accounts, pages))
-}
-
-/// RPC scan: return the typed [`ScanSummary`] (host upserts books).
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub async fn guest_scan_rpc(graphql_url: &str, params: &ScanParams) -> Result<ScanSummary> {
-    let credentials = account_credentials_json(&params.credentials)
-        .map_err(|e| ChirpError::auth(e.to_string()))?;
-    let (books, accounts, pages) = guest_scan(
-        graphql_url,
-        &credentials,
-        &params.accounts,
-        params.page_size,
+    let client = ChirpClient::new(graphql_url).with_token(&auth.access_token);
+    let (books, next) = fetch_account_page(
+        &client,
+        &params.account_id,
+        &auth.marketplace,
+        page,
+        page_size,
     )
     .await?;
-    Ok(scan_summary(books, accounts, pages))
+    Ok(full_pass_page(books, next.map(page_cursor), 1))
 }
 
 /// Download one title into `cache_dir` using host-injected credentials.

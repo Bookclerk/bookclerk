@@ -54,19 +54,40 @@ where
                 return Ok(None);
             };
 
-            let response = fetch_with_retry(&mut make_request, continuation.as_deref()).await?;
-            let response = response.error_for_status()?;
-
-            let state_token = header(&response, HEADER_STATE_TOKEN).filter(|token| token != "0");
-            let next = header(&response, HEADER_CONTINUATION_TOKEN);
-            let body = response.json().await?;
-
-            Ok(Some((
-                Page { body, state_token },
-                (make_request, next.map(Some)),
-            )))
+            let (page, next) = page_at(&mut make_request, continuation.as_deref()).await?;
+            Ok(Some((page, (make_request, next.map(Some)))))
         },
     )
+}
+
+/// Fetches one page of a continuation-token paginated endpoint.
+///
+/// `continuation` is the token a previous page announced (`None` for the
+/// first page); `make_request` follows the same rules as for [`pages`].
+/// Lets a caller that keeps the continuation token itself (for example
+/// across separate plugin invocations) resume a listing page by page.
+///
+/// # Returns
+///
+/// The page and the continuation token of the next page, `None` on the
+/// last page.
+///
+/// # Errors
+///
+/// Returns the HTTP error after retries, or an error status.
+pub async fn page_at<'c, F>(
+    make_request: &mut F,
+    continuation: Option<&str>,
+) -> Result<(Page, Option<String>), ApiError>
+where
+    F: FnMut(Option<&str>) -> RequestBuilder<'c>,
+{
+    let response = fetch_with_retry(make_request, continuation).await?;
+    let response = response.error_for_status()?;
+    let state_token = header(&response, HEADER_STATE_TOKEN).filter(|token| token != "0");
+    let next = header(&response, HEADER_CONTINUATION_TOKEN);
+    let body = response.json().await?;
+    Ok((Page { body, state_token }, next))
 }
 
 async fn fetch_with_retry<'c, F>(

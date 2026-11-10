@@ -5,11 +5,9 @@
 
 use std::io::{Cursor, Write};
 
-use std::collections::BTreeMap;
-
 use bookclerk_plugin_source_graphicaudio::GraphicAudioSource;
 use bookclerk_plugin_source_graphicaudio::{
-    fetch_title_materials, guest_fetch_title, guest_login, guest_scan, GraphicAudioAccess,
+    fetch_title_materials, guest_fetch_title, guest_login, guest_scan_page, GraphicAudioAccess,
     GraphicAudioAuthFile, GraphicAudioBitrate, GraphicAudioClient, GraphicAudioContainer,
     DEFAULT_STORE_URL, LOGIN_PATH, PRODUCTS_PATH, REMOVE_PATH,
 };
@@ -101,26 +99,29 @@ async fn scan_skips_samples_returns_owned() {
         .mount(&server)
         .await;
 
-    let mut credentials = BTreeMap::new();
-    credentials.insert(
-        "a@ex.com".to_string(),
-        serde_json::to_value(stored_auth("a@ex.com")).unwrap(),
-    );
-    let (books, accounts, _pages) = guest_scan(
+    let params = bookclerk_plugin_sdk::ScanParams {
+        account_id: "a@ex.com".into(),
+        credential: bookclerk_plugin_sdk::AccountCredential {
+            account_id: "a@ex.com".into(),
+            credentials: serde_json::to_vec(&stored_auth("a@ex.com")).unwrap(),
+        },
+        ..bookclerk_plugin_sdk::ScanParams::default()
+    };
+    let page = guest_scan_page(
         &server.uri(),
         DEFAULT_STORE_URL,
         GraphicAudioAccess::Device,
         None,
-        &credentials,
-        &[],
-        false,
+        &params,
+        1,
     )
     .await
     .unwrap();
-    assert_eq!(accounts, 1);
-    assert_eq!(books.len(), 1);
-    assert_eq!(books[0].product_id, "99");
-    assert_eq!(books[0].account_id, "a@ex.com");
+    assert!(page.complete && page.next_cursor.is_empty());
+    assert_eq!(page.store_pages, 1);
+    assert_eq!(page.books.len(), 1);
+    assert_eq!(page.books[0].product_id, "99");
+    assert_eq!(page.books[0].account_id, "a@ex.com");
 }
 
 #[tokio::test]

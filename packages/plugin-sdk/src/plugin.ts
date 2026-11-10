@@ -108,8 +108,8 @@ import type {
   QueueSendOk,
   RevokeAccountParams,
   ScanLibraryParams,
+  ScanPage,
   ScanParams,
-  ScanSummary,
   ScheduledController,
   SearchCatalogParams,
   SourceAccount,
@@ -1838,12 +1838,19 @@ export class StorefrontEntrypoint<
     return Promise.reject(unsupported("login"));
   }
   /**
-   * Library scan; the host upserts `ScanSummary.books`.
+   * One page of one account's library scan.
    *
-   * @param _params - Scan parameters (accounts + credentials).
-   * @returns Books discovered plus per-account counters.
+   * The host calls this repeatedly, passing back `nextCursor` as
+   * `params.cursor` until a page sets `complete`. An empty `params.syncToken`
+   * asks for a full pass; a non-empty one asks only for changes since that
+   * token (list gone titles in `removed`). Only the last page's `syncToken`
+   * is stored. Reject a stale cursor or token with `invalid_cursor` and the
+   * host restarts as a full pass.
+   *
+   * @param _params - The account, its credential, the cursor and the sync token.
+   * @returns At most `MAX_SCAN_PAGE_BOOKS` books plus the paging fields.
    */
-  scan(_params: ScanParams): Promise<ScanSummary> {
+  scan(_params: ScanParams): Promise<ScanPage> {
     return Promise.reject(unsupported("scan"));
   }
   /**

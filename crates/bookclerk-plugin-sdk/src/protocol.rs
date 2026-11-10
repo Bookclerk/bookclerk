@@ -25,7 +25,7 @@ pub use bookclerk_plugin_abi::{
     LoginParams, LoginResult, LoginStartResult, MediaKind, OutputLocalContextDto,
     OutputS3ContextDto, PlainFetch, PlainPart, PortalAuthMode, PurchaseHint, PurchaseHintParams,
     PurchaseHintResult, RevokeAccountParams, S3CredentialsDto, ScanBook, ScanLibraryParams,
-    ScanParams, ScanSummary, SearchCatalogParams, SeriesEntry, SourceAccount, SourceAccounts,
+    ScanPage, ScanParams, SearchCatalogParams, SeriesEntry, SourceAccount, SourceAccounts,
     SyncListeningResult, WorkKind,
 };
 

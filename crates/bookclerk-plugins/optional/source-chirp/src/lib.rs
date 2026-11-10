@@ -23,8 +23,8 @@ pub use client::{
 pub use download::fetch_title_materials;
 pub use error::{ChirpError, Result};
 pub use guest::{
-    guest_fetch_title, guest_fetch_title_rpc, guest_login, guest_login_rpc, guest_scan,
-    guest_scan_rpc, resolve_graphql_url,
+    guest_fetch_title, guest_fetch_title_rpc, guest_login, guest_login_rpc, guest_scan_page,
+    resolve_graphql_url,
 };
 pub use source::{ChirpSource, ID as CHIRP_SOURCE_ID};
-pub use sync::{audiobook_to_scan_book, collect_account_books};
+pub use sync::{audiobook_to_scan_book, collect_account_books, fetch_account_page};

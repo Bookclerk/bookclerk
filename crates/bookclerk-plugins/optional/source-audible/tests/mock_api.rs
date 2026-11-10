@@ -310,3 +310,81 @@ async fn revoke_reports_a_rejected_deregistration() {
     let client = synthetic_client(&server);
     assert!(deregister_device(&client).await.is_err());
 }
+
+#[tokio::test]
+async fn delta_pages_ask_for_changes_since_the_state_token_and_report_removals() {
+    use bookclerk_plugin_source_audible::{fetch_library_page, LibraryPageRequest};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/1.0/library"))
+        .and(query_param("status", "Active,Revoked"))
+        .and(query_param("state_token", "1700000000000"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Continuation-Token", "next-1")
+                .insert_header("State-Token", "1800000000000")
+                .set_body_json(serde_json::json!({
+                    "items": [library_item("B00NEW", "New Book")],
+                    "removed_asins": ["B00GONE"],
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = synthetic_client(&server);
+    let rows = fetch_library_page(
+        &client,
+        "acct",
+        "us",
+        &LibraryPageRequest {
+            state_token: Some("1700000000000".into()),
+            page_size: 50,
+            import_episodes: true,
+            import_plus_titles: true,
+            ..LibraryPageRequest::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows.books.len(), 1);
+    assert_eq!(rows.books[0].account_id, "acct");
+    assert_eq!(rows.removed, ["B00GONE"]);
+    assert_eq!(rows.next_continuation.as_deref(), Some("next-1"));
+    assert_eq!(rows.state_token.as_deref(), Some("1800000000000"));
+}
+
+#[tokio::test]
+async fn a_resumed_page_sends_its_continuation_token() {
+    use bookclerk_plugin_source_audible::{fetch_library_page, LibraryPageRequest};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/1.0/library"))
+        .and(query_param("status", "Active"))
+        .and(query_param("continuation_token", "next-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "items": [library_item("B00TWO", "Second")],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = synthetic_client(&server);
+    let rows = fetch_library_page(
+        &client,
+        "acct",
+        "us",
+        &LibraryPageRequest {
+            continuation: Some("next-1".into()),
+            page_size: 50,
+            ..LibraryPageRequest::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows.books[0].product_id, "B00TWO");
+    assert!(rows.removed.is_empty());
+    assert!(rows.next_continuation.is_none());
+}

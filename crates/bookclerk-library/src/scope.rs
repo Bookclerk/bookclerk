@@ -172,6 +172,59 @@ impl SourceScope {
         self.store.upsert_scanned_title(&title).await
     }
 
+    /// Where one of this plugin's accounts' scan stands.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn scan_state(&self, account_id: &str) -> Result<Option<crate::ScanState>> {
+        self.store.scan_state(&self.plugin_key, account_id).await
+    }
+
+    /// Checkpoints a pass of one of this plugin's accounts after a page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the write fails.
+    pub async fn save_scan_checkpoint(
+        &self,
+        account_id: &str,
+        cursor: &str,
+        pass_token: &str,
+    ) -> Result<()> {
+        self.store
+            .save_scan_checkpoint(&self.plugin_key, account_id, cursor, pass_token)
+            .await
+    }
+
+    /// Records the end of a pass of one of this plugin's accounts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the write fails.
+    pub async fn finish_scan_pass(
+        &self,
+        account_id: &str,
+        sync_token: &str,
+        complete: bool,
+    ) -> Result<()> {
+        self.store
+            .finish_scan_pass(&self.plugin_key, account_id, sync_token, complete)
+            .await
+    }
+
+    /// Forgets the sync token and resume cursor of one of this plugin's
+    /// accounts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the write fails.
+    pub async fn reset_scan_state(&self, account_id: &str) -> Result<()> {
+        self.store
+            .reset_scan_state(&self.plugin_key, account_id)
+            .await
+    }
+
     /// Look up one of this plugin's books by uuid, product id, ASIN, or ISBN.
     ///
     /// # Errors

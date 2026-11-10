@@ -255,7 +255,7 @@ pub mod login_complete {
 
 /// Scan a source storefront library; host upserts returned [`crate::ScanBook`] rows.
 ///
-/// Params: [`crate::ScanParams`]. Result: [`crate::ScanSummary`].
+/// Params: [`crate::ScanParams`]. Result: [`crate::ScanPage`].
 pub mod scan {
     /// Wire method name `"scan"`.
     pub const NAME: &str = "scan";

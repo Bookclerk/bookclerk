@@ -3,11 +3,9 @@
 // Test code: unwrap/expect and plain casts are fine here.
 #![allow(clippy::unwrap_used)]
 
-use std::collections::BTreeMap;
-
 use bookclerk_plugin_source_chirp::{
-    fetch_title_materials, guest_fetch_title, guest_login, guest_scan, ChirpAuthFile, ChirpClient,
-    ChirpSource,
+    fetch_title_materials, guest_fetch_title, guest_login, guest_scan_page, ChirpAuthFile,
+    ChirpClient, ChirpSource,
 };
 use bookclerk_storefront::{CatalogSearchOpts, LoginOptions, DEFAULT_CATALOG_SEARCH_LIMIT};
 use wiremock::matchers::{method, path};
@@ -29,10 +27,15 @@ fn test_password() -> String {
 }
 
 /// Host-injected credential map for one stored Chirp account.
-fn host_credentials(account_id: &str, auth: &ChirpAuthFile) -> BTreeMap<String, serde_json::Value> {
-    let mut map = BTreeMap::new();
-    map.insert(account_id.to_string(), serde_json::to_value(auth).unwrap());
-    map
+fn host_credentials(account_id: &str, auth: &ChirpAuthFile) -> bookclerk_plugin_sdk::ScanParams {
+    bookclerk_plugin_sdk::ScanParams {
+        account_id: account_id.into(),
+        credential: bookclerk_plugin_sdk::AccountCredential {
+            account_id: account_id.into(),
+            credentials: serde_json::to_vec(auth).unwrap(),
+        },
+        ..bookclerk_plugin_sdk::ScanParams::default()
+    }
 }
 
 /// A stored Chirp account the way the host keeps it.
@@ -115,11 +118,11 @@ async fn empty_library_scan_returns_no_books() {
         .await;
 
     let credentials = host_credentials("9", &stored_auth("9", "a@ex.com"));
-    let (books, accounts, _pages) = guest_scan(&server.uri(), &credentials, &[], 0)
+    let page = guest_scan_page(&server.uri(), &credentials, 1)
         .await
         .unwrap();
-    assert!(books.is_empty());
-    assert_eq!(accounts, 1);
+    assert!(page.books.is_empty());
+    assert!(page.complete && page.next_cursor.is_empty());
 }
 
 #[tokio::test]
@@ -156,13 +159,22 @@ async fn library_scan_returns_scan_rows() {
         .await;
 
     let credentials = host_credentials("9", &stored_auth("9", "a@ex.com"));
-    let (books, accounts, _pages) = guest_scan(&server.uri(), &credentials, &[], 0)
+    let page = guest_scan_page(&server.uri(), &credentials, 1)
         .await
         .unwrap();
-    assert_eq!(accounts, 1);
-    assert_eq!(books.len(), 1);
-    assert_eq!(books[0].product_id, "ab-100");
-    assert_eq!(books[0].account_id, "9");
+    // One item on a 20-item page is the last page.
+    assert!(page.complete && page.next_cursor.is_empty());
+    assert_eq!(page.books.len(), 1);
+    assert_eq!(page.books[0].product_id, "ab-100");
+    assert_eq!(page.books[0].account_id, "9");
+
+    let full = bookclerk_plugin_sdk::ScanParams {
+        page_size: 1,
+        ..credentials
+    };
+    let first = guest_scan_page(&server.uri(), &full, 1).await.unwrap();
+    assert_eq!(first.next_cursor, "page:2");
+    assert!(!first.complete);
 }
 
 #[tokio::test]

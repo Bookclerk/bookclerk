@@ -12,7 +12,7 @@ use crate::generated::{
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MetadataChapters,
     MetadataChaptersParams, MetadataLookupParams, MetadataRecord, MetadataSearchParams, PlainFetch,
     PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams, RevokeAccountParams,
-    ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams, SourceAccount,
+    ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams, SourceAccount,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
@@ -246,8 +246,9 @@ pub trait ContentSource {
         Err(PluginError::unsupported("login"))
     }
 
-    /// Library scan; the host upserts [`ScanSummary::books`].
-    async fn scan(&self, _params: ScanParams) -> Result<ScanSummary> {
+    /// One page of one account's library scan pass; the host upserts
+    /// [`ScanPage::books`] and drives the pass by `next_cursor`.
+    async fn scan(&self, _params: ScanParams) -> Result<ScanPage> {
         Err(PluginError::unsupported("scan"))
     }
 

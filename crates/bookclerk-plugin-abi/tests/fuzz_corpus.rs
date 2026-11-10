@@ -130,29 +130,30 @@ fn fuzz_corpus_abi_roundtrip_is_identity() {
 
 /// `read_any_message` selectors of the structured book records, whose seeds
 /// live in `fuzz/corpus/{abi_decode,abi_roundtrip}/structured_*.bin`.
-const SCAN_SUMMARY_SELECTOR: u8 = 29;
-/// See [`SCAN_SUMMARY_SELECTOR`].
+const SCAN_PAGE_SELECTOR: u8 = 29;
+/// See [`SCAN_PAGE_SELECTOR`].
 const CATALOG_HITS_SELECTOR: u8 = 46;
-/// See [`SCAN_SUMMARY_SELECTOR`].
+/// See [`SCAN_PAGE_SELECTOR`].
 const METADATA_RECORDS_SELECTOR: u8 = 91;
-/// See [`SCAN_SUMMARY_SELECTOR`].
+/// See [`SCAN_PAGE_SELECTOR`].
 const METADATA_CHAPTERS_SELECTOR: u8 = 94;
-/// See [`SCAN_SUMMARY_SELECTOR`].
+/// See [`SCAN_PAGE_SELECTOR`].
 const COVER_FETCH_PARAMS_SELECTOR: u8 = 96;
-/// See [`SCAN_SUMMARY_SELECTOR`].
+/// See [`SCAN_PAGE_SELECTOR`].
 const COVER_IMAGES_SELECTOR: u8 = 99;
 
-/// A scan summary with every structured book record filled.
-fn structured_scan_summary() -> bookclerk_plugin_abi::ScanSummary {
+/// A scan page with every structured book record and paging field filled.
+fn structured_scan_page() -> bookclerk_plugin_abi::ScanPage {
     use bookclerk_plugin_abi::{
         Abridgement, Credit, CreditLevel, CreditRole, ExpressionKind, Identifier, IdentifierScheme,
-        MediaKind, ScanBook, ScanSummary, SeriesEntry, WorkKind,
+        MediaKind, ScanBook, ScanPage, SeriesEntry, WorkKind,
     };
-    ScanSummary {
-        accounts: 1,
-        books_upserted: 1,
-        pages: 1,
-        skipped_disabled: 0,
+    ScanPage {
+        removed: vec!["B0GONE".into()],
+        next_cursor: "page=2".into(),
+        sync_token: "purchased_after=2026-01-01".into(),
+        complete: false,
+        store_pages: 1,
         books: vec![ScanBook {
             account_id: "acct".into(),
             product_id: "B0EPISODE".into(),
@@ -384,15 +385,15 @@ where
 fn structured_book_record_seeds_are_current() {
     use bookclerk_plugin_abi::{
         plugin_capnp, write_catalog_hits, write_cover_fetch_params, write_cover_images,
-        write_metadata_chapters, write_metadata_records, write_scan_summary,
+        write_metadata_chapters, write_metadata_records, write_scan_page,
     };
 
     let scan = message_bytes(|m| {
-        write_scan_summary(
-            m.init_root::<plugin_capnp::scan_summary::Builder<'_>>(),
-            &structured_scan_summary(),
+        write_scan_page(
+            m.init_root::<plugin_capnp::scan_page::Builder<'_>>(),
+            &structured_scan_page(),
         )
-        .expect("write scan summary");
+        .expect("write scan page");
     });
     let hits = message_bytes(|m| {
         write_catalog_hits(
@@ -438,13 +439,13 @@ fn structured_book_record_seeds_are_current() {
     };
     let scan_message = reader(&scan);
     assert_eq!(
-        bookclerk_plugin_abi::read_scan_summary(
+        bookclerk_plugin_abi::read_scan_page(
             scan_message
-                .get_root::<plugin_capnp::scan_summary::Reader<'_>>()
+                .get_root::<plugin_capnp::scan_page::Reader<'_>>()
                 .expect("scan root")
         )
-        .expect("decode scan summary"),
-        structured_scan_summary()
+        .expect("decode scan page"),
+        structured_scan_page()
     );
     let hits_message = reader(&hits);
     assert_eq!(
@@ -498,7 +499,7 @@ fn structured_book_record_seeds_are_current() {
     );
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus");
     for (name, selector, bytes) in [
-        ("structured_scan_summary.bin", SCAN_SUMMARY_SELECTOR, &scan),
+        ("structured_scan_page.bin", SCAN_PAGE_SELECTOR, &scan),
         ("structured_catalog_hits.bin", CATALOG_HITS_SELECTOR, &hits),
         (
             "structured_metadata_records.bin",
@@ -739,6 +740,103 @@ fn db_stream_seeds_are_current() {
         let path = corpus.join(name);
         let mut seed = vec![budget, chunk];
         seed.extend_from_slice(bytes);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
+}
+
+#[path = "../../../fuzz/oracles/scan_page.rs"]
+mod scan_page_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/scan_page.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_scan_page_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("scan_page") {
+        scan_page_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no scan_page seed");
+}
+
+/// Seeds for `scan_page`: an accepted first page, a last delta page, and one
+/// page breaking each pass rule. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O or encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn scan_page_seeds_are_current() {
+    use bookclerk_plugin_abi::{encode_scan_page_bytes, ScanBook, ScanPage};
+
+    let book = |account: &str, product: &str| ScanBook {
+        account_id: account.into(),
+        product_id: product.into(),
+        title: "Title".into(),
+        ..ScanBook::default()
+    };
+    let seeds: Vec<(&str, &str, &str, ScanPage)> = vec![
+        (
+            "first_page.bin",
+            "",
+            "acct",
+            ScanPage {
+                books: vec![book("acct", "B01"), book("", "B02")],
+                next_cursor: "page=2".into(),
+                store_pages: 1,
+                ..ScanPage::default()
+            },
+        ),
+        (
+            "last_delta_page.bin",
+            "page=2",
+            "acct",
+            structured_scan_page(),
+        ),
+        (
+            "repeated_cursor.bin",
+            "page=2",
+            "acct",
+            ScanPage {
+                next_cursor: "page=2".into(),
+                ..ScanPage::default()
+            },
+        ),
+        (
+            "foreign_account.bin",
+            "",
+            "acct",
+            ScanPage {
+                books: vec![book("other", "B01")],
+                ..ScanPage::default()
+            },
+        ),
+        (
+            "empty_ids.bin",
+            "",
+            "acct",
+            ScanPage {
+                books: vec![book("acct", " ")],
+                removed: vec![String::new()],
+                ..ScanPage::default()
+            },
+        ),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/scan_page");
+    for (name, sent, account, page) in seeds {
+        let mut seed = vec![u8::try_from(sent.len()).expect("short cursor")];
+        seed.extend_from_slice(sent.as_bytes());
+        seed.push(u8::try_from(account.len()).expect("short account"));
+        seed.extend_from_slice(account.as_bytes());
+        seed.extend(encode_scan_page_bytes(&page).expect("encode"));
+        let path = dir.join(name);
         if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
             std::fs::write(&path, &seed).expect("write seed");
         }

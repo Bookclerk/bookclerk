@@ -2001,28 +2001,30 @@ _account_credential_codec = _Codec(0, 2, _write_account_credential, _read_accoun
 
 def _write_scan_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["pluginDataDir"])
-    s.set_text_list(1, v["accounts"])
+    s.set_text(1, v["accountId"])
     s.set_u32(0, v["pageSize"])
     s.set_bool(32, v["importEpisodes"])
     s.set_bool(33, v["importPlusTitles"])
-    items = s.init_struct_list(2, len(v["credentials"]), 0, 2)
-    for item, elem in zip(items, v["credentials"], strict=True):
-        _account_credential_codec.write(item, elem, caps)
+    _account_credential_codec.write(s.init_struct(2, 0, 2), v["credential"], caps)
+    s.set_text(3, v["cursor"])
+    s.set_text(4, v["syncToken"])
 
 
 def _read_scan_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "pluginDataDir": s.get_text(0),
-        "accounts": s.get_text_list(1),
+        "accountId": s.get_text(1),
         "pageSize": s.get_u32(0),
         "importEpisodes": s.get_bool(32),
         "importPlusTitles": s.get_bool(33),
-        "credentials": [_account_credential_codec.read(item, caps) for item in s.get_struct_list(2, 0, 2)],
+        "credential": _account_credential_codec.read(s.get_struct(2, 0, 2), caps),
+        "cursor": s.get_text(3),
+        "syncToken": s.get_text(4),
     }
 
 
-_scan_params_codec = _Codec(1, 3, _write_scan_params, _read_scan_params)
-"""Wire codec for ``ScanParams`` (1 data words, 3 pointers)."""
+_scan_params_codec = _Codec(1, 5, _write_scan_params, _read_scan_params)
+"""Wire codec for ``ScanParams`` (1 data words, 5 pointers)."""
 
 
 def _write_identifier(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -2174,35 +2176,37 @@ _scan_book_codec = _Codec(2, 14, _write_scan_book, _read_scan_book)
 """Wire codec for ``ScanBook`` (2 data words, 14 pointers)."""
 
 
-def _write_scan_summary(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    s.set_u32(0, v["accounts"])
-    s.set_u32(1, v["booksUpserted"])
-    s.set_u32(2, v["pages"])
-    s.set_u32(3, v["skippedDisabled"])
+def _write_scan_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     items = s.init_struct_list(0, len(v["books"]), 2, 14)
     for item, elem in zip(items, v["books"], strict=True):
         _scan_book_codec.write(item, elem, caps)
+    s.set_text_list(1, v["removed"])
+    s.set_text(2, v["nextCursor"])
+    s.set_text(3, v["syncToken"])
+    s.set_bool(0, v["complete"])
+    s.set_u32(1, v["storePages"])
 
 
-def _read_scan_summary(s: _StructReader, caps: _CapTable) -> Any:
+def _read_scan_page(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "accounts": s.get_u32(0),
-        "booksUpserted": s.get_u32(1),
-        "pages": s.get_u32(2),
-        "skippedDisabled": s.get_u32(3),
         "books": [_scan_book_codec.read(item, caps) for item in s.get_struct_list(0, 2, 14)],
+        "removed": s.get_text_list(1),
+        "nextCursor": s.get_text(2),
+        "syncToken": s.get_text(3),
+        "complete": s.get_bool(0),
+        "storePages": s.get_u32(1),
     }
 
 
-_scan_summary_codec = _Codec(2, 1, _write_scan_summary, _read_scan_summary)
-"""Wire codec for ``ScanSummary`` (2 data words, 1 pointers)."""
+_scan_page_codec = _Codec(1, 4, _write_scan_page, _read_scan_page)
+"""Wire codec for ``ScanPage`` (1 data words, 4 pointers)."""
 
 
 def _write_scan_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _scan_summary_codec.write(s.init_struct(0, 2, 1), v["value"], caps)
+        _scan_page_codec.write(s.init_struct(0, 1, 4), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -2213,7 +2217,7 @@ def _write_scan_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_scan_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _scan_summary_codec.read(s.get_struct(0, 2, 1), caps)}
+        return {"kind": "ok", "value": _scan_page_codec.read(s.get_struct(0, 1, 4), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown ScanReply union member: {disc}")
@@ -5782,12 +5786,12 @@ _content_source_login_results_codec = _Codec(0, 1, _write_content_source_login_r
 
 
 def _write_content_source_scan_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _scan_params_codec.write(s.init_struct(0, 1, 3), v["params"], caps)
+    _scan_params_codec.write(s.init_struct(0, 1, 5), v["params"], caps)
 
 
 def _read_content_source_scan_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "params": _scan_params_codec.read(s.get_struct(0, 1, 3), caps),
+        "params": _scan_params_codec.read(s.get_struct(0, 1, 5), caps),
     }
 
 

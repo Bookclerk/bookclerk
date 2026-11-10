@@ -27,9 +27,8 @@ use bookclerk_config::Config;
 use bookclerk_library::SourceScope;
 use bookclerk_plugin_sdk::{ExtensibleConfig, PRODUCT_API_VERSION};
 use bookclerk_source::abi::{
-    self as source_abi, account_credentials, credentials_from_bytes, credentials_to_bytes,
-    expand_candidates_params, scan_summary_from_abi, scanned_title, DEFAULT_EXTERNAL_SORT_KEY,
-    DEFAULT_LIST_DEALS_LIMIT,
+    self as source_abi, credentials_from_bytes, credentials_to_bytes, expand_candidates_params,
+    scanned_title, DEFAULT_EXTERNAL_SORT_KEY, DEFAULT_LIST_DEALS_LIMIT,
 };
 use bookclerk_source::{
     CatalogHit, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions, LoginOptions,
@@ -38,6 +37,7 @@ use bookclerk_source::{
 };
 use serde_json::Value;
 
+use super::scan_pass::{run_pass, PassIo};
 use crate::discover::DiscoveredPlugin;
 use crate::jail::plugin_data_dir;
 use crate::protocol::{
@@ -217,28 +217,59 @@ impl ExternalSource {
                 "no credentials were handed with this job".into(),
             ));
         };
-        let credentials = account_credentials(
-            handed
-                .0
-                .iter()
-                .filter(|(account, _)| opts.accounts.is_empty() || opts.accounts.contains(account))
-                .map(|(account, value)| (account.clone(), value.to_vec())),
-        );
+        let credentials: Vec<(String, Vec<u8>)> = handed
+            .0
+            .iter()
+            .filter(|(account, _)| opts.accounts.is_empty() || opts.accounts.contains(account))
+            .map(|(account, value)| (account.clone(), value.to_vec()))
+            .collect();
         if !credentials.is_empty() {
             self.session.require_binding("secrets")?;
         }
+        // The owner keeps no sync state for a handed scan yet, so each
+        // account runs one full pass and every row goes back to the owner.
+        let mut rows = Vec::new();
+        for (account_id, credential) in credentials {
+            let mut io = CollectPass {
+                source: self,
+                opts: &opts,
+                account_id: account_id.clone(),
+                credential,
+                rows: Vec::new(),
+            };
+            run_pass(&mut io, &account_id, full_pass()).await?;
+            rows.append(&mut io.rows);
+        }
+        Ok(rows)
+    }
+
+    /// Asks the guest for one page of one account's pass.
+    async fn scan_page(
+        &self,
+        opts: &ScanOptions,
+        account_id: &str,
+        credential: &[u8],
+        cursor: &str,
+        sync_token: &str,
+    ) -> std::result::Result<bookclerk_plugin_sdk::ScanPage, bookclerk_plugin_sdk::PluginError>
+    {
         let params = ScanParams {
             plugin_data_dir: self.plugin_data_dir.display().to_string(),
-            accounts: opts.accounts,
+            account_id: account_id.to_string(),
             page_size: opts.page_size,
             import_episodes: opts.import_episodes,
             import_plus_titles: opts.import_plus_titles,
-            credentials,
+            credential: bookclerk_plugin_sdk::AccountCredential {
+                account_id: account_id.to_string(),
+                credentials: credential.to_vec(),
+            },
+            cursor: cursor.to_string(),
+            sync_token: sync_token.to_string(),
         };
-        let summary = self
-            .cs_call(move |src| async move { src.scan(params).await })
-            .await?;
-        Ok(summary.books)
+        self.session
+            .storefront(move |src| async move { src.scan(params).await })
+            .await
+            .map_err(crate::rpc_session::host_err_to_abi)
     }
 
     /// Records the plugin instance id used as this source's registry address.
@@ -512,32 +543,41 @@ impl ContentSource for ExternalSource {
             ));
         }
         let credentials = scan_credentials_for(scope, &opts.accounts).await?;
-        if !credentials.is_empty() {
-            self.session.require_binding("secrets")?;
+        if credentials.is_empty() {
+            return Err(bookclerk_source::SourceError::no_accounts(format!(
+                "no {} accounts with stored credentials to scan",
+                self.id()
+            )));
         }
-        let params = ScanParams {
-            plugin_data_dir: self.plugin_data_dir.display().to_string(),
-            accounts: opts.accounts,
-            page_size: opts.page_size,
-            import_episodes: opts.import_episodes,
-            import_plus_titles: opts.import_plus_titles,
-            credentials,
-        };
-        let summary = self
-            .cs_call(move |src| async move { src.scan(params).await })
-            .await?;
-        let mut upserted = 0usize;
-        for book in &summary.books {
-            let Some(title) = scanned_title(self.id(), book.clone()) else {
-                continue;
-            };
-            scope
-                .upsert_scanned_title(&title)
+        self.session.require_binding("secrets")?;
+        let mut summary = ScanSummary::default();
+        for (account_id, credential) in credentials {
+            let state = scope
+                .scan_state(&account_id)
                 .await
                 .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
-            upserted += 1;
+            let start = bookclerk_library::plan_pass(state.as_ref(), chrono::Utc::now());
+            tracing::debug!(
+                plugin = %self.id(),
+                account_id,
+                resumed = start.resumed,
+                delta = !start.sync_token.is_empty(),
+                "scan pass starting"
+            );
+            let mut io = LibraryPass {
+                source: self,
+                scope,
+                opts: &opts,
+                account_id: account_id.clone(),
+                credential,
+            };
+            let pass = run_pass(&mut io, &account_id, start).await?;
+            summary.accounts += 1;
+            summary.books_upserted += pass.upserted;
+            summary.pages = summary.pages.saturating_add(pass.store_pages);
+            summary.removed += pass.removed;
         }
-        Ok(scan_summary_from_abi(&summary, upserted))
+        Ok(summary)
     }
 
     async fn fetch_title(
@@ -747,6 +787,154 @@ fn purchase_hint_from_abi(hint: bookclerk_plugin_sdk::PurchaseHint) -> SourcePur
     SourcePurchaseHint::from(hint).decode_html_entities()
 }
 
+/// A full pass from the beginning, for a scan that keeps no sync state.
+fn full_pass() -> bookclerk_library::PassStart {
+    bookclerk_library::PassStart {
+        cursor: String::new(),
+        sync_token: String::new(),
+        resumed: false,
+    }
+}
+
+/// A pass whose pages are written into this install's library and whose
+/// progress is kept in `account_scan_state`.
+struct LibraryPass<'a> {
+    /// The guest.
+    source: &'a ExternalSource,
+    /// The plugin's library scope.
+    scope: &'a SourceScope,
+    /// Scan options.
+    opts: &'a ScanOptions,
+    /// The account the pass scans.
+    account_id: String,
+    /// Its credential blob.
+    credential: Vec<u8>,
+}
+
+impl PassIo for LibraryPass<'_> {
+    async fn page(
+        &mut self,
+        cursor: &str,
+        sync_token: &str,
+    ) -> std::result::Result<bookclerk_plugin_sdk::ScanPage, bookclerk_plugin_sdk::PluginError>
+    {
+        self.source
+            .scan_page(
+                self.opts,
+                &self.account_id,
+                &self.credential,
+                cursor,
+                sync_token,
+            )
+            .await
+    }
+
+    async fn write(
+        &mut self,
+        books: Vec<bookclerk_plugin_sdk::ScanBook>,
+    ) -> bookclerk_source::Result<usize> {
+        let mut upserted = 0usize;
+        for book in books {
+            let Some(title) = scanned_title(self.source.id(), book) else {
+                continue;
+            };
+            self.scope
+                .upsert_scanned_title(&title)
+                .await
+                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+            upserted += 1;
+        }
+        Ok(upserted)
+    }
+
+    async fn checkpoint(&mut self, cursor: &str, sync_token: &str) -> bookclerk_source::Result<()> {
+        self.scope
+            .save_scan_checkpoint(&self.account_id, cursor, sync_token)
+            .await
+            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))
+    }
+
+    async fn finish(&mut self, sync_token: &str, complete: bool) -> bookclerk_source::Result<()> {
+        self.scope
+            .finish_scan_pass(&self.account_id, sync_token, complete)
+            .await
+            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))
+    }
+
+    async fn reset(&mut self) -> bookclerk_source::Result<()> {
+        self.scope
+            .reset_scan_state(&self.account_id)
+            .await
+            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))
+    }
+
+    fn cancelled(&self) -> bool {
+        self.opts.is_cancelled()
+    }
+}
+
+/// A handed pass: rows are collected for the owner, nothing is stored here.
+struct CollectPass<'a> {
+    /// The guest.
+    source: &'a ExternalSource,
+    /// Scan options.
+    opts: &'a ScanOptions,
+    /// The account the pass scans.
+    account_id: String,
+    /// Its credential blob.
+    credential: Vec<u8>,
+    /// Rows collected so far.
+    rows: Vec<bookclerk_plugin_sdk::ScanBook>,
+}
+
+impl PassIo for CollectPass<'_> {
+    async fn page(
+        &mut self,
+        cursor: &str,
+        sync_token: &str,
+    ) -> std::result::Result<bookclerk_plugin_sdk::ScanPage, bookclerk_plugin_sdk::PluginError>
+    {
+        self.source
+            .scan_page(
+                self.opts,
+                &self.account_id,
+                &self.credential,
+                cursor,
+                sync_token,
+            )
+            .await
+    }
+
+    async fn write(
+        &mut self,
+        mut books: Vec<bookclerk_plugin_sdk::ScanBook>,
+    ) -> bookclerk_source::Result<usize> {
+        let n = books.len();
+        self.rows.append(&mut books);
+        Ok(n)
+    }
+
+    async fn checkpoint(
+        &mut self,
+        _cursor: &str,
+        _sync_token: &str,
+    ) -> bookclerk_source::Result<()> {
+        Ok(())
+    }
+
+    async fn finish(&mut self, _sync_token: &str, _complete: bool) -> bookclerk_source::Result<()> {
+        Ok(())
+    }
+
+    async fn reset(&mut self) -> bookclerk_source::Result<()> {
+        Ok(())
+    }
+
+    fn cancelled(&self) -> bool {
+        self.opts.is_cancelled()
+    }
+}
+
 /// Load host-sealed credentials for the accounts a scan will cover.
 ///
 /// Empty `accounts` filter → all scoped accounts that have credentials.
@@ -754,7 +942,7 @@ fn purchase_hint_from_abi(hint: bookclerk_plugin_sdk::PurchaseHint) -> SourcePur
 async fn scan_credentials_for(
     scope: &SourceScope,
     account_filter: &[String],
-) -> bookclerk_source::Result<Vec<bookclerk_plugin_sdk::AccountCredential>> {
+) -> bookclerk_source::Result<Vec<(String, Vec<u8>)>> {
     let accounts = scope
         .list_accounts()
         .await
@@ -786,7 +974,7 @@ async fn scan_credentials_for(
             }
         }
     }
-    Ok(account_credentials(out))
+    Ok(out.into_iter().collect())
 }
 
 /// Upserts the account and seals guest credentials via [`SourceScope`] (plugin cannot write the DB).
@@ -900,8 +1088,8 @@ mod tests {
 
         let creds = scan_credentials_for(&echo, &[]).await.unwrap();
         assert_eq!(creds.len(), 1);
-        assert_eq!(creds[0].account_id, "a1");
-        let json = credentials_from_bytes(&creds[0].credentials).unwrap();
+        assert_eq!(creds[0].0, "a1");
+        let json = credentials_from_bytes(&creds[0].1).unwrap();
         assert_eq!(json["token"], "echo-secret");
     }
 

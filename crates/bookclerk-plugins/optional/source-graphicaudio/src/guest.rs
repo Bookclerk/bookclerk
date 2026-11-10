@@ -4,16 +4,14 @@
 //! upserts scan rows via `bookclerk_plugin_host::ExternalSource`. Conversions
 //! between storefront types and the typed ABI live in [`bookclerk_storefront::abi`].
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
-use bookclerk_plugin_sdk::ScanBook;
 use bookclerk_plugin_sdk::{
-    FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch, ScanParams,
-    ScanSummary, SourceAccount,
+    FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch, ScanBook, ScanPage,
+    ScanParams, SourceAccount, MAX_SCAN_PAGE_BOOKS,
 };
 use bookclerk_storefront::abi::{
-    account_credentials_json, credentials_from_bytes, credentials_to_bytes, scan_summary,
+    credentials_from_bytes, credentials_to_bytes, full_pass_page, page_cursor, scan_credential,
 };
 use bookclerk_storefront::{LoginOptions, PlainFetch};
 use serde_json::Value;
@@ -122,96 +120,70 @@ pub async fn guest_login_rpc(
     })
 }
 
-/// Scan libraries for the credential blobs the host injected.
+/// RPC scan: one page of one account's full pass (the host upserts books).
+///
+/// GraphicAudio lists a library in one response with no paging or delta API,
+/// so every pass is full and ends `complete`. A library larger than
+/// `maxScanPageBooks` is split into pages of that size, and each later page
+/// lists the library again and takes its slice.
 ///
 /// `magento_password` is required for Magento web/zip listing unless a device
 /// token is present on the credentials (legacy Access App fallback).
 ///
-/// # Errors
+/// # Arguments
 ///
-/// Returns an error when the operation fails.
-#[allow(clippy::too_many_arguments)]
-pub async fn guest_scan(
-    access_base_url: &str,
-    store_base_url: &str,
-    access: GraphicAudioAccess,
-    magento_password: Option<&str>,
-    credentials: &BTreeMap<String, Value>,
-    account_filter: &[String],
-    include_samples: bool,
-) -> Result<(Vec<ScanBook>, usize, u32)> {
-    if credentials.is_empty() {
-        return Err(GraphicAudioError::no_accounts(
-            "no GraphicAudio credentials from host — run login first",
-        ));
-    }
-    let explicit = !account_filter.is_empty();
-    let mut books = Vec::new();
-    let mut accounts = 0usize;
-    let mut pages = 0u32;
-
-    for (account_id, creds) in credentials {
-        if explicit
-            && !account_filter
-                .iter()
-                .any(|n| n.eq_ignore_ascii_case(account_id))
-        {
-            continue;
-        }
-        let auth: GraphicAudioAuthFile = serde_json::from_value(creds.clone()).map_err(|e| {
-            GraphicAudioError::auth(format!(
-                "invalid GraphicAudio credentials for {account_id}: {e}"
-            ))
-        })?;
-        let (batch, p) = collect_account_books(
-            &auth,
-            access_base_url,
-            store_base_url,
-            access,
-            magento_password,
-            include_samples,
-            account_id,
-            &auth.marketplace,
-        )
-        .await?;
-        pages = pages.saturating_add(p);
-        accounts += 1;
-        books.extend(batch);
-    }
-
-    if accounts == 0 {
-        return Err(GraphicAudioError::no_accounts(
-            "no matching GraphicAudio accounts in host credentials",
-        ));
-    }
-    Ok((books, accounts, pages))
-}
-
-/// RPC scan: return the typed [`ScanSummary`] (host upserts books).
+/// * `access_base_url` - Access App API base URL.
+/// * `store_base_url` - Magento store base URL.
+/// * `access` - Which listing to use.
+/// * `magento_password` - The account password for the Magento listing.
+/// * `params` - The pass's account, credential and options.
+/// * `page` - The page the cursor names
+///   ([`bookclerk_storefront::abi::page_from_cursor`]).
 ///
 /// # Errors
 ///
-/// Returns an error when the operation fails.
-pub async fn guest_scan_rpc(
+/// Returns an error when the credential is missing or invalid, or the
+/// listing fails.
+pub async fn guest_scan_page(
     access_base_url: &str,
     store_base_url: &str,
     access: GraphicAudioAccess,
     magento_password: Option<&str>,
     params: &ScanParams,
-) -> Result<ScanSummary> {
-    let credentials = account_credentials_json(&params.credentials)
-        .map_err(|e| GraphicAudioError::auth(e.to_string()))?;
-    let (books, accounts, pages) = guest_scan(
+    page: u32,
+) -> Result<ScanPage> {
+    let creds = scan_credential(params).map_err(|e| GraphicAudioError::auth(e.to_string()))?;
+    let auth: GraphicAudioAuthFile = serde_json::from_value(creds).map_err(|e| {
+        GraphicAudioError::auth(format!(
+            "invalid GraphicAudio credentials for {}: {e}",
+            params.account_id
+        ))
+    })?;
+    let (books, store_pages) = collect_account_books(
+        &auth,
         access_base_url,
         store_base_url,
         access,
         magento_password,
-        &credentials,
-        &params.accounts,
         params.import_plus_titles,
+        &params.account_id,
+        &auth.marketplace,
     )
     .await?;
-    Ok(scan_summary(books, accounts, pages))
+    let (slice, next) = page_slice(books, page);
+    Ok(full_pass_page(slice, next.map(page_cursor), store_pages))
+}
+
+/// Titles of 1-based `page` when `books` is split into pages of
+/// `maxScanPageBooks`, and the next page number when more titles follow.
+fn page_slice(books: Vec<ScanBook>, page: u32) -> (Vec<ScanBook>, Option<u32>) {
+    let size = usize::try_from(MAX_SCAN_PAGE_BOOKS).unwrap_or(usize::MAX);
+    let index = usize::try_from(page.saturating_sub(1)).unwrap_or(usize::MAX);
+    let start = index.saturating_mul(size).min(books.len());
+    let end = start.saturating_add(size).min(books.len());
+    let next = (end < books.len()).then(|| page.saturating_add(1));
+    let slice = books.into_iter().skip(start).take(end - start).collect();
+    (slice, next)
 }
 
 /// Download one title into `cache_dir` using host-injected credentials.
@@ -367,4 +339,32 @@ pub fn resolve_container(source_config: &Value) -> GraphicAudioContainer {
 #[must_use]
 pub fn source_id() -> &'static str {
     ID
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::*;
+
+    fn books(n: usize) -> Vec<ScanBook> {
+        (0..n)
+            .map(|i| ScanBook {
+                product_id: i.to_string(),
+                ..ScanBook::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn libraries_split_into_pages_of_the_abi_cap() {
+        let size = usize::try_from(MAX_SCAN_PAGE_BOOKS).unwrap();
+        let (one, next) = page_slice(books(3), 1);
+        assert_eq!((one.len(), next), (3, None));
+        let (first, next) = page_slice(books(size + 1), 1);
+        assert_eq!((first.len(), next), (size, Some(2)));
+        let (last, next) = page_slice(books(size + 1), 2);
+        assert_eq!((last.len(), next), (1, None));
+        assert_eq!(last[0].product_id, size.to_string());
+        let (past, next) = page_slice(books(2), 9);
+        assert_eq!((past.len(), next), (0, None));
+    }
 }
