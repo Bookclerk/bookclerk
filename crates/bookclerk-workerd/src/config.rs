@@ -404,12 +404,26 @@ const SDK_DB_VALUE_PY: &str =
 /// Injected as `bookclerk_plugin_sdk/_abi.py` (generated product constants).
 const SDK_PRODUCT_ABI_PY: &str =
     include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_abi.py");
+/// Injected as `bookclerk_plugin_sdk/_capnp.py` (Cap'n Proto reader and
+/// builder, imported by `db_value.py` and `_wire.py`).
+const SDK_CAPNP_PY: &str =
+    include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_capnp.py");
+/// Injected as `bookclerk_plugin_sdk/_wire.py` (generated ABI codecs,
+/// imported by `db_value.py`). Compiled only when an isolate imports
+/// `db_value`, so a guest without a database binding does not pay for it.
+const SDK_WIRE_PY: &str =
+    include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_wire.py");
 /// Injected as `bookclerk_plugin_sdk/guest_sql.py` (imported by `db_value.py`).
 const SDK_GUEST_SQL_PY: &str =
     include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/guest_sql.py");
 /// Injected as `bookclerk_plugin_sdk/limits.py` (imported by `workerd.py` and `db_value.py`).
 const SDK_LIMITS_PY: &str =
     include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/limits.py");
+/// Injected as `bookclerk_plugin_sdk/plugin_migration.py` (imported by
+/// `workerd.py` when the adapter asks for a binding's migrations).
+const SDK_PLUGIN_MIGRATION_PY: &str = include_str!(
+    "../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/plugin_migration.py"
+);
 /// First-party adapter isolate: owns GRANTED / BRIDGE_TOKEN (author `PLUGIN`).
 const ADAPTER_JS: &str = r#"import { wrapPluginFromBinding } from "@bookclerk/plugin-sdk/workerd";
 export default wrapPluginFromBinding();
@@ -438,12 +452,82 @@ pub const SDK_PY_WORKERD_MODULE: &str = "bookclerk_plugin_sdk/workerd.py";
 pub const SDK_PY_DB_VALUE_MODULE: &str = "bookclerk_plugin_sdk/db_value.py";
 /// Python module path for the generated product ABI constants.
 pub const SDK_PY_PRODUCT_ABI_MODULE: &str = "bookclerk_plugin_sdk/_abi.py";
+/// Python module path for the Cap'n Proto reader and builder.
+pub const SDK_PY_CAPNP_MODULE: &str = "bookclerk_plugin_sdk/_capnp.py";
+/// Python module path for the generated ABI codecs.
+pub const SDK_PY_WIRE_MODULE: &str = "bookclerk_plugin_sdk/_wire.py";
 /// Python module path for guest-side SQL statement classification helpers.
 pub const SDK_PY_GUEST_SQL_MODULE: &str = "bookclerk_plugin_sdk/guest_sql.py";
 /// Python module path for the typed `limit_exceeded` helpers.
 pub const SDK_PY_LIMITS_MODULE: &str = "bookclerk_plugin_sdk/limits.py";
+/// Python module path for the plugin-owned migration registration checks.
+pub const SDK_PY_PLUGIN_MIGRATION_MODULE: &str = "bookclerk_plugin_sdk/plugin_migration.py";
 /// Python module path that initializes the sparse workerd guest SDK.
 pub const SDK_PY_INIT_MODULE: &str = "bookclerk_plugin_sdk/__init__.py";
+
+/// One Python SDK module the launcher injects into every Python isolate.
+struct InjectedPyModule {
+    /// Import path inside the isolate (`bookclerk_plugin_sdk/<file>.py`).
+    module: &'static str,
+    /// File name written under the state dir's `.bookclerk/` and embedded.
+    embed_file: &'static str,
+    /// Module source compiled into the launcher.
+    source: &'static str,
+}
+
+/// Every Python SDK module a Python isolate can import, in dependency order.
+///
+/// This is the import closure of `workerd.py` inside the package (lazy
+/// imports included); `python_sdk_injection_covers_the_import_closure` fails
+/// when an SDK import reaches a module missing from this list. The sparse
+/// workerd configs in both SDKs carry the same list.
+const SDK_PY_MODULES: &[InjectedPyModule] = &[
+    InjectedPyModule {
+        module: SDK_PY_INIT_MODULE,
+        embed_file: "sdk-init.py",
+        source: SDK_PY_INIT,
+    },
+    InjectedPyModule {
+        module: SDK_PY_PRODUCT_ABI_MODULE,
+        embed_file: "sdk-product-abi.py",
+        source: SDK_PRODUCT_ABI_PY,
+    },
+    InjectedPyModule {
+        module: SDK_PY_CAPNP_MODULE,
+        embed_file: "sdk-capnp.py",
+        source: SDK_CAPNP_PY,
+    },
+    InjectedPyModule {
+        module: SDK_PY_WIRE_MODULE,
+        embed_file: "sdk-wire.py",
+        source: SDK_WIRE_PY,
+    },
+    InjectedPyModule {
+        module: SDK_PY_GUEST_SQL_MODULE,
+        embed_file: "sdk-guest-sql.py",
+        source: SDK_GUEST_SQL_PY,
+    },
+    InjectedPyModule {
+        module: SDK_PY_LIMITS_MODULE,
+        embed_file: "sdk-limits.py",
+        source: SDK_LIMITS_PY,
+    },
+    InjectedPyModule {
+        module: SDK_PY_PLUGIN_MIGRATION_MODULE,
+        embed_file: "sdk-plugin-migration.py",
+        source: SDK_PLUGIN_MIGRATION_PY,
+    },
+    InjectedPyModule {
+        module: SDK_PY_DB_VALUE_MODULE,
+        embed_file: "sdk-db-value.py",
+        source: SDK_DB_VALUE_PY,
+    },
+    InjectedPyModule {
+        module: SDK_PY_WORKERD_MODULE,
+        embed_file: "sdk-workerd.py",
+        source: SDK_WORKERD_PY,
+    },
+];
 
 // Re-export so call sites / docs can discover the shared list beside workerd config.
 pub use bookclerk_plugin_manifest::PYODIDE_EGRESS_HOSTS;
@@ -1340,20 +1424,9 @@ pub fn materialize(
         }
     }
     if needs_python {
-        write_file_under(&bookclerk_dir, "sdk-workerd.py", SDK_WORKERD_PY)?;
-        write_file_under(&bookclerk_dir, "sdk-db-value.py", SDK_DB_VALUE_PY)?;
-        write_file_under(&bookclerk_dir, "sdk-product-abi.py", SDK_PRODUCT_ABI_PY)?;
-        write_file_under(&bookclerk_dir, "sdk-guest-sql.py", SDK_GUEST_SQL_PY)?;
-        write_file_under(&bookclerk_dir, "sdk-limits.py", SDK_LIMITS_PY)?;
-        write_file_under(&bookclerk_dir, "sdk-init.py", SDK_PY_INIT)?;
-        for (module_name, embed_file) in [
-            (SDK_PY_INIT_MODULE, "sdk-init.py"),
-            (SDK_PY_PRODUCT_ABI_MODULE, "sdk-product-abi.py"),
-            (SDK_PY_GUEST_SQL_MODULE, "sdk-guest-sql.py"),
-            (SDK_PY_LIMITS_MODULE, "sdk-limits.py"),
-            (SDK_PY_DB_VALUE_MODULE, "sdk-db-value.py"),
-            (SDK_PY_WORKERD_MODULE, "sdk-workerd.py"),
-        ] {
+        for injected in SDK_PY_MODULES {
+            write_file_under(&bookclerk_dir, injected.embed_file, injected.source)?;
+            let (module_name, embed_file) = (injected.module, injected.embed_file);
             if seen_names.contains(module_name) {
                 continue;
             }
@@ -1672,13 +1745,7 @@ fn is_legacy_sdk_embed(name: &str) -> bool {
             | "@bookclerk/plugin-sdk"
             | "@bookclerk/plugin-sdk/workerd"
             | "@bookclerk/plugin-sdk/workerd.js"
-            | "bookclerk_plugin_sdk/workerd.py"
-            | "bookclerk_plugin_sdk/db_value.py"
-            | "bookclerk_plugin_sdk/_abi.py"
-            | "bookclerk_plugin_sdk/guest_sql.py"
-            | "bookclerk_plugin_sdk/limits.py"
-            | "bookclerk_plugin_sdk/__init__.py"
-    )
+    ) || SDK_PY_MODULES.iter().any(|injected| injected.module == n)
 }
 
 /// Sorted list of `.js`/`.mjs`/`.py`/`.wasm`/`.json` files under a guest directory.
@@ -2089,6 +2156,122 @@ mode = "deny"
         let state_dir = &generated.state_dir;
         assert!(state_dir.join(".bookclerk/sdk-db-value.py").is_file());
         assert!(state_dir.join(".bookclerk/sdk-limits.py").is_file());
+        // `db_value.py` imports `_capnp` and `_wire`; `workerd.py` imports
+        // `plugin_migration` for the adapter's migration dispatch.
+        for injected in SDK_PY_MODULES {
+            assert!(
+                capnp.contains(&format!(
+                    r#"(name = "{}", pythonModule = embed ".bookclerk/{}")"#,
+                    injected.module, injected.embed_file
+                )),
+                "{} is embedded",
+                injected.module
+            );
+            assert!(
+                state_dir
+                    .join(".bookclerk")
+                    .join(injected.embed_file)
+                    .is_file(),
+                "{} is written",
+                injected.embed_file
+            );
+        }
+    }
+
+    /// In-package modules one Python SDK source imports at run time.
+    ///
+    /// Reads `from .x import`, `from . import x`, `from bookclerk_plugin_sdk.x
+    /// import` and `import bookclerk_plugin_sdk.x`, at any indentation (lazy
+    /// imports count), and skips the body of `if TYPE_CHECKING:` blocks,
+    /// which never run.
+    fn sdk_imports(source: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut type_checking_indent: Option<usize> = None;
+        for line in source.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let indent = line.len() - trimmed.len();
+            if let Some(block) = type_checking_indent {
+                if indent > block {
+                    continue;
+                }
+                type_checking_indent = None;
+            }
+            if trimmed.starts_with("if TYPE_CHECKING:") {
+                type_checking_indent = Some(indent);
+                continue;
+            }
+            let module = if let Some(rest) = trimmed.strip_prefix("from . import ") {
+                rest.split([' ', ',', '(']).next()
+            } else if let Some(rest) = trimmed.strip_prefix("from .") {
+                rest.split([' ', '.']).next()
+            } else if let Some(rest) = trimmed.strip_prefix("from bookclerk_plugin_sdk.") {
+                rest.split([' ', '.']).next()
+            } else if let Some(rest) = trimmed.strip_prefix("import bookclerk_plugin_sdk.") {
+                rest.split([' ', '.']).next()
+            } else {
+                None
+            };
+            if let Some(module) = module.filter(|m| !m.is_empty()) {
+                out.push(format!("bookclerk_plugin_sdk/{module}.py"));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn sdk_imports_reads_every_import_form() {
+        let source = "from .limits import X\n\
+            from . import _abi as A\n\
+            def f():\n    from bookclerk_plugin_sdk.db_value import Y\n\
+            import bookclerk_plugin_sdk._wire\n\
+            if TYPE_CHECKING:\n    from .abi import Z\n    from .workerd import W\n\
+            from ._capnp import (\n    Q,\n)\n";
+        assert_eq!(
+            sdk_imports(source),
+            [
+                "bookclerk_plugin_sdk/limits.py",
+                "bookclerk_plugin_sdk/_abi.py",
+                "bookclerk_plugin_sdk/db_value.py",
+                "bookclerk_plugin_sdk/_wire.py",
+                "bookclerk_plugin_sdk/_capnp.py",
+            ]
+        );
+    }
+
+    #[test]
+    fn python_sdk_injection_covers_the_import_closure() {
+        // Walk the imports from `workerd.py` (the module authors import) and
+        // require every module reached to be injected, so an isolate never
+        // meets `ModuleNotFoundError` on an SDK path.
+        let mut pending = vec![SDK_PY_WORKERD_MODULE.to_string()];
+        let mut reached = std::collections::BTreeSet::new();
+        while let Some(module) = pending.pop() {
+            if !reached.insert(module.clone()) {
+                continue;
+            }
+            let injected = SDK_PY_MODULES.iter().find(|m| m.module == module);
+            assert!(
+                injected.is_some(),
+                "{module} is imported by the Python SDK but not injected into isolates"
+            );
+            pending.extend(injected.map_or_else(Vec::new, |m| sdk_imports(m.source)));
+        }
+        assert!(reached.contains(SDK_PY_WIRE_MODULE));
+        assert!(reached.contains(SDK_PY_CAPNP_MODULE));
+        assert!(reached.contains(SDK_PY_PLUGIN_MIGRATION_MODULE));
+    }
+
+    #[test]
+    fn vendored_sdk_modules_are_not_packaged_twice() {
+        for injected in SDK_PY_MODULES {
+            assert!(is_legacy_sdk_embed(injected.module), "{}", injected.module);
+        }
+        assert!(is_legacy_sdk_embed("bookclerk_plugin_sdk\\_wire.py"));
+        assert!(!is_legacy_sdk_embed("bookclerk_plugin_sdk/cli.py"));
+        assert!(!is_legacy_sdk_embed("plugin.py"));
     }
 
     #[test]

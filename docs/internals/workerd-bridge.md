@@ -182,3 +182,38 @@ codecs, typed SQL helpers) into one ES module with `scripts/build-embed.mjs`
 on drift; `scripts/gen-plugin-abi.py --check` and `scripts/sync-workerd-pin.py --check`
 keep the Rust (`crates/bookclerk-plugin-sdk/embed/`) and Python
 (`bookclerk_plugin_sdk/bridge/`) mirrors byte-identical.
+
+A Python isolate gets the Python SDK the same way: the launcher injects
+`bookclerk_plugin_sdk/__init__.py` (a stub), `workerd.py` and every module
+`workerd.py` reaches at run time (`_abi`, `_capnp`, `_wire`, `guest_sql`,
+`limits`, `plugin_migration`, `db_value`), and skips a vendored copy of any of
+them so it is not packaged twice. `_wire.py` (the generated codecs, about
+260 KB) is only compiled when the isolate imports `db_value`, so a guest
+without a database binding does not pay for it. The list lives in
+`SDK_PY_MODULES` (`crates/bookclerk-workerd/src/config.rs`) and in both SDKs'
+sparse workerd configs; tests in the launcher and the Python SDK walk the
+SDK's imports and fail when one reaches a module the list leaves out.
+
+## Database errors between the isolates
+
+The author never holds a database grant: the adapter isolate hands it one
+`GrantedDatabaseTransport` per `[[databases]]` binding, and the author calls
+it over Workers RPC. An error thrown across that hop arrives as a plain error
+without its `PluginError` code or `details`, so the transport's `*Bytes`
+methods (`executeBytes`, `executeStreamedBytes`, `openStreamedBytes`,
+`limitsBytes`) never throw for a channel failure. They encode it into the
+reply instead, using the ABI's existing `err` arms:
+
+| Method | Failure is reported as |
+| --- | --- |
+| `executeBytes` | `ExecuteResultReply.err` |
+| `executeStreamedBytes`, `openStreamedBytes` | one `ExecuteStreamFrame.err` frame |
+| `limitsBytes` | `DbCapabilitiesReply.err` |
+
+The channel status maps as in the route table above: `404` / `405` are
+`unsupported` (an older host), `413` is `limit_exceeded` with the parsed cap in
+`details`, `401` is `unauthorized`, anything else (or a fetch that throws) is
+`unavailable`. Both author SDKs read through these methods and decode the
+reply locally, so `err.limit` survives a `413` and an `unsupported` streamed
+read still falls back to the inline read. If the RPC call itself fails, the
+Python SDK reports it as `unavailable`.
