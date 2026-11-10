@@ -46,7 +46,7 @@ from .plan import (
     plan_to_summary,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 ARTIFACT_NAME = "ci-plan.json"
 # One path segment. A fresh id is minted per resolve so marker dirs cannot
 # collide across local re-resolves that share a temp dir, commit, and run id.
@@ -185,6 +185,24 @@ BUILD_ONLY_JOBS = frozenset({"check", "test", "native-gateway", "release"})
 # Checks in a build-only job that only measure or test, so a build-only run
 # drops them (the small-VPS envelope shares the release job).
 BUILD_ONLY_SKIPPED_CHECKS = frozenset({"envelope"})
+# Jobs a draft pull request runs: lints, docs and the Rust unit and
+# integration tests, the fast feedback a draft needs. Every other selected
+# job (e2e, release, the confinement and gateway matrices, macOS, Postgres,
+# Windows, the Workers) is deferred: it runs once the pull request is marked
+# ready for review, on every later push, and in the merge queue, which always
+# runs the full suite. GitHub keeps drafts out of the merge queue, so no
+# deferred job is skipped before a merge (docs/contributing/ci.md#draft-pull-requests).
+DRAFT_JOBS = frozenset({"check", "test"})
+# A pull request's run (draft or ready) tests on Linux only. The Windows
+# legs of the matrix jobs, the Windows-only checks below and the macOS job
+# run in the merge queue, which always runs every platform, and on the
+# build-only `main` push, which saves their caches. CI Gate requires them
+# there, so a platform failure keeps the pull request out of `main`
+# (docs/contributing/ci.md#platform-legs-in-the-merge-queue).
+QUEUE_ONLY_CHECKS = frozenset({"windows_cluster"})
+# Runner labels of the matrix jobs' `os` legs (`os_matrix` plan output).
+LINUX_RUNNERS = ("ubuntu-latest",)
+ALL_RUNNERS = ("ubuntu-latest", "windows-latest")
 # Prerequisites kept in build-only runs (staging and installs only feed tests).
 BUILD_PREREQS = frozenset({"build", "ensure_workerd"})
 # Set to "true" by a build-only job whose dependency cache key is already
@@ -264,6 +282,8 @@ def resolve(
     event: str,
     force_full: bool = False,
     build_only: bool = False,
+    draft: bool = False,
+    linux_only: bool = False,
     workspace: Path | None = None,
     paths: Sequence[str] | None = None,
     metadata: Mapping[str, Any] | None = None,
@@ -275,7 +295,18 @@ def resolve(
     ``build_only`` (push to ``main``) compiles what every check compiles,
     which saves the caches later runs restore, and runs no tests: the same
     commit already passed the full suite in its merge group.
+    ``draft`` (a draft pull request) keeps only the checks of
+    ``DRAFT_JOBS`` and records the others under ``deferred``; they run when
+    the pull request is ready for review. ``linux_only`` (any pull request
+    run) defers ``QUEUE_ONLY_CHECKS`` and the Windows and macOS legs to the
+    merge queue.
+
+    Raises:
+        ExecError: ``build_only`` was set with ``draft`` or ``linux_only``
+            (a push to ``main`` is never a pull request run).
     """
+    if build_only and (draft or linux_only):
+        raise ExecError("a run is either build-only (push to main) or a pull request run, not both")
     predicted = plan_from_event(
         base=base,
         head=head,
@@ -306,6 +337,20 @@ def resolve(
         # A job whose only checks were dropped has nothing to build.
         kept = {CHECK_JOB[c] for c in execution.checks}
         execution.jobs = {job: on and job in BUILD_ONLY_JOBS and job in kept for job, on in execution.jobs.items()}
+    deferred: list[str] = []
+    if draft:
+        execution = plan_from_dict(plan_to_dict(execution))
+        deferred = sorted(c for c in execution.checks if CHECK_JOB[c] not in DRAFT_JOBS)
+        execution.checks = {c: v for c, v in execution.checks.items() if CHECK_JOB[c] in DRAFT_JOBS}
+        execution.jobs = {job: on and job in DRAFT_JOBS for job, on in execution.jobs.items()}
+    if linux_only:
+        execution = plan_from_dict(plan_to_dict(execution))
+        deferred += sorted(c for c in execution.checks if c in QUEUE_ONLY_CHECKS)
+        execution.checks = {c: v for c, v in execution.checks.items() if c not in QUEUE_ONLY_CHECKS}
+        # A job whose only checks were deferred has nothing left to run.
+        execution.jobs = {
+            job: on and any(c in execution.checks for c in JOB_CHECKS[job]) for job, on in execution.jobs.items()
+        }
     return {
         "schema_version": SCHEMA_VERSION,
         "execution_id": uuid.uuid4().hex,
@@ -317,6 +362,9 @@ def resolve(
         "selective_ci": selective_ci,
         "mode": mode,
         "build_only": bool(build_only),
+        "draft": bool(draft),
+        "linux_only": bool(linux_only),
+        "deferred": sorted(deferred),
         "predicted": plan_to_dict(predicted),
         "execution": plan_to_dict(execution),
     }
@@ -346,6 +394,11 @@ def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
         plan.selected("python_sdk")
         or (plan.selected("api_docs") and (docs.get("all") or docs.get("python")))
     )
+    # The `os` legs of the confinement, native-gateway and tray matrices,
+    # and whether the macOS job may run (see QUEUE_ONLY_CHECKS).
+    linux_only = bool(artifact.get("linux_only"))
+    out["os_matrix"] = json.dumps(list(LINUX_RUNNERS if linux_only else ALL_RUNNERS), separators=(",", ":"))
+    out["os_legs"] = _b(not linux_only)
     out["release_mode"] = plan.params("release").get("mode", "none") if plan.selected("release") else "none"
     return out
 
@@ -377,12 +430,35 @@ def validate(
         raise ExecError(
             f"plan schema_version {artifact.get('schema_version')!r} != {SCHEMA_VERSION}"
         )
-    for key in ("run_id", "checkout_sha", "mode", "build_only", "predicted", "execution", "execution_id"):
+    for key in (
+        "run_id",
+        "checkout_sha",
+        "mode",
+        "build_only",
+        "draft",
+        "linux_only",
+        "deferred",
+        "predicted",
+        "execution",
+        "execution_id",
+    ):
         if key not in artifact:
             raise ExecError(f"plan artifact missing `{key}`")
     require_execution_id(artifact)
     if not isinstance(artifact["build_only"], bool):
         raise ExecError(f"plan build_only {artifact['build_only']!r} is not a boolean")
+    for flag in ("draft", "linux_only"):
+        if not isinstance(artifact[flag], bool):
+            raise ExecError(f"plan {flag} {artifact[flag]!r} is not a boolean")
+    if artifact["build_only"] and (artifact["draft"] or artifact["linux_only"]):
+        raise ExecError("plan is both build-only and a pull request run")
+    deferred = artifact["deferred"]
+    if not isinstance(deferred, list) or not all(isinstance(c, str) and c in CHECK_JOB for c in deferred):
+        raise ExecError(f"plan deferred {deferred!r} is not a list of known checks")
+    # A draft may defer any check; a ready Linux-only run only the
+    # merge-queue ones; any other run nothing.
+    if not artifact["draft"] and any(not (artifact["linux_only"] and c in QUEUE_ONLY_CHECKS) for c in deferred):
+        raise ExecError(f"plan defers {deferred!r}, which this run may not defer")
     if artifact["mode"] not in ("full", "shadow", "selective"):
         raise ExecError(f"plan mode {artifact['mode']!r} is invalid")
     if run_id is not None and str(artifact["run_id"]) != str(run_id):
@@ -1306,11 +1382,12 @@ def expected_jobs(artifact: Mapping[str, Any]) -> dict[str, bool]:
 
     Returns:
         The execution plan's jobs, plus each ``OS_LEG_JOBS`` job, expected
-        when any of the jobs it runs a leg of is.
+        when any of the jobs it runs a leg of is, except in a Linux-only
+        pull request run.
     """
     expected = dict(execution_plan(artifact).jobs)
     for job, owners in OS_LEG_JOBS.items():
-        expected[job] = any(expected.get(owner, False) for owner in owners)
+        expected[job] = not artifact.get("linux_only") and any(expected.get(owner, False) for owner in owners)
     return expected
 
 
@@ -1412,7 +1489,20 @@ def artifact_summary(artifact: Mapping[str, Any]) -> str:
             " **Build only** (push to `main`): checks compile and save caches; no tests run,"
             " because this commit already passed the full suite in its merge group."
         )
-    parts = [f"# CI execution: `{mode}`", "", banner, "", plan_to_summary(execution_plan(artifact), "Execution")]
+    deferred = artifact.get("deferred") or []
+    if artifact.get("draft"):
+        waiting = [c for c in deferred if c not in QUEUE_ONLY_CHECKS]
+        listed = ", ".join(f"`{c}`" for c in waiting) if waiting else "none"
+        banner += (
+            " **Draft pull request**: only lints, docs and unit and integration tests run."
+            f" Deferred until the pull request is ready for review: {listed}."
+        )
+    if artifact.get("linux_only"):
+        banner += (
+            " **Linux only**: the Windows legs, `windows_cluster` and the macOS job run in the"
+            " merge queue, which runs every platform before a merge."
+        )
+    parts = [f"# CI execution: `{mode}`", "", banner, "", plan_to_summary(execution_plan(artifact), "Execution", artifact.get("deferred") or ())]
     if mode == "shadow":
         parts.append(plan_to_summary(plan_from_dict(artifact["predicted"]), "Predicted (selective)"))
     return "\n".join(parts)
@@ -1420,6 +1510,8 @@ def artifact_summary(artifact: Mapping[str, Any]) -> str:
 
 __all__ = [
     "ARTIFACT_NAME",
+    "DRAFT_JOBS",
+    "QUEUE_ONLY_CHECKS",
     "Command",
     "Context",
     "ExecError",

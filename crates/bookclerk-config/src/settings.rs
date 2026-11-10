@@ -477,7 +477,9 @@ pub struct DaemonAuthConfig {
     pub enabled: bool,
     /// Browser session lifetime in hours after `POST /api/auth/login`.
     pub session_ttl_hours: u64,
-    /// Failed `POST /api/auth/login` attempts (per client IP) before a lockout.
+    /// Failed sign-in attempts before a lockout, counted per client IP across
+    /// the sign-in routes, and per Owner for password elevation
+    /// (`POST /api/auth/elevate`).
     pub login_max_failures: u32,
     /// How long a client stays locked out after exceeding [`Self::login_max_failures`].
     pub login_lockout_secs: u64,
