@@ -115,7 +115,7 @@ pub fn shelf_kind_catalog() -> Vec<ShelfKindInfo> {
         kind("similar_taste", "Similar to books you finish"),
         kind("chirp_deals", "Chirp deals"),
         kind("from_store", "Picked for you on {Store}"),
-        kind("requests", "Wishlist"),
+        kind("requests", "On the wishlist"),
         kind("top_picks", "Top picks for you"),
     ]
 }
@@ -179,12 +179,12 @@ enum SeriesRule {
 /// Partitions scored recommendations into Discover shelves.
 ///
 /// Every title lands on one shelf. Shelves claim titles in the order they
-/// are built: the series shelves, the subject's wishes, authors, narrators,
-/// genres, starter genres, similar taste, Chirp deals, then one shelf per
-/// store for whatever is left, each title under the store where it costs
-/// the subject least (member price on stores they have an account with,
-/// list price elsewhere, its own store when no price is known). Wished
-/// titles are claimed first and shown last, on the wishlist shelf alone.
+/// are built: the wishlist first, then the series shelves, the
+/// subject's wishes, authors, narrators, genres, starter genres, similar
+/// taste, Chirp deals, then one shelf per store for whatever is left, each
+/// title under the store where it costs the subject least (member price on
+/// stores they have an account with, list price elsewhere, its own store
+/// when no price is known). A wished title shows on the wishlist shelf alone.
 /// Shelves other than the series shelves and the wishlist keep at most
 /// [`SERIES_CAP`] titles of one series; those rotate between series instead.
 ///
@@ -214,16 +214,25 @@ pub fn build_discover_feed(
         shelves: Vec::new(),
     };
 
-    // Wished titles belong on the wishlist shelf alone: claim them now and
-    // add the shelf at the end. Wished titles past the shelf's size are
-    // claimed too, so they never reach another shelf.
+    // The wishlist opens the page: what people want comes before what the
+    // stores suggest, and a wished title shows there alone. The row is in
+    // the viewer's own taste order: the shared wish-count boost orders the
+    // Wishlist page's global queue, not this person's Discover. Every wish
+    // shows, however many share a series: the series take turns. Wished
+    // titles past the shelf's size are claimed too, so they never reach
+    // another shelf.
     let wished = |r: &Recommendation| has_category(r, "requests") || r.from_request;
-    // Every wish shows, however many share a series: the series take turns.
-    let wishlist = builder.take(wished, SeriesRule::Interleave);
+    let wishlist = builder.take_by(wished, SeriesRule::Interleave, taste_only_score);
     builder.claimed.extend(
         recs.iter()
             .filter(|r| wished(r))
             .map(recommendation_map_key),
+    );
+    builder.push_items(
+        "requests",
+        "On the wishlist",
+        Some("Titles people have wishlisted"),
+        wishlist,
     );
 
     builder.push(
@@ -371,13 +380,6 @@ pub fn build_discover_feed(
         );
     }
 
-    builder.push_items(
-        "requests",
-        "On the wishlist",
-        Some("Titles people have wishlisted"),
-        wishlist,
-    );
-
     let FeedBuilder { mut shelves, .. } = builder;
     // Keep at least a "Top picks" dump if everything is empty but recs exist.
     // Wished titles stay off it: they belong to the wishlist shelf alone,
@@ -425,6 +427,15 @@ struct FeedBuilder<'a> {
     shelves: Vec<DiscoverShelf>,
 }
 
+/// A recommendation's score without the shared wish-count boost: how well
+/// it fits this person's taste alone.
+fn taste_only_score(r: &Recommendation) -> f64 {
+    // The boost is `wish_count × WISH_COUNT_WEIGHT`, added on top of the
+    // taste score (see `combine_wishlist_score`).
+    let wishes = u32::try_from(r.wish_count.max(0)).unwrap_or(u32::MAX);
+    r.score - f64::from(wishes) * crate::recommend::WISH_COUNT_WEIGHT
+}
+
 impl FeedBuilder<'_> {
     /// Takes the best unclaimed titles that satisfy `pred`, at most `cap`,
     /// and claims them.
@@ -433,14 +444,25 @@ impl FeedBuilder<'_> {
         pred: impl Fn(&Recommendation) -> bool,
         rule: SeriesRule,
     ) -> Vec<Recommendation> {
+        self.take_by(pred, rule, |r| r.score)
+    }
+
+    /// [`Self::take`], ordering the titles by `key` (highest first) instead
+    /// of their score.
+    fn take_by(
+        &mut self,
+        pred: impl Fn(&Recommendation) -> bool,
+        rule: SeriesRule,
+        key: impl Fn(&Recommendation) -> f64,
+    ) -> Vec<Recommendation> {
         let mut sorted: Vec<&Recommendation> = self
             .recs
             .iter()
             .filter(|r| pred(r) && !self.claimed.contains(&recommendation_map_key(r)))
             .collect();
         sorted.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
+            key(b)
+                .partial_cmp(&key(a))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         // De-dupe by product key before any series rule, so a merged
@@ -989,9 +1011,32 @@ mod tests {
         wished.from_request = true;
         let recs = vec![wished, rec("By Ada", 2.0, &["author"])];
         let feed = build_discover_feed(&recs, &ada_taste(), 8, &[]);
-        assert_eq!(ids(&feed), vec!["author:ada-author", "requests"]);
+        assert_eq!(ids(&feed), vec!["requests", "author:ada-author"]);
         assert_eq!(titles(&feed, "author:ada-author"), vec!["By Ada"]);
         assert_eq!(titles(&feed, "requests"), vec!["Wanted"]);
+    }
+
+    /// The wishlist row follows the viewer's taste, not how many people
+    /// wished: a title three people want but nobody here likes comes after
+    /// one that fits this person.
+    #[test]
+    fn the_wishlist_row_is_in_the_viewers_taste_order() {
+        let mut popular = rec(
+            "Popular",
+            1.0 + 3.0 * crate::recommend::WISH_COUNT_WEIGHT,
+            &["requests"],
+        );
+        popular.from_request = true;
+        popular.wish_count = 3;
+        let mut fitting = rec(
+            "Fitting",
+            9.0 + crate::recommend::WISH_COUNT_WEIGHT,
+            &["requests"],
+        );
+        fitting.from_request = true;
+        fitting.wish_count = 1;
+        let feed = build_discover_feed(&[popular, fitting], &ShelfTaste::default(), 8, &[]);
+        assert_eq!(titles(&feed, "requests"), vec!["Fitting", "Popular"]);
     }
 
     #[test]

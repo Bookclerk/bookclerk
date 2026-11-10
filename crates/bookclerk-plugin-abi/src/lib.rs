@@ -250,7 +250,7 @@ pub use roles::{
     CoverFetcher, Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
     JobController, JobRunner, KvNamespace, MetadataProvider, NamedKvBinding, NamedQueueBinding,
     NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer,
-    ReadResult, RemoteLibrary, ScheduledHandler, Source,
+    ReadResult, RemoteLibrary, ScheduledHandler, Source, PURCHASE_HINTS_BUDGET,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;

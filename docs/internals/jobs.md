@@ -542,6 +542,22 @@ refused before it deletes anything.
 | `maintenance.events` | Terminal deliveries, empty parent events, stale subscriber catalog rows (`[events]` retention) |
 | `maintenance.kv` | Expired plugin KV rows (already read as missing) |
 | `maintenance.sessions` | Expired operator sessions, OIDC RP states, WebAuthn challenges |
+| `maintenance.records` | Expired credentials and spent tokens, finished uploads, abandoned scan inventories, and old audit rows (windows below) |
+
+The `maintenance.records` windows are fixed in
+`crates/bookclerk-library/src/store/retention.rs`, not configured. Each is longer than
+the row can still be used; the grace periods only keep recent history
+visible:
+
+| Rows | Deleted when |
+| --- | --- |
+| OIDC authorization codes, portal sessions | Past `expires_at` |
+| OIDC refresh tokens | Past `expires_at`, or revoked |
+| Claim tickets, user invites, node enrollment links | 30 days past `expires_at` (expired and redeemed ones stay listed until then) |
+| Committed or aborted host uploads | 1 day past `expires_at`; open uploads are kept, since an abort still reads them |
+| Storage-scan inventories | Job terminal or gone; a jobless (CLI) scan silent for 1 day |
+| `security_audit_events`, `configuration_audit` | 365 days old |
+| `configuration_changes` | 30 days old (the document and its audit row keep the content) |
 
 The prunes are idempotent, so the fence bounds wasted work rather than
 guarding correctness: the window between a fence check and its delete is

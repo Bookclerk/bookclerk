@@ -308,6 +308,59 @@ applied on a plugin-owned unit under every profile, so a migration the
 minimum advertisement refuses fails there rather than at enrollment on an
 operator's adapter.
 
+### A database adapter's own suite
+
+The profiles above serve code that *uses* a database. An adapter plugin
+(an `entrypoints = ["databaseAdapter"]` guest) is held to the same contract
+from the other side by `bookclerk_db_testkit::adapter`. Point it at the
+adapter open on an empty unit and it drives that unit through the public
+`Database` / `AdapterDatabaseSession` surface the way the host drives a
+plugin's binding: it applies the binding bootstrap and a migration, then
+runs every guest batch through the host's authorization, receipt wrap and
+reply checks.
+
+```rust
+use bookclerk_db_testkit::assert_adapter_conforms;
+
+// `database` is any `bookclerk_plugin_abi::Database`: the adapter value in
+// process, or the RPC client of the spawned guest.
+assert_adapter_conforms(&database).await;
+```
+
+`run_adapter_suite` returns the report instead of panicking. Each case
+passes, fails with the reason, or is skipped when an earlier case it needs
+failed or the advertisement makes it unreachable. The host checks every
+reply against the caps as well, so the limit cases also fail an adapter
+that returns an oversized result and leaves the refusal to the host:
+
+| Case | The adapter must |
+| --- | --- |
+| `capabilities` | Meet the host minimums, declare `schemaMigrations`, and answer the same advertisement on every call and every session |
+| `bootstrap` | Apply the binding bootstrap and a plugin migration as typed atomic batches |
+| `values` | Return every value as the variant it was written: `Int64` extremes, `Float64`, multibyte and `b64:` text, bytes, `Boolean` and typed NULL |
+| `atomic_batch` | Leave nothing of a batch whose last statement fails |
+| `max_statements` / `max_binds` | Accept a batch of exactly `maxStatements` statements, and a statement with `maxBinds` binds, or with as many as `maxPayloadBytes` / `maxRequestBytes` admit when that is fewer (as on every first-party adapter) |
+| `result_rows` | Return `maxResultRows` rows, and refuse one more with `limit_exceeded` (`maxResultRows`) instead of truncating or returning it |
+| `cell_bytes` / `result_bytes` | Round-trip a cell as wide as one bind can carry (up to 32 KiB), and refuse a cell built past `maxCellBytes` or a result past the inline byte caps with `limit_exceeded` |
+| `streamed` | Answer `executeStreamed` with the same rows as `execute`, and with a result past `maxResultRows`, when it advertises a streamed budget; answer `unsupported` when it does not |
+| `receipt_replay` / `receipt_conflict` | Replay a retried batch's first reply without applying it again (the retry after a lost reply), and refuse the same operation id with another request as `conflict` |
+| `close` | Close the session cleanly |
+
+To run it against the shipped artifact rather than the adapter value,
+`adapter::NativeAdapter::spawn` starts a native guest binary, `open`s its
+`databaseAdapter` with the connect params you pass (for a binding, the
+same `DbConnectParams` the host sends) and hands back the RPC client. It
+runs the guest unconfined and without the `bookclerk-workerd` front door,
+so it is for tests only.
+
+The first-party adapters run the suite in CI: sqlite in process and as its
+guest binary, Postgres as its guest binary against every supported major
+(the `postgres` check's `adapter_conformance` step), and D1 against its
+mocked HTTP API. The D1 run pins one known gap: on a binding, D1 answers an
+over-cap read as retryable `unavailable` because the receipt-wrapped batch
+has committed before the size is known
+([#847](https://github.com/Bookclerk/bookclerk/issues/847)).
+
 ## Checklist
 
 - Read with `all()`; the SDK streams when it can, and the result is still
@@ -320,3 +373,5 @@ operator's adapter.
   and D1's are smaller than sqlite's.
 - Test under every `bookclerk-db-testkit` profile, and keep
   `refused_begins()` at zero.
+- Writing an adapter: pass `bookclerk_db_testkit::assert_adapter_conforms`
+  on an empty unit.

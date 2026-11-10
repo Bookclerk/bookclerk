@@ -3533,7 +3533,7 @@ fn skip_text_collate(sql: &str, start: usize, end: usize) -> bool {
 /// True when `IN (` follows the span and every list item is `?` or `$n`.
 ///
 /// `uuid IN (?, ?)` is byte equality, same as `uuid = ?`, so the column stays
-/// bare and Postgres can use `idx_books_uuid`. A literal in the list does not
+/// bare and Postgres can use the `UNIQUE(uuid)` index. A literal in the list does not
 /// count. `NOT IN` does not count.
 fn in_list_of_placeholders(sql: &str, end: usize) -> bool {
     let Some(rest) = sql.get(end..) else {

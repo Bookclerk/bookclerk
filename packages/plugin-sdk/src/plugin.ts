@@ -104,6 +104,7 @@ import type {
   PublishOk,
   PurchaseHint,
   PurchaseHintParams,
+  PurchaseHintsParams,
   QueueMessage as WireQueueMessage,
   QueueSendOk,
   RevokeAccountParams,
@@ -1800,6 +1801,14 @@ export class NamedEntrypoint<
   }
 }
 
+/**
+ * How long the default `purchaseHints` keeps starting one-title lookups
+ * before answering with what it has, in milliseconds. Well under the
+ * host's 10 s batch deadline, so even a slow last lookup lands before it
+ * and a store without a bulk endpoint still returns the titles it priced.
+ */
+export const PURCHASE_HINTS_BUDGET_MS = 4_000;
+
 const STOREFRONT_METHODS = Object.freeze([
   "login",
   "scan",
@@ -1810,6 +1819,7 @@ const STOREFRONT_METHODS = Object.freeze([
   "searchCatalog",
   "expandCandidates",
   "purchaseHint",
+  "purchaseHints",
   "listDeals",
   "catalogDetail",
   "revokeAccount",
@@ -1907,6 +1917,33 @@ export class StorefrontEntrypoint<
    */
   purchaseHint(_params: PurchaseHintParams): Promise<PurchaseHint | null> {
     return Promise.reject(unsupported("purchaseHint"));
+  }
+  /**
+   * Purchase links / price hints for several titles in one call, one
+   * answer per query in order. The default asks {@link purchaseHint} for
+   * each query, those with a product id first, and stops starting lookups
+   * after {@link PURCHASE_HINTS_BUDGET_MS}; a store whose catalog prices
+   * many products per request overrides this to make one request. Reject with a
+   * `rate_limited` {@link PluginError} (its `details.retryAfterMs` says how
+   * long) when the store asks to slow down, so the host leaves it alone.
+   *
+   * @param params - The titles to price, in order.
+   * @returns One hint or `null` per query.
+   */
+  async purchaseHints(params: PurchaseHintsParams): Promise<Array<PurchaseHint | null>> {
+    const started = Date.now();
+    const out: Array<PurchaseHint | null> = params.queries.map(() => null);
+    // Queries that already name a product id are one lookup each; title
+    // searches come after, and nothing starts past the budget.
+    const order = params.queries
+      .map((query, i) => ({ i, direct: Boolean(query.productId?.trim()) }))
+      .sort((a, b) => Number(b.direct) - Number(a.direct))
+      .map((entry) => entry.i);
+    for (const i of order) {
+      if (Date.now() - started >= PURCHASE_HINTS_BUDGET_MS) break;
+      out[i] = await this.purchaseHint(params.queries[i]);
+    }
+    return out;
   }
   /**
    * Current storefront deals.

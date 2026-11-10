@@ -69,6 +69,7 @@ pub use purchase::{
     parse_money_label_to_cents, purchase_hints_for, resolve_purchase_hints,
     resolve_purchase_hints_batch, seed_purchase_hint, PurchaseHint, PurchaseHintsQuery,
     PurchaseHintsResponse, BATCH_DEADLINE, BREAKER_OPEN_FOR, BREAKER_TRIP_TIMEOUTS,
+    RATE_LIMIT_FIRST_PAUSE, RATE_LIMIT_MAX_PAUSE,
 };
 pub use recommend::{
     combine_wishlist_score, listening_engagement, rank_global_request_queue, recommend,

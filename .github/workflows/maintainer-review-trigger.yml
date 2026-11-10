@@ -1,0 +1,39 @@
+# Starts the maintainer review check for a pull request.
+#
+# This workflow does nothing itself. It runs on `pull_request` and
+# `pull_request_review`, so it gets a read-only token and no secrets, and a
+# fork's copy of it is what runs for a fork pull request. When it completes,
+# the `Maintainer review` workflow (maintainer-review.yml) runs on
+# `workflow_run` from the default branch with the App token it needs, reads
+# the pull request and its reviews through the API, and reports the
+# `Maintainer review` check run.
+#
+# Nothing here is trusted: a pull request that edits, renames or deletes this
+# file can only start the check, start it late, or never start it, and a
+# required `Maintainer review` check that never arrives keeps the pull
+# request blocked. The check finds the pull request from the run's head
+# commit, branch and repository, which GitHub sets, not from anything this
+# run produces.
+#
+# See docs/contributing/automation.md#maintainer-review.
+
+name: Maintainer review trigger
+
+on:
+  pull_request:
+    # `closed` re-decides a head another pull request shares: the check
+    # vouches for a commit while any open pull request on it passes.
+    types: [opened, synchronize, reopened, closed]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions: {}
+
+jobs:
+  trigger:
+    name: Maintainer review trigger
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Hand over to the maintainer review workflow
+        run: echo "The maintainer review workflow checks this pull request when this run completes."

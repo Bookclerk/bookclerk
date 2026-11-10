@@ -16,8 +16,9 @@ use sea_orm::{
     QueryOrder, QuerySelect,
 };
 
-use bookclerk_plugin_abi::{DbCapabilities, ExecuteRequest, TypedDbStatement};
+use bookclerk_plugin_abi::TypedDbStatement;
 
+use super::write_batches::WriteBatches;
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
 use crate::control_plane::batch;
 use crate::entities::{
@@ -35,16 +36,6 @@ use crate::models::{portal_prefs_key, user_prefs_key, OPERATOR_PREFS_KEY};
 /// sqlite plugin's 256 KiB `maxResultBytes`, so the candidate listing halves
 /// its page when a result is refused for size.
 const DISCOVER_READ_PAGE: u64 = 200;
-
-/// Share of the plugin's `maxRequestBytes` a candidate batch fills, in
-/// eighths. The batch size is summed from each statement's own encoding, so
-/// the margin covers the framing that summing leaves out.
-const CANDIDATE_BATCH_BYTES_EIGHTHS: usize = 7;
-
-/// Bytes of the plugin's `maxRequestBytes` a request holding one candidate
-/// statement leaves free. That request is sized whole, so only the request
-/// hash and deadline, which are empty while sizing, still need room.
-const SINGLE_STATEMENT_HEADROOM: usize = 256;
 
 /// The two statements that upsert one candidate row.
 ///
@@ -88,98 +79,6 @@ fn candidate_upsert(
             ],
         ),
     ]
-}
-
-/// Splits candidate writes into atomic batches the database plugin accepts.
-///
-/// A batch closes before it would pass the plugin's `maxStatements`, or
-/// [`CANDIDATE_BATCH_BYTES_EIGHTHS`] of its `maxRequestBytes`. A statement
-/// too large to share a batch still goes alone while it fits the plugin's
-/// limit less [`SINGLE_STATEMENT_HEADROOM`].
-struct CandidateBatches {
-    /// Statements waiting for the next batch.
-    pending: Vec<TypedDbStatement>,
-    /// Summed encoded bytes of `pending` plus an empty request's framing.
-    pending_bytes: usize,
-    /// Encoded bytes of a request with no statements.
-    empty_bytes: usize,
-    /// Most statements one batch may hold.
-    max_statements: usize,
-    /// Most encoded bytes one batch of several statements may hold.
-    max_bytes: usize,
-    /// Most encoded bytes a request holding one statement may hold.
-    max_single_bytes: usize,
-}
-
-impl CandidateBatches {
-    /// Starts an empty batch sized to the plugin's advertised limits.
-    fn new(caps: &DbCapabilities) -> Self {
-        let empty_bytes = encoded_len(&[]).unwrap_or(0);
-        let request_cap = usize::try_from(caps.max_request_bytes).unwrap_or(usize::MAX);
-        Self {
-            pending: Vec::new(),
-            pending_bytes: empty_bytes,
-            empty_bytes,
-            max_statements: usize::try_from(caps.max_statements)
-                .unwrap_or(usize::MAX)
-                .max(1),
-            max_bytes: request_cap / 8 * CANDIDATE_BATCH_BYTES_EIGHTHS,
-            max_single_bytes: request_cap.saturating_sub(SINGLE_STATEMENT_HEADROOM),
-        }
-    }
-
-    /// Adds one statement.
-    ///
-    /// # Returns
-    ///
-    /// The batch that had to close to make room, when one did.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the statement alone is larger than one request
-    /// may carry, or cannot be encoded.
-    fn push(&mut self, stmt: TypedDbStatement) -> Result<Option<Vec<TypedDbStatement>>> {
-        let size = encoded_len(std::slice::from_ref(&stmt))?.saturating_sub(self.empty_bytes);
-        if self.empty_bytes.saturating_add(size) > self.max_single_bytes {
-            return Err(LibraryError::Other(anyhow::anyhow!(
-                "a discover candidate write is {size} bytes, over the database plugin's request limit"
-            )));
-        }
-        let full = self.pending.len() >= self.max_statements
-            || self.pending_bytes.saturating_add(size) > self.max_bytes;
-        let closed = if full && !self.pending.is_empty() {
-            self.pending_bytes = self.empty_bytes;
-            Some(std::mem::take(&mut self.pending))
-        } else {
-            None
-        };
-        self.pending_bytes = self.pending_bytes.saturating_add(size);
-        self.pending.push(stmt);
-        Ok(closed)
-    }
-
-    /// The last, partly filled batch, when anything is left.
-    fn finish(self) -> Option<Vec<TypedDbStatement>> {
-        (!self.pending.is_empty()).then_some(self.pending)
-    }
-}
-
-/// Encoded bytes of a request carrying `statements`.
-///
-/// # Errors
-///
-/// Returns an error when the statements cannot be encoded (a NUL in the SQL
-/// or a text bind).
-fn encoded_len(statements: &[TypedDbStatement]) -> Result<usize> {
-    let req = ExecuteRequest {
-        operation_id: format!("discover-candidates-{}", uuid::Uuid::nil()),
-        request_hash: String::new(),
-        statements: statements.to_vec(),
-        deadline_unix_ms: 0,
-    };
-    bookclerk_plugin_abi::encoded_execute_request_bytes(&req)
-        .map(|bytes| bytes.len())
-        .map_err(|err| LibraryError::Other(anyhow::anyhow!(err.to_string())))
 }
 
 /// Whose Discover shelves a stored row belongs to.
@@ -332,7 +231,7 @@ impl LibraryStore {
             }
             unique.push(row);
         }
-        let mut batches = CandidateBatches::new(self.db_capabilities());
+        let mut batches = WriteBatches::new(self.db_capabilities(), "discover candidate");
         for (key, json) in unique {
             for stmt in candidate_upsert(&subject_key, source, key, scope, json, &now) {
                 if let Some(full) = batches.push(stmt)? {
@@ -737,6 +636,7 @@ impl LibraryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bookclerk_plugin_abi::DbCapabilities;
 
     #[test]
     fn subject_keys_round_trip() {

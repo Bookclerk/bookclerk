@@ -150,6 +150,10 @@ pull request as the behavior they describe:
   why it stays, then resolve it.
 - Never skip or disable a test, push an empty commit, or close and reopen a
   pull request to re-run CI.
+- A pull request from an author without write access needs a maintainer's
+  approval of its current head commit before it can merge (the
+  `Maintainer review` check; see
+  [`docs/contributing/automation.md`](docs/contributing/automation.md#maintainer-review)).
 - Every author, maintainers included, must have accepted the
   [CLA](CLA.md); the `CLA` check says how. Only bots and AI coding
   assistant accounts are exempt.

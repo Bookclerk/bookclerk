@@ -1,0 +1,51 @@
+# Refuses a release whose tag does not point at a commit on the default
+# branch, so a tag put on an unmerged branch, a fork's commit or an old
+# side branch publishes nothing.
+#
+# This step runs from the tagged commit's own copy of the workflow, so it
+# catches a mistaken tag, not a forged one: a tag on a commit someone wrote
+# to remove this step would skip it. The `Release tags` rulesets
+# (scripts/setup-release-rulesets.sh) are what stop anyone without admin
+# rights, the automation App included, from creating or moving a `v*` tag.
+# See docs/contributing/packaging.md#release-tags.
+name: Release on main
+description: Fails unless the release's commit is on the default branch.
+
+inputs:
+  sha:
+    description: The commit the release's tag points at.
+    required: true
+  default-branch:
+    description: The repository's default branch.
+    required: true
+  token:
+    description: A token that can read the repository's contents.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Check the release's commit is on the default branch
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        SHA: ${{ inputs.sha }}
+        DEFAULT_BRANCH: ${{ inputs.default-branch }}
+      run: |
+        set -euo pipefail
+        if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::not a commit SHA: $SHA"
+          exit 1
+        fi
+        # `behind` or `identical`: the default branch contains the commit.
+        status=$(gh api "repos/$REPO/compare/$DEFAULT_BRANCH...$SHA" --jq .status)
+        case "$status" in
+          behind | identical)
+            echo "$SHA is on $DEFAULT_BRANCH ($status)"
+            ;;
+          *)
+            echo "::error::the release's commit $SHA is not on $DEFAULT_BRANCH ($status); tag a commit on $DEFAULT_BRANCH"
+            exit 1
+            ;;
+        esac

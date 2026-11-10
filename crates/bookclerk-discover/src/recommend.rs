@@ -701,24 +701,36 @@ pub(crate) async fn rank_candidates(
         );
 
         let mut purchase_hints = Vec::new();
-        // Card seeds must match resolve_purchase_hints: Audible-only URL
-        // seeds. Soft Magento/Chirp ids need live title-matched verification.
-        if seed_source_is_trusted(&c.source) {
-            if let Some(label) = c.price_label.clone().filter(|s| !s.is_empty()) {
-                if let Some(hint) = seed_purchase_hint(
+        // The price the catalog listed when the candidate was fetched shows
+        // on the card at once, as the store's list price, until the live
+        // lookup refreshes it. Only Audible is linked from its id without a
+        // live check (see `resolve_purchase_hints`); the others carry the
+        // price alone and get their link from the live lookup.
+        if let Some(label) = c.price_label.clone().filter(|s| !s.is_empty()) {
+            let mut hint = if seed_source_is_trusted(&c.source) {
+                seed_purchase_hint(
                     &c.source,
                     &c.product_id,
                     Some(c.title.clone()),
                     &opts.region,
-                ) {
-                    purchase_hints.push(PurchaseHint {
-                        price_cents: c.price_cents,
-                        currency: c.currency.clone(),
-                        price_label: Some(label),
-                        ..hint
-                    });
-                }
+                )
+            } else {
+                None
             }
+            .unwrap_or_else(|| {
+                PurchaseHint::link(
+                    c.source.as_str(),
+                    c.product_id.as_str(),
+                    Some(c.title.clone()),
+                    None,
+                )
+            });
+            hint.price_cents = c.price_cents;
+            hint.list_price_cents = c.price_cents;
+            hint.currency = c.currency.clone();
+            hint.list_price_label = Some(label.clone());
+            hint.price_label = Some(label);
+            purchase_hints.push(hint);
         }
         let mut rec = Recommendation {
             work_id: None,
@@ -1560,6 +1572,83 @@ mod tests {
         let unplaced = RankedQueueEntry::from_global(entry(None), 0.0, Vec::new());
         let json = serde_json::to_value(&unplaced).unwrap();
         assert!(json.get("work_id").is_none(), "{json}");
+    }
+
+    /// The price a catalog listed shows on the card as the store's list
+    /// price: an Audible card is linked from its id, while another store's
+    /// card carries the price and waits for the live lookup for its link.
+    #[tokio::test]
+    async fn a_listed_price_shows_on_the_card() {
+        let (store, books) = rated_library().await;
+        let candidate =
+            |source: &str, product_id: &str, title: &str| crate::candidates::StorefrontCandidate {
+                source: source.into(),
+                product_id: product_id.into(),
+                title: title.into(),
+                authors: Some("Ada Author".into()),
+                narrators: None,
+                series: None,
+                series_index: None,
+                asin: None,
+                isbn: None,
+                cover_url: None,
+                seed_categories: None,
+                origin: "author search".into(),
+                seed_title: None,
+                starter_genre: None,
+                store_editions: Vec::new(),
+                subtitle: None,
+                description: None,
+                publisher: None,
+                length_minutes: None,
+                published_at: None,
+                categories: None,
+                language: None,
+                price_cents: Some(1499),
+                currency: Some("USD".into()),
+                price_label: Some("$14.99".into()),
+                rating_overall: None,
+                rating_count: None,
+                is_abridged: None,
+                audible_rank: None,
+            };
+        let opts = RecommendOptions {
+            include_purchase_hints: false,
+            embeddings_enabled: false,
+            ..RecommendOptions::default()
+        };
+        let recs = rank_candidates(
+            &store,
+            &SourceRegistry::new(),
+            &books,
+            &TasteWeights::new(),
+            &[],
+            vec![
+                candidate("audible", "B0AUDIBLE1", "Audible Pick"),
+                candidate("chirp", "chirp-42", "Chirp Pick"),
+            ],
+            &opts,
+        )
+        .await
+        .unwrap();
+        for (title, source) in [("Audible Pick", "audible"), ("Chirp Pick", "chirp")] {
+            let rec = recs
+                .iter()
+                .find(|r| r.title == title)
+                .unwrap_or_else(|| panic!("{title} missing: {recs:?}"));
+            let hint = rec
+                .purchase_hints
+                .iter()
+                .find(|h| h.source == source)
+                .unwrap_or_else(|| panic!("{title} has no {source} hint"));
+            assert_eq!(hint.price_cents, Some(1499));
+            assert_eq!(hint.list_price_cents, Some(1499));
+            assert_eq!(hint.currency.as_deref(), Some("USD"));
+            assert_eq!(hint.price_label.as_deref(), Some("$14.99"));
+            assert_eq!(hint.list_price_label.as_deref(), Some("$14.99"));
+        }
+        let audible = recs.iter().find(|r| r.title == "Audible Pick").unwrap();
+        assert!(audible.purchase_hints[0].url.is_some(), "{audible:?}");
     }
 
     /// A store holding one unfinished book rated 5 by "Ada Author", and its rows.
