@@ -1596,15 +1596,20 @@ mod tests {
         id: &'static str,
         /// Record every lookup returns; `None` answers "not found".
         answer: Option<CatalogHit>,
+        /// When true every lookup fails, as a broken store would.
+        fails: bool,
         /// Lookups made, as `isbn:<v>` or `product:<v>`.
         calls: Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     impl DetailStore {
-        /// Records one lookup and returns the canned answer.
-        fn record(&self, call: String) -> Option<CatalogHit> {
+        /// Records one lookup and returns the canned answer, or fails.
+        fn record(&self, call: String) -> bookclerk_source::Result<Option<CatalogHit>> {
             self.calls.lock().unwrap().push(call);
-            self.answer.clone()
+            if self.fails {
+                return Err(bookclerk_source::SourceError::api("store is down"));
+            }
+            Ok(self.answer.clone())
         }
     }
 
@@ -1670,14 +1675,14 @@ mod tests {
             &self,
             product_id: &str,
         ) -> bookclerk_source::Result<Option<CatalogHit>> {
-            Ok(self.record(format!("product:{product_id}")))
+            self.record(format!("product:{product_id}"))
         }
 
         async fn catalog_detail_by_isbn(
             &self,
             isbn: &str,
         ) -> bookclerk_source::Result<Option<CatalogHit>> {
-            Ok(self.record(format!("isbn:{isbn}")))
+            self.record(format!("isbn:{isbn}"))
         }
     }
 
@@ -1686,10 +1691,20 @@ mod tests {
         id: &'static str,
         answer: Option<CatalogHit>,
     ) -> (Arc<dyn ContentSource>, Arc<std::sync::Mutex<Vec<String>>>) {
+        detail_store_with(id, answer, false)
+    }
+
+    /// A [`DetailStore`] that may fail every lookup, and its call log.
+    fn detail_store_with(
+        id: &'static str,
+        answer: Option<CatalogHit>,
+        fails: bool,
+    ) -> (Arc<dyn ContentSource>, Arc<std::sync::Mutex<Vec<String>>>) {
         let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
         let store = DetailStore {
             id,
             answer,
+            fails,
             calls: calls.clone(),
         };
         (Arc::new(store), calls)
@@ -1785,6 +1800,80 @@ mod tests {
         )];
         enrich_page_from(&[], &mut lean).await;
         assert!(lean[0].1.description.is_none());
+    }
+
+    #[tokio::test]
+    async fn page_enrich_skips_a_failing_store_and_uses_a_listing_product_id() {
+        let (broken, broken_calls) = detail_store_with("alpha", None, true);
+        let (listing, listing_calls) = detail_store(
+            "beta",
+            Some(CatalogHit {
+                product_id: "beta-9".into(),
+                title: "Adventure".into(),
+                description: Some("From beta.".into()),
+                ..CatalogHit::default()
+            }),
+        );
+        // No ISBN: alpha has no key for the row, beta listed it itself.
+        let mut row = lean_row("chirp", "c1", None);
+        row.store_editions.push(StoreEdition::new("beta", "beta-9"));
+        let mut ranked = vec![(String::from("soft:adventure"), row)];
+        enrich_page_from(&[broken.clone(), listing], &mut ranked).await;
+        assert!(broken_calls.lock().unwrap().is_empty());
+        assert_eq!(*listing_calls.lock().unwrap(), vec!["product:beta-9"]);
+        assert_eq!(ranked[0].1.description.as_deref(), Some("From beta."));
+
+        // A store that errors leaves the row as it was.
+        let mut lean = vec![(
+            String::from("isbn:9780000000003"),
+            lean_row("chirp", "c4", Some("9780000000003")),
+        )];
+        enrich_page_from(&[broken], &mut lean).await;
+        assert_eq!(*broken_calls.lock().unwrap(), vec!["isbn:9780000000003"]);
+        assert!(lean[0].1.description.is_none());
+    }
+
+    #[test]
+    fn relevance_follows_store_rank_and_rating_ties_break_on_it() {
+        let make = |id: &str, rank: Option<u32>| -> (String, StorefrontCandidate) {
+            let mut c = cand(None, Some(id));
+            c.product_id = id.into();
+            c.title = id.into();
+            c.rating_overall = Some(4.5);
+            c.rating_count = Some(100);
+            c.store_rank = rank;
+            (id.into(), c)
+        };
+        let order = |rows: &[(String, StorefrontCandidate)]| -> Vec<String> {
+            rows.iter().map(|(k, _)| k.clone()).collect()
+        };
+        let rows = || {
+            vec![
+                make("none", None),
+                make("third", Some(3)),
+                make("first", Some(1)),
+            ]
+        };
+
+        let mut relevance = rows();
+        rank_candidates(
+            &mut relevance,
+            CatalogSearchSort::Relevance,
+            CatalogSortDir::Desc,
+            "q",
+            "en",
+        );
+        assert_eq!(order(&relevance), vec!["first", "third", "none"]);
+
+        let mut rating = rows();
+        rank_candidates(
+            &mut rating,
+            CatalogSearchSort::Rating,
+            CatalogSortDir::Desc,
+            "q",
+            "en",
+        );
+        assert_eq!(order(&rating), vec!["first", "third", "none"]);
     }
 
     #[test]
