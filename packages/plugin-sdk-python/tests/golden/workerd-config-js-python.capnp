@@ -33,8 +33,11 @@ const pluginWorker :Workerd.Worker = (
     (name = "@bookclerk/plugin-sdk/workerd", esModule = embed ".bookclerk/sdk-workerd.js"),
     (name = "@bookclerk/plugin-sdk", esModule = embed ".bookclerk/sdk-workerd.js"),
     (name = "bookclerk_plugin_sdk/_abi.py", pythonModule = embed ".bookclerk/sdk-product-abi.py"),
+    (name = "bookclerk_plugin_sdk/_capnp.py", pythonModule = embed ".bookclerk/sdk-capnp.py"),
+    (name = "bookclerk_plugin_sdk/_wire.py", pythonModule = embed ".bookclerk/sdk-wire.py"),
     (name = "bookclerk_plugin_sdk/guest_sql.py", pythonModule = embed ".bookclerk/sdk-guest-sql.py"),
     (name = "bookclerk_plugin_sdk/limits.py", pythonModule = embed ".bookclerk/sdk-limits.py"),
+    (name = "bookclerk_plugin_sdk/plugin_migration.py", pythonModule = embed ".bookclerk/sdk-plugin-migration.py"),
     (name = "bookclerk_plugin_sdk/db_value.py", pythonModule = embed ".bookclerk/sdk-db-value.py"),
     (name = "bookclerk_plugin_sdk/__init__.py", pythonModule = embed ".bookclerk/sdk-init.py"),
     (name = "bookclerk_plugin_sdk/workerd.py", pythonModule = embed ".bookclerk/sdk-workerd.py")
