@@ -650,6 +650,32 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong passwords from this client or for this Owner; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginThrottled"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many failed login attempts. Try again in 45 seconds.",
+                  "retry_after_secs": 45,
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The password hash could not be read, or the elevated session could not be stored.",
             "content": {
@@ -25434,8 +25460,8 @@
         "tags": [
           "Accounts"
         ],
-        "summary": "Unlinks a store account from this identity and deletes secrets when no other identity remains.",
-        "description": "The account is addressed by `(source, account_id)`: the same store id may\nexist under two plugins. `source` is the alias or plugin key of the link.\n\nWhen the last link goes, the plugin first signs the account out at the\nstore (for example, Audible deregisters its device), best effort.",
+        "summary": "Marks a store account revoked, signs it out, deletes its stored credentials, then unlinks it.",
+        "description": "The account is addressed by `(source, account_id)`: the same store id may\nexist under two plugins. `source` is the alias or plugin key of the link.\n\nLinks are exclusive (one identity per account), so the caller's link is\nthe account's only one and revoking it always clears the credentials.\nEvery step runs while the link still exists, in this order: the account\nis marked revoked (which also turns scanning off, so no job picks it up\nhalf-cleaned); the plugin signs it out at the store (for example, Audible\nderegisters its device), best effort; its `encrypted_secrets` rows are\ndeleted; only then is the link removed. Any failed library step answers\n503 and keeps the link, so the same request retries the cleanup.\nAlready-acquired library rows stay (product policy).",
         "operationId": "portal_revoke_connection",
         "parameters": [
           {
@@ -25459,7 +25485,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The account was unlinked.",
+            "description": "The account was marked revoked, its stored credentials were deleted, and it was unlinked.",
             "content": {
               "application/json": {
                 "schema": {
@@ -25469,7 +25495,7 @@
             }
           },
           "400": {
-            "description": "The account is not linked to this identity, or the library database refused the unlink or the credential revoke (the body carries its message).",
+            "description": "The account is not linked to this identity, or the library database refused to read this identity's links (the body carries its message).",
             "content": {
               "application/json": {
                 "schema": {
@@ -25477,7 +25503,7 @@
                 },
                 "examples": {
                   "library_failed": {
-                    "summary": "The library database refused the step.",
+                    "summary": "The library database refused the read.",
                     "value": {
                       "error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"
                     }
@@ -25532,14 +25558,25 @@
             }
           },
           "503": {
-            "description": "The store sign-out task that follows the last unlink stopped. The link is already gone (a retry answers 400 `account not linked to this identity`) and the account's stored credentials may remain; the daemon log names the task.",
+            "description": "A cleanup step failed: marking the account revoked, deleting its stored credentials, or removing the link. The account stays linked, so repeating the request runs the cleanup again. When the cleanup task itself stopped, the daemon log names it; a repeat either finishes the cleanup or, if the unlink had already run, answers 400 `account not linked to this identity`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
-                "example": {
-                  "error": "revoke cleanup failed: task 12 panicked"
+                "examples": {
+                  "step_failed": {
+                    "summary": "The library database refused a cleanup step.",
+                    "value": {
+                      "error": "revoke cleanup failed: ORM / database plugin error: Execution Error: error returned from database: database is locked"
+                    }
+                  },
+                  "task_stopped": {
+                    "summary": "The cleanup task panicked.",
+                    "value": {
+                      "error": "revoke cleanup failed: task 12 panicked"
+                    }
+                  }
                 }
               }
             }
