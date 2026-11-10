@@ -39,6 +39,7 @@ use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrde
 use serde::Serialize;
 
 use super::versions::PluginArtifact;
+use crate::control_plane::{Bump, LiveTopic};
 use crate::entities::remote_plugin_consents;
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -393,25 +394,24 @@ pub async fn record_remote_plugin_request(
         revoked_at: Set(None),
         updated_at: Set(now()),
     };
-    remote_plugin_consents::Entity::insert(row)
-        .on_conflict(
-            OnConflict::columns([
-                remote_plugin_consents::Column::OwnerClusterId,
-                remote_plugin_consents::Column::PluginKey,
-            ])
-            .update_columns([
-                remote_plugin_consents::Column::RequestedVersion,
-                remote_plugin_consents::Column::RequestedGrantJson,
-                remote_plugin_consents::Column::RequestedArtifactUrl,
-                remote_plugin_consents::Column::RequestedArtifactSha256,
-                remote_plugin_consents::Column::RequestedArtifactPayloadSha256,
-                remote_plugin_consents::Column::UpdatedAt,
-            ])
-            .to_owned(),
-        )
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    let insert = remote_plugin_consents::Entity::insert(row).on_conflict(
+        OnConflict::columns([
+            remote_plugin_consents::Column::OwnerClusterId,
+            remote_plugin_consents::Column::PluginKey,
+        ])
+        .update_columns([
+            remote_plugin_consents::Column::RequestedVersion,
+            remote_plugin_consents::Column::RequestedGrantJson,
+            remote_plugin_consents::Column::RequestedArtifactUrl,
+            remote_plugin_consents::Column::RequestedArtifactSha256,
+            remote_plugin_consents::Column::RequestedArtifactPayloadSha256,
+            remote_plugin_consents::Column::UpdatedAt,
+        ])
+        .to_owned(),
+    );
+    store
+        .exec_bumped(insert, LiveTopic::Consents, Bump::Always)
+        .await?;
     load_remote_plugin_consent(store, cluster_id, plugin_key)
         .await?
         .ok_or_else(|| LibraryError::NotFound(format!("remote plugin consent {plugin_key}")))
@@ -556,7 +556,7 @@ pub async fn approve_remote_plugin(
         )
         .col_expr(
             remote_plugin_consents::Column::UpdatedAt,
-            sea_orm::sea_query::Expr::value(stamp),
+            sea_orm::sea_query::Expr::value(stamp.clone()),
         )
         .filter(remote_plugin_consents::Column::OwnerClusterId.eq(approval.cluster_id))
         .filter(remote_plugin_consents::Column::PluginKey.eq(approval.plugin_key))
@@ -586,8 +586,10 @@ pub async fn approve_remote_plugin(
                     .add(remote_plugin_consents::Column::ApprovedBy.eq(REMOTE_CONSENT_PLATFORM)),
             );
     }
-    let updated = update.exec(store.db()).await.map_err(LibraryError::Orm)?;
-    if updated.rows_affected != 1 {
+    let updated = store
+        .exec_bumped(update, LiveTopic::Consents, Bump::Stamped(stamp))
+        .await?;
+    if updated != 1 {
         return Err(LibraryError::Conflict(format!(
             "the request for {} changed since it was reviewed (or was revoked); review it again",
             approval.plugin_key
@@ -613,7 +615,7 @@ pub async fn revoke_remote_plugin(
     plugin_key: &str,
 ) -> Result<Option<RemotePluginConsent>> {
     let stamp = now();
-    remote_plugin_consents::Entity::update_many()
+    let update = remote_plugin_consents::Entity::update_many()
         .col_expr(
             remote_plugin_consents::Column::Version,
             sea_orm::sea_query::Expr::value(Option::<String>::None),
@@ -652,13 +654,13 @@ pub async fn revoke_remote_plugin(
         )
         .col_expr(
             remote_plugin_consents::Column::UpdatedAt,
-            sea_orm::sea_query::Expr::value(stamp),
+            sea_orm::sea_query::Expr::value(stamp.clone()),
         )
         .filter(remote_plugin_consents::Column::OwnerClusterId.eq(cluster_id))
-        .filter(remote_plugin_consents::Column::PluginKey.eq(plugin_key))
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+        .filter(remote_plugin_consents::Column::PluginKey.eq(plugin_key));
+    store
+        .exec_bumped(update, LiveTopic::Consents, Bump::Stamped(stamp))
+        .await?;
     load_remote_plugin_consent(store, cluster_id, plugin_key).await
 }
 

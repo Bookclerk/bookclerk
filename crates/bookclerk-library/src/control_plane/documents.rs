@@ -358,6 +358,23 @@ pub async fn import_if_absent(
                         text(&key.namespace),
                     ],
                 ),
+                // The notice above went in exactly when this write's document
+                // did (or a retry of it, which costs a re-read at most).
+                super::bump_if_any(
+                    super::LiveTopic::Config,
+                    query(
+                        "SELECT 1 FROM configuration_documents
+                          WHERE scope_type = ? AND scope_id = ? AND namespace = ?
+                            AND write_operation_id = ? AND revision = 1",
+                        vec![
+                            text(&key.scope_type),
+                            text(&key.scope_id),
+                            text(&key.namespace),
+                            text(operation_id),
+                        ],
+                        1,
+                    ),
+                ),
             ],
         ),
     )
@@ -549,6 +566,15 @@ pub async fn replace_document(
                         text(operation_id),
                     ],
                 ),
+                // The slot holds 1 exactly when the replacement went in.
+                super::bump_if_any(
+                    super::LiveTopic::Config,
+                    query(
+                        "SELECT 1 FROM bookclerk_slots WHERE slot_key = ? AND bump = 1",
+                        vec![text(&slot)],
+                        1,
+                    ),
+                ),
                 exec(
                     "DELETE FROM bookclerk_slots WHERE slot_key = ?",
                     vec![text(&slot)],
@@ -564,7 +590,7 @@ pub async fn replace_document(
     )
     .await?;
 
-    let rows = batch::rows(&reply, 7);
+    let rows = batch::rows(&reply, 8);
     let Some(row) = rows.first() else {
         return Err(LibraryError::Other(anyhow::anyhow!(
             "configuration replace for {} did not record a receipt",

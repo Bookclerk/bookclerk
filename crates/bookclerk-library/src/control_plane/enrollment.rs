@@ -922,11 +922,19 @@ pub async fn record_node_left(store: &LibraryStore, node_id: &str) -> Result<boo
     // the revoke is finished by its retry. Titles it shared stop being
     // shared; their files stay here.
     super::branch_catalog::detach_branch_titles(store, node_id, super::DETACHED_LEFT).await?;
-    crate::entities::node_status::Entity::delete_many()
-        .filter(crate::entities::node_status::Column::NodeId.eq(node_id))
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    {
+        use crate::entities::node_status;
+        let probe = node_status::Entity::find().filter(node_status::Column::NodeId.eq(node_id));
+        let delete =
+            node_status::Entity::delete_many().filter(node_status::Column::NodeId.eq(node_id));
+        store
+            .exec_bumped(
+                delete,
+                super::LiveTopic::Nodes,
+                super::Bump::IfAny(super::sea_probe(&probe)?),
+            )
+            .await?;
+    }
     if revoked_now {
         let _ = store
             .insert_security_audit_event(&format!("node:{node_id}"), "node_left", None)

@@ -132,6 +132,9 @@ pub use leases::{
     EVENT_RETENTION_LEASE, JOB_RETENTION_LEASE, KV_EXPIRY_LEASE, MIGRATION_LEASE,
     RECORD_RETENTION_LEASE, SESSION_EXPIRY_LEASE,
 };
+pub(crate) use live::{
+    bump, bump_if_any, bump_if_stamped, bump_on, exec_bumped_via, sea_probe, Bump,
+};
 pub use live::{changed_topics, live_revisions, LiveRevision, LiveRevisions, LiveTopic};
 pub use node_queue::{
     is_node_consumer_id, is_valid_node_id, node_consumer_id, node_queue_name, publish_node_message,
