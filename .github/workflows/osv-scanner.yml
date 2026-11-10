@@ -28,6 +28,12 @@ permissions:
   contents: read
   security-events: write
 
+# A new push supersedes a pull request's scan; merge groups, main pushes and
+# scheduled scans each keep their own run.
+concurrency:
+  group: osv-scanner-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   scan-pr:
     name: PR scan

@@ -30,6 +30,13 @@ jobs:
   trigger:
     name: CLA trigger
     if: github.event.action != 'edited' || github.event.changes.base
+    # A newer event on the same pull request supersedes a waiting or running
+    # trigger; the CLA workflow ignores a cancelled one, since the newer run
+    # starts it again. Job-level, so an `edited` run this job's `if` skips
+    # never cancels a real one.
+    concurrency:
+      group: cla-trigger-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -8,6 +8,9 @@ name: ClusterFuzzLite PR fuzzing
 
 on:
   pull_request:
+    # Drafts skip this workflow's jobs; `ready_for_review` runs them
+    # (docs/contributing/ci.md#draft-pull-requests).
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
     # Every crate a fuzz target links (`path =` dependencies in
     # fuzz/Cargo.toml); scripts/tests/test_ci_contract.py keeps this in sync.
@@ -43,6 +46,8 @@ concurrency:
 jobs:
   pr:
     name: fuzz changed code (${{ matrix.sanitizer }})
+    # Deferred on a draft pull request until it is ready for review.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
