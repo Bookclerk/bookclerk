@@ -1359,9 +1359,13 @@ SDK's `pyproject.toml`, under `[tool.mutmut]`: the package to mutate, the
 generated modules to leave alone (the same list ruff excludes, which a
 test checks) and the test folder.
 
-To reproduce the run locally, from `packages/plugin-sdk-python`:
+To reproduce the run locally, build the testkit first (it needs Rust and
+capnp, as the workflow installs), then run mutmut from
+`packages/plugin-sdk-python`:
 
 ```sh
+cargo build -p bookclerk-db-testkit --bin bookclerk-db-testkit
+export BOOKCLERK_DB_TESTKIT="$(git rev-parse --show-toplevel)/target/debug/bookclerk-db-testkit"
 python3 -m venv /tmp/mutmut && /tmp/mutmut/bin/pip install pytest "mutmut==3.8.1"
 /tmp/mutmut/bin/mutmut run "bookclerk_plugin_sdk.tools.x_check_plugin__mutmut_*"
 /tmp/mutmut/bin/mutmut show bookclerk_plugin_sdk.tools.x_check_plugin__mutmut_3
