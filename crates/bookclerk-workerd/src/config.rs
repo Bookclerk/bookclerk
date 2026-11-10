@@ -2252,10 +2252,12 @@ mode = "deny"
             if !reached.insert(module.clone()) {
                 continue;
             }
-            let Some(injected) = SDK_PY_MODULES.iter().find(|m| m.module == module) else {
-                panic!("{module} is imported by the Python SDK but not injected into isolates");
-            };
-            pending.extend(sdk_imports(injected.source));
+            let injected = SDK_PY_MODULES.iter().find(|m| m.module == module);
+            assert!(
+                injected.is_some(),
+                "{module} is imported by the Python SDK but not injected into isolates"
+            );
+            pending.extend(injected.map_or_else(Vec::new, |m| sdk_imports(m.source)));
         }
         assert!(reached.contains(SDK_PY_WIRE_MODULE));
         assert!(reached.contains(SDK_PY_CAPNP_MODULE));

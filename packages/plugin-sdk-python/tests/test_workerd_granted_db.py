@@ -776,3 +776,17 @@ class GrantedChannelErrorTests(unittest.IsolatedAsyncioTestCase):
             await env.DB.prepare("SELECT 1").all()
         self.assertEqual(ctx.exception.code, "unavailable")
         self.assertIn("executeBytes", str(ctx.exception))
+
+    async def test_a_stub_plugin_error_passes_through_unchanged(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError
+
+        raised = PluginError.from_wire("unauthorized", "database grant: 401 expired")
+
+        class _Typed(_MockTransport):
+            async def limitsBytes(self) -> bytes:  # noqa: N802  (Workers RPC method name)
+                raise raised
+
+        env = self._env(_Typed())
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.limits()
+        self.assertIs(ctx.exception, raised)
