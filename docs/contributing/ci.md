@@ -1196,7 +1196,9 @@ the starting point of the next scheduled one.
    stopped. When the cgroup cannot be set up, a warning says so and the run
    goes on uncapped. A kill that lands on cargo itself leaves the mutant
    unclassified; each one gets its own warning, and the job summary says
-   the results are incomplete, because no list holds it.
+   the results are incomplete, because no list holds it. A kill that lands
+   on cargo-mutants itself, before the time limit and without the
+   watchdog, fails the run, so the next run retries the same range.
 
 The job summary shows the share of mutants the tests caught and lists the
 missed ones. The full results, with a log per mutant, are in the

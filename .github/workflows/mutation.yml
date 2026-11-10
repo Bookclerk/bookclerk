@@ -191,6 +191,8 @@ jobs:
           # Memory, in MiB, left outside cargo-mutants' cgroup for the runner
           # and this script.
           MEMORY_HEADROOM_MIB: "1536"
+          # The run's time limit, in minutes.
+          TIME_LIMIT_MIN: "240"
         run: |
           set +e
           # Cap cargo-mutants and everything it starts in a cgroup that holds
@@ -203,8 +205,11 @@ jobs:
           # cgroup cannot be set up, the run goes on uncapped.
           cgroup=/sys/fs/cgroup/cargo-mutants
           total=$(awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo)
-          cap=$((total - MEMORY_HEADROOM_MIB))
-          if sudo mkdir -p "$cgroup" \
+          cap=$((${total:-0} - MEMORY_HEADROOM_MIB))
+          if [ "$cap" -le 0 ]; then
+            echo "::warning::Could not cap cargo-mutants' memory: ${total:-unknown} MiB total leaves nothing above ${MEMORY_HEADROOM_MIB} MiB headroom; running uncapped"
+            cgroup=""
+          elif sudo mkdir -p "$cgroup" \
             && echo "$((cap * 1024 * 1024))" | sudo tee "$cgroup/memory.max" >/dev/null \
             && echo 0 | sudo tee "$cgroup/memory.swap.max" >/dev/null; then
             echo "::notice::cargo-mutants runs in a cgroup capped at ${cap} MiB of ${total} MiB"
@@ -218,10 +223,11 @@ jobs:
             if [ -n "$cgroup" ] && ! echo "$self" | sudo tee "$cgroup/cgroup.procs" >/dev/null; then
               echo "::warning::Could not move cargo-mutants into its cgroup; running uncapped"
             fi
-            exec timeout --signal=INT --kill-after=5m 240m \
+            exec timeout --signal=INT --kill-after=5m "${TIME_LIMIT_MIN}m" \
               cargo mutants --workspace --in-diff "$RUNNER_TEMP/pr.diff" --in-place --no-shuffle --output "$RUNNER_TEMP"
           ) &
           mutants=$!
+          started=$SECONDS
           reason=""
           low_memory=0
           checks=0
@@ -254,15 +260,24 @@ jobs:
           done
           wait "$mutants"
           code=$?
+          elapsed=$((SECONDS - started))
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          interrupted=false
-          if [ "$code" -eq 124 ] || [ "$code" -eq 130 ] || [ "$code" -eq 137 ]; then interrupted=true; fi
           # Only an interrupted run is a stopped one: a run that ended on its
           # own (a baseline failure, an error) keeps its exit code's meaning,
-          # even if the watchdog fired as it was ending.
-          if [ "$interrupted" = true ] && [ -n "$reason" ]; then
-            echo "stopped=$reason" >> "$GITHUB_OUTPUT"
-          elif [ "$interrupted" = true ]; then
+          # even if the watchdog fired as it was ending. timeout exits 124
+          # when the limit's SIGINT stopped the run, and 137 when it then had
+          # to send SIGKILL; the watchdog's SIGINT gives 130 or 137. A 130 or
+          # 137 with neither (cargo-mutants itself killed, for instance by
+          # the memory cap) is an error, so the next run retries the range.
+          if [ "$code" -eq 130 ] || [ "$code" -eq 137 ]; then
+            if [ -n "$reason" ]; then
+              echo "stopped=$reason" >> "$GITHUB_OUTPUT"
+            elif [ "$code" -eq 137 ] && [ "$elapsed" -ge $((TIME_LIMIT_MIN * 60)) ]; then
+              echo "stopped=time-limit" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::cargo-mutants was killed after ${elapsed}s, before the time limit and without the watchdog (exit $code)"
+            fi
+          elif [ "$code" -eq 124 ]; then
             echo "stopped=time-limit" >> "$GITHUB_OUTPUT"
           fi
           df -h "$GITHUB_WORKSPACE/target"
