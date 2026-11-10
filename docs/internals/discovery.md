@@ -103,9 +103,34 @@ operator, a household user, or a portal identity) has a **subject key**
    exceed the inline limit (`maxResultBytes`). A stored feed is one cell,
    and the plugin counts a row as JSON, where each quote or backslash in
    the feed takes two bytes.
-   So the feed is kept under 192 KiB in that escaped form: if it is larger,
-   every shelf is cut to its best items (down to four), then long
-   descriptions are shortened, then the last shelves are dropped. Writing a
+   So the stored feed keeps **card references**, not whole cards. Each card
+   keeps what is personal to the person (its shelf, order, score, reasons,
+   shelf tags, prices and wishers) and its identity (title, authors,
+   series, store editions). The catalog metadata that the person's
+   `discover_candidates` rows already hold (description, cover, subtitle,
+   publisher, length, date, genres, language and narrators) is left out
+   and joined back from those rows when the page reads the feed, in pages
+   that stay under the inline result limit. A field is left out only when
+   that join gives it back unchanged: metadata merged in from another
+   store edition is left out when that edition's candidate row gives the
+   same value, and stays on the card when no row does. A card with no
+   stored candidate, such as a wish, keeps its metadata. A fetch that
+   changes candidates before the page reads the feed changes what the join
+   fills in: an updated row shows its new metadata, a removed row lets
+   another edition's row fill the field, and a field no row holds stays
+   empty until the ranking that fetch queues replaces the feed.
+   `GET /api/discover/status` needs only whether a feed exists and when it
+   was ranked, so it reads the feed without the join.
+
+   The stored feed carries a format number. A feed in another format, such
+   as the whole cards an older release stored, reads as missing and is
+   ranked again. The ranking job logs the stored feed's size and card count
+   (`stored discover feed`). As a backstop the stored feed is kept under
+   192 KiB in that escaped form: if it is ever larger, long descriptions
+   left on cards are shortened to 300 characters, then each card keeps
+   three reasons and drops `seed_categories`, then every shelf is cut to
+   its best items (down to four), and last the final shelves are dropped.
+   Writing a
    feed replaces the old row without reading it, so an old feed that is too
    large to read cannot block its replacement.
 

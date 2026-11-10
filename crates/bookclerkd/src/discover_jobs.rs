@@ -282,6 +282,8 @@ pub async fn run_discover_feed(
         subject = %subject.key(),
         scope = report.scope.as_str(),
         shelves = report.shelves,
+        cards = report.cards,
+        bytes = report.stored_bytes,
         "stored discover feed"
     );
     // Open Discover pages on this node re-read at once; other nodes see the
