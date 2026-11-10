@@ -201,6 +201,17 @@ impl D1Proxy {
         let retry_safe = !guest_receipt.is_absent()
             || typed_is_read_only(&req.statements)
             || typed_is_receipt_gated(&req.statements);
+        // Whether the caller asked for reads only: the guest slice under a
+        // receipt wrap, otherwise the whole batch. An over-cap result on
+        // such a batch committed nothing the caller asked for, so it is a
+        // typed cap failure rather than an ambiguous one.
+        let read_only_work = if guest_receipt.is_absent() {
+            typed_is_read_only(&req.statements)
+        } else {
+            let guest_len =
+                usize::try_from(guest_receipt.guest_statement_len).unwrap_or(usize::MAX);
+            bookclerk_db_exec::guest_batch_is_read_only(req, guest_len)
+        };
         let d1_caps = caps.clone();
         let cap = d1_caps.max_result_rows;
         if proofs.len() != wire_len {
@@ -328,14 +339,22 @@ impl D1Proxy {
                     )?;
                     value
                 }
-                Err(err)
-                    if err.is_retryable() && retry_safe && attempt + 1 < ATOMIC_HTTP_ATTEMPTS =>
-                {
-                    sleep_before_d1_retry_bounded(attempt, err.retry_after(), deadline).await?;
-                    last_err = Some(DbErr::from(err));
-                    continue;
+                Err(err) => {
+                    let retryable = err.is_retryable();
+                    let retry_after = err.retry_after();
+                    let err = DbErr::from(err);
+                    if let Some(limit) = read_only_cap_failure(&err, read_only_work) {
+                        return self
+                            .refuse_read_only_over_cap(req, &guest_receipt, &limit, timeout)
+                            .await;
+                    }
+                    if retryable && retry_safe && attempt + 1 < ATOMIC_HTTP_ATTEMPTS {
+                        sleep_before_d1_retry_bounded(attempt, retry_after, deadline).await?;
+                        last_err = Some(err);
+                        continue;
+                    }
+                    return Err(err);
                 }
-                Err(err) => return Err(err.into()),
             };
             match parse_typed_batch(req, &raw, started, caps) {
                 Ok(mut reply) => {
@@ -374,18 +393,51 @@ impl D1Proxy {
                     }
                     return Ok(reply);
                 }
-                Err(err)
-                    if is_ambiguous_d1(&err)
-                        && retry_safe
-                        && attempt + 1 < ATOMIC_HTTP_ATTEMPTS =>
-                {
-                    sleep_before_d1_retry_bounded(attempt, None, deadline).await?;
-                    last_err = Some(err);
+                Err(err) => {
+                    if let Some(limit) = read_only_cap_failure(&err, read_only_work) {
+                        return self
+                            .refuse_read_only_over_cap(req, &guest_receipt, &limit, timeout)
+                            .await;
+                    }
+                    if is_ambiguous_d1(&err) && retry_safe && attempt + 1 < ATOMIC_HTTP_ATTEMPTS {
+                        sleep_before_d1_retry_bounded(attempt, None, deadline).await?;
+                        last_err = Some(err);
+                        continue;
+                    }
+                    return Err(err);
                 }
-                Err(err) => return Err(err),
             }
         }
         Err(last_err.unwrap_or_else(|| ambiguous_d1("exhausted retries")))
+    }
+
+    /// Answers a read-only batch whose result passed a cap with that cap's
+    /// typed failure, without retrying (the same read fails the same way).
+    ///
+    /// Under a guest receipt wrap the stub has already committed, so it is
+    /// finalized as a read-only receipt first: a retry under the same
+    /// operation id then runs the reads again, as any read-only replay does.
+    ///
+    /// # Errors
+    ///
+    /// Always: the cap failure, or the finalize batch's failure when the
+    /// receipt could not be finalized (then still ambiguous, so retryable).
+    async fn refuse_read_only_over_cap(
+        &self,
+        req: &ExecuteRequest,
+        guest_receipt: &bookclerk_plugin_abi::GuestReceiptPersist,
+        limit: &LimitExceeded,
+        timeout: Duration,
+    ) -> std::result::Result<ExecuteReply, DbErr> {
+        if !guest_receipt.is_absent() {
+            let finalize = bookclerk_db_exec::guest_receipt_read_only_finalize_stmt(
+                &req.operation_id,
+                &guest_receipt.guest_request_hash,
+            );
+            let stmt = d1_typed_statement(&finalize.sql, &finalize.parameters, None)?;
+            self.run_batch_with_timeout(&[stmt], timeout).await?;
+        }
+        Err(DbErr::Custom(limit.to_message()))
     }
 
     /// INSERT-only claim of the guest-receipt stub (one committing HTTP).
@@ -966,6 +1018,21 @@ async fn sleep_before_d1_retry_bounded(
 /// rather than at the start of `Display`.
 fn is_post_commit_unavailable(err: &DbErr) -> bool {
     err.to_string().contains("unavailable:")
+}
+
+/// The cap a read-only batch's result passed, when `err` is D1's ambiguous
+/// cap failure and `read_only` says the caller asked for reads only.
+///
+/// D1 commits a batch before the adapter can size its result, so a cap
+/// failure is ambiguous when the batch may have written. For reads only
+/// (#847) nothing the caller asked for committed, and the same read fails
+/// the same cap again, so the failure is the typed cap, not a retryable
+/// `unavailable`. A lost receipt result is never narrowed.
+fn read_only_cap_failure(err: &DbErr, read_only: bool) -> Option<LimitExceeded> {
+    if !read_only || !is_ambiguous_d1(err) || bookclerk_db_exec::is_guest_receipt_result_lost(err) {
+        return None;
+    }
+    LimitExceeded::from_message(&err.to_string())
 }
 
 /// True when `err` is a D1 ambiguous-commit marker.

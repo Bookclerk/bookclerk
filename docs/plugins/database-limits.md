@@ -340,7 +340,7 @@ that returns an oversized result and leaves the refusal to the host:
 | `values` | Return every value as the variant it was written: `Int64` extremes, `Float64`, multibyte and `b64:` text, bytes, `Boolean` and typed NULL |
 | `atomic_batch` | Leave nothing of a batch whose last statement fails |
 | `max_statements` / `max_binds` | Accept a batch of exactly `maxStatements` statements, and a statement with `maxBinds` binds, or with as many as `maxPayloadBytes` / `maxRequestBytes` admit when that is fewer (as on every first-party adapter) |
-| `result_rows` | Return `maxResultRows` rows, and refuse one more with `limit_exceeded` (`maxResultRows`) instead of truncating or returning it |
+| `result_rows` | Return `maxResultRows` rows, refuse one more with `limit_exceeded` (`maxResultRows`) instead of truncating or returning it, refuse a retry under the same operation id the same way, and serve that retry once the data fits |
 | `cell_bytes` / `result_bytes` | Round-trip a cell as wide as one bind can carry (up to 32 KiB), and refuse a cell built past `maxCellBytes` or a result past the inline byte caps with `limit_exceeded` |
 | `streamed` | Answer `executeStreamed` with the same rows as `execute`, and with a result past `maxResultRows`, when it advertises a streamed budget; answer `unsupported` when it does not |
 | `receipt_replay` / `receipt_conflict` | Replay a retried batch's first reply without applying it again (the retry after a lost reply), and refuse the same operation id with another request as `conflict` |
@@ -356,10 +356,15 @@ so it is for tests only.
 The first-party adapters run the suite in CI: sqlite in process and as its
 guest binary, Postgres as its guest binary against every supported major
 (the `postgres` check's `adapter_conformance` step), and D1 against its
-mocked HTTP API. The D1 run pins one known gap: on a binding, D1 answers an
-over-cap read as retryable `unavailable` because the receipt-wrapped batch
-has committed before the size is known
-([#847](https://github.com/Bookclerk/bookclerk/issues/847)).
+mocked HTTP API.
+
+> [!NOTE]
+> D1 commits a batch before it can size the result. A batch that only reads
+> (on a binding, a guest batch whose own statements are all reads) answers a
+> result past a cap with `limit_exceeded`, because nothing it asked for was
+> written; D1 finalizes the host's receipt as a read-only one, so a retry runs
+> the read again. A batch that also writes answers the same cap failure as
+> retryable `unavailable`, since its writes may have committed.
 
 ## Checklist
 
