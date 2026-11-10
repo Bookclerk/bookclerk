@@ -163,6 +163,7 @@ pub use store::{
         edition_id_for_listing, holding_from_book, library_id, listing_from_book, TitleQuery,
         WorkEnrichment,
     },
+    listening::{ListeningIdentifiers, ListeningMatch, ListeningProgressWrite},
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
     prefer_enrichment_source, set_dispatch_chunk_for_test, wishlist_identities_match, BookPage,
