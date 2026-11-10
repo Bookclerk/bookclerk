@@ -421,6 +421,14 @@ class WorkflowContractTests(unittest.TestCase):
         for step in job["steps"]:
             self.assertNotIn("uses", step, "must not check out or run repository code")
         self.assertIn('gh run cancel "$RUN_ID"', job["steps"][0]["run"])
+        # A group the queue dropped (its branch deleted) is cancelled too,
+        # checked only after the CI Gate test, since a merged group's branch
+        # is deleted as well.
+        watch = job["steps"][0]
+        self.assertEqual(watch["env"]["QUEUE_REF"], "${{ github.event.merge_group.head_ref }}")
+        script = watch["run"]
+        self.assertIn('git ls-remote --exit-code "https://github.com/$GH_REPO.git" "$QUEUE_REF"', script)
+        self.assertLess(script.index("CI Gate$' <<<\"$jobs\""), script.index("git ls-remote"))
         self.assertNotIn(FAIL_FAST_JOB, self.jobs["ci-gate"]["needs"])
         for name, other in self.jobs.items():
             if name == "ci-gate":
