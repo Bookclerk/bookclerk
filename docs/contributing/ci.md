@@ -135,7 +135,8 @@ A merge group only needs to know whether it can land, so it fails fast.
 nextest stops at the first test that fails its retry. The
 `merge-queue-fail-fast` job cancels the rest of the run as soon as any job
 fails, so `CI Gate` reports at once and the queue ejects the group without
-waiting for the slowest job.
+waiting for the slowest job. It also cancels the run of a group the queue
+has dropped (see [Superseded merge groups](#superseded-merge-groups)).
 
 That job runs no repository code and is the only one with
 `actions: write`. Pull requests run every selected test and job to the
@@ -1434,12 +1435,16 @@ about 35 minutes and averages about 6 runners.
 | 2 | up to 20 when fan-outs overlap, about 12 typical | about 8, none at overlaps |
 | 3 or more | the whole pool | none until the groups drain |
 
+Build concurrency was 2 on 9 to 10 November 2026, yet up to three runs
+built at once: the third was the leftover run of a group the queue had
+already dropped (see [Superseded merge groups](#superseded-merge-groups)).
+
 Build concurrency 1 keeps about two thirds of the pool for pull request
 checks. It caps the queue at one landing about every 35 minutes, about
 1.7 pull requests an hour, so a queue 10 deep takes about 6 hours to drain.
 More concurrency helps only while the pool is idle: on a quiet 9 November
 2026, overlapping groups landed about 3 an hour. On the busy night of
-9 to 10 November, with up to three groups building, merge-group jobs waited
+9 to 10 November, with two groups and leftover runs building, merge-group jobs waited
 10 to 25 minutes for a runner, runs took about 65 minutes, and the queue
 landed about 1.3 an hour while pull request checks waited behind it.
 
@@ -1451,6 +1456,26 @@ progress.
 
 Raise build concurrency again only when the pool grows, for example a paid
 plan or a self-hosted runner reserved for `merge_group`.
+
+### Superseded merge groups
+
+The queue rebuilds its groups when an entry ahead fails or leaves, when a
+pull request jumps to the front, or when one is dequeued. It deletes each
+dropped group's `gh-readonly-queue/main/pr-<number>-<sha>` branch, but
+GitHub doesn't cancel that group's run, and the workflow's `concurrency`
+never cancels a `merge_group` run. The run would keep asking for its
+22 jobs although nothing can merge from it.
+
+`merge-queue-fail-fast` therefore checks the group's branch
+(`github.event.merge_group.head_ref`) with `git ls-remote --exit-code` on
+every pass and cancels the run once the branch is gone. It starts with the
+run, so it gets a runner before the jobs that fan out after `plan`. The
+queue also deletes a group's branch after merging it, so the check comes
+after the job's `CI Gate` test, and the job looks again for a started
+`CI Gate` just before it cancels. A transport error counts as the branch
+being present. A cancelled run doesn't trigger
+[re-enqueue](#merge-queue-re-enqueue), because its jobs carry no
+not-acquired annotation.
 
 ### macOS job
 
