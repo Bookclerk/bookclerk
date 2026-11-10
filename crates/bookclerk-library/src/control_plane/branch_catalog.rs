@@ -1218,20 +1218,23 @@ pub async fn branch_title_counts(store: &LibraryStore, node_id: &str) -> Result<
     let detached = count(BRANCH_TITLE_DETACHED)
         .await
         .map_err(LibraryError::Orm)?;
-    let delivered = branch_titles::Entity::find()
-        .select_only()
-        .column(branch_titles::Column::ManifestSha256)
-        .column(branch_titles::Column::DeliveredSha256)
-        .filter(branch_titles::Column::NodeId.eq(node_id))
-        .filter(branch_titles::Column::State.eq(BRANCH_TITLE_SHARED))
-        .filter(branch_titles::Column::DeliveredSha256.is_not_null())
-        .into_model::<DeliveredShaRow>()
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .into_iter()
-        .filter(|row| row.delivered_sha256.as_deref() == Some(row.manifest_sha256.as_str()))
-        .count() as u64;
+    let delivered = u64::try_from(
+        branch_titles::Entity::find()
+            .select_only()
+            .column(branch_titles::Column::ManifestSha256)
+            .column(branch_titles::Column::DeliveredSha256)
+            .filter(branch_titles::Column::NodeId.eq(node_id))
+            .filter(branch_titles::Column::State.eq(BRANCH_TITLE_SHARED))
+            .filter(branch_titles::Column::DeliveredSha256.is_not_null())
+            .into_model::<DeliveredShaRow>()
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .filter(|row| row.delivered_sha256.as_deref() == Some(row.manifest_sha256.as_str()))
+            .count(),
+    )
+    .unwrap_or(u64::MAX);
     Ok(BranchTitleCounts {
         shared,
         delivered,

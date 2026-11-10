@@ -85,15 +85,35 @@ pub fn only_column<T>(row: &QueryResult) -> Result<T, DbErr>
 where
     T: TryGetable,
 {
+    // A proxy row is a map: read its one entry without cloning the row,
+    // which `column_names` does.
+    if let Some(proxy) = row.try_as_proxy_row() {
+        let mut cells = proxy.values.keys();
+        return match (cells.next(), cells.next()) {
+            (Some(name), None) => row.try_get("", name),
+            _ => Err(wrong_width(
+                &proxy.values.keys().cloned().collect::<Vec<_>>(),
+            )),
+        };
+    }
     let names = row.column_names();
     match names.as_slice() {
         [name] => row.try_get("", name),
-        _ => Err(DbErr::Type(format!(
-            "only_column needs a row with one column, got {} ({}); read several columns by name",
-            names.len(),
-            names.join(", ")
-        ))),
+        _ => Err(wrong_width(&names)),
     }
+}
+
+/// The error [`only_column`] returns for a row whose width is not one.
+///
+/// # Arguments
+///
+/// * `names` - The row's column names, in the order the row reports them.
+fn wrong_width(names: &[String]) -> DbErr {
+    DbErr::Type(format!(
+        "only_column needs a row with one column, got {} ({}); read several columns by name",
+        names.len(),
+        names.join(", ")
+    ))
 }
 
 #[cfg(test)]

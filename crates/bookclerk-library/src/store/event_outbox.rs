@@ -163,10 +163,12 @@ where
     .map_err(LibraryError::Orm)?;
     let mut ids = Vec::new();
     for row in rows {
-        if let Ok(id) = crate::column_read::only_column::<String>(&row) {
-            if !id.is_empty() {
-                ids.push(id);
-            }
+        // The statement selects one column; a wider row is a bug in the SQL,
+        // reported rather than read as an empty result.
+        let id =
+            crate::column_read::only_column::<Option<String>>(&row).map_err(LibraryError::Orm)?;
+        if let Some(id) = id.filter(|id| !id.is_empty()) {
+            ids.push(id);
         }
     }
     Ok(ids)

@@ -189,12 +189,14 @@ Host code reads columns by name instead:
   `column_read::only_column(&row)`, which refuses a row with more than one
   column.
 
-`crates/bookclerk-library/clippy.toml` disallows `Select::into_tuple`,
-`QueryResult::try_get_by_index` and `QueryResult::try_get_many_by_index`
-(and their trait forms) in the library crate, and the workspace
-`clippy.toml` disallows `into_tuple` and `try_get_many_by_index` in the
-other crates, so a positional read fails Clippy. Adapters read their own
-engine rows, which keep `SELECT` order, and may still read a cell by index.
+The store code lives in `bookclerk-library`, whose `clippy.toml` disallows
+`Select::into_tuple`, `QueryResult::try_get_by_index` and
+`QueryResult::try_get_many_by_index` (and their trait forms), so a
+positional read there fails Clippy. The workspace `clippy.toml` disallows
+the tuple readers (`into_tuple`, `try_get_many_by_index`) in every crate,
+since a `FromQueryResult` struct works on any connection. Adapters and the
+engine executor read their own engine rows, which keep `SELECT` order, so
+they may still read a single cell by index.
 
 ## Testing against the limits
 
