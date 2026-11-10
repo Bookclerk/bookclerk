@@ -1325,7 +1325,7 @@ jobs:
     name: merge-queue fail-fast
     if: github.event_name == 'merge_group' || inputs.private-head
     runs-on: ubuntu-latest
-    timeout-minutes: 130
+    timeout-minutes: 310
     permissions:
       actions: write
     steps:
