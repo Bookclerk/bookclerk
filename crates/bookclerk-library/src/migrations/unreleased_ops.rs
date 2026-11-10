@@ -607,6 +607,20 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         fetched_at TEXT NOT NULL
     )",
     ),
+    // Stored taste ranking of the shared request queue: one row per queue
+    // entry, refreshed by the `discover_request_queue` job. Entry metadata
+    // and wish counts stay on `title_requests` and are joined at read time.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS discover_request_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_key TEXT NOT NULL UNIQUE,
+        work_id TEXT,
+        owned INTEGER NOT NULL DEFAULT 0,
+        taste_score REAL NOT NULL DEFAULT 0,
+        reasons_json TEXT NOT NULL DEFAULT '[]',
+        ranked_at TEXT NOT NULL
+    )",
+    ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS encrypted_secrets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -25,6 +25,7 @@ pub mod credits;
 pub mod discover_candidates;
 pub mod discover_feeds;
 pub mod discover_fetches;
+pub mod discover_request_queue;
 pub mod discover_store_calls;
 pub mod domain_events;
 pub mod edition_files;

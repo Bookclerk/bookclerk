@@ -44,6 +44,7 @@ mod plugin_installs;
 mod profile;
 /// Builds the daemon source / integration registry for [`AppState`].
 mod registry;
+mod request_queue_job;
 mod requirements_sweep;
 mod restart;
 mod scheduler;

@@ -35,7 +35,7 @@ use crate::models::{portal_prefs_key, user_prefs_key, OPERATOR_PREFS_KEY};
 /// reads. A page of real candidates (about 1.3 KB each) can still exceed the
 /// sqlite plugin's 256 KiB `maxResultBytes`, so the candidate listing halves
 /// its page when a result is refused for size.
-const DISCOVER_READ_PAGE: u64 = 200;
+pub(super) const DISCOVER_READ_PAGE: u64 = 200;
 
 /// The two statements that upsert one candidate row.
 ///

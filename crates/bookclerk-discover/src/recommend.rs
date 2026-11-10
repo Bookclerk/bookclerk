@@ -309,7 +309,11 @@ pub struct RankedQueueEntry {
 
 impl RankedQueueEntry {
     /// Ranks a global-queue row by combining local taste with a multi-user wishlist boost.
-    fn from_global(entry: GlobalQueueEntry, taste_score: f64, mut reasons: Vec<String>) -> Self {
+    pub(crate) fn from_global(
+        entry: GlobalQueueEntry,
+        taste_score: f64,
+        mut reasons: Vec<String>,
+    ) -> Self {
         if entry.wish_count > 1 {
             reasons.push(format!("wishlisted by {} people", entry.wish_count));
         } else if entry.wish_count == 1 {
@@ -444,33 +448,36 @@ pub(crate) fn feed_from_recommendations(
     )
 }
 
-/// Rank the global wishlist queue with **overall / operator** recommend taste
-/// plus a heavy wish-count weight.
+/// Ranks every entry of the shared request queue against **household**
+/// taste, for the `discover_request_queue` job to store.
 ///
 /// This ranking is **not** personalized: portal `external_user_id` filters are
-/// ignored so every viewer sees the same shared queue order (household library
-/// + all listening progress). Titles already in the library are omitted.
+/// ignored so every viewer sees the same shared queue order (the household
+/// library and all listening progress). Wishlist rows keyed as ASIN vs ISBN
+/// for the same work are merged first, as the read merges them, so each
+/// ranking's [`crate::queue_entry_key`] matches the entry the read builds.
 ///
-/// Wishlist rows keyed as ASIN vs ISBN for the same work are merged first.
+/// Only taste is ranked here: the wish-count boost and the wish reasons are
+/// added when the queue is read, from the live counts, so a new wish moves an
+/// entry before the next pass. Entries the library already holds are kept
+/// with `owned` set, so the read can hide them.
 ///
 /// # Arguments
 ///
-/// * `library` - Open library store used for reads/writes.
-/// * `registry` - Configured content-source or integration registry.
-/// * `opts` - Options struct for this operation.
+/// * `library` - Open library store.
+/// * `opts` - Ranking options (embedder, listening filters).
 ///
 /// # Returns
 ///
-/// On success, the inner `Vec<RankedQueueEntry>` value.
+/// One ranking per merged queue entry (empty when the queue is).
 ///
 /// # Errors
 ///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
-pub async fn rank_global_request_queue(
+/// Returns the library read error, or the embedder's open error.
+pub async fn rank_request_queue_taste(
     library: &LibraryStore,
-    _registry: &SourceRegistry,
     opts: &RecommendOptions,
-) -> Result<Vec<RankedQueueEntry>> {
+) -> Result<Vec<bookclerk_library::QueueRank>> {
     let mut opts = opts.clone();
     opts.external_user_id = None;
 
@@ -485,30 +492,31 @@ pub async fn rank_global_request_queue(
         build_taste_profile(library, &books, &TasteWeights::new(), &listening, &opts).await?;
     let mut embedder = open_candidate_embedder(&opts)?;
 
-    let mut ranked = Vec::new();
+    let mut ranks = Vec::with_capacity(queue.len());
     for entry in queue {
-        if library_owns_work(library, &entry).await? {
-            continue;
-        }
-        let (taste_score, reasons, _) = score_work_against_taste(
-            &entry.title,
-            entry.authors.as_deref(),
-            None,
-            None,
-            None,
-            &profile,
-            embedder.as_mut(),
-        );
-        ranked.push(RankedQueueEntry::from_global(entry, taste_score, reasons));
+        let owned = library_owns_work(library, &entry).await?;
+        let (taste_score, reasons, _) = if owned {
+            (0.0, Vec::new(), Vec::new())
+        } else {
+            score_work_against_taste(
+                &entry.title,
+                entry.authors.as_deref(),
+                None,
+                None,
+                None,
+                &profile,
+                embedder.as_mut(),
+            )
+        };
+        ranks.push(bookclerk_library::QueueRank {
+            entry_key: crate::request_queue::queue_entry_key(&entry),
+            work_id: entry.work_id,
+            owned,
+            taste_score,
+            reasons,
+        });
     }
-    ranked.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| b.wish_count.cmp(&a.wish_count))
-            .then_with(|| b.last_requested_at.cmp(&a.last_requested_at))
-    });
-    Ok(ranked)
+    Ok(ranks)
 }
 
 /// Load optional listening rows for ranking (empty when disabled / no providers).
