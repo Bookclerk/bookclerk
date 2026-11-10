@@ -1845,7 +1845,7 @@ mod tests {
         let mut hints = Vec::new();
         push_dedupe(&mut hints, hint("audible", "B00X"));
         push_dedupe(&mut hints, hint("AUDIBLE", "b00x"));
-        push_dedupe(&mut hints, hint("audible", "B00Y"));
+        push_dedupe(&mut hints, hint("AUDIBLE", "B00Y"));
         push_dedupe(&mut hints, hint("libro", "B00X"));
         let rows: Vec<(&str, &str)> = hints
             .iter()

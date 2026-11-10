@@ -91,8 +91,13 @@ def test_the_egress_policy_is_compact_json(tmp_path: Path) -> None:
     assert ", " not in raw and ": " not in raw
     policy = json.loads(raw)
     assert policy["mode"] == "outbound"
-    # The declared domain comes first, before the runtime's own hosts.
-    assert policy["domains"][0] == "api.example.com"
+    # The declared domain first, then the hosts the Python runtime loads from.
+    assert policy["domains"] == [
+        "api.example.com",
+        "cdn.jsdelivr.net",
+        "pypi.org",
+        "files.pythonhosted.org",
+    ]
     assert policy["maxRedirects"] == 10
     assert policy["ownUserAgentHosts"] == ["*.example.com"]
 

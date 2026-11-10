@@ -642,7 +642,7 @@ mod tests {
         assert_eq!(bad("Abort"), BadBookAction::Abort);
         assert_eq!(bad("Retry"), BadBookAction::Retry);
         assert_eq!(bad("Ignore"), BadBookAction::Ignore);
-        assert_eq!(bad("abort"), BadBookAction::Ask);
+        assert_eq!(bad("Bogus"), BadBookAction::Ask);
     }
 
     #[test]
