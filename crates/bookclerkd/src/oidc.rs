@@ -1489,6 +1489,7 @@ async fn list_clients(
             ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
             ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
         )),
+        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "too many wrong passwords for this account; try again later", "status": 429})),
         (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
             ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
             ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
@@ -1563,6 +1564,7 @@ async fn create_client(
             ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
             ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
         )),
+        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "too many wrong passwords for this account; try again later", "status": 429})),
         (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
             ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
             ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
@@ -1639,6 +1641,7 @@ async fn update_client(
             ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
             ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
         )),
+        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "too many wrong passwords for this account; try again later", "status": 429})),
         (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
             ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
             ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
@@ -1708,6 +1711,7 @@ struct RotateSecretBody {
             ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
             ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
         )),
+        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "too many wrong passwords for this account; try again later", "status": 429})),
         (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
             ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
             ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
