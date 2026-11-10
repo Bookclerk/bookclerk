@@ -17,7 +17,7 @@ use crate::atomic_ops::DbAtomicResult;
 use serde_json::json;
 
 use super::{AtomicSelection, CompiledAtomic};
-use crate::control_plane::{bump_if_any, bump_if_stamped, LiveTopic};
+use crate::control_plane::{bump, bump_if_any, bump_if_stamped, LiveTopic};
 
 /// One statement in a planned batch (SQL, binds, and structural kind).
 #[derive(Clone, Debug)]
@@ -215,12 +215,12 @@ fn append_live_bump(
         | LiveTopic::Jobs
         | LiveTopic::Deliveries
         | LiveTopic::Nodes
-        | LiveTopic::Config
         | LiveTopic::Consents
-        | LiveTopic::Clusters
         | LiveTopic::Discover => {
             bump_if_stamped(topic, now).map_err(|err| DbErr::Custom(err.to_string()))?
         }
+        // No change stamp to test; no named operation writes these today.
+        LiveTopic::Config | LiveTopic::Clusters => bump(topic),
     };
     plan.statements.push(SqlStmt {
         sql: bump.sql,

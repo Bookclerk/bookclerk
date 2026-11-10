@@ -1,7 +1,9 @@
 # ADR: Control plane — bootstrap, host identity, and database configuration
 
 - **Status:** Accepted for Phase 0, Phase 1, and Phase 2; Phase 3 decided and
-  implemented (Refs #192)
+  implemented (Refs #192). The live socket's change detection (count and
+  newest-stamp reads per poll) is superseded by per-topic counters
+  (2026-11-10, see [Live socket](#live-socket-and-the-host-consent-screen)).
 - **Date:** 2026-09-29 (Phase 2 and the Phase 3 decision: 2026-10-13; the
   cluster-install decision, the Phase 3 implementation, and the node and
   install/deploy terminology: 2026-10-14)

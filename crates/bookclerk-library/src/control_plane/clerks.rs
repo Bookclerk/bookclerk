@@ -224,14 +224,6 @@ pub async fn remove_owner_node(
     // delete nothing and the node stays.
     let mut statements = Vec::with_capacity(7);
     if let Some(status) = &checked {
-        statements.push(super::bump_if_any(
-            super::LiveTopic::Nodes,
-            batch::query(
-                "SELECT 1 FROM node_status WHERE node_id = ? AND heartbeat_ms = ?",
-                vec![batch::text(node_id), batch::int(status.heartbeat_ms)],
-                1,
-            ),
-        ));
         statements.push(batch::exec(
             "DELETE FROM node_status WHERE node_id = ? AND heartbeat_ms = ?",
             vec![batch::text(node_id), batch::int(status.heartbeat_ms)],
@@ -273,6 +265,10 @@ pub async fn remove_owner_node(
             "DELETE FROM plugin_deployments WHERE node_id = ?",
             vec![batch::text(node_id)],
         ),
+        // Last, so the counter row is locked after the node rows, in the
+        // same order a racing heartbeat takes them. A removal the guards
+        // refuse bumps too; that costs one needless re-read.
+        super::bump(super::LiveTopic::Nodes),
     ]);
     let operation_id = format!("owner-node-remove-{}", uuid::Uuid::new_v4());
     let reply = store

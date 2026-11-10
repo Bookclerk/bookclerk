@@ -109,7 +109,11 @@ impl LiveTopic {
 /// One topic's revision: a counter that every write to the topic's table
 /// moves forward by at least one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct LiveRevision(pub i64);
+pub struct LiveRevision(
+    /// The topic's counter: 0 when seeded, one more for each committed
+    /// write that bumped it. Only equality between two reads is meaningful.
+    pub i64,
+);
 
 /// Every topic's revision, in [`LiveTopic::ALL`] order.
 pub type LiveRevisions = Vec<(LiveTopic, LiveRevision)>;
@@ -118,11 +122,12 @@ pub type LiveRevisions = Vec<(LiveTopic, LiveRevision)>;
 /// and writes that always change a row.
 #[must_use]
 pub(crate) fn bump(topic: LiveTopic) -> TypedDbStatement {
-    exec(
-        "UPDATE live_topic_revisions SET revision = revision + 1 WHERE topic = ?",
-        vec![text(topic.as_str())],
-    )
+    exec(BUMP_SQL, vec![text(topic.as_str())])
 }
+
+/// The counter bump every form shares; conditional forms append
+/// ` AND EXISTS (...)`.
+const BUMP_SQL: &str = "UPDATE live_topic_revisions SET revision = revision + 1 WHERE topic = ?";
 
 /// Runs [`bump`] on `conn`, for the in-process fallbacks that write inside
 /// an open local transaction (local tools and tests without a database
@@ -133,7 +138,7 @@ pub(crate) fn bump(topic: LiveTopic) -> TypedDbStatement {
 /// Returns the write error.
 pub(crate) async fn bump_on<C: sea_orm::ConnectionTrait>(conn: &C, topic: LiveTopic) -> Result<()> {
     conn.execute_raw(bookclerk_db_exec::canonical_statement(
-        "UPDATE live_topic_revisions SET revision = revision + 1 WHERE topic = ?",
+        BUMP_SQL,
         [sea_orm::Value::from(topic.as_str())],
     ))
     .await
@@ -189,7 +194,7 @@ where
 /// # Errors
 ///
 /// Returns [`LibraryError::Other`] for a topic without a change stamp
-/// (`clusters`).
+/// (`clusters`, `config`).
 pub(crate) fn bump_if_stamped(topic: LiveTopic, stamp: &str) -> Result<TypedDbStatement> {
     let (table, column) = topic.stamp_column().ok_or_else(|| {
         LibraryError::Other(anyhow::anyhow!(
@@ -198,27 +203,23 @@ pub(crate) fn bump_if_stamped(topic: LiveTopic, stamp: &str) -> Result<TypedDbSt
         ))
     })?;
     Ok(exec(
-        &format!(
-            "UPDATE live_topic_revisions SET revision = revision + 1 \
-             WHERE topic = ? AND EXISTS (SELECT 1 FROM {table} WHERE {column} = ?)"
-        ),
+        &format!("{BUMP_SQL} AND EXISTS (SELECT 1 FROM {table} WHERE {column} = ?)"),
         vec![text(topic.as_str()), text(stamp)],
     ))
 }
 
 /// The counter bump, taken only when `probe` (a `SELECT`) finds a row.
-/// Placed before a delete or sweep with the same filter, it bumps exactly
-/// when the write is about to change a row.
+///
+/// Place it after the batch's data writes, with a probe that is true after
+/// the write exactly when it took effect (a receipt row, the row it just
+/// wrote), so the counter row is always locked last. A delete, whose rows
+/// are gone afterwards, uses [`Bump::IfAny`] instead.
 #[must_use]
 pub(crate) fn bump_if_any(topic: LiveTopic, probe: TypedDbStatement) -> TypedDbStatement {
     let mut parameters = vec![text(topic.as_str())];
     parameters.extend(probe.parameters);
     exec(
-        &format!(
-            "UPDATE live_topic_revisions SET revision = revision + 1 \
-             WHERE topic = ? AND EXISTS ({})",
-            probe.sql
-        ),
+        &format!("{BUMP_SQL} AND EXISTS ({})", probe.sql),
         parameters,
     )
 }
@@ -247,13 +248,17 @@ pub(crate) fn sea_exec<Q: QueryTrait>(statement: &Q) -> Result<TypedDbStatement>
     ))
 }
 
-/// [`sea_exec`] for a probe: a SeaORM `SELECT` to pass to [`bump_if_any`].
+/// A SeaORM `SELECT` as a one-row probe for [`Bump::IfAny`].
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::Other`] when a bind has no canonical type.
 pub(crate) fn sea_probe<Q: QueryTrait>(select: &Q) -> Result<TypedDbStatement> {
-    sea_exec(select)
+    let mut probe = sea_exec(select)?;
+    probe.kind = DbPlanStatementKind::Select;
+    probe.max_rows = 1;
+    probe.result_selection = DbResultSelection::Rows;
+    Ok(probe)
 }
 
 /// When a write made through [`LibraryStore::exec_bumped`] bumps its topic.
@@ -264,7 +269,9 @@ pub(crate) enum Bump {
     /// When a row carries this change stamp after the write
     /// ([`bump_if_stamped`]).
     Stamped(String),
-    /// When this probe finds a row before the write ([`bump_if_any`]).
+    /// When this probe (a `SELECT` with the write's filter) finds a row,
+    /// read just before the write. For deletes and sweeps, whose rows are
+    /// gone after the write so no stamp can show them.
     IfAny(TypedDbStatement),
 }
 
@@ -311,10 +318,20 @@ impl LibraryStore {
             return Ok(changed);
         }
         let write = built;
-        let (statements, index) = match when {
-            Bump::Always => (vec![write, bump(topic)], 0),
-            Bump::Stamped(stamp) => (vec![write, bump_if_stamped(topic, &stamp)?], 0),
-            Bump::IfAny(probe) => (vec![bump_if_any(topic, probe), write], 1),
+        // The counter is always the batch's last statement, so every batch
+        // locks the data rows first and the counter row second. One that
+        // took them the other way round could deadlock against a writer of
+        // the same row on an engine with row locks.
+        let statements = match when {
+            Bump::Always => vec![write, bump(topic)],
+            Bump::Stamped(stamp) => vec![write, bump_if_stamped(topic, &stamp)?],
+            Bump::IfAny(probe) => {
+                if self.probe_finds_a_row(topic, probe).await? {
+                    vec![write, bump(topic)]
+                } else {
+                    vec![write]
+                }
+            }
         };
         let reply = self
             .execute_host_batch(request(
@@ -322,7 +339,27 @@ impl LibraryStore {
                 statements,
             ))
             .await?;
-        Ok(rows_affected(&reply, index))
+        Ok(rows_affected(&reply, 0))
+    }
+
+    /// Whether `probe` finds a row now, read on its own just before a
+    /// [`Bump::IfAny`] write.
+    ///
+    /// A row that comes to match between this read and the write is
+    /// changed without a bump; that costs one missed notice, which the web
+    /// app's periodic re-reads cover. A row that stops matching costs one
+    /// needless re-read.
+    async fn probe_finds_a_row(&self, topic: LiveTopic, probe: TypedDbStatement) -> Result<bool> {
+        let reply = self
+            .execute_host_batch(request(
+                &format!("live.probe.{}:{}", topic.as_str(), uuid::Uuid::new_v4()),
+                vec![probe],
+            ))
+            .await?;
+        Ok(reply
+            .statements
+            .first()
+            .is_some_and(|stmt| !stmt.rows.is_empty()))
     }
 
     /// Inserts one row through SeaORM and bumps `topic`, as one atomic
@@ -410,13 +447,13 @@ impl LibraryStore {
         }
     }
 
-    /// Bumps `topic` on its own, for a write the counter cannot join (one
-    /// that runs on a connection of its own, such as a schema reset).
+    /// Bumps `topic` in a batch of its own, for a write the counter cannot
+    /// join ([`Self::bump_after_oversized_write`]).
     ///
     /// # Errors
     ///
     /// Returns the write error.
-    pub async fn bump_live_topic(&self, topic: LiveTopic) -> Result<()> {
+    pub(crate) async fn bump_live_topic(&self, topic: LiveTopic) -> Result<()> {
         self.execute_host_batch(request(
             &format!("live.{}:{}", topic.as_str(), uuid::Uuid::new_v4()),
             vec![bump(topic)],
@@ -453,7 +490,7 @@ pub async fn live_revisions(store: &LibraryStore) -> Result<LiveRevisions> {
             reads,
         ))
         .await?;
-    Ok(LiveTopic::ALL
+    LiveTopic::ALL
         .into_iter()
         .enumerate()
         .map(|(index, topic)| {
@@ -463,11 +500,21 @@ pub async fn live_revisions(store: &LibraryStore) -> Result<LiveRevisions> {
                 .and_then(|stmt| stmt.rows.first())
                 .and_then(|row| row.values.first());
             match revision {
-                Some(DbValue::Int64(revision)) => (topic, LiveRevision(*revision)),
-                _ => (topic, LiveRevision::default()),
+                Some(DbValue::Int64(revision)) => Ok((topic, LiveRevision(*revision))),
+                // No counter row yet (a database the seed has not reached).
+                None | Some(DbValue::Null(_)) => Ok((topic, LiveRevision::default())),
+                Some(
+                    other @ (DbValue::Boolean(_)
+                    | DbValue::Float64(_)
+                    | DbValue::Text(_)
+                    | DbValue::Bytes(_)),
+                ) => Err(LibraryError::Other(anyhow::anyhow!(
+                    "live topic `{}` revision is not an integer: {other:?}",
+                    topic.as_str()
+                ))),
             }
         })
-        .collect())
+        .collect::<Result<LiveRevisions>>()
 }
 
 /// The topics whose revision differs between `before` and `after`.

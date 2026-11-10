@@ -698,8 +698,8 @@ async fn owner_node_removal_is_one_batch_without_an_interactive_transaction() {
         }
         let as_owner = EnrollmentActor::User { user_id: owner };
 
-        // A stale heartbeat row: the status delete is the seventh statement,
-        // after the probe that bumps the nodes topic.
+        // A stale heartbeat row: the status delete, the guarded deletes and
+        // the nodes counter bump last.
         let beat = NodeSampler::new(dir.path()).sample();
         record_node_heartbeat(&store, &enrolled.node_id, &beat)
             .await
@@ -735,7 +735,7 @@ async fn owner_node_removal_is_one_batch_without_an_interactive_transaction() {
         assert_eq!(subscribers, vec![this_node.clone()], "{}", profile.name());
 
         // No status row at all: five statements, each guarded on none
-        // having appeared.
+        // having appeared, and the counter bump.
         let minted = mint_enrollment_link(&store, &operator(), owner, "rack-2", None)
             .await
             .unwrap();
@@ -749,7 +749,7 @@ async fn owner_node_removal_is_one_batch_without_an_interactive_transaction() {
             .unwrap();
         assert_eq!(
             &kit.batch_sizes()[batches_before..],
-            [5],
+            [6],
             "{}",
             profile.name()
         );

@@ -4261,10 +4261,17 @@ impl LibraryStore {
                 created_at: Set(now.clone()),
                 updated_at: Set(now),
             };
+            let mut written = am.clone();
             let id = self
                 .insert_bumped(books::Entity::insert(am), LiveTopic::Library)
                 .await?;
-            self.book_model_by_id(id).await?
+            // Every column was set, so the new row is known without
+            // reading it back.
+            written.id = Set(id);
+            match sea_orm::TryIntoModel::try_into_model(written) {
+                Ok(model) => model,
+                Err(_) => self.book_model_by_id(id).await?,
+            }
         };
         map_book(model)
     }
