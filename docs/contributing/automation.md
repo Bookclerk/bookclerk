@@ -143,6 +143,7 @@ GitHub App as [Dependabot auto-merge](#dependabot-auto-merge), not
 | `merge-queue-requeue.yml` | Auto-merge on a pull request the queue removed only because a job never got a runner ([re-enqueue](ci.md#merge-queue-re-enqueue)) |
 | `cla.yml` | Signature commits on the `cla-signatures` branch, the only writer its ruleset allows; the check's pull request comment and `Bookclerk CLA` check run ([CLA check](licensing.md#the-cla-check)) |
 | `maintainer-review.yml` | The `Maintainer review` check run and the `touches-ci-or-build` label ([maintainer review](#maintainer-review)) |
+| `signed-commits.yml` | The `Signed commits` check run and the pull request comment on how to sign ([signed commits](#signed-commits)) |
 
 The probes share `.github/actions/api-drift-report`:
 
@@ -272,6 +273,50 @@ blocked.
 2. Once `maintainer-review.yml` is on `main`, add `Maintainer review` to
    the required status checks of the default branch's ruleset, expected
    from the automation App, like `Bookclerk CLA`.
+
+## Signed commits
+
+The default branch's ruleset accepts only commits that GitHub shows as
+**Verified**. A pull request with an unsigned commit still passes CI and
+can be approved, but GitHub never lets it into the merge queue, and
+nothing on the pull request says why. The `Signed commits` check says why:
+
+- It fails while any of the pull request's commits isn't verified, whoever
+  wrote it. The ruleset exempts nobody, so neither does the check. It
+  judges only pull requests into the default branch, the one the ruleset
+  protects.
+- It keeps one comment on such a pull request, posted as the automation
+  App and edited in place on every push. The comment lists each unverified
+  commit with GitHub's reason (not signed, a key that isn't a signing key,
+  an unverified email, and so on), then the steps to set up SSH signing,
+  re-sign the commits without changing them (a rebase from where the branch
+  left the default branch), and force-push.
+- Once every commit is verified, the check passes and the comment says so.
+  A pull request whose commits were always verified gets no comment.
+- The check belongs to the head commit and passes while any open pull
+  request on that commit passes; the ruleset still judges each pull
+  request's own commits. Merge groups pass.
+
+When it doesn't update after GitHub finishes verifying a signature, press
+**Re-run** on the check.
+
+`signed-commits.yml` runs from the default branch on `workflow_run` when
+the unprivileged `Maintainer review trigger` workflow completes for a pull
+request event (opened, pushed to, reopened), so one trigger job serves both
+checks. It reads the pull request's commits and comments through the API
+(`scripts/signed_commits.py`) and never checks out or runs pull request
+code. Like the maintainer review check, it waits for a maintainer to
+approve a first-time contributor's workflow runs.
+
+### Setup
+
+1. The App's **Checks** and **Pull requests** permissions (see
+   [Automation App](#automation-app)) cover the check run and the comment.
+2. Optionally, once `signed-commits.yml` is on `main`, add `Signed commits`
+   to the required status checks of the default branch's ruleset, expected
+   from the automation App. The ruleset's **Require signed commits** rule
+   already blocks the merge, so requiring the check only makes the reason
+   show among the failed checks.
 
 ## OSV remediation
 
