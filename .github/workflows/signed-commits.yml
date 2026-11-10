@@ -1,0 +1,102 @@
+# Signed commits check.
+#
+# Policy (scripts/signed_commits.py):
+# - The default branch's ruleset accepts only commits GitHub shows as
+#   Verified, so a pull request with an unsigned commit can pass CI and be
+#   approved but never enter the merge queue. This check reports the
+#   `Signed commits` check run on the head commit, failing while any of the
+#   pull request's commits is not verified, and keeps one comment on the
+#   pull request, posted as the automation App and edited in place, that
+#   lists those commits with GitHub's reason and how to sign and re-sign
+#   them. Once every commit is verified the comment says so.
+# - The check belongs to the commit and passes while any open pull request
+#   on it passes; the ruleset still judges each pull request's own commits.
+#   Merge groups get a passing check. **Re-run** on the check (`check_run`
+#   `rerequested`) decides it again.
+# - Pull request events reach this workflow through `workflow_run`: the
+#   unprivileged `Maintainer review trigger` workflow
+#   (maintainer-review-trigger.yml) runs on `pull_request`, with no token
+#   permissions and no secrets, and its completion starts this one from the
+#   default branch, fork pull requests included. Sharing that trigger saves
+#   a job per push. This avoids `pull_request_target`. The check takes
+#   nothing from the trigger run but the head commit, branch and repository
+#   GitHub records for it, checks out the default branch only, and never
+#   checks out or runs pull request code.
+#
+# See docs/contributing/automation.md#signed-commits.
+
+name: Signed commits
+
+on:
+  workflow_run:
+    workflows: ["Maintainer review trigger"]
+    types: [completed]
+  merge_group:
+  # **Re-run** on the `Signed commits` check. GitHub runs a workflow for a
+  # check run's events only when another App (here the automation App)
+  # created it, so this needs no webhook.
+  check_run:
+    types: [rerequested]
+
+permissions: {}
+
+jobs:
+  signed:
+    name: Signed commits
+    # Only a completed pull request run counts: a review cannot change the
+    # commits, and a cancelled or skipped run carries no information.
+    if: >-
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.conclusion == 'success') ||
+      github.event_name == 'merge_group' ||
+      (github.event_name == 'check_run' &&
+        github.event.check_run.name == 'Signed commits')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Runs for one head branch wait for each other, so the newest event's
+    # verdict and comment are the ones posted last.
+    concurrency:
+      group: signed-commits-${{ github.event_name }}-${{ github.event.workflow_run.head_repository.id || github.ref }}-${{ github.event.workflow_run.head_branch || github.event.check_run.head_sha }}
+      cancel-in-progress: false
+    env:
+      # Whether the automation App is configured (a fork may not have it).
+      HAS_APP: ${{ secrets.AUTOMATION_APP_CLIENT_ID != '' && secrets.AUTOMATION_APP_PRIVATE_KEY != '' }}
+    permissions:
+      # Read the checker.
+      contents: read
+      # Read pull requests, their commits and comments. Only the App
+      # comments: without it the comment is skipped with a warning.
+      pull-requests: read
+      # Report the check run when the App is not configured.
+      checks: write
+    steps:
+      # The default branch's checker, never the pull request's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/signed_commits.py
+            scripts/maintainer_review.py
+            scripts/cla_check.py
+          sparse-checkout-cone-mode: false
+
+      # Posts the check run and the comment, narrowed to Checks and Pull
+      # requests on this repository and revoked when the job ends.
+      - name: Mint the App token
+        id: app-token
+        if: env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-checks: write
+          permission-pull-requests: write
+
+      - name: Check the signatures
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNED_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          SIGNED_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: python3 scripts/signed_commits.py

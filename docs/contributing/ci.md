@@ -1386,7 +1386,10 @@ Configure repository rulesets or branch protection so the **required** CI check 
 **`CI Gate`** (plus the OSV check), **not** every matrix child. The
 `Bookclerk CLA` and `Maintainer review` checks are required too, expected
 from the automation App (see [the CLA check](licensing.md#the-cla-check) and
-[maintainer review](automation.md#maintainer-review)).
+[maintainer review](automation.md#maintainer-review)). The ruleset also
+requires signed commits; the `Signed commits` check explains a pull request
+that its unsigned commits keep out of the queue (see
+[signed commits](automation.md#signed-commits)).
 
 > [!WARNING]
 > Skipped `release`, `confinement`, `native-gateway`, `tray` and macOS jobs

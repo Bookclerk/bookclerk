@@ -556,6 +556,10 @@ def render_summary(verdict: Verdict) -> str:
 class GitHub:
     """The REST calls the check makes, over a ``Transport``."""
 
+    #: The check run ``set_check`` reports; the signed commits check
+    #: (``signed_commits.py``) reuses this class under its own name.
+    check_name = CHECK_NAME
+
     def __init__(self, send: Transport, repository: str, reporter: Reporter | None = None) -> None:
         """Wraps ``send`` for ``repository`` (``owner/name``).
 
@@ -673,7 +677,7 @@ class GitHub:
         return evaluate(pull, author_permission, reviews, permissions, files, truncated)
 
     def set_check(self, sha: str, passed: bool, title: str, summary: str, run_url: str) -> None:
-        """Reports a completed ``Maintainer review`` check run on ``sha``.
+        """Reports a completed ``check_name`` check run on ``sha``.
 
         GitHub shows, and rulesets judge, the newest check run of a name.
 
@@ -682,7 +686,7 @@ class GitHub:
         """
         now = utc_now()
         body: dict[str, object] = {
-            "name": CHECK_NAME,
+            "name": self.check_name,
             "head_sha": sha,
             "details_url": run_url,
             "status": "completed",
