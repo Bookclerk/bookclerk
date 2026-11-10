@@ -1314,7 +1314,10 @@ afterwards: incremental mode reuses the results in it on the next run.
 
 The [`mutation-python.yml`](../../.github/workflows/mutation-python.yml)
 workflow does the same for the Python plugin SDK
-(`packages/plugin-sdk-python`) with [mutmut](https://mutmut.readthedocs.io/):
+(`packages/plugin-sdk-python`) with [mutmut](https://mutmut.readthedocs.io/).
+Before mutmut starts, it installs capnp and builds the
+`bookclerk-db-testkit` binary that `tests/test_testkit.py` drives, as CI's
+`python_sdk` check does, so no test run builds it:
 
 1. It finds the lines changed since the last run under the SDK's `src/`:
    the lines added, placed in the new file, and the lines deleted, placed
@@ -1364,9 +1367,13 @@ SDK's `pyproject.toml`, under `[tool.mutmut]`: the package to mutate, the
 generated modules to leave alone (the same list ruff excludes, which a
 test checks) and the test folder.
 
-To reproduce the run locally, from `packages/plugin-sdk-python`:
+To reproduce the run locally, build the testkit first (it needs Rust and
+capnp, as the workflow installs), then run mutmut from
+`packages/plugin-sdk-python`:
 
 ```sh
+cargo build -p bookclerk-db-testkit --bin bookclerk-db-testkit
+export BOOKCLERK_DB_TESTKIT="$(git rev-parse --show-toplevel)/target/debug/bookclerk-db-testkit"
 python3 -m venv /tmp/mutmut && /tmp/mutmut/bin/pip install pytest "mutmut==3.8.1"
 /tmp/mutmut/bin/mutmut run "bookclerk_plugin_sdk.tools.x_check_plugin__mutmut_*"
 /tmp/mutmut/bin/mutmut show bookclerk_plugin_sdk.tools.x_check_plugin__mutmut_3
