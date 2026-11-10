@@ -1053,6 +1053,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The password could not be hashed, or the library could not be read or written.",
             "content": {
@@ -19137,6 +19152,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_client",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The client could not be read or stored, or an Owner's current password could not be read or checked (`oidc_client`).",
             "content": {
@@ -19377,6 +19407,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_client",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The client could not be read or stored, or an Owner's current password could not be read or checked (`oidc_client`).",
             "content": {
@@ -19609,6 +19654,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_client",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The client could not be read or removed, or an Owner's current password could not be read or checked (`oidc_client`).",
             "content": {
@@ -19831,6 +19891,21 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_client",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
               }
             }
           },
@@ -20922,6 +20997,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_config`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_config",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The configuration file or the sealed secrets could not be written, or an Owner's current password could not be read or checked (`oidc_config`).",
             "content": {
@@ -21167,6 +21257,21 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
               }
             }
           },
@@ -21471,6 +21576,21 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
               }
             }
           },
@@ -22293,6 +22413,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The secret could not be sealed and stored, or the library could not be read.",
             "content": {
@@ -22649,6 +22784,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The library could not be read or written.",
             "content": {
@@ -22908,6 +23058,21 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: missing field `require_second_factor` at line 1 column 2"
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
               }
             }
           },
