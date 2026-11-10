@@ -93,10 +93,20 @@ async for row in self.env.DB.prepare("SELECT id, path FROM edition_files").itera
     await check(row["path"]["value"])
 ```
 
+```rust
+let mut rows = db.prepare("SELECT id, path FROM edition_files").iterate(None);
+while let Some(row) = rows.next().await {
+    check(&row?["path"]).await?;
+}
+```
+
 The loop fails with the same `limit_exceeded` as `all()` when the result
-passes the streamed budget. On a session that does not stream the rows come
-from one inline `all()`. `iterate()` is available in the TypeScript and
-Python SDKs; a Rust guest reads with `all()` or `raw()`.
+passes the streamed budget, after handing out the rows that fit. On a
+session that does not stream the rows come from one inline `all()`.
+`iterate()` is available in all three SDKs. In Rust it returns a
+`RowStream` whose `next()` yields each row as a column name to value map;
+nothing is sent until the first `next()`, and dropping the stream stops the
+read.
 
 ## Writes: `batch()` is one transaction, `chunk()` splits a list
 
