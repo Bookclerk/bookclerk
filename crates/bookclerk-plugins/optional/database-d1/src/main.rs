@@ -7,10 +7,9 @@ use bookclerk_db_guest::set_connection;
 use bookclerk_plugin_abi::db::{connect_params_from_bindings, DbConnectParams};
 use bookclerk_plugin_abi::IsolationReq;
 use bookclerk_plugin_abi::{AdapterExecuteRequest, AdapterTransaction, HostAdapterDatabaseSession};
+use bookclerk_plugin_database_d1::adapter::D1Session;
 use bookclerk_plugin_sdk::manifest_capabilities;
-use bookclerk_plugin_sdk::{
-    serve, DbBootstrap, DbCapabilities, ExecuteReply, ExecuteStream, PluginError,
-};
+use bookclerk_plugin_sdk::{serve, ExecuteReply, PluginError};
 use bookclerk_plugin_sdk::{
     AdapterDatabaseSession, BindingValues, Bindings, Database, Entrypoints, Invocation,
     PluginDescribe, PluginWorker, ScalarLimits, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
@@ -158,9 +157,7 @@ struct D1Database {
 #[async_trait(?Send)]
 impl Database for D1Database {
     async fn open_session(&self) -> Result<Box<dyn AdapterDatabaseSession>, PluginError> {
-        Ok(Box::new(D1Session {
-            dedicated: self.dedicated.clone(),
-        }))
+        Ok(Box::new(D1Session::new(self.dedicated.clone())))
     }
 
     async fn drop_unit(&self, unit_ref: &str) -> Result<(), PluginError> {
@@ -239,111 +236,6 @@ impl HostAdapterDatabaseSession for D1HostSession {
             .run_typed_atomic(&request.request, request.guest_receipt, &request.proofs)
             .await
             .map_err(bookclerk_plugin_database_d1::atomic::plugin_error_from_d1)
-    }
-}
-
-struct D1Session {
-    dedicated: Option<bookclerk_plugin_database_d1::D1Proxy>,
-}
-
-impl D1Session {
-    fn proxy(&self) -> Result<bookclerk_plugin_database_d1::D1Proxy, PluginError> {
-        if let Some(proxy) = &self.dedicated {
-            return Ok(proxy.clone());
-        }
-        bookclerk_plugin_database_d1::shared_proxy()
-            .ok_or_else(|| PluginError::internal("d1 guest is not connected"))
-    }
-}
-
-#[async_trait(?Send)]
-impl AdapterDatabaseSession for D1Session {
-    async fn capabilities(&self) -> Result<DbCapabilities, PluginError> {
-        Ok(DbCapabilities::advertised_d1())
-    }
-
-    async fn bootstrap(&self) -> Result<DbBootstrap, PluginError> {
-        Ok(DbBootstrap::sqlite())
-    }
-
-    async fn execute(&self, request: AdapterExecuteRequest) -> Result<ExecuteReply, PluginError> {
-        request.require_proofs()?;
-        if !matches!(request.isolation, IsolationReq::AtomicBatch) {
-            return Err(PluginError::unsupported(
-                "D1 supports AtomicBatch isolation only",
-            ));
-        }
-        self.proxy()?
-            .run_typed_atomic(&request.request, request.guest_receipt, &request.proofs)
-            .await
-            .map_err(bookclerk_plugin_database_d1::atomic::plugin_error_from_d1)
-    }
-
-    async fn execute_streamed(
-        &self,
-        request: AdapterExecuteRequest,
-    ) -> Result<ExecuteStream, PluginError> {
-        request.require_proofs()?;
-        if !matches!(request.isolation, IsolationReq::AtomicBatch) {
-            return Err(PluginError::unsupported(
-                "D1 supports AtomicBatch isolation only",
-            ));
-        }
-        let caps = DbCapabilities::advertised_d1().streamed().ok_or_else(|| {
-            PluginError::unsupported("this adapter advertises no streamed result budget")
-        })?;
-        let reply = self
-            .proxy()?
-            .run_typed_atomic_with(
-                &request.request,
-                request.guest_receipt,
-                &request.proofs,
-                &caps,
-            )
-            .await
-            .map_err(bookclerk_plugin_database_d1::atomic::plugin_error_from_d1)?;
-        ExecuteStream::from_reply(&reply)
-    }
-
-    async fn export_identity(
-        &self,
-    ) -> Result<Vec<bookclerk_plugin_sdk::DbIdentityHighWater>, PluginError> {
-        Err(PluginError::unsupported(
-            "D1 does not advertise consistentBackupRead",
-        ))
-    }
-
-    async fn import_identity(
-        &self,
-        _rows: &[bookclerk_plugin_sdk::DbIdentityHighWater],
-    ) -> Result<(), PluginError> {
-        Err(PluginError::unsupported(
-            "D1 does not advertise atomicUnitRestore",
-        ))
-    }
-
-    async fn list_user_relations(&self) -> Result<Vec<String>, PluginError> {
-        Err(PluginError::unsupported(
-            "D1 does not advertise consistentBackupRead",
-        ))
-    }
-
-    async fn prepare_unit_restore(&self) -> Result<(), PluginError> {
-        Err(PluginError::unsupported(
-            "D1 does not advertise atomicUnitRestore",
-        ))
-    }
-
-    async fn drop_user_relations(&self, _names: &[String]) -> Result<(), PluginError> {
-        Err(PluginError::unsupported(
-            "D1 does not advertise atomicUnitRestore",
-        ))
-    }
-
-    async fn assert_restore_constraints(&self) -> Result<(), PluginError> {
-        Err(PluginError::unsupported(
-            "D1 does not advertise atomicUnitRestore",
-        ))
     }
 }
 

@@ -85,6 +85,13 @@ topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
 - Changes are found by reading revisions from the shared database every
   2 s (so a change made on any owner node, or by `bookclerk clusters
   join|leave`, is seen) and by in-process notices for immediate updates.
+  Each topic has one counter row in `live_topic_revisions`, and every
+  write to a topic's tables adds one to it in the same atomic batch as
+  the write, so a poll reads nine small rows rather than counting tables.
+  A sweep that changes nothing (no expired claim, nothing to prune) leaves
+  the counter alone. New code that writes one of these tables must bump
+  its topic the same way (`exec_bumped`, or `bump` / `bump_if_stamped` /
+  `bump_if_any` in a host batch or named plan).
   The first read is taken before `hello`, so nothing written after the
   client hears `hello` is missed. The client sends nothing; a binary frame
   closes the socket.

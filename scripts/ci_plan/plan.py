@@ -87,9 +87,13 @@ ABI_SYNC_PATHS = frozenset(
         "workerd.pin.json",
     }
 )
-# Fuzz seed corpora the TypeScript and Python SDK tests replay as shared
-# vectors besides the owning crate (docs/contributing/fuzzing.md).
-SHARED_SDK_VECTOR_PREFIXES = ("fuzz/corpus/db_stream/",)
+# Shared vectors the TypeScript and Python SDK tests read besides the owning
+# crate: fuzz seed corpora (docs/contributing/fuzzing.md) and the host's
+# receipt-wrap vector for the isolate adapter batch helpers.
+SHARED_SDK_VECTOR_PREFIXES = (
+    "fuzz/corpus/db_stream/",
+    "crates/bookclerk-library/fixtures/guest_receipt/",
+)
 DOCS_PREFIX = "docs/"
 # The bookclerk.app website (Worker, generator and its tests), the brand
 # assets its build copies, the diagnostics collector Worker and the hosted
@@ -176,8 +180,9 @@ DOC_FILES = frozenset(
 )
 # Tests and fixtures the plan job runs on every event, before any check.
 PLAN_JOB_TEST_PREFIX = "scripts/tests/"
-# Scripts that only plan-job tests exercise (the CLA checker runs in its own
-# workflow, from the default branch, and builds nothing; the coverage gate
+# Scripts that only plan-job tests exercise (the CLA checker, the
+# maintainer review check and the signed commits check run in their own workflows, from the default
+# branch, and build nothing; the coverage gate
 # runs in CI Gate on every run, as does the Web API contract report, Codecov reads its settings itself, and the
 # bundle uploader in tools/codecov only runs in coverage-upload.yml; the
 # mutation testing reports, settings and starting commit only run in mutation.yml,
@@ -188,6 +193,8 @@ PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 PLAN_JOB_SCRIPT_FILES = frozenset(
     {
         "scripts/cla_check.py",
+        "scripts/maintainer_review.py",
+        "scripts/signed_commits.py",
         "scripts/cla_branch/README.md",
         "scripts/cla_branch/setup-rulesets.sh",
         "scripts/coverage_gate.py",
@@ -316,7 +323,9 @@ OS_LEG_JOBS: dict[str, tuple[str, ...]] = {
 }
 
 # Checks in the ``check`` (lint and docs) job that need no Cargo toolchain.
-NON_CARGO_CHECKS = frozenset({"lint", "ui", "python_sdk", "workerd_guests"})
+# ``python_sdk`` is not one: its tests launch the ``bookclerk-db-testkit``
+# executable (a ``check_input`` in relations.toml), which the check builds.
+NON_CARGO_CHECKS = frozenset({"lint", "ui", "workerd_guests"})
 
 PREREQ_ORDER = ("build", "ensure_workerd", "install_platform", "stage_plugins")
 
@@ -374,6 +383,7 @@ class Relations:
     embeds: list[dict[str, Any]]
     test_inputs: list[dict[str, Any]]
     fixtures: list[dict[str, Any]]
+    check_inputs: list[dict[str, Any]]
     test_guests: dict[str, dict[str, Any]]
     feature_tests: list[dict[str, Any]]
     postgres_steps: dict[str, str]
@@ -410,6 +420,7 @@ def load_relations(path: str | Path | None = None) -> Relations:
         embeds=list(raw.get("embed", [])),
         test_inputs=list(raw.get("test_input", [])),
         fixtures=list(raw.get("fixture", [])),
+        check_inputs=list(raw.get("check_input", [])),
         test_guests=dict(raw.get("test_guests", {})),
         feature_tests=list(raw.get("feature_tests", [])),
         postgres_steps=dict(raw.get("postgres", {}).get("steps", {})),
@@ -445,6 +456,10 @@ def validate_relations(rel: Relations, index: PackageIndex) -> list[str]:
         for check in f.get("checks", []):
             if check not in CHECK_JOB:
                 problems.append(f"fixture: unknown check `{check}`")
+    for c in rel.check_inputs:
+        for check in c.get("checks", []):
+            if check not in CHECK_JOB:
+                problems.append(f"check_input: unknown check `{check}`")
     for t in rel.test_inputs:
         need(t["package"], "test_input")
     for pkg, spec in rel.test_guests.items():
@@ -786,6 +801,7 @@ class _Surfaces:
         self.windows_cluster: list[str] = []
         self.envelope: list[str] = []
         self.fixture_checks: dict[str, list[str]] = {}
+        self.check_input_checks: dict[str, list[str]] = {}
         self.workerd_guests: list[str] = []
 
 
@@ -859,6 +875,14 @@ def build_plan(
                 compiled_seeds[pkg].append(f"{'smoke input' if smoke_only else 'changed'} {path}")
             else:
                 test_seeds[pkg][kind].append(f"{kind} input {path}")
+
+        # A path a check launches at run time (a workspace executable): the
+        # check re-runs on top of whatever the owner's own targets select.
+        for check_input in rel.check_inputs:
+            if any(glob_match(path, p) for p in check_input["paths"]):
+                classified = True
+                for check in check_input.get("checks", []):
+                    surf.check_input_checks.setdefault(check, []).append(path)
 
         for embed in rel.embeds:
             if path in embed["paths"]:
@@ -1063,6 +1087,8 @@ def _select_checks(
         _select(plan, "workerd_guests", guests_why)
     for check, paths in surf.fixture_checks.items():
         _select(plan, check, [f"shared fixture {p}" for p in paths])
+    for check, paths in surf.check_input_checks.items():
+        _select(plan, check, [f"check input {p}" for p in paths])
     if surf.lint:
         _select(plan, "lint", [f"path {p}" for p in surf.lint])
 
@@ -1442,7 +1468,25 @@ def _fmt_prereq(p: Mapping[str, Any]) -> str:
     return kind.replace("_", "-")
 
 
-def plan_to_summary(plan: Plan, title: str = "CI plan") -> str:
+# Why a summary row reads "deferred" (see ``scripts/ci_plan/execute.py``).
+DEFERRED_DRAFT = "draft pull request, runs when ready for review"
+DEFERRED_REASONS = {"windows_cluster": "Windows, runs in the merge queue"}
+
+
+def plan_to_summary(plan: Plan, title: str = "CI plan", deferred: Iterable[str] = ()) -> str:
+    """Markdown summary of ``plan``.
+
+    Args:
+        plan: The plan to describe.
+        title: The section heading.
+        deferred: Checks a pull request run left for later (the ready run
+            or the merge queue); they read ``deferred`` with the reason
+            rather than ``not affected``.
+
+    Returns:
+        The summary as Markdown.
+    """
+    waiting = frozenset(deferred)
     lines = [f"## {title}", "", f"- **full_suite:** `{plan.full_suite}`"]
     for r in plan.reasons:
         lines.append(f"  - {r}")
@@ -1459,6 +1503,9 @@ def plan_to_summary(plan: Plan, title: str = "CI plan") -> str:
     lines.append("| Check | Why | Prerequisites |")
     lines.append("| --- | --- | --- |")
     for check in ALL_CHECKS:
+        if check in waiting:
+            lines.append(f"| `{check}` | deferred: {DEFERRED_REASONS.get(check, DEFERRED_DRAFT)} | |")
+            continue
         if check not in plan.checks:
             lines.append(f"| `{check}` | skip: not affected | |")
             continue

@@ -15,6 +15,8 @@ use bookclerk_plugin_abi::DbColumn;
 
 mod b64;
 mod backup;
+#[cfg(feature = "test-support")]
+pub mod begin_gate;
 mod canonical;
 mod classify;
 mod exec;
@@ -59,7 +61,7 @@ pub use backup::{
 };
 pub use bookclerk_plugin_abi::DbPlanStatementKind;
 pub use bookclerk_plugin_abi::{AdapterExecuteRequest, GuestReceiptPersist};
-pub use canonical::{canonical_statement, execute_canonical, query_canonical};
+pub use canonical::{build_canonical, canonical_statement, execute_canonical, query_canonical};
 pub use classify::{
     classify_db_err, classify_db_err_message, is_schema_apply_retryable, DbErrorClass,
 };
@@ -70,13 +72,13 @@ pub use exec::{
 };
 pub use guest_receipt::{
     guest_batch_is_read_only, guest_receipt_applied_stmt, guest_receipt_finalize_stmts,
-    is_guest_receipt_result_lost, is_guest_receipt_stub_insert, pad_skipped_guest_results,
-    prior_receipt_exists, prior_receipt_is_claimed, prior_receipt_is_read_only_replay,
-    prior_receipt_should_resume_guest, receipt_hash_from, should_skip_remaining_guest_work,
-    strip_guest_receipt_write_gate, GUEST_READ_ONLY_REPLAY_PAYLOAD, GUEST_RECEIPT_RESULT_LOST,
-    GUEST_RECEIPT_STATUS_APPLIED, GUEST_RECEIPT_STATUS_CLAIMED, GUEST_RECEIPT_STATUS_OK,
-    GUEST_RECEIPT_STUB_SUFFIX, GUEST_RECEIPT_WRAP_PREFIX, GUEST_RECEIPT_WRITE_GATE,
-    GUEST_TYPED_REPLAY_PAYLOAD_MAX_BYTES,
+    guest_receipt_read_only_finalize_stmt, is_guest_receipt_result_lost,
+    is_guest_receipt_stub_insert, pad_skipped_guest_results, prior_receipt_exists,
+    prior_receipt_is_claimed, prior_receipt_is_read_only_replay, prior_receipt_should_resume_guest,
+    receipt_hash_from, should_skip_remaining_guest_work, strip_guest_receipt_write_gate,
+    GUEST_READ_ONLY_REPLAY_PAYLOAD, GUEST_RECEIPT_RESULT_LOST, GUEST_RECEIPT_STATUS_APPLIED,
+    GUEST_RECEIPT_STATUS_CLAIMED, GUEST_RECEIPT_STATUS_OK, GUEST_RECEIPT_STUB_SUFFIX,
+    GUEST_RECEIPT_WRAP_PREFIX, GUEST_RECEIPT_WRITE_GATE, GUEST_TYPED_REPLAY_PAYLOAD_MAX_BYTES,
 };
 pub use lower::{
     lower_canonical_ddl_to_postgres, lower_canonical_ddl_to_postgres_with, lower_canonical_sql,

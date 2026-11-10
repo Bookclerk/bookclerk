@@ -27,7 +27,7 @@ var MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES = 262144;
 var FEATURE_SCALAR_LIMITS = "rpc.scalarLimits";
 var FEATURE_STREAMS = "rpc.streams";
 var FEATURE_STORAGE_COPY = "storage.copy";
-var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded"];
+var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited"];
 var CLI_ARG_KINDS = ["string", "bool", "int", "path"];
 var WORK_KINDS = ["book", "podcastShow", "podcastEpisode", "drama"];
 var EXPRESSION_KINDS = ["narration", "text", "translation", "dramatisation", "podcastAudio"];
@@ -3472,6 +3472,75 @@ var PurchaseHintReplyCodec = {
     }
   }
 };
+var PurchaseHintsParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.queries ?? [];
+      const items = s.initStructList(0, list.length, 1, 6);
+      for (let i = 0; i < items.length; i++) {
+        PurchaseHintParamsCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      queries: s.getStructList(0, 1, 6).map((item) => PurchaseHintParamsCodec.read(item, caps))
+    };
+  }
+};
+var PurchaseHintsResultCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.results ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        PurchaseHintResultCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      results: s.getStructList(0, 1, 1).map((item) => PurchaseHintResultCodec.read(item, caps))
+    };
+  }
+};
+var PurchaseHintsReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          PurchaseHintsResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("PurchaseHintsReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: PurchaseHintsResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("PurchaseHintsReply", disc);
+    }
+  }
+};
 var ScanLibraryParamsCodec = {
   dataWords: 1,
   pointerCount: 0,
@@ -6248,6 +6317,34 @@ var ContentSourceRevokeAccountResultsCodec = {
     };
   }
 };
+var ContentSourcePurchaseHintsParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      PurchaseHintsParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: PurchaseHintsParamsCodec.read(s.getStruct(0, 0, 1), caps)
+    };
+  }
+};
+var ContentSourcePurchaseHintsResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      PurchaseHintsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: PurchaseHintsReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var RemoteLibraryHealthParamsCodec = {
   dataWords: 0,
   pointerCount: 0,
@@ -7414,10 +7511,10 @@ var ExecuteStreamDecoder = class {
       if (this.#len - at < frameLen) {
         break;
       }
-      const frame = decodeFrame(this.#buf.slice(at, at + frameLen), ceiling, (count) => this.#admitRows(count));
+      const frame2 = decodeFrame(this.#buf.slice(at, at + frameLen), ceiling, (count) => this.#admitRows(count));
       at += frameLen;
-      this.#apply(frame);
-      frames.push(frame);
+      this.#apply(frame2);
+      frames.push(frame2);
       if (this.finished) {
         if (this.#len > at) {
           throw PluginError.fromWire("invalid_params", "streamed reply carries bytes after its final frame");
@@ -7544,26 +7641,26 @@ var ExecuteStreamDecoder = class {
    * @throws `PluginError` `invalid_params` when the frame is out of sequence
    *   or a cell is not a valid `DbValue`, `limit_exceeded` past the row cap.
    */
-  #apply(frame) {
+  #apply(frame2) {
     const state = this.#state;
-    if (frame.kind === "err") {
+    if (frame2.kind === "err") {
       this.#columns = [];
       this.#state = {
         kind: "finished",
         outcome: {
-          err: PluginError.fromWire(frame.value.code, frame.value.message, frame.value.details)
+          err: PluginError.fromWire(frame2.value.code, frame2.value.message, frame2.value.details)
         }
       };
       return;
     }
     if (state.kind === "awaitingHead") {
-      if (frame.kind !== "head") {
-        throw this.#sequence(`opens with a ${frame.kind} frame instead of head`);
+      if (frame2.kind !== "head") {
+        throw this.#sequence(`opens with a ${frame2.kind} frame instead of head`);
       }
       this.#state = {
         kind: "inReply",
-        operationId: frame.value.operationId,
-        statementCount: frame.value.statementCount,
+        operationId: frame2.value.operationId,
+        statementCount: frame2.value.statementCount,
         nextIndex: 0,
         statements: [],
         open: void 0,
@@ -7574,12 +7671,12 @@ var ExecuteStreamDecoder = class {
     if (state.kind === "finished") {
       throw this.#sequence("carries a frame after its final frame");
     }
-    switch (frame.kind) {
+    switch (frame2.kind) {
       case "head":
         throw this.#sequence("carries a second head frame");
       case "statement": {
-        if (frame.value.index !== state.nextIndex) {
-          throw this.#sequence(`statement frame ${frame.value.index} arrived where ${state.nextIndex} was expected`);
+        if (frame2.value.index !== state.nextIndex) {
+          throw this.#sequence(`statement frame ${frame2.value.index} arrived where ${state.nextIndex} was expected`);
         }
         if (state.nextIndex >= state.statementCount) {
           throw this.#sequence(`carries more statements than its head announced`);
@@ -7589,12 +7686,12 @@ var ExecuteStreamDecoder = class {
         }
         state.open = {
           rows: [],
-          columns: frame.value.columns,
-          rowsAffected: frame.value.rowsAffected
+          columns: frame2.value.columns,
+          rowsAffected: frame2.value.rowsAffected
         };
         state.openRows = 0;
         state.nextIndex += 1;
-        this.#columns = frame.value.columns;
+        this.#columns = frame2.value.columns;
         return;
       }
       case "rows": {
@@ -7602,7 +7699,7 @@ var ExecuteStreamDecoder = class {
         if (!open) {
           throw this.#sequence("carries rows before a statement frame");
         }
-        for (const row of frame.value) {
+        for (const row of frame2.value) {
           if (row.values.length !== open.columns.length) {
             throw this.#sequence(`carries a row of ${row.values.length} cells for ${open.columns.length} columns`);
           }
@@ -7610,7 +7707,7 @@ var ExecuteStreamDecoder = class {
             validateCell(cell);
           }
         }
-        state.openRows += frame.value.length;
+        state.openRows += frame2.value.length;
         if (this.#limits.maxRows > 0 && state.openRows > this.#limits.maxRows) {
           throw PluginError.limitExceeded({
             limit: this.#limits.rowsLimit,
@@ -7619,7 +7716,7 @@ var ExecuteStreamDecoder = class {
           });
         }
         if (this.#retainRows) {
-          for (const row of frame.value) {
+          for (const row of frame2.value) {
             open.rows.push(row);
           }
         }
@@ -7640,7 +7737,7 @@ var ExecuteStreamDecoder = class {
             ok: {
               operationId: state.operationId,
               statements: state.statements,
-              timing: frame.value
+              timing: frame2.value
             }
           }
         };
@@ -8027,6 +8124,12 @@ function decodeExecuteRequest(bytes) {
     deadlineUnixMs: Number(root.getUint64(3))
   };
 }
+function encodeExecuteReply(reply) {
+  const msg = new CapnpMessage();
+  const root = msg.initRoot(0, 3);
+  writeExecuteReply(root, reply);
+  return msg.finish();
+}
 function encodeExecuteResultReply(outcome) {
   const msg = new CapnpMessage();
   const root = msg.initRoot(1, 1);
@@ -8053,6 +8156,16 @@ function decodeExecuteResultReply(bytes) {
     throw PluginError.fromWire(err.getText(0), err.getText(1), err.getText(2));
   }
   throw new Error("unknown ExecuteResultReply union member");
+}
+function encodeDbCapabilitiesReply(outcome) {
+  return encodeMessage(DbCapabilitiesReplyCodec, "ok" in outcome ? { kind: "ok", value: outcome.ok } : {
+    kind: "err",
+    value: {
+      code: outcome.err.code,
+      message: outcome.err.message,
+      details: outcome.err.details ?? ""
+    }
+  });
 }
 function decodeDbCapabilitiesReply(bytes) {
   const reply = decodeMessage(DbCapabilitiesReplyCodec, bytes);
@@ -8270,13 +8383,13 @@ function createDatabaseBinding(transport, options = {}) {
         }
         throw err;
       }
-      for (const frame of frames) {
-        if (frame.kind === "head") {
-          checkReplyIdentity(request, frame.value.operationId, frame.value.statementCount);
-        } else if (frame.kind === "statement") {
-          columns = frame.value.columns;
-        } else if (frame.kind === "rows") {
-          for (const row of frame.value) {
+      for (const frame2 of frames) {
+        if (frame2.kind === "head") {
+          checkReplyIdentity(request, frame2.value.operationId, frame2.value.statementCount);
+        } else if (frame2.kind === "statement") {
+          columns = frame2.value.columns;
+        } else if (frame2.kind === "rows") {
+          for (const row of frame2.value) {
             yielded = true;
             yield rowMap(columns, row);
           }
@@ -8801,6 +8914,12 @@ var METHODS = {
     searchCatalog: withParams("storefront", "searchCatalog", ContentSourceSearchCatalogParamsCodec, ContentSourceSearchCatalogResultsCodec, okHits),
     expandCandidates: withParams("storefront", "expandCandidates", ContentSourceExpandCandidatesParamsCodec, ContentSourceExpandCandidatesResultsCodec, okHits),
     purchaseHint: withParams("storefront", "purchaseHint", ContentSourcePurchaseHintParamsCodec, ContentSourcePurchaseHintResultsCodec, (value) => okValue({ found: value != null, hint: value ?? void 0 })),
+    purchaseHints: withParams("storefront", "purchaseHints", ContentSourcePurchaseHintsParamsCodec, ContentSourcePurchaseHintsResultsCodec, (value) => okValue({
+      results: asList(value).map((hint) => ({
+        found: hint != null,
+        hint: hint ?? void 0
+      }))
+    })),
     listDeals: withParams("storefront", "listDeals", ContentSourceListDealsParamsCodec, ContentSourceListDealsResultsCodec, okHits),
     health: withoutParams("storefront", "health", ContentSourceHealthParamsCodec, ContentSourceHealthResultsCodec, okHealth),
     diagnose: withoutParams("storefront", "diagnose", ContentSourceDiagnoseParamsCodec, ContentSourceDiagnoseResultsCodec, okLines),
@@ -9334,6 +9453,8 @@ var AdapterDatabaseSession = class extends RpcTarget {
    * `unsupported`. An isolate adapter's frames travel inside one invoke
    * reply, so its streamed budget is clamped to `MAX_SCALAR_BYTES` (256 KiB)
    * and larger frames are a `limit_exceeded` (`maxScalarBytes`) error.
+   * `executeAdapterBatchStreamed` runs the batch, stores the replay receipt
+   * and checks that bound before it commits.
    *
    * @param _request - Proven statements plus isolation and receipt.
    * @returns Every frame of the committed reply, concatenated.
@@ -9471,16 +9592,7 @@ function invocationEnv(rawEnv, context) {
         if (entry.database) {
           merged[entry.name] = entry.database;
         } else if (entry.transport) {
-          const transport = entry.transport;
-          const limits = transport.limits;
-          const executeStreamed = transport.executeStreamed;
-          merged[entry.name] = createDatabaseBinding({
-            execute: (request) => transport.execute(request),
-            ...typeof limits === "function" ? { limits: () => limits.call(transport) } : {},
-            ...typeof executeStreamed === "function" ? {
-              executeStreamed: (request) => executeStreamed.call(transport, request)
-            } : {}
-          });
+          merged[entry.name] = transportDatabase(entry.transport);
         }
       }
     }
@@ -9500,6 +9612,17 @@ function invocationEnv(rawEnv, context) {
     }
   }
   return Object.freeze(merged);
+}
+function transportDatabase(entry) {
+  const transport = entry;
+  const execute = typeof transport.executeBytes === "function" ? async (request) => decodeExecuteResultReply(await transport.executeBytes(encodeExecuteRequest(request))) : (request) => transport.execute(request);
+  const readLimits = typeof transport.limitsBytes === "function" ? async () => decodeDbCapabilitiesReply(await transport.limitsBytes()) : typeof transport.limits === "function" ? () => transport.limits() : void 0;
+  const streamed = typeof transport.openStreamedBytes === "function" ? (request) => transport.openStreamedBytes(encodeExecuteRequest(request)) : typeof transport.executeStreamed === "function" ? (request) => transport.executeStreamed(request) : void 0;
+  return createDatabaseBinding({
+    execute,
+    ...readLimits ? { limits: readLimits } : {},
+    ...streamed ? { executeStreamed: streamed } : {}
+  });
 }
 function applyInvocationEnv(instance, context) {
   const target = instance;
@@ -10132,6 +10255,7 @@ var NamedEntrypoint = class extends WorkerEntrypoint {
     return await target.apply(this, args);
   }
 };
+var PURCHASE_HINTS_BUDGET_MS = 4e3;
 var STOREFRONT_METHODS = Object.freeze([
   "login",
   "scan",
@@ -10142,6 +10266,7 @@ var STOREFRONT_METHODS = Object.freeze([
   "searchCatalog",
   "expandCandidates",
   "purchaseHint",
+  "purchaseHints",
   "listDeals",
   "catalogDetail",
   "revokeAccount",
@@ -10230,6 +10355,29 @@ var StorefrontEntrypoint = class extends NamedEntrypoint {
    */
   purchaseHint(_params) {
     return Promise.reject(unsupported("purchaseHint"));
+  }
+  /**
+   * Purchase links / price hints for several titles in one call, one
+   * answer per query in order. The default asks {@link purchaseHint} for
+   * each query, those with a product id first, and stops starting lookups
+   * after {@link PURCHASE_HINTS_BUDGET_MS}; a store whose catalog prices
+   * many products per request overrides this to make one request. Reject with a
+   * `rate_limited` {@link PluginError} (its `details.retryAfterMs` says how
+   * long) when the store asks to slow down, so the host leaves it alone.
+   *
+   * @param params - The titles to price, in order.
+   * @returns One hint or `null` per query.
+   */
+  async purchaseHints(params) {
+    const started = Date.now();
+    const out = params.queries.map(() => null);
+    const order = params.queries.map((query, i) => ({ i, direct: Boolean(query.productId?.trim()) })).sort((a, b) => Number(b.direct) - Number(a.direct)).map((entry) => entry.i);
+    for (const i of order) {
+      if (Date.now() - started >= PURCHASE_HINTS_BUDGET_MS)
+        break;
+      out[i] = await this.purchaseHint(params.queries[i]);
+    }
+    return out;
   }
   /**
    * Current storefront deals.
@@ -11062,12 +11210,16 @@ var GrantedDatabase = class extends RpcTarget {
    * @returns Unpacked `ExecuteResultReply` message.
    */
   async executeBytes(bytes) {
-    const resp = await this.#granted.fetch("http://granted/db/execute", {
-      method: "POST",
-      headers: { ...this.#auth, "content-type": "application/octet-stream" },
-      body: bytes
-    });
-    return grantedDatabaseBody(resp);
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/execute", {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/octet-stream" },
+        body: bytes
+      });
+      return await grantedDatabaseBody(resp);
+    } catch (err) {
+      return encodeExecuteResultReply({ err: wirePluginError(err) });
+    }
   }
   /**
    * Run one typed atomic batch answered as stream frames
@@ -11093,15 +11245,20 @@ var GrantedDatabase = class extends RpcTarget {
    * locally).
    *
    * @param bytes - Unpacked `ExecuteRequest` message.
-   * @returns Every `ExecuteStreamFrame`, concatenated.
+   * @returns Every `ExecuteStreamFrame`, concatenated; a channel failure is
+   *   one `err` frame.
    */
   async executeStreamedBytes(bytes) {
-    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
-      method: "POST",
-      headers: { ...this.#auth, "content-type": "application/octet-stream" },
-      body: bytes
-    });
-    return grantedDatabaseBody(resp, "executeStreamed");
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/octet-stream" },
+        body: bytes
+      });
+      return await grantedDatabaseBody(resp, "executeStreamed");
+    } catch (err) {
+      return errFrame(err);
+    }
   }
   /**
    * Same frames, as the channel delivers them (a `ReadableStream` when it
@@ -11109,18 +11266,23 @@ var GrantedDatabase = class extends RpcTarget {
    * frames as they arrive.
    *
    * @param bytes - Unpacked `ExecuteRequest` message.
-   * @returns The response body: the frame sequence.
+   * @returns The response body: the frame sequence; a channel failure is
+   *   one `err` frame.
    */
   async openStreamedBytes(bytes) {
-    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
-      method: "POST",
-      headers: { ...this.#auth, "content-type": "application/octet-stream" },
-      body: bytes
-    });
-    if (!resp.ok) {
-      await grantedDatabaseBody(resp, "executeStreamed");
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/octet-stream" },
+        body: bytes
+      });
+      if (!resp.ok) {
+        await grantedDatabaseBody(resp, "executeStreamed");
+      }
+      return resp.body ?? new Uint8Array(0);
+    } catch (err) {
+      return errFrame(err);
     }
-    return resp.body ?? new Uint8Array(0);
   }
   /**
    * Negotiated limits of the granted session (`GET /db/limits`).
@@ -11133,16 +11295,31 @@ var GrantedDatabase = class extends RpcTarget {
   /**
    * Same answer as Cap'n Proto bytes (Python authors decode locally).
    *
-   * @returns Unpacked `DbCapabilitiesReply` message.
+   * @returns Unpacked `DbCapabilitiesReply` message; a channel failure is
+   *   its `err` arm.
    */
   async limitsBytes() {
-    const resp = await this.#granted.fetch("http://granted/db/limits", {
-      method: "GET",
-      headers: { ...this.#auth }
-    });
-    return grantedDatabaseBody(resp, "limits");
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/limits", {
+        method: "GET",
+        headers: { ...this.#auth }
+      });
+      return await grantedDatabaseBody(resp, "limits");
+    } catch (err) {
+      return encodeDbCapabilitiesReply({ err: wirePluginError(err) });
+    }
   }
 };
+function wirePluginError(err) {
+  if (err instanceof PluginError) {
+    return { code: err.wireCode, message: err.message, details: err.detailsText };
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return { code: "unavailable", message: `database grant: ${message}`, details: "" };
+}
+function errFrame(err) {
+  return encodeMessage(ExecuteStreamFrameCodec, { kind: "err", value: wirePluginError(err) });
+}
 async function grantedDatabaseBody(resp, method = "execute") {
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
@@ -11581,6 +11758,293 @@ function createInvocationAdapter() {
     }
   };
 }
+
+// dist/db-adapter.js
+var GUEST_RECEIPT_WRAP_PREFIX = 2;
+var GUEST_RECEIPT_STUB_SUFFIX = 1;
+var GUEST_REPLAY_PAYLOAD_MAX_BYTES = 65536;
+var GUEST_READ_ONLY_REPLAY_PAYLOAD = '{"readOnly":true}';
+var GUEST_RECEIPT_RESULT_LOST = "guest receipt committed without payload; original response lost";
+var GUEST_RECEIPT_CLAIM_LOST = "guest receipt claimed by a concurrent attempt; retry to replay it";
+var STREAM_FRAME_TARGET_BYTES = 64 * 1024;
+var STATUS_CLAIMED = "claimed";
+var FINALIZE_SQL = "UPDATE bookclerk_receipts SET payload = ?, status = 'ok' WHERE operation_id = ? AND status IN ('claimed', 'applied')";
+async function executeAdapterBatch(request, begin, options) {
+  return inTransaction(begin, (txn) => runAdapterBatch(request, txn, options));
+}
+async function executeAdapterBatchStreamed(request, begin, options) {
+  return inTransaction(begin, async (txn) => {
+    const reply = await runAdapterBatch(request, txn, options);
+    const frames = encodeExecuteStream(reply, STREAM_FRAME_TARGET_BYTES, MAX_SCALAR_BYTES);
+    decodeExecuteStream(frames, options.limits);
+    requireReplyWithinBudget(reply, options.limits);
+    return frames;
+  });
+}
+function requireReplyWithinBudget(reply, limits) {
+  if (limits.maxBytes === 0) {
+    return;
+  }
+  const used = encodeExecuteReply(reply).length;
+  if (used > limits.maxBytes) {
+    throw PluginError.limitExceeded({ limit: limits.bytesLimit, cap: limits.maxBytes, used });
+  }
+}
+async function inTransaction(begin, body) {
+  const txn = await begin();
+  let result;
+  try {
+    result = await body(txn);
+    await txn.commit();
+  } catch (err) {
+    try {
+      await txn.rollback();
+    } catch {
+    }
+    throw err;
+  }
+  return result;
+}
+async function runAdapterBatch(request, txn, options) {
+  const started = Date.now();
+  const total = request.statements.length;
+  const guestLen = request.receipt.guestLen;
+  const guestHash = request.receipt.guestHash;
+  const statements = [];
+  for (const statement of request.statements) {
+    statements.push(await txn.run(statement));
+    if (guestLen > 0 && shouldSkipRemainingGuestWork(statements, total, guestHash)) {
+      while (statements.length < total) {
+        statements.push(affected(0));
+      }
+      break;
+    }
+  }
+  const timing = () => {
+    const elapsed = Math.max(0, Date.now() - started) * 1e3;
+    return {
+      attemptElapsedUs: elapsed,
+      dbExecutionUs: elapsed,
+      dbTimingSource: options.timingSource
+    };
+  };
+  for (const result of statements) {
+    for (const row of result.rows) {
+      row.values.forEach(validateCell);
+    }
+  }
+  if (guestLen > 0) {
+    const prior = statements[1];
+    const stub = statements[statements.length - 1];
+    if (prior !== void 0 && prior.rows.length === 0 && stub?.rowsAffected === 0) {
+      throw PluginError.fromWire("unavailable", GUEST_RECEIPT_CLAIM_LOST);
+    }
+    const partial = {
+      operationId: request.operationId,
+      statements,
+      timing: timing()
+    };
+    const readOnly = guestBatchIsReadOnly(request.statements, guestLen);
+    for (const statement of guestReceiptFinalizeStatements(partial, guestLen, guestHash, readOnly)) {
+      await txn.run(statement);
+    }
+  }
+  return { operationId: request.operationId, statements, timing: timing() };
+}
+function guestBatchIsReadOnly(statements, guestLen) {
+  const end = GUEST_RECEIPT_WRAP_PREFIX + guestLen;
+  if (guestLen === 0 || end > statements.length) {
+    return false;
+  }
+  return statements.slice(GUEST_RECEIPT_WRAP_PREFIX, end).every((s) => s.kind === "select");
+}
+function guestReceiptFinalizeStatements(partial, guestLen, guestHash, readOnly) {
+  const expected = GUEST_RECEIPT_WRAP_PREFIX + guestLen + GUEST_RECEIPT_STUB_SUFFIX;
+  if (partial.statements.length !== expected) {
+    throw PluginError.fromWire("internal", `guest atomic receipt wrap returned ${partial.statements.length} statements; expected ${expected}`);
+  }
+  const prior = partial.statements[1];
+  const priorHash = prior ? receiptHash(prior) : void 0;
+  if (prior && priorHash !== void 0) {
+    if (priorHash !== guestHash) {
+      return [];
+    }
+    if (receiptText(prior, "payload", 3) !== void 0) {
+      return [];
+    }
+    const claimed = receiptText(prior, "status", 2) === STATUS_CLAIMED;
+    const stubAffected = partial.statements[partial.statements.length - 1]?.rowsAffected ?? 0;
+    if (!claimed && stubAffected === 0) {
+      throw PluginError.fromWire("unavailable", GUEST_RECEIPT_RESULT_LOST);
+    }
+    if (claimed && stubAffected === 0) {
+      return [];
+    }
+  }
+  const payload = readOnly ? GUEST_READ_ONLY_REPLAY_PAYLOAD : guestReplayPayload({
+    operationId: partial.operationId,
+    statements: partial.statements.slice(GUEST_RECEIPT_WRAP_PREFIX, GUEST_RECEIPT_WRAP_PREFIX + guestLen),
+    timing: partial.timing
+  });
+  return [
+    {
+      sql: FINALIZE_SQL,
+      parameters: [
+        { kind: "text", value: payload },
+        { kind: "text", value: partial.operationId }
+      ],
+      kind: "execute",
+      maxRows: 0,
+      resultSelection: "affectedRows"
+    }
+  ];
+}
+function shouldSkipRemainingGuestWork(results, total, guestHash) {
+  if (results.length !== GUEST_RECEIPT_WRAP_PREFIX || total <= GUEST_RECEIPT_WRAP_PREFIX) {
+    return false;
+  }
+  const prior = results[1];
+  const priorHash = prior ? receiptHash(prior) : void 0;
+  if (!prior || priorHash === void 0) {
+    return false;
+  }
+  const sameHash = priorHash === guestHash;
+  const resumesClaim = sameHash && receiptText(prior, "status", 2) === STATUS_CLAIMED;
+  const readOnlyReplay = sameHash && receiptText(prior, "payload", 3) === GUEST_READ_ONLY_REPLAY_PAYLOAD;
+  return !resumesClaim && !readOnlyReplay;
+}
+function guestReplayPayload(reply) {
+  const statements = reply.statements.map(statementJson).join(",");
+  const t = reply.timing;
+  const text = `{"operation_id":${JSON.stringify(reply.operationId)},"statements":[${statements}],"timing":{"attemptElapsedUs":${uint(t.attemptElapsedUs)},"dbExecutionUs":${uint(t.dbExecutionUs)},"dbTimingSource":${JSON.stringify(t.dbTimingSource)}}}`;
+  const bytes = new TextEncoder().encode(text).byteLength;
+  if (bytes > GUEST_REPLAY_PAYLOAD_MAX_BYTES) {
+    throw PluginError.fromWire("internal", `guest replay payload is ${bytes} bytes; max is ${GUEST_REPLAY_PAYLOAD_MAX_BYTES}`);
+  }
+  return text;
+}
+function encodeExecuteStream(reply, frameTargetBytes = STREAM_FRAME_TARGET_BYTES, maxBytes = Number.POSITIVE_INFINITY) {
+  const parts = [];
+  let total = 0;
+  const push = (part) => {
+    total += part.byteLength;
+    if (total > maxBytes) {
+      throw PluginError.limitExceeded({ limit: "maxScalarBytes", cap: maxBytes, used: total });
+    }
+    parts.push(part);
+  };
+  push(frame({
+    kind: "head",
+    value: { operationId: reply.operationId, statementCount: reply.statements.length }
+  }));
+  reply.statements.forEach((stmt, index) => {
+    push(frame({
+      kind: "statement",
+      value: { index, columns: stmt.columns, rowsAffected: stmt.rowsAffected }
+    }));
+    let start = 0;
+    let size = 0;
+    stmt.rows.forEach((row, i) => {
+      const estimate = rowSizeEstimate(row);
+      if (size > 0 && size + estimate > frameTargetBytes) {
+        pushRowsFrames(push, stmt.rows.slice(start, i));
+        start = i;
+        size = 0;
+      }
+      size += estimate;
+    });
+    pushRowsFrames(push, stmt.rows.slice(start));
+  });
+  push(frame({ kind: "end", value: reply.timing }));
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.byteLength;
+  }
+  return out;
+}
+function pushRowsFrames(push, rows) {
+  if (rows.length === 0) {
+    return;
+  }
+  const encoded = frame({ kind: "rows", value: rows });
+  if (encoded.byteLength > MAX_SCALAR_BYTES && rows.length > 1) {
+    const mid = Math.floor(rows.length / 2);
+    pushRowsFrames(push, rows.slice(0, mid));
+    pushRowsFrames(push, rows.slice(mid));
+    return;
+  }
+  push(encoded);
+}
+function frame(value) {
+  return encodeMessage(ExecuteStreamFrameCodec, value);
+}
+function rowSizeEstimate(row) {
+  let size = 16;
+  for (const value of row.values) {
+    if (value.kind === "text") {
+      size += new TextEncoder().encode(value.value).byteLength + 24;
+    } else if (value.kind === "bytes") {
+      size += value.value.byteLength + 24;
+    } else {
+      size += 24;
+    }
+  }
+  return size;
+}
+function receiptHash(prior) {
+  const cell = receiptCell(prior, "request_hash", 1);
+  return cell?.kind === "text" ? cell.value : void 0;
+}
+function receiptText(prior, column, fallback) {
+  const cell = receiptCell(prior, column, fallback);
+  return cell?.kind === "text" && cell.value !== "" ? cell.value : void 0;
+}
+function receiptCell(prior, column, fallback) {
+  const row = prior.rows[0];
+  if (!row) {
+    return void 0;
+  }
+  const named2 = prior.columns.findIndex((c) => c.name.toLowerCase() === column);
+  return row.values[named2 >= 0 ? named2 : fallback];
+}
+function affected(n) {
+  return { rows: [], columns: [], rowsAffected: n };
+}
+function statementJson(stmt) {
+  const rows = stmt.rows.map((row) => `{"values":[${row.values.map(valueJson).join(",")}]}`);
+  const columns = stmt.columns.map(columnJson);
+  return `{"rows":[${rows.join(",")}],"columns":[${columns.join(",")}],"rowsAffected":${uint(stmt.rowsAffected)}}`;
+}
+function columnJson(column) {
+  return `{"name":${JSON.stringify(column.name)},"dbType":${JSON.stringify(column.dbType)}}`;
+}
+function valueJson(value) {
+  switch (value.kind) {
+    case "null":
+      return `{"kind":"null","value":${JSON.stringify(value.value)}}`;
+    case "boolean":
+      return `{"kind":"boolean","value":${value.value ? "true" : "false"}}`;
+    case "int64":
+      return `{"kind":"int64","value":${BigInt(value.value).toString()}}`;
+    case "float64":
+      if (!Number.isFinite(value.value)) {
+        throw PluginError.fromWire("internal", "guest replay payload has a non-finite float");
+      }
+      return `{"kind":"float64","value":${Object.is(value.value, -0) ? "-0.0" : JSON.stringify(value.value)}}`;
+    case "text":
+      return `{"kind":"text","value":${JSON.stringify(value.value)}}`;
+    case "bytes":
+      return `{"kind":"bytes","value":[${Array.from(value.value).join(",")}]}`;
+  }
+}
+function uint(n) {
+  if (!Number.isSafeInteger(n) || n < 0) {
+    throw PluginError.fromWire("internal", `guest replay payload counter ${n} is not a u64`);
+  }
+  return String(n);
+}
 export {
   AdapterDatabaseSession,
   BookclerkEntrypoint,
@@ -11596,6 +12060,12 @@ export {
   FEATURE_SCALAR_LIMITS,
   FEATURE_STORAGE_COPY,
   FEATURE_STREAMS,
+  GUEST_READ_ONLY_REPLAY_PAYLOAD,
+  GUEST_RECEIPT_CLAIM_LOST,
+  GUEST_RECEIPT_RESULT_LOST,
+  GUEST_RECEIPT_STUB_SUFFIX,
+  GUEST_RECEIPT_WRAP_PREFIX,
+  GUEST_REPLAY_PAYLOAD_MAX_BYTES,
   InvokeError,
   JobController,
   MAX_CHECKPOINT_BYTES,
@@ -11615,6 +12085,7 @@ export {
   QueueBatch,
   QueueMessage,
   RemoteLibraryEntrypoint,
+  STREAM_FRAME_TARGET_BYTES,
   Source,
   StorageEntrypoint,
   StorefrontEntrypoint,
@@ -11635,10 +12106,16 @@ export {
   encodeDbValue,
   encodeExecuteRequest,
   encodeExecuteResultReply,
+  encodeExecuteStream,
   eventBatchResults,
+  executeAdapterBatch,
+  executeAdapterBatchStreamed,
   executeReplyToD1Results,
   executeStreamLimits,
   fromBridgeJson,
+  guestBatchIsReadOnly,
+  guestReceiptFinalizeStatements,
+  guestReplayPayload,
   invocationOf,
   jobOutcomeFor,
   jsonPayload,
@@ -11646,7 +12123,9 @@ export {
   queueBatchResults,
   rawStreamCeiling,
   requirePluginMigrationRegistration,
+  runAdapterBatch,
   schemaMigrationOp,
+  shouldSkipRemainingGuestWork,
   statementResultToD1Result,
   streamsResults,
   toBridgeJson,

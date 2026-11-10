@@ -87,6 +87,9 @@ pub async fn migrate_library_backend(
         return Ok(summary);
     }
 
+    // The destination is a native engine connection this tool opened, not
+    // the store's adapter session, so an interactive transaction is available.
+    #[allow(clippy::disallowed_methods)]
     let txn = dest.begin().await.map_err(LibraryError::Orm)?;
 
     macro_rules! copy {

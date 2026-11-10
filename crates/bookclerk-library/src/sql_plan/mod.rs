@@ -390,6 +390,49 @@ pub fn proxy_read_kind(sql: &str) -> bookclerk_plugin_abi::DbPlanStatementKind {
     }
 }
 
+/// Drops SeaORM double-quoted identifiers so typed execute sees SQL v1 names.
+///
+/// String literals, including doubled single quotes, are preserved.
+#[must_use]
+pub fn unquote_sea_identifiers(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut rest = sql;
+    while let Some(ch) = rest.chars().next() {
+        if ch == '\'' {
+            out.push('\'');
+            rest = &rest[ch.len_utf8()..];
+            while let Some(inner) = rest.chars().next() {
+                if rest.starts_with("''") {
+                    out.push_str("''");
+                    rest = &rest[2..];
+                    continue;
+                }
+                out.push(inner);
+                rest = &rest[inner.len_utf8()..];
+                if inner == '\'' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '"' {
+            rest = &rest[ch.len_utf8()..];
+            while let Some(inner) = rest.chars().next() {
+                if inner == '"' {
+                    rest = &rest[inner.len_utf8()..];
+                    break;
+                }
+                out.push(inner);
+                rest = &rest[inner.len_utf8()..];
+            }
+            continue;
+        }
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+    out
+}
+
 /// Kind for a SeaORM proxy **write**. `RETURNING` is preserved; other DML is
 /// `Execute`.
 #[must_use]

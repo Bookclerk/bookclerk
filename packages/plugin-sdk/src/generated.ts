@@ -1107,6 +1107,16 @@ export interface ContentSource {
    * @returns {@link EmptyReply}
    */
   revokeAccount(params: RevokeAccountParams): Promise<EmptyReply>;
+  /**
+   * Purchase links / price hints for several titles in one call, so a guest
+   * whose backend prices many products per request makes one request for a
+   * page of cards. A guest that cannot batch answers each query as
+   * `purchaseHint` would.
+   *
+   * @param params - The titles to price, in order.
+   * @returns {@link PurchaseHintsReply}
+   */
+  purchaseHints(params: PurchaseHintsParams): Promise<PurchaseHintsReply>;
 }
 
 /**
@@ -1909,7 +1919,7 @@ export interface SearchCatalogParams {
   query: string;
   /** Storefront region / marketplace code; empty means the guest default. */
   region: string;
-  /** Maximum hits to return; the host always sends an explicit value. */
+  /** Maximum hits to return; 0 means the storefront default (20 hits). */
   limit: number;
   /** 1-based page for storefronts that page. */
   page: number;
@@ -2231,6 +2241,26 @@ export interface PurchaseHintResult {
 /** Result union of `ContentSource.purchaseHint`. */
 export type PurchaseHintReply =
   | { kind: "ok"; value: PurchaseHintResult } // Success: hint or not-found marker.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Params of `ContentSource.purchaseHints`: the titles to price together. */
+export interface PurchaseHintsParams {
+  /** One query per title, each as for `purchaseHint`; at most `maxListPage`. */
+  queries: PurchaseHintParams[];
+}
+
+/** Success payload of `ContentSource.purchaseHints`. */
+export interface PurchaseHintsResult {
+  /** One answer per query, in the order the queries were sent. */
+  results: PurchaseHintResult[];
+}
+
+/**
+ * Result union of `ContentSource.purchaseHints`. A whole-batch `err` (for
+ * example `rateLimited`) applies to every query in it.
+ */
+export type PurchaseHintsReply =
+  | { kind: "ok"; value: PurchaseHintsResult } // Success: an answer per query.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
 /** Params of `RemoteLibrary.scanLibrary` (remote library sync). */

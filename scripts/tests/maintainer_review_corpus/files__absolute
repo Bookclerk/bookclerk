@@ -1,0 +1,7 @@
+[
+ {
+  "filename": "/etc/passwd",
+  "status": "modified",
+  "patch": "@@ -1 +1 @@"
+ }
+]

@@ -40,6 +40,7 @@ use crate::discover::DiscoveredPlugin;
 use crate::jail::plugin_data_dir;
 use crate::rpc_session::{PluginSession, SessionServices, OPERATOR_ACCOUNT};
 use crate::{PluginError, Result as PluginResult};
+use bookclerk_library::unquote_sea_identifiers;
 use bookclerk_library::{
     atomic_status, binding_bootstrap_plan, binding_bootstrap_type_env, history_from_execute_reply,
     plugin_binding_type_env, plugin_history_session_matches, plugin_journal_select_request,
@@ -1840,48 +1841,6 @@ fn returned_identity(stmt: &bookclerk_plugin_abi::StatementResult) -> Result<u64
             "insert RETURNING identity is not an integer: {other:?}"
         ))),
     }
-}
-
-/// Drops SeaORM double-quoted identifiers so typed execute sees SQL v1 names.
-///
-/// String literals, including doubled single quotes, are preserved.
-fn unquote_sea_identifiers(sql: &str) -> String {
-    let mut out = String::with_capacity(sql.len());
-    let mut rest = sql;
-    while let Some(ch) = rest.chars().next() {
-        if ch == '\'' {
-            out.push('\'');
-            rest = &rest[ch.len_utf8()..];
-            while let Some(inner) = rest.chars().next() {
-                if rest.starts_with("''") {
-                    out.push_str("''");
-                    rest = &rest[2..];
-                    continue;
-                }
-                out.push(inner);
-                rest = &rest[inner.len_utf8()..];
-                if inner == '\'' {
-                    break;
-                }
-            }
-            continue;
-        }
-        if ch == '"' {
-            rest = &rest[ch.len_utf8()..];
-            while let Some(inner) = rest.chars().next() {
-                if inner == '"' {
-                    rest = &rest[inner.len_utf8()..];
-                    break;
-                }
-                out.push(inner);
-                rest = &rest[inner.len_utf8()..];
-            }
-            continue;
-        }
-        out.push(ch);
-        rest = &rest[ch.len_utf8()..];
-    }
-    out
 }
 
 #[async_trait]

@@ -87,6 +87,13 @@ Identity (`apiVersion`, `id`, capabilities) comes from `plugin.toml`; an
 optional `describe()` on the default export only refines `displayName`
 and similar fields.
 
+A database adapter runs each host batch through `executeAdapterBatch` or
+`executeAdapterBatchStreamed`, which stores the guest's replay receipt
+before `COMMIT` and, for a streamed reply, rolls back when the frames do
+not fit one scalar or the adapter's advertised streamed budget
+(`executeStreamLimits(caps)`) (see
+[Isolate adapter batches](../../sql-contract/v1.md#isolate-adapter-batches-and-replay-receipts)).
+
 ## Triggers
 
 - `event(batch)` mirrors Workers `queue(batch)`. Each `EventMessage`

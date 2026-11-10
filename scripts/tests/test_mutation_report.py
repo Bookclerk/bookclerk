@@ -479,8 +479,10 @@ class WiringTest(unittest.TestCase):
         names = [s.get("name") for s in job["steps"]]
         self.assertLess(names.index("Build the test prerequisites"), names.index("Test the mutants"))
         # The run's time limit leaves room to report inside the job's.
-        self.assertIn("240m", run)
-        self.assertGreaterEqual(job["timeout-minutes"], 250)
+        limit = int(steps["Test the mutants"]["env"]["TIME_LIMIT_MIN"])
+        self.assertIn('"${TIME_LIMIT_MIN}m"', run)
+        self.assertIn("$((TIME_LIMIT_MIN * 60))", run)
+        self.assertGreaterEqual(job["timeout-minutes"], limit + 10)
         self.assertIn('--issue "$RUNNER_TEMP/issue/rust.md"', steps["Report"]["run"])
         assert_files_issues(self, workflow, "rust", "rust")
 

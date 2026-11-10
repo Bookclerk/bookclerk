@@ -34,6 +34,11 @@
       "import": "./dist/sparse-workerd/index.js",
       "default": "./dist/sparse-workerd/index.js"
     },
+    "./testkit": {
+      "types": "./dist/testkit.d.ts",
+      "import": "./dist/testkit.js",
+      "default": "./dist/testkit.js"
+    },
     "./embed/bookclerk_plugin.js": "./embed/bookclerk_plugin.js"
   },
   "scripts": {
@@ -46,11 +51,13 @@
     "test:path-security": "node scripts/test-path-security.mjs",
     "test:db-value": "node scripts/test-db-value.mjs",
     "test:db-stream": "node scripts/test-db-stream.mjs",
+    "test:db-adapter": "node scripts/test-db-adapter.mjs",
     "test:plugin-migrations": "node scripts/test-plugin-migrations.mjs",
     "test:entrypoints": "node scripts/test-entrypoints.mjs",
     "test:entrypoints-codec": "node scripts/test-entrypoints-codec.mjs",
     "test:invoke": "node scripts/test-invoke.mjs",
     "test:egress-user-agent": "node scripts/test-egress-user-agent.mjs",
+    "test:testkit": "node scripts/test-testkit.mjs",
     "build:embed": "node scripts/build-embed.mjs"
   },
   "engines": {

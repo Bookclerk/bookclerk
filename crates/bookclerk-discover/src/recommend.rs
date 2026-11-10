@@ -227,6 +227,17 @@ fn taste_multiplier(weights: &TasteWeights, book: &BookRecord) -> f64 {
     weights.get(&book.uuid).copied().unwrap_or(1.0)
 }
 
+/// The multiplier `weights` gives a listening `row`: its book's multiplier,
+/// so a blended household listen counts as much as the book it is for (one
+/// when the row names no listed book).
+fn listening_multiplier(weights: &TasteWeights, row: &ListeningProgressRecord) -> f64 {
+    row.book_uuid
+        .as_deref()
+        .and_then(|uuid| weights.get(uuid))
+        .copied()
+        .unwrap_or(1.0)
+}
+
 /// True when `wish_count` should be omitted from JSON (zero / unset).
 fn wish_count_is_zero(n: &i64) -> bool {
     *n == 0
@@ -239,6 +250,13 @@ pub struct RankedQueueEntry {
     /// Stable map key for this work (`isbn:…`, `asin:…`, or soft title+author).
     #[schema(example = "isbn:9780441478125")]
     pub work_key: String,
+    /// Library work the entry's wishes resolve to, when the library could
+    /// place them. Wishes for one work are one entry even when their
+    /// `work_key`s differ, so a client matches its own wishes on this id
+    /// first and on `work_key` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "0b7e2c1d-5f3a-4e6b-9c8d-1a2b3c4d5e6f")]
+    pub work_id: Option<String>,
     /// Display title as shown on the storefront or library card.
     #[schema(example = "The Left Hand of Darkness")]
     pub title: String,
@@ -301,6 +319,7 @@ impl RankedQueueEntry {
         Self {
             cover_path: None,
             work_key: entry.work_key,
+            work_id: entry.work_id,
             title: entry.title,
             authors: entry.authors,
             asin: entry.asin,
@@ -685,24 +704,36 @@ pub(crate) async fn rank_candidates(
         );
 
         let mut purchase_hints = Vec::new();
-        // Card seeds must match resolve_purchase_hints: Audible-only URL
-        // seeds. Soft Magento/Chirp ids need live title-matched verification.
-        if seed_source_is_trusted(&c.source) {
-            if let Some(label) = c.price_label.clone().filter(|s| !s.is_empty()) {
-                if let Some(hint) = seed_purchase_hint(
+        // The price the catalog listed when the candidate was fetched shows
+        // on the card at once, as the store's list price, until the live
+        // lookup refreshes it. Only Audible is linked from its id without a
+        // live check (see `resolve_purchase_hints`); the others carry the
+        // price alone and get their link from the live lookup.
+        if let Some(label) = c.price_label.clone().filter(|s| !s.is_empty()) {
+            let mut hint = if seed_source_is_trusted(&c.source) {
+                seed_purchase_hint(
                     &c.source,
                     &c.product_id,
                     Some(c.title.clone()),
                     &opts.region,
-                ) {
-                    purchase_hints.push(PurchaseHint {
-                        price_cents: c.price_cents,
-                        currency: c.currency.clone(),
-                        price_label: Some(label),
-                        ..hint
-                    });
-                }
+                )
+            } else {
+                None
             }
+            .unwrap_or_else(|| {
+                PurchaseHint::link(
+                    c.source.as_str(),
+                    c.product_id.as_str(),
+                    Some(c.title.clone()),
+                    None,
+                )
+            });
+            hint.price_cents = c.price_cents;
+            hint.list_price_cents = c.price_cents;
+            hint.currency = c.currency.clone();
+            hint.list_price_label = Some(label.clone());
+            hint.price_label = Some(label);
+            purchase_hints.push(hint);
         }
         let mut rec = Recommendation {
             work_id: None,
@@ -911,7 +942,7 @@ async fn build_taste_profile(
     }
 
     for row in listening {
-        let weight = listening_engagement(row);
+        let weight = listening_engagement(row) * listening_multiplier(weights, row);
         if weight <= 0.0 {
             continue;
         }
@@ -1273,7 +1304,7 @@ pub(crate) fn shelf_taste(
         }
     }
     for row in listening {
-        let weight = listening_engagement(row);
+        let weight = listening_engagement(row) * listening_multiplier(weights, row);
         if weight <= 0.0 {
             continue;
         }
@@ -1570,6 +1601,123 @@ mod tests {
         assert!(open_candidate_embedder(&opts).unwrap().is_none());
     }
 
+    /// A ranked queue entry names the library work its wishes resolve to, so
+    /// a client can match its own wish whatever key that wish was stored
+    /// under; an entry the library could not place carries none.
+    #[test]
+    fn a_ranked_entry_names_its_work() {
+        let entry = |work_id: Option<&str>| GlobalQueueEntry {
+            work_key: "asin:B002V1OF70".into(),
+            work_id: work_id.map(str::to_string),
+            title: "Dune".into(),
+            authors: None,
+            asin: None,
+            isbn: None,
+            cover_url: None,
+            description: None,
+            subtitle: None,
+            narrators: None,
+            series: None,
+            series_index: None,
+            publisher: None,
+            length_minutes: None,
+            published_at: None,
+            genres: None,
+            language: None,
+            store_editions: Vec::new(),
+            purchase_hints: Vec::new(),
+            wish_count: 2,
+            wishers: Vec::new(),
+            sample_uuids: Vec::new(),
+            first_requested_at: chrono::Utc::now(),
+            last_requested_at: chrono::Utc::now(),
+        };
+        let ranked = RankedQueueEntry::from_global(entry(Some("work-dune")), 0.0, Vec::new());
+        let json = serde_json::to_value(&ranked).unwrap();
+        assert_eq!(json["work_id"], "work-dune");
+        assert_eq!(json["work_key"], "asin:B002V1OF70");
+        let unplaced = RankedQueueEntry::from_global(entry(None), 0.0, Vec::new());
+        let json = serde_json::to_value(&unplaced).unwrap();
+        assert!(json.get("work_id").is_none(), "{json}");
+    }
+
+    /// The price a catalog listed shows on the card as the store's list
+    /// price: an Audible card is linked from its id, while another store's
+    /// card carries the price and waits for the live lookup for its link.
+    #[tokio::test]
+    async fn a_listed_price_shows_on_the_card() {
+        let (store, books) = rated_library().await;
+        let candidate =
+            |source: &str, product_id: &str, title: &str| crate::candidates::StorefrontCandidate {
+                source: source.into(),
+                product_id: product_id.into(),
+                title: title.into(),
+                authors: Some("Ada Author".into()),
+                narrators: None,
+                series: None,
+                series_index: None,
+                asin: None,
+                isbn: None,
+                cover_url: None,
+                seed_categories: None,
+                origin: "author search".into(),
+                seed_title: None,
+                starter_genre: None,
+                store_editions: Vec::new(),
+                subtitle: None,
+                description: None,
+                publisher: None,
+                length_minutes: None,
+                published_at: None,
+                categories: None,
+                language: None,
+                price_cents: Some(1499),
+                currency: Some("USD".into()),
+                price_label: Some("$14.99".into()),
+                rating_overall: None,
+                rating_count: None,
+                is_abridged: None,
+                audible_rank: None,
+            };
+        let opts = RecommendOptions {
+            include_purchase_hints: false,
+            embeddings_enabled: false,
+            ..RecommendOptions::default()
+        };
+        let recs = rank_candidates(
+            &store,
+            &SourceRegistry::new(),
+            &books,
+            &TasteWeights::new(),
+            &[],
+            vec![
+                candidate("audible", "B0AUDIBLE1", "Audible Pick"),
+                candidate("chirp", "chirp-42", "Chirp Pick"),
+            ],
+            &opts,
+        )
+        .await
+        .unwrap();
+        for (title, source) in [("Audible Pick", "audible"), ("Chirp Pick", "chirp")] {
+            let rec = recs
+                .iter()
+                .find(|r| r.title == title)
+                .unwrap_or_else(|| panic!("{title} missing: {recs:?}"));
+            let hint = rec
+                .purchase_hints
+                .iter()
+                .find(|h| h.source == source)
+                .unwrap_or_else(|| panic!("{title} has no {source} hint"));
+            assert_eq!(hint.price_cents, Some(1499));
+            assert_eq!(hint.list_price_cents, Some(1499));
+            assert_eq!(hint.currency.as_deref(), Some("USD"));
+            assert_eq!(hint.price_label.as_deref(), Some("$14.99"));
+            assert_eq!(hint.list_price_label.as_deref(), Some("$14.99"));
+        }
+        let audible = recs.iter().find(|r| r.title == "Audible Pick").unwrap();
+        assert!(audible.purchase_hints[0].url.is_some(), "{audible:?}");
+    }
+
     /// A store holding one unfinished book rated 5 by "Ada Author", and its rows.
     async fn rated_library() -> (LibraryStore, Vec<BookRecord>) {
         let store = bookclerk_plugin_database_sqlite::open_store_memory()
@@ -1751,6 +1899,35 @@ mod tests {
             Some(&("Ada Author".to_owned(), 2.0))
         );
         assert!(!taste.owned_sources.is_empty());
+    }
+
+    #[test]
+    fn a_blended_listen_counts_at_its_book_weight() {
+        let row = |book_uuid: &str| bookclerk_library::ListeningProgressRecord {
+            id: 1,
+            identity_id: None,
+            provider: String::from("abs"),
+            external_user_id: String::from("u1"),
+            book_uuid: Some(book_uuid.to_owned()),
+            work_id: None,
+            external_item_id: String::from("item"),
+            title: None,
+            authors: Some(String::from("Ann Author")),
+            asin: None,
+            isbn: None,
+            progress: Some(0.5),
+            current_time_seconds: Some(3_600.0),
+            duration_seconds: Some(7_200.0),
+            is_finished: false,
+            last_listened_at: None,
+            updated_at: chrono::Utc::now(),
+        };
+        let full = listening_engagement(&row("mine"));
+        let mut weights = TasteWeights::new();
+        weights.insert(String::from("household"), 0.5);
+        let taste = shelf_taste(&[], &weights, &[row("mine"), row("household")]);
+        let weight = taste.authors.get("ann author").map(|(_, w)| *w);
+        assert_eq!(weight, Some(full * 1.5));
     }
 
     #[test]

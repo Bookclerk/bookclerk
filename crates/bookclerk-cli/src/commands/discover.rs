@@ -217,43 +217,8 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                 isbn,
                 notes,
             } => {
-                let work_key = bookclerk_discover::work_map_key(
-                    asin.as_deref(),
-                    isbn.as_deref(),
-                    &title,
-                    authors.as_deref(),
-                    None,
-                    asin.as_deref().or(isbn.as_deref()),
-                );
-                // The library work this wish is for, when it is already
-                // known, as the web API records it.
-                let work_id = library
-                    .work_for(&bookclerk_library::TitleQuery {
-                        title: &title,
-                        authors: authors.as_deref(),
-                        asin: asin.as_deref(),
-                        isbn: isbn.as_deref(),
-                        series: None,
-                        series_index: None,
-                    })
-                    .await
-                    .unwrap_or_default();
-                let row = library
-                    .create_title_request(&NewTitleRequest {
-                        uuid: None,
-                        identity_id: None,
-                        title,
-                        authors,
-                        asin,
-                        isbn,
-                        notes,
-                        status: RequestStatus::Open,
-                        work_key,
-                        work_id,
-                        resolved_book_uuid: None,
-                        cover_url: None,
-                    })
-                    .await?;
+                let request = wish_request(&library, title, authors, asin, isbn, notes).await;
+                let row = library.create_title_request(&request).await?;
                 format_out::emit(format, &row, || {
                     format_out::line(format!("wishlisted {}", row.uuid));
                 })?;
@@ -301,4 +266,94 @@ async fn sync_listening(
     let host = crate::registry::open_host(cfg).await?;
     let registry = crate::registry::integrations(&host).await?;
     Ok(registry.sync_listening_progress_all(library).await)
+}
+
+/// Builds the open wishlist request `discover wishlist add` stores.
+///
+/// The request carries the bibliographic work key and, when the library
+/// already knows the work the wish is for, that work's id, as the web API
+/// records it. A failed lookup leaves the id unset; readers then fall back
+/// to the resolver.
+///
+/// # Arguments
+///
+/// * `library` - Store the work is looked up in; nothing is written.
+/// * `title`, `authors`, `asin`, `isbn`, `notes` - The wish as typed.
+///
+/// # Returns
+///
+/// The request to hand to [`LibraryStore::create_title_request`].
+async fn wish_request(
+    library: &LibraryStore,
+    title: String,
+    authors: Option<String>,
+    asin: Option<String>,
+    isbn: Option<String>,
+    notes: Option<String>,
+) -> NewTitleRequest {
+    let work_key = bookclerk_discover::work_map_key(
+        asin.as_deref(),
+        isbn.as_deref(),
+        &title,
+        authors.as_deref(),
+        None,
+        asin.as_deref().or(isbn.as_deref()),
+    );
+    let work_id = library
+        .work_for(&bookclerk_library::TitleQuery {
+            title: &title,
+            authors: authors.as_deref(),
+            asin: asin.as_deref(),
+            isbn: isbn.as_deref(),
+            series: None,
+            series_index: None,
+        })
+        .await
+        .unwrap_or_default();
+    NewTitleRequest {
+        uuid: None,
+        identity_id: None,
+        title,
+        authors,
+        asin,
+        isbn,
+        notes,
+        status: RequestStatus::Open,
+        work_key,
+        work_id,
+        resolved_book_uuid: None,
+        cover_url: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A wish for a work the library holds carries that work; a sequel
+    /// with a similar title does not.
+    #[tokio::test]
+    async fn a_wish_records_the_work_it_resolves_to() {
+        let store = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        store
+            .upsert_account("libro", "reader@example.com", "us", None, true, "libro")
+            .await
+            .unwrap();
+        let mut book =
+            bookclerk_library::NewBook::minimal("p1", "reader@example.com", "us", "Dune");
+        book.source = "libro".into();
+        book.plugin_key = "libro".into();
+        book.authors = Some("Frank Herbert".into());
+        store.upsert_book(&book).await.unwrap();
+
+        let author = || Some("Frank Herbert".to_string());
+        let owned = wish_request(&store, "Dune".into(), author(), None, None, None).await;
+        assert!(owned.work_id.is_some(), "{owned:?}");
+        assert_eq!(owned.status, RequestStatus::Open);
+        assert!(!owned.work_key.is_empty());
+        let sequel = wish_request(&store, "Dune Messiah".into(), author(), None, None, None).await;
+        assert!(sequel.work_id.is_none(), "{sequel:?}");
+    }
 }

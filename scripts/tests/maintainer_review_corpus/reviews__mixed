@@ -1,0 +1,59 @@
+[
+ {
+  "id": 1,
+  "user": {
+   "login": "fritz-fritz",
+   "id": 5253894,
+   "type": "User"
+  },
+  "state": "COMMENTED",
+  "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "body": "hi"
+ },
+ {
+  "id": 2,
+  "user": {
+   "login": "fritz-fritz",
+   "id": 5253894,
+   "type": "User"
+  },
+  "state": "APPROVED",
+  "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ },
+ {
+  "id": 3,
+  "user": null,
+  "state": "APPROVED",
+  "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ },
+ {
+  "id": 4,
+  "user": {
+   "login": "alice",
+   "id": 101,
+   "type": "User"
+  },
+  "state": "CHANGES_REQUESTED",
+  "commit_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+ },
+ {
+  "id": 5,
+  "user": {
+   "login": "copilot-pull-request-reviewer[bot]",
+   "id": 175728472,
+   "type": "Bot"
+  },
+  "state": "COMMENTED",
+  "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ },
+ {
+  "id": 6,
+  "user": {
+   "login": "fritz-fritz",
+   "id": 5253894,
+   "type": "User"
+  },
+  "state": "DISMISSED",
+  "commit_id": null
+ }
+]

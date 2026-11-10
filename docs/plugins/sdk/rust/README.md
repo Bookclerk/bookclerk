@@ -40,7 +40,8 @@ A `[[databases]]` binding is taken from the `open` bindings with
 `DatabaseBinding::take_named_from_bindings` and used as on D1
 (`prepare`, `bind`, `all`, `first`, `batch`). Its `limits()` returns the
 session's `DbCapabilities`; `all()` reads through the session's streamed
-budget when it advertises one, and `chunk()` splits a long statement list
+budget when it advertises one, `iterate()` walks the same read one row at
+a time without holding the whole result, and `chunk()` splits a long statement list
 into batches that each fit one request. Any cap that is hit is a
 `PluginError` with `PluginErrorCode::LimitExceeded` and a typed `limit()`;
 see [Working within database limits](../../database-limits.md).
@@ -61,15 +62,17 @@ the host and fail closed; rebuild guests against this SDK. Pathname,
 ## Author tools
 
 The `bookclerk-plugin` author CLI (`check`, `fmt`, `sync-embed`,
-`package` and `smoke`) lives in the separate `bookclerk-plugin-tools`
+`package`, `smoke` and `test`) lives in the separate `bookclerk-plugin-tools`
 crate, so a guest that depends on this SDK never links
 `bookclerk-workerd`. Install it once, then run it from the plugin's
 directory:
 
 ```bash
 cargo install --git https://github.com/Bookclerk/bookclerk bookclerk-plugin-tools
+cargo install --git https://github.com/Bookclerk/bookclerk bookclerk-db-testkit  # the kit `test` serves
 bookclerk-plugin check .
 bookclerk-plugin smoke .
+bookclerk-plugin test .    # the plugin's suite under every database profile
 ```
 
 Inside a Bookclerk checkout, `cargo plugin -- check <dir>` is an alias

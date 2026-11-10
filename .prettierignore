@@ -20,6 +20,7 @@ crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/
 # Generated: regenerate these with their generator, never reformat them.
 crates/bookclerkd/openapi.json
 crates/bookclerkd/openapi-3.0.json
+crates/bookclerk-library/fixtures/guest_receipt/
 crates/bookclerk-plugin-abi/schema/
 crates/bookclerk-plugin-manifest/schema/
 examples/plugins-echo-workerd-rust/modules/pkg/

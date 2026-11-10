@@ -152,10 +152,11 @@ pub use db_execute::{
     FIRST_PARTY_MAX_RESULT_ROWS, FIRST_PARTY_MAX_STATEMENTS, FIRST_PARTY_MAX_STREAMED_RESULT_BYTES,
     FIRST_PARTY_MAX_STREAMED_RESULT_ROWS, HOST_MAX_STREAMED_RESULT_BYTES,
     HOST_MAX_STREAMED_RESULT_ROWS, HOST_MIN_BINDS, HOST_MIN_CELL_BYTES, HOST_MIN_FUNCTION_ARGS,
-    HOST_MIN_PATTERN_BYTES, HOST_MIN_PAYLOAD_BYTES, HOST_MIN_RESULT_BYTES, HOST_MIN_RESULT_ROWS,
-    HOST_MIN_SCHEMA_COLUMNS, HOST_MIN_STATEMENTS, POSTGRES_MAX_BINDS, POSTGRES_MAX_FUNCTION_ARGS,
-    POSTGRES_MAX_SCHEMA_COLUMNS, SQLITE_MAX_BINDS, SQLITE_MAX_FUNCTION_ARGS,
-    SQLITE_MAX_PATTERN_BYTES, SQLITE_MAX_SCHEMA_COLUMNS, SQL_CONTRACT_VERSION,
+    HOST_MIN_PATTERN_BYTES, HOST_MIN_PAYLOAD_BYTES, HOST_MIN_REQUEST_BYTES, HOST_MIN_RESULT_BYTES,
+    HOST_MIN_RESULT_ROWS, HOST_MIN_SCHEMA_COLUMNS, HOST_MIN_STATEMENTS, POSTGRES_MAX_BINDS,
+    POSTGRES_MAX_FUNCTION_ARGS, POSTGRES_MAX_SCHEMA_COLUMNS, SQLITE_MAX_BINDS,
+    SQLITE_MAX_FUNCTION_ARGS, SQLITE_MAX_PATTERN_BYTES, SQLITE_MAX_SCHEMA_COLUMNS,
+    SQL_CONTRACT_VERSION,
 };
 pub use db_value::{db_type_from_declared, normalize_db_value_for_column, DbType, DbValue};
 pub use error::{LimitExceeded, PluginError, PluginErrorCode, Result};
@@ -249,7 +250,7 @@ pub use roles::{
     CoverFetcher, Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
     JobController, JobRunner, KvNamespace, MetadataProvider, NamedKvBinding, NamedQueueBinding,
     NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer,
-    ReadResult, RemoteLibrary, ScheduledHandler, Source,
+    ReadResult, RemoteLibrary, ScheduledHandler, Source, PURCHASE_HINTS_BUDGET,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;

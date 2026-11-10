@@ -63,6 +63,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.workerd_control]
+crate = "bookclerk-workerd"
+boundary = "workerd --control-fd lines on the stdout plugin isolates share: the bridge RPC port on Windows"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.egress_policy]
 crate = "bookclerk-plugin-manifest"
 boundary = "Guest egress allowlist (EgressPolicy JSON wire form)"
@@ -186,5 +193,12 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-node-proto"
 boundary = "Node-to-node frames on the cluster socket"
 input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.plan_authz]
+crate = "bookclerk-library"
+boundary = "Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them"
+input_from = "signed-in user"
 side = "host"
 artifacts = ["bookclerk"]

@@ -10,6 +10,7 @@ use sea_orm::{
 use uuid::Uuid;
 
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
+use crate::control_plane::{bump_on, exec_bumped_via, sea_probe, Bump, LiveTopic};
 use crate::entities::{books, job_temp_paths, jobs};
 use crate::error::{LibraryError, Result};
 use crate::models::{
@@ -37,6 +38,10 @@ impl LibraryStore {
         if let Some(atomic) = &self.atomic {
             return atomic.enqueue_job(spec).await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match enqueue_job_on(&txn, self.leftover_in_process(), spec).await {
             Ok(outcome) => {
@@ -70,6 +75,10 @@ impl LibraryStore {
                 .claim_next_job(resource_class, owner, lease_secs, operation_id)
                 .await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match claim_next_job_on(
             &txn,
@@ -117,7 +126,7 @@ impl LibraryStore {
     ) -> Result<JobClaimPage> {
         let now_s = Utc::now().to_rfc3339();
         if after.is_none() {
-            sanitize_unreadable_pending_on(&self.db, &now_s).await?;
+            sanitize_unreadable_pending_on(&self.db, Some(self), &now_s).await?;
         }
         let limit = limit.max(1);
         let rows = claim_candidates_query(resource_class, &now_s, after)
@@ -146,7 +155,9 @@ impl LibraryStore {
             let id = model.id.clone();
             match try_map_job(model) {
                 Ok(job) => out.push(job),
-                Err(reason) => mark_pending_job_invalid_on(&self.db, &id, &reason, &now_s).await?,
+                Err(reason) => {
+                    mark_pending_job_invalid_on(&self.db, Some(self), &id, &reason, &now_s).await?
+                }
             }
         }
         Ok(JobClaimPage { jobs: out, next })
@@ -209,7 +220,7 @@ impl LibraryStore {
         }
         let lease_expires =
             (now + Duration::seconds(i64::try_from(lease_secs).unwrap_or(60))).to_rfc3339();
-        claim_candidate_on(&self.db, model, owner, &lease_expires, &now_s).await
+        claim_candidate_on(&self.db, Some(self), model, owner, &lease_expires, &now_s).await
     }
 
     /// One page of pending jobs in id order, for maintenance passes.
@@ -272,26 +283,29 @@ impl LibraryStore {
     ) -> Result<bool> {
         let payload_json = serde_json::to_string(payload)
             .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
-        let res = jobs::Entity::update_many()
-            .col_expr(
-                jobs::Column::Payload,
-                sea_orm::sea_query::Expr::value(payload_json),
+        let res = self
+            .exec_bumped(
+                jobs::Entity::update_many()
+                    .col_expr(
+                        jobs::Column::Payload,
+                        sea_orm::sea_query::Expr::value(payload_json),
+                    )
+                    .col_expr(
+                        jobs::Column::LeaseGeneration,
+                        sea_orm::sea_query::Expr::value(lease_generation + 1),
+                    )
+                    .col_expr(
+                        jobs::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now_str()),
+                    )
+                    .filter(jobs::Column::Id.eq(job_id))
+                    .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
+                    .filter(jobs::Column::LeaseGeneration.eq(lease_generation)),
+                LiveTopic::Jobs,
+                Bump::Always,
             )
-            .col_expr(
-                jobs::Column::LeaseGeneration,
-                sea_orm::sea_query::Expr::value(lease_generation + 1),
-            )
-            .col_expr(
-                jobs::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now_str()),
-            )
-            .filter(jobs::Column::Id.eq(job_id))
-            .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
-            .filter(jobs::Column::LeaseGeneration.eq(lease_generation))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+            .await?;
+        Ok(res == 1)
     }
 
     /// Fails a pending job read at `lease_generation`, terminally.
@@ -315,38 +329,41 @@ impl LibraryStore {
         error_message: &str,
     ) -> Result<bool> {
         let now = now_str();
-        let res = jobs::Entity::update_many()
-            .col_expr(
-                jobs::Column::State,
-                sea_orm::sea_query::Expr::value(JobState::Failed.as_str()),
+        let res = self
+            .exec_bumped(
+                jobs::Entity::update_many()
+                    .col_expr(
+                        jobs::Column::State,
+                        sea_orm::sea_query::Expr::value(JobState::Failed.as_str()),
+                    )
+                    .col_expr(
+                        jobs::Column::ErrorKind,
+                        sea_orm::sea_query::Expr::value(Some(error_kind.to_string())),
+                    )
+                    .col_expr(
+                        jobs::Column::ErrorMessage,
+                        sea_orm::sea_query::Expr::value(Some(error_message.to_string())),
+                    )
+                    .col_expr(
+                        jobs::Column::LeaseGeneration,
+                        sea_orm::sea_query::Expr::value(lease_generation + 1),
+                    )
+                    .col_expr(
+                        jobs::Column::FinishedAt,
+                        sea_orm::sea_query::Expr::value(Some(now.clone())),
+                    )
+                    .col_expr(
+                        jobs::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now),
+                    )
+                    .filter(jobs::Column::Id.eq(job_id))
+                    .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
+                    .filter(jobs::Column::LeaseGeneration.eq(lease_generation)),
+                LiveTopic::Jobs,
+                Bump::Always,
             )
-            .col_expr(
-                jobs::Column::ErrorKind,
-                sea_orm::sea_query::Expr::value(Some(error_kind.to_string())),
-            )
-            .col_expr(
-                jobs::Column::ErrorMessage,
-                sea_orm::sea_query::Expr::value(Some(error_message.to_string())),
-            )
-            .col_expr(
-                jobs::Column::LeaseGeneration,
-                sea_orm::sea_query::Expr::value(lease_generation + 1),
-            )
-            .col_expr(
-                jobs::Column::FinishedAt,
-                sea_orm::sea_query::Expr::value(Some(now.clone())),
-            )
-            .col_expr(
-                jobs::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now),
-            )
-            .filter(jobs::Column::Id.eq(job_id))
-            .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
-            .filter(jobs::Column::LeaseGeneration.eq(lease_generation))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+            .await?;
+        Ok(res == 1)
     }
 
     /// Returns a job claimed under `fence` to `pending` without spending an
@@ -415,15 +432,18 @@ impl LibraryStore {
                 sea_orm::sea_query::Expr::value((model.attempt_count - 1).max(0)),
             );
         }
-        let res = update
-            .filter(jobs::Column::Id.eq(&fence.job_id))
-            .filter(jobs::Column::State.eq(JobState::Running.as_str()))
-            .filter(jobs::Column::LeaseOwner.eq(&fence.owner))
-            .filter(jobs::Column::LeaseGeneration.eq(fence.generation))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+        let res = self
+            .exec_bumped(
+                update
+                    .filter(jobs::Column::Id.eq(&fence.job_id))
+                    .filter(jobs::Column::State.eq(JobState::Running.as_str()))
+                    .filter(jobs::Column::LeaseOwner.eq(&fence.owner))
+                    .filter(jobs::Column::LeaseGeneration.eq(fence.generation)),
+                LiveTopic::Jobs,
+                Bump::Always,
+            )
+            .await?;
+        Ok(res == 1)
     }
 
     /// Refresh the lease when `fence` still owns the running generation.
@@ -459,8 +479,10 @@ impl LibraryStore {
                 sea_orm::sea_query::Expr::value(Some(progress.to_string())),
             );
         }
-        let res = update.exec(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+        let res = self
+            .exec_bumped(update, LiveTopic::Jobs, Bump::Always)
+            .await?;
+        Ok(res == 1)
     }
 
     /// Persist progress when `fence` still owns the running generation.
@@ -469,23 +491,26 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when the update fails.
     pub async fn set_job_progress(&self, fence: &JobFence, progress: &str) -> Result<bool> {
-        let res = jobs::Entity::update_many()
-            .col_expr(
-                jobs::Column::Progress,
-                sea_orm::sea_query::Expr::value(Some(progress.to_string())),
+        let res = self
+            .exec_bumped(
+                jobs::Entity::update_many()
+                    .col_expr(
+                        jobs::Column::Progress,
+                        sea_orm::sea_query::Expr::value(Some(progress.to_string())),
+                    )
+                    .col_expr(
+                        jobs::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now_str()),
+                    )
+                    .filter(jobs::Column::Id.eq(&fence.job_id))
+                    .filter(jobs::Column::State.eq(JobState::Running.as_str()))
+                    .filter(jobs::Column::LeaseOwner.eq(&fence.owner))
+                    .filter(jobs::Column::LeaseGeneration.eq(fence.generation)),
+                LiveTopic::Jobs,
+                Bump::Always,
             )
-            .col_expr(
-                jobs::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now_str()),
-            )
-            .filter(jobs::Column::Id.eq(&fence.job_id))
-            .filter(jobs::Column::State.eq(JobState::Running.as_str()))
-            .filter(jobs::Column::LeaseOwner.eq(&fence.owner))
-            .filter(jobs::Column::LeaseGeneration.eq(fence.generation))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+            .await?;
+        Ok(res == 1)
     }
 
     /// Mark a running job succeeded when `fence` still owns the generation.
@@ -526,8 +551,10 @@ impl LibraryStore {
                 sea_orm::sea_query::Expr::value(Some(progress.to_string())),
             );
         }
-        let res = update.exec(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+        let res = self
+            .exec_bumped(update, LiveTopic::Jobs, Bump::Always)
+            .await?;
+        Ok(res == 1)
     }
 
     /// Park a running job as `pending` with a checkpoint, to be claimed again after `wake_at`.
@@ -575,43 +602,46 @@ impl LibraryStore {
         let payload_json = serde_json::to_string(&payload)
             .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
         let now = now_str();
-        let res = jobs::Entity::update_many()
-            .col_expr(
-                jobs::Column::State,
-                sea_orm::sea_query::Expr::value(JobState::Pending.as_str()),
+        let res = self
+            .exec_bumped(
+                jobs::Entity::update_many()
+                    .col_expr(
+                        jobs::Column::State,
+                        sea_orm::sea_query::Expr::value(JobState::Pending.as_str()),
+                    )
+                    .col_expr(
+                        jobs::Column::Payload,
+                        sea_orm::sea_query::Expr::value(payload_json),
+                    )
+                    .col_expr(
+                        jobs::Column::RunAfter,
+                        sea_orm::sea_query::Expr::value(wake_at.to_rfc3339()),
+                    )
+                    .col_expr(
+                        jobs::Column::LeaseOwner,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        jobs::Column::LeaseExpiresAt,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        jobs::Column::Progress,
+                        sea_orm::sea_query::Expr::value(Some("suspended".to_string())),
+                    )
+                    .col_expr(
+                        jobs::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now),
+                    )
+                    .filter(jobs::Column::Id.eq(&fence.job_id))
+                    .filter(jobs::Column::State.eq(JobState::Running.as_str()))
+                    .filter(jobs::Column::LeaseOwner.eq(&fence.owner))
+                    .filter(jobs::Column::LeaseGeneration.eq(fence.generation)),
+                LiveTopic::Jobs,
+                Bump::Always,
             )
-            .col_expr(
-                jobs::Column::Payload,
-                sea_orm::sea_query::Expr::value(payload_json),
-            )
-            .col_expr(
-                jobs::Column::RunAfter,
-                sea_orm::sea_query::Expr::value(wake_at.to_rfc3339()),
-            )
-            .col_expr(
-                jobs::Column::LeaseOwner,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                jobs::Column::LeaseExpiresAt,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                jobs::Column::Progress,
-                sea_orm::sea_query::Expr::value(Some("suspended".to_string())),
-            )
-            .col_expr(
-                jobs::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now),
-            )
-            .filter(jobs::Column::Id.eq(&fence.job_id))
-            .filter(jobs::Column::State.eq(JobState::Running.as_str()))
-            .filter(jobs::Column::LeaseOwner.eq(&fence.owner))
-            .filter(jobs::Column::LeaseGeneration.eq(fence.generation))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+            .await?;
+        Ok(res == 1)
     }
 
     /// Replaces `payload.checkpoint` while `fence` still owns the running job.
@@ -654,23 +684,26 @@ impl LibraryStore {
         payload.checkpoint = Some(checkpoint.clone());
         let payload_json = serde_json::to_string(&payload)
             .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
-        let res = jobs::Entity::update_many()
-            .col_expr(
-                jobs::Column::Payload,
-                sea_orm::sea_query::Expr::value(payload_json),
+        let res = self
+            .exec_bumped(
+                jobs::Entity::update_many()
+                    .col_expr(
+                        jobs::Column::Payload,
+                        sea_orm::sea_query::Expr::value(payload_json),
+                    )
+                    .col_expr(
+                        jobs::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now_str()),
+                    )
+                    .filter(jobs::Column::Id.eq(&fence.job_id))
+                    .filter(jobs::Column::State.eq(JobState::Running.as_str()))
+                    .filter(jobs::Column::LeaseOwner.eq(&fence.owner))
+                    .filter(jobs::Column::LeaseGeneration.eq(fence.generation)),
+                LiveTopic::Jobs,
+                Bump::Always,
             )
-            .col_expr(
-                jobs::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now_str()),
-            )
-            .filter(jobs::Column::Id.eq(&fence.job_id))
-            .filter(jobs::Column::State.eq(JobState::Running.as_str()))
-            .filter(jobs::Column::LeaseOwner.eq(&fence.owner))
-            .filter(jobs::Column::LeaseGeneration.eq(fence.generation))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+            .await?;
+        Ok(res == 1)
     }
 
     /// Fail a running job when `fence` still owns the generation.
@@ -777,15 +810,18 @@ impl LibraryStore {
                 sea_orm::sea_query::Expr::value(payload_json),
             );
         }
-        let res = update
-            .filter(jobs::Column::Id.eq(&fence.job_id))
-            .filter(jobs::Column::State.eq(JobState::Running.as_str()))
-            .filter(jobs::Column::LeaseOwner.eq(&fence.owner))
-            .filter(jobs::Column::LeaseGeneration.eq(fence.generation))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+        let res = self
+            .exec_bumped(
+                update
+                    .filter(jobs::Column::Id.eq(&fence.job_id))
+                    .filter(jobs::Column::State.eq(JobState::Running.as_str()))
+                    .filter(jobs::Column::LeaseOwner.eq(&fence.owner))
+                    .filter(jobs::Column::LeaseGeneration.eq(fence.generation)),
+                LiveTopic::Jobs,
+                Bump::Always,
+            )
+            .await?;
+        Ok(res == 1)
     }
 
     /// Cancel a pending job immediately, or flag a running job for cooperative stop.
@@ -829,21 +865,24 @@ impl LibraryStore {
                 }
                 continue;
             }
-            let res = jobs::Entity::update_many()
-                .col_expr(
-                    jobs::Column::CancelRequested,
-                    sea_orm::sea_query::Expr::value(1i64),
+            let res = self
+                .exec_bumped(
+                    jobs::Entity::update_many()
+                        .col_expr(
+                            jobs::Column::CancelRequested,
+                            sea_orm::sea_query::Expr::value(1i64),
+                        )
+                        .col_expr(
+                            jobs::Column::UpdatedAt,
+                            sea_orm::sea_query::Expr::value(now_str()),
+                        )
+                        .filter(jobs::Column::Id.eq(id))
+                        .filter(jobs::Column::State.eq(JobState::Running.as_str())),
+                    LiveTopic::Jobs,
+                    Bump::Always,
                 )
-                .col_expr(
-                    jobs::Column::UpdatedAt,
-                    sea_orm::sea_query::Expr::value(now_str()),
-                )
-                .filter(jobs::Column::Id.eq(id))
-                .filter(jobs::Column::State.eq(JobState::Running.as_str()))
-                .exec(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?;
-            if res.rows_affected == 1 {
+                .await?;
+            if res == 1 {
                 return self.get_job(id).await;
             }
         }
@@ -919,53 +958,56 @@ impl LibraryStore {
                 JobState::Pending.as_str()
             };
             let finished = if terminal { Some(now_s.clone()) } else { None };
-            let res = jobs::Entity::update_many()
-                .col_expr(
-                    jobs::Column::State,
-                    sea_orm::sea_query::Expr::value(next_state),
+            let res = self
+                .exec_bumped(
+                    jobs::Entity::update_many()
+                        .col_expr(
+                            jobs::Column::State,
+                            sea_orm::sea_query::Expr::value(next_state),
+                        )
+                        .col_expr(
+                            jobs::Column::LeaseOwner,
+                            sea_orm::sea_query::Expr::value(Option::<String>::None),
+                        )
+                        .col_expr(
+                            jobs::Column::LeaseExpiresAt,
+                            sea_orm::sea_query::Expr::value(Option::<String>::None),
+                        )
+                        .col_expr(
+                            jobs::Column::ErrorKind,
+                            sea_orm::sea_query::Expr::value(Some("lease_expired".to_string())),
+                        )
+                        .col_expr(
+                            jobs::Column::ErrorMessage,
+                            sea_orm::sea_query::Expr::value(Some(
+                                "worker lease expired; reclaiming after restart".to_string(),
+                            )),
+                        )
+                        .col_expr(
+                            jobs::Column::RunAfter,
+                            sea_orm::sea_query::Expr::value(now_s.clone()),
+                        )
+                        .col_expr(
+                            jobs::Column::FinishedAt,
+                            sea_orm::sea_query::Expr::value(finished),
+                        )
+                        .col_expr(
+                            jobs::Column::UpdatedAt,
+                            sea_orm::sea_query::Expr::value(now_s.clone()),
+                        )
+                        .filter(jobs::Column::Id.eq(&model.id))
+                        .filter(jobs::Column::State.eq(JobState::Running.as_str()))
+                        .filter(jobs::Column::LeaseGeneration.eq(model.lease_generation))
+                        .filter(
+                            Condition::any()
+                                .add(jobs::Column::LeaseExpiresAt.is_null())
+                                .add(jobs::Column::LeaseExpiresAt.lte(now_s.clone())),
+                        ),
+                    LiveTopic::Jobs,
+                    Bump::Always,
                 )
-                .col_expr(
-                    jobs::Column::LeaseOwner,
-                    sea_orm::sea_query::Expr::value(Option::<String>::None),
-                )
-                .col_expr(
-                    jobs::Column::LeaseExpiresAt,
-                    sea_orm::sea_query::Expr::value(Option::<String>::None),
-                )
-                .col_expr(
-                    jobs::Column::ErrorKind,
-                    sea_orm::sea_query::Expr::value(Some("lease_expired".to_string())),
-                )
-                .col_expr(
-                    jobs::Column::ErrorMessage,
-                    sea_orm::sea_query::Expr::value(Some(
-                        "worker lease expired; reclaiming after restart".to_string(),
-                    )),
-                )
-                .col_expr(
-                    jobs::Column::RunAfter,
-                    sea_orm::sea_query::Expr::value(now_s.clone()),
-                )
-                .col_expr(
-                    jobs::Column::FinishedAt,
-                    sea_orm::sea_query::Expr::value(finished),
-                )
-                .col_expr(
-                    jobs::Column::UpdatedAt,
-                    sea_orm::sea_query::Expr::value(now_s.clone()),
-                )
-                .filter(jobs::Column::Id.eq(&model.id))
-                .filter(jobs::Column::State.eq(JobState::Running.as_str()))
-                .filter(jobs::Column::LeaseGeneration.eq(model.lease_generation))
-                .filter(
-                    Condition::any()
-                        .add(jobs::Column::LeaseExpiresAt.is_null())
-                        .add(jobs::Column::LeaseExpiresAt.lte(now_s.clone())),
-                )
-                .exec(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?;
-            if res.rows_affected == 1 {
+                .await?;
+            if res == 1 {
                 n += 1;
             }
         }
@@ -1048,17 +1090,24 @@ impl LibraryStore {
     pub async fn prune_terminal_jobs(&self, retention_days: u64) -> Result<u64> {
         let cutoff =
             (Utc::now() - Duration::days(i64::try_from(retention_days).unwrap_or(7))).to_rfc3339();
-        let res = jobs::Entity::delete_many()
-            .filter(jobs::Column::State.is_in([
-                JobState::Succeeded.as_str(),
-                JobState::Failed.as_str(),
-                JobState::Cancelled.as_str(),
-            ]))
-            .filter(jobs::Column::FinishedAt.lte(cutoff))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected)
+        let terminal_before = || {
+            Condition::all()
+                .add(jobs::Column::State.is_in([
+                    JobState::Succeeded.as_str(),
+                    JobState::Failed.as_str(),
+                    JobState::Cancelled.as_str(),
+                ]))
+                .add(jobs::Column::FinishedAt.lte(cutoff.clone()))
+        };
+        let probe = jobs::Entity::find().filter(terminal_before());
+        let res = self
+            .exec_bumped(
+                jobs::Entity::delete_many().filter(terminal_before()),
+                LiveTopic::Jobs,
+                Bump::IfAny(sea_probe(&probe)?),
+            )
+            .await?;
+        Ok(res)
     }
 
     /// Reserve `reserved_bytes` against the job temp quota and register `path`.
@@ -1079,6 +1128,10 @@ impl LibraryStore {
                 .reserve_job_temp_path(job_id, path, reserved_bytes, quota_bytes)
                 .await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match reserve_job_temp_path_on(
             &txn,
@@ -1307,54 +1360,58 @@ impl LibraryStore {
     /// Rewrite an unreadable command row so it cannot be executed.
     async fn mark_invalid_job(&self, id: &str, reason: &str) -> Result<()> {
         let now = now_str();
-        let _ = jobs::Entity::update_many()
-            .col_expr(
-                jobs::Column::Kind,
-                sea_orm::sea_query::Expr::value(JobKind::Invalid.as_str()),
+        let _ = self
+            .exec_bumped(
+                jobs::Entity::update_many()
+                    .col_expr(
+                        jobs::Column::Kind,
+                        sea_orm::sea_query::Expr::value(JobKind::Invalid.as_str()),
+                    )
+                    .col_expr(
+                        jobs::Column::ResourceClass,
+                        sea_orm::sea_query::Expr::value(JobResourceClass::Network.as_str()),
+                    )
+                    .col_expr(
+                        jobs::Column::Payload,
+                        sea_orm::sea_query::Expr::value(invalid_job_payload_json()),
+                    )
+                    .col_expr(
+                        jobs::Column::State,
+                        sea_orm::sea_query::Expr::value(JobState::Failed.as_str()),
+                    )
+                    .col_expr(
+                        jobs::Column::ErrorKind,
+                        sea_orm::sea_query::Expr::value(Some("invalid_job".to_string())),
+                    )
+                    .col_expr(
+                        jobs::Column::ErrorMessage,
+                        sea_orm::sea_query::Expr::value(Some(reason.to_string())),
+                    )
+                    .col_expr(
+                        jobs::Column::LeaseOwner,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        jobs::Column::LeaseExpiresAt,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        jobs::Column::FinishedAt,
+                        sea_orm::sea_query::Expr::value(Some(now.clone())),
+                    )
+                    .col_expr(
+                        jobs::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now),
+                    )
+                    .filter(jobs::Column::Id.eq(id))
+                    .filter(
+                        jobs::Column::State
+                            .is_in([JobState::Pending.as_str(), JobState::Running.as_str()]),
+                    ),
+                LiveTopic::Jobs,
+                Bump::Always,
             )
-            .col_expr(
-                jobs::Column::ResourceClass,
-                sea_orm::sea_query::Expr::value(JobResourceClass::Network.as_str()),
-            )
-            .col_expr(
-                jobs::Column::Payload,
-                sea_orm::sea_query::Expr::value(invalid_job_payload_json()),
-            )
-            .col_expr(
-                jobs::Column::State,
-                sea_orm::sea_query::Expr::value(JobState::Failed.as_str()),
-            )
-            .col_expr(
-                jobs::Column::ErrorKind,
-                sea_orm::sea_query::Expr::value(Some("invalid_job".to_string())),
-            )
-            .col_expr(
-                jobs::Column::ErrorMessage,
-                sea_orm::sea_query::Expr::value(Some(reason.to_string())),
-            )
-            .col_expr(
-                jobs::Column::LeaseOwner,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                jobs::Column::LeaseExpiresAt,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                jobs::Column::FinishedAt,
-                sea_orm::sea_query::Expr::value(Some(now.clone())),
-            )
-            .col_expr(
-                jobs::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now),
-            )
-            .filter(jobs::Column::Id.eq(id))
-            .filter(
-                jobs::Column::State.is_in([JobState::Pending.as_str(), JobState::Running.as_str()]),
-            )
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+            .await?;
         Ok(())
     }
 
@@ -1422,8 +1479,10 @@ impl LibraryStore {
         } else {
             update.filter(jobs::Column::State.eq(JobState::Pending.as_str()))
         };
-        let res = update.exec(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+        let res = self
+            .exec_bumped(update, LiveTopic::Jobs, Bump::Always)
+            .await?;
+        Ok(res == 1)
     }
 }
 
@@ -1505,7 +1564,11 @@ where
         lease_generation: Set(0),
     };
     match am.insert(db).await {
-        Ok(_) => Ok(EnqueueOutcome::Created { id }),
+        Ok(_) => {
+            // Inside the caller's local transaction, so it commits with the row.
+            bump_on(db, LiveTopic::Jobs).await?;
+            Ok(EnqueueOutcome::Created { id })
+        }
         Err(err) if is_unique_violation(&err) => {
             if let Some(existing) = find_active_job_by_dedup_on(db, &dedup_key).await? {
                 return Ok(EnqueueOutcome::Duplicate {
@@ -1532,7 +1595,7 @@ where
     lock_job_queue(db, in_process).await?;
     let now = Utc::now();
     let now_s = now.to_rfc3339();
-    sanitize_unreadable_pending_on(db, &now_s).await?;
+    sanitize_unreadable_pending_on(db, None, &now_s).await?;
     let lease_expires =
         (now + Duration::seconds(i64::try_from(lease_secs).unwrap_or(60))).to_rfc3339();
     // Page past routed rows instead of reading one fixed window: a queue
@@ -1553,7 +1616,9 @@ where
                 // checks the node and takes the job's cluster semaphores.
                 continue;
             }
-            if let Some(job) = claim_candidate_on(db, model, owner, &lease_expires, &now_s).await? {
+            if let Some(job) =
+                claim_candidate_on(db, None, model, owner, &lease_expires, &now_s).await?
+            {
                 return Ok(Some(job));
             }
         }
@@ -1623,13 +1688,14 @@ fn job_has_requirements(model: &jobs::Model) -> bool {
 /// `invalid_job` instead; both return `None`, as does a lost CAS.
 async fn claim_candidate_on<C: ConnectionTrait>(
     db: &C,
+    store: Option<&LibraryStore>,
     model: jobs::Model,
     owner: &str,
     lease_expires: &str,
     now_s: &str,
 ) -> Result<Option<JobRecord>> {
     if model.cancel_requested != 0 {
-        let _ = jobs::Entity::update_many()
+        let cancel = jobs::Entity::update_many()
             .col_expr(
                 jobs::Column::State,
                 sea_orm::sea_query::Expr::value(JobState::Cancelled.as_str()),
@@ -1647,14 +1713,12 @@ async fn claim_candidate_on<C: ConnectionTrait>(
                 sea_orm::sea_query::Expr::value(now_s.to_string()),
             )
             .filter(jobs::Column::Id.eq(&model.id))
-            .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
-            .exec(db)
-            .await
-            .map_err(LibraryError::Orm)?;
+            .filter(jobs::Column::State.eq(JobState::Pending.as_str()));
+        exec_bumped_via(db, store, cancel, LiveTopic::Jobs, Bump::Always).await?;
         return Ok(None);
     }
     if let Err(reason) = try_map_job(model.clone()) {
-        mark_pending_job_invalid_on(db, &model.id, &reason, now_s).await?;
+        mark_pending_job_invalid_on(db, store, &model.id, &reason, now_s).await?;
         return Ok(None);
     }
     let mut payload: JobPayload = serde_json::from_str(&model.payload).unwrap_or_default();
@@ -1721,14 +1785,12 @@ async fn claim_candidate_on<C: ConnectionTrait>(
             sea_orm::sea_query::Expr::value(payload_json),
         );
     }
-    let res = update
+    let update = update
         .filter(jobs::Column::Id.eq(&model.id))
         .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
-        .filter(jobs::Column::LeaseGeneration.eq(model.lease_generation))
-        .exec(db)
-        .await
-        .map_err(LibraryError::Orm)?;
-    if res.rows_affected != 1 {
+        .filter(jobs::Column::LeaseGeneration.eq(model.lease_generation));
+    let res = exec_bumped_via(db, store, update, LiveTopic::Jobs, Bump::Always).await?;
+    if res != 1 {
         return Ok(None);
     }
     let Some(updated) = jobs::Entity::find_by_id(&model.id)
@@ -1829,7 +1891,11 @@ fn is_unique_violation(err: &sea_orm::DbErr) -> bool {
 
 /// Rewrites pending rows with an unknown `resource_class` so they cannot
 /// occupy the admission cap forever (class-specific claim never sees them).
-async fn sanitize_unreadable_pending_on<C: ConnectionTrait>(db: &C, now_s: &str) -> Result<()> {
+async fn sanitize_unreadable_pending_on<C: ConnectionTrait>(
+    db: &C,
+    store: Option<&LibraryStore>,
+    now_s: &str,
+) -> Result<()> {
     let suspects = jobs::Entity::find()
         .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
         .filter(jobs::Column::ResourceClass.is_not_in(JobResourceClass::ALL.iter().copied()))
@@ -1840,6 +1906,7 @@ async fn sanitize_unreadable_pending_on<C: ConnectionTrait>(db: &C, now_s: &str)
     for model in suspects {
         mark_pending_job_invalid_on(
             db,
+            store,
             &model.id,
             &format!("unknown job resource class `{}`", model.resource_class),
             now_s,
@@ -1852,11 +1919,12 @@ async fn sanitize_unreadable_pending_on<C: ConnectionTrait>(db: &C, now_s: &str)
 /// Marks one pending row `invalid_job` so it cannot be claimed.
 async fn mark_pending_job_invalid_on<C: ConnectionTrait>(
     db: &C,
+    store: Option<&LibraryStore>,
     id: &str,
     reason: &str,
     now_s: &str,
 ) -> Result<()> {
-    let _ = jobs::Entity::update_many()
+    let mark = jobs::Entity::update_many()
         .col_expr(
             jobs::Column::Kind,
             sea_orm::sea_query::Expr::value(JobKind::Invalid.as_str()),
@@ -1890,10 +1958,8 @@ async fn mark_pending_job_invalid_on<C: ConnectionTrait>(
             sea_orm::sea_query::Expr::value(now_s.to_string()),
         )
         .filter(jobs::Column::Id.eq(id))
-        .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
-        .exec(db)
-        .await
-        .map_err(LibraryError::Orm)?;
+        .filter(jobs::Column::State.eq(JobState::Pending.as_str()));
+    exec_bumped_via(db, store, mark, LiveTopic::Jobs, Bump::Always).await?;
     Ok(())
 }
 

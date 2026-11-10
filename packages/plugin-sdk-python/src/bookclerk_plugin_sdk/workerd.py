@@ -1396,6 +1396,12 @@ class NamedEntrypoint(WorkerEntrypoint):
         return js(result)
 
 
+PURCHASE_HINTS_BUDGET_SECONDS = 4.0
+"""How long the default ``purchaseHints`` keeps starting one-title lookups
+before answering with what it has. Well under the host's 10 s batch
+deadline, so even a slow last lookup lands before it and a store without a
+bulk endpoint still returns the titles it priced."""
+
 STOREFRONT_METHODS: tuple[str, ...] = (
     "login",
     "scan",
@@ -1406,6 +1412,7 @@ STOREFRONT_METHODS: tuple[str, ...] = (
     "searchCatalog",
     "expandCandidates",
     "purchaseHint",
+    "purchaseHints",
     "listDeals",
     "catalogDetail",
     "revokeAccount",
@@ -1461,6 +1468,37 @@ class StorefrontEntrypoint(NamedEntrypoint):
     async def purchaseHint(self, _params: abi.PurchaseHintParams):
         """Purchase link / price hint (``PurchaseHintParams`` → ``PurchaseHint``)."""
         raise _unsupported("purchaseHint")
+
+    async def purchaseHints(self, params: abi.PurchaseHintsParams):
+        """Purchase links / price hints for several titles at once.
+
+        Asks :meth:`purchaseHint` for each query, those that already name a
+        product id first (one lookup each) and title searches after, and
+        starts nothing once :data:`PURCHASE_HINTS_BUDGET_SECONDS` has passed,
+        so the host's batch gets what the store managed instead of nothing.
+        A store whose catalog prices many products per request overrides
+        this to make one request. Raise a ``rate_limited``
+        :class:`PluginError` (with ``details.retryAfterMs``) when the store
+        asks to slow down.
+
+        Args:
+            params: The titles to price, in order.
+
+        Returns:
+            One ``PurchaseHint`` or ``None`` per query.
+        """
+        started = time.monotonic()
+        queries = params["queries"]
+        out: list[abi.PurchaseHint | None] = [None] * len(queries)
+        order = sorted(
+            range(len(queries)),
+            key=lambda i: not (queries[i].get("productId") or "").strip(),
+        )
+        for i in order:
+            if time.monotonic() - started >= PURCHASE_HINTS_BUDGET_SECONDS:
+                break
+            out[i] = await self.purchaseHint(queries[i])
+        return out
 
     async def listDeals(self, _params: abi.ListDealsParams):
         """Current storefront deals (``ListDealsParams`` → list of ``CatalogHit``)."""
@@ -1835,7 +1873,11 @@ class AdapterDatabaseSession:
         / ``maxStreamedResultRows``; adapters that advertise ``0`` for both
         keep this default, which answers ``unsupported``. The request carries
         the proven statements plus ``isolation`` and ``receipt``, like the
-        adapter-side ``execute`` envelope.
+        adapter-side ``execute`` envelope. An isolate adapter's frames travel
+        inside one invoke reply, so they must fit ``MAX_SCALAR_BYTES``;
+        ``db_value.execute_adapter_batch_streamed`` runs the batch, stores the
+        replay receipt and checks that bound and the advertised streamed
+        budget before it commits.
 
         Returns:
             Every frame of the committed reply, concatenated.
@@ -2145,10 +2187,39 @@ class _TransportGuestDatabase(GuestDatabase):
     for each named ``[[databases]]`` binding; its ``executeBytes`` carries the
     Cap'n ``ExecuteRequest`` / ``ExecuteResultReply`` bytes, so the author
     encodes and decodes locally and never sees the grant token.
+
+    The transport reports channel failures inside the reply (the ``err`` arm,
+    or one ``err`` stream frame), so they decode here as typed
+    :class:`PluginError` with their ``details``: an exception thrown across
+    Workers RPC would lose both. Anything the stub still raises (the RPC call
+    itself failing) becomes ``unavailable``.
     """
 
     def __init__(self, transport: Any) -> None:
         self._transport = transport
+
+    async def _call(self, method: str, *args: Any) -> Any:
+        """Call one transport method, typing whatever it raises.
+
+        Args:
+            method: Transport method name (``executeBytes``, ...).
+            *args: Its arguments.
+
+        Returns:
+            The method's answer.
+
+        Raises:
+            PluginError: The stub's own ``PluginError`` unchanged; any other
+                exception as ``unavailable``.
+        """
+        try:
+            return await getattr(self._transport, method)(*args)
+        except PluginError:
+            raise
+        except Exception as err:  # noqa: BLE001 - an RPC failure has no type of its own
+            raise PluginError.from_wire(
+                "unavailable", f"database transport {method}: {err}"
+            ) from err
 
     async def execute(self, request: ExecuteRequest) -> ExecuteReply:
         from bookclerk_plugin_sdk.db_value import (
@@ -2157,7 +2228,7 @@ class _TransportGuestDatabase(GuestDatabase):
         )
 
         body = encode_execute_request(request)
-        raw = await self._transport.executeBytes(js(body))
+        raw = await self._call("executeBytes", js(body))
         data = _bytes(raw)
         if not data:
             raise PluginError.from_wire("internal", "granted execute reply missing body")
@@ -2189,11 +2260,11 @@ class _TransportGuestDatabase(GuestDatabase):
 
         body = encode_execute_request(request)
         if hasattr(self._transport, "openStreamedBytes"):
-            raw = await self._transport.openStreamedBytes(js(body))
+            raw = await self._call("openStreamedBytes", js(body))
             if hasattr(raw, "getReader"):
                 return _reader_chunks(raw)
         elif hasattr(self._transport, "executeStreamedBytes"):
-            raw = await self._transport.executeStreamedBytes(js(body))
+            raw = await self._call("executeStreamedBytes", js(body))
         else:
             # A transport that predates the streamed read: the binding falls
             # back to its inline read.
@@ -2213,7 +2284,7 @@ class _TransportGuestDatabase(GuestDatabase):
         """
         from bookclerk_plugin_sdk.db_value import decode_db_capabilities_reply
 
-        raw = await self._transport.limitsBytes()
+        raw = await self._call("limitsBytes")
         data = _bytes(raw)
         if not data:
             raise PluginError.from_wire("internal", "granted limits reply missing body")

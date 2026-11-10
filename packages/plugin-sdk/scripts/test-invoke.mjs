@@ -48,6 +48,10 @@ const {
   wrapPluginFromBinding,
 } = await import(join(dist, "plugin.js"));
 const { InvokeError, dispatchInvoke } = await import(join(dist, "invoke.js"));
+const { decodeExecuteRequest, encodeDbCapabilitiesReply, encodeExecuteResultReply } = await import(
+  join(dist, "db-execute.js")
+);
+const { limitExceededMessage } = await import(join(dist, "errors.js"));
 const W = await import(join(dist, "generated-wire.js"));
 
 const enc = new TextEncoder();
@@ -63,6 +67,11 @@ class Plugin extends BookclerkEntrypoint {
   }
 
   async queue(batch) {
+    if (batch.queue === "db-probe") {
+      calls.dbProbe = await probeGrantedDatabases(this.env);
+      for (const msg of batch.messages) msg.ack();
+      return;
+    }
     calls.queue += 1;
     const sent = await this.env.NOTIFY.send({ seen: batch.queue }, { delaySeconds: 3 });
     calls.queueSends.push(sent);
@@ -275,6 +284,142 @@ class Covers extends CoverEntrypoint {
   }
 }
 
+// --- Granted database errors across the adapter → author RPC boundary -----
+
+// The canonical `limit_exceeded` the fake channel answers with `413`.
+const requestLimit = { limit: "maxRequestBytes", cap: 100, used: 200 };
+
+// A session that streams, so reads try `/db/execute-streamed` first.
+const streamingCaps = {
+  sqlContractVersion: 1,
+  atomicBatch: true,
+  returning: true,
+  affectedRows: true,
+  schemaMigrations: true,
+  cancellation: true,
+  timing: true,
+  maxBinds: 999,
+  maxStatements: 100,
+  maxResultRows: 10000,
+  maxPayloadBytes: 1 << 20,
+  maxResultBytes: 1 << 20,
+  maxCellBytes: 1 << 20,
+  maxRequestBytes: 1 << 20,
+  maxAtomicResultBytes: 1 << 20,
+  maxStreamedResultBytes: 64 << 20,
+  maxStreamedResultRows: 250_000,
+  pluginDatabases: true,
+  maxFunctionArgs: 127,
+  maxSchemaColumns: 2000,
+  maxPatternBytes: 50000,
+  maxLoweredStatementBytes: 0,
+  consistentBackupRead: true,
+};
+
+/**
+ * Runs the author's database reads against the channel answers the fake is
+ * set to, collecting each outcome. `DB` has no `/db/limits` route (reads go
+ * inline); `SDB` streams.
+ *
+ * @param env - The author's invocation env.
+ * @returns Each read's `{ value }` or `{ err }`, by probe name.
+ */
+async function probeGrantedDatabases(env) {
+  const out = {};
+  const settle = (promise) =>
+    promise.then(
+      (value) => ({ value }),
+      (err) => ({ err }),
+    );
+  granted.db = { execute: 413 };
+  out.inline413 = await settle(env.DB.prepare("INSERT INTO t VALUES (1)").run());
+  granted.db = { execute: 503 };
+  out.inline503 = await settle(env.DB.prepare("SELECT 1").all());
+  granted.db = { execute: "ok", streamed: 404 };
+  out.streamed404 = await settle(env.SDB.prepare("SELECT 1").all());
+  out.iterate404 = await settle(
+    (async () => {
+      const rows = [];
+      for await (const row of env.SDB.prepare("SELECT 1").iterate()) rows.push(row);
+      return rows;
+    })(),
+  );
+  granted.db = { execute: "ok", streamed: 413 };
+  out.streamed413 = await settle(env.SDB.prepare("SELECT 1").all());
+  granted.db = { execute: "ok", streamed: "throw" };
+  out.streamedThrow = await settle(env.SDB.prepare("SELECT 1").all());
+  granted.db = undefined;
+  return out;
+}
+
+/**
+ * Stands in for Workers RPC between the adapter and the author isolate: an
+ * error thrown by a stub method arrives as a plain `Error` carrying only its
+ * message, as workerd delivers it, so a `PluginError` loses its code and
+ * `details` unless the transport reports it inside the reply.
+ *
+ * @param target - The transport the adapter handed out.
+ * @returns The transport as the author isolate sees it.
+ */
+function rpcStub(target) {
+  return new Proxy(target, {
+    get(obj, prop) {
+      const value = Reflect.get(obj, prop, obj);
+      if (typeof value !== "function") return value;
+      const method = async (...args) => {
+        try {
+          return await value.apply(obj, args);
+        } catch (err) {
+          throw new Error(err instanceof Error ? err.message : String(err));
+        }
+      };
+      // A detached stub property is itself a stub: `m.call(...)` asks the
+      // remote for a method named `call`, as workerd does.
+      return new Proxy(method, {
+        get(fn, key) {
+          if (key === "call" || key === "apply" || key === "bind") {
+            return () => {
+              throw new Error(`The RPC receiver does not implement the method "${key}".`);
+            };
+          }
+          return Reflect.get(fn, key);
+        },
+      });
+    },
+  });
+}
+
+/**
+ * The author entrypoint as the adapter reaches it: transports cross RPC.
+ *
+ * @param author - The author entrypoint instance.
+ * @returns The entrypoint whose `bookclerk*` methods see RPC transports.
+ */
+function acrossRpc(author) {
+  const crossing = (arg) =>
+    arg && typeof arg === "object" && Array.isArray(arg.databases)
+      ? {
+          ...arg,
+          databases: arg.databases.map((entry) =>
+            entry.transport ? { ...entry, transport: rpcStub(entry.transport) } : entry,
+          ),
+        }
+      : arg;
+  return new Proxy(author, {
+    get(obj, prop) {
+      const value = Reflect.get(obj, prop, obj);
+      if (
+        typeof value !== "function" ||
+        typeof prop !== "string" ||
+        !prop.startsWith("bookclerk")
+      ) {
+        return value;
+      }
+      return (...args) => value.apply(obj, args.map(crossing));
+    },
+  });
+}
+
 // --- Granted channel fake -------------------------------------------------
 
 const granted = {
@@ -328,6 +473,29 @@ const granted = {
       }
     }
     if (u.pathname === "/db/limits") {
+      if (init.headers?.Authorization === "Bearer stok") {
+        return new Response(encodeDbCapabilitiesReply({ ok: streamingCaps }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    }
+    if (u.pathname === "/db/execute") {
+      const mode = this.db?.execute;
+      if (mode === 413) return new Response(limitExceededMessage(requestLimit), { status: 413 });
+      if (mode === "ok") {
+        const request = decodeExecuteRequest(new Uint8Array(init.body));
+        const reply = {
+          operationId: request.operationId,
+          statements: request.statements.map(() => ({ rows: [], columns: [], rowsAffected: 0 })),
+          timing: { attemptElapsedUs: 0, dbExecutionUs: 0, dbTimingSource: "" },
+        };
+        return new Response(encodeExecuteResultReply({ ok: reply }), { status: 200 });
+      }
+      return new Response("database adapter is restarting", { status: 503 });
+    }
+    if (u.pathname === "/db/execute-streamed") {
+      const mode = this.db?.streamed;
+      if (mode === "throw") throw new TypeError("granted channel reset");
+      if (mode === 413) return new Response(limitExceededMessage(requestLimit), { status: 413 });
       return new Response("not found", { status: 404 });
     }
     if (u.pathname === "/queues/send") {
@@ -365,7 +533,7 @@ const granted = {
 
 const Adapter = wrapPluginFromBinding();
 const env = {
-  PLUGIN: new Plugin({}, {}),
+  PLUGIN: acrossRpc(new Plugin({}, {})),
   PLUGIN_STOREFRONT: new Storefront({}, {}),
   PLUGIN_STORAGE: new Storage({}, {}),
   PLUGIN_DATABASE_ADAPTER: new DatabaseAdapter({}, {}),
@@ -640,6 +808,66 @@ function decodeReply(reply, resultsCodec, caps) {
       { kind: "retry", value: { retryAtUnixMs: 0, reason: "again" } },
     ],
   });
+}
+
+// --- Granted database: typed errors survive the adapter → author RPC hop ----
+//
+// `env.PLUGIN` is wrapped by `acrossRpc`, so every transport method the author
+// calls behaves as over Workers RPC: a thrown error loses its prototype. The
+// author still sees typed `PluginError`s because the binding reads through
+// the transport's `*Bytes` methods, which report failures inside the reply.
+
+{
+  const ctx = JSON.stringify(
+    toBridgeJson({
+      invocation: { id: "inv-db", accountId: "acct" },
+      databases: { DB: "dtok", SDB: "stok" },
+    }),
+  );
+  const result = decodeReply(
+    await invoke(
+      "QueueConsumer",
+      "queue",
+      W.QueueConsumerQueueParamsCodec,
+      { batch: { queue: "db-probe", messages: [] } },
+      { ctx },
+    ),
+    W.QueueConsumerQueueResultsCodec,
+  );
+  assert.equal(result.kind, "ok");
+  const probe = calls.dbProbe;
+
+  // `413`: `limit_exceeded` with its parsed `limit`, not message matching.
+  const tooBig = probe.inline413.err;
+  assert.ok(tooBig instanceof PluginError, String(tooBig));
+  assert.equal(tooBig.code, "limit_exceeded");
+  assert.deepEqual(tooBig.limit, requestLimit);
+  assert.deepEqual(tooBig.details, requestLimit);
+
+  // Any other status is `unavailable`, still typed.
+  const down = probe.inline503.err;
+  assert.ok(down instanceof PluginError, String(down));
+  assert.equal(down.code, "unavailable");
+  assert.match(down.message, /database grant: 503 database adapter is restarting/);
+
+  // A host without the streamed route answers `unsupported`, so `all()` and
+  // `iterate()` fall back to the inline read instead of failing.
+  assert.equal(probe.streamed404.err, undefined, String(probe.streamed404.err));
+  assert.equal(probe.streamed404.value.success, true);
+  assert.equal(probe.iterate404.err, undefined, String(probe.iterate404.err));
+  assert.deepEqual(probe.iterate404.value, []);
+
+  // A streamed `413` keeps its `limit` too.
+  const streamedTooBig = probe.streamed413.err;
+  assert.ok(streamedTooBig instanceof PluginError, String(streamedTooBig));
+  assert.equal(streamedTooBig.code, "limit_exceeded");
+  assert.deepEqual(streamedTooBig.limit, requestLimit);
+
+  // A channel fetch that throws is `unavailable` rather than an untyped error.
+  const reset = probe.streamedThrow.err;
+  assert.ok(reset instanceof PluginError, String(reset));
+  assert.equal(reset.code, "unavailable");
+  assert.match(reset.message, /granted channel reset/);
 }
 
 // --- ScheduledHandler: one author call per fire; a throw is a typed error ----

@@ -28,7 +28,11 @@ events, then always runs a wake slice (so a backlog cannot starve sleepers or
 the catalog heartbeat) and continues when either undispatched remain or
 `wake still_pending`. Late-join is a **missing `(event_id, plugin_id)` anti-join**
 paged 200, restricted to the retention window — an unchanged catalog with no
-missing pairs does a bounded empty `SELECT` and zero dispatch writes. D1
+missing pairs does a bounded empty `SELECT` and zero dispatch writes. The
+subscriber snapshot an event's first dispatch freezes (so its pages resume
+unchanged after a crash, and a retry that sends the same list replays their
+receipts) covers only that dispatch; a late-join adds deliveries for the
+subscribers it finds now. D1
 dispatch receipts are per pair (`dispatch-{event_id}-{plugin_id}` /
 `reconcile-{event_id}-{plugin_id}`). Each VPS claims only PluginKeys loaded on
 that process **and** only events its own node catalog matches (type, schema
@@ -183,6 +187,7 @@ stateDiagram-v2
 | `discover_candidates` | `discover_candidates:subject={key}` | `network` | `run_discover_candidates`, then admits the subject's `discover_feed` |
 | `discover_feed` | `discover_feed:subject={key}` | `network` | `run_discover_feed` (no network; ranks stored candidates) |
 | `cache_sweep` | `cache_sweep:node={id}` | `network` | `run_cache_sweep` (no network; one node's image caches and job scratch) |
+| `search_index_rebuild` | `search_index_rebuild:node={id}` | `network` | `run_search_index_rebuild` (no network; rebuilds one node's search index) |
 
 `plugin_scheduled` jobs aren't enqueued through the API. Each daemon's cron
 ticker claims a due fire with a compare-and-swap on the instance's
@@ -224,8 +229,48 @@ heartbeat. When the queue is full, the admission fails, or the queued job
 has waited five minutes for a worker, the heartbeat sweeps the image caches
 in the background instead.
 
+A `search_index_rebuild` job is pinned to one node the same way. See
+[Search index](#search-index).
+
 Reserved classes (no worker in this release): `media`, `transcription`,
 `indexing`.
+
+## Search index
+
+`GET /api/library/books?q=` reads a Tantivy index under the node's own
+`search_index/`, so each daemon keeps its own copy current:
+
+- **From events.** Each node registers its own consumer,
+  `host:search-index:{node id}`, on the `core.events` outbox for
+  `edition_linked`, `edition_updated`, `holding_added` and
+  `book_acquired`, all host event types no plugin may produce. The id names
+  the node, so every node gets every event (Discover's `host:discover` is
+  one consumer for the cluster). An edition event refreshes each listing
+  that sells the edition, a holding event its listing, and `book_acquired`
+  its title. A listing refresh deletes the listing's documents and adds
+  back the titles that still sell it (and any older document of the same
+  title), so a title that is gone leaves the index. A holding event whose
+  listing is already gone removes the marker below, so the node rebuilds. `holding_removed`, which carries the same `listingId` as
+  `holding_added`, is subscribed by the change that starts publishing it.
+- **Rebuild job.** A finished rebuild leaves a marker for the current
+  document layout in the index folder. When it is missing (a new node, a
+  deleted folder, or an index of an older layout, which is discarded), the
+  heartbeat queues a `search_index_rebuild` job pinned to the node, at
+  priority 50, after its beat is recorded. It queues at most one every ten
+  minutes while the index stays incomplete, so a failing rebuild is not
+  re-queued on every beat. The job reads every title in pages and replaces
+  the index in one commit.
+
+One writer runs at a time per index. A delivery that finds a rebuild (or
+the CLI) writing is retried after 10 s, for up to an hour. Searches read the
+last commit, so they keep answering from the old index while a rebuild
+runs.
+
+The search matches, sorts by title, pages and counts in the index, and
+only the page's titles are read from the database, so there is no hit cap.
+A search that also filters by account or status takes every hit and lets
+the database filter and page them, since those columns can change without
+an event.
 
 ## Admission and backpressure
 
@@ -303,9 +348,10 @@ the cluster (the CLI fails before queueing otherwise); `--no-wait` only
 queues and prints the job ids. `library scan --account <id>` is still
 exactly one job for that account (bypassing `scan_enabled`), and
 `library acquire --asin <ASIN>` exactly one job for that title.
-`--match-storage` and the search index rebuild still run in the CLI after
-the scans succeed. `library acquire --dry-run` plans keys locally without
-queueing. `library acquire` has no `--license` or `-o key=value` flags
+`--match-storage` and a rebuild of the CLI machine's search index still run
+in the CLI after the scans succeed; daemons keep their own index current
+from events (see [Search index](#search-index)). `library acquire
+--dry-run` plans keys locally without queueing. `library acquire` has no `--license` or `-o key=value` flags
 (both were removed, never implemented); a queued acquire runs with the
 settings of the node that claims it.
 A host node's operator asks its owner cluster for a scan with `bookclerk
@@ -538,6 +584,22 @@ refused before it deletes anything.
 | `maintenance.events` | Terminal deliveries, empty parent events, stale subscriber catalog rows (`[events]` retention) |
 | `maintenance.kv` | Expired plugin KV rows (already read as missing) |
 | `maintenance.sessions` | Expired operator sessions, OIDC RP states, WebAuthn challenges |
+| `maintenance.records` | Expired credentials and spent tokens, finished uploads, abandoned scan inventories, and old audit rows (windows below) |
+
+The `maintenance.records` windows are fixed in
+`crates/bookclerk-library/src/store/retention.rs`, not configured. Each is longer than
+the row can still be used; the grace periods only keep recent history
+visible:
+
+| Rows | Deleted when |
+| --- | --- |
+| OIDC authorization codes, portal sessions | Past `expires_at` |
+| OIDC refresh tokens | Past `expires_at`, or revoked |
+| Claim tickets, user invites, node enrollment links | 30 days past `expires_at` (expired and redeemed ones stay listed until then) |
+| Committed or aborted host uploads | 1 day past `expires_at`; open uploads are kept, since an abort still reads them |
+| Storage-scan inventories | Job terminal or gone; a jobless (CLI) scan silent for 1 day |
+| `security_audit_events`, `configuration_audit` | 365 days old |
+| `configuration_changes` | 30 days old (the document and its audit row keep the content) |
 
 The prunes are idempotent, so the fence bounds wasted work rather than
 guarding correctness: the window between a fence check and its delete is

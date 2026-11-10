@@ -32,6 +32,7 @@ use super::deployments::{
     list_deployments_for_instance, list_deployments_for_node, DeploymentStatus,
 };
 use super::instances::PluginInstanceId;
+use crate::control_plane::{Bump, LiveTopic};
 use crate::entities::{node_status, plugin_deployment_observations};
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -461,37 +462,36 @@ pub(crate) async fn upsert_node_status(store: &LibraryStore, status: &NodeStatus
         cache_budget_bytes: Set(status.cache_budget_bytes),
         cache_swept_ms: Set(status.cache_swept_ms),
     };
-    node_status::Entity::insert(model)
-        .on_conflict(
-            OnConflict::column(node_status::Column::NodeId)
-                .update_columns([
-                    node_status::Column::Incarnation,
-                    node_status::Column::StartedAt,
-                    node_status::Column::HeartbeatAt,
-                    node_status::Column::HeartbeatMs,
-                    node_status::Column::IntervalMs,
-                    node_status::Column::CpuMillicores,
-                    node_status::Column::MemoryBytes,
-                    node_status::Column::CpuBudgetMillicores,
-                    node_status::Column::MemoryBudgetBytes,
-                    node_status::Column::Schedulable,
-                    node_status::Column::CpuUsedMillicores,
-                    node_status::Column::MemoryAvailableBytes,
-                    node_status::Column::FilesDirFreeBytes,
-                    node_status::Column::ReservedCpuMillicores,
-                    node_status::Column::ReservedMemoryBytes,
-                    node_status::Column::RunningGuests,
-                    node_status::Column::AvailabilityPpm,
-                    node_status::Column::OnlineSinceMs,
-                    node_status::Column::CacheBytes,
-                    node_status::Column::CacheBudgetBytes,
-                    node_status::Column::CacheSweptMs,
-                ])
-                .to_owned(),
-        )
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    let upsert = node_status::Entity::insert(model).on_conflict(
+        OnConflict::column(node_status::Column::NodeId)
+            .update_columns([
+                node_status::Column::Incarnation,
+                node_status::Column::StartedAt,
+                node_status::Column::HeartbeatAt,
+                node_status::Column::HeartbeatMs,
+                node_status::Column::IntervalMs,
+                node_status::Column::CpuMillicores,
+                node_status::Column::MemoryBytes,
+                node_status::Column::CpuBudgetMillicores,
+                node_status::Column::MemoryBudgetBytes,
+                node_status::Column::Schedulable,
+                node_status::Column::CpuUsedMillicores,
+                node_status::Column::MemoryAvailableBytes,
+                node_status::Column::FilesDirFreeBytes,
+                node_status::Column::ReservedCpuMillicores,
+                node_status::Column::ReservedMemoryBytes,
+                node_status::Column::RunningGuests,
+                node_status::Column::AvailabilityPpm,
+                node_status::Column::OnlineSinceMs,
+                node_status::Column::CacheBytes,
+                node_status::Column::CacheBudgetBytes,
+                node_status::Column::CacheSweptMs,
+            ])
+            .to_owned(),
+    );
+    store
+        .exec_bumped(upsert, LiveTopic::Nodes, Bump::Always)
+        .await?;
     Ok(())
 }
 

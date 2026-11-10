@@ -484,3 +484,133 @@ fn check_main_module_source_matches_shared_cases() {
         assert_eq!(got, case["error"], "{}", case["name"]);
     }
 }
+
+/// A plugin directory whose `cargo test` suite records the profile each run
+/// was handed, so `bookclerk-plugin test` can be checked without the kit.
+fn recording_cargo_plugin() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("plugin.toml"), "").expect("plugin.toml");
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"recording_plugin\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    )
+    .expect("Cargo.toml");
+    std::fs::create_dir(dir.path().join("src")).expect("src");
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        r#"
+#[test]
+fn record_profile() {
+    use std::io::Write as _;
+    let kit = std::env::var("BOOKCLERK_DB_TESTKIT").expect("kit path");
+    assert!(std::path::Path::new(&kit).is_file(), "{kit}");
+    let profile = std::env::var("BOOKCLERK_DB_TESTKIT_PROFILE").expect("profile");
+    let mut log = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(std::env::var("RECORD_FILE").expect("record file"))
+        .expect("open log");
+    writeln!(log, "{profile}").expect("write");
+    if let Ok(refused) = std::env::var("FAIL_UNDER") {
+        assert_ne!(profile, refused, "refused on purpose");
+    }
+}
+"#,
+    )
+    .expect("lib.rs");
+    dir
+}
+
+/// Runs `bookclerk-plugin test` on `plugin`, with the record file and the
+/// fake kit path in the environment, and returns the output and the
+/// profiles the suite recorded. The suite fails under `fail_under`, when
+/// one is named.
+fn run_plugin_test(
+    plugin: &tempfile::TempDir,
+    args: &[&str],
+    fail_under: Option<&str>,
+) -> (std::process::Output, Vec<String>) {
+    let record = plugin.path().join("profiles.log");
+    let kit = plugin.path().join("plugin.toml");
+    let mut cmd = bookclerk_plugin();
+    cmd.arg("test")
+        .arg(plugin.path())
+        .args(args)
+        .env("BOOKCLERK_DB_TESTKIT", &kit)
+        .env("RECORD_FILE", &record)
+        .env("CARGO_TARGET_DIR", plugin.path().join("target"))
+        .env_remove("RUSTFLAGS");
+    if let Some(profile) = fail_under {
+        cmd.env("FAIL_UNDER", profile);
+    }
+    let out = cmd.output().expect("run test");
+    let recorded = std::fs::read_to_string(&record)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    (out, recorded)
+}
+
+#[test]
+fn test_runs_the_suite_once_per_profile() {
+    let plugin = recording_cargo_plugin();
+    let (out, recorded) = run_plugin_test(&plugin, &[], None);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(recorded, ["first-party", "d1", "minimum"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for profile in ["first-party", "d1", "minimum"] {
+        assert!(
+            stdout.contains(&format!("profile {profile}: ok")),
+            "{stdout}"
+        );
+    }
+
+    let (out, recorded) = run_plugin_test(&plugin, &["--profile", "minimum"], None);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(recorded, ["first-party", "d1", "minimum", "minimum"]);
+}
+
+#[test]
+fn test_runs_the_later_profiles_after_the_first_one_fails() {
+    let plugin = recording_cargo_plugin();
+    let (out, recorded) = run_plugin_test(&plugin, &["--", "record_profile"], Some("first-party"));
+    assert!(!out.status.success(), "{out:?}");
+    assert_eq!(recorded, ["first-party", "d1", "minimum"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("profile first-party: failed"), "{stderr}");
+    assert!(stderr.contains("profile d1: ok"), "{stderr}");
+    assert!(stderr.contains("profile minimum: ok"), "{stderr}");
+    assert!(
+        stderr.contains("tests failed under profile(s) first-party"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn test_rejects_bad_usage_before_running_anything() {
+    let plugin = recording_cargo_plugin();
+    let out = bookclerk_plugin()
+        .args(["test", "--profile"])
+        .output()
+        .expect("run test");
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let out = bookclerk_plugin()
+        .args(["test", "--bogus"])
+        .output()
+        .expect("run test");
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+
+    let (out, recorded) = run_plugin_test(&plugin, &["--profile", "postgres"], None);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(recorded.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown profile"));
+
+    let out = bookclerk_plugin()
+        .args(["test", plugin.path().to_str().expect("utf8")])
+        .env("BOOKCLERK_DB_TESTKIT", plugin.path().join("missing-kit"))
+        .output()
+        .expect("run test");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not a file"));
+}

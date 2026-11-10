@@ -1,0 +1,38 @@
+# Re-bakes the hosted demo's seeded library on top of an existing demo image,
+# leaving every binary and plugin as they are. demo-deploy.yml runs it after
+# a nightly publish with nothing new to deploy, on the published image of the
+# commit the live demo runs, then redeploys that same commit:
+#
+#   docker buildx build --load --build-arg BASE=<demo image> \
+#     --tag bookclerk-demo:local <dir with this file as Dockerfile and bake-seed.sh>
+#
+# Why: the template's store records and Discover shelves are cached for a
+# day (`STORE_CALL_MAX_AGE` in crates/bookclerk-discover), so a container
+# that boots from an older template fetches them again and its first pages
+# are slow. A fresh bake keeps them current without rebuilding the release
+# binaries.
+#
+# The `seeded` stage is the one in packaging/demo/Dockerfile, with the same
+# user, paths and environment, so the baked plugin keys and node identity
+# match the image. bake-seed.sh comes from the image's own commit, so the
+# bake runs the seed and bookclerkd that image ships.
+
+# The demo image to re-bake, by digest.
+ARG BASE
+
+FROM ${BASE} AS seeded
+USER root
+RUN install -d -o bookclerk -g bookclerk -m 0700 /seed
+COPY --chmod=0755 bake-seed.sh /usr/local/bin/bake-seed
+USER bookclerk
+ENV BOOKCLERK_FILES_DIR=/seed \
+    BOOKCLERK_CONFIG=/seed/config.toml
+RUN /usr/local/bin/bake-seed
+
+# The image again, with the old template swapped for the new one. Its
+# entrypoint (demo-boot.sh) and user are inherited.
+FROM ${BASE}
+USER root
+RUN rm -rf /opt/bookclerk/seeded
+COPY --from=seeded --chown=bookclerk:bookclerk /seed /opt/bookclerk/seeded
+USER bookclerk

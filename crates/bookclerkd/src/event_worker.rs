@@ -68,6 +68,7 @@ fn spawn_dispatcher(state: Arc<AppState>) {
             crate::node_queue::upsert_catalog_row(&library, &files_dir).await;
             let node_id = event_node_id(&files_dir);
             crate::discover_events::upsert_catalog_row(&library, &node_id).await;
+            crate::search_index::upsert_catalog_row(&library, &node_id).await;
             let more = match dispatch_pending(
                 &library,
                 retention_days,
@@ -124,6 +125,7 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
             let mut claim_ids = loaded_plugin_ids(&state).await;
             claim_ids.extend(crate::node_queue::consumer_id(&files_dir));
             claim_ids.push(crate::discover_events::DISCOVER_CONSUMER_ID.to_string());
+            claim_ids.push(crate::search_index::consumer_id(&node_id));
             let groups = claim_groups(
                 &claim_ids,
                 ranks.get(&library, &files_dir, &claim_ids).await,
@@ -787,6 +789,10 @@ async fn run_delivery(
     }
     if crate::discover_events::is_discover_consumer_id(&delivery.plugin_id) {
         crate::discover_events::run_discover_delivery(state, library, &event, &delivery).await;
+        return;
+    }
+    if crate::search_index::is_search_consumer_id(&delivery.plugin_id) {
+        crate::search_index::run_search_delivery(state, library, &event, &delivery).await;
         return;
     }
     let integration = {
@@ -1763,7 +1769,7 @@ mod tests {
         let PublishDomainEventOutcome::Created { id } = created else {
             panic!("{created:?}");
         };
-        let store = store.with_atomic_txn(std::sync::Arc::new(InProcessSqliteAtomic { db }));
+        let store = store.with_atomic_txn(std::sync::Arc::new(InProcessSqliteAtomic::on(db)));
         bookclerk_library::set_dispatch_chunk_for_test(Some(1));
         bookclerk_library::inject_dispatch_page_failures(1);
         let err = dispatch_pending(&store, 7, "", false, 0, "test-node")

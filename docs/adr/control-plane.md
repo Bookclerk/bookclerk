@@ -1,7 +1,9 @@
 # ADR: Control plane — bootstrap, host identity, and database configuration
 
 - **Status:** Accepted for Phase 0, Phase 1, and Phase 2; Phase 3 decided and
-  implemented (Refs #192)
+  implemented (Refs #192). The live socket's change detection (count and
+  newest-stamp reads per poll) is superseded by per-topic counters
+  (2026-11-10, see [Live socket](#live-socket-and-the-host-consent-screen)).
 - **Date:** 2026-09-29 (Phase 2 and the Phase 3 decision: 2026-10-13; the
   cluster-install decision, the Phase 3 implementation, and the node and
   install/deploy terminology: 2026-10-14)
@@ -659,7 +661,9 @@ section is the record.
   offline, carrying the key's existing host grant onto the version row.
   `POST /api/config/plugins` installs one by directory name.
 - **Artifact location (step 4).** Archives up to 1 MiB are stored in
-  `plugin_artifacts` (`blob:sha256:<hex>`). A larger local archive is
+  the library (`blob:sha256:<hex>`): a `plugin_artifacts` header row over
+  `plugin_artifact_chunks` rows sized from the database plugin's advertised
+  limits, the header written after the last chunk. A larger local archive is
   referenced in place as `file://`, which only hosts that see the path can
   materialize. A shared artifact store is not part of this phase.
 - **Local archive keys (step 4).** A local archive's path-derived key
@@ -1405,7 +1409,7 @@ operator approves it, and only with what was approved.
   cluster, node, owner origin, digest and time; 5 minutes of skew either
   way; served only for archives of versions deployed to that node; every
   refusal is the same 404), is checked against its digest before it is
-  stored in the Host's own `plugin_artifacts`, and extracted by the
+  stored in the Host's own library, and extracted by the
   ordinary materializer, which checks the archive and payload digests.
   An `https:` archive is fetched by the materializer outside any plugin
   jail, so it is fetched only when its URL and digest are the approved
@@ -1651,6 +1655,12 @@ which topics changed; the SPA then re-reads its ordinary routes.
   client hears `hello` is never absorbed into it. Rejected:
   a table of change events or database triggers, which the SQL-v1
   contract would have to carry on every backend.
+  **Superseded** by the data-model scale audit (item 6): the per-poll
+  counts and newest-stamp reads grew with every table, so each topic now
+  has one counter row in `live_topic_revisions` that every write bumps in
+  its own atomic batch (plain SQL-v1 `UPDATE`, no triggers), and a poll
+  reads only those rows. See
+  [Node API → The live socket](../internals/node-api.md#the-live-socket-apilive).
 - **SPA.** One shared client (`ui/src/lib/live.ts`) per page;
   `useLiveRefresh(topics, refresh, {pollMs, openPollMs})` replaces the
   polling timers of Status, Library, Settings → Nodes and User Management.
@@ -2007,7 +2017,8 @@ it: a tree, A ← B ← C.
   `accounts` is unique on `(plugin_key, account_id)`; `books`,
   `ignored_titles`, and `account_links` carry `plugin_key`. Phase 3 adds
   `plugin_kv`, `plugin_versions`, `plugin_installs`,
-  `plugin_artifacts`, `plugin_placements` (with nullable `replicas`
+  `plugin_artifacts` with its `plugin_artifact_chunks`,
+  `plugin_placements` (with nullable `replicas`
   for "all"), `cluster_leases`, and `node_status`;
   `plugin_deployments.desired` allows `placed` and `unplaced`;
   `plugin_deployment_observations` gains the guest's reserved memory and
