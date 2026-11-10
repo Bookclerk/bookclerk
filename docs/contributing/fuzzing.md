@@ -446,6 +446,25 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     co-authors, minus the allowlisted bots, the assistant accounts and the
     signed ids. The comment mentions only them and links only to the CLA.
 
+### Maintainer review (Python)
+
+- **Maintainer review check** (`scripts/maintainer_review.py`). It reads
+  the workflow event (the head a `workflow_run` names, a merge group's
+  head, the check a `check_run` re-run names), collaborator permission
+  answers, and the pull request's review and changed-file pages, and
+  decides whether an outside pull request may merge. Logins, branch names
+  and file paths in them are chosen by contributors. It shares the CLA
+  checker's JSON readers and pull request parsers.
+  - Test and corpus: `scripts/tests/test_maintainer_review.py`,
+    `scripts/tests/maintainer_review_corpus/` (files named
+    `<kind>__<case>`).
+  - Oracle: an independent field-by-field reading of each document, which
+    refuses absolute paths, `..` segments and accounts whose login does not
+    fit their type. For fuzzed file pages, the flagged paths are exactly
+    those an independent reading of the sensitive prefixes, names and
+    missing diffs selects, and each listed path stays inside one code span
+    in the summary.
+
 ### Coverage gate (Python)
 
 - **Coverage report and diff readers** (`parse_lcov` and `parse_diff` in

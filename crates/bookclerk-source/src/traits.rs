@@ -233,6 +233,28 @@ pub trait ContentSource: Send + Sync {
         Ok(None)
     }
 
+    /// Resolve purchase hints for several titles in one call, one answer
+    /// per query in order.
+    ///
+    /// Default: [`Self::purchase_hint`] for each query, stopping at the
+    /// first error. A store whose catalog prices many products per request
+    /// overrides this to make one request. A [`SourceError::RateLimited`]
+    /// error applies to the whole batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first query's error.
+    async fn purchase_hints(
+        &self,
+        opts: &[PurchaseHintOpts],
+    ) -> Result<Vec<Option<SourcePurchaseHint>>> {
+        let mut out = Vec::with_capacity(opts.len());
+        for query in opts {
+            out.push(self.purchase_hint(query).await?);
+        }
+        Ok(out)
+    }
+
     /// Current deals / promos for discovery shelves.
     ///
     /// Default: empty.

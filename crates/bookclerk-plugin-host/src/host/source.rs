@@ -711,10 +711,16 @@ impl ContentSource for ExternalSource {
     ) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
         let params = bookclerk_plugin_sdk::PurchaseHintParams::from(opts);
         match self
-            .cs_call(move |src| async move { src.purchase_hint(params).await })
+            .session
+            .storefront(move |src| async move { src.purchase_hint(params).await })
             .await
         {
             Ok(hint) => Ok(hint.map(purchase_hint_from_abi)),
+            // The store's own "slow down" reaches the caller; other failures
+            // stay soft, as a missing price is not an error on a card.
+            Err(crate::PluginError::RateLimited { retry_after, .. }) => {
+                Err(bookclerk_source::SourceError::RateLimited(retry_after))
+            }
             Err(err) => {
                 tracing::debug!(
                     plugin = %self.id(),
@@ -722,6 +728,46 @@ impl ContentSource for ExternalSource {
                     "external purchase_hint soft-failed"
                 );
                 Ok(None)
+            }
+        }
+    }
+
+    async fn purchase_hints(
+        &self,
+        opts: &[PurchaseHintOpts],
+    ) -> bookclerk_source::Result<Vec<Option<SourcePurchaseHint>>> {
+        let params = bookclerk_plugin_sdk::PurchaseHintsParams {
+            queries: opts
+                .iter()
+                .map(bookclerk_plugin_sdk::PurchaseHintParams::from)
+                .collect(),
+        };
+        let wanted = opts.len();
+        match self
+            .session
+            .storefront(move |src| async move { src.purchase_hints(params).await })
+            .await
+        {
+            Ok(hints) => {
+                let mut out: Vec<Option<SourcePurchaseHint>> = hints
+                    .into_iter()
+                    .map(|hint| hint.map(purchase_hint_from_abi))
+                    .collect();
+                // A guest that answered short left the rest unpriced.
+                out.resize_with(wanted, || None);
+                out.truncate(wanted);
+                Ok(out)
+            }
+            Err(crate::PluginError::RateLimited { retry_after, .. }) => {
+                Err(bookclerk_source::SourceError::RateLimited(retry_after))
+            }
+            Err(err) => {
+                tracing::debug!(
+                    plugin = %self.id(),
+                    error = %err,
+                    "external purchase_hints soft-failed"
+                );
+                Ok(vec![None; wanted])
             }
         }
     }

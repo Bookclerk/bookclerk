@@ -2942,6 +2942,63 @@ _purchase_hint_reply_codec = _Codec(1, 1, _write_purchase_hint_reply, _read_purc
 """Wire codec for ``PurchaseHintReply`` (1 data words, 1 pointers)."""
 
 
+def _write_purchase_hints_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["queries"]), 1, 6)
+    for item, elem in zip(items, v["queries"], strict=True):
+        _purchase_hint_params_codec.write(item, elem, caps)
+
+
+def _read_purchase_hints_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "queries": [_purchase_hint_params_codec.read(item, caps) for item in s.get_struct_list(0, 1, 6)],
+    }
+
+
+_purchase_hints_params_codec = _Codec(0, 1, _write_purchase_hints_params, _read_purchase_hints_params)
+"""Wire codec for ``PurchaseHintsParams`` (0 data words, 1 pointers)."""
+
+
+def _write_purchase_hints_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["results"]), 1, 1)
+    for item, elem in zip(items, v["results"], strict=True):
+        _purchase_hint_result_codec.write(item, elem, caps)
+
+
+def _read_purchase_hints_result(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "results": [_purchase_hint_result_codec.read(item, caps) for item in s.get_struct_list(0, 1, 1)],
+    }
+
+
+_purchase_hints_result_codec = _Codec(0, 1, _write_purchase_hints_result, _read_purchase_hints_result)
+"""Wire codec for ``PurchaseHintsResult`` (0 data words, 1 pointers)."""
+
+
+def _write_purchase_hints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _purchase_hints_result_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown PurchaseHintsReply union member: {kind}")
+
+
+def _read_purchase_hints_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _purchase_hints_result_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown PurchaseHintsReply union member: {disc}")
+
+
+_purchase_hints_reply_codec = _Codec(1, 1, _write_purchase_hints_reply, _read_purchase_hints_reply)
+"""Wire codec for ``PurchaseHintsReply`` (1 data words, 1 pointers)."""
+
+
 def _write_scan_library_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_bool(0, v["force"])
 
@@ -6158,6 +6215,34 @@ def _read_content_source_revoke_account_results(s: _StructReader, caps: _CapTabl
 
 _content_source_revoke_account_results_codec = _Codec(0, 1, _write_content_source_revoke_account_results, _read_content_source_revoke_account_results)
 """Wire codec for ``ContentSourceRevokeAccountResults`` (0 data words, 1 pointers)."""
+
+
+def _write_content_source_purchase_hints_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _purchase_hints_params_codec.write(s.init_struct(0, 0, 1), v["params"], caps)
+
+
+def _read_content_source_purchase_hints_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "params": _purchase_hints_params_codec.read(s.get_struct(0, 0, 1), caps),
+    }
+
+
+_content_source_purchase_hints_params_codec = _Codec(0, 1, _write_content_source_purchase_hints_params, _read_content_source_purchase_hints_params)
+"""Wire codec for ``ContentSourcePurchaseHintsParams`` (0 data words, 1 pointers)."""
+
+
+def _write_content_source_purchase_hints_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _purchase_hints_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_content_source_purchase_hints_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _purchase_hints_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_content_source_purchase_hints_results_codec = _Codec(0, 1, _write_content_source_purchase_hints_results, _read_content_source_purchase_hints_results)
+"""Wire codec for ``ContentSourcePurchaseHintsResults`` (0 data words, 1 pointers)."""
 
 
 def _write_remote_library_health_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

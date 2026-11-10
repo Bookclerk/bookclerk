@@ -159,6 +159,20 @@ POSTGRES_STEPS: dict[str, tuple[str, list[str]]] = {
             "--nocapture",
         ],
     ),
+    "adapter_conformance": (
+        "Postgres adapter conformance suite (shipped guest over RPC)",
+        [
+            "cargo",
+            "test",
+            "-p",
+            "bookclerk-plugin-database-postgres",
+            "--test",
+            "adapter_conformance",
+            "--",
+            "--ignored",
+            "--nocapture",
+        ],
+    ),
     "rpc_like": (
         "Postgres production RPC proxy boundary (LIKE, identity inserts)",
         [

@@ -763,6 +763,24 @@ export interface ContentSourceRevokeAccountResults {
 }
 
 /**
+ * Params envelope of `ContentSource.purchaseHints`.
+ *
+ * @internal
+ */
+export interface ContentSourcePurchaseHintsParams {
+  params: T.PurchaseHintsParams;
+}
+
+/**
+ * Results envelope of `ContentSource.purchaseHints`.
+ *
+ * @internal
+ */
+export interface ContentSourcePurchaseHintsResults {
+  result: T.PurchaseHintsReply;
+}
+
+/**
  * Params envelope of `RemoteLibrary.health`.
  *
  * @internal
@@ -5480,6 +5498,93 @@ export const PurchaseHintReplyCodec: StructCodec<T.PurchaseHintReply> = {
 };
 
 /**
+ * Wire codec for `PurchaseHintsParams` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const PurchaseHintsParamsCodec: StructCodec<T.PurchaseHintsParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.queries ?? [];
+      const items = s.initStructList(0, list.length, 1, 6);
+      for (let i = 0; i < items.length; i++) {
+        PurchaseHintParamsCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      queries: s.getStructList(0, 1, 6).map((item) => PurchaseHintParamsCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `PurchaseHintsResult` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const PurchaseHintsResultCodec: StructCodec<T.PurchaseHintsResult> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.results ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        PurchaseHintResultCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      results: s.getStructList(0, 1, 1).map((item) => PurchaseHintResultCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `PurchaseHintsReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const PurchaseHintsReplyCodec: StructCodec<T.PurchaseHintsReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          PurchaseHintsResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("PurchaseHintsReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: PurchaseHintsResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("PurchaseHintsReply", disc);
+    }
+  },
+};
+
+/**
  * Wire codec for `ScanLibraryParams` (1 data words, 0 pointers).
  *
  * @internal
@@ -10086,6 +10191,46 @@ export const ContentSourceRevokeAccountResultsCodec: StructCodec<ContentSourceRe
   read(s, caps) {
     return {
       result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `ContentSource.purchaseHints` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ContentSourcePurchaseHintsParamsCodec: StructCodec<ContentSourcePurchaseHintsParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      PurchaseHintsParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: PurchaseHintsParamsCodec.read(s.getStruct(0, 0, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `ContentSource.purchaseHints` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ContentSourcePurchaseHintsResultsCodec: StructCodec<ContentSourcePurchaseHintsResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      PurchaseHintsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: PurchaseHintsReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

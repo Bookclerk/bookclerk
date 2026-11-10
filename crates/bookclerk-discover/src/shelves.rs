@@ -78,6 +78,12 @@ pub struct ShelfTaste {
     pub seed_authors_by_title: HashMap<String, Vec<String>>,
     /// Storefronts represented in the owned library (`audible`, `libro`, …).
     pub owned_sources: HashSet<String>,
+    /// Titles on the subject's own open wishlist, newest first, that name
+    /// the "Because you wishlisted" shelves.
+    pub wish_titles: Vec<String>,
+    /// Lowercase storefront ids the subject has an account with, compared
+    /// at member price when a card is placed on a store shelf.
+    pub linked_sources: HashSet<String>,
 }
 
 /// Maximum items kept on one Discover shelf after score sort and de-dupe.
@@ -88,6 +94,11 @@ const AUTHOR_SHELVES: usize = 3;
 const BECAUSE_SHELVES: usize = 2;
 /// How many “because you like {Genre}” shelves to emit from top categories.
 const GENRE_SHELVES: usize = 3;
+/// How many “because you wishlisted {Title}” shelves to emit, newest wish first.
+const WISH_SHELVES: usize = 3;
+/// Most titles of one series on a shelf that is not about series, so one
+/// long series cannot crowd the others out.
+pub const SERIES_CAP: usize = 2;
 
 /// Shelf kinds Discover can emit (for config / UI ignore lists).
 #[must_use]
@@ -95,14 +106,16 @@ pub fn shelf_kind_catalog() -> Vec<ShelfKindInfo> {
     vec![
         kind("finish_series", "Finish these series"),
         kind("keep_listening", "Pick up where you left off"),
+        kind("wish", "Because you wishlisted {Title}"),
         kind("author", "More from {Author}"),
         kind("because", "If you like {Author}"),
         kind("narrator", "Narrated by {Narrator}"),
         kind("genre", "Because you like {Genre}"),
-        kind("from_store", "From stores you use"),
-        kind("chirp_deals", "Chirp deals"),
+        kind("starter_genre", "Popular in {Genre}"),
         kind("similar_taste", "Similar to books you finish"),
-        kind("requests", "Wishlist"),
+        kind("chirp_deals", "Chirp deals"),
+        kind("from_store", "Picked for you on {Store}"),
+        kind("requests", "On the wishlist"),
         kind("top_picks", "Top picks for you"),
     ]
 }
@@ -153,7 +166,27 @@ pub fn shelf_is_disabled(shelf_id: &str, disabled: &[String]) -> bool {
     false
 }
 
-/// Partition scored recommendations into Discover shelves (items may repeat).
+/// How a shelf treats several titles of one series.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeriesRule {
+    /// At most [`SERIES_CAP`] titles per series; the rest wait for another shelf.
+    Cap,
+    /// Every title may stay, but series take turns so the top of the shelf
+    /// shows several of them rather than one in a row.
+    Interleave,
+}
+
+/// Partitions scored recommendations into Discover shelves.
+///
+/// Every title lands on one shelf. Shelves claim titles in the order they
+/// are built: the wishlist first, then the series shelves, the
+/// subject's wishes, authors, narrators, genres, starter genres, similar
+/// taste, Chirp deals, then one shelf per store for whatever is left, each
+/// title under the store where it costs the subject least (member price on
+/// stores they have an account with, list price elsewhere, its own store
+/// when no price is known). A wished title shows on the wishlist shelf alone.
+/// Shelves other than the series shelves and the wishlist keep at most
+/// [`SERIES_CAP`] titles of one series; those rotate between series instead.
 ///
 /// # Arguments
 ///
@@ -173,27 +206,62 @@ pub fn build_discover_feed(
     disabled_shelves: &[String],
 ) -> DiscoverFeed {
     let cap = per_shelf.clamp(4, SHELF_CAP);
-    let mut shelves = Vec::new();
+    let mut builder = FeedBuilder {
+        recs,
+        cap,
+        disabled: disabled_shelves,
+        claimed: HashSet::new(),
+        shelves: Vec::new(),
+    };
 
-    push_shelf(
-        &mut shelves,
+    // The wishlist opens the page: what people want comes before what the
+    // stores suggest, and a wished title shows there alone. The row is in
+    // the viewer's own taste order: the shared wish-count boost orders the
+    // Wishlist page's global queue, not this person's Discover. Every wish
+    // shows, however many share a series: the series take turns. Wished
+    // titles past the shelf's size are claimed too, so they never reach
+    // another shelf.
+    let wished = |r: &Recommendation| has_category(r, "requests") || r.from_request;
+    let wishlist = builder.take_by(wished, SeriesRule::Interleave, taste_only_score);
+    builder.claimed.extend(
+        recs.iter()
+            .filter(|r| wished(r))
+            .map(recommendation_map_key),
+    );
+    builder.push_items(
+        "requests",
+        "On the wishlist",
+        Some("Titles people have wishlisted"),
+        wishlist,
+    );
+
+    builder.push(
         "finish_series",
         "Finish these series",
         Some("Gaps in series you already own"),
-        filter_sorted(recs, |r| has_category(r, "finish_series")),
-        cap,
-        disabled_shelves,
+        |r| has_category(r, "finish_series"),
+        SeriesRule::Interleave,
     );
 
-    push_shelf(
-        &mut shelves,
+    builder.push(
         "keep_listening",
         "Pick up where you left off",
         Some("Series you’re actively listening to"),
-        filter_sorted(recs, |r| has_category(r, "keep_listening")),
-        cap,
-        disabled_shelves,
+        |r| has_category(r, "keep_listening"),
+        SeriesRule::Interleave,
     );
+
+    // Titles the stores found from the subject's own wishes, newest wish first.
+    for wish in taste.wish_titles.iter().take(WISH_SHELVES) {
+        let id = format!("wish:{}", slugish(&wish.to_lowercase()));
+        builder.push(
+            &id,
+            &format!("Because you wishlisted {wish}"),
+            Some("Related to a title on your wishlist"),
+            |r| seeded_by_wish(r, wish),
+            SeriesRule::Cap,
+        );
+    }
 
     // More from top liked authors.
     let mut authors: Vec<_> = taste.authors.values().cloned().collect();
@@ -202,24 +270,12 @@ pub fn build_discover_feed(
         let key = display.to_lowercase();
         let id = format!("author:{}", slugish(&key));
         let title = format!("More from {display}");
-        push_shelf(
-            &mut shelves,
+        builder.push(
             &id,
             &title,
             Some("Because you’ve liked their work"),
-            filter_sorted(recs, |r| {
-                has_category(r, "author")
-                    && r.authors
-                        .as_deref()
-                        .map(|a| {
-                            split_people(a)
-                                .iter()
-                                .any(|n| n.eq_ignore_ascii_case(&display))
-                        })
-                        .unwrap_or(false)
-            }),
-            cap,
-            disabled_shelves,
+            |r| has_category(r, "author") && names_include(r.authors.as_deref(), &display),
+            SeriesRule::Cap,
         );
     }
 
@@ -229,14 +285,12 @@ pub fn build_discover_feed(
     for (display, _) in because_authors.into_iter().take(BECAUSE_SHELVES) {
         let id = format!("because:{}", slugish(&display.to_lowercase()));
         let title = format!("If you like {display}");
-        push_shelf(
-            &mut shelves,
+        builder.push(
             &id,
             &title,
             Some("Related titles and similar tastes — new voices"),
-            filter_sorted(recs, |r| because_you_like(r, &display, taste)),
-            cap,
-            disabled_shelves,
+            |r| because_you_like(r, &display, taste),
+            SeriesRule::Cap,
         );
     }
 
@@ -245,24 +299,12 @@ pub fn build_discover_feed(
     narrators.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     if let Some((display, _)) = narrators.into_iter().next() {
         let id = format!("narrator:{}", slugish(&display.to_lowercase()));
-        push_shelf(
-            &mut shelves,
+        builder.push(
             &id,
             &format!("Narrated by {display}"),
             Some("More from a narrator you enjoy"),
-            filter_sorted(recs, |r| {
-                has_category(r, "narrator")
-                    && r.narrators
-                        .as_deref()
-                        .map(|n| {
-                            split_people(n)
-                                .iter()
-                                .any(|x| x.eq_ignore_ascii_case(&display))
-                        })
-                        .unwrap_or(false)
-            }),
-            cap,
-            disabled_shelves,
+            |r| has_category(r, "narrator") && names_include(r.narrators.as_deref(), &display),
+            SeriesRule::Cap,
         );
     }
 
@@ -271,73 +313,83 @@ pub fn build_discover_feed(
     categories.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     for (display, _) in categories.into_iter().take(GENRE_SHELVES) {
         let id = format!("genre:{}", slugish(&display.to_lowercase()));
-        push_shelf(
-            &mut shelves,
+        builder.push(
             &id,
             &format!("Because you like {display}"),
             Some("Genre and subject overlap from titles you’ve finished"),
-            filter_sorted(recs, |r| category_overlap(r, &display)),
-            cap,
-            disabled_shelves,
+            |r| category_overlap(r, &display),
+            SeriesRule::Cap,
         );
     }
 
-    // From stores you already use.
-    let mut sources: Vec<String> = taste.owned_sources.iter().cloned().collect();
-    sources.sort();
-    for source in sources {
-        let display = store_display_name(&source);
-        let id = format!("from_{source}");
-        push_shelf(
-            &mut shelves,
-            &id,
-            &format!("From {display}"),
-            Some("More from a storefront already in your library"),
-            filter_sorted(recs, |r| {
-                has_category(r, "from_store")
-                    && r.candidate_source
-                        .as_deref()
-                        .is_some_and(|s| s.eq_ignore_ascii_case(&source))
-            }),
-            cap,
-            disabled_shelves,
-        );
-    }
-
-    push_shelf(
-        &mut shelves,
-        "chirp_deals",
-        "Chirp deals right now",
-        Some("Top and free deals from Chirp"),
-        filter_sorted(recs, |r| has_category(r, "chirp_deals")),
-        cap,
-        disabled_shelves,
-    );
-
-    push_shelf(
-        &mut shelves,
+    builder.push(
         "similar_taste",
         "Similar to books you finish",
         Some("Embedding / taste overlap"),
-        filter_sorted(recs, |r| has_category(r, "similar_taste")),
-        cap,
-        disabled_shelves,
+        |r| has_category(r, "similar_taste"),
+        SeriesRule::Cap,
     );
 
-    push_shelf(
-        &mut shelves,
-        "requests",
-        "On the wishlist",
-        Some("Titles people have wishlisted"),
-        filter_sorted(recs, |r| has_category(r, "requests") || r.from_request),
-        cap,
-        disabled_shelves,
+    // Starter genres, browsed while the taste was thin: one shelf per genre,
+    // in the order the stores were asked.
+    for genre in starter_genres(recs) {
+        let id = format!("starter_genre:{}", slugish(&genre.to_lowercase()));
+        builder.push(
+            &id,
+            &format!("Popular in {genre}"),
+            Some("Popular titles while Discover learns your taste"),
+            |r| {
+                r.starter_genre
+                    .as_deref()
+                    .is_some_and(|g| g.eq_ignore_ascii_case(&genre))
+            },
+            SeriesRule::Cap,
+        );
+    }
+
+    builder.push(
+        "chirp_deals",
+        "Chirp deals right now",
+        Some("Top and free deals from Chirp"),
+        |r| has_category(r, "chirp_deals"),
+        SeriesRule::Cap,
     );
 
-    // Drop empty shelves; keep at least a "Top picks" dump if everything empty but recs exist.
-    shelves.retain(|s| !s.items.is_empty());
-    if shelves.is_empty() && !recs.is_empty() && !shelf_is_disabled("top_picks", disabled_shelves) {
-        let mut top = recs.to_vec();
+    // Whatever is left goes under the store where it costs the subject
+    // least; the stores already in the library come first.
+    let placed: HashMap<String, String> = recs
+        .iter()
+        .filter(|r| !builder.claimed.contains(&recommendation_map_key(r)))
+        .filter_map(|r| {
+            best_store_for(r, &taste.linked_sources).map(|s| (recommendation_map_key(r), s))
+        })
+        .collect();
+    let mut sources: Vec<String> = placed.values().cloned().collect();
+    sources.sort();
+    sources.dedup();
+    sources.sort_by_key(|s| !taste.owned_sources.contains(s));
+    for source in sources {
+        let display = store_display_name(&source);
+        let id = format!("from_{source}");
+        builder.push(
+            &id,
+            &format!("Picked for you on {display}"),
+            Some("Ranked by your taste, shown where it costs least"),
+            |r| placed.get(&recommendation_map_key(r)) == Some(&source),
+            SeriesRule::Cap,
+        );
+    }
+
+    let FeedBuilder { mut shelves, .. } = builder;
+    // Keep at least a "Top picks" dump if everything is empty but recs exist.
+    // Wished titles stay off it: they belong to the wishlist shelf alone,
+    // even when that shelf is hidden.
+    let mut top: Vec<Recommendation> = if shelves.is_empty() {
+        recs.iter().filter(|r| !wished(r)).cloned().collect()
+    } else {
+        Vec::new()
+    };
+    if !top.is_empty() && !shelf_is_disabled("top_picks", disabled_shelves) {
         top.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -358,6 +410,245 @@ pub fn build_discover_feed(
         state: None,
         computed_at: None,
     }
+}
+
+/// Builds the shelves of one feed, claiming each title for the first shelf
+/// that takes it.
+struct FeedBuilder<'a> {
+    /// Every scored recommendation.
+    recs: &'a [Recommendation],
+    /// Most items per shelf.
+    cap: usize,
+    /// Shelf ids the subject hides.
+    disabled: &'a [String],
+    /// Map keys of the titles a shelf has already taken.
+    claimed: HashSet<String>,
+    /// The shelves built so far, in page order.
+    shelves: Vec<DiscoverShelf>,
+}
+
+/// A recommendation's score without the shared wish-count boost: how well
+/// it fits this person's taste alone.
+fn taste_only_score(r: &Recommendation) -> f64 {
+    // The boost is `wish_count × WISH_COUNT_WEIGHT`, added on top of the
+    // taste score (see `combine_wishlist_score`).
+    let wishes = u32::try_from(r.wish_count.max(0)).unwrap_or(u32::MAX);
+    r.score - f64::from(wishes) * crate::recommend::WISH_COUNT_WEIGHT
+}
+
+impl FeedBuilder<'_> {
+    /// Takes the best unclaimed titles that satisfy `pred`, at most `cap`,
+    /// and claims them.
+    fn take(
+        &mut self,
+        pred: impl Fn(&Recommendation) -> bool,
+        rule: SeriesRule,
+    ) -> Vec<Recommendation> {
+        self.take_by(pred, rule, |r| r.score)
+    }
+
+    /// [`Self::take`], ordering the titles by `key` (highest first) instead
+    /// of their score.
+    fn take_by(
+        &mut self,
+        pred: impl Fn(&Recommendation) -> bool,
+        rule: SeriesRule,
+        key: impl Fn(&Recommendation) -> f64,
+    ) -> Vec<Recommendation> {
+        let mut sorted: Vec<&Recommendation> = self
+            .recs
+            .iter()
+            .filter(|r| pred(r) && !self.claimed.contains(&recommendation_map_key(r)))
+            .collect();
+        sorted.sort_by(|a, b| {
+            key(b)
+                .partial_cmp(&key(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        // De-dupe by product key before any series rule, so a merged
+        // duplicate does not use up a series' places.
+        let mut seen = HashSet::new();
+        sorted.retain(|r| seen.insert(recommendation_map_key(r)));
+        let picked = match rule {
+            SeriesRule::Cap => cap_series(&sorted, self.cap),
+            SeriesRule::Interleave => interleave_series(&sorted, self.cap),
+        };
+        for r in &picked {
+            self.claimed.insert(recommendation_map_key(r));
+        }
+        picked
+    }
+
+    /// Adds the shelf of the best unclaimed titles that satisfy `pred`,
+    /// unless it is hidden or would be empty.
+    fn push(
+        &mut self,
+        id: &str,
+        title: &str,
+        subtitle: Option<&str>,
+        pred: impl Fn(&Recommendation) -> bool,
+        rule: SeriesRule,
+    ) {
+        if shelf_is_disabled(id, self.disabled) {
+            return;
+        }
+        let items = self.take(pred, rule);
+        self.push_items(id, title, subtitle, items);
+    }
+
+    /// Adds a shelf of titles already taken, unless it is hidden or empty.
+    fn push_items(
+        &mut self,
+        id: &str,
+        title: &str,
+        subtitle: Option<&str>,
+        items: Vec<Recommendation>,
+    ) {
+        if items.is_empty() || shelf_is_disabled(id, self.disabled) {
+            return;
+        }
+        self.shelves.push(DiscoverShelf {
+            id: id.to_string(),
+            title: title.to_string(),
+            subtitle: subtitle.map(str::to_string),
+            items,
+        });
+    }
+}
+
+/// The series a title belongs to, as a comparison key, when it names one.
+fn series_key(r: &Recommendation) -> Option<String> {
+    r.series
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase)
+}
+
+/// The first `cap` of `sorted` (best first) with at most [`SERIES_CAP`]
+/// titles of one series; titles without a series are not limited.
+fn cap_series(sorted: &[&Recommendation], cap: usize) -> Vec<Recommendation> {
+    let mut per_series: HashMap<String, usize> = HashMap::new();
+    let mut out = Vec::with_capacity(cap.min(sorted.len()));
+    for r in sorted {
+        if out.len() >= cap {
+            break;
+        }
+        if let Some(series) = series_key(r) {
+            let n = per_series.entry(series).or_insert(0);
+            if *n >= SERIES_CAP {
+                continue;
+            }
+            *n += 1;
+        }
+        out.push((*r).clone());
+    }
+    out
+}
+
+/// Up to `cap` of `sorted` (best first), taking one title from each series
+/// in turn so the shelf opens with several series rather than one.
+///
+/// Series are ordered by their best title; a title without a series is a
+/// group of its own.
+fn interleave_series(sorted: &[&Recommendation], cap: usize) -> Vec<Recommendation> {
+    let mut groups: Vec<std::collections::VecDeque<&Recommendation>> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for r in sorted {
+        match series_key(r) {
+            Some(series) => {
+                let at = *index.entry(series).or_insert_with(|| {
+                    groups.push(std::collections::VecDeque::new());
+                    groups.len() - 1
+                });
+                groups[at].push_back(*r);
+            }
+            None => groups.push(std::collections::VecDeque::from([*r])),
+        }
+    }
+    let mut out = Vec::with_capacity(cap.min(sorted.len()));
+    while out.len() < cap {
+        let mut took = false;
+        for group in &mut groups {
+            if out.len() >= cap {
+                break;
+            }
+            if let Some(r) = group.pop_front() {
+                out.push(r.clone());
+                took = true;
+            }
+        }
+        if !took {
+            break;
+        }
+    }
+    out
+}
+
+/// True when the stores found `r` by expanding the wish `wish_title`, and
+/// `r` is not that wished title itself.
+fn seeded_by_wish(r: &Recommendation, wish_title: &str) -> bool {
+    !r.from_request
+        && r.seed_title
+            .as_deref()
+            .is_some_and(|s| s.eq_ignore_ascii_case(wish_title))
+        && !crate::identity::works_match(&r.title, None, wish_title, None)
+}
+
+/// The starter genres among `recs`, in the order they first appear by score.
+fn starter_genres(recs: &[Recommendation]) -> Vec<String> {
+    let mut sorted: Vec<&Recommendation> =
+        recs.iter().filter(|r| r.starter_genre.is_some()).collect();
+    sorted.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut out: Vec<String> = Vec::new();
+    for r in sorted {
+        if let Some(genre) = r.starter_genre.as_deref() {
+            if !out.iter().any(|g| g.eq_ignore_ascii_case(genre)) {
+                out.push(genre.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The store whose shelf shows `r`: the priced edition that costs the
+/// subject least (member price on `linked` stores, list price elsewhere),
+/// else the store the card came from.
+fn best_store_for(r: &Recommendation, linked: &HashSet<String>) -> Option<String> {
+    let cheapest = r
+        .purchase_hints
+        .iter()
+        .filter_map(|hint| {
+            let source = hint.source.trim().to_ascii_lowercase();
+            if source.is_empty() {
+                return None;
+            }
+            let as_member = linked.contains(&source);
+            crate::purchase::effective_price_cents(hint, as_member).map(|cents| (cents, source))
+        })
+        .min_by_key(|(cents, _)| *cents)
+        .map(|(_, source)| source);
+    cheapest.or_else(|| {
+        r.candidate_source
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+    })
+}
+
+/// True when `names` (a delimited list of people) includes `name`.
+fn names_include(names: Option<&str>, name: &str) -> bool {
+    names
+        .map(|list| {
+            split_people(list)
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(name))
+        })
+        .unwrap_or(false)
 }
 
 /// True when the recommendation lists `kind` among its categories (case-insensitive).
@@ -453,48 +744,6 @@ fn because_you_like(r: &Recommendation, liked_author: &str, taste: &ShelfTaste) 
         return !liked.is_empty();
     }
     false
-}
-
-/// Filters recommendations by `pred` and sorts remaining items by descending score.
-fn filter_sorted(
-    recs: &[Recommendation],
-    pred: impl Fn(&Recommendation) -> bool,
-) -> Vec<Recommendation> {
-    let mut out: Vec<_> = recs.iter().filter(|r| pred(r)).cloned().collect();
-    out.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    out
-}
-
-/// Appends a non-empty, de-duped shelf unless its id is on the ignore list.
-fn push_shelf(
-    shelves: &mut Vec<DiscoverShelf>,
-    id: &str,
-    title: &str,
-    subtitle: Option<&str>,
-    mut items: Vec<Recommendation>,
-    cap: usize,
-    disabled: &[String],
-) {
-    if shelf_is_disabled(id, disabled) {
-        return;
-    }
-    items.truncate(cap);
-    // De-dupe within shelf by product key.
-    let mut seen = HashSet::new();
-    items.retain(|r| seen.insert(recommendation_map_key(r)));
-    if items.is_empty() {
-        return;
-    }
-    shelves.push(DiscoverShelf {
-        id: id.to_string(),
-        title: title.to_string(),
-        subtitle: subtitle.map(str::to_string),
-        items,
-    });
 }
 
 /// Splits a contributor/category string on `,`, `;`, `&`, and `/`.
@@ -655,6 +904,222 @@ mod tests {
         };
         r.work_key = recommendation_map_key(&r);
         r
+    }
+
+    /// Shelf ids of `feed`, in page order.
+    fn ids(feed: &DiscoverFeed) -> Vec<&str> {
+        feed.shelves.iter().map(|s| s.id.as_str()).collect()
+    }
+
+    /// Titles on the shelf `id` of `feed` (empty when there is no such shelf).
+    fn titles<'a>(feed: &'a DiscoverFeed, id: &str) -> Vec<&'a str> {
+        feed.shelves
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.items.iter().map(|r| r.title.as_str()).collect())
+            .unwrap_or_default()
+    }
+
+    /// A taste that likes Ada Author.
+    fn ada_taste() -> ShelfTaste {
+        let mut taste = ShelfTaste::default();
+        taste
+            .authors
+            .insert("ada author".into(), ("Ada Author".into(), 5.0));
+        taste
+    }
+
+    #[test]
+    fn every_title_lands_on_one_shelf() {
+        let recs = vec![
+            rec("By Ada", 9.0, &["author", "from_store"]),
+            rec("Only Store", 3.0, &["from_store"]),
+        ];
+        let feed = build_discover_feed(&recs, &ada_taste(), 8, &[]);
+        assert_eq!(ids(&feed), vec!["author:ada-author", "from_audible"]);
+        assert_eq!(titles(&feed, "author:ada-author"), vec!["By Ada"]);
+        // The author shelf claimed "By Ada", so the store shelf has the rest.
+        assert_eq!(titles(&feed, "from_audible"), vec!["Only Store"]);
+    }
+
+    #[test]
+    fn a_series_fills_at_most_two_places_off_the_series_shelf() {
+        let recs: Vec<Recommendation> = (0..5)
+            .map(|i| {
+                rec(
+                    &format!("Dune {i}"),
+                    10.0 - f64::from(i),
+                    &["author", "from_store"],
+                )
+            })
+            .collect();
+        let feed = build_discover_feed(&recs, &ada_taste(), 8, &[]);
+        assert_eq!(
+            titles(&feed, "author:ada-author"),
+            vec!["Dune 0", "Dune 1"],
+            "two of the series on the author shelf"
+        );
+        assert_eq!(
+            titles(&feed, "from_audible"),
+            vec!["Dune 2", "Dune 3"],
+            "the store shelf takes the next two"
+        );
+    }
+
+    #[test]
+    fn the_series_shelf_rotates_between_series() {
+        let mut recs: Vec<Recommendation> = (0..3)
+            .map(|i| rec(&format!("A{i}"), 10.0 - f64::from(i), &["finish_series"]))
+            .collect();
+        for i in 0..2 {
+            let mut r = rec(&format!("B{i}"), 5.0 - f64::from(i), &["finish_series"]);
+            r.series = Some("Other Series".into());
+            recs.push(r);
+        }
+        let feed = build_discover_feed(&recs, &ShelfTaste::default(), 8, &[]);
+        assert_eq!(
+            titles(&feed, "finish_series"),
+            vec!["A0", "B0", "A1", "B1", "A2"]
+        );
+    }
+
+    #[test]
+    fn a_wish_names_its_own_shelf_without_the_wished_title() {
+        let taste = ShelfTaste {
+            wish_titles: vec!["Dune".into()],
+            ..ShelfTaste::default()
+        };
+        let seeded = |title: &str| Recommendation {
+            seed_title: Some("Dune".into()),
+            ..rec(title, 4.0, &["because", "from_store"])
+        };
+        let recs = vec![
+            seeded("Dune Messiah"),
+            seeded("Dune"),
+            rec("Unrelated", 6.0, &["from_store"]),
+        ];
+        let feed = build_discover_feed(&recs, &taste, 8, &[]);
+        assert_eq!(ids(&feed), vec!["wish:dune", "from_audible"]);
+        assert_eq!(titles(&feed, "wish:dune"), vec!["Dune Messiah"]);
+        // The wished title itself and the unrelated card go to the store.
+        assert_eq!(titles(&feed, "from_audible"), vec!["Unrelated", "Dune"]);
+    }
+
+    #[test]
+    fn wished_titles_show_only_on_the_wishlist_shelf() {
+        let mut wished = rec("Wanted", 50.0, &["author", "requests"]);
+        wished.from_request = true;
+        let recs = vec![wished, rec("By Ada", 2.0, &["author"])];
+        let feed = build_discover_feed(&recs, &ada_taste(), 8, &[]);
+        assert_eq!(ids(&feed), vec!["requests", "author:ada-author"]);
+        assert_eq!(titles(&feed, "author:ada-author"), vec!["By Ada"]);
+        assert_eq!(titles(&feed, "requests"), vec!["Wanted"]);
+    }
+
+    /// The wishlist row follows the viewer's taste, not how many people
+    /// wished: a title three people want but nobody here likes comes after
+    /// one that fits this person.
+    #[test]
+    fn the_wishlist_row_is_in_the_viewers_taste_order() {
+        let mut popular = rec(
+            "Popular",
+            1.0 + 3.0 * crate::recommend::WISH_COUNT_WEIGHT,
+            &["requests"],
+        );
+        popular.from_request = true;
+        popular.wish_count = 3;
+        let mut fitting = rec(
+            "Fitting",
+            9.0 + crate::recommend::WISH_COUNT_WEIGHT,
+            &["requests"],
+        );
+        fitting.from_request = true;
+        fitting.wish_count = 1;
+        let feed = build_discover_feed(&[popular, fitting], &ShelfTaste::default(), 8, &[]);
+        assert_eq!(titles(&feed, "requests"), vec!["Fitting", "Popular"]);
+    }
+
+    #[test]
+    fn a_hidden_wishlist_keeps_wished_titles_off_top_picks() {
+        let wished = Recommendation {
+            from_request: true,
+            ..rec("Wanted", 50.0, &["requests"])
+        };
+        let hidden = vec![String::from("requests")];
+        let feed = build_discover_feed(&[wished], &ShelfTaste::default(), 8, &hidden);
+        assert!(feed.shelves.is_empty(), "{:?}", ids(&feed));
+    }
+
+    #[test]
+    fn every_wish_in_one_series_shows_on_the_wishlist_alone() {
+        let wished = |title: &str| Recommendation {
+            from_request: true,
+            ..rec(title, 50.0, &["author", "requests"])
+        };
+        let recs = vec![
+            wished("Book One"),
+            wished("Book Two"),
+            wished("Book Three"),
+            rec("By Ada", 2.0, &["author"]),
+        ];
+        let feed = build_discover_feed(&recs, &ada_taste(), 8, &[]);
+        assert_eq!(titles(&feed, "requests").len(), 3);
+        for shelf in feed.shelves.iter().filter(|s| s.id != "requests") {
+            for item in &shelf.items {
+                assert!(!item.from_request, "{} on {}", item.title, shelf.id);
+            }
+        }
+    }
+
+    #[test]
+    fn starter_genres_get_a_shelf_each() {
+        let browsed = |title: &str, genre: &str| Recommendation {
+            starter_genre: Some(genre.into()),
+            series: None,
+            ..rec(title, 2.0, &["starter_genre", "from_store"])
+        };
+        let recs = vec![
+            browsed("Hobbit", "Fantasy"),
+            browsed("Gone Girl", "Mystery & Thriller"),
+        ];
+        let feed = build_discover_feed(&recs, &ShelfTaste::default(), 8, &[]);
+        assert_eq!(
+            ids(&feed),
+            vec!["starter_genre:fantasy", "starter_genre:mystery-thriller"]
+        );
+        assert_eq!(feed.shelves[0].title, "Popular in Fantasy");
+    }
+
+    #[test]
+    fn leftovers_go_to_the_store_where_they_cost_the_subject_least() {
+        let priced = |source: &str, list: Option<i64>, price: Option<i64>, member: Option<i64>| {
+            crate::purchase::PurchaseHint {
+                source: source.into(),
+                product_id: "p".into(),
+                list_price_cents: list,
+                price_cents: price,
+                member_price_cents: member,
+                ..crate::purchase::PurchaseHint::link(source, "p", None, None)
+            }
+        };
+        let mut r = rec("Priced", 2.0, &["from_store"]);
+        r.purchase_hints = vec![
+            priced("audible", None, Some(1_500), Some(900)),
+            priced("libro", Some(1_000), Some(500), Some(500)),
+        ];
+        let recs = vec![r];
+        // Nobody is a member: list prices, so Libro's 10.00 beats 15.00.
+        let feed = build_discover_feed(&recs, &ShelfTaste::default(), 8, &[]);
+        assert_eq!(ids(&feed), vec!["from_libro"]);
+        // An Audible member pays 9.00 there, under Libro's list price.
+        let mut taste = ShelfTaste::default();
+        taste.linked_sources.insert("audible".into());
+        let feed = build_discover_feed(&recs, &taste, 8, &[]);
+        assert_eq!(ids(&feed), vec!["from_audible"]);
+        // No price known: the card's own store.
+        let plain = vec![rec("Plain", 1.0, &["from_store"])];
+        let feed = build_discover_feed(&plain, &ShelfTaste::default(), 8, &[]);
+        assert_eq!(ids(&feed), vec!["from_audible"]);
     }
 
     /// A feed of many long items is cut down until it fits its budget,
@@ -859,12 +1324,20 @@ mod tests {
 
     #[test]
     fn genre_and_store_and_deals_shelves() {
-        let recs = vec![Recommendation {
-            seed_categories: Some("Mystery".into()),
-            candidate_source: Some("libro".into()),
-            categories: vec!["genre".into(), "from_store".into()],
-            ..rec("MysteryBook", 15.0, &[])
-        }];
+        let recs = vec![
+            Recommendation {
+                seed_categories: Some("Mystery".into()),
+                candidate_source: Some("libro".into()),
+                categories: vec!["genre".into(), "from_store".into()],
+                ..rec("MysteryBook", 15.0, &[])
+            },
+            // Matches no personal shelf, so the Libro shelf shows it.
+            Recommendation {
+                candidate_source: Some("libro".into()),
+                series: None,
+                ..rec("JustLibro", 2.0, &["from_store"])
+            },
+        ];
         let mut taste = ShelfTaste::default();
         taste
             .categories

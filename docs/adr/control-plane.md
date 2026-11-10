@@ -659,7 +659,9 @@ section is the record.
   offline, carrying the key's existing host grant onto the version row.
   `POST /api/config/plugins` installs one by directory name.
 - **Artifact location (step 4).** Archives up to 1 MiB are stored in
-  `plugin_artifacts` (`blob:sha256:<hex>`). A larger local archive is
+  the library (`blob:sha256:<hex>`): a `plugin_artifacts` header row over
+  `plugin_artifact_chunks` rows sized from the database plugin's advertised
+  limits, the header written after the last chunk. A larger local archive is
   referenced in place as `file://`, which only hosts that see the path can
   materialize. A shared artifact store is not part of this phase.
 - **Local archive keys (step 4).** A local archive's path-derived key
@@ -1405,7 +1407,7 @@ operator approves it, and only with what was approved.
   cluster, node, owner origin, digest and time; 5 minutes of skew either
   way; served only for archives of versions deployed to that node; every
   refusal is the same 404), is checked against its digest before it is
-  stored in the Host's own `plugin_artifacts`, and extracted by the
+  stored in the Host's own library, and extracted by the
   ordinary materializer, which checks the archive and payload digests.
   An `https:` archive is fetched by the materializer outside any plugin
   jail, so it is fetched only when its URL and digest are the approved
@@ -2007,7 +2009,8 @@ it: a tree, A ← B ← C.
   `accounts` is unique on `(plugin_key, account_id)`; `books`,
   `ignored_titles`, and `account_links` carry `plugin_key`. Phase 3 adds
   `plugin_kv`, `plugin_versions`, `plugin_installs`,
-  `plugin_artifacts`, `plugin_placements` (with nullable `replicas`
+  `plugin_artifacts` with its `plugin_artifact_chunks`,
+  `plugin_placements` (with nullable `replicas`
   for "all"), `cluster_leases`, and `node_status`;
   `plugin_deployments.desired` allows `placed` and `unplaced`;
   `plugin_deployment_observations` gains the guest's reserved memory and

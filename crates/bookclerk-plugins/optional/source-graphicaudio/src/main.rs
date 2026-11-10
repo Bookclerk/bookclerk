@@ -173,7 +173,7 @@ impl ContentSourceRole for GraphicAudioContentSource {
             .purchase_hint(&PurchaseHintOpts::from(params))
             .await
             .map(|hint| hint.map(Into::into))
-            .map_err(internal)
+            .map_err(PluginError::from)
     }
 
     /// GraphicAudio has no public deals feed, so the shelf is always empty.

@@ -27,7 +27,7 @@ var MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES = 262144;
 var FEATURE_SCALAR_LIMITS = "rpc.scalarLimits";
 var FEATURE_STREAMS = "rpc.streams";
 var FEATURE_STORAGE_COPY = "storage.copy";
-var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded"];
+var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited"];
 var CLI_ARG_KINDS = ["string", "bool", "int", "path"];
 var WORK_KINDS = ["book", "podcastShow", "podcastEpisode", "drama"];
 var EXPRESSION_KINDS = ["narration", "text", "translation", "dramatisation", "podcastAudio"];
@@ -3479,6 +3479,75 @@ var PurchaseHintReplyCodec = {
     }
   }
 };
+var PurchaseHintsParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.queries ?? [];
+      const items = s.initStructList(0, list.length, 1, 6);
+      for (let i = 0; i < items.length; i++) {
+        PurchaseHintParamsCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      queries: s.getStructList(0, 1, 6).map((item) => PurchaseHintParamsCodec.read(item, caps))
+    };
+  }
+};
+var PurchaseHintsResultCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.results ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        PurchaseHintResultCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      results: s.getStructList(0, 1, 1).map((item) => PurchaseHintResultCodec.read(item, caps))
+    };
+  }
+};
+var PurchaseHintsReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          PurchaseHintsResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("PurchaseHintsReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: PurchaseHintsResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("PurchaseHintsReply", disc);
+    }
+  }
+};
 var ScanLibraryParamsCodec = {
   dataWords: 1,
   pointerCount: 0,
@@ -6255,6 +6324,34 @@ var ContentSourceRevokeAccountResultsCodec = {
     };
   }
 };
+var ContentSourcePurchaseHintsParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      PurchaseHintsParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: PurchaseHintsParamsCodec.read(s.getStruct(0, 0, 1), caps)
+    };
+  }
+};
+var ContentSourcePurchaseHintsResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      PurchaseHintsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: PurchaseHintsReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var RemoteLibraryHealthParamsCodec = {
   dataWords: 0,
   pointerCount: 0,
@@ -8814,6 +8911,12 @@ var METHODS = {
     searchCatalog: withParams("storefront", "searchCatalog", ContentSourceSearchCatalogParamsCodec, ContentSourceSearchCatalogResultsCodec, okHits),
     expandCandidates: withParams("storefront", "expandCandidates", ContentSourceExpandCandidatesParamsCodec, ContentSourceExpandCandidatesResultsCodec, okHits),
     purchaseHint: withParams("storefront", "purchaseHint", ContentSourcePurchaseHintParamsCodec, ContentSourcePurchaseHintResultsCodec, (value) => okValue({ found: value != null, hint: value ?? void 0 })),
+    purchaseHints: withParams("storefront", "purchaseHints", ContentSourcePurchaseHintsParamsCodec, ContentSourcePurchaseHintsResultsCodec, (value) => okValue({
+      results: asList(value).map((hint) => ({
+        found: hint != null,
+        hint: hint ?? void 0
+      }))
+    })),
     listDeals: withParams("storefront", "listDeals", ContentSourceListDealsParamsCodec, ContentSourceListDealsResultsCodec, okHits),
     health: withoutParams("storefront", "health", ContentSourceHealthParamsCodec, ContentSourceHealthResultsCodec, okHealth),
     diagnose: withoutParams("storefront", "diagnose", ContentSourceDiagnoseParamsCodec, ContentSourceDiagnoseResultsCodec, okLines),
@@ -10147,6 +10250,7 @@ var NamedEntrypoint = class extends WorkerEntrypoint {
     return await target.apply(this, args);
   }
 };
+var PURCHASE_HINTS_BUDGET_MS = 4e3;
 var STOREFRONT_METHODS = Object.freeze([
   "login",
   "scan",
@@ -10157,6 +10261,7 @@ var STOREFRONT_METHODS = Object.freeze([
   "searchCatalog",
   "expandCandidates",
   "purchaseHint",
+  "purchaseHints",
   "listDeals",
   "catalogDetail",
   "revokeAccount",
@@ -10245,6 +10350,29 @@ var StorefrontEntrypoint = class extends NamedEntrypoint {
    */
   purchaseHint(_params) {
     return Promise.reject(unsupported("purchaseHint"));
+  }
+  /**
+   * Purchase links / price hints for several titles in one call, one
+   * answer per query in order. The default asks {@link purchaseHint} for
+   * each query, those with a product id first, and stops starting lookups
+   * after {@link PURCHASE_HINTS_BUDGET_MS}; a store whose catalog prices
+   * many products per request overrides this to make one request. Reject with a
+   * `rate_limited` {@link PluginError} (its `details.retryAfterMs` says how
+   * long) when the store asks to slow down, so the host leaves it alone.
+   *
+   * @param params - The titles to price, in order.
+   * @returns One hint or `null` per query.
+   */
+  async purchaseHints(params) {
+    const started = Date.now();
+    const out = params.queries.map(() => null);
+    const order = params.queries.map((query, i) => ({ i, direct: Boolean(query.productId?.trim()) })).sort((a, b) => Number(b.direct) - Number(a.direct)).map((entry) => entry.i);
+    for (const i of order) {
+      if (Date.now() - started >= PURCHASE_HINTS_BUDGET_MS)
+        break;
+      out[i] = await this.purchaseHint(params.queries[i]);
+    }
+    return out;
   }
   /**
    * Current storefront deals.

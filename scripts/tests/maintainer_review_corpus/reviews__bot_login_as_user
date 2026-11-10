@@ -1,0 +1,12 @@
+[
+ {
+  "id": 1,
+  "user": {
+   "login": "x[bot]",
+   "id": 3,
+   "type": "User"
+  },
+  "state": "APPROVED",
+  "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ }
+]

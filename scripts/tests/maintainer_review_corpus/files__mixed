@@ -1,0 +1,31 @@
+[
+ {
+  "filename": "crates/bookclerkd/src/covers.rs",
+  "status": "modified",
+  "patch": "@@ -1 +1 @@"
+ },
+ {
+  "filename": ".github/workflows/ci.yml",
+  "status": "modified",
+  "patch": "@@ -1 +1 @@"
+ },
+ {
+  "filename": "crates/x/build.rs",
+  "status": "added",
+  "patch": "@@ -1 +1 @@"
+ },
+ {
+  "filename": "tests/fixtures/sample.m4b",
+  "status": "added"
+ },
+ {
+  "filename": "old/name.rs",
+  "status": "renamed",
+  "patch": "@@ -1 +1 @@",
+  "previous_filename": "scripts/run.sh"
+ },
+ {
+  "filename": "docs/big.md",
+  "status": "removed"
+ }
+]

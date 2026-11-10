@@ -81,9 +81,10 @@ pub use protocol::{
     FetchTitleParams, Identifier, IdentifierScheme, ListDealsParams, ListeningProgress,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MediaKind,
     OutputLocalContextDto, OutputS3ContextDto, PlainFetch, PlainPart, PortalAuthMode, PurchaseHint,
-    PurchaseHintParams, PurchaseHintResult, RevokeAccountParams, S3CredentialsDto, ScanBook,
-    ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams, SeriesEntry, SourceAccount,
-    SourceAccounts, SyncListeningResult, WorkKind, MAX_RPC_LINE_BYTES, PROTOCOL_NAME,
+    PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, PurchaseHintsResult,
+    RevokeAccountParams, S3CredentialsDto, ScanBook, ScanLibraryParams, ScanParams, ScanSummary,
+    SearchCatalogParams, SeriesEntry, SourceAccount, SourceAccounts, SyncListeningResult, WorkKind,
+    MAX_RPC_LINE_BYTES, PROTOCOL_NAME,
 };
 
 pub use bookclerk_plugin_abi::{
