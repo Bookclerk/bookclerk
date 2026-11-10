@@ -137,12 +137,18 @@ const BUMP_SQL: &str = "UPDATE live_topic_revisions SET revision = revision + 1 
 ///
 /// Returns the write error.
 pub(crate) async fn bump_on<C: sea_orm::ConnectionTrait>(conn: &C, topic: LiveTopic) -> Result<()> {
-    conn.execute_raw(bookclerk_db_exec::canonical_statement(
-        BUMP_SQL,
-        [sea_orm::Value::from(topic.as_str())],
-    ))
-    .await
-    .map_err(LibraryError::Orm)?;
+    use sea_orm::sea_query::{Alias, Expr, ExprTrait, Query};
+    // Built with SeaORM so the connection renders it in its own dialect;
+    // a local transaction may be on any engine the in-process tools open.
+    let update = Query::update()
+        .table(Alias::new("live_topic_revisions"))
+        .value(
+            Alias::new("revision"),
+            Expr::col(Alias::new("revision")).add(1),
+        )
+        .and_where(Expr::col(Alias::new("topic")).eq(topic.as_str()))
+        .to_owned();
+    conn.execute(&update).await.map_err(LibraryError::Orm)?;
     Ok(())
 }
 
@@ -176,7 +182,7 @@ where
         return store.exec_bumped(write, topic, when).await;
     }
     let changed = conn
-        .execute_raw(bookclerk_db_exec::build_canonical(&write))
+        .execute(write.as_query())
         .await
         .map_err(LibraryError::Orm)?
         .rows_affected();
@@ -308,7 +314,7 @@ impl LibraryStore {
         if !self.admits_statement(&built) {
             let changed = self
                 .db()
-                .execute_raw(bookclerk_db_exec::build_canonical(&write))
+                .execute(write.as_query())
                 .await
                 .map_err(LibraryError::Orm)?
                 .rows_affected();
@@ -381,12 +387,15 @@ impl LibraryStore {
         if !self.admits_statement(&write) {
             let inserted = self
                 .db()
-                .execute_raw(bookclerk_db_exec::build_canonical(&insert))
+                .execute(insert.as_query())
                 .await
                 .map_err(LibraryError::Orm)?;
-            let id = i64::try_from(inserted.last_insert_id()).map_err(|_| {
-                LibraryError::Other(anyhow::anyhow!("live insert identity is out of range"))
-            })?;
+            let id = i64::try_from(inserted.last_insert_id())
+                .ok()
+                .filter(|id| *id > 0)
+                .ok_or_else(|| {
+                    LibraryError::Other(anyhow::anyhow!("live insert returned no usable identity"))
+                })?;
             self.bump_after_oversized_write(topic).await;
             return Ok(id);
         }
