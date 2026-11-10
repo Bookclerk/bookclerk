@@ -1541,7 +1541,6 @@ async fn serve(
     refresh: Refresh,
     admission: Admission,
 ) -> axum::response::Response {
-    use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
     let backend = Arc::new(LiveBackend {
@@ -1571,19 +1570,39 @@ async fn serve(
             "image/jpeg",
             refresh.cache_control(),
         ),
-        Err(CoverFailure::UnknownToken) => StatusCode::NOT_FOUND.into_response(),
-        Err(CoverFailure::NotFound(reason)) => {
-            tracing::debug!(reason = %reason, "cover not found upstream");
-            failure_response(StatusCode::NOT_FOUND)
+        Err(failure) => {
+            // A token this node never issued is not an image failure the
+            // browser should retry, so it answers without `no-store`.
+            if matches!(failure, CoverFailure::UnknownToken) {
+                return failure_status(&failure).into_response();
+            }
+            match &failure {
+                CoverFailure::NotFound(reason) => {
+                    tracing::debug!(reason = %reason, "cover not found upstream");
+                }
+                CoverFailure::Refused(reason) => {
+                    tracing::debug!(reason = %reason, "cover refused");
+                }
+                CoverFailure::Unavailable(reason) => {
+                    tracing::warn!(reason = %reason, "cover unavailable");
+                }
+                CoverFailure::UnknownToken => {}
+            }
+            failure_response(failure_status(&failure))
         }
-        Err(CoverFailure::Refused(reason)) => {
-            tracing::debug!(reason = %reason, "cover refused");
-            failure_response(StatusCode::BAD_GATEWAY)
-        }
-        Err(CoverFailure::Unavailable(reason)) => {
-            tracing::warn!(reason = %reason, "cover unavailable");
-            failure_response(StatusCode::SERVICE_UNAVAILABLE)
-        }
+    }
+}
+
+/// The status a [`CoverFailure`] answers with.
+///
+/// A missing image is the browser's `404`, like a token this node never
+/// issued; a refused image blames the gateway, and an unavailable cover
+/// service blames this node.
+fn failure_status(failure: &CoverFailure) -> axum::http::StatusCode {
+    match failure {
+        CoverFailure::UnknownToken | CoverFailure::NotFound(_) => axum::http::StatusCode::NOT_FOUND,
+        CoverFailure::Refused(_) => axum::http::StatusCode::BAD_GATEWAY,
+        CoverFailure::Unavailable(_) => axum::http::StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 
@@ -2076,6 +2095,30 @@ mod tests {
             format!("{}?s=1", &hash[..60]),
         ] {
             assert_eq!(gravatar_url(&refused), None, "{refused}");
+        }
+    }
+
+    /// The route's answer: a missing image is the browser's 404, while a
+    /// refused download and an unavailable service stay gateway/node errors.
+    #[test]
+    fn failures_split_missing_images_from_broken_ones() {
+        use axum::http::StatusCode;
+        for (failure, expected) in [
+            (CoverFailure::UnknownToken, StatusCode::NOT_FOUND),
+            (
+                CoverFailure::NotFound("HTTP 404".into()),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                CoverFailure::Refused("HTTP 500".into()),
+                StatusCode::BAD_GATEWAY,
+            ),
+            (
+                CoverFailure::Unavailable("no covers plugin".into()),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        ] {
+            assert_eq!(failure_status(&failure), expected, "{failure:?}");
         }
     }
 
