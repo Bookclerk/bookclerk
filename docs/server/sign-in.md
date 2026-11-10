@@ -44,6 +44,12 @@ An Owner can **elevate** to operator, with an IdP step-up, a passkey or
 their password. Elevated, they get **Server** and **Plugins** settings and
 impersonation. Administrators can add users but cannot elevate.
 
+Wrong elevation passwords count toward the same lockout as other sign-in
+attempts, both for the client address and for the Owner. After too many
+misses, `POST /api/auth/elevate` answers `429` with a `Retry-After` header,
+even from another address, until the lockout ends. A passkey or IdP step-up
+still works meanwhile.
+
 ## Sign-in methods
 
 ### Passwords and second factors
@@ -274,6 +280,12 @@ Operators also see scan and acquire. Connecting stores stays in
 ### Accounts
 
 Link and revoke stores, and manage linked sign-in identities.
+
+**Revoke** marks the account revoked (which stops its scans), signs it
+out at the store (best effort), deletes its saved credentials, then
+unlinks it. Books already in the library stay. If a step fails, the store
+stays listed and the page shows the error, so **Revoke** can be tried
+again.
 
 ### Settings → Account (everyone)
 
