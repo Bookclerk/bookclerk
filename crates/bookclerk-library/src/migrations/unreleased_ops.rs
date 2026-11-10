@@ -1249,9 +1249,18 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS plugin_artifacts (
         sha256 TEXT PRIMARY KEY NOT NULL,
-        data TEXT NOT NULL,
         size INTEGER NOT NULL,
+        chunk_bytes INTEGER NOT NULL,
         created_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_artifact_chunks (
+        sha256 TEXT NOT NULL,
+        chunk_bytes INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        data BLOB NOT NULL,
+        PRIMARY KEY (sha256, chunk_bytes, seq)
     )",
     ),
     MigrationOp::Schema(

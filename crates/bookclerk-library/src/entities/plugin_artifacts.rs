@@ -1,5 +1,8 @@
-//! SeaORM entity for `plugin_artifacts`: small version archives stored
-//! in the library when no shared artifact location exists.
+//! SeaORM entity for `plugin_artifacts`: the header of a version archive
+//! stored in the library when no shared artifact location exists.
+//!
+//! The bytes live in `plugin_artifact_chunks`, written before this row, so
+//! a header means every chunk is stored.
 
 use sea_orm::entity::prelude::*;
 
@@ -10,10 +13,11 @@ pub struct Model {
     /// Lowercase hex SHA-256 of the archive bytes.
     #[sea_orm(primary_key, auto_increment = false)]
     pub sha256: String,
-    /// Archive bytes as base64 text.
-    pub data: String,
     /// Archive size in bytes.
     pub size: i64,
+    /// Bytes per chunk in `plugin_artifact_chunks` (the last may be
+    /// shorter); picks which chunk set belongs to this archive.
+    pub chunk_bytes: i64,
     /// RFC 3339 insert time.
     pub created_at: String,
 }
