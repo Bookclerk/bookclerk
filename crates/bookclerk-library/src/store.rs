@@ -30,10 +30,10 @@ use crate::entities::{
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{
-    user_prefs_key, AccountRecord, AcquireStatus, BookRecord, GlobalQueueEntry,
-    ListeningProgressRecord, OidcClientRecord, PortalIdentity, QueueWisher, RequestStatus,
-    StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord, UserPreferences, UserRecord,
-    UserRole, UserStatus,
+    user_prefs_key, AccountRecord, AcquireStatus, AcquireStatusCounts, BookRecord,
+    GlobalQueueEntry, ListeningProgressRecord, OidcClientRecord, PortalIdentity, QueueWisher,
+    RequestStatus, StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord, UserPreferences,
+    UserRecord, UserRole, UserStatus,
 };
 use crate::wishlist_merge::apply_merged_sources;
 use library_model::{holding_from_book, listing_from_book, WorkEnrichment};
@@ -4760,6 +4760,58 @@ impl LibraryStore {
         .await
     }
 
+    /// Counts `books` rows per acquire status in one grouped read.
+    ///
+    /// # Returns
+    ///
+    /// The count for each [`AcquireStatus`] and the table total. A row with
+    /// a status this build does not know is counted in the total only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn count_books_by_status(&self) -> Result<AcquireStatusCounts> {
+        /// One group of the read, decoded by column name: the host database
+        /// proxy does not keep the select order, so a positional tuple
+        /// read could swap the columns.
+        #[derive(Debug, sea_orm::FromQueryResult)]
+        struct StatusCount {
+            /// The group's `acquire_status` wire string.
+            acquire_status: String,
+            /// Rows in the group.
+            n: i64,
+        }
+        lock_retry::retry_read_lock(|| async {
+            let rows = books::Entity::find()
+                .select_only()
+                .column(books::Column::AcquireStatus)
+                .column_as(books::Column::Id.count(), "n")
+                .group_by(books::Column::AcquireStatus)
+                .into_model::<StatusCount>()
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::from_db_err)?;
+            let mut counts = AcquireStatusCounts::default();
+            for StatusCount {
+                acquire_status: status,
+                n,
+            } in rows
+            {
+                counts.total += n;
+                match AcquireStatus::parse(&status) {
+                    Some(AcquireStatus::NotAcquired) => counts.not_acquired += n,
+                    Some(AcquireStatus::Queued) => counts.queued += n,
+                    Some(AcquireStatus::Downloading) => counts.downloading += n,
+                    Some(AcquireStatus::Acquired) => counts.acquired += n,
+                    Some(AcquireStatus::Error) => counts.error += n,
+                    None => {}
+                }
+            }
+            Ok(counts)
+        })
+        .await
+    }
+
     /// Persist enrichment fields without touching scan / ownership columns.
     ///
     /// # Errors
@@ -7152,10 +7204,13 @@ pub(crate) mod discover;
 pub(crate) mod edition_files;
 pub(crate) mod event_outbox;
 pub(crate) mod library_model;
+pub(crate) mod listening;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
+pub(crate) mod retention;
 pub(crate) mod scan_state;
 pub(crate) mod storage_scan;
+pub(crate) mod write_batches;
 pub use discover::{DiscoverSubject, SeedScope, StoredCandidate, StoredFeed};
 pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};

@@ -1,6 +1,6 @@
 {
   "generator": "tools/abi-layout",
-  "capnpVersion": "Cap'n Proto version 1.0.1",
+  "capnpVersion": "Cap'n Proto version 1.5.0",
   "files": [
     "plugin.capnp",
     "plugin_host.capnp"
@@ -2508,6 +2508,46 @@
           "type": {
             "kind": "struct",
             "name": "PurchaseHintReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "ContentSource.purchaseHints$Params": {
+      "name": "ContentSource.purchaseHints$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "PurchaseHintsParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "ContentSource.purchaseHints$Results": {
+      "name": "ContentSource.purchaseHints$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "PurchaseHintsReply"
           },
           "offset": 0
         }
@@ -10197,6 +10237,82 @@
         }
       ]
     },
+    "PurchaseHintsParams": {
+      "name": "PurchaseHintsParams",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "queries",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "PurchaseHintParams"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "PurchaseHintsReply": {
+      "name": "PurchaseHintsReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "PurchaseHintsResult"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "PurchaseHintsResult": {
+      "name": "PurchaseHintsResult",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "results",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "PurchaseHintResult"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
     "PutReply": {
       "name": "PutReply",
       "file": "plugin.capnp",
@@ -12531,7 +12647,8 @@
         "invalidCursor",
         "cancelled",
         "conflict",
-        "limitExceeded"
+        "limitExceeded",
+        "rateLimited"
       ]
     },
     "PortalAuthMode": {
@@ -12810,6 +12927,12 @@
           "ordinal": 13,
           "params": "ContentSource.revokeAccount$Params",
           "results": "ContentSource.revokeAccount$Results"
+        },
+        {
+          "name": "purchaseHints",
+          "ordinal": 14,
+          "params": "ContentSource.purchaseHints$Params",
+          "results": "ContentSource.purchaseHints$Results"
         }
       ]
     },

@@ -1,0 +1,7 @@
+[
+ {
+  "filename": "a/../b",
+  "status": "modified",
+  "patch": "@@ -1 +1 @@"
+ }
+]

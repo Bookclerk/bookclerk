@@ -154,7 +154,7 @@ impl ContentSourceRole for LibroContentSource {
             .purchase_hint(&PurchaseHintOpts::from(params))
             .await
             .map(|hint| hint.map(Into::into))
-            .map_err(internal)
+            .map_err(PluginError::from)
     }
 
     /// Libro.fm has no public deals feed, so the shelf is always empty.

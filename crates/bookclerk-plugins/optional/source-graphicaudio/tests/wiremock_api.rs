@@ -5,13 +5,14 @@
 
 use std::io::{Cursor, Write};
 
-use bookclerk_plugin_source_graphicaudio::GraphicAudioSource;
 use bookclerk_plugin_source_graphicaudio::{
     fetch_title_materials, guest_fetch_title, guest_login, guest_scan_page, GraphicAudioAccess,
     GraphicAudioAuthFile, GraphicAudioBitrate, GraphicAudioClient, GraphicAudioContainer,
-    DEFAULT_STORE_URL, LOGIN_PATH, PRODUCTS_PATH, REMOVE_PATH,
+    GraphicAudioSource, DEFAULT_STORE_URL, LOGIN_PATH, PRODUCTS_PATH, REMOVE_PATH,
 };
-use bookclerk_storefront::{CatalogSearchOpts, LoginOptions, DEFAULT_CATALOG_SEARCH_LIMIT};
+use bookclerk_storefront::{
+    CatalogSearchOpts, LoginOptions, PurchaseHintOpts, SourceError, DEFAULT_CATALOG_SEARCH_LIMIT,
+};
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use zip::write::SimpleFileOptions;
@@ -401,6 +402,68 @@ async fn browser_player_guest_fetch() {
     assert!(std::fs::read(&fetch.parts[0].path)
         .unwrap()
         .starts_with(b"ftyp"));
+}
+
+/// A price query for GraphicAudio product 7.
+fn priced_product() -> PurchaseHintOpts {
+    PurchaseHintOpts {
+        product_id: Some("7".into()),
+        title: Some("Mistborn".into()),
+        region: "us".into(),
+        with_price: true,
+        ..PurchaseHintOpts::default()
+    }
+}
+
+#[tokio::test]
+async fn a_product_page_gives_its_price() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalog/product/view/id/7"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"<span data-price-amount="17.4" class="price"></span>"#),
+        )
+        .mount(&server)
+        .await;
+    let hint = GraphicAudioSource::new()
+        .with_store_url(server.uri())
+        .purchase_hint(&PurchaseHintOpts {
+            title: Some("Mistborn".into()),
+            ..priced_product()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(hint.price_cents, Some(1740));
+}
+
+#[tokio::test]
+async fn a_429_on_a_product_page_reaches_the_host_and_other_failures_do_not() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalog/product/view/id/7"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "12"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/catalog/product/view/id/7"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let source = GraphicAudioSource::new().with_store_url(server.uri());
+    let limited = source.purchase_hint(&priced_product()).await;
+    assert!(
+        matches!(limited, Err(SourceError::RateLimited(Some(w))) if w.as_secs() == 12),
+        "{limited:?}"
+    );
+    let failed = source
+        .purchase_hint(&priced_product())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(failed.price_cents.is_none());
 }
 
 #[tokio::test]

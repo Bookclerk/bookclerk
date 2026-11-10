@@ -20,7 +20,35 @@ pub fn generate_bridge_token() -> String {
     hex::encode(bytes)
 }
 
+/// `GET /health` on the bridge at `127.0.0.1:<port>` with `token`, through
+/// [`BridgeHttp::health`].
+///
+/// The launcher polls this until the isolate is up. Like every other bridge
+/// request it never consults proxy environment variables, so the session
+/// token stays on loopback.
+///
+/// # Arguments
+///
+/// * `port` - The bridge's loopback TCP port.
+/// * `token` - The session's `BRIDGE_TOKEN`.
+///
+/// # Errors
+///
+/// The errors of [`BridgeHttp::health`].
+pub async fn check_health(port: u16, token: &str) -> Result<()> {
+    BridgeHttp {
+        port,
+        token: token.to_owned(),
+    }
+    .health()
+    .await
+}
+
 /// Loopback HTTP client for the isolate bridge.
+///
+/// It writes HTTP/1.1 straight to a `TcpStream` on `127.0.0.1`, so proxy
+/// environment variables (`ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`) never
+/// route a request, and the bearer token never leaves loopback.
 #[derive(Clone)]
 pub struct BridgeHttp {
     /// Bridge TCP port.
@@ -30,6 +58,25 @@ pub struct BridgeHttp {
 }
 
 impl BridgeHttp {
+    /// `GET /health`: whether the bridge is up and accepts this token.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport failures, `bridge unauthorized` on 401, and any other
+    /// non-2xx status as `bridge HTTP <status>`.
+    pub async fn health(&self) -> Result<()> {
+        let (status, headers, rest, mut stream) =
+            self.exchange("GET", "/health", &[], None).await?;
+        if status == 401 {
+            bail!("bridge unauthorized");
+        }
+        if !(200..300).contains(&status) {
+            let body = read_body(&mut stream, &headers, rest).await?;
+            bail!("bridge HTTP {status}: {}", String::from_utf8_lossy(&body));
+        }
+        Ok(())
+    }
+
     /// POST JSON and parse a JSON object response.
     ///
     /// # Errors

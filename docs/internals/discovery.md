@@ -59,8 +59,18 @@ operator, a household user, or a portal identity) has a **subject key**
    identities, household books they have listened to, their listening and
    their open wishlist, with book and wishlist seeds alternating so each
    store's call budget reaches both) and asks **every
-   deployed storefront**, not only the stores they have accounts with. A
-   person with no signal yet (and the operator) seeds from the household.
+   deployed storefront**, not only the stores they have accounts with.
+   While a person has fewer than five books and listens of their own, the
+   rest of the household's books **blend in** at half weight, behind their
+   own, with the household's listening to those books at the same weight:
+   a first wish or book adds to the shelves they already had instead
+   of replacing them, and the household drops out once their own taste can
+   stand alone. A person with no signal of their own yet (and the operator)
+   seeds from the household as it stands. With fewer than five seeds in
+   all, each store is also asked for a fixed set of **starter genres**
+   (Science Fiction, Fantasy, Mystery & Thriller, Romance, History &
+   Biography, Self-help) through its catalog search, as far as its call
+   budget reaches, so a new library still gets shelves.
    `storefront_max_remote_calls` is split across the stores, so all stores
    together never make more calls than it allows (deals count as one call,
    and a store whose share is zero is not asked).
@@ -116,7 +126,7 @@ seeing:
 | `state` | Meaning |
 | --- | --- |
 | `ready` | The stored feed is current. |
-| `refreshing` | The stored feed is shown while a newer one is built. |
+| `refreshing` | The stored feed is shown while a newer one is built: a read found it stale, or a fetch or ranking for the caller is waiting or running (queued by a taste event or the Refresh button). The page shows an "Updating shelves" notice. |
 | `preparing` | No feed yet (or the stored one does not decode); shelves are empty and the page shows placeholders. |
 
 When a ranking job stores someone's shelves, the live socket's `discover`
@@ -138,9 +148,17 @@ Deleting a user removes their Discover rows. A fetch or ranking still queued
 or running for them deletes its rows instead of writing them back.
 
 `GET /api/discover/status` reports whether the caller's shelves are stored
-yet, and queues their refresh as a read would. Callers that must wait on
-shelves, such as the hosted demo, poll it. Any signed-in caller can use it,
-since it only reports the caller's own shelves.
+yet (and, as `updating`, whether a fetch or ranking for them is waiting or
+running), and queues their refresh as a read would. Callers that must wait
+on shelves, such as the hosted demo, poll it. Any signed-in caller can use
+it, since it only reports the caller's own shelves.
+
+`POST /api/discover/refresh` queues a storefront fetch (and the ranking
+that follows it) for the caller now and answers with the same status. The
+Discover page's **Refresh** button calls it: unchanged store calls answer
+from the day's cache, so a refresh is cheap, and a fetch already waiting
+absorbs the request. When the job queue is full the route answers `429`
+and queues nothing, and the page shows the error.
 
 ### Taste events
 
@@ -156,7 +174,9 @@ events:
 | `book_acquired` | The household acquires a book. | A fetch for everyone with shelves. |
 
 Each job it queues may only run 30 seconds later, so the changes of one
-sync or one browsing session fold into a single job per person. The fetches
+sync or one browsing session fold into a single job per person. The one
+exception is the fetch for the person who wished: they are looking at the
+page, so it may run after 5 seconds. The fetches
 are cheap when little changed, because unchanged store calls come from the
 24-hour cache. Apart from the person who wished, someone without stored
 shelves is left to their first read.
@@ -285,6 +305,29 @@ Candidates are **unowned** storefront hits (plus open wishlist items), scored by
 5. Wishlist boost (`wish_count × 40` on the shared queue / Discover merge)
 6. Purchase hints resolved at view time (see below)
 
+Whether a wished title is already owned is decided by the library's
+resolver (`LibraryStore::owned_work_for`), the same way a scanned listing
+finds its work: shared identifiers, then the work's identifiers, then the
+work-level title-and-author match. A wish whose work no library title
+resolves to stays on the queue, so *Dune Messiah* is not hidden by an owned
+*Dune*. Storefront candidates are still dropped by owned ASIN, ISBN and
+product id.
+
+Shelves then partition the ranked list so that **every title lands on one
+shelf**. Shelves claim titles in page order: the wishlist first,
+then the series shelves, the person's own wishes, authors, narrators,
+genres, starter genres, similar taste, Chirp deals, then one **Picked for
+you on {Store}** shelf per store for whatever is left, each title under the
+store where it costs the person least (member price on stores they have an
+account with, list price elsewhere, its own store when no price is known on
+the card). A wished title shows on the wishlist shelf alone (every wish
+shows, however many share a series; wishes past the shelf's size are
+claimed too, and shown nowhere). A shelf that is not about series keeps at
+most **two titles of one series**, so a long series cannot crowd the others
+out; the two series shelves and the wishlist instead rotate between series,
+so their first cards show several series rather than one in
+a row.
+
 ## Wishlist (no approval flow)
 
 There is **no triage / approve / reject** path. An item stays in the **global
@@ -297,8 +340,8 @@ title is **not** in the household library.
 - Global queue: `GET /api/request-queue` — shared order using **overall /
   operator** taste (not per-portal personalization) plus a heavy wish-count
   weight. Each row includes `wishers` (tiny profile pictures: upload /
-  Gravatar / SSO / monogram) for the people who have the title open. Discover
-  `requests` shelf cards carry the same `wishers` / `wish_count` fields.
+  Gravatar / SSO / monogram) for the people who have the title open. Discover's
+  `requests` shelf (the first row) carries the same `wishers` / `wish_count` fields.
 - Identity merge: canonical ISBN-10↔13 when present, else ASIN, else soft
   title+author; ASIN-keyed and ISBN-keyed rows for the same work are merged
   (ISBN is **not** universal across Chirp / GA / Audible public search)
@@ -395,7 +438,7 @@ still resolve by ASIN (e.g. English *A Game of Thrones* `B002UZZ93G`).
 | Surface | Commands / routes |
 | --- | --- |
 | CLI | `bookclerk discover recommend` (prints shelves), `embed`, `sync-listening`, `wishlist …` |
-| Daemon | `GET /api/discover/recommendations` (stored feed), `GET /api/discover/status`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
+| Daemon | `GET /api/discover/recommendations` (stored feed), `GET /api/discover/status`, `POST /api/discover/refresh`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
 | GUI | **Discover** — personalized shelves + catalog search (filter rail, sort + direction, language, Hide Virtual Voice); **Wishlist** — personal list with global queue sidebar |
 
 Wishlists are **store-agnostic**. Rows share a `work_key` plus runtime identity
@@ -407,16 +450,18 @@ queue order; Discover personalizes the feed (including wishlist items).
 
 | Shelf | Kind id | Signal |
 | --- | --- | --- |
-| Finish these series | `finish_series` | Incomplete series + next index |
-| Pick up where you left off | `keep_listening` | Active / multi-book listening in a series |
+| On the wishlist | `requests` | Open shared wishlist items, first on the page and in the viewer's own taste order (tiny wisher avatars on each card) |
+| Finish these series | `finish_series` | Incomplete series + next index; series take turns |
+| Pick up where you left off | `keep_listening` | Active / multi-book listening in a series; series take turns |
+| Because you wishlisted {Title} | `wish` (`wish:dune`, …) | Titles the stores found from one of the person's own open wishes (newest three wishes) |
 | More from {Author} | `author` | Liked-author overlap (top authors) |
 | If you like {Author} | `because` | Related/similar titles **not** by that author |
 | Narrated by {Narrator} | `narrator` | Liked-narrator overlap |
 | Because you like {Genre} | `genre` | Category/subject overlap from finished titles |
-| From {Store} | `from_store` (`from_audible`, …) | Candidates from storefronts already in the library |
-| Chirp deals right now | `chirp_deals` | Chirp top + free deals |
 | Similar to books you finish | `similar_taste` | Embedding similarity |
-| On the wishlist | `requests` | Open shared wishlist items (tiny wisher avatars on each card) |
+| Popular in {Genre} | `starter_genre` (`starter_genre:fantasy`, …) | Starter-genre browse while the taste is thin |
+| Chirp deals right now | `chirp_deals` | Chirp top + free deals |
+| Picked for you on {Store} | `from_store` (`from_audible`, …) | Titles no personal shelf took, ranked by taste, under the store where they cost the person least |
 | Top picks for you | `top_picks` | Fallback when every other shelf is empty |
 
 Shelf **titles** stay dynamic (`More from {Author}`, …). Prefs filter on stable
@@ -449,6 +494,39 @@ caller’s associated accounts (portal account links, or all operator accounts)
 as a **membership** signal: linked stores are compared at member price; other
 stores at list / non-member price; the shelf shows the global cheapest of those
 effective prices. Client-supplied `preferred_sources` are ignored.
+
+A page of cards is priced with **one call per store**: the batch route
+sends every visible card's query to each deployed store's `purchaseHints`
+entrypoint together, with the product id the card already knows for that
+store, so Audible prices up to fifty titles in one catalog request and
+Chirp prices a page in one aliased GraphQL query; Libro.fm and GraphicAudio
+have no bulk endpoint and loop inside the guest. Audible and Chirp resolve
+the titles whose product id they already know first, then look the rest up
+by title for at most five seconds, so a slow search never costs a known
+title its price; Audible prices each query in its own marketplace. The batch answers within
+**10 seconds** with what has resolved: a store still working then counts as
+timed out. A query no store answered with a hint carries only its trusted
+store links, unpriced, with `incomplete: true`: a store's `None` is no
+proof it lacks the title, since a guest out of its own time budget answers
+`None` for titles it never tried. Such an answer is not cached, the page
+keeps no copy, and the card asks again after 15 seconds (twice at most)
+without dropping prices it already shows, so one slow store never turns a
+page of cards into a failed request or a card left unpriced. Queries a
+store answered with a hint are cached for 10 minutes.
+
+Cards show a price before any lookup: the list price the catalog reported
+when the candidate was fetched is stored on the card as the store's list
+price, and the live lookup refreshes it when the card scrolls into view.
+Member prices are applied only for stores the viewer has an account with,
+decided server-side as before.
+
+Stores are paused in two ways. A store that answers **429** returns
+`rate_limited` with its `Retry-After`, and its price lookups are left alone
+for that long (at most fifteen minutes), or for a minute that doubles on
+each repeat when it did not say; a store that answers again closes the
+pause. A store that times out three lookups in a row is paused for five
+minutes (the breaker logs `price lookups paused after repeated timeouts`),
+then tried again. The single-title route honors the same pauses.
 
 ## Non-goals (this iteration)
 

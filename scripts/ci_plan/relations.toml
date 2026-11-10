@@ -258,6 +258,7 @@ library_totp = "bookclerk-library"
 library_vectors = "bookclerk-library"
 db_guest = "bookclerk-db-guest"
 binding_schema = "bookclerk-plugin-database-postgres"
+adapter_conformance = "bookclerk-plugin-database-postgres"
 rpc_like = "bookclerk-plugin-host"
 
 [staged_e2e]

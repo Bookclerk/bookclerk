@@ -41,6 +41,7 @@ pub const METHOD_NAMES: &[&str] = &[
     search_catalog::NAME,
     expand_candidates::NAME,
     purchase_hint::NAME,
+    purchase_hints::NAME,
     list_deals::NAME,
     list_accounts::NAME,
     catalog_detail::NAME,
@@ -293,6 +294,14 @@ pub mod purchase_hint {
     pub const NAME: &str = "purchaseHint";
 }
 
+/// Resolve purchase URLs / price hints for several catalog products at once.
+///
+/// Params: [`crate::PurchaseHintsParams`]. Result: [`crate::PurchaseHintsResult`].
+pub mod purchase_hints {
+    /// Wire method name `"purchaseHints"`.
+    pub const NAME: &str = "purchaseHints";
+}
+
 /// List current storefront deals / promotions.
 ///
 /// Params: [`crate::ListDealsParams`].
@@ -426,6 +435,8 @@ pub mod names {
     pub use super::publish::NAME as PUBLISH;
     /// Alias of [`super::purchase_hint::NAME`] (`"purchaseHint"`).
     pub use super::purchase_hint::NAME as PURCHASE_HINT;
+    /// Alias of [`super::purchase_hints::NAME`] (`"purchaseHints"`).
+    pub use super::purchase_hints::NAME as PURCHASE_HINTS;
     /// Alias of [`super::put::NAME`] (`"put"`).
     pub use super::put::NAME as PUT;
     /// Alias of [`super::revoke_account::NAME`] (`"revokeAccount"`).

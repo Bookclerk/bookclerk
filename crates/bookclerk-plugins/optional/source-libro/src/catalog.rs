@@ -114,7 +114,7 @@ pub async fn catalog_detail(
         return Ok(None);
     };
     let http = HttpClient::new();
-    if let Some(details) = libro_details_logged(&http, base_url, &isbn).await {
+    if let Some(details) = libro_details_logged(&http, base_url, &isbn).await? {
         if let Some(hit) = details.audiobook {
             return Ok(Some(hit.decode_html_entities()));
         }
@@ -157,7 +157,7 @@ pub async fn expand_candidates(
     let from_libro = seed.source.eq_ignore_ascii_case("libro");
     let http = HttpClient::new();
     if let (true, Some(isbn)) = (from_libro, seed_isbn.as_deref()) {
-        if let Some(details) = libro_details_logged(&http, base_url, isbn).await {
+        if let Some(details) = libro_details_logged(&http, base_url, isbn).await? {
             let origin = format!("libro related to “{}”", seed.title);
             let related: Vec<CatalogHit> = details
                 .related
@@ -251,7 +251,7 @@ pub async fn purchase_hint(
     // must not offer that same edition.
     let mut not_for_sale: Option<String> = None;
     if let Some(isbn) = isbn {
-        if let Some(details) = libro_details_logged(&http, base_url, &isbn).await {
+        if let Some(details) = libro_details_logged(&http, base_url, &isbn).await? {
             match (details.audiobook, details.for_sale) {
                 (Some(hit), true) => {
                     return Ok(Some(hint_from_hit(hit, title, opts.with_price)));
@@ -293,7 +293,7 @@ pub async fn purchase_hint(
         if not_for_sale.as_deref() == Some(comparable_isbn(&isbn).as_str()) {
             continue;
         }
-        match libro_details_logged(&http, base_url, &isbn).await {
+        match libro_details_logged(&http, base_url, &isbn).await? {
             Some(details) if !details.for_sale => {
                 tracing::debug!(%isbn, "libro title match not for sale; trying the next");
             }
@@ -438,6 +438,9 @@ async fn libro_details(
     if resp.status().as_u16() == 404 {
         return Ok(None);
     }
+    if let Some(limited) = rate_limited(&resp) {
+        return Err(limited);
+    }
     if !resp.status().is_success() {
         return Err(bookclerk_storefront::SourceError::api(format!(
             "libro audiobook details HTTP {}",
@@ -456,14 +459,29 @@ async fn libro_details_logged(
     http: &HttpClient,
     base_url: &str,
     isbn: &str,
-) -> Option<LibroDetails> {
+) -> bookclerk_storefront::Result<Option<LibroDetails>> {
     match libro_details(http, base_url, isbn).await {
-        Ok(details) => details,
+        Ok(details) => Ok(details),
+        // The store's own "slow down" reaches the host; anything else is
+        // a missing detail, not an error.
+        Err(limited @ bookclerk_storefront::SourceError::RateLimited(_)) => Err(limited),
         Err(err) => {
             tracing::debug!(isbn, error = %err, "libro audiobook details failed");
-            None
+            Ok(None)
         }
     }
+}
+
+/// [`SourceError::RateLimited`](bookclerk_storefront::SourceError::RateLimited)
+/// for a 429 answer, with the store's `Retry-After` when it sent one.
+fn rate_limited(
+    resp: &bookclerk_plugin_sdk::http::Response,
+) -> Option<bookclerk_storefront::SourceError> {
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok());
+    bookclerk_storefront::SourceError::from_rate_limit(resp.status().as_u16(), retry_after)
 }
 
 /// Catalog search for `isbn`, keeping only the row with exactly that ISBN.
@@ -524,6 +542,9 @@ async fn libro_search_hits(
         .send()
         .await
         .map_err(|e| bookclerk_storefront::SourceError::api(e.to_string()))?;
+    if let Some(limited) = rate_limited(&resp) {
+        return Err(limited);
+    }
     if !resp.status().is_success() {
         return Err(bookclerk_storefront::SourceError::api(format!(
             "libro catalog search HTTP {}",

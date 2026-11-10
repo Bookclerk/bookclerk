@@ -80,7 +80,7 @@ FEATURE_STREAMS: str = "rpc.streams"
 FEATURE_STORAGE_COPY: str = "storage.copy"
 """Guest implements server-side `Destination.copy` (`storage.copy`)."""
 
-PLUGIN_ERROR_CODES: tuple[str, ...] = ("invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded")
+PLUGIN_ERROR_CODES: tuple[str, ...] = ("invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited")
 """Stable `PluginError.code` strings. Unknown future codes are forwarded
 as-is; SDKs surface them as a local `unknown` while keeping the raw wire
 code.

@@ -1498,6 +1498,7 @@ fn plugin_error_status(err: &PluginError) -> u16 {
         C::NotFound => 404,
         C::Conflict => 409,
         C::PayloadTooLarge | C::LimitExceeded => 413,
+        C::RateLimited => 429,
         C::Unsupported => 501,
         C::Unavailable | C::DeadlineExceeded | C::Cancelled => 503,
         C::Internal | C::Unknown => 500,
