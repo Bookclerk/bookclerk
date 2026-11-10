@@ -95,3 +95,17 @@ requirePluginMigrationRegistration([mig("", "x".repeat(MAX_SCALAR_BYTES))]);
 }
 
 console.log("plugin migration registration N/N+1 bounds ok");
+
+// The typed form (`{ kind, value }`) is held to the same SQL size cap.
+requirePluginMigrationRegistration([
+  { id: "", operations: [{ kind: "schema", value: "x".repeat(MAX_SCALAR_BYTES) }] },
+]);
+{
+  const err = tooLarge(() =>
+    requirePluginMigrationRegistration([
+      { id: "", operations: [{ kind: "data", value: "x".repeat(MAX_SCALAR_BYTES + 1) }] },
+    ]),
+  );
+  assert.match(err.message, /bytes; exceeds max/);
+}
+console.log("ok typed migration ops");

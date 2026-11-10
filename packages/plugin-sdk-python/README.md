@@ -24,6 +24,18 @@ in this repository). The package's reference follows it on the same page.
 A complete plugin is
 [`examples/plugins-echo-workerd-python`](../../examples/plugins-echo-workerd-python/).
 
+## Database
+
+A `[[databases]]` binding is D1-shaped (`prepare`, `bind`, `all`, `batch`)
+and adds `limits()`, `iterate()` and `chunk()` for staying within the
+adapter's caps; a cap that is hit raises `PluginError` with code
+`limit_exceeded`. `create_test_database()` from
+`bookclerk_plugin_sdk.testkit` serves the same binding to a pytest suite,
+and `bookclerk-plugin test .` runs that suite under every capability
+profile. See
+[Working within database limits](https://bookclerk.app/docs/plugins/database-limits)
+([`docs/plugins/database-limits.md`](../../docs/plugins/database-limits.md)).
+
 ## Developing the SDK
 
 `uv.lock` pins the `dev` and `docs` extras (the SDK itself has no runtime

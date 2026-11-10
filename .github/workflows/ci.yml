@@ -86,6 +86,7 @@ jobs:
       check_plugin_sdk_abi: ${{ steps.resolve.outputs.check_plugin_sdk_abi }}
       check_python_sdk: ${{ steps.resolve.outputs.check_python_sdk }}
       check_workerd_guests: ${{ steps.resolve.outputs.check_workerd_guests }}
+      check_plugin_examples: ${{ steps.resolve.outputs.check_plugin_examples }}
       check_author_surface: ${{ steps.resolve.outputs.check_author_surface }}
       check_fmt: ${{ steps.resolve.outputs.check_fmt }}
       check_clippy: ${{ steps.resolve.outputs.check_clippy }}
@@ -413,6 +414,10 @@ jobs:
         env:
           CI_COVERAGE_DIR: ${{ runner.temp }}/coverage
         run: python3 scripts/ci-exec.py run workerd_guests
+
+      - name: Plugin examples under every database profile
+        if: needs.plan.outputs.check_plugin_examples == 'true'
+        run: python3 scripts/ci-exec.py run plugin_examples
 
       # The Python SDK's and the guests' coverage reports, and the JUnit
       # reports Codecov Test Analytics reads. Failed tests still upload their

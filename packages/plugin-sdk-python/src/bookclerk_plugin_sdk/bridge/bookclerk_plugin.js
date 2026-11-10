@@ -9263,6 +9263,9 @@ function opSql(op) {
     if ("data" in op && typeof op.data === "string") {
       return op.data;
     }
+    if ("value" in op && typeof op.value === "string") {
+      return op.value;
+    }
   }
   return "";
 }

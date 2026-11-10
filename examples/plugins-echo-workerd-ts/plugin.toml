@@ -22,12 +22,18 @@ name = "index.js"
 path = "index.js"
 type = "js"
 
+[[modules]]
+name = "notes.js"
+path = "notes.js"
+type = "js"
+
 [capabilities.network]
 mode = "deny"
 
-# Isolated plugin-owned databases (Workers-style named bindings).
 [vars]
 
+# Isolated plugin-owned database (Workers-style named binding): the `notes`
+# table that `src/notes.ts` keeps, created by `databaseMigrations("DB")`.
 [[databases]]
 binding = "DB"
 

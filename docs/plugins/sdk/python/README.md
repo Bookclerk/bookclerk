@@ -116,6 +116,24 @@ typed `Env` protocol from `plugin.toml`:
 python -m bookclerk_plugin_sdk types .   # writes bookclerk_configuration.py
 ```
 
+## Testing database code
+
+`create_test_database()` from `bookclerk_plugin_sdk.testkit` gives a
+pytest suite the same binding a host grants, served by the
+`bookclerk-db-testkit` executable under one capability profile with the
+plugin's `database_migrations` applied. `bookclerk-plugin test .` runs the
+suite once per profile (`first-party`, `d1` and `minimum`):
+
+```python
+from bookclerk_plugin_sdk.testkit import create_test_database
+
+async with await create_test_database(migrations=MIGRATIONS) as db:  # profile from `bookclerk-plugin test`
+    await db.binding.prepare("INSERT INTO notes (body) VALUES (?)").bind(body).run()
+```
+
+See [Testing against the limits](../../database-limits.md#testing-against-the-limits);
+the TypeScript `echo_workerd_ts` example shows the same pattern end to end.
+
 ## Author tools
 
 ```bash

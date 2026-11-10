@@ -274,6 +274,7 @@ paths):
 | A declared `test_guests` executable | The launching package's tests re-run, with no propagation |
 | `ui/`, `packages/plugin-sdk*/`, ABI scripts | The UI, SDK ABI and API-doc checks |
 | A first-party workerd guest without a Cargo package (`crates/bookclerk-plugins/<tier>/<name>/`) | Its type-check, build and tests (`workerd_guests`) and its staged E2E. `packages/plugin-sdk/` also selects `workerd_guests`, because the guests type-check against it |
+| A reference example that declares `[[databases]]` and has a `test` script in `package.json` (`examples/plugins-<name>/`) | Its type-check, build and suite under every database profile (`plugin_examples`) and its staged E2E. `packages/plugin-sdk/`, `crates/bookclerk-db-testkit/` and `crates/bookclerk-plugin-tools/` also select `plugin_examples` |
 | `docs/**` | The website tests (`site_test`) |
 | `tools/site/**`, `assets/brand/**` | The website tests and audit (`site_test`, `site_audit`) |
 | `tools/diagnostics-collector/**` | The collector's tests (`collector_test`) |
@@ -409,7 +410,7 @@ when a step matches no test. Name such tests `postgres_*`.
 | Job | Runs when | Checks |
 | --- | --- | --- |
 | `plan` | Always | Planner, executor, contract and guardrail tests; DB isolation and docs lints; `resolve`; the `ci-plan` artifact |
-| `fmt / clippy / docs` | Any of its checks is selected | `lint`, `ui`, `plugin_sdk_abi`, `python_sdk`, `workerd_guests`, `author_surface`, `fmt`, `clippy`, `clippy_publish`, `api_docs`, `doctest`, `store_free` |
+| `fmt / clippy / docs` | Any of its checks is selected | `lint`, `ui`, `plugin_sdk_abi`, `python_sdk`, `workerd_guests`, `plugin_examples`, `author_surface`, `fmt`, `clippy`, `clippy_publish`, `api_docs`, `doctest`, `store_free` |
 | `unit + integration tests` | `rust_test` is selected | nextest over the affected packages (the workspace on the full suite), custom-harness targets, feature test runs, bench and example builds |
 | `staged plugin installation (e2e)` | `e2e` is selected | Builds, installs and stages the guests in scope, then the `bookclerk-plugin-e2e` staged targets |
 | `release build + small-VPS envelope (<lto> LTO)` | A shipped binary (hosts, helpers, platform guests) is compiled-affected (`release`), or an `[envelope].paths` input changed, an `[envelope].packages` member is compiled-affected, or the full suite (`envelope`) | Each selected check as its own step; see [Release build](#release-build) and [Small-VPS envelope](#small-vps-envelope) |
@@ -485,6 +486,13 @@ executable first (`cargo build -p bookclerk-db-testkit`) and name it to the
 SDK tests as `BOOKCLERK_DB_TESTKIT`: the SDKs' `createTestDatabase` wrappers
 spawn it (see [Working within database limits](../plugins/database-limits.md#a-plugins-own-binding)),
 so both checks need the Rust toolchain.
+
+The `plugin_examples` check builds the TypeScript SDK, the kit and the
+`bookclerk-plugin` author CLI, then, for each database example, type-checks
+it, rebuilds its `modules/` (a committed tree that differs is drift, as in
+`workerd_guests`) and runs `bookclerk-plugin test <dir>`, which runs the
+example's own suite once per profile (`first-party`, `d1`, `minimum`; see
+[The suite under every profile](../plugins/database-limits.md#the-suite-under-every-profile)).
 
 To fix formatting locally:
 
