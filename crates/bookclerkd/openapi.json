@@ -14180,7 +14180,7 @@
           {
             "name": "q",
             "in": "query",
-            "description": "Full-text search query; empty skips the search index.",
+            "description": "Full-text search over this node's search index. Hits are sorted by\ntitle and every hit counts toward `total` (there is no hit cap); an\nempty value skips the index.",
             "required": false,
             "schema": {
               "type": "string"
@@ -29664,6 +29664,7 @@
           "discover_candidates",
           "discover_feed",
           "cache_sweep",
+          "search_index_rebuild",
           "invalid"
         ]
       },

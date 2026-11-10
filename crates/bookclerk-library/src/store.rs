@@ -7296,6 +7296,7 @@ pub(crate) mod listening;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
 pub(crate) mod retention;
+pub(crate) mod search_feed;
 pub(crate) mod storage_scan;
 pub(crate) mod write_batches;
 pub use discover::{DiscoverSubject, SeedScope, StoredCandidate, StoredFeed};

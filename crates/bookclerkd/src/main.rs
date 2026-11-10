@@ -47,6 +47,7 @@ mod registry;
 mod requirements_sweep;
 mod restart;
 mod scheduler;
+mod search_index;
 mod totp;
 mod tray_companion;
 
