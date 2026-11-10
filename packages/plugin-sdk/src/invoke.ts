@@ -485,6 +485,19 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       W.ContentSourcePurchaseHintResultsCodec,
       (value) => okValue({ found: value != null, hint: (value ?? undefined) as PurchaseHint }),
     ),
+    purchaseHints: withParams(
+      "storefront",
+      "purchaseHints",
+      W.ContentSourcePurchaseHintsParamsCodec,
+      W.ContentSourcePurchaseHintsResultsCodec,
+      (value) =>
+        okValue({
+          results: asList<PurchaseHint | null>(value).map((hint) => ({
+            found: hint != null,
+            hint: (hint ?? undefined) as PurchaseHint,
+          })),
+        }),
+    ),
     listDeals: withParams(
       "storefront",
       "listDeals",

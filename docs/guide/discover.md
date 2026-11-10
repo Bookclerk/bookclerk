@@ -7,6 +7,7 @@ track of books you want but do not own yet, across every store at once.
 
 Discover shows rows of suggestions, each with its reason, for example:
 
+- **On the wishlist**: what people in your household want, first.
 - **Finish these series**: the next book in a series you started.
 - **Pick up where you left off**: books you have started.
 - **Because you wishlisted** a title: books related to something on your
@@ -18,7 +19,11 @@ Discover shows rows of suggestions, each with its reason, for example:
 - **Popular in** a genre, while Discover is still learning your taste.
 - **Picked for you on** a store: the rest of your matches, each under the
   store where it costs you least, and **Chirp deals**.
-- **Wishlist**: what people in your household want.
+
+Each book appears on one row only. Most rows show no more than two books
+of the same series, so one long series cannot crowd out the rest. **Finish
+these series**, **Pick up where you left off** and **Wishlist** may show
+more, taking turns between series, and so may **Top picks for you**.
 
 Each book appears on one row only. Most rows show no more than two books
 of the same series, so one long series cannot crowd out the rest. **Finish
