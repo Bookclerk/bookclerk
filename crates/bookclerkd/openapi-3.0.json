@@ -36539,6 +36539,12 @@
             "description": "Stable map key for this work (`isbn:…`, `asin:…`, or soft title+author).",
             "example": "isbn:9780441478125"
           },
+          "work_id": {
+            "type": "string",
+            "description": "Library work the entry's wishes resolve to, when the library could\nplace them. Wishes for one work are one entry even when their\n`work_key`s differ, so a client matches its own wishes on this id\nfirst and on `work_key` otherwise.",
+            "example": "0b7e2c1d-5f3a-4e6b-9c8d-1a2b3c4d5e6f",
+            "nullable": true
+          },
           "title": {
             "type": "string",
             "description": "Display title as shown on the storefront or library card.",
