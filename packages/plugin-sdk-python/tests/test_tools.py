@@ -614,10 +614,11 @@ def test_refuse_symlink_blocks_bookclerk_dir_link(tmp_path: Path):
         .replace('[[kv_namespaces]]\nbinding = "KV"\n', ""),
         encoding="utf-8",
     )
-    (modules / "plugin.py").write_text(
-        (ECHO_PY / "modules" / "plugin.py").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    for name in ("plugin.py", "notes.py"):
+        (modules / name).write_text(
+            (ECHO_PY / "modules" / name).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
     outside = tmp_path / "outside_dir"
     outside.mkdir()
     (plugin / ".bookclerk").symlink_to(outside)
@@ -676,10 +677,11 @@ def test_sync_embed_optional_vendor(tmp_path: Path):
     )
     modules = staging / "modules"
     modules.mkdir()
-    (modules / "plugin.py").write_text(
-        (ECHO_PY / "modules" / "plugin.py").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    for name in ("plugin.py", "notes.py"):
+        (modules / name).write_text(
+            (ECHO_PY / "modules" / name).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
     assert "synced" in sync_embed(staging)
     assert (modules / "bookclerk_plugin_sdk" / "workerd.py").is_file()
     assert "ok" in check_plugin(staging)
