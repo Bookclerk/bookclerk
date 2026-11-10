@@ -627,8 +627,6 @@ mod tests {
                 isbn: None,
                 notes: None,
                 status: RequestStatus::Open,
-                work_key: String::new(),
-                work_id: None,
                 resolved_book_uuid: None,
                 cover_url: None,
             })

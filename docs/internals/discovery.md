@@ -41,7 +41,9 @@ them. Chirp top/free deals are pulled once per recommend run (unowned only).
 
 Listening taste is **optional** and **provider-agnostic**. Integrations that
 support listening sync (Audiobookshelf today; third-party plugins via capability
-`sync_listening`) write into the shared `listening_progress` table. Ranking never
+`sync_listening`) write into the shared `listening_progress` table, one row
+per listener and work (see [Listening sync](../server/integrations.md#listening-sync)).
+Discover reads each row's authors and library title through its work. Ranking never
 calls those adapters — if no listening data is present, or you pass
 `--no-listening` to the CLI, discovery still runs on owned-library taste
 alone. The CLI scopes with `external_user_id` and/or `--listening-provider` for
@@ -449,8 +451,14 @@ still resolve by ASIN (e.g. English *A Game of Thrones* `B002UZZ93G`).
 | Daemon | `GET /api/discover/recommendations` (stored feed), `GET /api/discover/status`, `POST /api/discover/refresh`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
 | GUI | **Discover** — personalized shelves + catalog search (filter rail, sort + direction, language, Hide Virtual Voice); **Wishlist** — personal list with global queue sidebar |
 
-Wishlists are **store-agnostic**. Rows share a `work_key` plus runtime identity
-merge (ISBN/ASIN aliases and soft title+author). The global queue ranks with
+Wishlists are **store-agnostic**. Every wish names the library work it is
+for: adding one resolves its ASIN, ISBN, title and authors the way a scan
+resolves a listing. A book the library does not hold gets a catalog work and
+edition (no listing or holding), with ids derived from what it was resolved
+from, so two people wishing for the same ASIN share one work. Wishes for one
+work are one queue entry, and a person's second wish for a work they already
+wish for returns the first. The wish's `work_key` is derived on read from its
+identifiers, for display matching only. The global queue ranks with
 **overall / operator** taste plus `wish_count × 40`. Every viewer sees the same
 queue order; Discover personalizes the feed (including wishlist items).
 

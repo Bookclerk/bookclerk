@@ -1186,6 +1186,8 @@ impl LibraryStore {
                 .all(&self.db)
                 .await
                 .map_err(LibraryError::Orm)?;
+            // The work each user's latest hint is about.
+            let mut listening_work: HashMap<i64, String> = HashMap::new();
             for row in progress {
                 if row.is_finished != 0 {
                     continue;
@@ -1215,10 +1217,24 @@ impl LibraryStore {
                     .unwrap_or(true);
                 if replace {
                     extras.listening = Some(UserListeningHint {
-                        title: row.title,
+                        title: None,
                         provider: row.provider,
                         last_listened_at: at,
                     });
+                    listening_work.insert(user_id, row.work_id);
+                }
+            }
+            // The hint's title is its work's, read for every user at once.
+            let work_ids: Vec<String> = listening_work
+                .values()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let works = self.works_by_ids(&work_ids).await?;
+            for (user_id, work_id) in listening_work {
+                if let Some(hint) = out.get_mut(&user_id).and_then(|e| e.listening.as_mut()) {
+                    hint.title = works.get(&work_id).map(|w| w.title.clone());
                 }
             }
         }
@@ -1363,6 +1379,11 @@ impl LibraryStore {
             .map_err(LibraryError::Orm)?;
         oidc_rp_states::Entity::delete_many()
             .filter(oidc_rp_states::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        crate::entities::user_title_state::Entity::delete_many()
+            .filter(crate::entities::user_title_state::Column::UserId.eq(id))
             .exec(txn)
             .await
             .map_err(LibraryError::Orm)?;
@@ -4474,7 +4495,19 @@ impl LibraryStore {
             am.is_finished = Set(i64::from(v));
         }
         am.updated_at = Set(now_str());
-        self.update_book_bumped(am).await?;
+        let book = self.update_book_bumped(am).await?;
+        // Each person linked to the account keeps the state on the work, so
+        // members sharing the account do not overwrite one another's.
+        let users = self
+            .users_linked_to_account(&book.plugin_key, &book.account_id)
+            .await?;
+        if !users.is_empty() {
+            if let Some(work_id) = self.work_id_for_book(&book.uuid).await? {
+                for user_id in users {
+                    self.set_user_title_state(user_id, &work_id, fields).await?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -4985,12 +5018,11 @@ impl LibraryStore {
             let coalesce = |new: Option<String>, old: Option<String>| new.or(old);
             let mut am: listening_progress::ActiveModel = existing.clone().into();
             am.identity_id = Set(row.identity_id.or(existing.identity_id));
-            am.book_uuid = Set(coalesce(row.book_uuid.clone(), existing.book_uuid.clone()));
-            am.work_id = Set(coalesce(row.work_id.clone(), existing.work_id.clone()));
-            am.title = Set(coalesce(row.title.clone(), existing.title.clone()));
-            am.authors = Set(coalesce(row.authors.clone(), existing.authors.clone()));
-            am.asin = Set(coalesce(row.asin.clone(), existing.asin.clone()));
-            am.isbn = Set(coalesce(row.isbn.clone(), existing.isbn.clone()));
+            am.work_id = Set(row.work_id.clone());
+            am.edition_id = Set(coalesce(
+                row.edition_id.clone(),
+                existing.edition_id.clone(),
+            ));
             am.progress = Set(row.progress);
             am.current_time_seconds = Set(row.current_time_seconds);
             am.duration_seconds = Set(row.duration_seconds);
@@ -5007,13 +5039,9 @@ impl LibraryStore {
                 identity_id: Set(row.identity_id),
                 provider: Set(row.provider.clone()),
                 external_user_id: Set(row.external_user_id.clone()),
-                book_uuid: Set(row.book_uuid.clone()),
                 work_id: Set(row.work_id.clone()),
+                edition_id: Set(row.edition_id.clone()),
                 external_item_id: Set(row.external_item_id.clone()),
-                title: Set(row.title.clone()),
-                authors: Set(row.authors.clone()),
-                asin: Set(row.asin.clone()),
-                isbn: Set(row.isbn.clone()),
                 progress: Set(row.progress),
                 current_time_seconds: Set(row.current_time_seconds),
                 duration_seconds: Set(row.duration_seconds),
@@ -5124,35 +5152,18 @@ impl LibraryStore {
             .uuid
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let work_key = if req.work_key.trim().is_empty() {
-            fallback_work_key(
-                &req.title,
-                req.authors.as_deref(),
-                req.asin.as_deref(),
-                req.isbn.as_deref(),
-            )
-        } else {
-            req.work_key.trim().to_string()
-        };
-
-        // Idempotent wishlist: same wisher + exact work_key, or same bibliographic
-        // identity under a different key (e.g. soft:… vs asin:… / isbn:…).
-        if let Some(existing) = self.find_open_wishlist(req.identity_id, &work_key).await? {
-            return self
-                .backfill_title_request_cover(&existing, req.cover_url.as_deref())
-                .await;
-        }
-        if let Some(existing) = self
-            .find_open_wishlist_matching(
-                req.identity_id,
-                &work_key,
-                &req.title,
-                req.authors.as_deref(),
-                req.asin.as_deref(),
-                req.isbn.as_deref(),
-            )
-            .await?
-        {
+        // The wish names its work; wishing twice for one work is one wish.
+        let (work_id, edition_id) = self
+            .work_for_wish(&crate::TitleQuery {
+                title: &req.title,
+                authors: req.authors.as_deref(),
+                asin: req.asin.as_deref(),
+                isbn: req.isbn.as_deref(),
+                series: None,
+                series_index: None,
+            })
+            .await?;
+        if let Some(existing) = self.find_open_wishlist(req.identity_id, &work_id).await? {
             return self
                 .backfill_title_request_cover(&existing, req.cover_url.as_deref())
                 .await;
@@ -5162,15 +5173,11 @@ impl LibraryStore {
             id: NotSet,
             uuid: Set(uuid),
             identity_id: Set(req.identity_id),
-            title: Set(req.title.clone()),
-            authors: Set(req.authors.clone()),
-            asin: Set(req.asin.clone()),
-            isbn: Set(req.isbn.clone()),
+            work_id: Set(work_id),
+            edition_id: Set(edition_id),
             notes: Set(req.notes.clone()),
             status: Set(req.status.as_str().to_string()),
             preferred_source: NotSet,
-            work_id: Set(req.work_id.clone()),
-            work_key: Set(work_key),
             resolved_book_uuid: Set(req.resolved_book_uuid.clone()),
             cover_url: Set(req.cover_url.clone()),
             created_at: Set(now.clone()),
@@ -5320,30 +5327,6 @@ impl LibraryStore {
                     dirty = true;
                 }
             }
-            if model
-                .asin
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .is_none()
-            {
-                if let Some(a) = row.asin.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                    am.asin = Set(Some(a.to_string()));
-                    dirty = true;
-                }
-            }
-            if model
-                .isbn
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .is_none()
-            {
-                if let Some(i) = row.isbn.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                    am.isbn = Set(Some(i.to_string()));
-                    dirty = true;
-                }
-            }
             if dirty {
                 am.updated_at = Set(now_str());
                 am.update(&self.db).await.map_err(LibraryError::Orm)?;
@@ -5393,42 +5376,143 @@ impl LibraryStore {
         else {
             return Ok(None);
         };
-        let mut row = map_request(model);
-        row.sources = self.list_title_request_sources(id).await?;
-        apply_merged_sources(&mut row);
-        Ok(Some(row))
+        Ok(self.hydrate_requests(vec![model]).await?.pop())
     }
 
-    /// Attaches storefront source rows to a page of title requests in one query.
-    async fn attach_sources_batch(
+    /// Turns stored wish rows into records: each wish's title and authors
+    /// from its work, its storefront sources merged in, and the card key
+    /// derived from both. Works, credits and sources are read in chunked
+    /// bulk lookups, not per wish.
+    ///
+    /// # Arguments
+    ///
+    /// * `models` - Stored wish rows, in the order to return them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    async fn hydrate_requests(
         &self,
-        rows: Vec<TitleRequestRecord>,
+        models: Vec<title_requests::Model>,
     ) -> Result<Vec<TitleRequestRecord>> {
-        if rows.is_empty() {
-            return Ok(rows);
+        if models.is_empty() {
+            return Ok(Vec::new());
         }
-        let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
-        let all = title_request_sources::Entity::find()
-            .filter(title_request_sources::Column::TitleRequestId.is_in(ids))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let work_ids: Vec<String> = models
+            .iter()
+            .map(|m| m.work_id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let works = self.works_by_ids(&work_ids).await?;
+        let edition_ids: Vec<String> = models
+            .iter()
+            .filter_map(|m| m.edition_id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let edition_codes = self.edition_asin_isbn(&edition_ids).await?;
+        let ids: Vec<i64> = models.iter().map(|m| m.id).collect();
         let mut by_id: std::collections::HashMap<i64, Vec<TitleRequestSourceRecord>> =
             std::collections::HashMap::new();
-        for m in all {
-            by_id
-                .entry(m.title_request_id)
-                .or_default()
-                .push(map_source(m));
+        for part in ids.chunks(self.lookup_chunk()) {
+            let found = title_request_sources::Entity::find()
+                .filter(title_request_sources::Column::TitleRequestId.is_in(part.iter().copied()))
+                .order_by_asc(title_request_sources::Column::Source)
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            for m in found {
+                by_id
+                    .entry(m.title_request_id)
+                    .or_default()
+                    .push(map_source(m));
+            }
         }
-        Ok(rows
+        Ok(models
             .into_iter()
-            .map(|mut row| {
-                row.sources = by_id.remove(&row.id).unwrap_or_default();
+            .map(|model| {
+                let id = model.id;
+                let mut row = map_request(model);
+                if let Some(work) = works.get(&row.work_id) {
+                    row.title.clone_from(&work.title);
+                    row.authors = (!work.credits.is_empty()).then(|| work.credits.join(", "));
+                }
+                row.sources = by_id.remove(&id).unwrap_or_default();
                 apply_merged_sources(&mut row);
+                // The edition the wish named carries the identifiers it was
+                // resolved from, when no store source names them.
+                if let Some((asin, isbn)) = row
+                    .edition_id
+                    .as_ref()
+                    .and_then(|edition| edition_codes.get(edition))
+                {
+                    if row.asin.is_none() {
+                        row.asin.clone_from(asin);
+                    }
+                    if row.isbn.is_none() {
+                        row.isbn.clone_from(isbn);
+                    }
+                }
+                row.work_key = fallback_work_key(
+                    &row.title,
+                    row.authors.as_deref(),
+                    row.asin.as_deref(),
+                    row.isbn.as_deref(),
+                );
                 row
             })
             .collect())
+    }
+
+    /// The first ASIN and ISBN each edition carries, read in chunked bulk
+    /// queries.
+    ///
+    /// # Arguments
+    ///
+    /// * `edition_ids` - Edition ids to read.
+    ///
+    /// # Returns
+    ///
+    /// `(asin, isbn)` per edition that carries either; values are taken in
+    /// value order so the answer is stable.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database read error.
+    async fn edition_asin_isbn(
+        &self,
+        edition_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, (Option<String>, Option<String>)>> {
+        let mut out: std::collections::HashMap<String, (Option<String>, Option<String>)> =
+            std::collections::HashMap::new();
+        for part in edition_ids.chunks(self.lookup_chunk()) {
+            let rows = crate::entities::edition_identifiers::Entity::find()
+                .filter(
+                    crate::entities::edition_identifiers::Column::EditionId
+                        .is_in(part.iter().cloned()),
+                )
+                .filter(crate::entities::edition_identifiers::Column::Scheme.is_in([
+                    bookclerk_resolve::IdentifierScheme::Asin.as_str(),
+                    bookclerk_resolve::IdentifierScheme::Isbn.as_str(),
+                ]))
+                .order_by_asc(crate::entities::edition_identifiers::Column::Value)
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            for m in rows {
+                let entry = out.entry(m.edition_id).or_default();
+                let slot = if m.scheme == bookclerk_resolve::IdentifierScheme::Asin.as_str() {
+                    &mut entry.0
+                } else {
+                    &mut entry.1
+                };
+                if slot.is_none() {
+                    *slot = Some(m.value);
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Fill `cover_url` on an open wishlist row when the client later supplies one.
@@ -5459,29 +5543,30 @@ impl LibraryStore {
         am.cover_url = Set(Some(cover.to_string()));
         am.updated_at = Set(now_str());
         let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
-        let mut row = map_request(model);
-        row.sources = self.list_title_request_sources(row.id).await?;
-        apply_merged_sources(&mut row);
-        Ok(row)
+        self.hydrate_requests(vec![model])
+            .await?
+            .pop()
+            .ok_or_else(|| LibraryError::NotFound(existing.uuid.clone()))
     }
 
-    /// Open wishlist row for this identity + work key, if any.
+    /// Open wish of this identity for `work_id`, if any.
+    ///
+    /// # Arguments
+    ///
+    /// * `identity_id` - The wisher's portal identity; `None` for the operator.
+    /// * `work_id` - The work wished for.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// Returns [`LibraryError::Orm`] when a read fails.
     pub async fn find_open_wishlist(
         &self,
         identity_id: Option<i64>,
-        work_key: &str,
+        work_id: &str,
     ) -> Result<Option<TitleRequestRecord>> {
-        let work_key = work_key.trim();
-        if work_key.is_empty() {
-            return Ok(None);
-        }
         let mut query = title_requests::Entity::find()
-            .filter(title_requests::Column::WorkKey.eq(work_key))
-            .filter(title_requests::Column::Status.eq("open"))
+            .filter(title_requests::Column::WorkId.eq(work_id))
+            .filter(title_requests::Column::Status.eq(RequestStatus::Open.as_str()))
             .order_by_desc(title_requests::Column::CreatedAt);
         query = match identity_id {
             Some(id) => query.filter(title_requests::Column::IdentityId.eq(id)),
@@ -5490,43 +5575,7 @@ impl LibraryStore {
         let Some(model) = query.one(&self.db).await.map_err(LibraryError::Orm)? else {
             return Ok(None);
         };
-        let mut row = map_request(model);
-        row.sources = self.list_title_request_sources(row.id).await?;
-        apply_merged_sources(&mut row);
-        Ok(Some(row))
-    }
-
-    /// Open wishlist row that matches bibliographic identity even when `work_key` differs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn find_open_wishlist_matching(
-        &self,
-        identity_id: Option<i64>,
-        work_key: &str,
-        title: &str,
-        authors: Option<&str>,
-        asin: Option<&str>,
-        isbn: Option<&str>,
-    ) -> Result<Option<TitleRequestRecord>> {
-        let needle = WishlistIdentity {
-            work_key,
-            title,
-            authors,
-            asin,
-            isbn,
-        };
-        let open = self.list_wishlist(identity_id).await?;
-        Ok(open.into_iter().find(|row| {
-            needle.matches(WishlistIdentity {
-                work_key: &row.work_key,
-                title: &row.title,
-                authors: row.authors.as_deref(),
-                asin: row.asin.as_deref(),
-                isbn: row.isbn.as_deref(),
-            })
-        }))
+        Ok(self.hydrate_requests(vec![model]).await?.pop())
     }
 
     /// Personal open wishlist for a portal identity, or operator (`identity_id` null).
@@ -5536,23 +5585,17 @@ impl LibraryStore {
     /// Returns an error when the operation fails.
     pub async fn list_wishlist(&self, identity_id: Option<i64>) -> Result<Vec<TitleRequestRecord>> {
         let mut query = title_requests::Entity::find()
-            .filter(title_requests::Column::Status.eq("open"))
+            .filter(title_requests::Column::Status.eq(RequestStatus::Open.as_str()))
             .order_by_desc(title_requests::Column::CreatedAt);
         query = match identity_id {
             Some(id) => query.filter(title_requests::Column::IdentityId.eq(id)),
             None => query.filter(title_requests::Column::IdentityId.is_null()),
         };
-        let rows = query
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(map_request)
-            .collect();
-        self.attach_sources_batch(rows).await
+        let rows = query.all(&self.db).await.map_err(LibraryError::Orm)?;
+        self.hydrate_requests(rows).await
     }
 
-    /// Global request queue: open wishes grouped by `work_key`.
+    /// Global request queue: open wishes grouped by their work.
     ///
     /// Sorted by wish count as a simple default; Discover re-ranks with local
     /// taste plus a heavy per-wisher boost for the Wishlist sidebar.
@@ -5569,29 +5612,11 @@ impl LibraryStore {
         let mut by_key: std::collections::HashMap<String, GlobalQueueEntry> =
             std::collections::HashMap::new();
         for row in open {
-            let key = if row.work_key.trim().is_empty() {
-                fallback_work_key(
-                    &row.title,
-                    row.authors.as_deref(),
-                    row.asin.as_deref(),
-                    row.isbn.as_deref(),
-                )
-            } else {
-                row.work_key.clone()
-            };
-            // Wishes resolved to the same work are one entry, whatever
-            // identifiers each wisher's store gave; the rest group by key.
-            // The entry keeps its bibliographic key: clients match cards
-            // and wishes on it.
-            let group = match row.work_id.as_deref().map(str::trim) {
-                Some(work_id) if !work_id.is_empty() => format!("work:{work_id}"),
-                _ => key.clone(),
-            };
             let wisher = queue_wisher_for(row.identity_id, &identities, &users);
-            match by_key.entry(group) {
+            match by_key.entry(row.work_id.clone()) {
                 std::collections::hash_map::Entry::Vacant(e) => {
                     let mut entry = GlobalQueueEntry {
-                        work_key: key,
+                        work_key: row.work_key,
                         work_id: row.work_id,
                         title: row.title,
                         authors: row.authors,
@@ -5681,6 +5706,7 @@ impl LibraryStore {
                     if row.created_at > entry.last_requested_at {
                         entry.last_requested_at = row.created_at;
                         // Prefer the newest metadata.
+                        entry.work_key = row.work_key;
                         entry.title = row.title;
                         if row.authors.is_some() {
                             entry.authors = row.authors;
@@ -5759,10 +5785,7 @@ impl LibraryStore {
         else {
             return Ok(None);
         };
-        let mut row = map_request(model);
-        row.sources = self.list_title_request_sources(row.id).await?;
-        apply_merged_sources(&mut row);
-        Ok(Some(row))
+        Ok(self.hydrate_requests(vec![model]).await?.pop())
     }
 
     /// Lists wishlist / title-request rows.
@@ -5787,14 +5810,8 @@ impl LibraryStore {
         if let Some(status) = status {
             query = query.filter(title_requests::Column::Status.eq(status.as_str()));
         }
-        let rows = query
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(map_request)
-            .collect();
-        self.attach_sources_batch(rows).await
+        let rows = query.all(&self.db).await.map_err(LibraryError::Orm)?;
+        self.hydrate_requests(rows).await
     }
 
     /// Updates the lifecycle status of a title request.
@@ -6350,20 +6367,12 @@ pub struct NewListeningProgress {
     pub provider: String,
     /// User id at the external provider.
     pub external_user_id: String,
-    /// Foreign key to `books.uuid`.
-    pub book_uuid: Option<String>,
-    /// Canonical work id this edition or request resolves to.
-    pub work_id: Option<String>,
+    /// The work the item resolved to through its identifiers.
+    pub work_id: String,
+    /// The edition the item's identifiers name, when exactly one does.
+    pub edition_id: Option<String>,
     /// Provider-native listening-progress item id.
     pub external_item_id: String,
-    /// Display title of the work or edition.
-    pub title: Option<String>,
-    /// Comma-separated or JSON author list from the storefront.
-    pub authors: Option<String>,
-    /// Amazon ASIN when known; otherwise null.
-    pub asin: Option<String>,
-    /// ISBN-10/13 when known; otherwise null.
-    pub isbn: Option<String>,
     /// Fractional progress 0.0–1.0 when the provider reports it.
     pub progress: Option<f64>,
     /// Current playback position within the title, in seconds.
@@ -6383,22 +6392,19 @@ pub struct NewTitleRequest {
     pub uuid: Option<String>,
     /// Foreign key to `portal_identities.id`.
     pub identity_id: Option<i64>,
-    /// Display title of the work or edition.
+    /// Title the wisher asked for. It only finds (or makes) the wish's
+    /// work and is not stored on the wish.
     pub title: String,
-    /// Comma-separated or JSON author list from the storefront.
+    /// Comma-separated authors the wisher gave, used like `title`.
     pub authors: Option<String>,
-    /// Amazon ASIN when known; otherwise null.
+    /// Amazon ASIN the wisher gave, used like `title`.
     pub asin: Option<String>,
-    /// ISBN-10/13 when known; otherwise null.
+    /// ISBN-10/13 the wisher gave, used like `title`.
     pub isbn: Option<String>,
     /// Free-form operator or requester notes.
     pub notes: Option<String>,
     /// Lifecycle status for the row (user, request, …).
     pub status: RequestStatus,
-    /// Stable bibliographic key; empty triggers [`fallback_work_key`].
-    pub work_key: String,
-    /// Canonical work id this edition or request resolves to.
-    pub work_id: Option<String>,
     /// Library `books.uuid` once the wishlist item is fulfilled.
     pub resolved_book_uuid: Option<String>,
     /// HTTPS URL for cover art when known.
@@ -6546,101 +6552,6 @@ impl NewTitleRequestSource {
         crate::decode_html_entities_opt_in_place(&mut self.list_price_label);
         crate::decode_html_entities_opt_in_place(&mut self.member_price_label);
     }
-}
-
-/// Bibliographic slice used for wishlist dedupe.
-#[derive(Debug, Clone, Copy)]
-pub struct WishlistIdentity<'a> {
-    /// Stable merge key used to group editions into a work.
-    pub work_key: &'a str,
-    /// Display title of the work or edition.
-    pub title: &'a str,
-    /// Comma-separated or JSON author list from the storefront.
-    pub authors: Option<&'a str>,
-    /// Amazon ASIN when known; otherwise null.
-    pub asin: Option<&'a str>,
-    /// ISBN-10/13 when known; otherwise null.
-    pub isbn: Option<&'a str>,
-}
-
-impl WishlistIdentity<'_> {
-    /// Whether two wishlist rows refer to the same work despite differing keys.
-    ///
-    /// Matches exact `work_key`, shared ASIN/ISBN, or the soft title+author key
-    /// from [`fallback_work_key`]. Cross-key isbn↔asin pairs require a soft title
-    /// agreement so unrelated hard keys never collapse.
-    #[must_use]
-    pub fn matches(self, other: WishlistIdentity<'_>) -> bool {
-        let ka = self.work_key.trim();
-        let kb = other.work_key.trim();
-        if !ka.is_empty() && !kb.is_empty() && ka == kb {
-            return true;
-        }
-        let soft_a = fallback_work_key(self.title, self.authors, None, None);
-        let soft_b = fallback_work_key(other.title, other.authors, None, None);
-        let soft_ok = soft_a != "soft:|" && soft_a == soft_b;
-
-        if let (Some(aa), Some(ab)) = (
-            self.asin.map(str::trim).filter(|s| !s.is_empty()),
-            other.asin.map(str::trim).filter(|s| !s.is_empty()),
-        ) {
-            if aa.eq_ignore_ascii_case(ab) {
-                return true;
-            }
-        }
-        let isbn_a = fallback_work_key("", None, None, self.isbn);
-        let isbn_b = fallback_work_key("", None, None, other.isbn);
-        if isbn_a.starts_with("isbn:") && isbn_a == isbn_b {
-            return true;
-        }
-        // Stored work_key may be asin:/isbn: while the other side only has fields.
-        if !ka.is_empty() {
-            if ka.starts_with("asin:") {
-                if let Some(ab) = other.asin.map(str::trim).filter(|s| !s.is_empty()) {
-                    if ka.eq_ignore_ascii_case(&format!("asin:{}", ab.to_ascii_uppercase())) {
-                        return true;
-                    }
-                }
-            }
-            if ka.starts_with("isbn:") && ka == isbn_b {
-                return true;
-            }
-            if ka.starts_with("soft:") && ka == soft_b {
-                return true;
-            }
-        }
-        if !kb.is_empty() {
-            if kb.starts_with("asin:") {
-                if let Some(aa) = self.asin.map(str::trim).filter(|s| !s.is_empty()) {
-                    if kb.eq_ignore_ascii_case(&format!("asin:{}", aa.to_ascii_uppercase())) {
-                        return true;
-                    }
-                }
-            }
-            if kb.starts_with("isbn:") && kb == isbn_a {
-                return true;
-            }
-            if kb.starts_with("soft:") && kb == soft_a {
-                return true;
-            }
-        }
-        let cross = (ka.starts_with("isbn:") && kb.starts_with("asin:"))
-            || (ka.starts_with("asin:") && kb.starts_with("isbn:"))
-            || (isbn_a.starts_with("isbn:")
-                && other.asin.map(str::trim).is_some_and(|s| !s.is_empty()))
-            || (isbn_b.starts_with("isbn:")
-                && self.asin.map(str::trim).is_some_and(|s| !s.is_empty()));
-        if cross {
-            return soft_ok;
-        }
-        soft_ok
-    }
-}
-
-/// Whether two wishlist rows refer to the same work despite differing keys.
-#[must_use]
-pub fn wishlist_identities_match(a: WishlistIdentity<'_>, b: WishlistIdentity<'_>) -> bool {
-    a.matches(b)
 }
 
 /// Local fallback when callers do not supply a discover `work_map_key`.
@@ -7020,13 +6931,9 @@ fn map_listening(m: listening_progress::Model) -> ListeningProgressRecord {
         identity_id: m.identity_id,
         provider: m.provider,
         external_user_id: m.external_user_id,
-        book_uuid: m.book_uuid,
         work_id: m.work_id,
+        edition_id: m.edition_id,
         external_item_id: m.external_item_id,
-        title: m.title,
-        authors: m.authors,
-        asin: m.asin,
-        isbn: m.isbn,
         progress: m.progress,
         current_time_seconds: m.current_time_seconds,
         duration_seconds: m.duration_seconds,
@@ -7036,21 +6943,23 @@ fn map_listening(m: listening_progress::Model) -> ListeningProgressRecord {
     }
 }
 
-/// Maps a `title_requests` row; storefront sources are filled later by attach helpers.
+/// Maps a `title_requests` row; [`LibraryStore::hydrate_requests`] fills the
+/// work's title and authors, the sources and the card key.
 fn map_request(m: title_requests::Model) -> TitleRequestRecord {
     TitleRequestRecord {
         cover_path: None,
         id: m.id,
         uuid: m.uuid,
         identity_id: m.identity_id,
-        title: m.title,
-        authors: m.authors,
-        asin: m.asin,
-        isbn: m.isbn,
+        title: String::new(),
+        authors: None,
+        asin: None,
+        isbn: None,
         notes: m.notes,
         status: RequestStatus::parse(&m.status).unwrap_or_default(),
-        work_key: m.work_key,
+        work_key: String::new(),
         work_id: m.work_id,
+        edition_id: m.edition_id,
         resolved_book_uuid: m.resolved_book_uuid,
         cover_url: m.cover_url,
         sources: Vec::new(),
@@ -7307,6 +7216,7 @@ pub(crate) mod plugin_kv;
 pub(crate) mod retention;
 pub(crate) mod search_feed;
 pub(crate) mod storage_scan;
+pub(crate) mod user_title_state;
 pub(crate) mod write_batches;
 pub use discover::{DiscoverSubject, SeedScope, StoredCandidate, StoredFeed};
 pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};

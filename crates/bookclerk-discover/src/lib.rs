@@ -21,6 +21,7 @@ mod embed;
 /// Discover crate error types for shelves, embeddings, and catalog search.
 mod error;
 mod identity;
+mod listening;
 mod metadata_enrich;
 mod precompute;
 mod purchase;
@@ -50,9 +51,8 @@ pub use embed::{
 };
 pub use identity::{
     candidate_map_key, hard_work_key, identities_match, merge_candidate_metadata,
-    merge_global_queue_entries, merge_recommendation, parse_series_index, push_edition,
-    push_shelf_category, recommendation_map_key, soft_work_key, work_map_key, works_match,
-    StoreEdition, WorkIdentity,
+    merge_recommendation, parse_series_index, push_edition, push_shelf_category,
+    recommendation_map_key, soft_work_key, work_map_key, works_match, StoreEdition, WorkIdentity,
 };
 pub use metadata_enrich::{
     enrich_books_from_metadata, MetadataEnrichOptions, DEFAULT_MAX_REQUESTS_PER_RUN,

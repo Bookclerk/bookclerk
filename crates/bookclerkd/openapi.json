@@ -28003,14 +28003,6 @@
             },
             "description": "Optional priced storefront links snapshotted at wishlist time."
           },
-          "work_key": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional stable work key; when omitted one is derived from bib fields.",
-            "example": "work:9780441478125"
-          },
           "cover_url": {
             "type": [
               "string",
@@ -35423,6 +35415,7 @@
         "description": "Global wishlist queue entry ranked by overall/operator recommend taste +\nheavy wish-count weight (shared order; not per-viewer personalized).",
         "required": [
           "work_key",
+          "work_id",
           "title",
           "wish_count",
           "sample_uuids",
@@ -35439,11 +35432,8 @@
             "example": "isbn:9780441478125"
           },
           "work_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Library work the entry's wishes resolve to, when the library could\nplace them. Wishes for one work are one entry even when their\n`work_key`s differ, so a client matches its own wishes on this id\nfirst and on `work_key` otherwise.",
+            "type": "string",
+            "description": "The work every wish of this entry is for. Wishes for one work are\none entry even when their `work_key`s differ, so a client matches\nits own wishes on this id first and on `work_key` otherwise.",
             "example": "0b7e2c1d-5f3a-4e6b-9c8d-1a2b3c4d5e6f"
           },
           "title": {
@@ -37378,6 +37368,7 @@
           "uuid",
           "title",
           "status",
+          "work_id",
           "created_at",
           "updated_at"
         ],
@@ -37404,7 +37395,7 @@
           },
           "title": {
             "type": "string",
-            "description": "Display title of the work or edition.",
+            "description": "Display title: the title of the wish's work.",
             "example": "The Left Hand of Darkness"
           },
           "authors": {
@@ -37412,7 +37403,7 @@
               "string",
               "null"
             ],
-            "description": "Comma-separated or JSON author list from the storefront.",
+            "description": "Comma-separated authors: the work's author credits in billing order.",
             "example": "Ursula K. Le Guin"
           },
           "asin": {
@@ -37420,7 +37411,7 @@
               "string",
               "null"
             ],
-            "description": "Amazon ASIN when known; otherwise null.",
+            "description": "Amazon ASIN from the wish's storefront sources, when one carries it.",
             "example": "B002V0QK4C"
           },
           "isbn": {
@@ -37428,7 +37419,7 @@
               "string",
               "null"
             ],
-            "description": "ISBN-10/13 when known; otherwise null.",
+            "description": "ISBN-10/13 from the wish's storefront sources, when one carries it.",
             "example": "9780441478125"
           },
           "notes": {
@@ -37445,16 +37436,21 @@
           },
           "work_key": {
             "type": "string",
-            "description": "Stable bibliographic key (`isbn:…` / `asin:…` / `soft:…`) for aggregation.",
+            "description": "Bibliographic card key (`isbn:…` / `asin:…` / `soft:…`) clients use\nto match a wish to a catalog card. Derived from the work's title and\nauthors and the sources' identifiers on every read, never stored.",
             "example": "isbn:9780441478125"
           },
           "work_id": {
+            "type": "string",
+            "description": "The work the wish is for; wishes for one work are one queue entry.",
+            "example": "7c1e9a2b-3d4f-4e5a-9b6c-8d7e0f1a2b3c"
+          },
+          "edition_id": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Canonical work id this edition or request resolves to.",
-            "example": "7c1e9a2b-3d4f-4e5a-9b6c-8d7e0f1a2b3c"
+            "description": "The edition the wish named, when the library knows it.",
+            "example": "0b8e3f2a-5c1d-5e7f-9a2b-4c6d8e0f1a3b"
           },
           "resolved_book_uuid": {
             "type": [
@@ -38599,7 +38595,7 @@
               "string",
               "null"
             ],
-            "description": "Display title when the provider reported one.",
+            "description": "Title of the work being listened to, when the library knows it.",
             "example": "The Left Hand of Darkness"
           },
           "provider": {

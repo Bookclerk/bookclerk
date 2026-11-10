@@ -15,20 +15,13 @@ pub struct Model {
     pub provider: String,
     /// User id at the external provider.
     pub external_user_id: String,
-    /// Foreign key to `books.uuid`.
-    pub book_uuid: Option<String>,
-    /// Canonical work id this edition or request resolves to.
-    pub work_id: Option<String>,
+    /// The work the item resolved to (`works.id`), through its
+    /// identifiers.
+    pub work_id: String,
+    /// The edition the item's identifiers name, when exactly one does.
+    pub edition_id: Option<String>,
     /// Provider-native listening-progress item id.
     pub external_item_id: String,
-    /// Display title of the work or edition.
-    pub title: Option<String>,
-    /// Comma-separated or JSON author list from the storefront.
-    pub authors: Option<String>,
-    /// Amazon ASIN when known; otherwise null.
-    pub asin: Option<String>,
-    /// ISBN-10/13 when known; otherwise null.
-    pub isbn: Option<String>,
     /// Fractional progress 0.0–1.0 when the provider reports it.
     pub progress: Option<f64>,
     /// Current playback position within the title, in seconds.
