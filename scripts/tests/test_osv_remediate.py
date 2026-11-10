@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from types import ModuleType
 
@@ -735,3 +736,55 @@ class BundleTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HttpRetryTest(unittest.TestCase):
+    """`_http_json` retries transient failures and nothing else."""
+
+    def setUp(self) -> None:
+        self.calls = 0
+        self.waits: list[float] = []
+        self._once = osv._http_json_once
+        self._sleep = osv._sleep
+        osv._sleep = self.waits.append
+
+    def tearDown(self) -> None:
+        osv._http_json_once = self._once
+        osv._sleep = self._sleep
+
+    def _answer(self, *outcomes: object) -> None:
+        """Makes each attempt raise or return the next outcome."""
+
+        def once(url: str, token: str | None) -> tuple[object, str]:
+            outcome = outcomes[self.calls]
+            self.calls += 1
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome, ""
+
+        osv._http_json_once = once
+
+    @staticmethod
+    def _status(code: int) -> urllib.error.HTTPError:
+        return urllib.error.HTTPError("https://api.osv.dev/v1/vulns/X", code, "status", {}, None)
+
+    def test_a_timeout_then_success_returns_the_body(self) -> None:
+        self._answer(TimeoutError("The read operation timed out"), {"id": "X"})
+        self.assertEqual(osv._http_json("https://api.osv.dev/v1/vulns/X"), ({"id": "X"}, ""))
+        self.assertEqual((self.calls, self.waits), (2, [2]))
+
+    def test_retryable_statuses_and_dropped_connections_are_retried(self) -> None:
+        self._answer(self._status(503), urllib.error.URLError("reset"), ConnectionResetError(), [])
+        self.assertEqual(osv._http_json("https://api.github.com/x", "t"), ([], ""))
+        self.assertEqual(self.waits, [2, 4, 8])
+
+    def test_gives_up_after_the_last_attempt(self) -> None:
+        self._answer(*[TimeoutError("slow")] * osv.HTTP_ATTEMPTS)
+        with self.assertRaises(TimeoutError):
+            osv._http_json("https://api.osv.dev/v1/vulns/X")
+        self.assertEqual(self.calls, osv.HTTP_ATTEMPTS)
+
+    def test_a_not_found_is_raised_at_once(self) -> None:
+        self._answer(self._status(404))
+        self.assertIsNone(osv.fetch_vuln("X"))
+        self.assertEqual((self.calls, self.waits), (1, []))

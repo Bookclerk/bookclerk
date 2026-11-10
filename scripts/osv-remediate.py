@@ -44,6 +44,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -57,6 +58,13 @@ API = "https://api.github.com"
 OSV_API = "https://api.osv.dev/v1/vulns"
 TOOL_NAME = "osv-scanner"
 HTTP_TIMEOUT_S = 30
+# Attempts per request, and the wait before each retry in seconds: a slow or
+# briefly failing API (api.osv.dev once took over HTTP_TIMEOUT_S on main)
+# must not fail the whole run.
+HTTP_ATTEMPTS = 4
+HTTP_RETRY_DELAYS_S = (2, 4, 8)
+# HTTP statuses worth retrying: request timeout, rate limit, server errors.
+_RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 # Upper bound on alert pages read (100 alerts each), so a runaway listing
 # cannot keep the job paging forever.
 MAX_ALERT_PAGES = 20
@@ -176,6 +184,42 @@ class Target:
 def _http_json(url: str, token: str | None = None) -> tuple[object, str]:
     """Fetches a JSON document.
 
+    Retries a timeout, a dropped connection or a retryable status
+    (`_RETRY_STATUSES`) up to `HTTP_ATTEMPTS` times in all, waiting
+    `HTTP_RETRY_DELAYS_S` between attempts. Any other HTTP error, such as a
+    404, is raised at once.
+
+    Args:
+        url: The URL to GET.
+        token: Bearer token for the GitHub API, or None for public APIs.
+
+    Returns:
+        The decoded body and the response's `Link` header (empty when absent).
+
+    Raises:
+        urllib.error.URLError: The request failed, or kept failing.
+        TimeoutError: Every attempt timed out.
+    """
+    for attempt in range(HTTP_ATTEMPTS):
+        try:
+            return _http_json_once(url, token)
+        except urllib.error.HTTPError as err:
+            if err.code not in _RETRY_STATUSES or attempt == HTTP_ATTEMPTS - 1:
+                raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == HTTP_ATTEMPTS - 1:
+                raise
+        _sleep(HTTP_RETRY_DELAYS_S[min(attempt, len(HTTP_RETRY_DELAYS_S) - 1)])
+    raise AssertionError("unreachable: the last attempt returns or raises")
+
+
+# Waits between retries; tests replace it.
+_sleep = time.sleep
+
+
+def _http_json_once(url: str, token: str | None) -> tuple[object, str]:
+    """Makes one attempt at `_http_json`'s request.
+
     Args:
         url: The URL to GET.
         token: Bearer token for the GitHub API, or None for public APIs.
@@ -185,6 +229,7 @@ def _http_json(url: str, token: str | None = None) -> tuple[object, str]:
 
     Raises:
         urllib.error.URLError: The request failed.
+        TimeoutError: The response did not arrive in `HTTP_TIMEOUT_S`.
     """
     headers = {"Accept": "application/json", "User-Agent": "bookclerk-osv-remediate"}
     if token:

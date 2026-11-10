@@ -326,6 +326,10 @@ without a preceding scan. It reads the open OSV-Scanner
 alerts in **Security → Code scanning** and looks each advisory up on
 api.osv.dev, with its aliases.
 
+A request to api.osv.dev or the GitHub API that times out, drops its
+connection or gets a 408, 429 or 5xx answer is tried up to four times,
+2, 4 and 8 seconds apart. Any other error stops the run at once.
+
 When OSV doesn't know an alert's rule id, the other advisory ids in the
 alert's rule and message text stand in for it. That happens, for example,
 with a new CVE that OSV-Scanner chose to name a group of advisories.
