@@ -970,6 +970,11 @@ Workers RPC, plus a generic atomic-plan executor.
 > and bind and statement limits at or above the host minimum is **not
 > loaded** (fail closed). Non-SQL engines aren't supported.
 
+An adapter proves it keeps this contract with the adapter conformance
+suite in `bookclerk-db-testkit` (see
+[A database adapter's own suite](database-limits.md#a-database-adapters-own-suite)),
+which every first-party adapter passes.
+
 | Method | Notes |
 | --- | --- |
 | `Database.openSession` | Opens the adapter session. The guest connects its engine from `DatabaseContext.config` (verified first-party guests receive host-injected connect params; SQLite: path grant; D1/Postgres: host-injected credentials) |
