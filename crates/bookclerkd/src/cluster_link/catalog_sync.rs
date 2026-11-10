@@ -57,6 +57,21 @@ use crate::api::AppState;
 /// Between catalog passes while connected.
 pub const SYNC_INTERVAL: Duration = Duration::from_secs(300);
 
+/// Identity rows per keyset read while listing a pass's titles: the
+/// readers' maximum, or two under test so every walk crosses pages.
+const ENTRY_PAGE: u64 = if cfg!(test) {
+    2
+} else {
+    ACQUIRED_KEYS_MAX_PAGE
+};
+
+/// Identity rows per keyset read of branch titles, as [`ENTRY_PAGE`].
+const BRANCH_ENTRY_PAGE: u64 = if cfg!(test) {
+    2
+} else {
+    FORWARDABLE_KEYS_MAX_PAGE
+};
+
 /// Largest serialized `catalog.sync` batch (well under a frame).
 const MAX_BATCH_BYTES: usize = 768 * 1024;
 
@@ -320,9 +335,9 @@ impl<S: BranchShelf> CatalogSync<S> {
         loop {
             let page = self
                 .library
-                .acquired_book_keys_page(after, ACQUIRED_KEYS_MAX_PAGE)
+                .acquired_book_keys_page(after, ENTRY_PAGE)
                 .await?;
-            let full = u64::try_from(page.len()).unwrap_or(u64::MAX) >= ACQUIRED_KEYS_MAX_PAGE;
+            let full = u64::try_from(page.len()).unwrap_or(u64::MAX) >= ENTRY_PAGE;
             after = page.last().map(|key| key.id);
             for key in page {
                 let reference = CatalogRef {
@@ -350,14 +365,10 @@ impl<S: BranchShelf> CatalogSync<S> {
         if include_branches {
             let mut after = None;
             loop {
-                let page = forwardable_branch_title_keys_page(
-                    &self.library,
-                    after,
-                    FORWARDABLE_KEYS_MAX_PAGE,
-                )
-                .await?;
-                let full =
-                    u64::try_from(page.len()).unwrap_or(u64::MAX) >= FORWARDABLE_KEYS_MAX_PAGE;
+                let page =
+                    forwardable_branch_title_keys_page(&self.library, after, BRANCH_ENTRY_PAGE)
+                        .await?;
+                let full = u64::try_from(page.len()).unwrap_or(u64::MAX) >= BRANCH_ENTRY_PAGE;
                 after = page.last().map(|key| key.id);
                 for key in page.into_iter().filter(|key| key.delivered) {
                     let reference = CatalogRef {

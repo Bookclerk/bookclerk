@@ -489,6 +489,7 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
     assert!(list_branch_titles(&a, None, 10).await.unwrap().is_empty());
     assert!(a_out.path().join("Author/b1/b1.m4b").exists());
 
+    let listed = b_sync.entries(true).await.unwrap();
     // C leaves B: its title on B is marked as from a branch that left.
     assert!(record_node_left(&b, &c_link.remote_node_id).await.unwrap());
     assert_eq!(
@@ -503,6 +504,22 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
             .all(|key| !key.delivered),
         "B no longer passes C's title on"
     );
+
+    // A title listed before it stopped being shareable loads as gone, so
+    // a pass skips it instead of sending stale rows.
+    b.set_acquire_status("b1", "b-store-acct", AcquireStatus::NotAcquired, None, None)
+        .await
+        .unwrap();
+    for product in ["c1", "b1"] {
+        let entry = listed
+            .iter()
+            .find(|entry| entry.reference.product_id == product)
+            .unwrap_or_else(|| panic!("{product} was listed"));
+        assert!(
+            b_sync.load(entry).await.unwrap().is_none(),
+            "{product} is no longer shareable"
+        );
+    }
 }
 
 /// A local destination whose listing of one folder fails while `fail`

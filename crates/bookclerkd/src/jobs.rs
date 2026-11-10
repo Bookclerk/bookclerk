@@ -865,14 +865,7 @@ pub async fn run_acquire(
     .await?;
 
     let wanted = |b: &BookRecord| {
-        if mode.pdf_only {
-            mode.force || b.pdf_status != AcquireStatus::Acquired
-        } else if mode.force {
-            is_downloadable(&b.content_kind)
-                && (cfg.library.download_episodes || b.content_kind != "episode")
-        } else {
-            acquire_job_includes_book(b, options.download_pdf, cfg.library.download_episodes)
-        }
+        acquire_mode_includes(b, mode, options.download_pdf, cfg.library.download_episodes)
     };
     let targets = acquire_candidates(&library, account, title, wanted).await?;
     // A pinned instance serves its own plugin's books only; the rest are
@@ -1116,6 +1109,27 @@ pub async fn run_listen_sync(state: &AppState, ctx: Option<&JobExecCtx>) -> anyh
     Ok(detail)
 }
 
+/// Whether an acquire run in `mode` visits `book`.
+///
+/// A PDF-only run visits titles whose companion PDF is not acquired (every
+/// title when forced). A forced run visits every downloadable title,
+/// episodes only when `download_episodes` is on. Otherwise
+/// [`acquire_job_includes_book`] decides.
+fn acquire_mode_includes(
+    book: &BookRecord,
+    mode: AcquireMode,
+    download_pdf: bool,
+    download_episodes: bool,
+) -> bool {
+    if mode.pdf_only {
+        mode.force || book.pdf_status != AcquireStatus::Acquired
+    } else if mode.force {
+        is_downloadable(&book.content_kind) && (download_episodes || book.content_kind != "episode")
+    } else {
+        acquire_job_includes_book(book, download_pdf, download_episodes)
+    }
+}
+
 /// The books [`run_acquire`] considers: those on `account` (every account
 /// when `None`) that match `title` (every title when `None`) and pass
 /// `wanted`, in title order.
@@ -1314,6 +1328,49 @@ mod tests {
         )
         .await;
         assert!(!acquire_job_includes_book(&book, true, true));
+    }
+
+    /// Each mode picks its titles: PDF-only by companion PDF state, forced
+    /// by downloadability, otherwise the pending-work rule.
+    #[tokio::test]
+    async fn acquire_modes_pick_their_titles() {
+        let store = test_store().await;
+        let done = book_with(
+            &store,
+            AcquireStatus::Acquired,
+            Some("a.m4b"),
+            AcquireStatus::Acquired,
+            Some("a.pdf"),
+            "book",
+        )
+        .await;
+        let pdf_only = AcquireMode {
+            force: false,
+            pdf_only: true,
+        };
+        let forced_pdf = AcquireMode {
+            force: true,
+            pdf_only: true,
+        };
+        let forced = AcquireMode {
+            force: true,
+            pdf_only: false,
+        };
+        let plain = AcquireMode {
+            force: false,
+            pdf_only: false,
+        };
+        assert!(!acquire_mode_includes(&done, pdf_only, true, true));
+        assert!(acquire_mode_includes(&done, forced_pdf, true, true));
+        assert!(acquire_mode_includes(&done, forced, true, true));
+        assert!(!acquire_mode_includes(&done, plain, true, true));
+        let mut episode = done.clone();
+        episode.content_kind = "episode".into();
+        assert!(!acquire_mode_includes(&episode, forced, true, false));
+        assert!(acquire_mode_includes(&episode, forced, true, true));
+        let mut pending_pdf = done.clone();
+        pending_pdf.pdf_status = AcquireStatus::Error;
+        assert!(acquire_mode_includes(&pending_pdf, pdf_only, true, true));
     }
 
     /// One title is found by any of its ids on the account; without a
