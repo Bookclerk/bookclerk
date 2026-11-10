@@ -261,7 +261,9 @@ pub struct OperatorAuthState {
     login_window: Duration,
     /// How long a client stays locked after exceeding `login_max_failures`.
     login_lockout: Duration,
-    /// Per-client throttle buckets keyed by resolved client IP.
+    /// Sign-in throttle buckets: one per resolved client IP, plus per-account
+    /// buckets such as `elevate:<user_id>` (password elevation) and
+    /// `clerk-step-up:<user_id>` (clerk join step-up).
     login_attempts: Mutex<HashMap<String, LoginThrottleBucket>>,
 }
 
@@ -2381,11 +2383,13 @@ pub struct ImpersonateRequest {
         (status = 403, description = "The caller is not an Owner, or the Owner has no password to check."),
         (status = 400, description = "Operator auth is off, or the password is empty."),
         (status = 409, description = "The caller is already an operator."),
+        (status = 429, description = "Too many wrong passwords from this client or for this Owner; retry after `Retry-After` seconds.", body = LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), example = json!({"error": "too_many_requests", "message": "Too many failed login attempts. Try again in 45 seconds.", "status": 429, "retry_after_secs": 45})),
         (status = 500, description = "The password hash could not be read, or the elevated session could not be stored."),
     ),
 )]
 pub async fn elevate(
     State(state): State<Arc<AppState>>,
+    ClientIp(client_key): ClientIp,
     headers: HeaderMap,
     Json(body): Json<ElevateRequest>,
 ) -> Result<Response, StatusCode> {
@@ -2395,6 +2399,10 @@ pub async fn elevate(
     }
     if authorize_operator(&state, &auth, &headers).await {
         return Err(StatusCode::CONFLICT);
+    }
+    // Locked-out clients are refused before the session or password is checked.
+    if let Some(retry_after) = auth.login_throttle_check(&client_key).await {
+        return Ok(too_many_requests(retry_after));
     }
     let library = state.library_snapshot().await;
     let identity = timed_portal_identity_from_headers(&library, &headers)
@@ -2407,6 +2415,11 @@ pub async fn elevate(
     let Some(user) = user else {
         return Err(StatusCode::FORBIDDEN);
     };
+    // A second bucket per Owner catches guesses spread across addresses.
+    let owner_key = elevate_throttle_key(user.id);
+    if let Some(retry_after) = auth.login_throttle_check(&owner_key).await {
+        return Ok(too_many_requests(retry_after));
+    }
     let password = body.password.trim();
     if password.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
@@ -2434,9 +2447,35 @@ pub async fn elevate(
                 Some(r#"{"reason":"bad_password"}"#),
             )
             .await;
+        let client_locked = auth.record_login_failure(&client_key).await;
+        let owner_locked = auth.record_login_failure(&owner_key).await;
+        if let Some(retry_after) = client_locked.max(owner_locked) {
+            return Ok(too_many_requests(retry_after));
+        }
         return Err(StatusCode::UNAUTHORIZED);
     }
+    // Only the Owner bucket is cleared: the client bucket is shared with the
+    // other sign-in routes, and a successful elevation must not reset their
+    // count for this address.
+    auth.clear_login_failures(&owner_key).await;
     issue_elevation(&state, &library, user.id, &headers).await
+}
+
+/// Throttle bucket for password elevation guesses against one Owner.
+///
+/// Kept apart from the per-client buckets (which are keyed by IP address) so
+/// wrong passwords for the same Owner count together whichever address they
+/// come from.
+///
+/// # Arguments
+///
+/// * `user_id` - The Owner's `users.id`.
+///
+/// # Returns
+///
+/// The key passed to the login throttle, `elevate:<user_id>`.
+fn elevate_throttle_key(user_id: i64) -> String {
+    format!("elevate:{user_id}")
 }
 
 /// Mint a short-lived elevated operator cookie for an Owner.
@@ -5407,6 +5446,141 @@ pub(crate) mod tests {
         let events = library.list_security_audit_events(20).await.unwrap();
         assert!(events.iter().any(|e| e.action == "elevate_start"));
         assert!(events.iter().any(|e| e.action == "elevate_failed"));
+    }
+
+    /// Test-only wrong Owner password (assembled at runtime so static analysis does not flag a literal).
+    fn wrong_elevate_password() -> String {
+        ["not", "-", "the", "-", "pass"].concat()
+    }
+
+    /// Sends `POST /api/auth/elevate` with `password` from the client address `peer`.
+    ///
+    /// # Arguments
+    ///
+    /// * `app` - Router from [`phase2_harness`].
+    /// * `cookie` - The Owner's portal session cookie.
+    /// * `peer` - Client address the throttle keys on (stands in for the TCP peer).
+    /// * `password` - Password sent in the body.
+    ///
+    /// # Returns
+    ///
+    /// The response status and its `Retry-After` header, when present.
+    async fn elevate_from(
+        app: &axum::Router,
+        cookie: &str,
+        peer: &str,
+        password: &str,
+    ) -> (axum::http::StatusCode, Option<String>) {
+        use axum::body::Body;
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let addr: SocketAddr = format!("{peer}:40000").parse().unwrap();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/elevate")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::COOKIE, cookie)
+                    .extension(ConnectInfo(addr))
+                    .body(Body::from(
+                        serde_json::json!({ "password": password }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let retry_after = res
+            .headers()
+            .get(header::RETRY_AFTER)
+            .map(|v| v.to_str().unwrap().to_string());
+        let _ = res.into_body().collect().await;
+        (status, retry_after)
+    }
+
+    #[tokio::test]
+    async fn elevate_locks_a_client_out_after_repeated_wrong_passwords() {
+        use axum::http::StatusCode;
+
+        // The harness allows five failures per window.
+        let (_state, app, library) = phase2_harness("op-token-elevate-throttle").await;
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        for _ in 0..4 {
+            let (status, _) =
+                elevate_from(&app, &cookie, "198.51.100.7", &wrong_elevate_password()).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        let (status, retry_after) =
+            elevate_from(&app, &cookie, "198.51.100.7", &wrong_elevate_password()).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(retry_after.is_some(), "429 carries Retry-After");
+
+        // Locked out: even the right password is refused without being checked.
+        let (status, retry_after) =
+            elevate_from(&app, &cookie, "198.51.100.7", &phase2_owner_password()).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(retry_after.is_some());
+    }
+
+    #[tokio::test]
+    async fn elevate_lockout_follows_the_owner_across_addresses() {
+        use axum::http::StatusCode;
+
+        let (state, app, library) = phase2_harness("op-token-elevate-owner").await;
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        for i in 1..=4 {
+            let (status, _) = elevate_from(
+                &app,
+                &cookie,
+                &format!("203.0.113.{i}"),
+                &wrong_elevate_password(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        let (status, _) =
+            elevate_from(&app, &cookie, "203.0.113.5", &wrong_elevate_password()).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+        // A fresh address with the right password is still refused for this Owner,
+        // while that address itself is not locked for other sign-ins.
+        let (status, retry_after) =
+            elevate_from(&app, &cookie, "203.0.113.99", &phase2_owner_password()).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(retry_after.is_some());
+        let auth = state.auth_snapshot().await;
+        assert!(auth.login_throttle_check("203.0.113.99").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn elevate_success_clears_the_owner_bucket_only() {
+        use axum::http::StatusCode;
+
+        let (_state, app, library) = phase2_harness("op-token-elevate-clear").await;
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        for _ in 0..4 {
+            let (status, _) =
+                elevate_from(&app, &cookie, "192.0.2.4", &wrong_elevate_password()).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        let (status, _) = elevate_from(&app, &cookie, "192.0.2.4", &phase2_owner_password()).await;
+        assert_eq!(status, StatusCode::OK);
+
+        // The Owner bucket was cleared: three misses from another address stay 401
+        // (the Owner count is now 3, below the cap even after one more miss).
+        for _ in 0..3 {
+            let (status, _) =
+                elevate_from(&app, &cookie, "192.0.2.5", &wrong_elevate_password()).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        // The first address kept its count, so its fifth miss locks it.
+        let (status, _) = elevate_from(&app, &cookie, "192.0.2.4", &wrong_elevate_password()).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]

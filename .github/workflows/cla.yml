@@ -19,7 +19,10 @@
 #   under the App); the default branch's ruleset expects the check from that
 #   App. Without the App's secrets the workflow posts both.
 # - Runs when a pull request is opened, pushed to, reopened, closed or
-#   retargeted (a new base can add commits without changing the head).
+#   retargeted (a new base can add commits without changing the head). A
+#   trigger run that a newer event on the same pull request cancelled is
+#   ignored; the newer one decides. If a trigger run is cancelled by hand,
+#   no check arrives (the pull request stays blocked) until a recheck.
 # - `@<App slug> recheck` (`@bookclerk recheck` here, `@github-actions
 #   recheck` without the App) re-runs the check after a signature or
 #   allowlist change. Other comments that mention `recheck` are ignored.
@@ -64,12 +67,14 @@ jobs:
   cla:
     name: CLA check
     # A `workflow_run` counts only for a `pull_request` run that the trigger
-    # did not skip (a skipped run is an edit that kept the base). Its other
-    # outcomes carry no information.
+    # did not skip (a skipped run is an edit that kept the base) and that a
+    # newer event on the same pull request did not cancel (that newer run
+    # starts this workflow again). Its other outcomes carry no information.
     if: >-
       (github.event_name == 'workflow_run' &&
         github.event.workflow_run.event == 'pull_request' &&
-        github.event.workflow_run.conclusion != 'skipped') ||
+        github.event.workflow_run.conclusion != 'skipped' &&
+        github.event.workflow_run.conclusion != 'cancelled') ||
       github.event_name == 'merge_group' ||
       (github.event_name == 'check_run' &&
         github.event.check_run.name == 'Bookclerk CLA') ||
