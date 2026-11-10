@@ -76,11 +76,12 @@ pub async fn search_catalog(
     opts: &CatalogSearchOpts,
 ) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
     let q = opts.query.trim();
-    if q.is_empty() || opts.limit == 0 {
+    if q.is_empty() {
         return Ok(Vec::new());
     }
+    let limit = opts.effective_limit();
     let http = HttpClient::new();
-    let hits = libro_search_hits(&http, base_url, q, opts.limit, opts.page.max(1)).await?;
+    let hits = libro_search_hits(&http, base_url, q, limit, opts.page.max(1)).await?;
     Ok(hits
         .into_iter()
         .map(|mut h| {

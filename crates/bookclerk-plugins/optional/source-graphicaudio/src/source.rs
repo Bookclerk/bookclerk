@@ -59,9 +59,10 @@ impl GraphicAudioSource {
         opts: &CatalogSearchOpts,
     ) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
         let q = opts.query.trim();
-        if q.is_empty() || opts.limit == 0 {
+        if q.is_empty() {
             return Ok(Vec::new());
         }
+        let limit = opts.effective_limit();
         let http = match catalog_http_client() {
             Ok(c) => c,
             Err(_) => return Ok(Vec::new()),
@@ -77,7 +78,7 @@ impl GraphicAudioSource {
             };
         Ok(products
             .into_iter()
-            .take(opts.limit)
+            .take(limit)
             .filter(|p| !p.product_id.trim().is_empty())
             .map(|p| ga_catalog_hit(&p, String::from("search")))
             .collect())

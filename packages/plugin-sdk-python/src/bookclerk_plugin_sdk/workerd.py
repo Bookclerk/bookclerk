@@ -1873,7 +1873,11 @@ class AdapterDatabaseSession:
         / ``maxStreamedResultRows``; adapters that advertise ``0`` for both
         keep this default, which answers ``unsupported``. The request carries
         the proven statements plus ``isolation`` and ``receipt``, like the
-        adapter-side ``execute`` envelope.
+        adapter-side ``execute`` envelope. An isolate adapter's frames travel
+        inside one invoke reply, so they must fit ``MAX_SCALAR_BYTES``;
+        ``db_value.execute_adapter_batch_streamed`` runs the batch, stores the
+        replay receipt and checks that bound and the advertised streamed
+        budget before it commits.
 
         Returns:
             Every frame of the committed reply, concatenated.

@@ -326,6 +326,44 @@ pub(crate) fn dispatch_chunk_override() -> Option<usize> {
     DISPATCH_CHUNK_OVERRIDE.with(|c| c.get())
 }
 
+/// Operation id of one dispatch page.
+///
+/// A page that sends the event's frozen snapshot is `{operation_id}:p{page}`:
+/// the snapshot makes a resumed page, or a retry of a first dispatch whose
+/// reply was lost, send the same subscribers, so its receipt replays. Any
+/// other list comes from a later caller and may differ between a retry and
+/// the original call, so the page is named after its contents and whether it
+/// marks the event dispatched (`{operation_id}:d{digest}`): a retry with the
+/// same page replays, and a different page is a new operation instead of an
+/// idempotency conflict.
+///
+/// # Arguments
+///
+/// * `operation_id` - The caller's operation id for the whole dispatch.
+/// * `page` - Zero-based page index within the dispatch.
+/// * `from_snapshot` - True when the dispatch sends the frozen snapshot.
+/// * `subscribers` - The subscribers this page sends.
+/// * `last` - True when this page marks the event dispatched.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Other`] when the page cannot be serialized.
+fn dispatch_page_operation_id(
+    operation_id: &str,
+    page: usize,
+    from_snapshot: bool,
+    subscribers: &[EventSubscriber],
+    last: bool,
+) -> Result<String> {
+    if from_snapshot {
+        return Ok(format!("{operation_id}:p{page}"));
+    }
+    let json = serde_json::to_string(&(subscribers, last))
+        .map_err(|e| LibraryError::Other(anyhow!("dispatch page: {e}")))?;
+    let digest = crate::hash_token(&json);
+    Ok(format!("{operation_id}:d{}", &digest[..16]))
+}
+
 fn take_dispatch_page_fault() -> bool {
     DISPATCH_PAGE_FAULTS.with(|c| {
         let n = c.load(Ordering::SeqCst);
@@ -366,6 +404,10 @@ impl LibraryStore {
         if let Some(atomic) = &self.atomic {
             return atomic.publish_domain_event(spec).await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match publish_domain_event_on(&txn, spec).await {
             Ok(outcome) => {
@@ -397,9 +439,31 @@ impl LibraryStore {
             c.fetch_add(1, Ordering::SeqCst);
         });
         if let Some(atomic) = &self.atomic {
-            let snapshot = self
-                .load_or_init_dispatch_snapshot(event_id, subscribers)
-                .await?;
+            let row = domain_events::Entity::find_by_id(event_id)
+                .one(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?
+                .ok_or_else(|| LibraryError::NotFound(format!("domain event {event_id}")))?;
+            // The subscriber snapshot is frozen for the pages of the first
+            // dispatch only, so a page that resumes after a crash sees the
+            // same list. Once the event is dispatched, a call adds deliveries
+            // for subscribers that joined since (catalog reconciliation), so
+            // it takes the subscribers it was given; `INSERT OR IGNORE`
+            // keeps the rows that exist.
+            let (snapshot, from_snapshot) = if row.dispatch_state == STATE_PENDING {
+                let snapshot = self
+                    .load_or_init_dispatch_snapshot(row, subscribers)
+                    .await?;
+                (snapshot, true)
+            } else {
+                // A retry of the first dispatch (its reply lost after the
+                // final page) sends the frozen list again and replays its
+                // receipts; any other list is a later reconciliation.
+                let frozen = row.dispatch_snapshot_json.trim();
+                let same =
+                    !frozen.is_empty() && parse_dispatch_snapshot(event_id, frozen)? == subscribers;
+                (subscribers.to_vec(), same)
+            };
             let chunk = self.dispatch_chunk_size().max(1);
             if snapshot.is_empty() {
                 return atomic
@@ -412,7 +476,13 @@ impl LibraryStore {
             while start < snapshot.len() {
                 let end = (start + chunk).min(snapshot.len());
                 let last = end == snapshot.len();
-                let op = format!("{operation_id}:p{page}");
+                let op = dispatch_page_operation_id(
+                    operation_id,
+                    page,
+                    from_snapshot,
+                    &snapshot[start..end],
+                    last,
+                )?;
                 total += atomic
                     .dispatch_event_deliveries(event_id, &snapshot[start..end], &op, last)
                     .await?;
@@ -426,6 +496,10 @@ impl LibraryStore {
             }
             return Ok(total);
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match dispatch_event_deliveries_on(&txn, self.leftover_in_process(), event_id, subscribers)
             .await
@@ -441,17 +515,14 @@ impl LibraryStore {
         }
     }
 
-    /// Returns the frozen dispatch subscriber snapshot, writing it on first use.
+    /// Returns the frozen dispatch subscriber snapshot of the pending event
+    /// `row`, writing it on first use.
     async fn load_or_init_dispatch_snapshot(
         &self,
-        event_id: &str,
+        row: domain_events::Model,
         subscribers: &[EventSubscriber],
     ) -> Result<Vec<EventSubscriber>> {
-        let row = domain_events::Entity::find_by_id(event_id)
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(format!("domain event {event_id}")))?;
+        let event_id = row.id.as_str();
         if !row.dispatch_snapshot_json.trim().is_empty() {
             return parse_dispatch_snapshot(event_id, &row.dispatch_snapshot_json);
         }
@@ -594,6 +665,10 @@ impl LibraryStore {
             )
             .await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match wake_one_page_on(
             &txn,
@@ -686,6 +761,10 @@ impl LibraryStore {
                 )
                 .await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match claim_next_event_delivery_on(
             &txn,
@@ -1815,7 +1894,7 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when the read fails.
-    async fn list_missing_dispatched_events_for_plugin(
+    pub(super) async fn list_missing_dispatched_events_for_plugin(
         &self,
         plugin_id: &str,
         event_types: &[String],

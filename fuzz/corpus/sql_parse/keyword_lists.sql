@@ -1,0 +1,1 @@
+INSERT INTO t (c0, c1, c2, c3, c4, c5, c6, c7, c8, c9) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?); SELECT uuid FROM books WHERE lower(uuid) IN (lower(?), lower(?), lower(?)) AND EXISTS (SELECT 1 FROM t WHERE (a = ? OR b = ?) AND c NOT IN (?, ?)); CREATE TABLE u (a TEXT, FOREIGN KEY (a) REFERENCES t (c0))

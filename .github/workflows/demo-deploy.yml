@@ -16,6 +16,17 @@
 # after a publish or a release whose commit the live demo already runs, or
 # is already past, stops before deploying.
 #
+# Once a day it also refreshes the seed: the baked library's store records
+# and Discover shelves are cached for a day, and a container that boots
+# from an older template fetches them again, which makes its first pages
+# slow. When the run after the nightly publish finds that the live demo
+# already runs the published commit, and no run in the last 12 hours baked
+# a seed, it re-bakes only the seed on top of that commit's verified
+# published image (packaging/demo/Dockerfile.refresh, a few minutes) and
+# redeploys the same commit. It never moves the demo to newer code and
+# never builds the release binaries. A manual run with `refresh` re-bakes
+# the live commit's seed at once.
+#
 # GitHub repository secrets (without the first two the workflow only prints a
 # notice, so a fork without Cloudflare credentials stays green):
 #   CLOUDFLARE_API_TOKEN   Workers Scripts edit, Containers edit, D1 edit,
@@ -42,8 +53,12 @@
 
 name: demo-deploy
 # Names the deployed commit, which after a publish is not the run's head_sha
-# (main's newest commit); the gate finds earlier deploys of a commit by it.
-run-name: Deploy demo ${{ github.event.workflow_run.head_sha || github.sha }}
+# (main's newest commit); the gate finds earlier deploys of a commit by it. A
+# manual seed refresh learns its commit from the live demo, so its name names
+# none and never matches a deploy.
+run-name: >-
+  ${{ inputs.refresh && 'Refresh demo seed'
+  || format('Deploy demo {0}', github.event.workflow_run.head_sha || github.sha) }}
 
 on:
   push:
@@ -55,12 +70,18 @@ on:
   release:
     types: [published]
   # Replaces a nightly schedule of its own: the nightly image publish builds
-  # the same demo image, so the demo deploys the one it pushed.
+  # the same demo image, so the demo deploys the one it pushed, and a night
+  # with nothing new to deploy refreshes the seed instead.
   workflow_run:
     workflows: ["Publish images"]
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      refresh:
+        description: Re-bake the seed on the commit the live demo runs instead of deploying this commit
+        type: boolean
+        default: false
 
 # Least privilege for GITHUB_TOKEN:
 #   contents → checkout
@@ -87,11 +108,6 @@ jobs:
       && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    env:
-      # The commit to deploy. After a publish it is the commit that run
-      # built, which main may already have moved past (GITHUB_SHA is then
-      # main's newest commit, not the image's).
-      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     defaults:
       run:
         working-directory: tools/demo
@@ -124,54 +140,122 @@ jobs:
       # (a push deployed it while the images were building), so the demo
       # never goes back. Pushes and manual runs always deploy.
       #
+      # An after-publish run that would stop because the live demo already
+      # runs its commit refreshes that commit's seed instead, unless a run
+      # in the last 12 hours already baked one. A manual refresh deploys the
+      # commit the live demo runs.
+      #
       # Then the image: the one images-publish.yml pushed for this commit,
       # when its provenance attestation proves that workflow in this
       # repository built it from this commit on a GitHub-hosted runner.
       # Otherwise the steps below build it (about 25 minutes). An
       # after-publish run without a demo image (a publish that only built
-      # the Dev Container) has nothing to deploy.
+      # the Dev Container) has nothing to deploy, and a refresh only ever
+      # re-bakes a verified published image.
       - name: Choose the commit and image to deploy
         id: gate
         working-directory: .
         env:
           READY: ${{ steps.secrets.outputs.ready }}
           EVENT: ${{ github.event_name }}
+          REFRESH: ${{ inputs.refresh }}
           DOMAIN: ${{ vars.DOMAIN }}
           DEMO_URL: ${{ vars.DEMO_URL }}
-          SHA: ${{ env.DEPLOY_SHA }}
+          # After a publish, the commit that run built, which main may
+          # already have moved past (GITHUB_SHA is then main's newest commit,
+          # not the image's). A refresh replaces it with the live commit.
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           GH_TOKEN: ${{ github.token }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
+          # Whether run $1 of this workflow passed its smoke check.
+          checked() {
+            local passed
+            passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1/jobs" \
+              --jq '[.jobs[].steps[]? | select(.name == "Check the demo answers" and .conclusion == "success")] | length' \
+              2>/dev/null || echo 0)
+            [ "${passed:-0}" -gt 0 ]
+          }
+          # Without a deploy, a refresh and an after-publish run end here
+          # rather than build an image.
+          strict=false
+          if [ "$REFRESH" = true ] || [ "$EVENT" = workflow_run ]; then strict=true; fi
           deploy="$READY"
-          if [ "$READY" = true ] && { [ "$EVENT" = workflow_run ] || [ "$EVENT" = release ]; }; then
-            url="${DEMO_URL}"
-            if [ -n "$DOMAIN" ]; then url="https://demo.${DOMAIN}"; fi
-            live=""
+          live=""
+          url="${DEMO_URL}"
+          if [ -n "$DOMAIN" ]; then url="https://demo.${DOMAIN}"; fi
+          if [ "$READY" = true ] && { [ "$REFRESH" = true ] || [ "$EVENT" = workflow_run ] || [ "$EVENT" = release ]; }; then
             if [ -n "$url" ] && body=$(curl -fsS --max-time 10 "$url/_demo/health"); then
               # A full commit id, or empty for any other answer.
               live=$(python3 scripts/demo_image.py live <<<"$body")
             fi
+          fi
+          # Whether a run in the last 12 hours already baked a fresh seed: a
+          # push (which builds its image), an after-publish deploy (which
+          # deploys the image that publish just built) or a refresh. A
+          # release run does not count, since it can deploy an image built
+          # days earlier.
+          seed_is_fresh() {
+            local since runs run
+            since=$(date -u -d '12 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+            runs=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/demo-deploy.yml/runs" \
+              -f status=success -f "created=>=$since" -f per_page=100 \
+              --jq '.workflow_runs[] | select(.event == "push" or .event == "workflow_run" or (.event == "workflow_dispatch" and .display_title == "Refresh demo seed")) | .id' \
+              2>/dev/null || true)
+            for run in $runs; do
+              if checked "$run"; then return 0; fi
+            done
+            return 1
+          }
+          # Turns this run into a seed refresh of the live commit, or says
+          # why it can't be one.
+          refresh=false
+          start_refresh() {
+            if [ -z "$live" ]; then
+              echo "::notice::${url:-The demo} reports no commit; no seed to refresh"
+              return 1
+            fi
+            if ! gh api "repos/$GITHUB_REPOSITORY/contents/packaging/demo/bake-seed.sh?ref=$live" --silent 2>/dev/null; then
+              echo "::notice::$live bakes no seed at build time (no packaging/demo/bake-seed.sh); nothing to refresh"
+              return 1
+            fi
+            SHA="$live"
+            refresh=true
+          }
+          if [ "$deploy" = true ] && [ "$REFRESH" = true ]; then
+            if start_refresh; then
+              echo "Refreshing the seed of $live, the commit $url runs"
+            else
+              deploy=false
+            fi
+          elif [ "$deploy" = true ] && { [ "$EVENT" = workflow_run ] || [ "$EVENT" = release ]; }; then
             # The Worker reports the new version as soon as it is uploaded,
             # before migrations, secrets and smoke checks run, so the health
             # check alone cannot tell a finished deploy from one that failed
             # half way. Skip only when an earlier run deployed this commit
             # and passed its smoke check. Runs are matched by the commit they
             # deployed: the run name, or the head_sha of a run not started by
-            # a publish (runs from before the run name existed).
+            # a publish or a refresh (runs from before the run name existed).
             done=0
             runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/demo-deploy.yml/runs?status=success&per_page=100" \
-              --jq ".workflow_runs[] | select(.display_title == \"Deploy demo $SHA\" or (.head_sha == \"$SHA\" and .event != \"workflow_run\")) | .id" \
+              --jq ".workflow_runs[] | select(.display_title == \"Deploy demo $SHA\" or (.head_sha == \"$SHA\" and .event != \"workflow_run\" and .display_title != \"Refresh demo seed\")) | .id" \
               2>/dev/null || true)
             for run in $runs; do
-              checked=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs" \
-                --jq '[.jobs[].steps[]? | select(.name == "Check the demo answers" and .conclusion == "success")] | length' \
-                2>/dev/null || echo 0)
-              if [ "${checked:-0}" -gt 0 ]; then done=1; break; fi
+              if checked "$run"; then done=1; break; fi
             done
             if [ "$live" = "$SHA" ] && [ "$done" -gt 0 ]; then
-              echo "::notice::$url already runs $SHA; nothing to deploy"
-              deploy=false
+              # The nightly publish found nothing newer: keep the seed of
+              # the commit the demo runs from going stale instead.
+              if [ "$EVENT" = workflow_run ] && seed_is_fresh; then
+                echo "::notice::$url already runs $SHA with a seed baked in the last 12 hours; nothing to deploy"
+                deploy=false
+              elif [ "$EVENT" = workflow_run ] && start_refresh; then
+                echo "::notice::$url already runs $SHA; refreshing its seed"
+              else
+                echo "::notice::$url already runs $SHA; nothing to deploy"
+                deploy=false
+              fi
             elif [ "$EVENT" = workflow_run ] && [ -n "$live" ] && [ "$live" != "$SHA" ] \
               && [ "$(gh api "repos/$GITHUB_REPOSITORY/compare/$SHA...$live" --jq '.status' 2>/dev/null || true)" = ahead ]; then
               echo "::notice::$url already runs $live, which is newer than $SHA; nothing to deploy"
@@ -187,7 +271,8 @@ jobs:
             # manual run, which then builds here. Any other registry failure
             # is retried once. An after-publish run follows a publish of this
             # repository's package, so it fails on anything but a missing
-            # tag rather than skip the deploy it was started for.
+            # tag rather than skip the deploy it was started for; a refresh
+            # skips the day's refresh instead.
             digest=""
             missing=false
             for attempt in 1 2; do
@@ -216,7 +301,12 @@ jobs:
                 echo "::error::Could not read $repo:sha-${SHA:0:12} from the registry"
                 exit 1
               fi
-              echo "::warning::Could not read $repo:sha-${SHA:0:12} from the registry; building the image here instead"
+              if [ "$strict" = true ]; then
+                echo "::warning::Could not read $repo:sha-${SHA:0:12} from the registry; no seed refresh today"
+                deploy=false
+              else
+                echo "::warning::Could not read $repo:sha-${SHA:0:12} from the registry; building the image here instead"
+              fi
             fi
             if [ -n "$digest" ]; then
               if gh attestation verify "oci://$repo@$digest" \
@@ -226,23 +316,41 @@ jobs:
                 --deny-self-hosted-runners >/dev/null; then
                 image="$repo@$digest"
                 echo "::notice::Deploying the published demo image $image"
+              elif [ "$refresh" = true ]; then
+                echo "::warning::$repo@$digest failed provenance verification; no seed refresh"
+                deploy=false
               else
                 echo "::warning::$repo@$digest failed provenance verification; building the image here instead"
               fi
-            elif [ "$EVENT" = workflow_run ]; then
+            elif [ "$deploy" = false ]; then
+              :
+            elif [ "$strict" = true ]; then
               echo "::notice::No published demo image for $SHA; nothing to deploy"
               deploy=false
             else
               echo "No published demo image for $SHA; building it here"
             fi
           fi
+          if [ "$deploy" != true ]; then refresh=false; fi
           echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "refresh=$refresh" >> "$GITHUB_OUTPUT"
+
+      # The refresh recipe comes from this workflow's commit; the checkout
+      # below replaces it with the deployed one, which may predate it.
+      - name: Keep the seed refresh recipe
+        if: steps.gate.outputs.refresh == 'true'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          install -d "$RUNNER_TEMP/refresh"
+          cp packaging/demo/Dockerfile.refresh "$RUNNER_TEMP/refresh/Dockerfile"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.gate.outputs.deploy == 'true' && env.DEPLOY_SHA != github.sha
+        if: steps.gate.outputs.deploy == 'true' && steps.gate.outputs.sha != github.sha
         with:
-          ref: ${{ env.DEPLOY_SHA }}
+          ref: ${{ steps.gate.outputs.sha }}
           persist-credentials: false
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -307,14 +415,29 @@ jobs:
           echo "url=https://${host}" >> "$GITHUB_OUTPUT"
           echo "site=https://${DOMAIN}" >> "$GITHUB_OUTPUT"
 
+      # The bake of packaging/demo/Dockerfile's `seeded` stage, run again on
+      # the published image the live demo runs: bake-seed.sh from that same
+      # commit, with network access to the stores' catalogs. Only the seed
+      # changes; every binary and plugin is the published image's.
+      - name: Re-bake the seed
+        if: steps.gate.outputs.refresh == 'true'
+        working-directory: .
+        env:
+          BASE: ${{ steps.gate.outputs.image }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/refresh"
+          cp packaging/demo/bake-seed.sh "$dir/bake-seed.sh"
+          docker buildx build --load --build-arg "BASE=$BASE" --tag bookclerk-demo:local "$dir"
+
       # Wrangler builds a one-line Dockerfile on the demo image and pushes
       # that: the verified published image (by digest; Cloudflare's container
-      # registry cannot pull from GHCR itself) or the one built above, so
-      # wrangler never compiles anything.
+      # registry cannot pull from GHCR itself) or the one built or re-baked
+      # above, so wrangler never compiles anything.
       - name: Point wrangler at the demo image
         if: steps.gate.outputs.deploy == 'true'
         env:
-          IMAGE: ${{ steps.gate.outputs.image || 'bookclerk-demo:local' }}
+          IMAGE: ${{ (steps.gate.outputs.refresh != 'true' && steps.gate.outputs.image) || 'bookclerk-demo:local' }}
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/demo-image"
@@ -338,7 +461,7 @@ jobs:
           workingDirectory: tools/demo
           # No wranglerVersion: the action then uses the wrangler that `npm
           # ci` installed from package-lock.json, the one the tests ran.
-          command: deploy --var DEMO_VERSION:${{ env.DEPLOY_SHA }}${{ steps.route.outputs.site && format(' --var SITE_URL:{0}', steps.route.outputs.site) || '' }}
+          command: deploy --var DEMO_VERSION:${{ steps.gate.outputs.sha }}${{ steps.route.outputs.site && format(' --var SITE_URL:{0}', steps.route.outputs.site) || '' }}
 
       # Cloudflare's own startup figure for this deploy
       # (docs/contributing/ci.md#worker-startup-time); warns near the limit.
@@ -414,7 +537,7 @@ jobs:
         if: steps.gate.outputs.deploy == 'true'
         env:
           URL: ${{ steps.url.outputs.url }}
-          SHA: ${{ env.DEPLOY_SHA }}
+          SHA: ${{ steps.gate.outputs.sha }}
         run: |
           set -euo pipefail
           # A new custom domain or workers.dev subdomain can take a few

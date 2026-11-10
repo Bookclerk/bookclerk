@@ -211,7 +211,12 @@ description rather than widening the change silently.
   for native sockets, operator-added hosts or CIDRs).
 - Host SQL goes through the canonical SQL-v1 contract
   ([`docs/plugins/sql-contract/v1.md`](docs/plugins/sql-contract/v1.md)), never engine-specific
-  SQL.
+  SQL. Host writes go to the database plugin as one atomic batch or a named
+  atomic operation, never an interactive `begin()` on the store connection
+  (external adapters refuse it; `crates/bookclerk-library/clippy.toml`
+  disallows it). Database code is tested under every `bookclerk-db-testkit`
+  profile (see
+  [`docs/plugins/database-limits.md`](docs/plugins/database-limits.md#testing-against-the-limits)).
 - `plugin.capnp` changes ship with the TS SDK. From the v1 freeze it is
   append-only (new ordinals only); before it, a change that removes or
   renumbers fields updates every first-party plugin and SDK in the same pull
@@ -339,7 +344,7 @@ cargo stage-plugins --optional --examples --skip-build
 cargo stage-plugins --plugin libro --skip-build   # individual guest(s) by plugin.toml id
 cargo test-staged             # describe/health conformance (bookclerk-plugin-e2e) against installed + staged guests
 cargo test-staged --plugin libro                  # platform + only libro
-cargo plugin -- check <dir>   # author CLI (crate bookclerk-plugin-tools)
+cargo plugin -- check <dir>   # author CLI (crate bookclerk-plugin-tools); `test <dir>` runs a plugin's suite under every database profile
 ```
 
 See `docs/plugins/README.md` and `crates/bookclerk-dev/README.md`.

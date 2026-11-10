@@ -6,7 +6,9 @@
 
 use bookclerk_plugin_source_libro::APP_VER;
 use bookclerk_plugin_source_libro::{explore_search_path, LibroSource, CATALOG_USER_AGENT};
-use bookclerk_storefront::{CatalogSearchOpts, ExpandSeed, PurchaseHintOpts};
+use bookclerk_storefront::{
+    CatalogSearchOpts, ExpandSeed, PurchaseHintOpts, DEFAULT_CATALOG_SEARCH_LIMIT,
+};
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -134,6 +136,26 @@ async fn search_uses_the_app_api_with_an_honest_user_agent() {
         hits[0].cover_url.as_deref(),
         Some("https://covers.libro.fm/9781427201447_1120.jpg")
     );
+}
+
+#[tokio::test]
+async fn search_with_a_zero_limit_returns_the_default_page() {
+    let server = MockServer::start().await;
+    let rows = (0..25u64)
+        .map(|i| row(9781427201400 + i, &format!("Dune {i}"), "Frank Herbert"))
+        .collect();
+    mount_search(&server, "dune", page(rows)).await;
+    let source = LibroSource::with_base_url(server.uri());
+    let hits = source
+        .search_catalog(&CatalogSearchOpts {
+            query: "dune".into(),
+            limit: 0,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), DEFAULT_CATALOG_SEARCH_LIMIT);
+    assert_eq!(hits[0].title, "Dune 0");
 }
 
 #[tokio::test]
@@ -598,16 +620,6 @@ async fn expand_searches_the_title_alone_without_authors() {
         .await
         .unwrap()
         .is_empty());
-    // A zero limit never reaches the catalog.
-    let none = source
-        .search_catalog(&CatalogSearchOpts {
-            query: "Dune".into(),
-            limit: 0,
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    assert!(none.is_empty());
 }
 
 #[tokio::test]

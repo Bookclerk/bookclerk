@@ -10,9 +10,11 @@ use std::process::ExitCode;
 
 use bookclerk_plugin_manifest::{format_manifest, parse};
 
-use crate::{check_plugin, package_plugin, smoke_plugin, sync_embed};
+use crate::{
+    check_plugin, package_plugin, smoke_plugin, sync_embed, test_plugin, TEST_DATABASE_PROFILES,
+};
 
-/// Runs the authoring CLI (`check` / `fmt` / `sync-embed` / `package` / `smoke`).
+/// Runs the authoring CLI (`check` / `fmt` / `sync-embed` / `package` / `smoke` / `test`).
 ///
 /// Reads `std::env::args` after the binary name. Unknown commands or missing
 /// required flags print usage to stderr and return exit code `2`.
@@ -48,6 +50,7 @@ pub fn run() -> ExitCode {
         "sync-embed" => cmd_sync_embed(&args),
         "package" => cmd_package(&args),
         "smoke" => cmd_smoke(&args),
+        "test" => cmd_test(&args),
         "-h" | "--help" | "help" => {
             eprint_usage();
             ExitCode::SUCCESS
@@ -71,6 +74,7 @@ Usage:
   bookclerk-plugin sync-embed [dir]
   bookclerk-plugin package --out <dir> [plugin-dir]
   bookclerk-plugin smoke [dir]
+  bookclerk-plugin test [dir] [--profile <first-party|d1|minimum>]... [-- <runner args>]
 "
     );
 }
@@ -112,6 +116,51 @@ fn cmd_smoke(args: &[String]) -> ExitCode {
         }
         Err(err) => {
             eprintln!("smoke failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_test(args: &[String]) -> ExitCode {
+    let mut dir = PathBuf::from(".");
+    let mut profiles = Vec::new();
+    let mut runner_args = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--" => {
+                runner_args.extend(args[i + 1..].iter().cloned());
+                break;
+            }
+            "--profile" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("--profile requires a name");
+                    return ExitCode::from(2);
+                }
+                profiles.push(args[i].clone());
+            }
+            a if !a.starts_with('-') => dir = PathBuf::from(a),
+            a => {
+                eprintln!("unknown test flag: {a}");
+                return ExitCode::from(2);
+            }
+        }
+        i += 1;
+    }
+    if profiles.is_empty() {
+        profiles = TEST_DATABASE_PROFILES
+            .iter()
+            .map(|p| (*p).to_string())
+            .collect();
+    }
+    match test_plugin(&dir, &profiles, &runner_args) {
+        Ok(msg) => {
+            println!("{msg}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("test failed: {err}");
             ExitCode::FAILURE
         }
     }

@@ -152,6 +152,8 @@ async fn ensure_shares_one_id_across_two_sqlite_connections() {
     let left_store = file_store(&path).await;
     let right_store = file_store(&path).await;
     let holder = file_store(&path).await;
+    // A second native connection holds the file lock the test contends on.
+    #[allow(clippy::disallowed_methods)]
     let txn = holder.db().begin().await.expect("hold the file lock");
     txn.execute_unprepared("CREATE TABLE IF NOT EXISTS enrollment_hold (id INTEGER PRIMARY KEY)")
         .await

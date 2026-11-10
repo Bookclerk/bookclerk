@@ -64,8 +64,8 @@ OS.
 | `GET`/`PUT /api/config/domains/core.output` | Operator | The authoritative shared `[output]` document and revision (`{expected_revision, document}`) |
 | `GET`/`PUT /api/auth/mfa-policy` | Owner or operator | `require_second_factor`: password sign-in needs TOTP or a passkey |
 | `GET /api/status` (also `/status`) | Yes | Status snapshot |
-| `POST /api/library/scan` (also `/scan`) | Yes | Queue a scan |
-| `POST /api/library/acquire` (also `/acquire`) | Yes | Queue an acquire |
+| `POST /api/library/scan` (also `/scan`) | Yes | Queue a scan. Any user may call `/api/library/scan`; a Member or Host scans only the store accounts linked to them. The `/scan` alias stays with Administrators |
+| `POST /api/library/acquire` (also `/acquire`) | Yes | Queue an acquire. Any user may call `/api/library/acquire`; a Member or Host acquires only from the store accounts linked to them. The `/acquire` alias stays with Administrators |
 | `GET /api/library/books` | Yes | Book rows for the web app |
 | `GET /api/jobs` (also `/jobs`) | Yes | The durable job list: progress, attempts, times |
 | `POST /api/jobs/{id}/cancel` | Yes | Cancel pending work, or ask running work to stop |

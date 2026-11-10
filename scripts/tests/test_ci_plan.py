@@ -26,7 +26,9 @@ sys.path.insert(0, str(SCRIPTS))
 from ci_plan import execute  # noqa: E402
 from ci_plan.execute import (  # noqa: E402
     BUILD_ONLY_JOBS,
+    DRAFT_JOBS,
     NEXTEST_RUN,
+    QUEUE_ONLY_CHECKS,
     SCHEMA_VERSION,
     Command,
     Context,
@@ -93,6 +95,9 @@ def artifact(p, mode: str = "selective") -> dict:
         "selective_ci": "1",
         "mode": mode,
         "build_only": False,
+        "draft": False,
+        "linux_only": False,
+        "deferred": [],
         "predicted": plan_to_dict(p),
         "execution": plan_to_dict(p),
     }
@@ -445,6 +450,25 @@ class ScenarioTests(unittest.TestCase):
         self.assertTrue(p.selected("plugin_sdk_abi"))
         self.assertTrue(p.selected("python_sdk"))
         self.assertFalse(p.selected("e2e"))
+
+    def test_check_input_selects_its_checks_on_top_of_the_owner(self) -> None:
+        # The SDK test wrappers spawn the kit executable: a change to the kit
+        # re-runs both wrapper checks and the kit's own tests.
+        p = plan("crates/bookclerk-db-testkit/src/binding.rs")
+        self.assertTrue(p.selected("plugin_sdk_abi"))
+        self.assertTrue(p.selected("python_sdk"))
+        self.assertTrue(p.packages["bookclerk-db-testkit"].compiled)
+        self.assertIn("bookclerk-db-testkit", p.packages)
+
+    def test_sdk_checks_build_the_kit_before_running_the_wrappers(self) -> None:
+        for check, label in (("plugin_sdk_abi", "npm run test:testkit"), ("python_sdk", "pytest")):
+            with self.subTest(check=check):
+                cmds = [c for _, c in planned_commands(artifact(plan("crates/bookclerk-db-testkit/src/binding.rs")), check, CTX)]
+                labels = [c.label for c in cmds]
+                build = labels.index("cargo build -p bookclerk-db-testkit")
+                run = labels.index(label)
+                self.assertLess(build, run)
+                self.assertTrue(cmds[run].env["BOOKCLERK_DB_TESTKIT"].endswith("bookclerk-db-testkit"))
 
     def test_dev_edge_selects_consumer_tests_and_doctests_not_its_consumers(self) -> None:
         p = plan("crates/bookclerk-plugins/platform/database-sqlite/src/plugin.rs")
@@ -1325,7 +1349,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(out["check_needs_uv"], "false")
         self.assertEqual(
             set(out),
-            {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode"}
+            {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs"}
             | {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
             | {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]},
         )
@@ -1887,6 +1911,197 @@ class RunnerLayoutTests(unittest.TestCase):
         assert kept is not None
         self.assertEqual(kept.argv, bench)
         self.assertIsNone(build_only_command(Command("bench run", bench[:-1])))
+
+    def draft_artifact(self, *paths: str, force_full: bool = False) -> dict:
+        return resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="pull_request",
+            force_full=force_full,
+            draft=True,
+            paths=list(paths),
+            metadata=META,
+            workspace=REPO,
+        )
+
+    def test_draft_runs_only_the_fast_jobs_and_defers_the_rest(self) -> None:
+        art = self.draft_artifact("Cargo.lock")
+        self.assertTrue(art["draft"])
+        validate(art, run_id="9", checkout_sha="abc")
+        predicted = plan_from_dict(art["predicted"])
+        execution = plan_from_dict(art["execution"])
+        self.assertTrue(predicted.full_suite)
+        on = {job for job, run in execution.jobs.items() if run}
+        self.assertEqual(on, set(DRAFT_JOBS))
+        self.assertEqual(set(execution.checks), {c for j in DRAFT_JOBS for c in JOB_CHECKS[j]})
+        # Every check the prediction selected either runs or is deferred.
+        self.assertEqual(set(execution.checks) | set(art["deferred"]), set(predicted.checks))
+        self.assertTrue(set(art["deferred"]).isdisjoint(execution.checks))
+        self.assertIn("e2e", art["deferred"])
+        self.assertIn("site_test", art["deferred"])
+        # The fast jobs keep their full-suite scope.
+        self.assertIs(execution.params("rust_test").get("workspace"), True)
+        out = job_outputs(art)
+        for job in JOB_CHECKS:
+            with self.subTest(job=job):
+                self.assertEqual(out[f"job_{job.replace('-', '_')}"], "true" if job in DRAFT_JOBS else "false")
+        needs = {"plan": {"result": "success"}}
+        for job in [*JOB_CHECKS, "macos"]:
+            needs[job] = {"result": "success" if job in DRAFT_JOBS else "skipped"}
+        self.assertEqual(gate(art, needs), [])
+        # A deferred job that ran anyway is a mismatch the gate reports.
+        self.assertTrue(gate(art, dict(needs, e2e={"result": "success"})))
+        self.assertIn("Draft pull request", execute.artifact_summary(art))
+
+    def test_draft_of_a_worker_change_runs_only_the_lint(self) -> None:
+        art = self.draft_artifact("tools/site/src/worker.ts")
+        self.assertIn("site_test", plan_from_dict(art["predicted"]).checks)
+        on = {job for job, run in plan_from_dict(art["execution"]).jobs.items() if run}
+        self.assertEqual(on, {"check"})
+        self.assertIn("site_test", art["deferred"])
+        self.assertIn("| `site_test` | deferred: draft", execute.artifact_summary(art))
+
+    def test_ready_pull_request_defers_nothing(self) -> None:
+        art = resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="pull_request",
+            paths=["Cargo.lock"],
+            metadata=META,
+            workspace=REPO,
+        )
+        self.assertFalse(art["draft"])
+        self.assertEqual(art["deferred"], [])
+        self.assertEqual(art["execution"], art["predicted"])
+
+    def test_draft_and_build_only_are_exclusive(self) -> None:
+        with self.assertRaises(ExecError):
+            resolve(
+                base=None,
+                head=None,
+                selective_ci="1",
+                run_id="9",
+                checkout_sha="abc",
+                event="push",
+                build_only=True,
+                draft=True,
+                paths=["Cargo.lock"],
+                metadata=META,
+                workspace=REPO,
+            )
+
+    def test_validate_rejects_a_malformed_draft_record(self) -> None:
+        base = artifact(plan("crates/bookclerk-cli/src/main.rs"))
+        for bad in (
+            {"draft": "yes"},
+            {"deferred": "e2e"},
+            {"deferred": ["no_such_check"]},
+            {"deferred": ["e2e"]},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ExecError):
+                validate(dict(base, **bad), run_id="1", checkout_sha="c")
+        for key in ("draft", "deferred"):
+            broken = dict(base)
+            del broken[key]
+            with self.subTest(missing=key), self.assertRaises(ExecError):
+                validate(broken, run_id="1", checkout_sha="c")
+        validate(dict(base, draft=True, deferred=["e2e"]), run_id="1", checkout_sha="c")
+
+    def ready_artifact(self, *paths: str, linux_only: bool = True) -> dict:
+        return resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="pull_request",
+            linux_only=linux_only,
+            paths=list(paths),
+            metadata=META,
+            workspace=REPO,
+        )
+
+    def test_ready_pull_request_leaves_windows_and_macos_to_the_queue(self) -> None:
+        art = self.ready_artifact("Cargo.lock")
+        validate(art, run_id="9", checkout_sha="abc")
+        predicted = plan_from_dict(art["predicted"])
+        execution = plan_from_dict(art["execution"])
+        self.assertEqual(art["deferred"], sorted(QUEUE_ONLY_CHECKS))
+        self.assertEqual(set(execution.checks), set(predicted.checks) - QUEUE_ONLY_CHECKS)
+        out = job_outputs(art)
+        self.assertEqual(json.loads(out["os_matrix"]), ["ubuntu-latest"])
+        self.assertEqual(out["os_legs"], "false")
+        self.assertEqual(out["job_windows_cluster"], "false")
+        for job in ("check", "test", "e2e", "release", "confinement", "native_gateway", "tray", "postgres", "site"):
+            with self.subTest(job=job):
+                self.assertEqual(out[f"job_{job}"], "true")
+        expected = expected_jobs(art)
+        self.assertFalse(expected["macos"])
+        self.assertFalse(expected["windows-cluster"])
+        needs = {"plan": {"result": "success"}}
+        for job, want in expected.items():
+            needs[job] = {"result": "success" if want else "skipped"}
+        self.assertEqual(gate(art, needs), [])
+        self.assertTrue(gate(art, dict(needs, macos={"result": "success"})))
+        summary = execute.artifact_summary(art)
+        self.assertIn("**Linux only**", summary)
+        self.assertIn("| `windows_cluster` | deferred: Windows, runs in the merge queue", summary)
+
+    def test_merge_group_and_main_run_every_platform(self) -> None:
+        for build_only in (False, True):
+            with self.subTest(build_only=build_only):
+                art = resolve(
+                    base=None,
+                    head=None,
+                    selective_ci="1",
+                    run_id="9",
+                    checkout_sha="abc",
+                    event="push" if build_only else "merge_group",
+                    force_full=True,
+                    build_only=build_only,
+                    paths=["Cargo.lock"],
+                    metadata=META,
+                    workspace=REPO,
+                )
+                self.assertFalse(art["linux_only"])
+                self.assertEqual(art["deferred"], [])
+                out = job_outputs(art)
+                self.assertEqual(json.loads(out["os_matrix"]), ["ubuntu-latest", "windows-latest"])
+                self.assertEqual(out["os_legs"], "true")
+                self.assertTrue(expected_jobs(art)["macos"])
+        self.assertEqual(job_outputs(self.ready_artifact("Cargo.lock", linux_only=False))["job_windows_cluster"], "true")
+
+    def test_linux_only_and_build_only_are_exclusive(self) -> None:
+        with self.assertRaises(ExecError):
+            resolve(
+                base=None,
+                head=None,
+                selective_ci="1",
+                run_id="9",
+                checkout_sha="abc",
+                event="push",
+                build_only=True,
+                linux_only=True,
+                paths=["Cargo.lock"],
+                metadata=META,
+                workspace=REPO,
+            )
+        base = artifact(plan("crates/bookclerk-cli/src/main.rs"))
+        for bad in (
+            {"linux_only": 1},
+            {"build_only": True, "linux_only": True},
+            {"deferred": ["windows_cluster"]},
+            {"linux_only": True, "deferred": ["e2e"]},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ExecError):
+                validate(dict(base, **bad), run_id="1", checkout_sha="c")
+        validate(dict(base, linux_only=True, deferred=["windows_cluster"]), run_id="1", checkout_sha="c")
 
     def test_pull_request_and_merge_group_are_never_build_only(self) -> None:
         art = artifact(plan("crates/bookclerk-cli/src/main.rs"))

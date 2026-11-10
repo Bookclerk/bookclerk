@@ -6,10 +6,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, Condition, EntityTrait, PaginatorTrait,
-    QueryFilter, QueryOrder, QuerySelect, TransactionTrait,
+    QueryFilter, QueryOrder, QuerySelect,
 };
 
 use super::{map_book, LibraryStore};
+use crate::control_plane::batch;
 use crate::entities::{books, storage_scan_generations, storage_scan_rows};
 use crate::error::{LibraryError, Result};
 use crate::models::BookRecord;
@@ -210,30 +211,34 @@ impl LibraryStore {
 
     /// Deletes inventory rows and the generation ownership row for `scan_id`.
     ///
-    /// Both deletes commit together. A failure leaves the generation and its
-    /// rows in place so an apply checkpoint cannot adopt an empty inventory.
+    /// Both deletes go to the database plugin as one atomic batch, so a
+    /// failure leaves the generation and its rows in place and an apply
+    /// checkpoint cannot adopt an empty inventory.
     ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when the delete fails.
+    /// Returns the batch error when the delete fails.
     pub async fn storage_scan_delete(&self, scan_id: &str) -> Result<()> {
-        let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        storage_scan_rows::Entity::delete_many()
-            .filter(storage_scan_rows::Column::ScanId.eq(scan_id))
-            .exec(&txn)
-            .await
-            .map_err(LibraryError::Orm)?;
         if scan_delete_should_fail_before_generation() {
             return Err(LibraryError::Other(anyhow::anyhow!(
                 "injected storage scan delete failure before generation removal"
             )));
         }
-        storage_scan_generations::Entity::delete_many()
-            .filter(storage_scan_generations::Column::ScanId.eq(scan_id))
-            .exec(&txn)
-            .await
-            .map_err(LibraryError::Orm)?;
-        txn.commit().await.map_err(LibraryError::Orm)?;
+        let operation_id = format!("storage-scan-delete-{}", uuid::Uuid::new_v4());
+        self.execute_host_batch(batch::request(
+            &operation_id,
+            vec![
+                batch::exec(
+                    "DELETE FROM storage_scan_rows WHERE scan_id = ?",
+                    vec![batch::text(scan_id)],
+                ),
+                batch::exec(
+                    "DELETE FROM storage_scan_generations WHERE scan_id = ?",
+                    vec![batch::text(scan_id)],
+                ),
+            ],
+        ))
+        .await?;
         Ok(())
     }
 
@@ -584,7 +589,7 @@ fn prefix_upper_bound(prefix: &str) -> Option<String> {
     None
 }
 
-/// Test switch: fail `storage_scan_delete` after the row delete, before commit.
+/// Test switch: fail `storage_scan_delete` before its batch is sent.
 fn scan_delete_should_fail_before_generation() -> bool {
     #[cfg(test)]
     {
@@ -596,7 +601,7 @@ fn scan_delete_should_fail_before_generation() -> bool {
     }
 }
 
-/// When set, [`LibraryStore::storage_scan_delete`] rolls back instead of
-/// removing the generation row.
+/// When set, [`LibraryStore::storage_scan_delete`] fails before it sends
+/// its batch, so the generation and its rows stay.
 #[cfg(test)]
 pub(crate) static FAIL_STORAGE_SCAN_DELETE_BEFORE_GENERATION: AtomicBool = AtomicBool::new(false);

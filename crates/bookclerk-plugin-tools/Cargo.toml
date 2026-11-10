@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-plugin-tools"
-description = "Bookclerk plugin author CLI (`bookclerk-plugin`: check / fmt / sync-embed / package / smoke)"
+description = "Bookclerk plugin author CLI (`bookclerk-plugin`: check / fmt / sync-embed / package / smoke / test)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

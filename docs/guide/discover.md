@@ -25,6 +25,11 @@ of the same series, so one long series cannot crowd out the rest. **Finish
 these series**, **Pick up where you left off** and **Wishlist** may show
 more, taking turns between series, and so may **Top picks for you**.
 
+Each book appears on one row only. Most rows show no more than two books
+of the same series, so one long series cannot crowd out the rest. **Finish
+these series**, **Pick up where you left off** and **Wishlist** may show
+more, taking turns between series, and so may **Top picks for you**.
+
 Suggestions come from the stores' catalogs, so they include books nobody in
 your library owns yet. The more you rate and finish, the better they get.
 Until you have a few books or listens of your own, your household's library

@@ -582,6 +582,9 @@ pub fn sql_v1_function_calls(sql: &str) -> Result<Vec<SqlFnCall>> {
     let mut out = Vec::new();
     let mut i = 0usize;
     let bytes = sql.as_bytes();
+    // The identifier before the current one, folded: a name after `INTO`,
+    // `TABLE` or `REFERENCES` is a table whose column list follows.
+    let mut prev_word = String::new();
     while i < bytes.len() {
         i = skip_trivia(sql, i)?;
         if i >= bytes.len() {
@@ -608,9 +611,15 @@ pub fn sql_v1_function_calls(sql: &str) -> Result<Vec<SqlFnCall>> {
                 }
                 let name = sql[start..i].to_ascii_lowercase();
                 let j = skip_trivia(sql, i)?;
-                if bytes.get(j) == Some(&b'(') && !matches!(name.as_str(), "cast" | "case") {
+                let is_call = bytes.get(j) == Some(&b'(')
+                    && !sql_v1_keyword_before_paren(&name)
+                    && !sql_v1_names_a_table(&prev_word);
+                prev_word = name.clone();
+                if is_call {
                     if let Some((n, end)) = count_call_args(sql, j)? {
-                        out.push(SqlFnCall { name, arg_count: n });
+                        if !sql_v1_cte_columns_end(sql, end)? {
+                            out.push(SqlFnCall { name, arg_count: n });
+                        }
                         i = end;
                         continue;
                     }
@@ -620,6 +629,101 @@ pub fn sql_v1_function_calls(sql: &str) -> Result<Vec<SqlFnCall>> {
         }
     }
     Ok(out)
+}
+
+/// True when `word` (folded) is a SQL keyword a `(` may follow without
+/// opening a function call: an `IN` list, a `VALUES` row, an `EXISTS` or
+/// parenthesised subquery, a grouped condition, a `CAST`/`CASE` form.
+///
+/// `maxFunctionArgs` is a ceiling on one physical function call, so the
+/// members of such a list are not counted against it.
+fn sql_v1_keyword_before_paren(word: &str) -> bool {
+    matches!(
+        word,
+        "cast"
+            | "case"
+            | "in"
+            | "not"
+            | "and"
+            | "or"
+            | "is"
+            | "like"
+            | "glob"
+            | "between"
+            | "exists"
+            | "values"
+            | "select"
+            | "distinct"
+            | "all"
+            | "from"
+            | "where"
+            | "when"
+            | "then"
+            | "else"
+            | "on"
+            | "as"
+            | "by"
+            | "having"
+            | "set"
+            | "returning"
+            | "union"
+            | "intersect"
+            | "except"
+            | "join"
+            | "using"
+            | "filter"
+            | "over"
+            | "partition"
+            | "collate"
+            | "escape"
+            | "default"
+            | "check"
+            | "unique"
+            | "key"
+            | "limit"
+            | "offset"
+            | "with"
+            | "do"
+            | "conflict"
+            | "if"
+            | "materialized"
+    )
+}
+
+/// True when the identifier after `word` (folded) names a table, so the
+/// parenthesis after that identifier opens a column list, not a call.
+///
+/// `exists` covers `CREATE TABLE IF NOT EXISTS name (…)`: an `EXISTS`
+/// subquery opens its parenthesis directly, with no name in between.
+fn sql_v1_names_a_table(word: &str) -> bool {
+    matches!(word, "into" | "table" | "references" | "update" | "exists")
+}
+
+/// True when the parenthesised list that closed just before `end` is a
+/// common table expression's column list: `name (a, b) AS (…)` or
+/// `AS [NOT] MATERIALIZED (…)`.
+///
+/// A call aliased in a select list (`count(x) AS n`) is followed by a name,
+/// never by a parenthesis, so it still counts.
+///
+/// # Errors
+///
+/// Returns [`PluginError::invalid_params`] when a comment after the list is
+/// unterminated.
+fn sql_v1_cte_columns_end(sql: &str, end: usize) -> Result<bool> {
+    let bytes = sql.as_bytes();
+    let mut i = skip_trivia(sql, end)?;
+    if !keyword_at(sql, i, "as") {
+        return Ok(false);
+    }
+    i = skip_trivia(sql, i + 2)?;
+    if keyword_at(sql, i, "not") {
+        i = skip_trivia(sql, i + 3)?;
+    }
+    if keyword_at(sql, i, "materialized") {
+        i = skip_trivia(sql, i + "materialized".len())?;
+    }
+    Ok(bytes.get(i) == Some(&b'('))
 }
 
 /// True when `c` may start an unquoted identifier.
@@ -1047,6 +1151,48 @@ mod tests {
             "{calls:?}"
         );
         require_function_args_within("SELECT replace(a, 'x', 'y')", 3).expect("N");
+        // Lists a keyword introduces are not function calls: their members
+        // do not count against the cap, while the calls inside them do.
+        let marks = vec!["lower(?)"; 40].join(", ");
+        let in_list = format!("SELECT uuid FROM books WHERE lower(uuid) IN ({marks})");
+        require_function_args_within(&in_list, 32).expect("IN list");
+        let calls = sql_v1_function_calls(&in_list).expect("function calls");
+        assert_eq!(calls.len(), 41, "{calls:?}");
+        assert!(calls.iter().all(|c| c.name == "lower" && c.arg_count == 1));
+        let pairs = vec!["'k', 1"; 17].join(", ");
+        let err = require_function_args_within(
+            &format!("SELECT uuid FROM books WHERE uuid NOT IN (json_object({pairs}))"),
+            32,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, crate::PluginErrorCode::LimitExceeded, "{err}");
+        let cols = (0..40)
+            .map(|i| format!("c{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let binds = vec!["?"; 40].join(", ");
+        require_function_args_within(&format!("INSERT INTO t ({cols}) VALUES ({binds})"), 32)
+            .expect("column list and VALUES row");
+        require_function_args_within(&format!("CREATE TABLE IF NOT EXISTS t ({cols})"), 32)
+            .expect("column list after IF NOT EXISTS");
+        let cte = format!(
+            "WITH a ({cols}) AS (SELECT {binds}), b ({cols}) AS MATERIALIZED (SELECT * FROM a) \
+             SELECT count(*) AS n FROM b"
+        );
+        require_function_args_within(&cte, 32).expect("CTE column lists");
+        let calls = sql_v1_function_calls(&cte).expect("function calls");
+        assert_eq!(calls.len(), 1, "an aliased call still counts: {calls:?}");
+        assert_eq!(calls[0].name, "count");
+        require_function_args_within(
+            &format!("CREATE TABLE t ({cols}, FOREIGN KEY (c0) REFERENCES u (a))"),
+            32,
+        )
+        .expect("table definition");
+        require_function_args_within(
+            "SELECT 1 WHERE EXISTS (SELECT 1 FROM t WHERE (a = ? OR b = ?) AND c IN (?, ?))",
+            1,
+        )
+        .expect("subquery and grouped condition");
         let err = require_function_args_within("SELECT replace(a, 'x', 'y')", 2).unwrap_err();
         assert_eq!(err.code, crate::PluginErrorCode::LimitExceeded, "{err}");
         assert_eq!(
