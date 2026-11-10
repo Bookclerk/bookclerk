@@ -749,6 +749,7 @@ methods on [`ContentSource`](../../packages/plugin-sdk/src/plugin.ts) and
 | `login` | Password storefronts. Params include `pluginDataDir`, marketplace, label, email and password. Result: `{ account, credentials? }`. The host seals the credentials (`provider = plugin id`) and upserts the account row |
 | `loginStart` / `loginComplete` | OAuth storefronts (Audible). Start returns `{ sessionId, url }`; complete returns the login result |
 | `scan` | Params include `pluginDataDir`, filters, and a host-injected `credentials` list (one `{ accountId, credentials }` entry per account, with the credentials as opaque JSON bytes; **no** library database path). The result includes `books[]` records (see [Book records](#book-records)); the host stores them with `source` forced to the plugin id |
+| `searchCatalog` | `{ query, region, limit, page, sort, field }` → `CatalogHit[]` (see [Book records](#book-records)). A `limit` of `0` means the storefront's default page of 20 hits; an empty query returns `[]` |
 | `fetchTitle` | The host injects `credentials` from `encrypted_secrets`. The plugin writes media under the work folder and returns **plain** paths (DRM guests decrypt before returning) |
 
 > [!IMPORTANT]
@@ -968,6 +969,11 @@ Workers RPC, plus a generic atomic-plan executor.
 > A backend that can't advertise `atomicBatch`, parameterized statements,
 > and bind and statement limits at or above the host minimum is **not
 > loaded** (fail closed). Non-SQL engines aren't supported.
+
+An adapter proves it keeps this contract with the adapter conformance
+suite in `bookclerk-db-testkit` (see
+[A database adapter's own suite](database-limits.md#a-database-adapters-own-suite)),
+which every first-party adapter passes.
 
 | Method | Notes |
 | --- | --- |

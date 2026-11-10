@@ -180,8 +180,9 @@ DOC_FILES = frozenset(
 )
 # Tests and fixtures the plan job runs on every event, before any check.
 PLAN_JOB_TEST_PREFIX = "scripts/tests/"
-# Scripts that only plan-job tests exercise (the CLA checker runs in its own
-# workflow, from the default branch, and builds nothing; the coverage gate
+# Scripts that only plan-job tests exercise (the CLA checker and the
+# maintainer review check run in their own workflows, from the default
+# branch, and build nothing; the coverage gate
 # runs in CI Gate on every run, as does the Web API contract report, Codecov reads its settings itself, and the
 # bundle uploader in tools/codecov only runs in coverage-upload.yml; the
 # mutation testing reports, settings and starting commit only run in mutation.yml,
@@ -192,6 +193,7 @@ PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 PLAN_JOB_SCRIPT_FILES = frozenset(
     {
         "scripts/cla_check.py",
+        "scripts/maintainer_review.py",
         "scripts/cla_branch/README.md",
         "scripts/cla_branch/setup-rulesets.sh",
         "scripts/coverage_gate.py",
@@ -1465,7 +1467,25 @@ def _fmt_prereq(p: Mapping[str, Any]) -> str:
     return kind.replace("_", "-")
 
 
-def plan_to_summary(plan: Plan, title: str = "CI plan") -> str:
+# Why a summary row reads "deferred" (see ``scripts/ci_plan/execute.py``).
+DEFERRED_DRAFT = "draft pull request, runs when ready for review"
+DEFERRED_REASONS = {"windows_cluster": "Windows, runs in the merge queue"}
+
+
+def plan_to_summary(plan: Plan, title: str = "CI plan", deferred: Iterable[str] = ()) -> str:
+    """Markdown summary of ``plan``.
+
+    Args:
+        plan: The plan to describe.
+        title: The section heading.
+        deferred: Checks a pull request run left for later (the ready run
+            or the merge queue); they read ``deferred`` with the reason
+            rather than ``not affected``.
+
+    Returns:
+        The summary as Markdown.
+    """
+    waiting = frozenset(deferred)
     lines = [f"## {title}", "", f"- **full_suite:** `{plan.full_suite}`"]
     for r in plan.reasons:
         lines.append(f"  - {r}")
@@ -1482,6 +1502,9 @@ def plan_to_summary(plan: Plan, title: str = "CI plan") -> str:
     lines.append("| Check | Why | Prerequisites |")
     lines.append("| --- | --- | --- |")
     for check in ALL_CHECKS:
+        if check in waiting:
+            lines.append(f"| `{check}` | deferred: {DEFERRED_REASONS.get(check, DEFERRED_DRAFT)} | |")
+            continue
         if check not in plan.checks:
             lines.append(f"| `{check}` | skip: not affected | |")
             continue

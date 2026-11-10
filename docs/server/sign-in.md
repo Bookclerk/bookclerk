@@ -14,9 +14,9 @@ to Bookclerk's Rust HTTP API; TypeScript never hosts the API.
 | --- | --- | --- |
 | **Operator** | The operator token, until an Owner exists; then a sign-in link or Owner elevation | Everything on the server, except connect stores |
 | **Owner** | Invite link, password, passkey, SSO or integration login | Administrator powers, plus elevation to operator and **Settings → Nodes** for the nodes they own |
-| **Administrator** | Invite link, password, passkey, SSO or integration login | Member powers, plus acquire, scan, jobs, adding users and **Settings → Nodes** for the nodes they own |
+| **Administrator** | Invite link, password, passkey, SSO or integration login | Member powers, plus acquire and scan for every store account, jobs, adding users and **Settings → Nodes** for the nodes they own |
 | **Host** | Invite link, password, passkey, SSO or integration return visit | Member powers, plus **Status** and **Settings → Nodes** for the nodes they own |
-| **Member** | Invite link, password, passkey, SSO or integration return visit | Discover, Wishlist, browsing the shared library, **Accounts**, and their own **Settings → Account** |
+| **Member** | Invite link, password, passkey, SSO or integration return visit | Discover, Wishlist, browsing the shared library, **Accounts**, scan and acquire for the store accounts linked to them (through the API), and their own **Settings → Account** |
 
 ### The operator
 
@@ -43,6 +43,12 @@ default), never the durable token.
 An Owner can **elevate** to operator, with an IdP step-up, a passkey or
 their password. Elevated, they get **Server** and **Plugins** settings and
 impersonation. Administrators can add users but cannot elevate.
+
+Wrong elevation passwords count toward the same lockout as other sign-in
+attempts, both for the client address and for the Owner. After too many
+misses, `POST /api/auth/elevate` answers `429` with a `Retry-After` header,
+even from another address, until the lockout ends. A passkey or IdP step-up
+still works meanwhile.
 
 ## Sign-in methods
 
@@ -274,6 +280,12 @@ Operators also see scan and acquire. Connecting stores stays in
 ### Accounts
 
 Link and revoke stores, and manage linked sign-in identities.
+
+**Revoke** marks the account revoked (which stops its scans), signs it
+out at the store (best effort), deletes its saved credentials, then
+unlinks it. Books already in the library stay. If a step fails, the store
+stays listed and the page shows the error, so **Revoke** can be tried
+again.
 
 ### Settings → Account (everyone)
 

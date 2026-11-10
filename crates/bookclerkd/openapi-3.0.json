@@ -650,6 +650,32 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong passwords from this client or for this Owner; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginThrottled"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many failed login attempts. Try again in 45 seconds.",
+                  "retry_after_secs": 45,
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The password hash could not be read, or the elevated session could not be stored.",
             "content": {
@@ -4443,563 +4469,6 @@
                   "error": "session_check_unavailable",
                   "message": "Your sign-in could not be checked yet. Try again in a moment.",
                   "status": 503
-                }
-              }
-            }
-          },
-          "504": {
-            "description": "The request ran past the API's time budget.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "request timed out"
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
-          {
-            "portalSession": []
-          }
-        ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
-      }
-    },
-    "/api/library/scan": {
-      "post": {
-        "tags": [
-          "Library"
-        ],
-        "summary": "Plans and enqueues a library scan; returns the accepted job ids.",
-        "description": "The scan planner splits a scan of every account into one job per\nscan-enabled account for operators, Owners and Administrators, and\nlimits anyone else to the accounts they own. `job_id` is the first\naccepted (or already queued) job and `job_ids` lists every one.",
-        "operationId": "trigger_scan",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "description": "Optional body for `POST /api/library/scan`.",
-                "properties": {
-                  "account": {
-                    "type": "string",
-                    "description": "When set, scan this account even if `scan_enabled` is false.",
-                    "example": "reader@example.com",
-                    "nullable": true
-                  },
-                  "plugin_instance_id": {
-                    "type": "string",
-                    "description": "When set, scan only this deployed plugin instance.",
-                    "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
-                    "nullable": true
-                  }
-                },
-                "nullable": true
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "The scan jobs were accepted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ScanPlanResponse"
-                },
-                "example": {
-                  "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
-                  "job_ids": [
-                    "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
-                    "scan-8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
-                  ],
-                  "message": "scan planned: 2 accepted, 0 already pending or running, 0 not admitted (queue full)",
-                  "ok": true
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "The body names no valid target. As `text/plain`, when the body is not syntactically valid JSON.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
-                },
-                "example": {
-                  "error": "invalid",
-                  "job_id": "",
-                  "message": "the account named is blank",
-                  "ok": false
-                }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
-              }
-            }
-          },
-          "401": {
-            "description": "The caller is not signed in, or the credential is wrong.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The caller may not scan these accounts. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/ActionResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ErrorJson"
-                    }
-                  ]
-                },
-                "examples": {
-                  "forbidden": {
-                    "summary": "The route's own refusal",
-                    "value": {
-                      "error": "forbidden",
-                      "job_id": "",
-                      "message": "this user may not scan the library",
-                      "ok": false
-                    }
-                  },
-                  "mfa_enrollment_required": {
-                    "summary": "The user must enroll a second factor first",
-                    "value": {
-                      "error": "mfa_enrollment_required",
-                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
-                      "status": 403
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "A scan is already pending or running, or no node can run it.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PlanConflict"
-                },
-                "examples": {
-                  "duplicate": {
-                    "summary": "Every planned job is already pending or running",
-                    "value": {
-                      "error": "conflict",
-                      "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
-                      "job_ids": [
-                        "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
-                      ],
-                      "message": "scan already pending or running",
-                      "ok": false
-                    }
-                  },
-                  "unroutable": {
-                    "summary": "No node runs every plugin instance the job requires",
-                    "value": {
-                      "error": "unroutable",
-                      "job_id": "",
-                      "message": "no node runs all of the plugin instances this scan job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node",
-                      "ok": false
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "No account matched. As `text/plain`, when the JSON does not fit the body.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ScanPlanResponse"
-                },
-                "example": {
-                  "error": "nothing_to_scan",
-                  "job_id": "",
-                  "job_ids": [],
-                  "message": "no scan-enabled store account to scan",
-                  "ok": false
-                }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to deserialize the JSON body into the target type: account: invalid type: integer `1`, expected a string at line 1 column 12"
-              }
-            }
-          },
-          "429": {
-            "description": "The job queue is full.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ScanPlanResponse"
-                },
-                "example": {
-                  "error": "queue_full",
-                  "job_id": "",
-                  "job_ids": [],
-                  "message": "job queue is full",
-                  "ok": false
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "The jobs could not be queued.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
-                },
-                "example": {
-                  "error": "internal_error",
-                  "job_id": "",
-                  "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection",
-                  "ok": false
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Job admission is paused. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
-                },
-                "example": {
-                  "error": "admission_paused",
-                  "job_id": "",
-                  "message": "job admission paused (database reload in progress)",
-                  "ok": false
-                }
-              }
-            }
-          },
-          "504": {
-            "description": "The request ran past the API's time budget.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "request timed out"
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
-          {
-            "portalSession": []
-          }
-        ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
-      }
-    },
-    "/api/library/acquire": {
-      "post": {
-        "tags": [
-          "Library"
-        ],
-        "summary": "Plans and enqueues acquire jobs; returns the accepted job ids.",
-        "description": "The acquire planner makes one job per title id, and limits a user who is\nnot an Owner or Administrator to the accounts they own (one job per\naccount when no title or account is named). `job_id` is the first\naccepted (or already queued) job and `job_ids` lists every one.",
-        "operationId": "trigger_acquire",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "description": "Optional body for `POST /api/library/acquire`.",
-                "properties": {
-                  "asin": {
-                    "type": "string",
-                    "description": "Audible ASIN filter; first of uuid/asin/isbn/product_id wins.",
-                    "example": "B0C8HVKW7X",
-                    "nullable": true
-                  },
-                  "uuid": {
-                    "type": "string",
-                    "description": "Library title UUID filter.",
-                    "example": "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31",
-                    "nullable": true
-                  },
-                  "isbn": {
-                    "type": "string",
-                    "description": "ISBN filter for non-Audible stores.",
-                    "example": "9781797176802",
-                    "nullable": true
-                  },
-                  "product_id": {
-                    "type": "string",
-                    "description": "Store product id filter.",
-                    "example": "1797176803",
-                    "nullable": true
-                  },
-                  "account": {
-                    "type": "string",
-                    "description": "Restrict acquire to this store account.",
-                    "example": "reader@example.com",
-                    "nullable": true
-                  },
-                  "plugin_instance_id": {
-                    "type": "string",
-                    "description": "When set, fetch through this deployed plugin instance.",
-                    "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
-                    "nullable": true
-                  },
-                  "titles": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "description": "More title ids; each (with the single filter above) becomes its own\njob.",
-                    "example": [
-                      "8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
-                    ]
-                  },
-                  "force": {
-                    "type": "boolean",
-                    "description": "Re-download titles already acquired.",
-                    "example": false
-                  },
-                  "pdf_only": {
-                    "type": "boolean",
-                    "description": "Fetch only each title's companion PDF.",
-                    "example": false
-                  }
-                },
-                "nullable": true
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "The acquire jobs were accepted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ScanPlanResponse"
-                },
-                "example": {
-                  "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
-                  "job_ids": [
-                    "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
-                  ],
-                  "message": "acquire job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted",
-                  "ok": true
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "The body names no valid title. As `text/plain`, when the body is not syntactically valid JSON.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
-                },
-                "example": {
-                  "error": "invalid",
-                  "job_id": "",
-                  "message": "every title id given is blank",
-                  "ok": false
-                }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
-              }
-            }
-          },
-          "401": {
-            "description": "The caller is not signed in, or the credential is wrong.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The caller may not acquire for these accounts. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/ActionResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ErrorJson"
-                    }
-                  ]
-                },
-                "examples": {
-                  "forbidden": {
-                    "summary": "The route's own refusal",
-                    "value": {
-                      "error": "forbidden",
-                      "job_id": "",
-                      "message": "that title is not in a store account linked to this user",
-                      "ok": false
-                    }
-                  },
-                  "mfa_enrollment_required": {
-                    "summary": "The user must enroll a second factor first",
-                    "value": {
-                      "error": "mfa_enrollment_required",
-                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
-                      "status": 403
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The same acquire is already pending or running, or no node can run it.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PlanConflict"
-                },
-                "examples": {
-                  "duplicate": {
-                    "summary": "Every planned job is already pending or running",
-                    "value": {
-                      "error": "conflict",
-                      "job_id": "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
-                      "job_ids": [
-                        "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
-                      ],
-                      "message": "acquire already pending or running",
-                      "ok": false
-                    }
-                  },
-                  "unroutable": {
-                    "summary": "No node runs every plugin instance the job requires",
-                    "value": {
-                      "error": "unroutable",
-                      "job_id": "",
-                      "message": "no node runs all of the plugin instances this acquire job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node",
-                      "ok": false
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "No account of the caller's can acquire. As `text/plain`, when the JSON does not fit the body.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ScanPlanResponse"
-                },
-                "example": {
-                  "error": "nothing_to_acquire",
-                  "job_id": "",
-                  "job_ids": [],
-                  "message": "no store account of yours to acquire from",
-                  "ok": false
-                }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to deserialize the JSON body into the target type: asin: invalid type: integer `1`, expected a string at line 1 column 9"
-              }
-            }
-          },
-          "429": {
-            "description": "The job queue is full.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ScanPlanResponse"
-                },
-                "example": {
-                  "error": "queue_full",
-                  "job_id": "",
-                  "job_ids": [],
-                  "message": "job queue is full",
-                  "ok": false
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "The jobs could not be queued.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
-                },
-                "example": {
-                  "error": "internal_error",
-                  "job_id": "",
-                  "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection",
-                  "ok": false
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Job admission is paused. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
-                },
-                "example": {
-                  "error": "admission_paused",
-                  "job_id": "",
-                  "message": "job admission paused (database reload in progress)",
-                  "ok": false
                 }
               }
             }
@@ -11770,6 +11239,563 @@
         "x-bookclerk-access": "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
       }
     },
+    "/api/library/scan": {
+      "post": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Plans and enqueues a library scan; returns the accepted job ids.",
+        "description": "The scan planner splits a scan of every account into one job per\nscan-enabled account for operators, Owners and Administrators, and\nlimits anyone else to the accounts they own. `job_id` is the first\naccepted (or already queued) job and `job_ids` lists every one.",
+        "operationId": "trigger_scan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Optional body for `POST /api/library/scan`.",
+                "properties": {
+                  "account": {
+                    "type": "string",
+                    "description": "When set, scan this account even if `scan_enabled` is false.",
+                    "example": "reader@example.com",
+                    "nullable": true
+                  },
+                  "plugin_instance_id": {
+                    "type": "string",
+                    "description": "When set, scan only this deployed plugin instance.",
+                    "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+                    "nullable": true
+                  }
+                },
+                "nullable": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The scan jobs were accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "job_ids": [
+                    "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                    "scan-8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
+                  ],
+                  "message": "scan planned: 2 accepted, 0 already pending or running, 0 not admitted (queue full)",
+                  "ok": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body names no valid target. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "error": "invalid",
+                  "job_id": "",
+                  "message": "the account named is blank",
+                  "ok": false
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not scan these accounts. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ActionResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "forbidden",
+                      "job_id": "",
+                      "message": "this user may not scan the library",
+                      "ok": false
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A scan is already pending or running, or no node can run it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanConflict"
+                },
+                "examples": {
+                  "duplicate": {
+                    "summary": "Every planned job is already pending or running",
+                    "value": {
+                      "error": "conflict",
+                      "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                      "job_ids": [
+                        "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
+                      ],
+                      "message": "scan already pending or running",
+                      "ok": false
+                    }
+                  },
+                  "unroutable": {
+                    "summary": "No node runs every plugin instance the job requires",
+                    "value": {
+                      "error": "unroutable",
+                      "job_id": "",
+                      "message": "no node runs all of the plugin instances this scan job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node",
+                      "ok": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No account matched. As `text/plain`, when the JSON does not fit the body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "error": "nothing_to_scan",
+                  "job_id": "",
+                  "job_ids": [],
+                  "message": "no scan-enabled store account to scan",
+                  "ok": false
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: account: invalid type: integer `1`, expected a string at line 1 column 12"
+              }
+            }
+          },
+          "429": {
+            "description": "The job queue is full.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "error": "queue_full",
+                  "job_id": "",
+                  "job_ids": [],
+                  "message": "job queue is full",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The jobs could not be queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "job_id": "",
+                  "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Job admission is paused. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "error": "admission_paused",
+                  "job_id": "",
+                  "message": "job admission paused (database reload in progress)",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/library/acquire": {
+      "post": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Plans and enqueues acquire jobs; returns the accepted job ids.",
+        "description": "The acquire planner makes one job per title id, and limits a user who is\nnot an Owner or Administrator to the accounts they own (one job per\naccount when no title or account is named). `job_id` is the first\naccepted (or already queued) job and `job_ids` lists every one.",
+        "operationId": "trigger_acquire",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Optional body for `POST /api/library/acquire`.",
+                "properties": {
+                  "asin": {
+                    "type": "string",
+                    "description": "Audible ASIN filter; first of uuid/asin/isbn/product_id wins.",
+                    "example": "B0C8HVKW7X",
+                    "nullable": true
+                  },
+                  "uuid": {
+                    "type": "string",
+                    "description": "Library title UUID filter.",
+                    "example": "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31",
+                    "nullable": true
+                  },
+                  "isbn": {
+                    "type": "string",
+                    "description": "ISBN filter for non-Audible stores.",
+                    "example": "9781797176802",
+                    "nullable": true
+                  },
+                  "product_id": {
+                    "type": "string",
+                    "description": "Store product id filter.",
+                    "example": "1797176803",
+                    "nullable": true
+                  },
+                  "account": {
+                    "type": "string",
+                    "description": "Restrict acquire to this store account.",
+                    "example": "reader@example.com",
+                    "nullable": true
+                  },
+                  "plugin_instance_id": {
+                    "type": "string",
+                    "description": "When set, fetch through this deployed plugin instance.",
+                    "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+                    "nullable": true
+                  },
+                  "titles": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "More title ids; each (with the single filter above) becomes its own\njob.",
+                    "example": [
+                      "8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
+                    ]
+                  },
+                  "force": {
+                    "type": "boolean",
+                    "description": "Re-download titles already acquired.",
+                    "example": false
+                  },
+                  "pdf_only": {
+                    "type": "boolean",
+                    "description": "Fetch only each title's companion PDF.",
+                    "example": false
+                  }
+                },
+                "nullable": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The acquire jobs were accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+                  "job_ids": [
+                    "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+                  ],
+                  "message": "acquire job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted",
+                  "ok": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body names no valid title. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "error": "invalid",
+                  "job_id": "",
+                  "message": "every title id given is blank",
+                  "ok": false
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not acquire for these accounts. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ActionResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "forbidden",
+                      "job_id": "",
+                      "message": "that title is not in a store account linked to this user",
+                      "ok": false
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The same acquire is already pending or running, or no node can run it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanConflict"
+                },
+                "examples": {
+                  "duplicate": {
+                    "summary": "Every planned job is already pending or running",
+                    "value": {
+                      "error": "conflict",
+                      "job_id": "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                      "job_ids": [
+                        "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
+                      ],
+                      "message": "acquire already pending or running",
+                      "ok": false
+                    }
+                  },
+                  "unroutable": {
+                    "summary": "No node runs every plugin instance the job requires",
+                    "value": {
+                      "error": "unroutable",
+                      "job_id": "",
+                      "message": "no node runs all of the plugin instances this acquire job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node",
+                      "ok": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No account of the caller's can acquire. As `text/plain`, when the JSON does not fit the body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "error": "nothing_to_acquire",
+                  "job_id": "",
+                  "job_ids": [],
+                  "message": "no store account of yours to acquire from",
+                  "ok": false
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: asin: invalid type: integer `1`, expected a string at line 1 column 9"
+              }
+            }
+          },
+          "429": {
+            "description": "The job queue is full.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "error": "queue_full",
+                  "job_id": "",
+                  "job_ids": [],
+                  "message": "job queue is full",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The jobs could not be queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "job_id": "",
+                  "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Job admission is paused. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "error": "admission_paused",
+                  "job_id": "",
+                  "message": "job admission paused (database reload in progress)",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
     "/api/config/node-invites": {
       "get": {
         "tags": [
@@ -15327,6 +15353,136 @@
           },
           "500": {
             "description": "The lookup failed.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session."
+      }
+    },
+    "/api/discover/refresh": {
+      "post": {
+        "tags": [
+          "Discover"
+        ],
+        "summary": "Queues a storefront fetch and ranking for the caller's shelves now, as\nthe Discover page's Refresh button asks. Unchanged store calls answer\nfrom the day's cache, so a refresh is cheap; a fetch already waiting\nabsorbs the request.",
+        "operationId": "discover_refresh",
+        "responses": {
+          "200": {
+            "description": "Stored Discover state of the caller's shelves, with `updating` set once the fetch is queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoverStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller has no portal identity.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Unauthorized"
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The job queue is full, so the fetch was not queued.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "job queue is full"
+              }
+            }
+          },
+          "500": {
+            "description": "The lookup failed, or the fetch could not be queued.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -25434,8 +25590,8 @@
         "tags": [
           "Accounts"
         ],
-        "summary": "Unlinks a store account from this identity and deletes secrets when no other identity remains.",
-        "description": "The account is addressed by `(source, account_id)`: the same store id may\nexist under two plugins. `source` is the alias or plugin key of the link.\n\nWhen the last link goes, the plugin first signs the account out at the\nstore (for example, Audible deregisters its device), best effort.",
+        "summary": "Marks a store account revoked, signs it out, deletes its stored credentials, then unlinks it.",
+        "description": "The account is addressed by `(source, account_id)`: the same store id may\nexist under two plugins. `source` is the alias or plugin key of the link.\n\nLinks are exclusive (one identity per account), so the caller's link is\nthe account's only one and revoking it always clears the credentials.\nEvery step runs while the link still exists, in this order: the account\nis marked revoked (which also turns scanning off, so no job picks it up\nhalf-cleaned); the plugin signs it out at the store (for example, Audible\nderegisters its device), best effort; its `encrypted_secrets` rows are\ndeleted; only then is the link removed. Any failed library step answers\n503 and keeps the link, so the same request retries the cleanup.\nAlready-acquired library rows stay (product policy).",
         "operationId": "portal_revoke_connection",
         "parameters": [
           {
@@ -25459,7 +25615,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The account was unlinked.",
+            "description": "The account was marked revoked, its stored credentials were deleted, and it was unlinked.",
             "content": {
               "application/json": {
                 "schema": {
@@ -25469,7 +25625,7 @@
             }
           },
           "400": {
-            "description": "The account is not linked to this identity, or the library database refused the unlink or the credential revoke (the body carries its message).",
+            "description": "The account is not linked to this identity, or the library database refused to read this identity's links (the body carries its message).",
             "content": {
               "application/json": {
                 "schema": {
@@ -25477,7 +25633,7 @@
                 },
                 "examples": {
                   "library_failed": {
-                    "summary": "The library database refused the step.",
+                    "summary": "The library database refused the read.",
                     "value": {
                       "error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"
                     }
@@ -25532,14 +25688,25 @@
             }
           },
           "503": {
-            "description": "The store sign-out task that follows the last unlink stopped. The link is already gone (a retry answers 400 `account not linked to this identity`) and the account's stored credentials may remain; the daemon log names the task.",
+            "description": "A cleanup step failed: marking the account revoked, deleting its stored credentials, or removing the link. The account stays linked, so repeating the request runs the cleanup again. When the cleanup task itself stopped, the daemon log names it; a repeat either finishes the cleanup or, if the unlink had already run, answers 400 `account not linked to this identity`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
-                "example": {
-                  "error": "revoke cleanup failed: task 12 panicked"
+                "examples": {
+                  "step_failed": {
+                    "summary": "The library database refused a cleanup step.",
+                    "value": {
+                      "error": "revoke cleanup failed: ORM / database plugin error: Execution Error: error returned from database: database is locked"
+                    }
+                  },
+                  "task_stopped": {
+                    "summary": "The cleanup task panicked.",
+                    "value": {
+                      "error": "revoke cleanup failed: task 12 panicked"
+                    }
+                  }
                 }
               }
             }
@@ -28323,7 +28490,8 @@
         "description": "Stored Discover state of the caller's shelves.",
         "required": [
           "subject",
-          "ready"
+          "ready",
+          "updating"
         ],
         "properties": {
           "subject": {
@@ -28353,6 +28521,11 @@
             "description": "RFC 3339 time the caller's last storefront fetch finished, when any.",
             "example": "2026-11-06T00:29:41+00:00",
             "nullable": true
+          },
+          "updating": {
+            "type": "boolean",
+            "description": "True while a fetch or ranking for the caller is waiting or running.",
+            "example": false
           }
         }
       },
@@ -35715,6 +35888,11 @@
               }
             },
             "nullable": true
+          },
+          "incomplete": {
+            "type": "boolean",
+            "description": "True when the batch deadline cut this lookup short: the hints are the\nquery's trusted seeds alone, so a client should not keep the answer\nand asks again later. Omitted (false) for a finished lookup.",
+            "example": false
           }
         }
       },
@@ -36491,6 +36669,18 @@
             "format": "int64",
             "description": "Number of distinct users who wishlisted this title (may exceed `wishers.len()`).",
             "example": 3
+          },
+          "seed_title": {
+            "type": "string",
+            "description": "Title of the book or wish the storefront was asked about to find this\ncard, when it came from such an expansion.",
+            "example": "Dune",
+            "nullable": true
+          },
+          "starter_genre": {
+            "type": "string",
+            "description": "Starter genre this card was browsed from while the taste was thin.",
+            "example": "Science Fiction",
+            "nullable": true
           }
         }
       },

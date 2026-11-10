@@ -7,6 +7,7 @@
 //!
 //! See `docs/adr/control-plane.md`.
 
+mod artifacts;
 pub(crate) mod batch;
 mod branch_catalog;
 mod cache;
@@ -46,6 +47,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+pub use artifacts::{load_artifact_blob, put_artifact_blob, MAX_ARTIFACT_BLOB_BYTES};
 pub use branch_catalog::{
     accept_catalog_batch, begin_catalog, branch_provenance, branch_title_counts,
     catalog_fence_live, detach_branch_titles, forwardable_branch_titles, grant_catalog_upload,
@@ -212,9 +214,8 @@ pub use uploads::{
 };
 pub use versions::{
     activate_version, add_plugin_version, approve_version_grant, clear_install, list_installs,
-    list_versions, load_active_version, load_artifact_blob, load_install, load_version,
-    put_artifact_blob, AddVersion, PluginArtifact, PluginInstall, PluginVersion,
-    ARTIFACT_BLOB_SCHEME, MAX_ARTIFACT_BLOB_BYTES,
+    list_versions, load_active_version, load_install, load_version, AddVersion, PluginArtifact,
+    PluginInstall, PluginVersion, ARTIFACT_BLOB_SCHEME,
 };
 
 use documents::{import_if_absent, load_document, replace_document};

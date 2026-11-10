@@ -3103,7 +3103,7 @@ class SearchCatalogParams(TypedDict):
     Attributes:
         query: Free-text search query.
         region: Storefront region / marketplace code; empty means the guest default.
-        limit: Maximum hits to return; the host always sends an explicit value.
+        limit: Maximum hits to return; 0 means the storefront default (20 hits).
         page: 1-based page for storefronts that page.
         sort: Sort order.
         field: Facet restriction.

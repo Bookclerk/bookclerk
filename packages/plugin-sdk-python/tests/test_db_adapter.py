@@ -37,11 +37,17 @@ from bookclerk_plugin_sdk.db_value import (
 )
 from bookclerk_plugin_sdk.workerd import PluginError
 
+# The repository root: the nearest folder above holding the ABI crate. A
+# fixed depth would break when mutation testing runs these tests from a copy
+# under `mutants/` (docs/contributing/ci.md#python-sdk).
+REPO_ROOT = next(
+    p for p in Path(__file__).resolve().parents if (p / "crates" / "bookclerk-plugin-abi").is_dir()
+)
+
 FIXTURE = json.loads(
-    (
-        Path(__file__).resolve().parents[3]
-        / "crates/bookclerk-library/fixtures/guest_receipt/isolate_adapter.json"
-    ).read_text(encoding="utf-8")
+    (REPO_ROOT / "crates/bookclerk-library/fixtures/guest_receipt/isolate_adapter.json").read_text(
+        encoding="utf-8"
+    )
 )
 SOURCE = "sqlite_txn"
 LIMITS = ExecuteStreamLimits(

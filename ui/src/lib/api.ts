@@ -3088,6 +3088,12 @@ export interface PurchaseHint {
 export interface PurchaseHintsResponse {
   hints: PurchaseHint[];
   best: PurchaseHint | null;
+  /**
+   * True when the server's batch deadline cut the lookup short: the hints are
+   * links without prices, so the answer is not cached and should be asked
+   * for again later.
+   */
+  incomplete?: boolean;
 }
 
 /**
@@ -3129,6 +3135,10 @@ export interface Recommendation {
   wishers?: QueueWisher[];
   /** Distinct wisher count (may exceed `wishers.length`). */
   wish_count?: number;
+  /** Title of the book or wish the storefront was asked about to find this card. */
+  seed_title?: string | null;
+  /** Starter genre this card was browsed from while the taste was thin. */
+  starter_genre?: string | null;
 }
 
 /**
@@ -3352,6 +3362,38 @@ export interface CatalogSearchPage {
   sort_dir?: string;
 }
 
+/** Stored state of the caller's Discover shelves (`GET /api/discover/status`). */
+export interface DiscoverStatus {
+  subject: string;
+  ready: boolean;
+  scope?: string | null;
+  feed_computed_at?: string | null;
+  candidates_fetched_at?: string | null;
+  /** True while a fetch or ranking for the caller is waiting or running. */
+  updating: boolean;
+}
+
+/**
+ * Queues a storefront fetch and ranking for the caller's shelves now, as
+ * the Refresh button asks. A fetch already waiting absorbs the request.
+ *
+ * @returns The caller's Discover status once the fetch is queued.
+ */
+export async function requestDiscoverRefresh(): Promise<DiscoverStatus> {
+  const res = await fetchWithTimeout(
+    "/api/discover/refresh",
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    },
+    8_000,
+    "Discover refresh",
+  );
+  return parseJson(res);
+}
+
 /**
  * Loads the caller's stored Discover shelves.
  *
@@ -3572,7 +3614,10 @@ export function fetchPurchaseHints(body: PurchaseHintsQuery): Promise<PurchaseHi
     purchaseHintsQueue.push({
       query: body,
       resolve: (value) => {
-        clientCacheSet(purchaseHintsClientCache, key, value, PURCHASE_HINTS_CLIENT_TTL_MS);
+        // An unfinished lookup is not kept, so the next ask reaches the server.
+        if (!value.incomplete) {
+          clientCacheSet(purchaseHintsClientCache, key, value, PURCHASE_HINTS_CLIENT_TTL_MS);
+        }
         resolve(value);
       },
       reject,

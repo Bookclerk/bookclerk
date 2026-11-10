@@ -29,13 +29,14 @@ pub async fn search_catalog(
     opts: &CatalogSearchOpts,
 ) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
     let q = opts.query.trim();
-    if q.is_empty() || opts.limit == 0 {
+    if q.is_empty() {
         return Ok(Vec::new());
     }
+    let limit = opts.effective_limit();
     let http =
         public_http_client().map_err(|e| bookclerk_storefront::SourceError::api(e.to_string()))?;
     let region = normalize_region(&opts.region);
-    let fetch_limit = catalog_fetch_limit(opts.limit);
+    let fetch_limit = catalog_fetch_limit(limit);
     let page = opts.page.max(1);
     let products_sort = opts.sort.audible_products_sort_by();
     let storefront_sort = opts.sort.audible_catalog_search_sort();
@@ -131,7 +132,7 @@ pub async fn search_catalog(
     Ok(products
         .into_iter()
         .filter(|p| !p.asin.trim().is_empty())
-        .take(opts.limit)
+        .take(limit)
         .map(|p| product_to_hit(p, String::from("search")))
         .collect())
 }

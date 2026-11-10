@@ -56,7 +56,9 @@ version answers to.
 
 - A registry artifact keeps its download URL.
 - A local archive up to 1 MiB is stored in the database
-  (`blob:sha256:<hex>`), so every node can materialize it.
+  (`blob:sha256:<hex>`), so every node can materialize it. It is split into
+  chunks small enough for the database plugin's cell, request and result
+  limits, so it fits every adapter, D1 and the host minimums included.
 - A larger local archive is referenced in place as a `file://` URL. Only
   nodes that see that path (shared storage) can materialize it; the others
   record an `error` observation.
