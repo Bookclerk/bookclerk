@@ -1399,11 +1399,58 @@ Queue settings:
 
 - squash;
 - "only merge non-failing pull requests";
-- build concurrency around 5.
+- build concurrency 1;
+- merge limits: minimum 1, maximum 5, wait time 5 minutes;
+- status check timeout 120 minutes.
 
 With a queue required, "require branches to be up to date" no longer
 matters. The queue tests each entry against the current `main`, stacked on
 the entries ahead of it.
+
+### Sizing the queue to the runner pool
+
+The organization runs on GitHub Free, which allows 20 hosted jobs at once
+across every workflow, and hosted runners serve queued jobs first come,
+first served. A job from a pull request gets no priority over one from a
+merge group, or the other way round.
+
+The merge queue starts one `merge_group` run per entry it builds, each
+holding the entries ahead of it. Merge limits don't change that: GitHub
+documents that they "do not combine `merge_group` builds" and only decide
+how many passing entries land at once. Build concurrency is the only
+setting that caps how many groups test at the same time.
+
+One merge group asks for about 22 jobs: the 19 CI jobs (17 of them start
+together right after `plan`), plus OSV-Scanner, the CLA check and the
+coverage upload. Most finish within 10 minutes. The unit tests (about
+30 minutes), the fat-LTO release build (about 23), `fmt / clippy / docs`
+(about 16), the two long Windows jobs and `merge-queue fail-fast`, which
+holds a runner until the run ends, keep going. Uncontended, a group takes
+about 35 minutes and averages about 6 runners.
+
+| Build concurrency | Merge-group runners (peak, typical) | Left for pull requests |
+| --- | --- | --- |
+| 1 | about 19, then about 6 after 10 minutes | about 14 most of the time |
+| 2 | up to 20 when fan-outs overlap, about 12 typical | about 8, none at overlaps |
+| 3 or more | the whole pool | none until the groups drain |
+
+Build concurrency 1 keeps about two thirds of the pool for pull request
+checks. It caps the queue at one landing about every 35 minutes, about
+1.7 pull requests an hour, so a queue 10 deep takes about 6 hours to drain.
+More concurrency helps only while the pool is idle: on a quiet 9 November
+2026, overlapping groups landed about 3 an hour. On the busy night of
+9 to 10 November, with up to three groups building, merge-group jobs waited
+10 to 25 minutes for a runner, runs took about 65 minutes, and the queue
+landed about 1.3 an hour while pull request checks waited behind it.
+
+It also makes a failure cheap. With several groups building, a failure
+(including a flaky test) ejects the head entry and rebuilds every group
+behind it. With one group, nothing else was building, so nothing is
+rebuilt. "Jump to the front" likewise restarts only the one group in
+progress.
+
+Raise build concurrency again only when the pool grows, for example a paid
+plan or a self-hosted runner reserved for `merge_group`.
 
 ### macOS job
 
