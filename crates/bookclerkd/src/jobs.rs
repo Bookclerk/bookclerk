@@ -1120,7 +1120,7 @@ pub async fn run_listen_sync(state: &AppState, ctx: Option<&JobExecCtx>) -> anyh
 /// when `None`) that match `title` (every title when `None`) and pass
 /// `wanted`, in title order.
 ///
-/// One title is an indexed lookup ([`LibraryStore::find_books_by_any_id`]);
+/// One title is an indexed lookup ([`bookclerk_library::LibraryStore::find_books_by_any_id`]);
 /// otherwise the library is read in keyset pages and only the books
 /// `wanted` keeps are held, so no read loads the whole catalog at once.
 ///
