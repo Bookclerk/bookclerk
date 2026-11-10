@@ -206,6 +206,7 @@ pub fn encode_scan_page_bytes(page: &ScanPage) -> capnp::Result<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
     use crate::ScanBook;
