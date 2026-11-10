@@ -1156,11 +1156,13 @@ async fn acquire_candidates(
     let mut after_id = None;
     loop {
         let page = library.list_books_page(account, after_id, 64).await?;
-        let Some(last) = page.last() else {
-            break;
-        };
-        after_id = Some(last.id);
+        // `list_books_page` fills a page unless the catalog ends.
+        let last_page = page.len() < 64;
+        after_id = page.last().map(|b| b.id);
         targets.extend(page.into_iter().filter(|b| wanted(b)));
+        if last_page {
+            break;
+        }
     }
     targets.sort_by(|a, b| a.title.cmp(&b.title));
     Ok(targets)

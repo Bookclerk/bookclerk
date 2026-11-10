@@ -7,6 +7,7 @@
 //! enriched titles; these reads stay within it at any size.
 
 use chrono::{DateTime, Utc};
+use sea_orm::sea_query::{Expr, ExprTrait, Func};
 use sea_orm::{
     ColumnTrait, Condition, EntityTrait, FromQueryResult, QueryFilter, QueryOrder, QuerySelect,
 };
@@ -83,11 +84,14 @@ impl LibraryStore {
     /// Books whose uuid, product id, ISBN or ASIN equals `id`, ignoring
     /// ASCII case, optionally on one account, in title order.
     ///
-    /// Every comparison uses that column's index (see `case_variants` for
-    /// how case is handled), so the read touches the matching rows only.
-    /// The result is the same set the acquire job used to find by
-    /// filtering the whole library in memory, except a stored id cased
-    /// differently from all three spellings tried.
+    /// The first read compares each id column through its index (see
+    /// `case_variants` for how case is handled), so it touches the matching
+    /// rows only. When that finds nothing, a second read compares
+    /// `lower(column)` so a stored id in mixed case (a slug such as
+    /// `The-Dresden-Files`) still matches; that read may scan the table on
+    /// the database side but still returns only the matching rows. The
+    /// result is the set the acquire job used to find by filtering the
+    /// whole library in memory.
     ///
     /// # Arguments
     ///
@@ -107,13 +111,38 @@ impl LibraryStore {
         id: &str,
     ) -> Result<Vec<BookRecord>> {
         let variants = case_variants(id);
-        let any = Condition::any()
+        let exact = Condition::any()
             .add(books::Column::Uuid.is_in(variants.clone()))
             .add(books::Column::ProductId.is_in(variants.clone()))
             .add(books::Column::Isbn.is_in(variants.clone()))
             .add(books::Column::Asin.is_in(variants));
+        let found = self.books_matching_id(account_id, id, exact).await?;
+        if !found.is_empty() {
+            return Ok(found);
+        }
+        let lowered = id.to_ascii_lowercase();
+        let folded = |column: books::Column| {
+            ExprTrait::eq(Expr::expr(Func::lower(Expr::col(column))), lowered.clone())
+        };
+        let folded = Condition::any()
+            .add(folded(books::Column::Uuid))
+            .add(folded(books::Column::ProductId))
+            .add(folded(books::Column::Isbn))
+            .add(folded(books::Column::Asin));
+        self.books_matching_id(account_id, id, folded).await
+    }
+
+    /// Books matching `condition` on `account_id` (every account when
+    /// `None`), in title order, kept only when one id column equals `id`
+    /// ignoring ASCII case (the database's own case folding can be wider).
+    async fn books_matching_id(
+        &self,
+        account_id: Option<&str>,
+        id: &str,
+        condition: Condition,
+    ) -> Result<Vec<BookRecord>> {
         let mut query = books::Entity::find()
-            .filter(any)
+            .filter(condition)
             .order_by_asc(books::Column::Title)
             .order_by_asc(books::Column::Id);
         if let Some(account_id) = account_id {
@@ -135,8 +164,10 @@ impl LibraryStore {
     /// The first book, in title order, whose product id or ASIN is exactly
     /// `id`, or else whose primary storage key is exactly `storage_key`.
     ///
-    /// The id comparison uses the `product_id` and `asin` indexes; the
-    /// storage-key comparison reads at most one row.
+    /// The id comparison uses the `product_id` and `asin` indexes. The
+    /// storage-key fallback returns at most one row, but `storage_key` has
+    /// no index, so the database may scan the table to find it; it runs
+    /// only when no id matched.
     ///
     /// # Arguments
     ///
@@ -314,6 +345,12 @@ mod tests {
             let upper = other.uuid.to_ascii_uppercase();
             let found = store.find_books_by_any_id(None, &upper).await.unwrap();
             assert_eq!(uuids(&found), vec![other.uuid.clone()], "{name}");
+            let slug = book(&store, "a1", "The-Dresden-Files", None, None, "Slug").await;
+            let found = store
+                .find_books_by_any_id(None, "the-dresden-FILES")
+                .await
+                .unwrap();
+            assert_eq!(uuids(&found), vec![slug.uuid.clone()], "{name}: mixed case");
             let found = store.find_books_by_any_id(None, "missing").await.unwrap();
             assert!(found.is_empty(), "{name}");
         }
