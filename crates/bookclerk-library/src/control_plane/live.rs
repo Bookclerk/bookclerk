@@ -310,6 +310,18 @@ impl LibraryStore {
         topic: LiveTopic,
         when: Bump,
     ) -> Result<u64> {
+        // Boxed: the batch future is large, and inlining it into every
+        // caller's state machine overflows test-thread stacks.
+        Box::pin(self.exec_bumped_inner(write, topic, when)).await
+    }
+
+    /// [`Self::exec_bumped`]'s body, kept off the caller's stack.
+    async fn exec_bumped_inner<Q: QueryTrait>(
+        &self,
+        write: Q,
+        topic: LiveTopic,
+        when: Bump,
+    ) -> Result<u64> {
         let built = sea_exec(&write)?;
         if !self.admits_statement(&built) {
             let changed = self
@@ -383,6 +395,12 @@ impl LibraryStore {
         insert: Q,
         topic: LiveTopic,
     ) -> Result<i64> {
+        // Boxed for the same reason as [`Self::exec_bumped`].
+        Box::pin(self.insert_bumped_inner(insert, topic)).await
+    }
+
+    /// [`Self::insert_bumped`]'s body, kept off the caller's stack.
+    async fn insert_bumped_inner<Q: QueryTrait>(&self, insert: Q, topic: LiveTopic) -> Result<i64> {
         let mut write = sea_exec(&insert)?;
         if !self.admits_statement(&write) {
             let inserted = self
