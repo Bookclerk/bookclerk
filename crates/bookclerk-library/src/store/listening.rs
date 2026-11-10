@@ -98,12 +98,15 @@ impl LibraryStore {
     /// Resolves many listening items to owned books and works in a few bulk
     /// lookups.
     ///
-    /// A work comes from the editions whose `edition_identifiers` carry the
-    /// item's ASIN (in any marketplace), then its ISBN, and is used only
-    /// when those editions agree on one work; failing both, it is the work of
-    /// the matched owned book. The owned book is the one with the same ASIN,
-    /// then the same ISBN (lowest UUID when several do). Titles are never
-    /// compared.
+    /// The item's ASIN is tried first, then its ISBN; the first one that
+    /// names an owned book or a work decides both, so they never come from
+    /// different identifiers. For that identifier, the work comes from the
+    /// editions whose `edition_identifiers` carry it (an ASIN in any
+    /// marketplace), used only when those editions agree on one work, and
+    /// otherwise from the owned book. The owned book is the one whose
+    /// `asin` / `isbn` column holds the item's spelling or its normalised
+    /// form (an ASIN also in lower case; lowest UUID when several do).
+    /// Titles are never compared.
     ///
     /// # Arguments
     ///
@@ -159,6 +162,7 @@ impl LibraryStore {
             .filter(|raw| !raw.is_empty())
             .map(str::to_string)
             .chain(asins.iter().cloned())
+            .chain(asins.iter().map(|a| a.to_ascii_lowercase()))
             .collect();
         let raw_isbns: BTreeSet<String> = items
             .iter()
@@ -185,13 +189,26 @@ impl LibraryStore {
         let mut matches: Vec<ListeningMatch> = normalised
             .iter()
             .map(|(asin, isbn)| {
-                let by_asin = asin.as_ref().and_then(|a| editions_by_asin.get(a));
-                let by_isbn = isbn.as_ref().and_then(|i| editions_by_isbn.get(i));
-                ListeningMatch {
-                    book_uuid: first_book(asin.as_ref().and_then(|a| books_by_asin.get(a)))
-                        .or_else(|| first_book(isbn.as_ref().and_then(|i| books_by_isbn.get(i)))),
-                    work_id: unique_work(by_asin).or_else(|| unique_work(by_isbn)),
-                }
+                // The first identifier that names anything decides both the
+                // book and the work, so the two never come from different
+                // identifiers (and so never from different works).
+                let by = |book: Option<String>, work: Option<String>| {
+                    (book.is_some() || work.is_some()).then_some(ListeningMatch {
+                        book_uuid: book,
+                        work_id: work,
+                    })
+                };
+                by(
+                    first_book(asin.as_ref().and_then(|a| books_by_asin.get(a))),
+                    unique_work(asin.as_ref().and_then(|a| editions_by_asin.get(a))),
+                )
+                .or_else(|| {
+                    by(
+                        first_book(isbn.as_ref().and_then(|i| books_by_isbn.get(i))),
+                        unique_work(isbn.as_ref().and_then(|i| editions_by_isbn.get(i))),
+                    )
+                })
+                .unwrap_or_default()
             })
             .collect();
 
@@ -366,8 +383,9 @@ impl LibraryStore {
     /// out, progress fields take the report's. Each row is written once.
     ///
     /// The writes are split into atomic batches under the database plugin's
-    /// `maxStatements` and `maxRequestBytes`; no interactive transaction is
-    /// used. A reader between two batches can see part of the sync.
+    /// `maxStatements` and `maxRequestBytes`; a row's two statements always
+    /// share a batch. No interactive transaction is used, so a reader
+    /// between two batches can see part of the sync.
     ///
     /// # Arguments
     ///
@@ -413,10 +431,8 @@ impl LibraryStore {
                 merged = Some(merge_listening(merged.as_ref(), report));
             }
             let Some(after) = merged else { continue };
-            for stmt in listening_upsert(&after, &now) {
-                if let Some(full) = batches.push(stmt)? {
-                    self.run_listening_batch(full).await?;
-                }
+            if let Some(full) = batches.push_group(listening_upsert(&after, &now).to_vec())? {
+                self.run_listening_batch(full).await?;
             }
             writes.push(ListeningProgressWrite { before, after });
         }
@@ -727,51 +743,61 @@ mod tests {
 
     #[tokio::test]
     async fn an_owned_book_without_an_edition_identifier_lends_its_work() {
-        let kit = sqlite::memory(Profile::D1).await;
-        let store = kit.store();
-        store
-            .upsert_account("audible", "a1", "us", None, true, "audible")
-            .await
-            .unwrap();
-        let mut dune = NewBook::minimal("B00DUNE001", "a1", "US", "Dune");
-        dune.isbn = Some("9780441172719".into());
-        let dune = store.upsert_book(&dune).await.unwrap();
-        let work = store.work_id_for_book(&dune.uuid).await.unwrap();
-        // The edition loses its identifiers; the book still carries them.
-        edition_identifiers::Entity::delete_many()
-            .exec(store.db())
-            .await
-            .unwrap();
-        let matches = store
-            .match_listening_items(&[ids(Some("B00DUNE001"), None)])
-            .await
-            .unwrap();
-        assert_eq!(
-            matches,
-            vec![ListeningMatch {
-                book_uuid: Some(dune.uuid),
-                work_id: work,
-            }]
-        );
+        for profile in Profile::ALL {
+            let kit = sqlite::memory(profile).await;
+            let store = kit.store();
+            store
+                .upsert_account("audible", "a1", "us", None, true, "audible")
+                .await
+                .unwrap();
+            let mut dune = NewBook::minimal("B00DUNE001", "a1", "US", "Dune");
+            dune.isbn = Some("9780441172719".into());
+            let dune = store.upsert_book(&dune).await.unwrap();
+            let work = store.work_id_for_book(&dune.uuid).await.unwrap();
+            // The edition loses its identifiers; the book still carries them.
+            edition_identifiers::Entity::delete_many()
+                .exec(store.db())
+                .await
+                .unwrap();
+            let matches = store
+                .match_listening_items(&[ids(Some("B00DUNE001"), None)])
+                .await
+                .unwrap();
+            assert_eq!(
+                matches,
+                vec![ListeningMatch {
+                    book_uuid: Some(dune.uuid),
+                    work_id: work,
+                }]
+            );
+        }
     }
 
     #[tokio::test]
     async fn identities_are_read_for_many_users_at_once() {
-        let store = sqlite::store().await;
-        let dana = store
-            .upsert_portal_identity("abs", "dana", Some("Dana"))
-            .await
-            .unwrap();
-        store
-            .upsert_portal_identity("other", "lee", Some("Lee"))
-            .await
-            .unwrap();
-        let users: BTreeSet<String> = ["dana", "lee", "nobody"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        let found = store.portal_identity_ids("abs", &users).await.unwrap();
-        assert_eq!(found, BTreeMap::from([("dana".to_string(), dana.id)]));
+        for profile in Profile::ALL {
+            let kit = sqlite::memory(profile).await;
+            let store = kit.store();
+            let dana = store
+                .upsert_portal_identity("abs", "dana", Some("Dana"))
+                .await
+                .unwrap();
+            store
+                .upsert_portal_identity("other", "lee", Some("Lee"))
+                .await
+                .unwrap();
+            let users: BTreeSet<String> = ["dana", "lee", "nobody"]
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+            let found = store.portal_identity_ids("abs", &users).await.unwrap();
+            assert_eq!(
+                found,
+                BTreeMap::from([("dana".to_string(), dana.id)]),
+                "{}",
+                profile.name()
+            );
+        }
     }
 
     #[tokio::test]
@@ -849,6 +875,10 @@ mod tests {
             let caps = profile.capabilities();
             let sizes = kit.batch_sizes()[sent_before..].to_vec();
             assert_eq!(sizes.iter().sum::<usize>(), 84, "{name}: {sizes:?}");
+            assert!(
+                sizes.iter().all(|n| n % 2 == 0),
+                "{name}: a row's two statements share a batch: {sizes:?}"
+            );
             if caps.max_statements < 84 {
                 assert!(sizes.len() > 1, "{name}: {sizes:?}");
             }

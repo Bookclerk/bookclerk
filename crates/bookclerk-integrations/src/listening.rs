@@ -39,7 +39,8 @@ use crate::types::ListeningProgressSnapshot;
 /// # Errors
 ///
 /// Returns an error when a store read or write fails. Batches written
-/// before the failure stay.
+/// before the failure stay, so a failed write still publishes
+/// `listening_synced` (naming no identity: everyone refreshes).
 pub async fn upsert_listening_snapshots(
     library: &LibraryStore,
     provider: &str,
@@ -85,7 +86,16 @@ pub async fn upsert_listening_snapshots(
             last_listened_at: item.last_listened_at,
         })
         .collect();
-    let writes = library.upsert_listening_progress_batch(&rows).await?;
+    let writes = match library.upsert_listening_progress_batch(&rows).await {
+        Ok(writes) => writes,
+        Err(err) => {
+            // Batches before the failing one stay written, and the next sync
+            // would see those rows as unchanged: tell Discover now, for
+            // everyone, rather than lose the change.
+            publish_listening_synced(library, provider, &BTreeSet::new()).await;
+            return Err(err.into());
+        }
+    };
 
     let mut identities = BTreeSet::new();
     let mut changed = false;
@@ -426,6 +436,27 @@ mod tests {
             .expect("read")
             .expect("row");
         assert_eq!((b.book_uuid, b.work_id, b.identity_id), (None, None, None));
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_still_tells_discover() {
+        let library = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("memory store"),
+        );
+        let mut huge = snapshot("u1", "a", 0.3);
+        let cap = usize::try_from(library.db_capabilities().max_request_bytes).expect("cap");
+        huge.title = Some("x".repeat(cap + 1));
+        assert!(
+            upsert_listening_snapshots(&library, "audiobookshelf", &[huge])
+                .await
+                .is_err()
+        );
+        let events = synced_events(&library).await;
+        assert_eq!(events.len(), 1);
+        let payload: serde_json::Value = serde_json::from_str(&events[0].payload).expect("payload");
+        assert_eq!(payload["identityIds"], serde_json::json!([]));
     }
 
     #[test]

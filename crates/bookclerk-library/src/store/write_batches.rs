@@ -99,6 +99,57 @@ impl WriteBatches {
         Ok(closed)
     }
 
+    /// Adds statements that must land in the same batch (one row's
+    /// `UPDATE` and `INSERT OR IGNORE`), so a failed batch never leaves half
+    /// of a row's write applied.
+    ///
+    /// # Returns
+    ///
+    /// The batch that had to close to make room, when one did.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when one statement alone is larger than one request
+    /// may carry, when the group together cannot fit one batch, or when a
+    /// statement cannot be encoded.
+    pub(crate) fn push_group(
+        &mut self,
+        group: Vec<TypedDbStatement>,
+    ) -> Result<Option<Vec<TypedDbStatement>>> {
+        let mut sizes = Vec::with_capacity(group.len());
+        for stmt in &group {
+            let size = encoded_len(std::slice::from_ref(stmt))?.saturating_sub(self.empty_bytes);
+            if self.empty_bytes.saturating_add(size) > self.max_single_bytes {
+                return Err(LibraryError::Other(anyhow::anyhow!(
+                    "a {} write is {size} bytes, over the database plugin's request limit",
+                    self.what
+                )));
+            }
+            sizes.push(size);
+        }
+        let total: usize = sizes.iter().sum();
+        if group.len() > self.max_statements
+            || (group.len() > 1 && self.empty_bytes.saturating_add(total) > self.max_bytes)
+        {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "a {} write of {} statements and {total} bytes does not fit one batch",
+                self.what,
+                group.len()
+            )));
+        }
+        let full = self.pending.len().saturating_add(group.len()) > self.max_statements
+            || self.pending_bytes.saturating_add(total) > self.max_bytes;
+        let closed = if full && !self.pending.is_empty() {
+            self.pending_bytes = self.empty_bytes;
+            Some(std::mem::take(&mut self.pending))
+        } else {
+            None
+        };
+        self.pending_bytes = self.pending_bytes.saturating_add(total);
+        self.pending.extend(group);
+        Ok(closed)
+    }
+
     /// The last, partly filled batch, when anything is left.
     pub(crate) fn finish(self) -> Option<Vec<TypedDbStatement>> {
         (!self.pending.is_empty()).then_some(self.pending)
@@ -126,4 +177,55 @@ fn encoded_len(statements: &[TypedDbStatement]) -> Result<usize> {
     bookclerk_plugin_abi::encoded_execute_request_bytes(&req)
         .map(|bytes| bytes.len())
         .map_err(|err| LibraryError::Other(anyhow::anyhow!(err.to_string())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control_plane::batch;
+
+    /// A small execute statement carrying `text`.
+    fn stmt(text: &str) -> TypedDbStatement {
+        batch::exec("UPDATE t SET v = ?", vec![batch::text(text)])
+    }
+
+    #[test]
+    fn a_group_never_splits_across_batches() {
+        let mut caps = DbCapabilities::advertised_sqlite();
+        caps.max_statements = 3;
+        let mut batches = WriteBatches::new(&caps, "test");
+        assert!(batches
+            .push_group(vec![stmt("a"), stmt("b")])
+            .unwrap()
+            .is_none());
+        // A second pair would pass three statements: the first pair closes.
+        let closed = batches.push_group(vec![stmt("c"), stmt("d")]).unwrap();
+        assert_eq!(closed.map(|b| b.len()), Some(2));
+        assert_eq!(batches.finish().map(|b| b.len()), Some(2));
+    }
+
+    #[test]
+    fn a_group_that_cannot_fit_one_batch_is_refused() {
+        let mut caps = DbCapabilities::advertised_sqlite();
+        caps.max_statements = 2;
+        let mut batches = WriteBatches::new(&caps, "test");
+        let err = batches
+            .push_group(vec![stmt("a"), stmt("b"), stmt("c")])
+            .unwrap_err();
+        assert!(err.to_string().contains("does not fit one batch"), "{err}");
+
+        let caps = DbCapabilities::advertised_sqlite();
+        let cap = usize::try_from(caps.max_request_bytes).unwrap();
+        let mut batches = WriteBatches::new(&caps, "test");
+        let half = "x".repeat(cap / 2);
+        let err = batches
+            .push_group(vec![stmt(&half), stmt(&half)])
+            .unwrap_err();
+        assert!(err.to_string().contains("does not fit one batch"), "{err}");
+        let err = batches
+            .push_group(vec![stmt(&"x".repeat(cap))])
+            .unwrap_err();
+        assert!(err.to_string().contains("request limit"), "{err}");
+        assert!(batches.finish().is_none());
+    }
 }

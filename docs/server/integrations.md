@@ -111,12 +111,13 @@ shared table and never calls a plugin's client.
 
 Each item is matched by its identifiers, never by its title:
 
-1. Its ASIN, then its ISBN, is looked up in the library's edition
-   identifiers. When the editions found belong to one work, the item
-   counts toward that work.
-2. The owned book with the same ASIN, then the same ISBN, is linked when
-   there is one. If the identifiers named no work, the item takes that
-   book's work.
+1. Its ASIN is tried first, then its ISBN. The first one that names an
+   owned book or a work decides both, so the book and the work always
+   come from the same identifier.
+2. The work comes from the library's edition identifiers: when the
+   editions carrying that identifier belong to one work, the item counts
+   toward it. Otherwise the item takes the work of the owned book with
+   that identifier.
 
 An item with neither identifier is still stored, but it is not tied to a
 book or work, so it does not seed Discover. A sync is written in a few
