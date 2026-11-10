@@ -639,6 +639,8 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
     let b_out = tempfile::tempdir().unwrap();
     own_book(&b, b_out.path(), "libro", "b-store-acct", "b1").await;
     own_book(&b, b_out.path(), "libro", "b-store-acct", "b2").await;
+    // The same store title on a second account is shared once.
+    own_book(&b, b_out.path(), "libro", "b-other-acct", "b1").await;
     let b_link = join(&a, &b, riley, &a_origin, None).await.unwrap();
     let (b_handle, _b_stop) = start(&b, &b_link).await;
     let fail = Arc::new(std::sync::Mutex::new(None));
@@ -651,6 +653,14 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
             fail: Arc::clone(&fail),
         },
     };
+    let listed: Vec<String> = b_sync
+        .entries(false)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.reference.product_id)
+        .collect();
+    assert_eq!(listed.len(), 2, "one entry per store title: {listed:?}");
     let report = b_sync.sync_once().await.unwrap();
     assert_eq!((report.sent, report.upserted), (2, 2));
 

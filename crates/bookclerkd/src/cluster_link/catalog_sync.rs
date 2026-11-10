@@ -518,53 +518,57 @@ impl<S: BranchShelf> CatalogSync<S> {
         for entry in pending {
             // A read failure ends the pass (the next one resumes after what
             // was accepted); a title gone since it was listed is skipped.
-            match self.load(entry).await? {
-                None => tracing::debug!(
+            let Some(loaded) = self.load(entry).await? else {
+                tracing::debug!(
                     product_id = %entry.reference.product_id,
                     "a title is no longer shareable; skipped"
+                );
+                if !unlisted {
+                    cursor.clone_from(&entry.order);
+                }
+                continue;
+            };
+            match self.title(shelf.as_ref(), entry, &loaded).await {
+                Ok(title) if title.problem().is_none() => {
+                    let size = serde_json::to_string(&title).map_or(0, |text| text.len());
+                    if !batch.is_empty()
+                        && (batch.len() >= MAX_CATALOG_BATCH_TITLES
+                            || batch_bytes + size > MAX_BATCH_BYTES)
+                    {
+                        batch_no += 1;
+                        let sent = std::mem::take(&mut batch);
+                        report.sent += sent.len() as u64;
+                        let accepted = self
+                            .handle
+                            .catalog_sync(session.fence, batch_no, &cursor, false, sent)
+                            .await
+                            .map_err(|err| call_error("catalog.sync", &err))?;
+                        report.upserted += accepted.upserted;
+                        report.skipped += accepted.skipped;
+                        wanted.extend(accepted.wanted);
+                        batch_bytes = 0;
+                    }
+                    batch_bytes += size;
+                    batch.push(title);
+                }
+                Ok(title) => tracing::warn!(
+                    product_id = %title.product_id,
+                    problem = title.problem().unwrap_or_default(),
+                    "a title is not shareable as it stands; skipped"
                 ),
-                Some(loaded) => match self.title(shelf.as_ref(), entry, &loaded).await {
-                    Ok(title) if title.problem().is_none() => {
-                        let size = serde_json::to_string(&title).map_or(0, |text| text.len());
-                        if !batch.is_empty()
-                            && (batch.len() >= MAX_CATALOG_BATCH_TITLES
-                                || batch_bytes + size > MAX_BATCH_BYTES)
-                        {
-                            batch_no += 1;
-                            let sent = std::mem::take(&mut batch);
-                            report.sent += sent.len() as u64;
-                            let accepted = self
-                                .handle
-                                .catalog_sync(session.fence, batch_no, &cursor, false, sent)
-                                .await
-                                .map_err(|err| call_error("catalog.sync", &err))?;
-                            report.upserted += accepted.upserted;
-                            report.skipped += accepted.skipped;
-                            wanted.extend(accepted.wanted);
-                            batch_bytes = 0;
-                        }
-                        batch_bytes += size;
-                        batch.push(title);
-                    }
-                    Ok(title) => tracing::warn!(
-                        product_id = %title.product_id,
-                        problem = title.problem().unwrap_or_default(),
-                        "a title is not shareable as it stands; skipped"
-                    ),
-                    Err(err) if err.downcast_ref::<ListingFailed>().is_some() => {
-                        tracing::warn!(
-                            product_id = %entry.reference.product_id,
-                            error = %err,
-                            "a title's files could not be listed; the next pass tries it again"
-                        );
-                        unlisted = true;
-                    }
-                    Err(err) => tracing::warn!(
+                Err(err) if err.downcast_ref::<ListingFailed>().is_some() => {
+                    tracing::warn!(
                         product_id = %entry.reference.product_id,
                         error = %err,
-                        "a title is not shareable as it stands; skipped"
-                    ),
-                },
+                        "a title's files could not be listed; the next pass tries it again"
+                    );
+                    unlisted = true;
+                }
+                Err(err) => tracing::warn!(
+                    product_id = %entry.reference.product_id,
+                    error = %err,
+                    "a title is not shareable as it stands; skipped"
+                ),
             }
             if !unlisted {
                 cursor.clone_from(&entry.order);
