@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader, Lines};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, BufReader};
 
 use crate::config::ListenSpec;
 
@@ -31,6 +31,11 @@ pub const RPC_SOCKET: &str = "rpc";
 
 /// Longest control line worth parsing, in bytes; a `listen` message is under 100.
 pub const MAX_CONTROL_LINE_BYTES: usize = 1024;
+
+/// Longest workerd output line kept for logging, in bytes; the rest of a
+/// longer line is read and dropped, so isolate output cannot make the
+/// launcher buffer or log an unbounded line.
+pub const MAX_LOG_LINE_BYTES: usize = 16 * 1024;
 
 /// Event name workerd writes once a socket is listening.
 const LISTEN_EVENT: &str = "listen";
@@ -110,11 +115,11 @@ where
         return Ok(port);
     }
     let stdout = stdout.context("workerd stdout is not piped")?;
-    let mut lines = BufReader::new(stdout).lines();
-    let port = tokio::time::timeout(timeout, read_listen_port(&mut lines))
+    let mut reader = BufReader::new(stdout);
+    let port = tokio::time::timeout(timeout, read_listen_port(&mut reader))
         .await
         .context("timeout waiting for workerd to report the bridge RPC port")??;
-    tokio::spawn(forward_remaining(lines));
+    tokio::spawn(forward_remaining(reader));
     Ok(port)
 }
 
@@ -128,17 +133,88 @@ where
     R: AsyncRead + Unpin + Send + 'static,
 {
     if let Some(stream) = stream {
-        tokio::spawn(forward_remaining(BufReader::new(stream).lines()));
+        tokio::spawn(forward_remaining(BufReader::new(stream)));
     }
 }
 
-/// Logs every remaining line of `lines` under the `workerd` target until it ends.
-async fn forward_remaining<R>(mut lines: Lines<BufReader<R>>)
+/// One output line, cut to [`MAX_LOG_LINE_BYTES`].
+struct BoundedLine {
+    /// The line's bytes without its terminator (and without a trailing `\r`),
+    /// at most [`MAX_LOG_LINE_BYTES`] long.
+    bytes: Vec<u8>,
+    /// Whether the line was longer than [`MAX_LOG_LINE_BYTES`] and was cut.
+    truncated: bool,
+}
+
+impl BoundedLine {
+    /// Logs the line under the `workerd` target, marking a cut line.
+    fn log(&self) {
+        let text = String::from_utf8_lossy(&self.bytes);
+        if self.truncated {
+            tracing::info!(target: "workerd", "{text}… [line truncated]");
+        } else {
+            tracing::info!(target: "workerd", "{text}");
+        }
+    }
+}
+
+/// Reads one line, keeping at most [`MAX_LOG_LINE_BYTES`] of it.
+///
+/// The rest of a longer line is consumed and dropped, so the next call starts
+/// at the following line.
+///
+/// # Returns
+///
+/// `None` at end of stream with nothing read.
+///
+/// # Errors
+///
+/// When the underlying read fails.
+async fn next_bounded_line<R>(reader: &mut R) -> std::io::Result<Option<BoundedLine>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut line = BoundedLine {
+        bytes: Vec::new(),
+        truncated: false,
+    };
+    let mut read_any = false;
+    loop {
+        let buf = reader.fill_buf().await?;
+        if buf.is_empty() {
+            if !read_any {
+                return Ok(None);
+            }
+            break;
+        }
+        read_any = true;
+        let newline = buf.iter().position(|&b| b == b'\n');
+        let chunk = &buf[..newline.unwrap_or(buf.len())];
+        let room = MAX_LOG_LINE_BYTES.saturating_sub(line.bytes.len());
+        if chunk.len() > room {
+            line.truncated = true;
+        }
+        line.bytes
+            .extend_from_slice(&chunk[..chunk.len().min(room)]);
+        let used = newline.map_or(buf.len(), |at| at + 1);
+        reader.consume(used);
+        if newline.is_some() {
+            break;
+        }
+    }
+    if !line.truncated && line.bytes.last() == Some(&b'\r') {
+        line.bytes.pop();
+    }
+    Ok(Some(line))
+}
+
+/// Logs every remaining line of `reader` under the `workerd` target until it ends.
+async fn forward_remaining<R>(mut reader: BufReader<R>)
 where
     R: AsyncRead + Unpin,
 {
-    while let Ok(Some(line)) = lines.next_line().await {
-        tracing::info!(target: "workerd", "{line}");
+    while let Ok(Some(line)) = next_bounded_line(&mut reader).await {
+        line.log();
     }
 }
 
@@ -147,19 +223,20 @@ where
 /// # Errors
 ///
 /// When the stream ends or fails first.
-async fn read_listen_port<R>(lines: &mut Lines<BufReader<R>>) -> Result<u16>
+async fn read_listen_port<R>(reader: &mut BufReader<R>) -> Result<u16>
 where
     R: AsyncRead + Unpin,
 {
-    while let Some(line) = lines
-        .next_line()
+    while let Some(line) = next_bounded_line(reader)
         .await
         .context("read workerd control output")?
     {
-        if let Some(port) = listen_port(line.as_bytes(), RPC_SOCKET) {
-            return Ok(port.get());
+        if !line.truncated {
+            if let Some(port) = listen_port(&line.bytes, RPC_SOCKET) {
+                return Ok(port.get());
+            }
         }
-        tracing::info!(target: "workerd", "{line}");
+        line.log();
     }
     bail!("workerd exited before reporting the bridge RPC port; its log above says why")
 }
@@ -248,6 +325,55 @@ mod tests {
         .await
         .expect_err("no stdout");
         assert!(format!("{err:#}").contains("not piped"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn oversized_lines_are_cut_and_skipped() {
+        let mut output = "x".repeat(MAX_LOG_LINE_BYTES * 3);
+        output.push('\n');
+        output.push_str(r#"{"event":"listen","socket":"rpc","port":4242}"#);
+        output.push('\n');
+        let port = bridge_port(
+            &ListenSpec::ReportedTcp,
+            Some(stream(&output)),
+            TEST_TIMEOUT,
+        )
+        .await
+        .expect("port after an oversized line");
+        assert_eq!(port, 4242);
+
+        let mut reader = BufReader::new(stream(&output));
+        let first = next_bounded_line(&mut reader)
+            .await
+            .expect("read")
+            .expect("line");
+        assert!(first.truncated);
+        assert_eq!(first.bytes.len(), MAX_LOG_LINE_BYTES);
+        first.log();
+        let second = next_bounded_line(&mut reader)
+            .await
+            .expect("read")
+            .expect("line");
+        assert!(!second.truncated);
+        assert!(listen_port(&second.bytes, RPC_SOCKET).is_some());
+        assert!(next_bounded_line(&mut reader)
+            .await
+            .expect("read")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_last_line_without_newline_is_read() {
+        let mut reader = BufReader::new(stream("tail\r"));
+        let line = next_bounded_line(&mut reader)
+            .await
+            .expect("read")
+            .expect("line");
+        assert_eq!(line.bytes, b"tail");
+        assert!(next_bounded_line(&mut reader)
+            .await
+            .expect("read")
+            .is_none());
     }
 
     #[tokio::test]

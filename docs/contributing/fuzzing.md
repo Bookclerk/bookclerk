@@ -70,6 +70,12 @@ only that. The others check:
   an `httparse` reference decoder. The route body reader (framing dispatch,
   byte cap, end of stream) is split-invariant and yields what the declared
   framing promises.
+- **`workerd_control`**: a port the parser accepts agrees with an
+  independent `serde_json::Value` reading, every listen object that reading
+  accepts is accepted once re-encoded canonically, and no structured log
+  line (the input wrapped as a `console.*` message) yields a port. The
+  shared oracle is `fuzz/oracles/workerd_control.rs`, replayed from
+  `bookclerk-workerd`.
 - **`egress_policy`**: deny allows nothing. Loopback, private and metadata
   addresses need a CIDR in every spelling (trailing dot, fullwidth digits,
   legacy `127.1`, hex and octal IPv4). `*.suffix` never matches `xsuffix`,

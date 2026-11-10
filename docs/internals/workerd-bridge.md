@@ -51,6 +51,10 @@ dials. The launcher never picks a port number for workerd to bind:
   only an object with exactly the three control keys. The `workerd_control`
   fuzz target checks that no log line reads as a control message.
 
+The launcher forwards workerd's stdout and stderr to its own log line by
+line. It keeps at most 16 KiB of each line and drops the rest, so isolate
+output cannot make it buffer or log an unbounded line.
+
 > [!NOTE]
 > The launcher used to reserve a port on Windows, release it and pass it to
 > workerd. Another process could take the port in between, and because
