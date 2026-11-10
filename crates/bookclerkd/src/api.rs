@@ -834,6 +834,11 @@ struct PluginConsentResponse {
     /// Previously approved grant, when one is stored.
     existing: Option<PluginGrantView>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// What the request asks for beyond the stored grant (a plugin upgrade
+    /// that widened its capabilities); absent when no grant is stored. The
+    /// plugin keeps running under the stored grant until these are approved.
+    pending: Option<PluginConsentPending>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     /// Optional portal or manifest branding for the dialog.
     brand: Option<PluginConsentBrand>,
     /// Host-capped resource defaults (workerd budgets + shared disk). Always set.
@@ -842,6 +847,40 @@ struct PluginConsentResponse {
     /// the request's `ownUserAgentHosts`.
     #[schema(example = "bookclerk/0.1.0 (+https://bookclerk.app)")]
     host_user_agent: String,
+}
+
+/// The difference between a plugin's request and its stored grant.
+#[derive(Debug, Clone, Default, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct PluginConsentPending {
+    /// Operator-facing lines naming every capability awaiting consent, the
+    /// same lines `bookclerk plugins info` and `bookclerk plugins approve`
+    /// print; empty when the stored grant covers the request.
+    #[schema(example = json!(["Awaiting consent (not automatically approved):", "  fetch hosts: any public website (*)"]))]
+    lines: Vec<String>,
+    /// Fetch host patterns the request adds (`*` is any public host).
+    #[schema(example = json!(["*"]))]
+    domains: Vec<String>,
+    /// TCP `host:ports` the request adds, narrowed to the new ports.
+    tcp: Vec<TcpGrantView>,
+    /// CIDRs the request adds.
+    #[schema(example = json!(["192.168.1.0/24"]))]
+    address_cidrs: Vec<String>,
+    /// Whether the request newly asks to follow undeclared public redirects.
+    #[schema(example = false)]
+    allow_undeclared_public_redirects: bool,
+}
+
+impl From<&bookclerk_plugin_host::PendingStructural> for PluginConsentPending {
+    fn from(pending: &bookclerk_plugin_host::PendingStructural) -> Self {
+        Self {
+            lines: pending.summary_lines(),
+            domains: pending.domains.iter().cloned().collect(),
+            tcp: pending.tcp.iter().map(TcpGrantView::from).collect(),
+            address_cidrs: pending.address_cidrs.iter().cloned().collect(),
+            allow_undeclared_public_redirects: pending.undeclared_public_redirects,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -3246,7 +3285,12 @@ fn build_approved_grant(
     }
     if let Some(flag) = grant_override.allow_undeclared_public_redirects {
         approved.allow_undeclared_public_redirects = flag;
-        approved.operator_allow_undeclared_public_redirects = Some(flag);
+        // Record an operator choice only when it departs from the manifest.
+        // Echoing the baseline back (the dialog always submits the box) is
+        // not an answer, so a later version that asks for redirects still
+        // waits for consent instead of reading as already refused.
+        approved.operator_allow_undeclared_public_redirects =
+            (flag != baseline.allow_undeclared_public_redirects).then_some(flag);
     }
     if let Some(hosts) = grant_override.own_user_agent_hosts {
         approved.own_user_agent_hosts = Some(vec_to_set(hosts));
@@ -3348,8 +3392,11 @@ async fn get_plugin_consent(
     let existing = store
         .get_by_plugin_key(plugin.plugin_key().canonical())
         .cloned();
+    let pending = existing
+        .as_ref()
+        .map(|grant| pending_structural(grant, &request));
     let covered = existing.as_ref().is_some_and(|grant| {
-        grant_covers(grant, &request) && pending_structural(grant, &request).is_empty()
+        grant_covers(grant, &request) && pending.as_ref().is_some_and(|p| p.is_empty())
     });
     let brand = plugin_consent_brand(&state, plugin).await;
     let limits = plugin_consent_limits(plugin, cfg.plugins.jail.cpu_rate_percent);
@@ -3367,6 +3414,7 @@ async fn get_plugin_consent(
         covered,
         summary,
         existing: existing.as_ref().map(PluginGrantView::from_grant),
+        pending: pending.as_ref().map(PluginConsentPending::from),
         brand,
         limits,
         host_user_agent: bookclerk_plugin_manifest::host_user_agent(),
@@ -3417,15 +3465,19 @@ async fn post_plugin_consent(
         PluginRuntimeKind::Workerd => "workerd",
     }
     .to_string();
+    // An approval can leave a structural capability unticked; it stays
+    // pending, so the answer says so instead of claiming coverage.
+    let pending = pending_structural(&approved, &request);
     Ok(Json(PluginConsentResponse {
         plugin_id: plugin.alias().to_string(),
         plugin_key: plugin.plugin_key().canonical().to_string(),
         provenance: plugin.identity.provenance.to_string(),
         runtime,
         request: PluginGrantView::from_grant(&request),
-        covered: true,
+        covered: pending.is_empty(),
         summary,
         existing: Some(PluginGrantView::from_grant(&approved)),
+        pending: Some(PluginConsentPending::from(&pending)),
         brand,
         limits,
         host_user_agent: bookclerk_plugin_manifest::host_user_agent(),
@@ -7033,6 +7085,48 @@ mod tests {
     }
 
     #[test]
+    fn echoing_the_redirect_default_is_not_an_operator_answer() {
+        use bookclerk_plugin_host::{pending_structural, PluginGrant};
+
+        let baseline = PluginGrant {
+            plugin_id: "demo".into(),
+            network_mode: "outbound".into(),
+            ..PluginGrant::empty()
+        };
+        let echoed = build_approved_grant(
+            &baseline,
+            Some(PluginGrantOverride {
+                allow_undeclared_public_redirects: Some(false),
+                ..PluginGrantOverride::default()
+            }),
+        )
+        .expect("echo the default");
+        assert_eq!(echoed.operator_allow_undeclared_public_redirects, None);
+
+        // A later version asking for redirects still waits for consent.
+        let upgrade = PluginGrant {
+            allow_undeclared_public_redirects: true,
+            ..baseline.clone()
+        };
+        assert!(pending_structural(&echoed, &upgrade).undeclared_public_redirects);
+
+        // Refusing what the manifest asks for is recorded as a refusal.
+        let refused = build_approved_grant(
+            &upgrade,
+            Some(PluginGrantOverride {
+                allow_undeclared_public_redirects: Some(false),
+                ..PluginGrantOverride::default()
+            }),
+        )
+        .expect("refuse redirects");
+        assert_eq!(
+            refused.operator_allow_undeclared_public_redirects,
+            Some(false)
+        );
+        assert!(!pending_structural(&refused, &upgrade).undeclared_public_redirects);
+    }
+
+    #[test]
     fn listen_validation_uses_effective_auth_flag() {
         let mut cfg = Config::default();
         cfg.daemon.listen = ListenAddrs::parse_list("0.0.0.0:8787").unwrap();
@@ -7320,6 +7414,146 @@ mode = "deny"
         )
         .unwrap();
         root
+    }
+
+    /// Stages a native plugin asking for `tcp` (a TOML array of TCP grants).
+    fn stage_network_plugin(files: &std::path::Path, tcp: &str) {
+        let root = files.join("plugins").join("net_echo");
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("guest");
+        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(
+            root.join("plugin.toml"),
+            format!(
+                r#"
+api_version = 3
+id = "net_echo"
+version = "0.1.0"
+runtime = "native"
+command = "./guest"
+entrypoints = ["cli"]
+
+[capabilities.network]
+mode = "outbound"
+tcp = {tcp}
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    /// An `AppState` over `cfg` with an in-memory library and auth off.
+    async fn consent_test_state(cfg: Config) -> std::sync::Arc<super::AppState> {
+        use bookclerk_integrations::IntegrationRegistry;
+        use bookclerk_library::LibraryStore;
+        use bookclerk_plugin_host::{DatabaseRegistry, DestinationRegistry};
+        use bookclerk_source::SourceRegistry;
+        use std::sync::Arc;
+        use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
+
+        let library = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("sqlite memory"),
+        );
+        Arc::new(super::AppState {
+            config: Arc::new(RwLock::new(cfg)),
+            library: Arc::new(RwLock::new(library)),
+            database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
+            job_notify: Arc::new(Notify::new()),
+            job_runtime: Arc::new(RwLock::new(())),
+            work_lock: Mutex::new(()),
+            discover_gate: Arc::new(Semaphore::new(1)),
+            integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
+            sources: Arc::new(RwLock::new(SourceRegistry::new())),
+            destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
+            auth: Arc::new(RwLock::new(Arc::new(crate::auth::OperatorAuthState::new(
+                String::new(),
+                12,
+                false,
+                5,
+                30,
+            )))),
+            reload_lock: Mutex::new(()),
+            listen_reload: Arc::new(Notify::new()),
+            last_bound_listen: RwLock::new(None),
+            tray: RwLock::new(None),
+            tray_handoff: Mutex::new(None),
+            deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
+            covers: Arc::new(crate::covers::CoverService::detached()),
+        })
+    }
+
+    /// An upgrade that adds a TCP port is reported as pending (#700), and
+    /// approving it clears that.
+    #[tokio::test]
+    async fn plugin_consent_reports_what_an_upgrade_adds() {
+        use axum::extract::{Path, Query, State};
+        use axum::Json;
+
+        let files = tempfile::tempdir().unwrap();
+        stage_network_plugin(
+            files.path(),
+            r#"[{ host = "db.store.example", ports = [5432] }]"#,
+        );
+        let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+        let plugin = bookclerk_plugin_host::discover_plugins(&cfg)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.manifest.id == "net_echo")
+            .expect("staged plugin");
+        let approved =
+            bookclerk_plugin_host::consent_request(&plugin.manifest, plugin.plugin_key());
+        let mut store = bookclerk_plugin_host::PluginGrantStore::default();
+        store.upsert(approved);
+        store.save(files.path()).unwrap();
+
+        // The upgrade asks for another port on the same host.
+        stage_network_plugin(
+            files.path(),
+            r#"[{ host = "db.store.example", ports = [5432, 6432] }]"#,
+        );
+        let state = consent_test_state(cfg).await;
+        let Json(before) = super::get_plugin_consent(
+            State(state.clone()),
+            Path("net_echo".to_string()),
+            Query(super::PluginConsentQuery::default()),
+        )
+        .await
+        .expect("consent");
+        let body = serde_json::to_value(&before).unwrap();
+        assert_eq!(body["covered"], false, "{body}");
+        assert_eq!(
+            body["pending"]["tcp"],
+            serde_json::json!([{ "host": "db.store.example", "ports": [6432] }])
+        );
+        assert!(body["pending"]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l == "  raw TCP connect: db.store.example:[6432]"));
+
+        let Json(after) = super::post_plugin_consent(
+            State(state.clone()),
+            Path("net_echo".to_string()),
+            Query(super::PluginConsentQuery::default()),
+            Json(super::PluginConsentApproveRequest {
+                approve: true,
+                grant: None,
+            }),
+        )
+        .await
+        .expect("approve");
+        let body = serde_json::to_value(&after).unwrap();
+        assert_eq!(body["covered"], true, "{body}");
+        assert_eq!(body["pending"]["lines"], serde_json::json!([]));
     }
 
     fn write_logo_svg(root: &std::path::Path, svg: &str) {

@@ -337,6 +337,22 @@ function ConsentRow({
         </p>
       ) : null}
 
+      {row.pending && row.pending.length > 1 ? (
+        <div
+          role="note"
+          className="rounded-md border border-brick/30 bg-brick/5 px-3 py-2 text-xs text-ink/75"
+        >
+          <p className="font-semibold text-ink">Changed since your approval</p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            {row.pending.slice(1).map((line) => (
+              <li key={line} className="break-words">
+                {line.trim()}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {row.state !== "consented" ? (
         <div className="grid gap-3 sm:grid-cols-2">
           <fieldset className="space-y-1" disabled={busy}>

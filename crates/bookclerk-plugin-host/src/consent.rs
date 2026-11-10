@@ -15,10 +15,17 @@
 //! Network authority is operator-extensible: the operator may add hostnames
 //! the author omitted. Guest `describe()` remains refinement only.
 //!
+//! A stored grant never widens its network with a newer manifest either: a
+//! fetch host, TCP port, CIDR or undeclared-redirect permission the package
+//! asks for that the operator never approved (nor denied) stays pending
+//! ([`pending_structural`]) and is left out of the effective grant until the
+//! operator approves it. Narrowing needs no consent.
+//!
 //! ```text
 //! effective structural = manifest ∩ operator grant ∩ host policy
-//! effective network    = host policy ∩ approved(manifest network ∪ operator additions)
-//!                      − operator denials
+//! effective network    = host policy ∩ ((manifest network covered by the
+//!                        approved network) ∪ operator additions)
+//!                        − operator denials
 //! ```
 
 use std::collections::BTreeSet;
@@ -425,7 +432,9 @@ pub struct PluginGrant {
     pub network_mode: String,
     /// Approved initial outbound domain patterns (**workerd** allowlist).
     ///
-    /// Effective set: manifest request ∪ operator additions − operator denials.
+    /// Effective set: (manifest request covered by the approval) ∪ operator
+    /// additions − operator denials. On a stored grant this is the approved
+    /// set; a newer manifest can't add to it ([`effective_grant`]).
     pub domains: BTreeSet<String>,
     /// Network destinations requested by the installed manifest (not operator-added).
     #[serde(default)]
@@ -438,7 +447,9 @@ pub struct PluginGrant {
     /// Operator-denied destinations (even if the manifest still lists them).
     #[serde(default)]
     pub operator_denied_domains: BTreeSet<String>,
-    /// Effective raw TCP grants (manifest ∪ operator additions − denials).
+    /// Effective raw TCP grants: (manifest ports covered by the approval) ∪
+    /// operator additions − denials. On a stored grant these are the approved
+    /// grants; a newer manifest can't add to them ([`effective_grant`]).
     #[serde(default)]
     pub tcp: BTreeSet<TcpGrant>,
     /// TCP grants requested by the installed manifest.
@@ -454,7 +465,9 @@ pub struct PluginGrant {
     /// destinations from operator config after this set is applied.
     #[serde(default)]
     pub operator_denied_tcp: BTreeSet<TcpGrant>,
-    /// Effective CIDR grants beyond the public Internet.
+    /// Effective CIDR grants beyond the public Internet. On a stored grant
+    /// these are the approved ranges; a newer manifest can't add to them
+    /// ([`effective_grant`]).
     #[serde(default)]
     pub address_cidrs: BTreeSet<String>,
     /// CIDRs requested by the installed manifest.
@@ -1502,6 +1515,37 @@ pub fn pending_structural(existing: &PluginGrant, requested: &PluginGrant) -> Pe
             .cloned()
             .collect(),
     };
+    // Network the request asks for that the stored grant neither approved
+    // (an approved pattern or range that already allows it counts) nor
+    // denied: an operator denial is an answer, so it is not pending.
+    let domains = requested
+        .domains
+        .iter()
+        .filter(|domain| {
+            !domain_approved(&existing.domains, domain)
+                && !existing.operator_denied_domains.contains(*domain)
+        })
+        .cloned()
+        .collect();
+    let tcp = tcp_ports_where(&requested.tcp, |host, port| {
+        !tcp_port_approved(&existing.tcp, host, port)
+            && !tcp_port_listed(&existing.operator_denied_tcp, host, port)
+    });
+    let address_cidrs = requested
+        .address_cidrs
+        .iter()
+        .filter(|cidr| {
+            !cidr_approved(&existing.address_cidrs, cidr)
+                && !existing.operator_denied_cidrs.contains(*cidr)
+        })
+        .cloned()
+        .collect();
+    // An explicit operator answer (either way) is not pending.
+    let undeclared_public_redirects = requested.allow_undeclared_public_redirects
+        && !existing.allow_undeclared_public_redirects
+        && existing
+            .operator_allow_undeclared_public_redirects
+            .is_none();
     PendingStructural {
         entrypoints,
         producers,
@@ -1510,10 +1554,133 @@ pub fn pending_structural(existing: &PluginGrant, requested: &PluginGrant) -> Pe
         bindings,
         compatibility_flags,
         own_user_agent_hosts,
+        domains,
+        tcp,
+        address_cidrs,
+        undeclared_public_redirects,
     }
 }
 
-/// Newly requested structural capabilities awaiting operator consent.
+/// True when the approved fetch pattern `approved` allows every host the
+/// requested pattern `requested` allows.
+///
+/// Patterns are normalized: an exact host, a `*.suffix` wildcard (the
+/// suffix itself and every subdomain, as the egress policy matches), or
+/// [`bookclerk_plugin_manifest::ANY_PUBLIC_HOST`] (every hostname, never an
+/// IP literal). Restricted names such as `localhost` still need a CIDR at
+/// run time under either pattern, so coverage does not change that.
+///
+/// # Arguments
+///
+/// * `approved` - A pattern the stored grant approved.
+/// * `requested` - A pattern the request asks for.
+///
+/// # Returns
+///
+/// `true` when `requested` is equal to or narrower than `approved`.
+fn domain_pattern_covers(approved: &str, requested: &str) -> bool {
+    use bookclerk_plugin_manifest::ANY_PUBLIC_HOST;
+    if approved == requested {
+        return true;
+    }
+    if requested == ANY_PUBLIC_HOST {
+        return false;
+    }
+    let host = requested.strip_prefix("*.").unwrap_or(requested);
+    if approved == ANY_PUBLIC_HOST {
+        return host.parse::<IpAddr>().is_err();
+    }
+    approved
+        .strip_prefix("*.")
+        .is_some_and(|rest| host == rest || host.ends_with(&format!(".{rest}")))
+}
+
+/// True when some pattern in `approved` covers `requested`
+/// ([`domain_pattern_covers`]).
+fn domain_approved(approved: &BTreeSet<String>, requested: &str) -> bool {
+    approved
+        .iter()
+        .any(|pattern| domain_pattern_covers(pattern, requested))
+}
+
+/// True when an approved TCP grant allows `port` on every host `host` names.
+///
+/// `*` is a fetch grant only and allows no TCP host, as at run time.
+fn tcp_port_approved(approved: &BTreeSet<TcpGrant>, host: &str, port: u16) -> bool {
+    approved.iter().any(|grant| {
+        grant.host != bookclerk_plugin_manifest::ANY_PUBLIC_HOST
+            && grant.ports.contains(&port)
+            && domain_pattern_covers(&grant.host, host)
+    })
+}
+
+/// True when `grants` lists exactly `host` with `port` (operator denials are
+/// recorded as the grants they deny, so they match by spelling).
+fn tcp_port_listed(grants: &BTreeSet<TcpGrant>, host: &str, port: u16) -> bool {
+    grants
+        .iter()
+        .any(|grant| grant.host == host && grant.ports.contains(&port))
+}
+
+/// True when some CIDR in `approved` contains the whole range `requested`.
+///
+/// A CIDR that does not parse covers nothing and is covered by nothing.
+fn cidr_approved(approved: &BTreeSet<String>, requested: &str) -> bool {
+    if approved.contains(requested) {
+        return true;
+    }
+    let Ok(requested) = bookclerk_plugin_manifest::CidrGrant::parse(requested) else {
+        return false;
+    };
+    approved.iter().any(|raw| {
+        bookclerk_plugin_manifest::CidrGrant::parse(raw).is_ok_and(|range| {
+            range.network.is_ipv4() == requested.network.is_ipv4()
+                && range.prefix <= requested.prefix
+                && range.contains(requested.network)
+        })
+    })
+}
+
+/// Keeps the ports of each grant for which `keep(host, port)` holds.
+///
+/// Each grant keeps its host and the order of its ports, so a grant whose
+/// ports all pass comes back unchanged (and hashes the same).
+///
+/// # Arguments
+///
+/// * `grants` - TCP grants to filter.
+/// * `keep` - Predicate over one host pattern and port.
+///
+/// # Returns
+///
+/// The grants with only the kept ports; grants left with no port are dropped.
+fn tcp_ports_where(
+    grants: &BTreeSet<TcpGrant>,
+    keep: impl Fn(&str, u16) -> bool,
+) -> BTreeSet<TcpGrant> {
+    grants
+        .iter()
+        .filter_map(|grant| {
+            let ports: Vec<u16> = grant
+                .ports
+                .iter()
+                .copied()
+                .filter(|port| keep(&grant.host, *port))
+                .collect();
+            (!ports.is_empty()).then(|| TcpGrant {
+                host: grant.host.clone(),
+                ports,
+            })
+        })
+        .collect()
+}
+
+/// First line of [`PendingStructural::summary_lines`] and
+/// [`crate::remote_request_changes`].
+pub const PENDING_HEADER: &str = "Awaiting consent (not automatically approved):";
+
+/// Newly requested capabilities awaiting operator consent: structural ones,
+/// and network destinations wider than the stored grant.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PendingStructural {
     /// Entrypoints declared by the current manifest but not granted.
@@ -1531,6 +1698,17 @@ pub struct PendingStructural {
     /// Hosts where the current manifest asks to keep its own `User-Agent`
     /// but the grant does not allow it yet.
     pub own_user_agent_hosts: BTreeSet<String>,
+    /// Fetch host patterns (normalized, `*` for any public host) the request
+    /// asks for that the grant neither approved nor denied.
+    pub domains: BTreeSet<String>,
+    /// TCP `host:ports` the request asks for that the grant neither approved
+    /// nor denied, narrowed to the new ports.
+    pub tcp: BTreeSet<TcpGrant>,
+    /// CIDRs the request asks for that the grant neither approved nor denied.
+    pub address_cidrs: BTreeSet<String>,
+    /// The request asks to follow undeclared public redirects, which the
+    /// grant does not allow and the operator never answered.
+    pub undeclared_public_redirects: bool,
 }
 
 impl PendingStructural {
@@ -1544,6 +1722,10 @@ impl PendingStructural {
             && self.bindings.is_empty()
             && self.compatibility_flags.is_empty()
             && self.own_user_agent_hosts.is_empty()
+            && self.domains.is_empty()
+            && self.tcp.is_empty()
+            && self.address_cidrs.is_empty()
+            && !self.undeclared_public_redirects
     }
 
     /// CLI/UI lines for capabilities waiting on consent.
@@ -1552,7 +1734,7 @@ impl PendingStructural {
         if self.is_empty() {
             return Vec::new();
         }
-        let mut lines = vec!["Awaiting consent (not automatically approved):".into()];
+        let mut lines = vec![PENDING_HEADER.to_string()];
         if !self.entrypoints.is_empty() {
             lines.push(format!(
                 "  entrypoints: {}",
@@ -1615,7 +1797,58 @@ impl PendingStructural {
                     .join(", ")
             ));
         }
+        if !self.domains.is_empty() {
+            lines.push(format!(
+                "  fetch hosts: {}",
+                self.domains
+                    .iter()
+                    .map(|domain| pending_domain_label(domain))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !self.tcp.is_empty() {
+            lines.push(format!(
+                "  raw TCP connect: {}",
+                self.tcp
+                    .iter()
+                    .map(|grant| format!(
+                        "{}:[{}]",
+                        grant.host,
+                        grant
+                            .ports
+                            .iter()
+                            .map(u16::to_string)
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !self.address_cidrs.is_empty() {
+            lines.push(format!(
+                "  address CIDRs: {}",
+                self.address_cidrs
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if self.undeclared_public_redirects {
+            lines.push("  follow undeclared public redirects".into());
+        }
         lines
+    }
+}
+
+/// How a pending fetch host reads on the consent diff: `*` reads plainly.
+fn pending_domain_label(domain: &str) -> String {
+    if domain == bookclerk_plugin_manifest::ANY_PUBLIC_HOST {
+        "any public website (*)".into()
+    } else {
+        domain.to_string()
     }
 }
 
@@ -1637,19 +1870,29 @@ fn classified_operator_network(
     };
     let added = existing.domains.difference(manifest).cloned().collect();
     // Legacy grants without explicit denials: do not treat "not yet stored"
-    // manifest hosts as denied — those re-evaluate from the new package.
+    // manifest hosts as denied. They aren't approved either: they stay
+    // pending until the operator answers (`merge_network_domains`).
     let denied = existing.operator_denied_domains.clone();
     (added, denied)
 }
 
-/// Effective outbound domains: current manifest ∪ operator additions − denials.
+/// Effective outbound domains: (current manifest hosts an approved pattern
+/// covers) ∪ operator additions − denials.
+///
+/// A host the current manifest asks for that the stored grant never approved
+/// stays out until the operator approves it ([`pending_structural`]).
 fn merge_network_domains(existing: &PluginGrant, requested: &PluginGrant) -> BTreeSet<String> {
     let (added, denied) = classified_operator_network(existing, requested);
-    let mut domains = if requested.manifest_domains.is_empty() {
-        requested.domains.clone()
+    let manifest = if requested.manifest_domains.is_empty() {
+        &requested.domains
     } else {
-        requested.manifest_domains.clone()
+        &requested.manifest_domains
     };
+    let mut domains: BTreeSet<String> = manifest
+        .iter()
+        .filter(|domain| domain_approved(&existing.domains, domain))
+        .cloned()
+        .collect();
     domains.extend(added);
     for d in denied {
         domains.remove(&d);
@@ -1673,7 +1916,8 @@ fn classified_operator_tcp(
         .difference(&requested.manifest_tcp)
         .cloned()
         .collect();
-    // Legacy grants without explicit TCP denials: new package hosts re-evaluate.
+    // Legacy grants without explicit TCP denials deny nothing; new package
+    // hosts still need the approval to cover them (`merge_tcp`).
     let denied = existing.operator_denied_tcp.clone();
     (added, denied)
 }
@@ -1683,10 +1927,16 @@ fn merge_operator_tcp(existing: &PluginGrant, requested: &PluginGrant) -> BTreeS
     classified_operator_tcp(existing, requested).0
 }
 
-/// Effective TCP: current manifest ∪ operator additions − operator denials.
+/// Effective TCP: (current manifest ports an approved grant covers) ∪
+/// operator additions − operator denials.
+///
+/// A host or port the current manifest asks for that the stored grant never
+/// approved stays out until the operator approves it ([`pending_structural`]).
 fn merge_tcp(existing: &PluginGrant, requested: &PluginGrant) -> BTreeSet<TcpGrant> {
     let (added, denied) = classified_operator_tcp(existing, requested);
-    let mut tcp = requested.manifest_tcp.clone();
+    let mut tcp = tcp_ports_where(&requested.manifest_tcp, |host, port| {
+        tcp_port_approved(&existing.tcp, host, port)
+    });
     tcp.extend(added);
     for grant in denied {
         tcp.remove(&grant);
@@ -1710,15 +1960,25 @@ fn classified_operator_cidrs(
         .difference(&requested.manifest_cidrs)
         .cloned()
         .collect();
-    // Legacy grants without explicit CIDR denials: new package CIDRs re-evaluate.
+    // Legacy grants without explicit CIDR denials deny nothing; new package
+    // CIDRs still need the approval to cover them (`merge_cidrs`).
     let denied = existing.operator_denied_cidrs.clone();
     (added, denied)
 }
 
-/// Effective CIDRs: current manifest ∪ operator additions − operator denials.
+/// Effective CIDRs: (current manifest ranges inside an approved range) ∪
+/// operator additions − operator denials.
+///
+/// A CIDR the current manifest asks for that the stored grant never approved
+/// stays out until the operator approves it ([`pending_structural`]).
 fn merge_cidrs(existing: &PluginGrant, requested: &PluginGrant) -> BTreeSet<String> {
     let (added, denied) = classified_operator_cidrs(existing, requested);
-    let mut cidrs = requested.manifest_cidrs.clone();
+    let mut cidrs: BTreeSet<String> = requested
+        .manifest_cidrs
+        .iter()
+        .filter(|cidr| cidr_approved(&existing.address_cidrs, cidr))
+        .cloned()
+        .collect();
     cidrs.extend(added);
     for cidr in denied {
         cidrs.remove(&cidr);
@@ -1729,8 +1989,11 @@ fn merge_cidrs(existing: &PluginGrant, requested: &PluginGrant) -> BTreeSet<Stri
 /// Spawn/delivery grant: stored approval is authoritative, host-normalized.
 ///
 /// Structural capabilities stay at the stored operator snapshot (narrowed).
-/// Network destinations re-evaluate the current manifest plus persisted
-/// operator additions/denials.
+/// Network destinations re-evaluate the current manifest against the stored
+/// approval plus persisted operator additions/denials: the manifest can drop
+/// a destination but never add one the operator did not approve, and
+/// undeclared public redirects follow the manifest only while the stored
+/// grant allows them.
 #[must_use]
 pub fn effective_grant(existing: &PluginGrant, requested: &PluginGrant) -> PluginGrant {
     let network_mode = if existing.network_mode.is_empty() {
@@ -1777,7 +2040,10 @@ pub fn effective_grant(existing: &PluginGrant, requested: &PluginGrant) -> Plugi
         operator_denied_cidrs,
         allow_undeclared_public_redirects: existing
             .operator_allow_undeclared_public_redirects
-            .unwrap_or(requested.allow_undeclared_public_redirects),
+            .unwrap_or(
+                requested.allow_undeclared_public_redirects
+                    && existing.allow_undeclared_public_redirects,
+            ),
         operator_allow_undeclared_public_redirects: existing
             .operator_allow_undeclared_public_redirects,
         // The stored approval is kept as is, so the effective grant hashes
@@ -4161,10 +4427,19 @@ domains = ["api.example.com"]
 
         let grant = require_grant(dir.path(), &plugin).expect("operator widen kept");
         assert!(grant.domains.contains("old.example"));
+        // A host the new manifest adds waits for the operator (#700).
         assert!(
-            grant.domains.contains("api.example.com"),
-            "new manifest hosts re-evaluate on the same PluginKey"
+            !grant.domains.contains("api.example.com"),
+            "new manifest hosts must not take effect without consent"
         );
+        let requested = consent_request(&plugin.manifest, plugin.plugin_key());
+        let stored = PluginGrantStore::load(dir.path()).unwrap();
+        let stored = stored
+            .get_by_plugin_key(plugin.plugin_key().canonical())
+            .unwrap();
+        assert!(pending_structural(stored, &requested)
+            .domains
+            .contains("api.example.com"));
         assert!(grant.operator_added_domains.contains("old.example"));
     }
 
@@ -4540,7 +4815,12 @@ reason = "  App API contract.  "
             "operator TCP denials must survive a same-PluginKey package upgrade"
         );
         assert!(effective.tcp.contains(&added));
-        assert!(effective.tcp.iter().any(|t| t.host == "new.example.com"));
+        // A host the upgrade adds waits for consent (#700).
+        assert!(!effective.tcp.iter().any(|t| t.host == "new.example.com"));
+        assert!(pending_structural(&existing, &requested)
+            .tcp
+            .iter()
+            .any(|t| t.host == "new.example.com"));
         assert!(effective.operator_denied_tcp.contains(&denied));
     }
 
@@ -4566,7 +4846,11 @@ reason = "  App API contract.  "
             "operator CIDR denials must survive a same-PluginKey package upgrade"
         );
         assert!(effective.address_cidrs.contains(&added));
-        assert!(effective.address_cidrs.contains("172.16.0.0/12"));
+        // A CIDR the upgrade adds waits for consent (#700).
+        assert!(!effective.address_cidrs.contains("172.16.0.0/12"));
+        assert!(pending_structural(&existing, &requested)
+            .address_cidrs
+            .contains("172.16.0.0/12"));
         assert!(effective.operator_denied_cidrs.contains(&denied));
     }
 
@@ -4592,8 +4876,263 @@ reason = "  App API contract.  "
             "operator fetch-host denials must survive a same-PluginKey package upgrade"
         );
         assert!(effective.domains.contains(&added));
-        assert!(effective.domains.contains("new.example.com"));
+        // A host the upgrade adds waits for consent (#700).
+        assert!(!effective.domains.contains("new.example.com"));
+        let pending = pending_structural(&existing, &requested);
+        assert_eq!(pending.domains, ["new.example.com".to_string()].into());
         assert!(effective.operator_denied_domains.contains(&denied));
+    }
+
+    /// A stored grant approved for `before`, as the consent API stores it.
+    fn approved_for(before: &PluginGrant) -> PluginGrant {
+        validate_approved_grant(before, before).unwrap()
+    }
+
+    /// The consent request for a networked plugin with these destinations.
+    fn network_request(domains: &[&str], tcp: &[(&str, &[u16])], cidrs: &[&str]) -> PluginGrant {
+        let mut grant = sample_grant(domains, &["config"], &[]);
+        grant.network_mode = "outbound".into();
+        grant.manifest_domains = grant.domains.clone();
+        grant.tcp = tcp
+            .iter()
+            .map(|(host, ports)| TcpGrant {
+                host: (*host).into(),
+                ports: ports.to_vec(),
+            })
+            .collect();
+        grant.manifest_tcp = grant.tcp.clone();
+        grant.address_cidrs = cidrs.iter().map(|c| (*c).to_string()).collect();
+        grant.manifest_cidrs = grant.address_cidrs.clone();
+        grant
+    }
+
+    #[test]
+    fn an_upgrade_to_any_public_host_waits_for_consent() {
+        let before = network_request(&["api.store.example"], &[], &[]);
+        let stored = approved_for(&before);
+        let after = network_request(
+            &[
+                "api.store.example",
+                bookclerk_plugin_manifest::ANY_PUBLIC_HOST,
+            ],
+            &[],
+            &[],
+        );
+
+        let effective = effective_grant(&stored, &after);
+        assert_eq!(effective.domains, ["api.store.example".to_string()].into());
+        assert!(!effective.egress_policy().allows_initial("evil.example"));
+        assert!(effective
+            .egress_policy()
+            .allows_initial("api.store.example"));
+
+        let pending = pending_structural(&stored, &after);
+        assert_eq!(
+            pending.domains,
+            [bookclerk_plugin_manifest::ANY_PUBLIC_HOST.to_string()].into()
+        );
+        assert!(!pending.is_empty());
+        let lines = pending.summary_lines();
+        assert_eq!(lines[0], PENDING_HEADER);
+        assert!(
+            lines.iter().any(|l| l.contains("any public website (*)")),
+            "{lines:?}"
+        );
+        // The upgrade runs with exactly the egress the old version had.
+        assert_eq!(
+            effective_grant(&stored, &before)
+                .egress_policy()
+                .to_policy_json(),
+            effective.egress_policy().to_policy_json()
+        );
+    }
+
+    #[test]
+    fn an_upgrade_adding_tcp_ports_waits_for_consent_on_the_new_ports_only() {
+        let before = network_request(&[], &[("db.store.example", &[5432])], &[]);
+        let stored = approved_for(&before);
+        let after = network_request(
+            &[],
+            &[
+                ("db.store.example", &[5432, 6432]),
+                ("cache.store.example", &[6379]),
+            ],
+            &[],
+        );
+
+        let effective = effective_grant(&stored, &after);
+        let policy = effective.egress_policy();
+        assert!(policy.allows_tcp("db.store.example", 5432));
+        assert!(!policy.allows_tcp("db.store.example", 6432));
+        assert!(!policy.allows_tcp("cache.store.example", 6379));
+
+        let pending = pending_structural(&stored, &after);
+        assert_eq!(
+            pending.tcp,
+            [
+                TcpGrant {
+                    host: "cache.store.example".into(),
+                    ports: vec![6379],
+                },
+                TcpGrant {
+                    host: "db.store.example".into(),
+                    ports: vec![6432],
+                },
+            ]
+            .into()
+        );
+        assert!(
+            pending
+                .summary_lines()
+                .iter()
+                .any(|l| l
+                    == "  raw TCP connect: cache.store.example:[6379], db.store.example:[6432]")
+        );
+    }
+
+    #[test]
+    fn an_upgrade_asking_for_undeclared_redirects_waits_for_consent() {
+        let before = network_request(&["api.store.example"], &[], &[]);
+        let stored = approved_for(&before);
+        let mut after = before.clone();
+        after.allow_undeclared_public_redirects = true;
+
+        assert!(!effective_grant(&stored, &after).allow_undeclared_public_redirects);
+        assert!(pending_structural(&stored, &after).undeclared_public_redirects);
+
+        // Once the operator approves the new version, it follows them.
+        let reapproved = approved_for(&after);
+        assert!(effective_grant(&reapproved, &after).allow_undeclared_public_redirects);
+        assert!(pending_structural(&reapproved, &after).is_empty());
+
+        // An operator who turned them off answered: not pending, still off.
+        let mut refused = after.clone();
+        refused.allow_undeclared_public_redirects = false;
+        let refused = validate_approved_grant(&refused, &after).unwrap();
+        assert!(!effective_grant(&refused, &after).allow_undeclared_public_redirects);
+        assert!(pending_structural(&refused, &after).is_empty());
+    }
+
+    #[test]
+    fn approving_the_wider_grant_clears_pending_and_applies_it() {
+        let before = network_request(&["api.store.example"], &[], &["10.0.0.0/8"]);
+        let stored = approved_for(&before);
+        let after = network_request(
+            &["api.store.example", "cdn.store.example"],
+            &[("db.store.example", &[5432])],
+            &["10.0.0.0/8", "192.168.0.0/16"],
+        );
+        assert!(!pending_structural(&stored, &after).is_empty());
+
+        let reapproved = approved_for(&after);
+        assert!(pending_structural(&reapproved, &after).is_empty());
+        let effective = effective_grant(&reapproved, &after);
+        assert!(effective.domains.contains("cdn.store.example"));
+        assert!(effective
+            .egress_policy()
+            .allows_tcp("db.store.example", 5432));
+        assert!(effective.address_cidrs.contains("192.168.0.0/16"));
+
+        // Leaving the new host unticked is an answer too: it is denied, not
+        // pending, and stays out.
+        let mut partial = after.clone();
+        partial.domains.remove("cdn.store.example");
+        let partial = validate_approved_grant(&partial, &after).unwrap();
+        assert!(pending_structural(&partial, &after).domains.is_empty());
+        assert!(!effective_grant(&partial, &after)
+            .domains
+            .contains("cdn.store.example"));
+    }
+
+    #[test]
+    fn narrowing_a_wildcard_or_range_on_upgrade_keeps_access() {
+        let before = network_request(
+            &["*.store.example"],
+            &[("*.store.example", &[443])],
+            &["10.0.0.0/8"],
+        );
+        let stored = approved_for(&before);
+        let after = network_request(
+            &["api.store.example", "*.cdn.store.example"],
+            &[("db.store.example", &[443])],
+            &["10.1.0.0/16"],
+        );
+
+        assert!(
+            pending_structural(&stored, &after).is_empty(),
+            "{:?}",
+            pending_structural(&stored, &after)
+        );
+        let effective = effective_grant(&stored, &after);
+        assert!(effective.domains.contains("api.store.example"));
+        assert!(effective.domains.contains("*.cdn.store.example"));
+        assert!(effective
+            .egress_policy()
+            .allows_tcp("db.store.example", 443));
+        assert!(effective.address_cidrs.contains("10.1.0.0/16"));
+
+        // `*` covers any hostname pattern, but not raw TCP, and a wildcard
+        // does not cover a sibling or a wider pattern.
+        let any = approved_for(&network_request(
+            &[bookclerk_plugin_manifest::ANY_PUBLIC_HOST],
+            &[],
+            &[],
+        ));
+        let pending = pending_structural(
+            &any,
+            &network_request(&["cdn.example"], &[("db.example", &[5432])], &[]),
+        );
+        assert!(pending.domains.is_empty());
+        assert_eq!(pending.tcp.len(), 1);
+        assert!(domain_pattern_covers("*.store.example", "store.example"));
+        assert!(!domain_pattern_covers("*.store.example", "other.example"));
+        assert!(!domain_pattern_covers(
+            "api.store.example",
+            "*.store.example"
+        ));
+        assert!(!domain_pattern_covers(
+            "*.store.example",
+            bookclerk_plugin_manifest::ANY_PUBLIC_HOST
+        ));
+        assert!(!domain_pattern_covers(
+            bookclerk_plugin_manifest::ANY_PUBLIC_HOST,
+            "10.0.0.1"
+        ));
+        assert!(!cidr_approved(
+            &["10.1.0.0/16".to_string()].into(),
+            "10.0.0.0/8"
+        ));
+        assert!(!cidr_approved(
+            &["10.0.0.0/8".to_string()].into(),
+            "fd00::/8"
+        ));
+        assert!(!cidr_approved(
+            &["not-a-cidr".to_string()].into(),
+            "10.0.0.0/8"
+        ));
+    }
+
+    #[test]
+    fn narrowing_on_upgrade_needs_no_consent() {
+        let before = network_request(
+            &["api.store.example", "cdn.store.example"],
+            &[("db.store.example", &[5432, 6432])],
+            &["10.0.0.0/8"],
+        );
+        let stored = approved_for(&before);
+        let after = network_request(
+            &["api.store.example"],
+            &[("db.store.example", &[5432])],
+            &[],
+        );
+
+        assert!(pending_structural(&stored, &after).is_empty());
+        let effective = effective_grant(&stored, &after);
+        assert!(effective.domains.is_subset(&stored.domains));
+        assert!(effective.address_cidrs.is_subset(&stored.address_cidrs));
+        let policy = effective.egress_policy();
+        assert!(policy.allows_tcp("db.store.example", 5432));
+        assert!(!policy.allows_tcp("other.store.example", 5432));
     }
 
     #[test]
