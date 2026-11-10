@@ -7,6 +7,10 @@
 //! library writes) sits behind [`PassIo`] so the loop is tested without a
 //! guest process.
 
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+
 use bookclerk_library::PassStart;
 use bookclerk_plugin_sdk::{PluginError, PluginErrorCode, ScanBook, ScanPage};
 
@@ -67,9 +71,15 @@ pub(crate) async fn run_pass(
     let mut resumed = start.resumed;
     let mut restarted = false;
     let mut outcome = PassOutcome::default();
+    // Cursors this pass has already asked for, hashed: a guest that cycles
+    // through several cursors is caught on its first repeat rather than at
+    // MAX_PASS_PAGES.
+    let mut asked: HashSet<u64> = HashSet::new();
     loop {
         if io.cancelled() {
-            return Err(bookclerk_source::SourceError::api("scan cancelled"));
+            return Err(bookclerk_source::SourceError::Other(anyhow::anyhow!(
+                "cancelled"
+            )));
         }
         if outcome.pages >= MAX_PASS_PAGES {
             return Err(bookclerk_source::SourceError::api(format!(
@@ -90,14 +100,35 @@ pub(crate) async fn run_pass(
             Err(err) if !restarted && resumed && !cursor.is_empty() => {
                 tracing::warn!(account_id, error = %err, "resumed scan page failed; restarting the pass");
                 restarted = true;
+                // Forget the stored cursor now, so a restart that fails too
+                // does not leave the next job resuming the same page.
+                io.checkpoint("", &token).await?;
                 cursor.clear();
                 resumed = false;
+                asked.clear();
+                continue;
+            }
+            Err(err) if !restarted && cursor.is_empty() && !token.is_empty() => {
+                // A store may refuse an expired token with a plain error
+                // rather than `invalid_cursor`. The stored token stays until
+                // the full pass finishes and replaces it.
+                tracing::warn!(account_id, error = %err, "delta scan failed; restarting as a full pass");
+                restarted = true;
+                token.clear();
+                resumed = false;
+                asked.clear();
                 continue;
             }
             Err(err) => return Err(bookclerk_source::SourceError::api(err.to_string())),
         };
         bookclerk_plugin_abi::validate_scan_page(&page, &cursor, account_id)
             .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
+        asked.insert(cursor_hash(&cursor));
+        if !page.next_cursor.is_empty() && asked.contains(&cursor_hash(&page.next_cursor)) {
+            return Err(bookclerk_source::SourceError::api(format!(
+                "scan of account `{account_id}` returned a cursor it already returned in this pass"
+            )));
+        }
         resumed = false;
         outcome.pages += 1;
         outcome.store_pages = outcome.store_pages.saturating_add(page.store_pages);
@@ -117,6 +148,13 @@ pub(crate) async fn run_pass(
         io.checkpoint(&page.next_cursor, &token).await?;
         cursor = page.next_cursor;
     }
+}
+
+/// A pass-local hash of `cursor`, for spotting a repeat.
+fn cursor_hash(cursor: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    cursor.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[cfg(test)]
@@ -297,6 +335,11 @@ mod tests {
             .unwrap();
         assert_eq!(io.calls[1], ("".into(), "t1".into()));
         assert_eq!(io.resets, 0);
+        assert_eq!(
+            io.checkpoints[0],
+            ("".into(), "t1".into()),
+            "the dead cursor is forgotten before the restart"
+        );
 
         // A fresh pass does not retry.
         let mut io = Script {
@@ -365,5 +408,74 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("pages"));
         assert_eq!(io.calls.len(), MAX_PASS_PAGES as usize);
+    }
+
+    #[tokio::test]
+    async fn a_failed_delta_restarts_once_as_a_full_pass_without_a_reset() {
+        let mut io = Script {
+            pages: [
+                Err(PluginError::internal("HTTP 400: bad state_token")),
+                Ok(last(&["1"], "t2", true)),
+            ]
+            .into(),
+            ..Script::default()
+        };
+        let outcome = run_pass(&mut io, "a", start("", "t1", false))
+            .await
+            .unwrap();
+        assert!(outcome.complete);
+        assert_eq!(io.calls[1], ("".into(), "".into()));
+        assert_eq!(
+            io.resets, 0,
+            "the stored token stays until the full pass ends"
+        );
+        assert_eq!(io.finished, Some(("t2".into(), true)));
+
+        let mut io = Script {
+            pages: [
+                Err(PluginError::internal("bad token")),
+                Err(PluginError::internal("still down")),
+            ]
+            .into(),
+            ..Script::default()
+        };
+        assert!(run_pass(&mut io, "a", start("", "t1", false))
+            .await
+            .is_err());
+        assert_eq!(io.calls.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_cursor_cycle_is_refused_on_its_first_repeat() {
+        let mut io = Script {
+            pages: [
+                Ok(page(&["1"], "a")),
+                Ok(page(&["2"], "b")),
+                Ok(page(&["3"], "a")),
+            ]
+            .into(),
+            ..Script::default()
+        };
+        let err = run_pass(&mut io, "acct", start("", "", false))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("already returned"), "{err}");
+        assert_eq!(io.written, ["1", "2"]);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_pass_reports_a_cancellation() {
+        let mut io = Script {
+            cancel_after: Some(0),
+            ..Script::default()
+        };
+        let err = run_pass(&mut io, "a", start("", "", false))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, bookclerk_source::SourceError::Other(_)),
+            "{err}"
+        );
+        assert!(err.to_string().contains("cancelled"), "{err}");
     }
 }

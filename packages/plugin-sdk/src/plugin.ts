@@ -1841,10 +1841,11 @@ export class StorefrontEntrypoint<
    * One page of one account's library scan.
    *
    * The host calls this repeatedly, passing back `nextCursor` as
-   * `params.cursor` until a page sets `complete`. An empty `params.syncToken`
-   * asks for a full pass; a non-empty one asks only for changes since that
-   * token (list gone titles in `removed`). Only the last page's `syncToken`
-   * is stored. Reject a stale cursor or token with `invalid_cursor` and the
+   * `params.cursor` until a page returns an empty `nextCursor`, which ends
+   * the pass. An empty `params.syncToken` asks for a full pass; a non-empty
+   * one asks only for changes since that token (list gone titles in
+   * `removed`). Set `complete` only on the last page of a full pass that
+   * listed the whole library. Only the last page's `syncToken` is stored. Reject a stale cursor or token with `invalid_cursor` and the
    * host restarts as a full pass.
    *
    * @param _params - The account, its credential, the cursor and the sync token.

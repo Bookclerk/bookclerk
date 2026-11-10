@@ -171,6 +171,9 @@ pub async fn guest_scan_page(
     )
     .await?;
     let (slice, next) = page_slice(books, page);
+    // Every page reads the one store listing again; count its store pages
+    // once per pass, on the first page.
+    let store_pages = if page <= 1 { store_pages } else { 0 };
     Ok(full_pass_page(slice, next.map(page_cursor), store_pages))
 }
 

@@ -779,8 +779,9 @@ picks up where it left off.
 A page holds at most `MAX_SCAN_PAGE_BOOKS` (500) books and as many removed
 ids; `cursor` and `syncToken` are at most `MAX_SCAN_CURSOR_BYTES` (4096)
 bytes. Both are opaque to the host and never shown to anyone. The host
-refuses a page that breaks a limit, repeats the cursor it was sent, carries
-a book for another account or a blank product id, and fails the scan.
+refuses a page that breaks a limit, returns a cursor it already returned
+in the same pass, carries a book for another account or a blank product id,
+and fails the scan.
 
 The host keeps where each account stands in the `account_scan_state`
 table:
@@ -794,7 +795,10 @@ table:
 - A plugin that no longer accepts a cursor or token rejects the call with
   `invalid_cursor`. The host forgets both and restarts once as a full pass.
   If the first page of a resumed pass fails for another reason, the host
-  restarts that pass once from the beginning.
+  forgets the cursor and restarts that pass once from the beginning. If the
+  first page of a delta pass fails for another reason, the host restarts
+  once as a full pass and keeps the stored token until that pass replaces
+  it.
 - A pass stops with an error after 10,000 pages.
 
 A store with no change feed returns full passes with an empty `syncToken`;

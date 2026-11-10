@@ -542,7 +542,7 @@ impl ContentSource for ExternalSource {
                 "a source opened for a host job scans with scan_handed",
             ));
         }
-        let credentials = scan_credentials_for(scope, &opts.accounts).await?;
+        let (credentials, skipped_disabled) = scan_credentials_for(scope, &opts.accounts).await?;
         if credentials.is_empty() {
             return Err(bookclerk_source::SourceError::no_accounts(format!(
                 "no {} accounts with stored credentials to scan",
@@ -550,7 +550,10 @@ impl ContentSource for ExternalSource {
             )));
         }
         self.session.require_binding("secrets")?;
-        let mut summary = ScanSummary::default();
+        let mut summary = ScanSummary {
+            skipped_disabled,
+            ..ScanSummary::default()
+        };
         for (account_id, credential) in credentials {
             let state = scope
                 .scan_state(&account_id)
@@ -942,13 +945,14 @@ impl PassIo for CollectPass<'_> {
 async fn scan_credentials_for(
     scope: &SourceScope,
     account_filter: &[String],
-) -> bookclerk_source::Result<Vec<(String, Vec<u8>)>> {
+) -> bookclerk_source::Result<(Vec<(String, Vec<u8>)>, usize)> {
     let accounts = scope
         .list_accounts()
         .await
         .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
     let explicit = !account_filter.is_empty();
     let mut out = std::collections::BTreeMap::new();
+    let mut skipped_disabled = 0;
     for acct in accounts {
         if explicit {
             let matched = account_filter.iter().any(|needle| {
@@ -962,6 +966,7 @@ async fn scan_credentials_for(
                 continue;
             }
         } else if !acct.scan_enabled {
+            skipped_disabled += 1;
             continue;
         }
         match scope.load_credentials_json(&acct.account_id).await {
@@ -974,7 +979,7 @@ async fn scan_credentials_for(
             }
         }
     }
-    Ok(out.into_iter().collect())
+    Ok((out.into_iter().collect(), skipped_disabled))
 }
 
 /// Upserts the account and seals guest credentials via [`SourceScope`] (plugin cannot write the DB).
@@ -1086,7 +1091,7 @@ mod tests {
             .await
             .unwrap();
 
-        let creds = scan_credentials_for(&echo, &[]).await.unwrap();
+        let (creds, _) = scan_credentials_for(&echo, &[]).await.unwrap();
         assert_eq!(creds.len(), 1);
         assert_eq!(creds[0].0, "a1");
         let json = credentials_from_bytes(&creds[0].1).unwrap();
@@ -1106,8 +1111,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(scan_credentials_for(&echo, &[]).await.unwrap().is_empty());
-        let explicit = scan_credentials_for(&echo, &["a1".into()]).await.unwrap();
+        let (creds, skipped) = scan_credentials_for(&echo, &[]).await.unwrap();
+        assert!(creds.is_empty());
+        assert_eq!(skipped, 1, "the disabled account is counted");
+        let (explicit, skipped) = scan_credentials_for(&echo, &["a1".into()]).await.unwrap();
         assert_eq!(explicit.len(), 1);
+        assert_eq!(skipped, 0);
     }
 }

@@ -1,7 +1,7 @@
 //! Storefront scan state per account: sync tokens and pass checkpoints.
 //!
 //! A scan pass walks one account's library page by page
-//! (`ContentSource.scan`, `docs/server/library.md`). After the host writes a
+//! (`ContentSource.scan`, `docs/plugins/abi.md#paged-scans`). After the host writes a
 //! page it checkpoints the next cursor here, so a scan job that stops part
 //! way resumes from that page; the last page stores the plugin's opaque sync
 //! token for the next pass. The host decides from this row whether the next
