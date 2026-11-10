@@ -462,29 +462,42 @@ pub fn current_exec_budget() -> Option<Arc<ExecBudget>> {
     TASK_EXEC_BUDGET.try_with(Arc::clone).ok()
 }
 
-/// Suspends the execute-request row cap until the guard is dropped.
+/// Suspends the execute-request row and result byte caps until the guard is
+/// dropped.
 ///
 /// Catalog / `sqlite_master` loads are not guest result rows; they must not
-/// fail a tight `maxResultRows` on the surrounding execute.
+/// fail a tight `maxResultRows` or `maxResultBytes` on the surrounding
+/// execute. An adapter advertising the host minimum of 4,096 result bytes
+/// still has to read its own catalog, which is larger than that.
 #[must_use]
 pub fn suspend_execute_row_cap() -> Option<ExecuteRowCapGuard> {
     let budget = current_exec_budget()?;
-    let prev = budget.raw_query_row_cap();
+    let prev_rows = budget.raw_query_row_cap();
+    let prev_bytes = budget.raw_query_byte_cap();
     budget.set_query_row_cap(0);
-    Some(ExecuteRowCapGuard { budget, prev })
+    budget.set_query_byte_cap(0);
+    Some(ExecuteRowCapGuard {
+        budget,
+        prev_rows,
+        prev_bytes,
+    })
 }
 
-/// Restores [`ExecBudget::raw_query_row_cap`] when dropped.
+/// Restores [`ExecBudget::raw_query_row_cap`] and
+/// [`ExecBudget::raw_query_byte_cap`] when dropped.
 pub struct ExecuteRowCapGuard {
-    /// Budget whose row cap is restored on drop.
+    /// Budget whose caps are restored on drop.
     budget: Arc<ExecBudget>,
-    /// Cap to restore (`0` = unlimited).
-    prev: usize,
+    /// Row cap to restore (`0` = unlimited).
+    prev_rows: usize,
+    /// Result byte cap to restore (`0` = unlimited).
+    prev_bytes: u32,
 }
 
 impl Drop for ExecuteRowCapGuard {
     fn drop(&mut self) {
-        self.budget.set_query_row_cap(self.prev);
+        self.budget.set_query_row_cap(self.prev_rows);
+        self.budget.set_query_byte_cap(self.prev_bytes);
     }
 }
 

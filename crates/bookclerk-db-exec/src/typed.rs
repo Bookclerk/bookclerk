@@ -2460,6 +2460,11 @@ where
         stmt.sql = canon.clone();
     }
     let proofs = proofs_after_adapter_expand(&env, &wire, &type_req, stamped, require_stamped)?;
+    // Under the test-support begin gate, the batch executor's own transaction is
+    // let through while a store-level interactive `begin()` is refused.
+    #[cfg(feature = "test-support")]
+    let txn = crate::begin_gate::with_batch_in_progress(db.begin()).await?;
+    #[cfg(not(feature = "test-support"))]
     let txn = db.begin().await?;
     if is_txn_broken() {
         let _ = txn.rollback().await;

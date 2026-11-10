@@ -12,7 +12,9 @@ use bookclerk_plugin_source_graphicaudio::{
     GraphicAudioAuthFile, GraphicAudioBitrate, GraphicAudioClient, GraphicAudioContainer,
     GraphicAudioSource, DEFAULT_STORE_URL, LOGIN_PATH, PRODUCTS_PATH, REMOVE_PATH,
 };
-use bookclerk_storefront::{LoginOptions, PurchaseHintOpts, SourceError};
+use bookclerk_storefront::{
+    CatalogSearchOpts, LoginOptions, PurchaseHintOpts, SourceError, DEFAULT_CATALOG_SEARCH_LIMIT,
+};
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use zip::write::SimpleFileOptions;
@@ -461,4 +463,41 @@ async fn a_429_on_a_product_page_reaches_the_host_and_other_failures_do_not() {
         .unwrap()
         .unwrap();
     assert!(failed.price_cents.is_none());
+}
+
+#[tokio::test]
+async fn search_with_a_zero_limit_returns_the_default_page() {
+    let server = MockServer::start().await;
+    let items: String = (0..25)
+        .map(|i| {
+            format!(
+                r#"<li class="item product product-item" data-sku="SKU{i}">
+                  <a href="{base}/title-{i}.html" class="product">
+                    <h2 class="product name product-item-name">Title {i}</h2>
+                  </a>
+                  <div class="price" data-product-id="{id}"></div>
+                </li>"#,
+                base = server.uri(),
+                id = 7000 + i
+            )
+        })
+        .collect();
+    let html = format!(r#"<ol class="products list items product-items">{items}</ol>"#);
+    Mock::given(method("GET"))
+        .and(path("/catalogsearch/result/"))
+        .and(query_param("q", "title"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(html))
+        .mount(&server)
+        .await;
+    let source = GraphicAudioSource::new().with_store_url(server.uri());
+    let hits = source
+        .search_catalog(&CatalogSearchOpts {
+            query: "title".into(),
+            limit: 0,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), DEFAULT_CATALOG_SEARCH_LIMIT);
+    assert_eq!(hits[0].title, "Title 0");
 }

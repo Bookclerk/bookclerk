@@ -227,6 +227,17 @@ fn taste_multiplier(weights: &TasteWeights, book: &BookRecord) -> f64 {
     weights.get(&book.uuid).copied().unwrap_or(1.0)
 }
 
+/// The multiplier `weights` gives a listening `row`: its book's multiplier,
+/// so a blended household listen counts as much as the book it is for (one
+/// when the row names no listed book).
+fn listening_multiplier(weights: &TasteWeights, row: &ListeningProgressRecord) -> f64 {
+    row.book_uuid
+        .as_deref()
+        .and_then(|uuid| weights.get(uuid))
+        .copied()
+        .unwrap_or(1.0)
+}
+
 /// True when `wish_count` should be omitted from JSON (zero / unset).
 fn wish_count_is_zero(n: &i64) -> bool {
     *n == 0
@@ -920,7 +931,7 @@ async fn build_taste_profile(
     }
 
     for row in listening {
-        let weight = listening_engagement(row);
+        let weight = listening_engagement(row) * listening_multiplier(weights, row);
         if weight <= 0.0 {
             continue;
         }
@@ -1212,7 +1223,7 @@ pub(crate) fn shelf_taste(
         }
     }
     for row in listening {
-        let weight = listening_engagement(row);
+        let weight = listening_engagement(row) * listening_multiplier(weights, row);
         if weight <= 0.0 {
             continue;
         }
@@ -1509,6 +1520,83 @@ mod tests {
         assert!(open_candidate_embedder(&opts).unwrap().is_none());
     }
 
+    /// The price a catalog listed shows on the card as the store's list
+    /// price: an Audible card is linked from its id, while another store's
+    /// card carries the price and waits for the live lookup for its link.
+    #[tokio::test]
+    async fn a_listed_price_shows_on_the_card() {
+        let (store, books) = rated_library().await;
+        let candidate =
+            |source: &str, product_id: &str, title: &str| crate::candidates::StorefrontCandidate {
+                source: source.into(),
+                product_id: product_id.into(),
+                title: title.into(),
+                authors: Some("Ada Author".into()),
+                narrators: None,
+                series: None,
+                series_index: None,
+                asin: None,
+                isbn: None,
+                cover_url: None,
+                seed_categories: None,
+                origin: "author search".into(),
+                seed_title: None,
+                starter_genre: None,
+                store_editions: Vec::new(),
+                subtitle: None,
+                description: None,
+                publisher: None,
+                length_minutes: None,
+                published_at: None,
+                categories: None,
+                language: None,
+                price_cents: Some(1499),
+                currency: Some("USD".into()),
+                price_label: Some("$14.99".into()),
+                rating_overall: None,
+                rating_count: None,
+                is_abridged: None,
+                audible_rank: None,
+            };
+        let opts = RecommendOptions {
+            include_purchase_hints: false,
+            embeddings_enabled: false,
+            ..RecommendOptions::default()
+        };
+        let recs = rank_candidates(
+            &store,
+            &SourceRegistry::new(),
+            &books,
+            &TasteWeights::new(),
+            &[],
+            vec![
+                candidate("audible", "B0AUDIBLE1", "Audible Pick"),
+                candidate("chirp", "chirp-42", "Chirp Pick"),
+            ],
+            &opts,
+        )
+        .await
+        .unwrap();
+        for (title, source) in [("Audible Pick", "audible"), ("Chirp Pick", "chirp")] {
+            let rec = recs
+                .iter()
+                .find(|r| r.title == title)
+                .unwrap_or_else(|| panic!("{title} missing: {recs:?}"));
+            let hint = rec
+                .purchase_hints
+                .iter()
+                .find(|h| h.source == source)
+                .unwrap_or_else(|| panic!("{title} has no {source} hint"));
+            assert_eq!(hint.price_cents, Some(1499));
+            assert_eq!(hint.list_price_cents, Some(1499));
+            assert_eq!(hint.currency.as_deref(), Some("USD"));
+            assert_eq!(hint.price_label.as_deref(), Some("$14.99"));
+            assert_eq!(hint.list_price_label.as_deref(), Some("$14.99"));
+        }
+        let audible = recs.iter().find(|r| r.title == "Audible Pick").unwrap();
+        assert!(audible.purchase_hints[0].url.is_some(), "{audible:?}");
+    }
+
     /// A store holding one unfinished book rated 5 by "Ada Author", and its rows.
     async fn rated_library() -> (LibraryStore, Vec<BookRecord>) {
         let store = bookclerk_plugin_database_sqlite::open_store_memory()
@@ -1619,6 +1707,35 @@ mod tests {
             Some(&("Ada Author".to_owned(), 2.0))
         );
         assert!(!taste.owned_sources.is_empty());
+    }
+
+    #[test]
+    fn a_blended_listen_counts_at_its_book_weight() {
+        let row = |book_uuid: &str| bookclerk_library::ListeningProgressRecord {
+            id: 1,
+            identity_id: None,
+            provider: String::from("abs"),
+            external_user_id: String::from("u1"),
+            book_uuid: Some(book_uuid.to_owned()),
+            work_id: None,
+            external_item_id: String::from("item"),
+            title: None,
+            authors: Some(String::from("Ann Author")),
+            asin: None,
+            isbn: None,
+            progress: Some(0.5),
+            current_time_seconds: Some(3_600.0),
+            duration_seconds: Some(7_200.0),
+            is_finished: false,
+            last_listened_at: None,
+            updated_at: chrono::Utc::now(),
+        };
+        let full = listening_engagement(&row("mine"));
+        let mut weights = TasteWeights::new();
+        weights.insert(String::from("household"), 0.5);
+        let taste = shelf_taste(&[], &weights, &[row("mine"), row("household")]);
+        let weight = taste.authors.get("ann author").map(|(_, w)| *w);
+        assert_eq!(weight, Some(full * 1.5));
     }
 
     #[test]

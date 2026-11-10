@@ -673,7 +673,12 @@ const TITLE_QUERY_PLUGIN: &str = "bookclerk-query";
 /// abridgement are left unknown, so the resolver only joins an existing
 /// edition through a shared identifier and otherwise finds the work by its
 /// identifiers or its title-and-author match key.
-fn listing_from_query(query: &TitleQuery<'_>) -> Result<resolve::Listing> {
+///
+/// # Returns
+///
+/// `None` when the query cannot form a valid listing (a blank title, or a
+/// field over the listing limits): no stored work can match it.
+fn listing_from_query(query: &TitleQuery<'_>) -> Option<resolve::Listing> {
     let mut identifiers = Vec::new();
     if let Some(asin) = query.asin.map(str::trim).filter(|a| !a.is_empty()) {
         identifiers.push((resolve::IdentifierScheme::Asin, asin.to_string(), None));
@@ -720,8 +725,13 @@ fn listing_from_query(query: &TitleQuery<'_>) -> Result<resolve::Listing> {
             .collect(),
         parent_product_id: None,
     };
-    resolve::Listing::from_draft(&draft)
-        .map_err(|err| LibraryError::Other(anyhow::anyhow!("title query: {err}")))
+    match resolve::Listing::from_draft(&draft) {
+        Ok(listing) => Some(listing),
+        Err(err) => {
+            tracing::debug!(error = %err, "title query is not a valid listing; it matches no work");
+            None
+        }
+    }
 }
 
 /// The work a dry-run plan reached, or `None` when it would make a new one.
@@ -760,7 +770,7 @@ pub fn holding_from_book(book: &NewBook) -> resolve::HoldingDraft {
 
 impl LibraryStore {
     /// Ids bound per `IN (...)` lookup on this store's backend.
-    fn lookup_chunk(&self) -> usize {
+    pub(super) fn lookup_chunk(&self) -> usize {
         lookup_chunk(self.max_binds)
     }
 
@@ -785,14 +795,17 @@ impl LibraryStore {
     /// identifiers first, then the work's identifiers, then the work-level
     /// title-and-author match), but nothing is written. A query that would
     /// make a new work, or whose work no library title resolves to, is not
-    /// owned: *Dune Messiah* is its own work beside *Dune*.
+    /// owned: *Dune Messiah* is its own work beside *Dune*. A query that
+    /// cannot form a valid listing (a blank title, or a field over the
+    /// listing limits) matches no work, so it is not owned either.
     ///
     /// # Errors
     ///
-    /// Returns [`LibraryError`] when the query cannot form a listing (blank
-    /// title) or a read fails.
+    /// Returns [`LibraryError`] when a read fails.
     pub async fn owned_work_for(&self, query: &TitleQuery<'_>) -> Result<Option<String>> {
-        let listing = listing_from_query(query)?;
+        let Some(listing) = listing_from_query(query) else {
+            return Ok(None);
+        };
         let holder = resolve::Holder::Account(String::from("query"));
         let holding = resolve::HoldingDraft {
             holder: holder.clone(),
@@ -1424,7 +1437,7 @@ impl LibraryStore {
     }
 
     /// Each edition's work, through its expression.
-    async fn works_of_editions(
+    pub(super) async fn works_of_editions(
         &self,
         edition_ids: BTreeSet<String>,
     ) -> Result<std::collections::BTreeMap<String, String>> {
@@ -1920,6 +1933,20 @@ mod store_tests {
             .await
             .unwrap()
             .is_none());
+        // A query that is not a valid listing (a title over the listing
+        // limit, or a blank one) matches no work instead of failing.
+        let long_title = "Dune ".repeat(1000);
+        for title in [long_title.as_str(), "  "] {
+            assert!(store
+                .owned_work_for(&TitleQuery {
+                    title,
+                    authors: herbert,
+                    ..TitleQuery::default()
+                })
+                .await
+                .unwrap()
+                .is_none());
+        }
     }
 
     #[tokio::test]
@@ -2171,6 +2198,27 @@ mod store_tests {
     }
 
     #[tokio::test]
+    async fn listing_links_and_credit_batches_run_under_every_profile() {
+        use crate::test_support::Profile;
+        for profile in Profile::ALL {
+            let store = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let mut draft = dune("audible", "B001");
+            draft.credits = (0..40)
+                .map(|i| (format!("Cast Member {i}"), resolve::CreditRole::Cast, None))
+                .collect();
+            let listing = resolve::Listing::from_draft(&draft).unwrap();
+            store
+                .record_listing(&listing, &account("a1"))
+                .await
+                .unwrap();
+            let written = credits::Entity::find().count(&store.db).await.unwrap();
+            assert_eq!(written, 40, "{profile:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_credit_write_that_stopped_part_way_is_finished_next_scan() {
         let store = store().await;
         let mut draft = dune("audible", "B001");
@@ -2305,7 +2353,7 @@ mod store_tests {
             .await
             .unwrap();
         let store = LibraryStore::from_connection(db.clone())
-            .with_atomic_txn(Arc::new(InProcessSqliteAtomic { db }));
+            .with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db)));
         let listing = resolve::Listing::from_draft(&dune("audible", "B001")).unwrap();
         let plan = store
             .record_listing(&listing, &account("a1"))

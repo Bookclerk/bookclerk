@@ -62,7 +62,8 @@ operator, a household user, or a portal identity) has a **subject key**
    deployed storefront**, not only the stores they have accounts with.
    While a person has fewer than five books and listens of their own, the
    rest of the household's books **blend in** at half weight, behind their
-   own: a first wish or book adds to the shelves they already had instead
+   own, with the household's listening to those books at the same weight:
+   a first wish or book adds to the shelves they already had instead
    of replacing them, and the household drops out once their own taste can
    stand alone. A person with no signal of their own yet (and the operator)
    seeds from the household as it stands. With fewer than five seeds in
@@ -178,7 +179,8 @@ it, since it only reports the caller's own shelves.
 that follows it) for the caller now and answers with the same status. The
 Discover page's **Refresh** button calls it: unchanged store calls answer
 from the day's cache, so a refresh is cheap, and a fetch already waiting
-absorbs the request.
+absorbs the request. When the job queue is full the route answers `429`
+and queues nothing, and the page shows the error.
 
 ### Taste events
 
@@ -340,10 +342,12 @@ genres, starter genres, similar taste, Chirp deals, then one **Picked for
 you on {Store}** shelf per store for whatever is left, each title under the
 store where it costs the person least (member price on stores they have an
 account with, list price elsewhere, its own store when no price is known on
-the card). A wished title shows on the wishlist shelf alone. A shelf that
-is not about series keeps at most **two titles of one series**, so a long
-series cannot crowd the others out; the two series shelves instead rotate
-between series, so their first cards show several series rather than one in
+the card). A wished title shows on the wishlist shelf alone (every wish
+shows, however many share a series; wishes past the shelf's size are
+claimed too, and shown nowhere). A shelf that is not about series keeps at
+most **two titles of one series**, so a long series cannot crowd the others
+out; the two series shelves and the wishlist instead rotate between series,
+so their first cards show several series rather than one in
 a row.
 
 ## Wishlist (no approval flow)
@@ -518,12 +522,19 @@ sends every visible card's query to each deployed store's `purchaseHints`
 entrypoint together, with the product id the card already knows for that
 store, so Audible prices up to fifty titles in one catalog request and
 Chirp prices a page in one aliased GraphQL query; Libro.fm and GraphicAudio
-have no bulk endpoint and loop inside the guest. The batch answers within
+have no bulk endpoint and loop inside the guest. Audible and Chirp resolve
+the titles whose product id they already know first, then look the rest up
+by title for at most five seconds, so a slow search never costs a known
+title its price; Audible prices each query in its own marketplace. The batch answers within
 **10 seconds** with what has resolved: a store still working then counts as
-timed out, a query no store answered carries only its trusted store links,
-unpriced, and the page asks again later, so one slow store never turns a
-page of cards into a failed request. Only queries at least one store
-answered are cached (10 minutes, empty answers included).
+timed out. A query no store answered with a hint carries only its trusted
+store links, unpriced, with `incomplete: true`: a store's `None` is no
+proof it lacks the title, since a guest out of its own time budget answers
+`None` for titles it never tried. Such an answer is not cached, the page
+keeps no copy, and the card asks again after 15 seconds (twice at most)
+without dropping prices it already shows, so one slow store never turns a
+page of cards into a failed request or a card left unpriced. Queries a
+store answered with a hint are cached for 10 minutes.
 
 Cards show a price before any lookup: at the end of each store's fetch the
 `discover_candidates` job fills in prices the store answered in the last

@@ -1873,7 +1873,11 @@ class AdapterDatabaseSession:
         / ``maxStreamedResultRows``; adapters that advertise ``0`` for both
         keep this default, which answers ``unsupported``. The request carries
         the proven statements plus ``isolation`` and ``receipt``, like the
-        adapter-side ``execute`` envelope.
+        adapter-side ``execute`` envelope. An isolate adapter's frames travel
+        inside one invoke reply, so they must fit ``MAX_SCALAR_BYTES``;
+        ``db_value.execute_adapter_batch_streamed`` runs the batch, stores the
+        replay receipt and checks that bound and the advertised streamed
+        budget before it commits.
 
         Returns:
             Every frame of the committed reply, concatenated.
@@ -2183,10 +2187,39 @@ class _TransportGuestDatabase(GuestDatabase):
     for each named ``[[databases]]`` binding; its ``executeBytes`` carries the
     Cap'n ``ExecuteRequest`` / ``ExecuteResultReply`` bytes, so the author
     encodes and decodes locally and never sees the grant token.
+
+    The transport reports channel failures inside the reply (the ``err`` arm,
+    or one ``err`` stream frame), so they decode here as typed
+    :class:`PluginError` with their ``details``: an exception thrown across
+    Workers RPC would lose both. Anything the stub still raises (the RPC call
+    itself failing) becomes ``unavailable``.
     """
 
     def __init__(self, transport: Any) -> None:
         self._transport = transport
+
+    async def _call(self, method: str, *args: Any) -> Any:
+        """Call one transport method, typing whatever it raises.
+
+        Args:
+            method: Transport method name (``executeBytes``, ...).
+            *args: Its arguments.
+
+        Returns:
+            The method's answer.
+
+        Raises:
+            PluginError: The stub's own ``PluginError`` unchanged; any other
+                exception as ``unavailable``.
+        """
+        try:
+            return await getattr(self._transport, method)(*args)
+        except PluginError:
+            raise
+        except Exception as err:  # noqa: BLE001 - an RPC failure has no type of its own
+            raise PluginError.from_wire(
+                "unavailable", f"database transport {method}: {err}"
+            ) from err
 
     async def execute(self, request: ExecuteRequest) -> ExecuteReply:
         from bookclerk_plugin_sdk.db_value import (
@@ -2195,7 +2228,7 @@ class _TransportGuestDatabase(GuestDatabase):
         )
 
         body = encode_execute_request(request)
-        raw = await self._transport.executeBytes(js(body))
+        raw = await self._call("executeBytes", js(body))
         data = _bytes(raw)
         if not data:
             raise PluginError.from_wire("internal", "granted execute reply missing body")
@@ -2227,11 +2260,11 @@ class _TransportGuestDatabase(GuestDatabase):
 
         body = encode_execute_request(request)
         if hasattr(self._transport, "openStreamedBytes"):
-            raw = await self._transport.openStreamedBytes(js(body))
+            raw = await self._call("openStreamedBytes", js(body))
             if hasattr(raw, "getReader"):
                 return _reader_chunks(raw)
         elif hasattr(self._transport, "executeStreamedBytes"):
-            raw = await self._transport.executeStreamedBytes(js(body))
+            raw = await self._call("executeStreamedBytes", js(body))
         else:
             # A transport that predates the streamed read: the binding falls
             # back to its inline read.
@@ -2251,7 +2284,7 @@ class _TransportGuestDatabase(GuestDatabase):
         """
         from bookclerk_plugin_sdk.db_value import decode_db_capabilities_reply
 
-        raw = await self._transport.limitsBytes()
+        raw = await self._call("limitsBytes")
         data = _bytes(raw)
         if not data:
             raise PluginError.from_wire("internal", "granted limits reply missing body")

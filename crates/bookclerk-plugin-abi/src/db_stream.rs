@@ -218,11 +218,24 @@ enum DecoderState {
 /// then take the reassembled [`ExecuteReply`].
 ///
 /// It fails closed on more raw bytes than the budget allows, on a statement
-/// with more rows than the row cap, and on any frame out of sequence.
+/// with more rows than the row cap, on duplicate column names or a row
+/// whose width disagrees with its statement's columns (when the statement
+/// closes, or as soon as it arrives on a [`Self::streaming`] decoder), and
+/// on any frame out of sequence.
+///
+/// A decoder made with [`Self::streaming`] counts rows against the budget
+/// but does not keep them: [`Self::push_frames`] hands each row out once,
+/// as it arrives, so a reader can walk a result without holding it.
 #[derive(Debug)]
 pub struct ExecuteStreamDecoder {
     /// Budget the stream is held to.
     limits: ExecuteStreamLimits,
+    /// Whether rows are kept for [`Self::finish`] (`false` for
+    /// [`Self::streaming`], which hands them out instead).
+    retain_rows: bool,
+    /// Rows the open statement has received so far, kept or not; held to
+    /// the row cap.
+    open_rows: usize,
     /// Bytes of the frame being assembled.
     buf: Vec<u8>,
     /// Raw bytes pushed so far.
@@ -237,9 +250,23 @@ impl ExecuteStreamDecoder {
     pub fn new(limits: ExecuteStreamLimits) -> Self {
         Self {
             limits,
+            retain_rows: true,
+            open_rows: 0,
             buf: Vec::new(),
             seen: 0,
             state: DecoderState::AwaitingHead,
+        }
+    }
+
+    /// A decoder that holds the stream to `limits` but keeps no rows: each
+    /// row is handed out once by [`Self::push_frames`] and counted against
+    /// the row cap, and the reply [`Self::finish`] returns carries every
+    /// statement's columns and `rows_affected` with no rows.
+    #[must_use]
+    pub fn streaming(limits: ExecuteStreamLimits) -> Self {
+        Self {
+            retain_rows: false,
+            ..Self::new(limits)
         }
     }
 
@@ -258,6 +285,35 @@ impl ExecuteStreamDecoder {
     /// malformed or out of sequence or bytes follow the final frame, and a
     /// decode failure from a frame's codec.
     pub fn push(&mut self, bytes: &[u8]) -> Result<()> {
+        self.push_into(bytes, None)
+    }
+
+    /// Feeds the next bytes of the stream and appends the frames they
+    /// completed to `out`, in order.
+    ///
+    /// A `Rows` frame carries the rows that arrived; on a
+    /// [`Self::streaming`] decoder those rows are handed out here and not
+    /// kept. A frame is appended only once the decoder has accepted it, so
+    /// a row past the budget or out of sequence is never handed out, and
+    /// the frames accepted before a failure stay in `out`.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::push`].
+    pub fn push_frames(&mut self, bytes: &[u8], out: &mut Vec<ExecuteStreamFrame>) -> Result<()> {
+        self.push_into(bytes, Some(out))
+    }
+
+    /// [`Self::push`], appending each accepted frame to `out` when given.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::push`].
+    fn push_into(
+        &mut self,
+        bytes: &[u8],
+        mut out: Option<&mut Vec<ExecuteStreamFrame>>,
+    ) -> Result<()> {
         if bytes.is_empty() {
             return Ok(());
         }
@@ -297,7 +353,17 @@ impl ExecuteStreamDecoder {
                 self.limits.frame_ceiling(),
             )?;
             self.buf.drain(..frame_len);
-            self.apply(frame)?;
+            // Rows a retaining decoder keeps are copied out; a streaming
+            // decoder hands its rows back from `apply` instead.
+            let echo = (out.is_some()
+                && (self.retain_rows || !matches!(frame, ExecuteStreamFrame::Rows(_))))
+            .then(|| frame.clone());
+            let handed = self.apply(frame)?;
+            if let Some(out) = out.as_deref_mut() {
+                if let Some(frame) = echo.or_else(|| handed.map(ExecuteStreamFrame::Rows)) {
+                    out.push(frame);
+                }
+            }
             if self.is_finished() {
                 if !self.buf.is_empty() {
                     return Err(PluginError::invalid_params(
@@ -340,7 +406,7 @@ impl ExecuteStreamDecoder {
     /// # Errors
     ///
     /// Always returns `err`.
-    fn fail(&mut self, err: PluginError) -> Result<()> {
+    fn fail<T>(&mut self, err: PluginError) -> Result<T> {
         self.state = DecoderState::Finished(Err(err.clone()));
         Err(err)
     }
@@ -355,7 +421,13 @@ impl ExecuteStreamDecoder {
     /// width or column names disagree with its statement, and
     /// [`PluginError::limit_exceeded`] when the rows received so far pass
     /// the row budget.
-    fn apply(&mut self, frame: ExecuteStreamFrame) -> Result<()> {
+    ///
+    /// # Returns
+    ///
+    /// The rows of a `Rows` frame on a [`Self::streaming`] decoder, which
+    /// keeps none; `None` otherwise.
+    fn apply(&mut self, frame: ExecuteStreamFrame) -> Result<Option<Vec<DbRow>>> {
+        let mut handed = None;
         let state = std::mem::replace(&mut self.state, DecoderState::AwaitingHead);
         self.state = match (state, frame) {
             (
@@ -413,16 +485,27 @@ impl ExecuteStreamDecoder {
                         "streamed reply statement {index} exceeds the announced count {statement_count}"
                     )));
                 }
+                let opened = StatementResult {
+                    rows: Vec::new(),
+                    columns,
+                    rows_affected,
+                };
+                // A retaining decoder validates a statement when it closes; a
+                // streaming one hands rows out before then, so it checks the
+                // columns before any row arrives (a reader never sees two
+                // cells under one name).
+                if !self.retain_rows {
+                    if let Err(err) = opened.validate_positional() {
+                        return self.fail(PluginError::invalid_params(err));
+                    }
+                }
+                self.open_rows = 0;
                 DecoderState::InReply {
                     operation_id,
                     statement_count,
                     next_index: next_index.saturating_add(1),
                     statements,
-                    open: Some(StatementResult {
-                        rows: Vec::new(),
-                        columns,
-                        rows_affected,
-                    }),
+                    open: Some(opened),
                 }
             }
             (
@@ -435,7 +518,7 @@ impl ExecuteStreamDecoder {
                 },
                 ExecuteStreamFrame::Rows(rows),
             ) => {
-                let total = open.rows.len().saturating_add(rows.len());
+                let total = self.open_rows.saturating_add(rows.len());
                 let cap = usize::try_from(self.limits.max_rows).unwrap_or(usize::MAX);
                 if self.limits.max_rows != 0 && total > cap {
                     return self.fail(PluginError::limit_exceeded(LimitExceeded::new(
@@ -444,7 +527,25 @@ impl ExecuteStreamDecoder {
                         u64::try_from(total).unwrap_or(u64::MAX),
                     )));
                 }
-                open.rows.extend(rows);
+                // Each row's width is checked as it arrives on a streaming
+                // decoder, which will not have the rows when the statement
+                // closes.
+                let width = open.columns.len();
+                if let Some(row) = rows
+                    .iter()
+                    .find(|row| !self.retain_rows && row.values.len() != width)
+                {
+                    return self.fail(PluginError::invalid_params(format!(
+                        "streamed reply carries a row of {} values for {width} columns",
+                        row.values.len()
+                    )));
+                }
+                self.open_rows = total;
+                if self.retain_rows {
+                    open.rows.extend(rows);
+                } else {
+                    handed = Some(rows);
+                }
                 DecoderState::InReply {
                     operation_id,
                     statement_count,
@@ -494,7 +595,7 @@ impl ExecuteStreamDecoder {
                 ));
             }
         };
-        Ok(())
+        Ok(handed)
     }
 }
 
@@ -1181,5 +1282,184 @@ mod tests {
             cursor += len;
         }
         assert_eq!(frames, 3);
+    }
+
+    /// Rows handed out by `push_frames`, per statement, and the other
+    /// frames' kinds, in order.
+    fn drive(
+        decoder: &mut ExecuteStreamDecoder,
+        frames: &[u8],
+        chunk: usize,
+    ) -> (Vec<Vec<DbRow>>, Vec<&'static str>) {
+        let mut rows: Vec<Vec<DbRow>> = Vec::new();
+        let mut kinds = Vec::new();
+        for piece in frames.chunks(chunk) {
+            let mut frames = Vec::new();
+            decoder
+                .push_frames(piece, &mut frames)
+                .unwrap_or_else(|err| panic!("{err}"));
+            for frame in frames {
+                match frame {
+                    ExecuteStreamFrame::Head { .. } => kinds.push("head"),
+                    ExecuteStreamFrame::Statement { .. } => {
+                        kinds.push("statement");
+                        rows.push(Vec::new());
+                    }
+                    ExecuteStreamFrame::Rows(batch) => {
+                        if let Some(open) = rows.last_mut() {
+                            open.extend(batch);
+                        }
+                    }
+                    ExecuteStreamFrame::End(_) => kinds.push("end"),
+                    ExecuteStreamFrame::Err(_) => kinds.push("err"),
+                }
+            }
+        }
+        (rows, kinds)
+    }
+
+    /// A streaming decoder hands every row out once, in order, keeps none,
+    /// and still finishes with the reply's columns, counts and timing.
+    #[test]
+    fn a_streaming_decoder_hands_rows_out_and_keeps_none() {
+        let reply = reply(500, 300);
+        let frames = encode_execute_stream(&reply).unwrap_or_else(|err| panic!("{err}"));
+        for chunk in [7, 4096, frames.len()] {
+            let mut decoder = ExecuteStreamDecoder::streaming(limits());
+            let (rows, kinds) = drive(&mut decoder, &frames, chunk);
+            assert_eq!(kinds, ["head", "statement", "statement", "end"]);
+            let expected: Vec<Vec<DbRow>> =
+                reply.statements.iter().map(|s| s.rows.clone()).collect();
+            assert_eq!(rows, expected, "chunks of {chunk}");
+            let mut stripped = reply.clone();
+            for stmt in &mut stripped.statements {
+                stmt.rows.clear();
+            }
+            assert_eq!(
+                decoder.finish().unwrap_or_else(|err| panic!("{err}")),
+                stripped
+            );
+        }
+    }
+
+    /// A streaming decoder returns an adapter's `err` frame like any other
+    /// final frame, and `finish` reports it.
+    #[test]
+    fn a_streaming_decoder_returns_the_error_frame() {
+        let refused = PluginError::unsupported("no stream");
+        let frames = encode_execute_stream_error(&refused).unwrap_or_else(|err| panic!("{err}"));
+        let mut decoder = ExecuteStreamDecoder::streaming(limits());
+        let (rows, kinds) = drive(&mut decoder, &frames, 3);
+        assert!(rows.is_empty());
+        assert_eq!(kinds, ["err"]);
+        assert_eq!(decoder.finish().expect_err("adapter error"), refused);
+    }
+
+    /// A retaining decoder's `push_frames` returns copies of the rows it
+    /// keeps, so both modes see the same frames.
+    #[test]
+    fn a_retaining_decoder_returns_the_frames_it_keeps() {
+        let reply = reply(40, 10);
+        let frames = encode_execute_stream(&reply).unwrap_or_else(|err| panic!("{err}"));
+        let mut decoder = ExecuteStreamDecoder::new(limits());
+        let (rows, _) = drive(&mut decoder, &frames, 100);
+        assert_eq!(rows[0], reply.statements[0].rows);
+        assert_eq!(
+            decoder.finish().unwrap_or_else(|err| panic!("{err}")),
+            reply
+        );
+    }
+
+    /// The row cap counts rows a streaming decoder no longer holds, and no
+    /// row past it is handed out.
+    #[test]
+    fn a_streaming_decoder_holds_the_row_cap() {
+        let tight = ExecuteStreamLimits {
+            max_rows: 3,
+            ..limits()
+        };
+        let mut decoder = ExecuteStreamDecoder::streaming(tight);
+        decoder.push(&head(1)).unwrap_or_else(|err| panic!("{err}"));
+        decoder
+            .push(&statement(0))
+            .unwrap_or_else(|err| panic!("{err}"));
+        let two = frame(&ExecuteStreamFrame::Rows(vec![
+            DbRow { values: Vec::new() },
+            DbRow { values: Vec::new() },
+        ]));
+        let mut handed = Vec::new();
+        decoder
+            .push_frames(&two, &mut handed)
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(handed.len(), 1);
+        let err = decoder.push_frames(&two, &mut handed).expect_err("row cap");
+        assert_eq!(handed.len(), 1, "no row past the cap is handed out");
+        assert_eq!(err.code, PluginErrorCode::LimitExceeded, "{err}");
+        let limit = err.limit().unwrap_or_else(|| panic!("typed limit: {err}"));
+        assert_eq!((limit.cap, limit.used), (3, 4));
+        assert!(decoder.is_finished(), "the refusal is final");
+    }
+
+    /// A streaming decoder refuses a row whose width disagrees with its
+    /// statement, and duplicate column names, before handing anything out.
+    #[test]
+    fn a_streaming_decoder_validates_before_handing_rows_out() {
+        let mut decoder = ExecuteStreamDecoder::streaming(limits());
+        decoder.push(&head(1)).unwrap_or_else(|err| panic!("{err}"));
+        decoder
+            .push(&statement(0))
+            .unwrap_or_else(|err| panic!("{err}"));
+        let wide = frame(&ExecuteStreamFrame::Rows(vec![DbRow {
+            values: vec![DbValue::Int64(1)],
+        }]));
+        let mut handed = Vec::new();
+        let err = decoder
+            .push_frames(&wide, &mut handed)
+            .expect_err("wide row");
+        assert!(handed.is_empty());
+        assert_eq!(err.code, PluginErrorCode::InvalidParams, "{err}");
+        assert!(err.message.contains("1 values for 0 columns"), "{err}");
+        assert!(decoder.is_finished(), "the refusal is final");
+
+        let column = DbColumn {
+            name: "id".into(),
+            db_type: DbType::Int64,
+        };
+        let duplicate = frame(&ExecuteStreamFrame::Statement {
+            index: 0,
+            columns: vec![column.clone(), column],
+            rows_affected: 0,
+        });
+        let mut decoder = ExecuteStreamDecoder::streaming(limits());
+        decoder.push(&head(1)).unwrap_or_else(|err| panic!("{err}"));
+        let err = decoder
+            .push_frames(&duplicate, &mut handed)
+            .expect_err("duplicate column");
+        assert!(handed.is_empty());
+        assert!(err.message.contains("duplicate result column"), "{err}");
+        // A retaining decoder accepts the statement until it closes.
+        let mut decoder = ExecuteStreamDecoder::new(limits());
+        decoder.push(&head(1)).unwrap_or_else(|err| panic!("{err}"));
+        decoder
+            .push(&duplicate)
+            .unwrap_or_else(|err| panic!("{err}"));
+    }
+
+    /// Frames a push accepted before it failed stay with the caller, so a
+    /// streaming reader keeps the rows that arrived ahead of the failure.
+    #[test]
+    fn frames_accepted_before_a_failure_stay_with_the_caller() {
+        let good = frame(&ExecuteStreamFrame::Rows(vec![DbRow {
+            values: Vec::new(),
+        }]));
+        let bytes = [head(1), statement(0), good, head(1)].concat();
+        let mut decoder = ExecuteStreamDecoder::streaming(limits());
+        let mut out = Vec::new();
+        let err = decoder
+            .push_frames(&bytes, &mut out)
+            .expect_err("second head");
+        assert_eq!(err.code, PluginErrorCode::InvalidParams, "{err}");
+        assert_eq!(out.len(), 3, "head, statement and the row frame");
+        assert!(matches!(&out[2], ExecuteStreamFrame::Rows(rows) if rows.len() == 1));
     }
 }

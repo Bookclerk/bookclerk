@@ -34,7 +34,14 @@ from bookclerk_plugin_sdk.db_value import (
 )
 from bookclerk_plugin_sdk.workerd import PluginError
 
-CORPUS = Path(__file__).resolve().parents[3] / "fuzz" / "corpus" / "db_stream"
+# The repository root: the nearest folder above holding the ABI crate. A
+# fixed depth would break when mutation testing runs these tests from a copy
+# under `mutants/` (docs/contributing/ci.md#python-sdk).
+REPO_ROOT = next(
+    p for p in Path(__file__).resolve().parents if (p / "crates" / "bookclerk-plugin-abi").is_dir()
+)
+
+CORPUS = REPO_ROOT / "fuzz" / "corpus" / "db_stream"
 
 # The first-party sqlite advertisement as the host reads it (every value
 # mirrors `DbCapabilities::advertised_sqlite()`).

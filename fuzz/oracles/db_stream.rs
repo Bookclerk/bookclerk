@@ -12,11 +12,16 @@
 //!   the same reply, or both fail;
 //! - an accepted reply stays within the budget: no statement has more rows
 //!   than the row cap;
-//! - an accepted reply re-encodes to frames that decode to the same reply.
+//! - an accepted reply re-encodes to frames that decode to the same reply;
+//! - a streaming decoder (the one a row-at-a-time `iterate()` reads with)
+//!   fed the same chunks accepts exactly what one push accepts, hands out
+//!   every row of it once and in order, and finishes with the same reply
+//!   minus its rows.
 
 use bookclerk_plugin_abi::{
-    decode_execute_stream, encode_execute_stream, DbCapabilities, ExecuteStreamDecoder,
-    ExecuteStreamLimits, PluginErrorCode, FIRST_PARTY_MAX_STREAMED_RESULT_BYTES,
+    decode_execute_stream, encode_execute_stream, DbCapabilities, DbRow, ExecuteReply,
+    ExecuteStreamDecoder, ExecuteStreamFrame, ExecuteStreamLimits, PluginError, PluginErrorCode,
+    FIRST_PARTY_MAX_STREAMED_RESULT_BYTES,
 };
 
 /// Largest input worth checking; a frame the wire would carry is far
@@ -119,6 +124,33 @@ pub fn check(data: &[u8]) {
         }
     }
     let split = pushed.and_then(|()| decoder.finish());
+    let streamed = stream_rows(stream, limits, chunk);
+
+    match (&whole, &streamed) {
+        (Ok(whole), Ok((rows, finished))) => {
+            let expected: Vec<Vec<DbRow>> =
+                whole.statements.iter().map(|s| s.rows.clone()).collect();
+            assert_eq!(
+                rows, &expected,
+                "a streaming decoder must hand out every accepted row once, in order"
+            );
+            let mut stripped = whole.clone();
+            for stmt in &mut stripped.statements {
+                stmt.rows.clear();
+            }
+            assert_eq!(
+                finished, &stripped,
+                "a streaming decoder must finish with the reply minus its rows"
+            );
+        }
+        (Err(_), Err(_)) => {}
+        (Ok(_), Err(err)) => {
+            panic!("one push accepted what a streaming decoder in chunks of {chunk} refused: {err}")
+        }
+        (Err(err), Ok(_)) => {
+            panic!("a streaming decoder in chunks of {chunk} accepted what one push refused: {err}")
+        }
+    }
 
     match (whole, split) {
         (Ok(whole), Ok(split)) => {
@@ -148,4 +180,44 @@ pub fn check(data: &[u8]) {
         (Ok(_), Err(err)) => panic!("one push accepted what chunks of {chunk} refused: {err}"),
         (Err(err), Ok(_)) => panic!("chunks of {chunk} accepted what one push refused: {err}"),
     }
+}
+
+/// Rows a streaming decoder fed `stream` in `chunk`-byte pieces hands out,
+/// per statement, and the reply it finishes with.
+///
+/// # Arguments
+///
+/// * `stream` - The frame bytes.
+/// * `limits` - Budget the decoder holds the stream to.
+/// * `chunk` - Bytes per push.
+///
+/// # Errors
+///
+/// The decoder's refusal, from a push or from `finish`.
+fn stream_rows(
+    stream: &[u8],
+    limits: ExecuteStreamLimits,
+    chunk: usize,
+) -> Result<(Vec<Vec<DbRow>>, ExecuteReply), PluginError> {
+    let mut decoder = ExecuteStreamDecoder::streaming(limits);
+    let mut rows: Vec<Vec<DbRow>> = Vec::new();
+    for piece in stream.chunks(chunk) {
+        let mut frames = Vec::new();
+        decoder.push_frames(piece, &mut frames)?;
+        for frame in frames {
+            match frame {
+                ExecuteStreamFrame::Statement { .. } => rows.push(Vec::new()),
+                ExecuteStreamFrame::Rows(batch) => {
+                    let Some(open) = rows.last_mut() else {
+                        panic!("a streaming decoder handed out rows outside a statement");
+                    };
+                    open.extend(batch);
+                }
+                ExecuteStreamFrame::Head { .. }
+                | ExecuteStreamFrame::End(_)
+                | ExecuteStreamFrame::Err(_) => {}
+            }
+        }
+    }
+    Ok((rows, decoder.finish()?))
 }

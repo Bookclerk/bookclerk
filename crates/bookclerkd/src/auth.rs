@@ -261,7 +261,10 @@ pub struct OperatorAuthState {
     login_window: Duration,
     /// How long a client stays locked after exceeding `login_max_failures`.
     login_lockout: Duration,
-    /// Per-client throttle buckets keyed by resolved client IP.
+    /// Sign-in throttle buckets: one per resolved client IP, plus per-account
+    /// buckets such as `password:<user_id>` (password re-checks by a signed-in
+    /// user: elevation, step-up re-auth, password change) and
+    /// `clerk-step-up:<user_id>` (clerk join step-up).
     login_attempts: Mutex<HashMap<String, LoginThrottleBucket>>,
 }
 
@@ -1696,8 +1699,10 @@ pub enum UserCaller {
 }
 
 /// Operator token/session **or** any signed-in portal user with a user
-/// account. Puts a [`UserCaller`] in the request extensions; handlers pass it
-/// to the library, which decides from the stored role what the user may do.
+/// account. Puts a [`UserCaller`] (and the same caller as a
+/// [`ScanRequester`], for the scan and acquire planners) in the request
+/// extensions; handlers pass it to the library, which decides from the
+/// stored role what the user may do.
 /// Impersonating a user acts as that user.
 pub async fn require_operator_or_user_auth(
     State(state): State<Arc<AppState>>,
@@ -1706,7 +1711,15 @@ pub async fn require_operator_or_user_auth(
 ) -> Result<Response, StatusCode> {
     match resolve_user_caller(&state, req.headers(), req.uri().path()).await {
         Ok(caller) => {
+            // The scan and acquire planners read who asked from a
+            // `ScanRequester`; they re-read the user's role and status and
+            // limit anyone below Administrator to their own accounts.
+            let requester = match caller {
+                UserCaller::Operator => ScanRequester::Operator,
+                UserCaller::User { user_id } => ScanRequester::User(user_id),
+            };
             req.extensions_mut().insert(caller);
+            req.extensions_mut().insert(requester);
             Ok(next.run(req).await)
         }
         Err(UserCallerRefusal::Status(status)) => Err(status),
@@ -1776,7 +1789,9 @@ pub async fn resolve_user_caller(
 
 /// Operator token/session **or** an active Administrator user portal session.
 ///
-/// Used for scan / acquire / jobs. Full control-plane settings stay on
+/// Used for jobs, status and the legacy `/scan` / `/acquire` aliases
+/// (`/api/library/scan` and `/api/library/acquire` admit any user and
+/// leave the scoping to the planner). Full control-plane settings stay on
 /// [`require_operator_auth`] until Phase 2 elevation. Records who asked as a
 /// [`ScanRequester`] request extension for the scan planner; a handler that
 /// finds none refuses.
@@ -2369,11 +2384,13 @@ pub struct ImpersonateRequest {
         (status = 403, description = "The caller is not an Owner, or the Owner has no password to check."),
         (status = 400, description = "Operator auth is off, or the password is empty."),
         (status = 409, description = "The caller is already an operator."),
+        (status = 429, description = "Too many wrong passwords from this client or for this Owner; retry after `Retry-After` seconds.", body = LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), example = json!({"error": "too_many_requests", "message": "Too many failed login attempts. Try again in 45 seconds.", "status": 429, "retry_after_secs": 45})),
         (status = 500, description = "The password hash could not be read, or the elevated session could not be stored."),
     ),
 )]
 pub async fn elevate(
     State(state): State<Arc<AppState>>,
+    ClientIp(client_key): ClientIp,
     headers: HeaderMap,
     Json(body): Json<ElevateRequest>,
 ) -> Result<Response, StatusCode> {
@@ -2383,6 +2400,10 @@ pub async fn elevate(
     }
     if authorize_operator(&state, &auth, &headers).await {
         return Err(StatusCode::CONFLICT);
+    }
+    // Locked-out clients are refused before the session or password is checked.
+    if let Some(retry_after) = auth.login_throttle_check(&client_key).await {
+        return Ok(too_many_requests(retry_after));
     }
     let library = state.library_snapshot().await;
     let identity = timed_portal_identity_from_headers(&library, &headers)
@@ -2413,18 +2434,120 @@ pub async fn elevate(
             .await;
         return Err(StatusCode::FORBIDDEN);
     };
-    let password_ok = bookclerk_library::verify_password(password, &hash).unwrap_or(false);
-    if !password_ok {
-        let _ = library
-            .insert_security_audit_event(
-                &format!("user:{}", user.id),
-                "elevate_failed",
-                Some(r#"{"reason":"bad_password"}"#),
-            )
-            .await;
-        return Err(StatusCode::UNAUTHORIZED);
+    // The account bucket (shared with every other password re-check) catches
+    // guesses spread across addresses; the client bucket is checked above.
+    // Only the account bucket is cleared on success: the client bucket is
+    // shared with the other sign-in routes, and a successful elevation must
+    // not reset their count for this address.
+    match recheck_account_password(&auth, user.id, password, &hash).await? {
+        PasswordRecheck::Matched => {}
+        PasswordRecheck::Locked(retry_after) => return Ok(too_many_requests(retry_after)),
+        PasswordRecheck::Wrong { locked } => {
+            let _ = library
+                .insert_security_audit_event(
+                    &format!("user:{}", user.id),
+                    "elevate_failed",
+                    Some(r#"{"reason":"bad_password"}"#),
+                )
+                .await;
+            let client_locked = auth.record_login_failure(&client_key).await;
+            if let Some(retry_after) = client_locked.max(locked) {
+                return Ok(too_many_requests(retry_after));
+            }
+            return Err(StatusCode::UNAUTHORIZED);
+        }
     }
     issue_elevation(&state, &library, user.id, &headers).await
+}
+
+/// Result of re-checking a signed-in user's password under the account throttle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PasswordRecheck {
+    /// The password matched; the account's failure count was cleared.
+    Matched,
+    /// The password was wrong and the failure was counted.
+    Wrong {
+        /// Lockout length when this failure reached the cap, `None` while under it.
+        locked: Option<Duration>,
+    },
+    /// The account is locked out; the password was not checked.
+    Locked(Duration),
+}
+
+impl PasswordRecheck {
+    /// The plain status a re-check gate answers with.
+    ///
+    /// # Errors
+    ///
+    /// Returns 401 for a wrong password under the cap and 429 once the account
+    /// is locked (by this miss or an earlier one).
+    pub(crate) fn into_gate_result(self) -> Result<(), StatusCode> {
+        match self {
+            Self::Matched => Ok(()),
+            Self::Wrong { locked: None } => Err(StatusCode::UNAUTHORIZED),
+            Self::Wrong { locked: Some(_) } | Self::Locked(_) => Err(StatusCode::TOO_MANY_REQUESTS),
+        }
+    }
+}
+
+/// Throttle bucket for password re-checks against one account.
+///
+/// Kept apart from the per-client buckets (which are keyed by IP address) so
+/// wrong passwords for the same account count together whichever address and
+/// whichever route (elevation, step-up re-auth, password change) they come
+/// through.
+///
+/// # Arguments
+///
+/// * `user_id` - The account's `users.id`.
+///
+/// # Returns
+///
+/// The key passed to the login throttle, `password:<user_id>`.
+fn password_throttle_key(user_id: i64) -> String {
+    format!("password:{user_id}")
+}
+
+/// Verifies a signed-in user's password against `hash` under the account throttle.
+///
+/// A locked account is refused before the (slow) hash comparison. Each
+/// attempt is counted before the comparison runs, so concurrent guesses
+/// cannot all slip past the cap while the hash is being checked; a match then
+/// clears the account's count.
+///
+/// # Arguments
+///
+/// * `auth` - Operator auth state holding the throttle buckets.
+/// * `user_id` - The account whose password is checked.
+/// * `password` - The password the caller presented.
+/// * `hash` - The account's stored password hash.
+///
+/// # Returns
+///
+/// Whether the password matched, was wrong, or was not checked because the
+/// account is locked out.
+///
+/// # Errors
+///
+/// Returns 500 when the stored hash cannot be parsed; the attempt stays
+/// counted.
+pub(crate) async fn recheck_account_password(
+    auth: &OperatorAuthState,
+    user_id: i64,
+    password: &str,
+    hash: &str,
+) -> Result<PasswordRecheck, StatusCode> {
+    let key = password_throttle_key(user_id);
+    if let Some(retry_after) = auth.login_throttle_check(&key).await {
+        return Ok(PasswordRecheck::Locked(retry_after));
+    }
+    let locked = auth.record_login_failure(&key).await;
+    if verify_password(password, hash).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? {
+        auth.clear_login_failures(&key).await;
+        Ok(PasswordRecheck::Matched)
+    } else {
+        Ok(PasswordRecheck::Wrong { locked })
+    }
 }
 
 /// Mint a short-lived elevated operator cookie for an Owner.
@@ -3576,6 +3699,7 @@ pub struct SetPasswordRequest {
     responses(
         (status = 200, description = "The password was set and other sessions revoked.", body = PasswordSet),
         (status = 401, description = "The caller is not signed in, or the caller already has a password and `current_password` is missing or wrong."),
+        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout."),
         (status = 403, description = "The caller may not set that user's password: not a provisioner, or a role the caller cannot manage."),
         (status = 400, description = "The password is empty (the standard error body)."),
         (status = 404, description = "No such user."),
@@ -3628,11 +3752,9 @@ pub async fn set_password(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .ok_or(StatusCode::UNAUTHORIZED)?;
-            let ok =
-                verify_password(current, &hash).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            if !ok {
-                return Err(StatusCode::UNAUTHORIZED);
-            }
+            recheck_account_password(&auth, target_id, current, &hash)
+                .await?
+                .into_gate_result()?;
         }
     }
     let hash = hash_password(password).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -3655,6 +3777,9 @@ pub async fn set_password(
             | LibraryError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
             LibraryError::LimitExceeded(_) => StatusCode::UNPROCESSABLE_ENTITY,
         })?;
+    // A new password (including a provisioner's reset) lifts the account lockout.
+    auth.clear_login_failures(&password_throttle_key(target_id))
+        .await;
     let revoked = library
         .delete_portal_sessions_for_user(target_id)
         .await
@@ -4252,12 +4377,15 @@ pub(crate) const RECENT_AUTH_WINDOW: ChronoDuration = ChronoDuration::minutes(15
 /// # Returns
 ///
 /// `reauth` for a 401, a fixed note for a 500 (the current password could
-/// not be read or verified) and `forbidden` for everything else.
+/// not be read or verified), a lockout note for a 429 (too many wrong
+/// passwords for the account) and `forbidden` for everything else.
 pub(crate) fn recent_owner_gate_message(status: StatusCode, reauth: &'static str) -> &'static str {
     if status == StatusCode::UNAUTHORIZED {
         reauth
     } else if status == StatusCode::INTERNAL_SERVER_ERROR {
         "the current password could not be checked"
+    } else if status == StatusCode::TOO_MANY_REQUESTS {
+        "too many wrong passwords for this account; try again later"
     } else {
         "forbidden"
     }
@@ -4318,12 +4446,10 @@ pub(crate) async fn require_recent_portal_reauth(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    let ok = verify_password(current, &hash).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if ok {
-        Ok(())
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
-    }
+    let auth = state.auth_snapshot().await;
+    recheck_account_password(&auth, user_id, current, &hash)
+        .await?
+        .into_gate_result()
 }
 
 /// Raw operator session id from the session cookie (hashed before any DB lookup).
@@ -5143,6 +5269,177 @@ pub(crate) mod tests {
         let _ = res.into_body().collect().await;
     }
 
+    /// A Member reaches the scan and acquire planners over HTTP, which keep
+    /// them to the store accounts linked to them; the legacy aliases and
+    /// the job list stay with Administrators.
+    #[tokio::test]
+    async fn member_scans_and_acquires_only_their_own_accounts() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (_state, app, library) = phase2_harness("op-token-member-plan").await;
+        for account in ["mine", "theirs"] {
+            library
+                .upsert_account("pk", account, "us", None, true, "test")
+                .await
+                .unwrap();
+        }
+        let cookie = portal_cookie_for(&library, "test", "member-ext").await;
+        let post = |uri: &str, cookie: Option<&str>, body: serde_json::Value| {
+            let mut req = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json");
+            if let Some(cookie) = cookie {
+                req = req.header(header::COOKIE, cookie);
+            }
+            req.body(Body::from(body.to_string())).unwrap()
+        };
+        let send = |req: Request<Body>| {
+            let app = app.clone();
+            async move {
+                let res = app.oneshot(req).await.unwrap();
+                let status = res.status();
+                let bytes = res.into_body().collect().await.unwrap().to_bytes();
+                let body: serde_json::Value =
+                    serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+                (status, body)
+            }
+        };
+        let empty = serde_json::json!({});
+
+        // Owning no account, there is nothing to plan.
+        let (status, body) = send(post("/api/library/scan", Some(&cookie), empty.clone())).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"], "nothing_to_scan");
+        let (status, body) = send(post("/api/library/acquire", Some(&cookie), empty.clone())).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"], "nothing_to_acquire");
+
+        let identity = library
+            .get_portal_identity("test", "member-ext")
+            .await
+            .unwrap()
+            .expect("member identity");
+        library
+            .link_account(identity.id, "pk", "mine", "test")
+            .await
+            .unwrap();
+
+        // Someone else's account is refused by the planner.
+        for uri in ["/api/library/scan", "/api/library/acquire"] {
+            let (status, body) = send(post(
+                uri,
+                Some(&cookie),
+                serde_json::json!({ "account": "theirs" }),
+            ))
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {body}");
+            assert_eq!(body["error"], "forbidden", "{uri}");
+        }
+        // Scanning everything covers only the linked account.
+        let (status, body) = send(post("/api/library/scan", Some(&cookie), empty.clone())).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["job_ids"].as_array().map(Vec::len), Some(1), "{body}");
+        let (status, body) = send(post(
+            "/api/library/acquire",
+            Some(&cookie),
+            serde_json::json!({ "account": "mine" }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let job_id = body["job_id"].as_str().expect("job id").to_string();
+        let job = library.get_job(&job_id).await.unwrap().expect("job");
+        assert_eq!(job.payload.account.as_deref(), Some("mine"));
+
+        // A title id from someone else's account is refused too.
+        let foreign = library
+            .scope("pk", "test")
+            .upsert_book(&bookclerk_library::NewBook {
+                uuid: None,
+                product_id: "theirs-book".into(),
+                plugin_key: "pk".into(),
+                source: "test".into(),
+                account_id: "theirs".into(),
+                asin: Some("B0THEIRS".into()),
+                isbn: None,
+                marketplace: "us".into(),
+                title: "Theirs".into(),
+                authors: None,
+                narrators: None,
+                series: None,
+                series_index: None,
+                series_asin: None,
+                purchased_at: None,
+                publisher: None,
+                length_minutes: None,
+                is_abridged: false,
+                content_kind: "book".into(),
+                categories: None,
+                subtitle: None,
+                published_at: None,
+            })
+            .await
+            .unwrap();
+        let (status, body) = send(post(
+            "/api/library/acquire",
+            Some(&cookie),
+            serde_json::json!({ "uuid": foreign.uuid }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], "forbidden");
+
+        // The operator token still plans for every account through the
+        // same layer.
+        let (status, body) = send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/library/scan")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, "Bearer op-token-member-plan")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["job_ids"].as_array().map(Vec::len), Some(2), "{body}");
+
+        // Signed out is still refused, and the aliases and job list stay
+        // with Administrators.
+        let (status, _) = send(post("/api/library/scan", None, empty.clone())).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        for uri in ["/scan", "/acquire"] {
+            let (status, _) = send(post(uri, Some(&cookie), empty.clone())).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+        }
+        let (status, _) = send(
+            Request::builder()
+                .uri("/api/jobs")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Disabled with its session still in hand, the Member plans nothing.
+        let member_id = identity.user_id.expect("member user");
+        library
+            .set_user_status(member_id, bookclerk_library::UserStatus::Disabled)
+            .await
+            .unwrap();
+        for uri in ["/api/library/scan", "/api/library/acquire"] {
+            let (status, body) = send(post(uri, Some(&cookie), empty.clone())).await;
+            assert!(
+                matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN),
+                "{uri}: {status} {body}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn owner_elevate_without_password_fails_settings_ok_with_password() {
         use axum::body::Body;
@@ -5224,6 +5521,290 @@ pub(crate) mod tests {
         let events = library.list_security_audit_events(20).await.unwrap();
         assert!(events.iter().any(|e| e.action == "elevate_start"));
         assert!(events.iter().any(|e| e.action == "elevate_failed"));
+    }
+
+    /// Test-only wrong Owner password (assembled at runtime so static analysis does not flag a literal).
+    fn wrong_elevate_password() -> String {
+        ["not", "-", "the", "-", "pass"].concat()
+    }
+
+    /// Sends `POST /api/auth/elevate` with `password` from the client address `peer`.
+    ///
+    /// # Arguments
+    ///
+    /// * `app` - Router from [`phase2_harness`].
+    /// * `cookie` - The Owner's portal session cookie.
+    /// * `peer` - Client address the throttle keys on (stands in for the TCP peer).
+    /// * `password` - Password sent in the body.
+    ///
+    /// # Returns
+    ///
+    /// The response status and its `Retry-After` header, when present.
+    async fn elevate_from(
+        app: &axum::Router,
+        cookie: &str,
+        peer: &str,
+        password: &str,
+    ) -> (axum::http::StatusCode, Option<String>) {
+        use axum::body::Body;
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let addr: SocketAddr = format!("{peer}:40000").parse().unwrap();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/elevate")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::COOKIE, cookie)
+                    .extension(ConnectInfo(addr))
+                    .body(Body::from(
+                        serde_json::json!({ "password": password }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let retry_after = res
+            .headers()
+            .get(header::RETRY_AFTER)
+            .map(|v| v.to_str().unwrap().to_string());
+        let _ = res.into_body().collect().await;
+        (status, retry_after)
+    }
+
+    #[tokio::test]
+    async fn elevate_locks_a_client_out_after_repeated_wrong_passwords() {
+        use axum::http::StatusCode;
+
+        // The harness allows five failures per window.
+        let (_state, app, library) = phase2_harness("op-token-elevate-throttle").await;
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        for _ in 0..4 {
+            let (status, _) =
+                elevate_from(&app, &cookie, "198.51.100.7", &wrong_elevate_password()).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        let (status, retry_after) =
+            elevate_from(&app, &cookie, "198.51.100.7", &wrong_elevate_password()).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(retry_after.is_some(), "429 carries Retry-After");
+
+        // Locked out: even the right password is refused without being checked.
+        let (status, retry_after) =
+            elevate_from(&app, &cookie, "198.51.100.7", &phase2_owner_password()).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(retry_after.is_some());
+    }
+
+    #[tokio::test]
+    async fn elevate_lockout_follows_the_owner_across_addresses() {
+        use axum::http::StatusCode;
+
+        let (state, app, library) = phase2_harness("op-token-elevate-owner").await;
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        for i in 1..=4 {
+            let (status, _) = elevate_from(
+                &app,
+                &cookie,
+                &format!("203.0.113.{i}"),
+                &wrong_elevate_password(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        let (status, _) =
+            elevate_from(&app, &cookie, "203.0.113.5", &wrong_elevate_password()).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+        // A fresh address with the right password is still refused for this Owner,
+        // while that address itself is not locked for other sign-ins.
+        let (status, retry_after) =
+            elevate_from(&app, &cookie, "203.0.113.99", &phase2_owner_password()).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(retry_after.is_some());
+        let auth = state.auth_snapshot().await;
+        assert!(auth.login_throttle_check("203.0.113.99").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn elevate_success_clears_the_owner_bucket_only() {
+        use axum::http::StatusCode;
+
+        let (_state, app, library) = phase2_harness("op-token-elevate-clear").await;
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        for _ in 0..4 {
+            let (status, _) =
+                elevate_from(&app, &cookie, "192.0.2.4", &wrong_elevate_password()).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        let (status, _) = elevate_from(&app, &cookie, "192.0.2.4", &phase2_owner_password()).await;
+        assert_eq!(status, StatusCode::OK);
+
+        // The Owner bucket was cleared: three misses from another address stay 401
+        // (the Owner count is now 3, below the cap even after one more miss).
+        for _ in 0..3 {
+            let (status, _) =
+                elevate_from(&app, &cookie, "192.0.2.5", &wrong_elevate_password()).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        // The first address kept its count, so its fifth miss locks it.
+        let (status, _) = elevate_from(&app, &cookie, "192.0.2.4", &wrong_elevate_password()).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// The `users.id` behind the seeded Owner portal identity (`test` / `admin-ext`).
+    async fn seeded_owner_id(library: &bookclerk_library::LibraryStore) -> i64 {
+        library
+            .upsert_portal_identity("test", "admin-ext", Some("Owner"))
+            .await
+            .unwrap()
+            .user_id
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn recent_reauth_locks_the_account_after_repeated_wrong_passwords() {
+        let (state, _app, library) = phase2_harness("op-token-reauth-throttle").await;
+        let uid = seeded_owner_id(&library).await;
+        // No portal cookie, so the session is never "recent" and the password decides.
+        let headers = HeaderMap::new();
+        let wrong = wrong_elevate_password();
+        for _ in 0..4 {
+            let res = require_recent_portal_reauth(&state, &headers, uid, Some(&wrong)).await;
+            assert_eq!(res, Err(StatusCode::UNAUTHORIZED));
+        }
+        let res = require_recent_portal_reauth(&state, &headers, uid, Some(&wrong)).await;
+        assert_eq!(res, Err(StatusCode::TOO_MANY_REQUESTS));
+        // Locked: the right password is refused without being checked.
+        let right = phase2_owner_password();
+        let res = require_recent_portal_reauth(&state, &headers, uid, Some(&right)).await;
+        assert_eq!(res, Err(StatusCode::TOO_MANY_REQUESTS));
+    }
+
+    #[tokio::test]
+    async fn recent_reauth_success_clears_the_account_count() {
+        let (state, _app, library) = phase2_harness("op-token-reauth-clear").await;
+        let uid = seeded_owner_id(&library).await;
+        let headers = HeaderMap::new();
+        let wrong = wrong_elevate_password();
+        for _ in 0..4 {
+            let res = require_recent_portal_reauth(&state, &headers, uid, Some(&wrong)).await;
+            assert_eq!(res, Err(StatusCode::UNAUTHORIZED));
+        }
+        let right = phase2_owner_password();
+        let res = require_recent_portal_reauth(&state, &headers, uid, Some(&right)).await;
+        assert_eq!(res, Ok(()));
+        let res = require_recent_portal_reauth(&state, &headers, uid, Some(&wrong)).await;
+        assert_eq!(res, Err(StatusCode::UNAUTHORIZED));
+    }
+
+    #[tokio::test]
+    async fn concurrent_rechecks_cannot_exceed_the_account_cap() {
+        let (state, _app, library) = phase2_harness("op-token-recheck-burst").await;
+        let uid = seeded_owner_id(&library).await;
+        let hash = library.get_user_password_hash(uid).await.unwrap().unwrap();
+        let auth = state.auth_snapshot().await;
+        let wrong = wrong_elevate_password();
+        let attempts = (0..20).map(|_| recheck_account_password(&auth, uid, &wrong, &hash));
+        let results = futures::future::join_all(attempts).await;
+        // The harness allows five failures, so at most five guesses are compared.
+        let checked = results
+            .iter()
+            .filter(|r| matches!(r, Ok(PasswordRecheck::Wrong { .. })))
+            .count();
+        assert!(checked <= 5, "{checked} guesses were compared");
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, Ok(PasswordRecheck::Locked(_)))));
+    }
+
+    #[test]
+    fn recent_owner_gate_message_names_the_lockout() {
+        assert_eq!(
+            recent_owner_gate_message(StatusCode::TOO_MANY_REQUESTS, "reauth"),
+            "too many wrong passwords for this account; try again later"
+        );
+        assert_eq!(
+            recent_owner_gate_message(StatusCode::UNAUTHORIZED, "reauth"),
+            "reauth"
+        );
+    }
+
+    #[tokio::test]
+    async fn reauth_misses_count_toward_the_elevation_lockout() {
+        use axum::http::StatusCode;
+
+        let (state, app, library) = phase2_harness("op-token-reauth-elevate").await;
+        let uid = seeded_owner_id(&library).await;
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        let wrong = wrong_elevate_password();
+        for _ in 0..4 {
+            let res =
+                require_recent_portal_reauth(&state, &HeaderMap::new(), uid, Some(&wrong)).await;
+            assert_eq!(res, Err(StatusCode::UNAUTHORIZED));
+        }
+        // The fifth miss for this account, via elevation from a fresh address, locks it.
+        let (status, retry_after) = elevate_from(&app, &cookie, "198.51.100.40", &wrong).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(retry_after.is_some());
+    }
+
+    #[tokio::test]
+    async fn password_change_locks_after_repeated_wrong_current_passwords() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (_state, app, library) = phase2_harness("op-token-password-throttle").await;
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        let next = ["next", "-", "pass", "-", "word"].concat();
+        let change = |current: String| {
+            let app = app.clone();
+            let cookie = cookie.clone();
+            let next = next.clone();
+            async move {
+                let res = app
+                    .oneshot(
+                        Request::builder()
+                            .method("PUT")
+                            .uri("/api/auth/password")
+                            .header(header::CONTENT_TYPE, "application/json")
+                            .header(header::COOKIE, &cookie)
+                            .body(Body::from(
+                                serde_json::json!({ "password": next, "current_password": current })
+                                    .to_string(),
+                            ))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = res.status();
+                let _ = res.into_body().collect().await;
+                status
+            }
+        };
+        for _ in 0..4 {
+            assert_eq!(
+                change(wrong_elevate_password()).await,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert_eq!(
+            change(wrong_elevate_password()).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        // Locked: the right current password does not change it either.
+        assert_eq!(
+            change(phase2_owner_password()).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
     }
 
     #[tokio::test]

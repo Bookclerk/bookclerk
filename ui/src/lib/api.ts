@@ -1920,10 +1920,30 @@ export interface PluginConsentResponse {
   covered: boolean;
   summary: string[];
   existing?: PluginGrant;
+  /**
+   * What the request asks for beyond the stored grant (a plugin upgrade that
+   * widened its capabilities); absent when no grant is stored. The plugin runs
+   * under the stored grant until these are approved.
+   */
+  pending?: PluginConsentPending;
   brand?: PluginConsentBrand;
   limits: PluginConsentLimits;
   /** The `User-Agent` the host sends, except to the request's `ownUserAgentHosts`. */
   host_user_agent?: string;
+}
+
+/** The difference between a plugin's request and its stored grant. */
+export interface PluginConsentPending {
+  /** Operator-facing lines naming every capability awaiting consent (the CLI prints the same). */
+  lines: string[];
+  /** Fetch host patterns the request adds (`*` is any public host). */
+  domains: string[];
+  /** TCP `host:ports` the request adds, narrowed to the new ports. */
+  tcp: { host: string; ports: number[] }[];
+  /** CIDRs the request adds. */
+  addressCidrs: string[];
+  /** Whether the request newly asks to follow undeclared public redirects. */
+  allowUndeclaredPublicRedirects: boolean;
 }
 
 function consentQuery(pluginKey?: string): string {
@@ -2500,6 +2520,11 @@ export interface RemoteConsentView {
   updated_at?: string;
   /** Whether the guest may run here now, or what it waits on. */
   state: RemoteConsentState;
+  /**
+   * What the current request asks for beyond the request this host approved,
+   * as the lines the CLI prints; empty when nothing was approved yet.
+   */
+  pending?: string[];
 }
 
 /** `GET /api/config/cluster-consents`. */
@@ -3063,6 +3088,12 @@ export interface PurchaseHint {
 export interface PurchaseHintsResponse {
   hints: PurchaseHint[];
   best: PurchaseHint | null;
+  /**
+   * True when the server's batch deadline cut the lookup short: the hints are
+   * links without prices, so the answer is not cached and should be asked
+   * for again later.
+   */
+  incomplete?: boolean;
 }
 
 /**
@@ -3583,7 +3614,10 @@ export function fetchPurchaseHints(body: PurchaseHintsQuery): Promise<PurchaseHi
     purchaseHintsQueue.push({
       query: body,
       resolve: (value) => {
-        clientCacheSet(purchaseHintsClientCache, key, value, PURCHASE_HINTS_CLIENT_TTL_MS);
+        // An unfinished lookup is not kept, so the next ask reaches the server.
+        if (!value.incomplete) {
+          clientCacheSet(purchaseHintsClientCache, key, value, PURCHASE_HINTS_CLIENT_TTL_MS);
+        }
         resolve(value);
       },
       reject,

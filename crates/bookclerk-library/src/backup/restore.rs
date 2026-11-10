@@ -87,6 +87,9 @@ pub async fn restore_backup_unit(
     // leaking OFF onto later writes or leaving the restore txn with FKs still ON.
     // The adapter defers checks on the restore transaction, then asserts constraints
     // before commit. Changing `foreign_keys` inside an open transaction is a no-op.
+    // Restore runs on the adapter's restore connection, which the SQL
+    // contract requires to accept one interactive transaction per unit.
+    #[allow(clippy::disallowed_methods)]
     let txn = db.begin().await.map_err(LibraryError::from_db_err)?;
     backup_prepare_unit_restore(&txn, opts.adapter.as_ref()).await?;
     match restore_unit_on(

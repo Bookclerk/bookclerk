@@ -349,6 +349,7 @@ struct ReauthBody {
         (status = 200, description = "WebAuthn creation options.", body = PasskeyCreationOptions),
         (status = 400, description = "The daemon's origin is not a valid WebAuthn relying party (set `integrations.public_origin`)."),
         (status = 401, description = "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong."),
+        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout."),
         (status = 500, description = "The library could not be read, or the challenge could not be stored."),
     ),
 )]
@@ -541,6 +542,7 @@ async fn register_finish(
     responses(
         (status = 200, description = "The passkey was deleted.", body = OkResponse),
         (status = 401, description = "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong."),
+        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout."),
         (status = 404, description = "No such passkey for this user."),
         (status = 500, description = "The library could not be read or written."),
     ),

@@ -8,6 +8,7 @@ members = [
     "crates/bookclerk-cover",
     "crates/bookclerk-db-exec",
     "crates/bookclerk-db-guest",
+    "crates/bookclerk-db-testkit",
     "crates/bookclerk-demo-seed",
     "crates/bookclerk-dev",
     "crates/bookclerk-discover",
@@ -83,6 +84,7 @@ bookclerk-audible-catalog = { path = "crates/bookclerk-audible-catalog" }
 bookclerk-config = { path = "crates/bookclerk-config" }
 bookclerk-db-exec = { path = "crates/bookclerk-db-exec" }
 bookclerk-db-guest = { path = "crates/bookclerk-db-guest" }
+bookclerk-db-testkit = { path = "crates/bookclerk-db-testkit" }
 # First-party plugins under bookclerk-plugins/{platform,optional}/.
 bookclerk-plugin-source-audible = { path = "crates/bookclerk-plugins/optional/source-audible" }
 bookclerk-plugin-source-libro = { path = "crates/bookclerk-plugins/optional/source-libro" }

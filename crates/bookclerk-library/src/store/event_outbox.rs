@@ -15,6 +15,7 @@ use sea_orm::{
 use uuid::Uuid;
 
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
+use crate::control_plane::{bump_if_stamped, bump_on, exec_bumped_via, sea_probe, Bump, LiveTopic};
 use crate::entities::{
     books, domain_events, event_deliveries, event_outbox_stats, event_subscriber_nodes,
 };
@@ -172,8 +173,16 @@ where
 }
 
 /// Wake matching pending deliveries when `owner` still holds the event's wake lease.
+///
+/// With `store`, each chunk and its `deliveries` counter bump commit as one
+/// host batch; without it (inside a local transaction) the bump follows on
+/// `db`.
+// The store joins the existing connection, fence and limit arguments; a
+// struct for one internal caller pair would only rename them.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn wake_deliveries_fenced_on<C>(
     db: &C,
+    store: Option<&LibraryStore>,
     in_process: bool,
     event_id: &str,
     owner: &str,
@@ -199,7 +208,43 @@ where
         }
         values.push(event_id.to_string().into());
         values.push(owner.to_string().into());
-        let affected = exec_host_sql(db, in_process, &sql, values).await?;
+        let affected = match store {
+            // The wake and the counter bump commit as one batch, unless the
+            // wake is too large for one batch statement.
+            Some(store) => {
+                let binds = values
+                    .iter()
+                    .map(bookclerk_db_exec::db_value_from_sea)
+                    .collect::<std::result::Result<Vec<_>, String>>()
+                    .map_err(|err| LibraryError::Other(anyhow!("wake bind: {err}")))?;
+                let wake = crate::control_plane::batch::exec(&sql, binds);
+                if store.admits_statement(&wake) {
+                    let reply = store
+                        .execute_host_batch(crate::control_plane::batch::request(
+                            &format!("event-wake:{event_id}:{}", Uuid::new_v4()),
+                            vec![wake, bump_if_stamped(LiveTopic::Deliveries, now)?],
+                        ))
+                        .await?;
+                    crate::control_plane::batch::rows_affected(&reply, 0)
+                } else {
+                    let affected = exec_host_sql(db, in_process, &sql, values).await?;
+                    if affected > 0 {
+                        store
+                            .bump_after_oversized_write(LiveTopic::Deliveries)
+                            .await;
+                    }
+                    affected
+                }
+            }
+            // Inside the caller's local transaction.
+            None => {
+                let affected = exec_host_sql(db, in_process, &sql, values).await?;
+                if affected > 0 {
+                    bump_on(db, LiveTopic::Deliveries).await?;
+                }
+                affected
+            }
+        };
         woken = woken.saturating_add(u32::try_from(affected).unwrap_or(0));
     }
     Ok(woken)
@@ -326,6 +371,44 @@ pub(crate) fn dispatch_chunk_override() -> Option<usize> {
     DISPATCH_CHUNK_OVERRIDE.with(|c| c.get())
 }
 
+/// Operation id of one dispatch page.
+///
+/// A page that sends the event's frozen snapshot is `{operation_id}:p{page}`:
+/// the snapshot makes a resumed page, or a retry of a first dispatch whose
+/// reply was lost, send the same subscribers, so its receipt replays. Any
+/// other list comes from a later caller and may differ between a retry and
+/// the original call, so the page is named after its contents and whether it
+/// marks the event dispatched (`{operation_id}:d{digest}`): a retry with the
+/// same page replays, and a different page is a new operation instead of an
+/// idempotency conflict.
+///
+/// # Arguments
+///
+/// * `operation_id` - The caller's operation id for the whole dispatch.
+/// * `page` - Zero-based page index within the dispatch.
+/// * `from_snapshot` - True when the dispatch sends the frozen snapshot.
+/// * `subscribers` - The subscribers this page sends.
+/// * `last` - True when this page marks the event dispatched.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Other`] when the page cannot be serialized.
+fn dispatch_page_operation_id(
+    operation_id: &str,
+    page: usize,
+    from_snapshot: bool,
+    subscribers: &[EventSubscriber],
+    last: bool,
+) -> Result<String> {
+    if from_snapshot {
+        return Ok(format!("{operation_id}:p{page}"));
+    }
+    let json = serde_json::to_string(&(subscribers, last))
+        .map_err(|e| LibraryError::Other(anyhow!("dispatch page: {e}")))?;
+    let digest = crate::hash_token(&json);
+    Ok(format!("{operation_id}:d{}", &digest[..16]))
+}
+
 fn take_dispatch_page_fault() -> bool {
     DISPATCH_PAGE_FAULTS.with(|c| {
         let n = c.load(Ordering::SeqCst);
@@ -366,6 +449,10 @@ impl LibraryStore {
         if let Some(atomic) = &self.atomic {
             return atomic.publish_domain_event(spec).await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match publish_domain_event_on(&txn, spec).await {
             Ok(outcome) => {
@@ -397,9 +484,31 @@ impl LibraryStore {
             c.fetch_add(1, Ordering::SeqCst);
         });
         if let Some(atomic) = &self.atomic {
-            let snapshot = self
-                .load_or_init_dispatch_snapshot(event_id, subscribers)
-                .await?;
+            let row = domain_events::Entity::find_by_id(event_id)
+                .one(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?
+                .ok_or_else(|| LibraryError::NotFound(format!("domain event {event_id}")))?;
+            // The subscriber snapshot is frozen for the pages of the first
+            // dispatch only, so a page that resumes after a crash sees the
+            // same list. Once the event is dispatched, a call adds deliveries
+            // for subscribers that joined since (catalog reconciliation), so
+            // it takes the subscribers it was given; `INSERT OR IGNORE`
+            // keeps the rows that exist.
+            let (snapshot, from_snapshot) = if row.dispatch_state == STATE_PENDING {
+                let snapshot = self
+                    .load_or_init_dispatch_snapshot(row, subscribers)
+                    .await?;
+                (snapshot, true)
+            } else {
+                // A retry of the first dispatch (its reply lost after the
+                // final page) sends the frozen list again and replays its
+                // receipts; any other list is a later reconciliation.
+                let frozen = row.dispatch_snapshot_json.trim();
+                let same =
+                    !frozen.is_empty() && parse_dispatch_snapshot(event_id, frozen)? == subscribers;
+                (subscribers.to_vec(), same)
+            };
             let chunk = self.dispatch_chunk_size().max(1);
             if snapshot.is_empty() {
                 return atomic
@@ -412,7 +521,13 @@ impl LibraryStore {
             while start < snapshot.len() {
                 let end = (start + chunk).min(snapshot.len());
                 let last = end == snapshot.len();
-                let op = format!("{operation_id}:p{page}");
+                let op = dispatch_page_operation_id(
+                    operation_id,
+                    page,
+                    from_snapshot,
+                    &snapshot[start..end],
+                    last,
+                )?;
                 total += atomic
                     .dispatch_event_deliveries(event_id, &snapshot[start..end], &op, last)
                     .await?;
@@ -426,6 +541,10 @@ impl LibraryStore {
             }
             return Ok(total);
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match dispatch_event_deliveries_on(&txn, self.leftover_in_process(), event_id, subscribers)
             .await
@@ -441,17 +560,14 @@ impl LibraryStore {
         }
     }
 
-    /// Returns the frozen dispatch subscriber snapshot, writing it on first use.
+    /// Returns the frozen dispatch subscriber snapshot of the pending event
+    /// `row`, writing it on first use.
     async fn load_or_init_dispatch_snapshot(
         &self,
-        event_id: &str,
+        row: domain_events::Model,
         subscribers: &[EventSubscriber],
     ) -> Result<Vec<EventSubscriber>> {
-        let row = domain_events::Entity::find_by_id(event_id)
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(format!("domain event {event_id}")))?;
+        let event_id = row.id.as_str();
         if !row.dispatch_snapshot_json.trim().is_empty() {
             return parse_dispatch_snapshot(event_id, &row.dispatch_snapshot_json);
         }
@@ -586,6 +702,7 @@ impl LibraryStore {
         if self.atomic.is_some() {
             return wake_one_page_on(
                 &self.db,
+                Some(self),
                 self.leftover_in_process(),
                 row,
                 owner,
@@ -594,9 +711,14 @@ impl LibraryStore {
             )
             .await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match wake_one_page_on(
             &txn,
+            None,
             self.leftover_in_process(),
             row,
             owner,
@@ -686,6 +808,10 @@ impl LibraryStore {
                 )
                 .await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match claim_next_event_delivery_on(
             &txn,
@@ -728,7 +854,7 @@ impl LibraryStore {
         let page = claim_page_size();
         let now_s = Utc::now().to_rfc3339();
         let due_s = due_by.min(Utc::now()).to_rfc3339();
-        sanitize_unknown_event_resource_class_on(&self.db, &now_s).await?;
+        sanitize_unknown_event_resource_class_on(&self.db, Some(self), &now_s).await?;
         let mut cursor: Option<(String, String)> = None;
         loop {
             let mut query = event_deliveries::Entity::find()
@@ -863,15 +989,18 @@ impl LibraryStore {
                 ),
             );
         }
-        let res = update
-            .filter(event_deliveries::Column::Id.eq(&fence.delivery_id))
-            .filter(event_deliveries::Column::State.eq(STATE_RUNNING))
-            .filter(event_deliveries::Column::LeaseOwner.eq(&fence.owner))
-            .filter(event_deliveries::Column::LeaseGeneration.eq(fence.generation))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+        let res = self
+            .exec_bumped(
+                update
+                    .filter(event_deliveries::Column::Id.eq(&fence.delivery_id))
+                    .filter(event_deliveries::Column::State.eq(STATE_RUNNING))
+                    .filter(event_deliveries::Column::LeaseOwner.eq(&fence.owner))
+                    .filter(event_deliveries::Column::LeaseGeneration.eq(fence.generation)),
+                LiveTopic::Deliveries,
+                Bump::Always,
+            )
+            .await?;
+        Ok(res == 1)
     }
 
     /// Refresh the lease when `fence` still owns the running generation.
@@ -885,25 +1014,29 @@ impl LibraryStore {
         lease_secs: u64,
     ) -> Result<bool> {
         let now = Utc::now();
-        let res = event_deliveries::Entity::update_many()
-            .col_expr(
-                event_deliveries::Column::LeaseExpiresAt,
-                sea_orm::sea_query::Expr::value(Some(
-                    (now + Duration::seconds(i64::try_from(lease_secs).unwrap_or(60))).to_rfc3339(),
-                )),
+        let res = self
+            .exec_bumped(
+                event_deliveries::Entity::update_many()
+                    .col_expr(
+                        event_deliveries::Column::LeaseExpiresAt,
+                        sea_orm::sea_query::Expr::value(Some(
+                            (now + Duration::seconds(i64::try_from(lease_secs).unwrap_or(60)))
+                                .to_rfc3339(),
+                        )),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now.to_rfc3339()),
+                    )
+                    .filter(event_deliveries::Column::Id.eq(&fence.delivery_id))
+                    .filter(event_deliveries::Column::State.eq(STATE_RUNNING))
+                    .filter(event_deliveries::Column::LeaseOwner.eq(&fence.owner))
+                    .filter(event_deliveries::Column::LeaseGeneration.eq(fence.generation)),
+                LiveTopic::Deliveries,
+                Bump::Always,
             )
-            .col_expr(
-                event_deliveries::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now.to_rfc3339()),
-            )
-            .filter(event_deliveries::Column::Id.eq(&fence.delivery_id))
-            .filter(event_deliveries::Column::State.eq(STATE_RUNNING))
-            .filter(event_deliveries::Column::LeaseOwner.eq(&fence.owner))
-            .filter(event_deliveries::Column::LeaseGeneration.eq(fence.generation))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+            .await?;
+        Ok(res == 1)
     }
 
     /// Mark a fenced delivery `acked`.
@@ -912,7 +1045,7 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when the update fails.
     pub async fn ack_event_delivery(&self, fence: &EventDeliveryFence) -> Result<bool> {
-        finalize_delivery(&self.db, fence, STATE_ACKED, Some("ack"), None).await
+        finalize_delivery(self, fence, STATE_ACKED, Some("ack"), None).await
     }
 
     /// Mark a fenced delivery permanently `rejected`.
@@ -925,14 +1058,7 @@ impl LibraryStore {
         fence: &EventDeliveryFence,
         reason: &str,
     ) -> Result<bool> {
-        finalize_delivery(
-            &self.db,
-            fence,
-            STATE_REJECTED,
-            Some("reject"),
-            Some(reason),
-        )
-        .await
+        finalize_delivery(self, fence, STATE_REJECTED, Some("reject"), Some(reason)).await
     }
 
     /// Mark a fenced delivery `dead_letter`.
@@ -946,7 +1072,7 @@ impl LibraryStore {
         reason: &str,
     ) -> Result<bool> {
         let ok = finalize_delivery(
-            &self.db,
+            self,
             fence,
             STATE_DEAD_LETTER,
             Some("dead_letter"),
@@ -999,39 +1125,42 @@ impl LibraryStore {
                 .await;
         }
         let now = now_str();
-        let res = event_deliveries::Entity::update_many()
-            .col_expr(
-                event_deliveries::Column::State,
-                sea_orm::sea_query::Expr::value(STATE_PENDING),
+        let res = self
+            .exec_bumped(
+                event_deliveries::Entity::update_many()
+                    .col_expr(
+                        event_deliveries::Column::State,
+                        sea_orm::sea_query::Expr::value(STATE_PENDING),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::RunAfter,
+                        sea_orm::sea_query::Expr::value(run_after.to_rfc3339()),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::LeaseOwner,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::LeaseExpiresAt,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::ErrorMessage,
+                        sea_orm::sea_query::Expr::value(Some(reason.to_string())),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now),
+                    )
+                    .filter(event_deliveries::Column::Id.eq(&fence.delivery_id))
+                    .filter(event_deliveries::Column::State.eq(STATE_RUNNING))
+                    .filter(event_deliveries::Column::LeaseOwner.eq(&fence.owner))
+                    .filter(event_deliveries::Column::LeaseGeneration.eq(fence.generation)),
+                LiveTopic::Deliveries,
+                Bump::Always,
             )
-            .col_expr(
-                event_deliveries::Column::RunAfter,
-                sea_orm::sea_query::Expr::value(run_after.to_rfc3339()),
-            )
-            .col_expr(
-                event_deliveries::Column::LeaseOwner,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                event_deliveries::Column::LeaseExpiresAt,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                event_deliveries::Column::ErrorMessage,
-                sea_orm::sea_query::Expr::value(Some(reason.to_string())),
-            )
-            .col_expr(
-                event_deliveries::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now),
-            )
-            .filter(event_deliveries::Column::Id.eq(&fence.delivery_id))
-            .filter(event_deliveries::Column::State.eq(STATE_RUNNING))
-            .filter(event_deliveries::Column::LeaseOwner.eq(&fence.owner))
-            .filter(event_deliveries::Column::LeaseGeneration.eq(fence.generation))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        if res.rows_affected == 1 {
+            .await?;
+        if res == 1 {
             bump_event_stats(&self.db, self.leftover_in_process(), 1, 0, 0, None, None).await?;
             return Ok(true);
         }
@@ -1095,63 +1224,66 @@ impl LibraryStore {
         } else {
             wake_at.to_rfc3339()
         };
-        let res = event_deliveries::Entity::update_many()
-            .col_expr(
-                event_deliveries::Column::State,
-                sea_orm::sea_query::Expr::value(STATE_PENDING),
+        let res = self
+            .exec_bumped(
+                event_deliveries::Entity::update_many()
+                    .col_expr(
+                        event_deliveries::Column::State,
+                        sea_orm::sea_query::Expr::value(STATE_PENDING),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::RunAfter,
+                        sea_orm::sea_query::Expr::value(run_after),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::CheckpointJson,
+                        sea_orm::sea_query::Expr::value(Some(checkpoint_json.to_string())),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::CheckpointSchemaVersion,
+                        sea_orm::sea_query::Expr::value(checkpoint_schema_version),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::InvocationSequence,
+                        sea_orm::sea_query::Expr::value(row.invocation_sequence + 1),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::ResumePending,
+                        sea_orm::sea_query::Expr::value(1i64),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::WakeEventType,
+                        sea_orm::sea_query::Expr::value(wake_event_type.to_string()),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::WakeFilterJson,
+                        sea_orm::sea_query::Expr::value(wake_filter_json.to_string()),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::WakeGrantsJson,
+                        sea_orm::sea_query::Expr::value(wake_grants_json.to_string()),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::LeaseOwner,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::LeaseExpiresAt,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now.to_rfc3339()),
+                    )
+                    .filter(event_deliveries::Column::Id.eq(&fence.delivery_id))
+                    .filter(event_deliveries::Column::State.eq(STATE_RUNNING))
+                    .filter(event_deliveries::Column::LeaseOwner.eq(&fence.owner))
+                    .filter(event_deliveries::Column::LeaseGeneration.eq(fence.generation)),
+                LiveTopic::Deliveries,
+                Bump::Always,
             )
-            .col_expr(
-                event_deliveries::Column::RunAfter,
-                sea_orm::sea_query::Expr::value(run_after),
-            )
-            .col_expr(
-                event_deliveries::Column::CheckpointJson,
-                sea_orm::sea_query::Expr::value(Some(checkpoint_json.to_string())),
-            )
-            .col_expr(
-                event_deliveries::Column::CheckpointSchemaVersion,
-                sea_orm::sea_query::Expr::value(checkpoint_schema_version),
-            )
-            .col_expr(
-                event_deliveries::Column::InvocationSequence,
-                sea_orm::sea_query::Expr::value(row.invocation_sequence + 1),
-            )
-            .col_expr(
-                event_deliveries::Column::ResumePending,
-                sea_orm::sea_query::Expr::value(1i64),
-            )
-            .col_expr(
-                event_deliveries::Column::WakeEventType,
-                sea_orm::sea_query::Expr::value(wake_event_type.to_string()),
-            )
-            .col_expr(
-                event_deliveries::Column::WakeFilterJson,
-                sea_orm::sea_query::Expr::value(wake_filter_json.to_string()),
-            )
-            .col_expr(
-                event_deliveries::Column::WakeGrantsJson,
-                sea_orm::sea_query::Expr::value(wake_grants_json.to_string()),
-            )
-            .col_expr(
-                event_deliveries::Column::LeaseOwner,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                event_deliveries::Column::LeaseExpiresAt,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                event_deliveries::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now.to_rfc3339()),
-            )
-            .filter(event_deliveries::Column::Id.eq(&fence.delivery_id))
-            .filter(event_deliveries::Column::State.eq(STATE_RUNNING))
-            .filter(event_deliveries::Column::LeaseOwner.eq(&fence.owner))
-            .filter(event_deliveries::Column::LeaseGeneration.eq(fence.generation))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        if res.rows_affected == 1 {
+            .await?;
+        if res == 1 {
             bump_event_stats(&self.db, self.leftover_in_process(), 0, 1, 0, None, None).await?;
             Ok(true)
         } else {
@@ -1204,74 +1336,80 @@ impl LibraryStore {
         let expired = Condition::any()
             .add(event_deliveries::Column::LeaseExpiresAt.is_null())
             .add(event_deliveries::Column::LeaseExpiresAt.lte(now_s.clone()));
-        let cancelled = event_deliveries::Entity::update_many()
-            .col_expr(
-                event_deliveries::Column::State,
-                sea_orm::sea_query::Expr::value(STATE_REJECTED),
+        let cancelled = self
+            .exec_bumped(
+                event_deliveries::Entity::update_many()
+                    .col_expr(
+                        event_deliveries::Column::State,
+                        sea_orm::sea_query::Expr::value(STATE_REJECTED),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::Outcome,
+                        sea_orm::sea_query::Expr::value(Some("reject".to_string())),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::ErrorMessage,
+                        sea_orm::sea_query::Expr::value(Some("cancelled by operator".to_string())),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::LeaseOwner,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::LeaseExpiresAt,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::CancelRequested,
+                        sea_orm::sea_query::Expr::value(0i64),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now_s.clone()),
+                    )
+                    .filter(event_deliveries::Column::State.eq(STATE_RUNNING))
+                    .filter(event_deliveries::Column::CancelRequested.eq(1i64))
+                    .filter(expired.clone()),
+                LiveTopic::Deliveries,
+                Bump::Stamped(now_s.clone()),
             )
-            .col_expr(
-                event_deliveries::Column::Outcome,
-                sea_orm::sea_query::Expr::value(Some("reject".to_string())),
+            .await?;
+        let res = self
+            .exec_bumped(
+                event_deliveries::Entity::update_many()
+                    .col_expr(
+                        event_deliveries::Column::State,
+                        sea_orm::sea_query::Expr::value(STATE_PENDING),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::LeaseOwner,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::LeaseExpiresAt,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now_s.clone()),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::ResumePending,
+                        sea_orm::sea_query::Expr::cust(
+                            "CASE WHEN checkpoint_json IS NOT NULL THEN 1 ELSE resume_pending END",
+                        ),
+                    )
+                    .filter(event_deliveries::Column::State.eq(STATE_RUNNING))
+                    .filter(expired),
+                LiveTopic::Deliveries,
+                Bump::Stamped(now_s.clone()),
             )
-            .col_expr(
-                event_deliveries::Column::ErrorMessage,
-                sea_orm::sea_query::Expr::value(Some("cancelled by operator".to_string())),
-            )
-            .col_expr(
-                event_deliveries::Column::LeaseOwner,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                event_deliveries::Column::LeaseExpiresAt,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                event_deliveries::Column::CancelRequested,
-                sea_orm::sea_query::Expr::value(0i64),
-            )
-            .col_expr(
-                event_deliveries::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now_s.clone()),
-            )
-            .filter(event_deliveries::Column::State.eq(STATE_RUNNING))
-            .filter(event_deliveries::Column::CancelRequested.eq(1i64))
-            .filter(expired.clone())
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        let res = event_deliveries::Entity::update_many()
-            .col_expr(
-                event_deliveries::Column::State,
-                sea_orm::sea_query::Expr::value(STATE_PENDING),
-            )
-            .col_expr(
-                event_deliveries::Column::LeaseOwner,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                event_deliveries::Column::LeaseExpiresAt,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                event_deliveries::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now_s),
-            )
-            .col_expr(
-                event_deliveries::Column::ResumePending,
-                sea_orm::sea_query::Expr::cust(
-                    "CASE WHEN checkpoint_json IS NOT NULL THEN 1 ELSE resume_pending END",
-                ),
-            )
-            .filter(event_deliveries::Column::State.eq(STATE_RUNNING))
-            .filter(expired)
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        if res.rows_affected > 0 {
+            .await?;
+        if res > 0 {
             bump_event_stats(
                 &self.db,
                 self.leftover_in_process(),
-                i64::try_from(res.rows_affected).unwrap_or(0),
+                i64::try_from(res).unwrap_or(0),
                 0,
                 0,
                 None,
@@ -1279,7 +1417,7 @@ impl LibraryStore {
             )
             .await?;
         }
-        Ok(u32::try_from(cancelled.rows_affected + res.rows_affected).unwrap_or(u32::MAX))
+        Ok(u32::try_from(cancelled + res).unwrap_or(u32::MAX))
     }
 
     /// Load one event envelope.
@@ -1442,53 +1580,56 @@ impl LibraryStore {
     /// Returns [`LibraryError::Orm`] when the update fails.
     pub async fn retry_dead_letter_delivery(&self, id: &str) -> Result<bool> {
         let now = now_str();
-        let res = event_deliveries::Entity::update_many()
-            .col_expr(
-                event_deliveries::Column::State,
-                sea_orm::sea_query::Expr::value(STATE_PENDING),
+        let res = self
+            .exec_bumped(
+                event_deliveries::Entity::update_many()
+                    .col_expr(
+                        event_deliveries::Column::State,
+                        sea_orm::sea_query::Expr::value(STATE_PENDING),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::RunAfter,
+                        sea_orm::sea_query::Expr::value(now.clone()),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::Outcome,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::ErrorMessage,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::AttemptCount,
+                        sea_orm::sea_query::Expr::value(0i64),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::ResumePending,
+                        sea_orm::sea_query::Expr::value(0i64),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::InvocationSequence,
+                        sea_orm::sea_query::Expr::value(0i64),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::CheckpointJson,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::CheckpointSchemaVersion,
+                        sea_orm::sea_query::Expr::value(0i64),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now),
+                    )
+                    .filter(event_deliveries::Column::Id.eq(id))
+                    .filter(event_deliveries::Column::State.eq(STATE_DEAD_LETTER)),
+                LiveTopic::Deliveries,
+                Bump::Always,
             )
-            .col_expr(
-                event_deliveries::Column::RunAfter,
-                sea_orm::sea_query::Expr::value(now.clone()),
-            )
-            .col_expr(
-                event_deliveries::Column::Outcome,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                event_deliveries::Column::ErrorMessage,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                event_deliveries::Column::AttemptCount,
-                sea_orm::sea_query::Expr::value(0i64),
-            )
-            .col_expr(
-                event_deliveries::Column::ResumePending,
-                sea_orm::sea_query::Expr::value(0i64),
-            )
-            .col_expr(
-                event_deliveries::Column::InvocationSequence,
-                sea_orm::sea_query::Expr::value(0i64),
-            )
-            .col_expr(
-                event_deliveries::Column::CheckpointJson,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                event_deliveries::Column::CheckpointSchemaVersion,
-                sea_orm::sea_query::Expr::value(0i64),
-            )
-            .col_expr(
-                event_deliveries::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now),
-            )
-            .filter(event_deliveries::Column::Id.eq(id))
-            .filter(event_deliveries::Column::State.eq(STATE_DEAD_LETTER))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+            .await?;
+        Ok(res == 1)
     }
 
     /// Operator acknowledge: mark a dead-letter as rejected (no further retry).
@@ -1498,25 +1639,28 @@ impl LibraryStore {
     /// Returns [`LibraryError::Orm`] when the update fails.
     pub async fn acknowledge_dead_letter_delivery(&self, id: &str) -> Result<bool> {
         let now = now_str();
-        let res = event_deliveries::Entity::update_many()
-            .col_expr(
-                event_deliveries::Column::State,
-                sea_orm::sea_query::Expr::value(STATE_REJECTED),
+        let res = self
+            .exec_bumped(
+                event_deliveries::Entity::update_many()
+                    .col_expr(
+                        event_deliveries::Column::State,
+                        sea_orm::sea_query::Expr::value(STATE_REJECTED),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::Outcome,
+                        sea_orm::sea_query::Expr::value(Some("ack".to_string())),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now),
+                    )
+                    .filter(event_deliveries::Column::Id.eq(id))
+                    .filter(event_deliveries::Column::State.eq(STATE_DEAD_LETTER)),
+                LiveTopic::Deliveries,
+                Bump::Always,
             )
-            .col_expr(
-                event_deliveries::Column::Outcome,
-                sea_orm::sea_query::Expr::value(Some("ack".to_string())),
-            )
-            .col_expr(
-                event_deliveries::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now),
-            )
-            .filter(event_deliveries::Column::Id.eq(id))
-            .filter(event_deliveries::Column::State.eq(STATE_DEAD_LETTER))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+            .await?;
+        Ok(res == 1)
     }
 
     /// Count deliveries in `state`.
@@ -1815,7 +1959,7 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when the read fails.
-    async fn list_missing_dispatched_events_for_plugin(
+    pub(super) async fn list_missing_dispatched_events_for_plugin(
         &self,
         plugin_id: &str,
         event_types: &[String],
@@ -1988,52 +2132,60 @@ impl LibraryStore {
             }
             if model.state == STATE_PENDING {
                 let now = now_str();
-                let res = event_deliveries::Entity::update_many()
-                    .col_expr(
-                        event_deliveries::Column::State,
-                        sea_orm::sea_query::Expr::value(STATE_REJECTED),
+                let res = self
+                    .exec_bumped(
+                        event_deliveries::Entity::update_many()
+                            .col_expr(
+                                event_deliveries::Column::State,
+                                sea_orm::sea_query::Expr::value(STATE_REJECTED),
+                            )
+                            .col_expr(
+                                event_deliveries::Column::Outcome,
+                                sea_orm::sea_query::Expr::value(Some("reject".to_string())),
+                            )
+                            .col_expr(
+                                event_deliveries::Column::ErrorMessage,
+                                sea_orm::sea_query::Expr::value(Some(
+                                    "cancelled by operator".to_string(),
+                                )),
+                            )
+                            .col_expr(
+                                event_deliveries::Column::CancelRequested,
+                                sea_orm::sea_query::Expr::value(0i64),
+                            )
+                            .col_expr(
+                                event_deliveries::Column::UpdatedAt,
+                                sea_orm::sea_query::Expr::value(now),
+                            )
+                            .filter(event_deliveries::Column::Id.eq(id))
+                            .filter(event_deliveries::Column::State.eq(STATE_PENDING)),
+                        LiveTopic::Deliveries,
+                        Bump::Always,
                     )
-                    .col_expr(
-                        event_deliveries::Column::Outcome,
-                        sea_orm::sea_query::Expr::value(Some("reject".to_string())),
-                    )
-                    .col_expr(
-                        event_deliveries::Column::ErrorMessage,
-                        sea_orm::sea_query::Expr::value(Some("cancelled by operator".to_string())),
-                    )
-                    .col_expr(
-                        event_deliveries::Column::CancelRequested,
-                        sea_orm::sea_query::Expr::value(0i64),
-                    )
-                    .col_expr(
-                        event_deliveries::Column::UpdatedAt,
-                        sea_orm::sea_query::Expr::value(now),
-                    )
-                    .filter(event_deliveries::Column::Id.eq(id))
-                    .filter(event_deliveries::Column::State.eq(STATE_PENDING))
-                    .exec(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?;
-                if res.rows_affected == 1 {
+                    .await?;
+                if res == 1 {
                     return self.get_event_delivery(id).await;
                 }
                 continue;
             }
-            let res = event_deliveries::Entity::update_many()
-                .col_expr(
-                    event_deliveries::Column::CancelRequested,
-                    sea_orm::sea_query::Expr::value(1i64),
+            let res = self
+                .exec_bumped(
+                    event_deliveries::Entity::update_many()
+                        .col_expr(
+                            event_deliveries::Column::CancelRequested,
+                            sea_orm::sea_query::Expr::value(1i64),
+                        )
+                        .col_expr(
+                            event_deliveries::Column::UpdatedAt,
+                            sea_orm::sea_query::Expr::value(now_str()),
+                        )
+                        .filter(event_deliveries::Column::Id.eq(id))
+                        .filter(event_deliveries::Column::State.eq(STATE_RUNNING)),
+                    LiveTopic::Deliveries,
+                    Bump::Always,
                 )
-                .col_expr(
-                    event_deliveries::Column::UpdatedAt,
-                    sea_orm::sea_query::Expr::value(now_str()),
-                )
-                .filter(event_deliveries::Column::Id.eq(id))
-                .filter(event_deliveries::Column::State.eq(STATE_RUNNING))
-                .exec(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?;
-            if res.rows_affected == 1 {
+                .await?;
+            if res == 1 {
                 return self.get_event_delivery(id).await;
             }
         }
@@ -2063,26 +2215,29 @@ impl LibraryStore {
     /// Returns [`LibraryError::Orm`] when the update fails.
     pub async fn resume_event_delivery(&self, id: &str) -> Result<bool> {
         let now = now_str();
-        let res = event_deliveries::Entity::update_many()
-            .col_expr(
-                event_deliveries::Column::RunAfter,
-                sea_orm::sea_query::Expr::value(now.clone()),
+        let res = self
+            .exec_bumped(
+                event_deliveries::Entity::update_many()
+                    .col_expr(
+                        event_deliveries::Column::RunAfter,
+                        sea_orm::sea_query::Expr::value(now.clone()),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::ResumePending,
+                        sea_orm::sea_query::Expr::value(1i64),
+                    )
+                    .col_expr(
+                        event_deliveries::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now),
+                    )
+                    .filter(event_deliveries::Column::Id.eq(id))
+                    .filter(event_deliveries::Column::State.eq(STATE_PENDING))
+                    .filter(event_deliveries::Column::CheckpointJson.is_not_null()),
+                LiveTopic::Deliveries,
+                Bump::Always,
             )
-            .col_expr(
-                event_deliveries::Column::ResumePending,
-                sea_orm::sea_query::Expr::value(1i64),
-            )
-            .col_expr(
-                event_deliveries::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now),
-            )
-            .filter(event_deliveries::Column::Id.eq(id))
-            .filter(event_deliveries::Column::State.eq(STATE_PENDING))
-            .filter(event_deliveries::Column::CheckpointJson.is_not_null())
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected == 1)
+            .await?;
+        Ok(res == 1)
     }
 
     /// Delete terminal deliveries past their retention windows, then empty events.
@@ -2138,26 +2293,39 @@ impl LibraryStore {
                 .to_rfc3339()
         };
         match step {
-            EventPruneStep::TerminalDeliveries => Ok(event_deliveries::Entity::delete_many()
-                .filter(event_deliveries::Column::State.is_in([STATE_ACKED, STATE_REJECTED]))
-                .filter(event_deliveries::Column::UpdatedAt.lte(terminal_cutoff()))
-                .exec(&self.db)
+            EventPruneStep::TerminalDeliveries => {
+                let cutoff = terminal_cutoff();
+                let terminal = || {
+                    Condition::all()
+                        .add(event_deliveries::Column::State.is_in([STATE_ACKED, STATE_REJECTED]))
+                        .add(event_deliveries::Column::UpdatedAt.lte(cutoff.clone()))
+                };
+                let probe = event_deliveries::Entity::find().filter(terminal());
+                self.exec_bumped(
+                    event_deliveries::Entity::delete_many().filter(terminal()),
+                    LiveTopic::Deliveries,
+                    Bump::IfAny(sea_probe(&probe)?),
+                )
                 .await
-                .map_err(LibraryError::Orm)?
-                .rows_affected),
+            }
             EventPruneStep::DeadLetters => {
                 let dead_letter_cutoff = (Utc::now()
                     - chrono::Duration::days(
                         i64::try_from(dead_letter_retention_days).unwrap_or(30),
                     ))
                 .to_rfc3339();
-                Ok(event_deliveries::Entity::delete_many()
-                    .filter(event_deliveries::Column::State.eq(STATE_DEAD_LETTER))
-                    .filter(event_deliveries::Column::UpdatedAt.lte(dead_letter_cutoff))
-                    .exec(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?
-                    .rows_affected)
+                let dead = || {
+                    Condition::all()
+                        .add(event_deliveries::Column::State.eq(STATE_DEAD_LETTER))
+                        .add(event_deliveries::Column::UpdatedAt.lte(dead_letter_cutoff.clone()))
+                };
+                let probe = event_deliveries::Entity::find().filter(dead());
+                self.exec_bumped(
+                    event_deliveries::Entity::delete_many().filter(dead()),
+                    LiveTopic::Deliveries,
+                    Bump::IfAny(sea_probe(&probe)?),
+                )
+                .await
             }
             EventPruneStep::StaleSubscriberNodes => {
                 let heartbeat_cutoff = (Utc::now()
@@ -2354,7 +2522,7 @@ pub(crate) async fn update_acquire_status_on<C: ConnectionTrait>(
     am.error_message = Set(error_message.map(str::to_string));
     am.updated_at = Set(now_str());
     am.update(db).await.map_err(LibraryError::Orm)?;
-    Ok(())
+    crate::control_plane::bump_on(db, crate::control_plane::LiveTopic::Library).await
 }
 
 /// Insert an outbox row or return the existing id for the same namespaced key.
@@ -2441,6 +2609,7 @@ pub(crate) async fn publish_domain_event_on<C: ConnectionTrait>(
 /// Zero rows affected is fence loss: do not overwrite another owner’s cursor.
 async fn wake_one_page_on<C>(
     db: &C,
+    store: Option<&LibraryStore>,
     in_process: bool,
     row: &domain_events::Model,
     owner: &str,
@@ -2516,8 +2685,10 @@ where
             ids.push(delivery.id);
         }
     }
-    let woken =
-        wake_deliveries_fenced_on(db, in_process, &event.id, owner, &ids, &now, max_binds).await?;
+    let woken = wake_deliveries_fenced_on(
+        db, store, in_process, &event.id, owner, &ids, &now, max_binds,
+    )
+    .await?;
     if u64::try_from(page_len).unwrap_or(page) < page {
         let _ = finish_wake_on(db, &event.id, owner).await?;
     } else {
@@ -2684,6 +2855,10 @@ where
         let ms = (Utc::now() - created_at).num_milliseconds().max(0);
         bump_event_stats(db, in_process, 0, 0, 0, Some(ms), None).await?;
     }
+    if created > 0 {
+        // Inside the caller's local transaction, so it commits with the rows.
+        bump_on(db, LiveTopic::Deliveries).await?;
+    }
     Ok(created)
 }
 
@@ -2709,7 +2884,7 @@ where
     let now = Utc::now();
     let now_s = now.to_rfc3339();
     let due_s = due_by.min(now).to_rfc3339();
-    sanitize_unknown_event_resource_class_on(db, &now_s).await?;
+    sanitize_unknown_event_resource_class_on(db, None, &now_s).await?;
     let lease_expires =
         (now + Duration::seconds(i64::try_from(lease_secs).unwrap_or(60))).to_rfc3339();
     let mut cursor: Option<(String, String)> = None;
@@ -2788,13 +2963,12 @@ where
                     sea_orm::sea_query::Expr::value(0i64),
                 );
             }
-            let res = update
+            let update = update
                 .filter(event_deliveries::Column::Id.eq(&model.id))
-                .filter(event_deliveries::Column::State.eq(STATE_PENDING))
-                .exec(db)
-                .await
-                .map_err(LibraryError::Orm)?;
-            if res.rows_affected != 1 {
+                .filter(event_deliveries::Column::State.eq(STATE_PENDING));
+            let res =
+                exec_bumped_via(db, None, update, LiveTopic::Deliveries, Bump::Always).await?;
+            if res != 1 {
                 continue;
             }
             let Some(updated) = event_deliveries::Entity::find_by_id(&model.id)
@@ -2827,15 +3001,15 @@ async fn fifo_blocked<C: ConnectionTrait>(
     Ok(n > 0)
 }
 
-async fn finalize_delivery<C: ConnectionTrait>(
-    db: &C,
+async fn finalize_delivery(
+    store: &LibraryStore,
     fence: &EventDeliveryFence,
     state: &str,
     outcome: Option<&str>,
     error: Option<&str>,
 ) -> Result<bool> {
     let now = now_str();
-    let res = event_deliveries::Entity::update_many()
+    let update = event_deliveries::Entity::update_many()
         .col_expr(
             event_deliveries::Column::State,
             sea_orm::sea_query::Expr::value(state),
@@ -2863,11 +3037,11 @@ async fn finalize_delivery<C: ConnectionTrait>(
         .filter(event_deliveries::Column::Id.eq(&fence.delivery_id))
         .filter(event_deliveries::Column::State.eq(STATE_RUNNING))
         .filter(event_deliveries::Column::LeaseOwner.eq(&fence.owner))
-        .filter(event_deliveries::Column::LeaseGeneration.eq(fence.generation))
-        .exec(db)
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok(res.rows_affected == 1)
+        .filter(event_deliveries::Column::LeaseGeneration.eq(fence.generation));
+    let res = store
+        .exec_bumped(update, LiveTopic::Deliveries, Bump::Always)
+        .await?;
+    Ok(res == 1)
 }
 
 fn is_unique_violation(err: &sea_orm::DbErr) -> bool {
@@ -3182,6 +3356,7 @@ where
 
 async fn sanitize_unknown_event_resource_class_on<C: ConnectionTrait>(
     db: &C,
+    store: Option<&LibraryStore>,
     now_s: &str,
 ) -> Result<()> {
     let suspects = event_deliveries::Entity::find()
@@ -3194,7 +3369,7 @@ async fn sanitize_unknown_event_resource_class_on<C: ConnectionTrait>(
         .map_err(LibraryError::Orm)?;
     for model in suspects {
         let reason = format!("unknown event resource class `{}`", model.resource_class);
-        let _ = event_deliveries::Entity::update_many()
+        let reject = event_deliveries::Entity::update_many()
             .col_expr(
                 event_deliveries::Column::State,
                 sea_orm::sea_query::Expr::value(STATE_REJECTED),
@@ -3212,10 +3387,8 @@ async fn sanitize_unknown_event_resource_class_on<C: ConnectionTrait>(
                 sea_orm::sea_query::Expr::value(now_s.to_string()),
             )
             .filter(event_deliveries::Column::Id.eq(&model.id))
-            .filter(event_deliveries::Column::State.eq(STATE_PENDING))
-            .exec(db)
-            .await
-            .map_err(LibraryError::Orm)?;
+            .filter(event_deliveries::Column::State.eq(STATE_PENDING));
+        exec_bumped_via(db, store, reject, LiveTopic::Deliveries, Bump::Always).await?;
     }
     Ok(())
 }

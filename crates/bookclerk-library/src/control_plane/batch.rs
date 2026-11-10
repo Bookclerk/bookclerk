@@ -38,7 +38,7 @@ pub(crate) fn exec(sql: &str, parameters: Vec<DbValue>) -> TypedDbStatement {
 }
 
 /// Read-only `SELECT` that returns at most `max_rows` rows.
-pub(super) fn query(sql: &str, parameters: Vec<DbValue>, max_rows: u32) -> TypedDbStatement {
+pub(crate) fn query(sql: &str, parameters: Vec<DbValue>, max_rows: u32) -> TypedDbStatement {
     TypedDbStatement {
         sql: sql.to_string(),
         parameters,
@@ -54,12 +54,12 @@ pub(crate) fn text(value: &str) -> DbValue {
 }
 
 /// Integer bind.
-pub(super) fn int(value: i64) -> DbValue {
+pub(crate) fn int(value: i64) -> DbValue {
     DbValue::Int64(value)
 }
 
 /// Integer bind, or NULL when the observation is missing.
-pub(super) fn int_opt(value: Option<i64>) -> DbValue {
+pub(crate) fn int_opt(value: Option<i64>) -> DbValue {
     match value {
         Some(value) => DbValue::Int64(value),
         None => DbValue::Null(DbType::Int64),
@@ -67,10 +67,23 @@ pub(super) fn int_opt(value: Option<i64>) -> DbValue {
 }
 
 /// Text bind, or NULL when absent.
-pub(super) fn text_opt(value: Option<&str>) -> DbValue {
+pub(crate) fn text_opt(value: Option<&str>) -> DbValue {
     match value {
         Some(value) => DbValue::Text(value.to_string()),
         None => DbValue::Null(DbType::Text),
+    }
+}
+
+/// Blob bind.
+pub(crate) fn blob(value: &[u8]) -> DbValue {
+    DbValue::Bytes(value.to_vec())
+}
+
+/// Blob bind, or NULL when absent.
+pub(crate) fn blob_opt(value: Option<&[u8]>) -> DbValue {
+    match value {
+        Some(value) => DbValue::Bytes(value.to_vec()),
+        None => DbValue::Null(DbType::Bytes),
     }
 }
 
@@ -88,7 +101,7 @@ pub(super) fn text_cell(row: &DbRow, index: usize) -> Result<String> {
 }
 
 /// First statement's affected-row count, or 0 when the reply is empty.
-pub(super) fn rows_affected(reply: &ExecuteReply, index: usize) -> u64 {
+pub(crate) fn rows_affected(reply: &ExecuteReply, index: usize) -> u64 {
     reply
         .statements
         .get(index)

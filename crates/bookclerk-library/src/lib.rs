@@ -28,13 +28,13 @@ pub mod email;
 pub mod entities;
 mod error;
 mod host_schema;
-#[cfg(any(test, feature = "test-support"))]
 mod in_process_atomic;
 pub mod library_link;
 pub mod master_key;
 pub mod migrations;
 /// Public library DTOs and status enums (`BookRecord`, `AcquireStatus`, prefs) re-exported from this crate.
 mod models;
+mod named_atomic;
 pub mod operator_token;
 pub mod password;
 pub mod proxy_txn;
@@ -46,6 +46,8 @@ mod session_client;
 /// Host-owned generic SQL atomic plans for database adapters.
 pub mod sql_plan;
 mod store;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 mod token_hash;
 mod wishlist_merge;
 
@@ -86,8 +88,7 @@ pub use host_schema::{
     migrate_host_schema_to_with_batch, require_schema_migrations, schema_state_compatible,
     SchemaApplyOptions, SchemaBatch, MIGRATION_LEASE_TTL, MIGRATION_LEASE_WAIT,
 };
-#[cfg(any(test, feature = "test-support"))]
-pub use in_process_atomic::InProcessSqliteAtomic;
+pub use in_process_atomic::{InProcessSqlite, InProcessSqliteAtomic};
 pub use master_key::{
     configure_master_key, configure_master_key_with, discard_minted_master_key,
     encode_master_key_file, inspect_master_key, install_master_key, master_key_fingerprint,
@@ -111,22 +112,24 @@ pub use models::{
     intersect_event_filters, is_downloadable, is_episode, is_podcast_parent, is_valid_queue_name,
     job_backoff_run_after, normalize_theme, plugin_scheduled_dedup_key, portal_prefs_key,
     push_queue_wisher, queue_name_or_bus, subscription_matches_event, user_prefs_key,
-    wake_grants_from_subscriptions, AccountLinkRecord, AccountRecord, AcquireStatus, BookRecord,
-    ClaimTicketRecord, DomainEventRecord, EmbeddingRecord, EnqueueJobSpec, EnqueueOutcome,
-    EventCatalogSubscription, EventDeliveryFence, EventDeliveryMetrics, EventDeliveryRecord,
-    EventSubscriber, EventSubscriberCatalogRecord, EventSubscriberNodeRecord, EventWakeGrant,
-    GlobalQueueEntry, JobClaimCursor, JobClaimPage, JobFence, JobKind, JobPayload, JobRecord,
-    JobResourceClass, JobState, JobTempPath, JobTrigger, ListeningProgressRecord, OidcClientRecord,
-    OperatorSessionRecord, PendingWakeProgress, PortalIdentity, PortalSessionRecord,
-    PublishDomainEventOutcome, PublishDomainEventSpec, QueueWisher, RequestStatus,
-    SecurityAuditEvent, StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord,
-    UserIntegrationHint, UserInviteRecord, UserListeningHint, UserPreferences, UserPresenceExtras,
-    UserRecord, UserRole, UserSsoPicture, UserStatus, WishlistPurchaseHint, WishlistStoreEdition,
-    WorkRecord, CORE_EVENTS_QUEUE, EVENT_DELIVERY_MAX_ATTEMPTS, EVENT_RESOURCE_CLASS_NETWORK,
-    EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN,
-    MAX_QUEUE_WISHERS, NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES,
-    QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
+    wake_grants_from_subscriptions, AccountLinkRecord, AccountRecord, AcquireStatus,
+    AcquireStatusCounts, BookRecord, ClaimTicketRecord, DomainEventRecord, EmbeddingRecord,
+    EnqueueJobSpec, EnqueueOutcome, EventCatalogSubscription, EventDeliveryFence,
+    EventDeliveryMetrics, EventDeliveryRecord, EventSubscriber, EventSubscriberCatalogRecord,
+    EventSubscriberNodeRecord, EventWakeGrant, GlobalQueueEntry, JobClaimCursor, JobClaimPage,
+    JobFence, JobKind, JobPayload, JobRecord, JobResourceClass, JobState, JobTempPath, JobTrigger,
+    ListeningProgressRecord, OidcClientRecord, OperatorSessionRecord, PendingWakeProgress,
+    PortalIdentity, PortalSessionRecord, PublishDomainEventOutcome, PublishDomainEventSpec,
+    QueueWisher, RequestStatus, SecurityAuditEvent, StoredPasskey, TitleRequestRecord,
+    TitleRequestSourceRecord, UserIntegrationHint, UserInviteRecord, UserListeningHint,
+    UserPreferences, UserPresenceExtras, UserRecord, UserRole, UserSsoPicture, UserStatus,
+    WishlistPurchaseHint, WishlistStoreEdition, WorkRecord, CORE_EVENTS_QUEUE,
+    EVENT_DELIVERY_MAX_ATTEMPTS, EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS,
+    JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN, MAX_QUEUE_WISHERS,
+    NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES, QUEUE_CONTENT_TYPE_JSON,
+    QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
 };
+pub use named_atomic::{NamedAtomicBackend, NamedAtomicRunner};
 pub use operator_token::{
     read_or_create_operator_token, resolve_operator_token, rotate_operator_token,
     ResolveOperatorToken,
@@ -151,8 +154,9 @@ pub use session_client::{classify_session_client, SessionClientInfo};
 pub use sql_plan::{
     authorize_typed_request, compile_claim_event_delivery, compile_named_request,
     execute_guest_atomic_with, interpret_typed_exec, proxy_insert_returning_identity,
-    proxy_read_kind, proxy_write_kind, validate_execute_reply, validate_plan,
-    validate_streamed_execute_reply, wake_page_for_max_binds, AtomicSession, CompiledAtomic,
+    proxy_read_kind, proxy_write_kind, unquote_sea_identifiers, validate_execute_reply,
+    validate_plan, validate_streamed_execute_reply, wake_page_for_max_binds, AtomicSession,
+    CompiledAtomic,
 };
 pub use store::{
     event_outbox::{deliver_after_for, prepare_publish_domain_event, EventPruneStep},
@@ -161,13 +165,19 @@ pub use store::{
         edition_id_for_listing, holding_from_book, library_id, listing_from_book, TitleQuery,
         WorkEnrichment,
     },
+    listening::{ListeningIdentifiers, ListeningMatch, ListeningProgressWrite},
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
-    prefer_enrichment_source, set_dispatch_chunk_for_test, wishlist_identities_match, BookPage,
-    CatalogEnrichmentFields, DiscoverSubject, EditionFile, FileOwner, FileRole, LibraryStore,
-    NewBook, NewListeningProgress, NewTitleRequest, NewTitleRequestSource, SavedFilterRecord,
-    ScannedTitle, SeedScope, StoredCandidate, StoredFeed, UserBookFields, WishlistIdentity,
-    ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
+    prefer_enrichment_source,
+    retention::{
+        RecordPruneStep, AUDIT_RETENTION_DAYS, CONFIGURATION_CHANGE_RETENTION_DAYS,
+        STORAGE_SCAN_STALE_DAYS, TOKEN_HISTORY_DAYS, UPLOAD_HISTORY_DAYS,
+    },
+    set_dispatch_chunk_for_test, wishlist_identities_match, BookPage, CatalogEnrichmentFields,
+    DiscoverSubject, EditionFile, FileOwner, FileRole, LibraryStore, NewBook, NewListeningProgress,
+    NewTitleRequest, NewTitleRequestSource, SavedFilterRecord, ScannedTitle, SeedScope,
+    StoredCandidate, StoredFeed, UserBookFields, WishlistIdentity, ACQUIRE_WRITER,
+    BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
 };
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

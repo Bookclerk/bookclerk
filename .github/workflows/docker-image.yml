@@ -9,6 +9,9 @@ name: Docker image
 
 on:
   pull_request:
+    # Drafts skip this workflow's jobs; `ready_for_review` runs them
+    # (docs/contributing/ci.md#draft-pull-requests).
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "packaging/docker/**"
       - ".dockerignore"
@@ -36,6 +39,8 @@ concurrency:
 jobs:
   image:
     name: build + boot
+    # Deferred on a draft pull request until it is ready for review.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
