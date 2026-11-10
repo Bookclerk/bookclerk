@@ -906,7 +906,7 @@ impl StoreBreaker {
 }
 
 /// Records a store asking to slow down.
-fn note_store_rate_limit(store: &str, wait: Option<Duration>, now: std::time::Instant) {
+pub(crate) fn note_store_rate_limit(store: &str, wait: Option<Duration>, now: std::time::Instant) {
     if let Ok(mut map) = store_breakers().lock() {
         let breaker = map.entry(store.to_string()).or_default();
         breaker.rate_limited(now, wait);
@@ -926,7 +926,7 @@ fn store_breakers() -> &'static std::sync::Mutex<HashMap<String, StoreBreaker>> 
 }
 
 /// True when `store`'s price lookups are skipped because it kept timing out.
-fn store_breaker_open(store: &str, now: std::time::Instant) -> bool {
+pub(crate) fn store_breaker_open(store: &str, now: std::time::Instant) -> bool {
     store_breakers()
         .lock()
         .map(|map| map.get(store).is_some_and(|b| b.is_open(now)))
