@@ -2416,6 +2416,13 @@ pub async fn elevate(
     let Some(user) = user else {
         return Err(StatusCode::FORBIDDEN);
     };
+    // A locked account is refused before the body is even looked at.
+    if let Some(retry_after) = auth
+        .login_throttle_check(&password_throttle_key(user.id))
+        .await
+    {
+        return Ok(too_many_requests(retry_after));
+    }
     let password = body.password.trim();
     if password.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
@@ -2439,7 +2446,7 @@ pub async fn elevate(
     // Only the account bucket is cleared on success: the client bucket is
     // shared with the other sign-in routes, and a successful elevation must
     // not reset their count for this address.
-    match recheck_account_password(&auth, user.id, password, &hash).await {
+    match recheck_account_password(&auth, user.id, password, &hash).await? {
         PasswordRecheck::Matched => {}
         PasswordRecheck::Locked(retry_after) => return Ok(too_many_requests(retry_after)),
         PasswordRecheck::Wrong { locked } => {
@@ -2474,6 +2481,22 @@ pub(crate) enum PasswordRecheck {
     Locked(Duration),
 }
 
+impl PasswordRecheck {
+    /// The plain status a re-check gate answers with.
+    ///
+    /// # Errors
+    ///
+    /// Returns 401 for a wrong password under the cap and 429 once the account
+    /// is locked (by this miss or an earlier one).
+    pub(crate) fn into_gate_result(self) -> Result<(), StatusCode> {
+        match self {
+            Self::Matched => Ok(()),
+            Self::Wrong { locked: None } => Err(StatusCode::UNAUTHORIZED),
+            Self::Wrong { locked: Some(_) } | Self::Locked(_) => Err(StatusCode::TOO_MANY_REQUESTS),
+        }
+    }
+}
+
 /// Throttle bucket for password re-checks against one account.
 ///
 /// Kept apart from the per-client buckets (which are keyed by IP address) so
@@ -2494,8 +2517,10 @@ fn password_throttle_key(user_id: i64) -> String {
 
 /// Verifies a signed-in user's password against `hash` under the account throttle.
 ///
-/// A locked account is refused before the (slow) hash comparison. A wrong
-/// password counts toward the lockout and a match clears the account's count.
+/// A locked account is refused before the (slow) hash comparison. Each
+/// attempt is counted before the comparison runs, so concurrent guesses
+/// cannot all slip past the cap while the hash is being checked; a match then
+/// clears the account's count.
 ///
 /// # Arguments
 ///
@@ -2508,24 +2533,27 @@ fn password_throttle_key(user_id: i64) -> String {
 ///
 /// Whether the password matched, was wrong, or was not checked because the
 /// account is locked out.
+///
+/// # Errors
+///
+/// Returns 500 when the stored hash cannot be parsed; the attempt stays
+/// counted.
 pub(crate) async fn recheck_account_password(
     auth: &OperatorAuthState,
     user_id: i64,
     password: &str,
     hash: &str,
-) -> PasswordRecheck {
+) -> Result<PasswordRecheck, StatusCode> {
     let key = password_throttle_key(user_id);
     if let Some(retry_after) = auth.login_throttle_check(&key).await {
-        return PasswordRecheck::Locked(retry_after);
+        return Ok(PasswordRecheck::Locked(retry_after));
     }
-    // A hash that cannot be parsed never matches, so it counts as a miss.
-    if verify_password(password, hash).unwrap_or(false) {
+    let locked = auth.record_login_failure(&key).await;
+    if verify_password(password, hash).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? {
         auth.clear_login_failures(&key).await;
-        PasswordRecheck::Matched
+        Ok(PasswordRecheck::Matched)
     } else {
-        PasswordRecheck::Wrong {
-            locked: auth.record_login_failure(&key).await,
-        }
+        Ok(PasswordRecheck::Wrong { locked })
     }
 }
 
@@ -3731,13 +3759,9 @@ pub async fn set_password(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .ok_or(StatusCode::UNAUTHORIZED)?;
-            match recheck_account_password(&auth, target_id, current, &hash).await {
-                PasswordRecheck::Matched => {}
-                PasswordRecheck::Wrong { locked: None } => return Err(StatusCode::UNAUTHORIZED),
-                PasswordRecheck::Wrong { locked: Some(_) } | PasswordRecheck::Locked(_) => {
-                    return Err(StatusCode::TOO_MANY_REQUESTS)
-                }
-            }
+            recheck_account_password(&auth, target_id, current, &hash)
+                .await?
+                .into_gate_result()?;
         }
     }
     let hash = hash_password(password).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -3760,6 +3784,9 @@ pub async fn set_password(
             | LibraryError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
             LibraryError::LimitExceeded(_) => StatusCode::UNPROCESSABLE_ENTITY,
         })?;
+    // A new password (including a provisioner's reset) lifts the account lockout.
+    auth.clear_login_failures(&password_throttle_key(target_id))
+        .await;
     let revoked = library
         .delete_portal_sessions_for_user(target_id)
         .await
@@ -4427,13 +4454,9 @@ pub(crate) async fn require_recent_portal_reauth(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let auth = state.auth_snapshot().await;
-    match recheck_account_password(&auth, user_id, current, &hash).await {
-        PasswordRecheck::Matched => Ok(()),
-        PasswordRecheck::Wrong { locked: None } => Err(StatusCode::UNAUTHORIZED),
-        PasswordRecheck::Wrong { locked: Some(_) } | PasswordRecheck::Locked(_) => {
-            Err(StatusCode::TOO_MANY_REQUESTS)
-        }
-    }
+    recheck_account_password(&auth, user_id, current, &hash)
+        .await?
+        .into_gate_result()
 }
 
 /// Raw operator session id from the session cookie (hashed before any DB lookup).
@@ -5686,6 +5709,26 @@ pub(crate) mod tests {
         assert_eq!(res, Ok(()));
         let res = require_recent_portal_reauth(&state, &headers, uid, Some(&wrong)).await;
         assert_eq!(res, Err(StatusCode::UNAUTHORIZED));
+    }
+
+    #[tokio::test]
+    async fn concurrent_rechecks_cannot_exceed_the_account_cap() {
+        let (state, _app, library) = phase2_harness("op-token-recheck-burst").await;
+        let uid = seeded_owner_id(&library).await;
+        let hash = library.get_user_password_hash(uid).await.unwrap().unwrap();
+        let auth = state.auth_snapshot().await;
+        let wrong = wrong_elevate_password();
+        let attempts = (0..20).map(|_| recheck_account_password(&auth, uid, &wrong, &hash));
+        let results = futures::future::join_all(attempts).await;
+        // The harness allows five failures, so at most five guesses are compared.
+        let checked = results
+            .iter()
+            .filter(|r| matches!(r, Ok(PasswordRecheck::Wrong { .. })))
+            .count();
+        assert!(checked <= 5, "{checked} guesses were compared");
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, Ok(PasswordRecheck::Locked(_)))));
     }
 
     #[tokio::test]

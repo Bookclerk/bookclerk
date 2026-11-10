@@ -23062,15 +23062,15 @@
             }
           },
           "429": {
-            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`too_many_requests`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
                   "error": "too_many_requests",
-                  "message": "Too many requests. Try again shortly.",
+                  "message": "Too many wrong passwords for this account. Try again later.",
                   "status": 429
                 }
               }

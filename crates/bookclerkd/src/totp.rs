@@ -664,7 +664,7 @@ struct MfaPolicyPut {
             ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "reauth_required", "message": "Recent authentication is required to change the MFA policy.", "status": 401}))),
             ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
         )),
-        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout."),
+        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`too_many_requests`).", body = crate::http_error::ErrorJson, example = json!({"error": "too_many_requests", "message": "Too many wrong passwords for this account. Try again later.", "status": 429})),
         (status = 403, description = "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
             ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
@@ -692,6 +692,11 @@ async fn put_mfa_policy(
                 (
                     "internal_error",
                     "The current password could not be checked.",
+                )
+            } else if status == StatusCode::TOO_MANY_REQUESTS {
+                (
+                    "too_many_requests",
+                    "Too many wrong passwords for this account. Try again later.",
                 )
             } else {
                 ("forbidden", "You cannot change the MFA policy.")
