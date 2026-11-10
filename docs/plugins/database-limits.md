@@ -329,7 +329,9 @@ assert_adapter_conforms(&database).await;
 
 `run_adapter_suite` returns the report instead of panicking. Each case
 passes, fails with the reason, or is skipped when an earlier case it needs
-failed or the advertisement makes it unreachable:
+failed or the advertisement makes it unreachable. The host checks every
+reply against the caps as well, so the limit cases also fail an adapter
+that returns an oversized result and leaves the refusal to the host:
 
 | Case | The adapter must |
 | --- | --- |
@@ -337,9 +339,9 @@ failed or the advertisement makes it unreachable:
 | `bootstrap` | Apply the binding bootstrap and a plugin migration as typed atomic batches |
 | `values` | Return every value as the variant it was written: `Int64` extremes, `Float64`, multibyte and `b64:` text, bytes, `Boolean` and typed NULL |
 | `atomic_batch` | Leave nothing of a batch whose last statement fails |
-| `max_statements` / `max_binds` | Accept a batch of exactly `maxStatements` statements and a statement with exactly `maxBinds` binds |
-| `result_rows` | Return `maxResultRows` rows, and refuse one more with `limit_exceeded` (`maxResultRows`) instead of truncating |
-| `cell_bytes` / `result_bytes` | Round-trip a cell near `maxCellBytes`, and refuse a wider cell or a result past the inline byte caps with `limit_exceeded` |
+| `max_statements` / `max_binds` | Accept a batch of exactly `maxStatements` statements, and a statement with `maxBinds` binds, or with as many as `maxPayloadBytes` / `maxRequestBytes` admit when that is fewer (as on every first-party adapter) |
+| `result_rows` | Return `maxResultRows` rows, and refuse one more with `limit_exceeded` (`maxResultRows`) instead of truncating or returning it |
+| `cell_bytes` / `result_bytes` | Round-trip a cell as wide as one bind can carry (up to 32 KiB), and refuse a cell built past `maxCellBytes` or a result past the inline byte caps with `limit_exceeded` |
 | `streamed` | Answer `executeStreamed` with the same rows as `execute`, and with a result past `maxResultRows`, when it advertises a streamed budget; answer `unsupported` when it does not |
 | `receipt_replay` / `receipt_conflict` | Replay a retried batch's first reply without applying it again (the retry after a lost reply), and refuse the same operation id with another request as `conflict` |
 | `close` | Close the session cleanly |

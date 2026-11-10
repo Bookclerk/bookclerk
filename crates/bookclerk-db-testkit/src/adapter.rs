@@ -22,12 +22,18 @@
 //!   the earlier statements behind.
 //! - **max_statements** / **max_binds**: a batch of exactly `maxStatements`
 //!   statements and a statement with exactly `maxBinds` binds are accepted,
-//!   so the advertised numbers are real.
+//!   so the advertised numbers are real. Where `maxBinds` binds cannot fit
+//!   `maxPayloadBytes` / `maxRequestBytes` as host admission measures them,
+//!   `max_binds` sends the most binds that do: the largest statement a
+//!   guest can send.
 //! - **result_rows**: `maxResultRows` rows read inline, one more is refused
-//!   with a typed `limit_exceeded` error instead of being truncated.
-//! - **cell_bytes** / **result_bytes**: a cell near `maxCellBytes`
-//!   round-trips, and a result past the inline byte caps is refused with a
-//!   typed `limit_exceeded` error.
+//!   by the adapter with a typed `limit_exceeded` error instead of being
+//!   truncated or returned.
+//! - **cell_bytes** / **result_bytes**: a cell as wide as one bind can
+//!   carry under the byte caps (at most 32 KiB) round-trips, a cell built
+//!   past `maxCellBytes` in SQL and a result past the inline byte caps are
+//!   refused with a typed `limit_exceeded` error, and the refusal comes
+//!   from the adapter, not only from the host's own reply check.
 //! - **streamed**: an adapter that advertises a streamed budget answers
 //!   `executeStreamed` with results past the inline caps; one that does not
 //!   answers `unsupported`.
@@ -40,9 +46,12 @@
 //! Open the adapter on an empty unit and call [`assert_adapter_conforms`]
 //! from a test, or [`run_adapter_suite`] to inspect the [`AdapterReport`].
 
+use std::cell::Cell;
 use std::fmt;
 
-use bookclerk_db_exec::stamp_adapter_execute;
+use bookclerk_db_exec::{
+    stamp_adapter_execute, GUEST_RECEIPT_STUB_SUFFIX, GUEST_RECEIPT_WRAP_PREFIX,
+};
 use bookclerk_library::migrations::{
     host_sql_type_env, plugin_apply_statements, plugin_binding_type_env,
     prove_plugin_migration_sequence, PluginMigrationSequence,
@@ -70,11 +79,11 @@ pub enum Case {
     AtomicBatch,
     /// A batch of exactly `maxStatements` statements is accepted.
     MaxStatements,
-    /// A statement with exactly `maxBinds` binds is accepted.
+    /// The largest statement the bind and byte caps admit is accepted.
     MaxBinds,
     /// `maxResultRows` rows read; one more is a typed refusal.
     ResultRows,
-    /// A cell near `maxCellBytes` round-trips; a wider one is refused.
+    /// A wide written cell round-trips; one past `maxCellBytes` is refused.
     CellBytes,
     /// A result past the inline byte caps is a typed refusal.
     ResultBytes,
@@ -389,8 +398,9 @@ fn suite_migrations() -> Vec<PluginMigration> {
 const RECEIPT_ID: i64 = 9_000_000_001;
 
 /// Statements a seeding batch leaves under `maxStatements` for the host's
-/// receipt wrap around a guest batch.
-const SEED_WRAP_HEADROOM: u32 = 8;
+/// receipt wrap around a guest batch: the prune / prior-select prefix and
+/// the receipt stub after the guest statements.
+const SEED_WRAP_HEADROOM: usize = GUEST_RECEIPT_WRAP_PREFIX + GUEST_RECEIPT_STUB_SUFFIX;
 
 /// The most rows the suite seeds to reach `maxResultRows`; a larger cap is
 /// not exercised inline.
@@ -406,6 +416,10 @@ const MAX_WRITTEN_CELL: usize = 32 * 1024;
 /// Statement and request headroom the suite leaves under the byte caps for
 /// SQL text and envelope framing.
 const BYTE_HEADROOM: usize = 1024;
+
+/// How long [`NativeAdapter::spawn`] waits for the guest to answer
+/// `describe` and `open`.
+const GUEST_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// One run's open session, advertisement and binding policy.
 struct SuiteRun {
@@ -610,7 +624,9 @@ impl SuiteRun {
         Ok(())
     }
 
-    /// A batch whose second write fails leaves the first write unapplied.
+    /// A batch whose second write fails leaves the first write unapplied,
+    /// and the first write alone then applies, so the failure came from the
+    /// second statement rather than from admitting the batch.
     async fn atomic_batch(&mut self) -> Result<(), String> {
         let insert = |body: &str| {
             exec(
@@ -630,6 +646,15 @@ impl SuiteRun {
             return Err(format!(
                 "the failed batch left {count} row(s) of its first statement behind"
             ));
+        }
+        self.guest("atomic-first", vec![insert("first")])
+            .await
+            .map_err(|err| {
+                format!("the duplicate's first statement alone was refused too: {err}")
+            })?;
+        let count = self.count_rows("id = -1").await?;
+        if count != 1 {
+            return Err(format!("the first statement alone left {count} rows"));
         }
         Ok(())
     }
@@ -654,37 +679,77 @@ impl SuiteRun {
         Ok(())
     }
 
-    /// A statement with exactly `maxBinds` binds is accepted when its SQL
-    /// fits `maxPayloadBytes`.
+    /// The largest statement a guest can send is accepted: as many binds as
+    /// `maxBinds` allows and the byte caps leave room for, as host admission
+    /// measures them.
     async fn max_binds(&mut self) -> Outcome {
         let n = self.caps.max_binds;
-        let count = usize::try_from(n).unwrap_or(usize::MAX);
-        let sql = format!(
-            "SELECT COUNT(*) AS n FROM conformance_rows WHERE id IN ({})",
-            vec!["?"; count].join(", ")
-        );
-        // Each Int64 bind is counted at most as its decimal text.
-        let payload = sql.len().saturating_add(count.saturating_mul(4));
-        let payload_cap = usize::try_from(self.caps.max_payload_bytes).unwrap_or(usize::MAX);
-        let request_cap = usize::try_from(self.caps.max_request_bytes).unwrap_or(usize::MAX);
-        if payload.saturating_add(BYTE_HEADROOM) > payload_cap.min(request_cap) {
-            return Outcome::Skipped(format!(
-                "{n} binds do not fit maxPayloadBytes {payload_cap} / maxRequestBytes {request_cap}"
-            ));
+        let mut fits = match self.binds_statement(1) {
+            Ok((statement, true)) => (1, statement),
+            Ok((_, false)) => {
+                return Outcome::Skipped(
+                    "one bind does not fit maxPayloadBytes / maxRequestBytes".into(),
+                )
+            }
+            Err(err) => return failed(err),
+        };
+        // The largest count in (fits.0, high] that fits, by bisection: the
+        // encoded size grows with the count.
+        let mut high = n;
+        while fits.0 < high {
+            let mid = fits.0 + (high - fits.0).div_ceil(2);
+            match self.binds_statement(mid) {
+                Ok((statement, true)) => fits = (mid, statement),
+                Ok((_, false)) => high = mid - 1,
+                Err(err) => return failed(err),
+            }
         }
-        let parameters = (0..n).map(|i| DbValue::Int64(i64::from(i) + 1)).collect();
+        let (count, statement) = fits;
+        let what = if count == n {
+            format!("{count} binds (maxBinds)")
+        } else {
+            format!("{count} binds (the most maxPayloadBytes / maxRequestBytes admit under maxBinds {n})")
+        };
         let operation_id = self.op("max-binds");
         let env = self.policy_env();
-        let reply = self
-            .host(
-                request(operation_id, vec![query(&sql, parameters, 1)]),
-                &env,
-            )
-            .await;
-        match reply {
+        match self
+            .host(request(operation_id, vec![statement]), &env)
+            .await
+        {
             Ok(_) => Outcome::Passed,
-            Err(err) => failed(format!("{n} binds (maxBinds): {err}")),
+            Err(err) => failed(format!("{what}: {err}")),
         }
+    }
+
+    /// A one-row read with `count` binds, and whether it fits the byte caps
+    /// as host admission measures them: canonical SQL plus each encoded bind
+    /// against `maxPayloadBytes`, the encoded request against
+    /// `maxRequestBytes`. Lowering the SQL is the adapter's own business.
+    fn binds_statement(&self, count: u32) -> Result<(TypedDbStatement, bool), String> {
+        let placeholders = usize::try_from(count).unwrap_or(usize::MAX);
+        let sql = format!(
+            "SELECT COUNT(*) AS n FROM conformance_rows WHERE id IN ({})",
+            vec!["?"; placeholders].join(", ")
+        );
+        let parameters: Vec<DbValue> = (0..count)
+            .map(|i| DbValue::Int64(i64::from(i) + 1))
+            .collect();
+        let mut payload = sql.len();
+        for param in &parameters {
+            let bytes = bookclerk_plugin_abi::encoded_db_value_bytes(param)
+                .map_err(|err| format!("encoding a bind: {err}"))?;
+            payload = payload.saturating_add(bytes.len());
+        }
+        let statement = query(&sql, parameters, 1);
+        let req = request("conformance-max-binds".into(), vec![statement]);
+        let request_bytes = bookclerk_plugin_abi::encoded_execute_request_bytes(&req)
+            .map_err(|err| format!("encoding a {count}-bind request: {err}"))?
+            .len();
+        let payload_cap = usize::try_from(self.caps.max_payload_bytes).unwrap_or(usize::MAX);
+        let request_cap = usize::try_from(self.caps.max_request_bytes).unwrap_or(usize::MAX);
+        let fits = payload <= payload_cap && request_bytes <= request_cap;
+        let statement = req.statements.into_iter().next().ok_or("no statement")?;
+        Ok((statement, fits))
     }
 
     /// The SQL types of the applied suite schema.
@@ -711,6 +776,51 @@ impl SuiteRun {
         match single_row(&reply)?.as_slice() {
             [DbValue::Int64(n)] => Ok(*n),
             other => Err(format!("COUNT(*) read back {other:?}")),
+        }
+    }
+
+    /// Sends one over-cap guest read and expects the adapter itself to refuse
+    /// it with a typed `limit_exceeded` naming one of `limits`.
+    ///
+    /// The host checks every reply against the caps too, so an adapter that
+    /// returned the oversized result would still reach the guest as
+    /// `limit_exceeded`; the suite records what the adapter answered to tell
+    /// the two apart. `what` describes the read in failure messages.
+    async fn expect_refusal(
+        &mut self,
+        label: &str,
+        statement: TypedDbStatement,
+        limits: &[&str],
+        what: &str,
+    ) -> Outcome {
+        let operation_id = self.op(label);
+        let policy = self.policy();
+        let session = self.session.as_ref();
+        let adapter_answered = Cell::new(false);
+        let answered = &adapter_answered;
+        let reply = execute_guest_atomic_with(
+            request(operation_id, vec![statement]),
+            &self.caps,
+            &policy,
+            |envelope| async move {
+                let reply = session.execute(envelope).await;
+                answered.set(reply.is_ok());
+                reply
+            },
+        )
+        .await;
+        match reply {
+            Ok(reply) => failed(format!(
+                "{what} succeeded with {} row(s) instead of a limit_exceeded error",
+                reply.statements.first().map_or(0, |s| s.rows.len())
+            )),
+            Err(err) if adapter_answered.get() => failed(format!(
+                "the adapter returned {what} instead of refusing it; only the host's reply \
+                 check stopped it ({}: {})",
+                err.code.as_str(),
+                err.message
+            )),
+            Err(err) => expect_limit(&err, limits),
         }
     }
 
@@ -751,50 +861,56 @@ impl SuiteRun {
             }
             Err(err) => return failed(format!("a {cap}-row read (maxResultRows): {err}")),
         }
-        let over = self
-            .guest(
-                "rows-over-cap",
-                vec![query(
-                    "SELECT id FROM conformance_rows WHERE id > 0 ORDER BY id",
-                    Vec::new(),
-                    cap,
-                )],
-            )
-            .await;
-        match over {
-            Ok(reply) => failed(format!(
-                "a {seed}-row read under maxResultRows {cap} succeeded with {} rows \
-                 instead of a limit_exceeded error",
-                reply.statements.first().map_or(0, |s| s.rows.len())
-            )),
-            Err(err) => expect_limit(&err, &["maxResultRows"]),
-        }
+        self.expect_refusal(
+            "rows-over-cap",
+            query(
+                "SELECT id FROM conformance_rows WHERE id > 0 ORDER BY id",
+                Vec::new(),
+                cap,
+            ),
+            &["maxResultRows"],
+            &format!("a {seed}-row read under maxResultRows {cap}"),
+        )
+        .await
     }
 
-    /// Inserts rows `1..=count` into `conformance_rows`, one row per
-    /// statement and as many statements per batch as the receipt wrap
-    /// leaves under `maxStatements`.
+    /// Inserts rows `1..=count` into `conformance_rows`.
     async fn seed_rows(&mut self, count: u32) -> Result<(), String> {
-        let per_batch = self
-            .caps
-            .max_statements
-            .saturating_sub(SEED_WRAP_HEADROOM)
-            .max(1);
-        let mut next = 1u32;
-        while next <= count {
-            let end = next.saturating_add(per_batch - 1).min(count);
-            let statements = (next..=end)
-                .map(|id| {
-                    exec(
-                        "INSERT INTO conformance_rows (id, body) VALUES (?, 'r')",
-                        vec![DbValue::Int64(i64::from(id))],
-                    )
-                })
-                .collect();
-            self.guest("rows-seed", statements)
-                .await
-                .map_err(|err| format!("seeding {count} rows: {err}"))?;
-            next = end.saturating_add(1);
+        let statements = (1..=count)
+            .map(|id| {
+                exec(
+                    "INSERT INTO conformance_rows (id, body) VALUES (?, 'r')",
+                    vec![DbValue::Int64(i64::from(id))],
+                )
+            })
+            .collect();
+        self.seed("rows-seed", statements, 0)
+            .await
+            .map_err(|err| format!("seeding {count} rows: {err}"))
+    }
+
+    /// Sends `statements` as few guest batches as the caps allow: as many
+    /// per batch as the receipt wrap leaves under `maxStatements`, and as
+    /// many of `bytes_each` bound bytes as fit `maxRequestBytes`.
+    async fn seed(
+        &mut self,
+        label: &str,
+        statements: Vec<TypedDbStatement>,
+        bytes_each: usize,
+    ) -> Result<(), PluginError> {
+        let by_count = usize::try_from(self.caps.max_statements)
+            .unwrap_or(usize::MAX)
+            .saturating_sub(SEED_WRAP_HEADROOM);
+        let request_cap = usize::try_from(self.caps.max_request_bytes).unwrap_or(usize::MAX);
+        let by_bytes = request_cap
+            .saturating_sub(BYTE_HEADROOM)
+            .checked_div(bytes_each.saturating_add(BYTE_HEADROOM))
+            .unwrap_or(usize::MAX);
+        let per_batch = by_count.min(by_bytes).max(1);
+        let mut statements = statements.into_iter().peekable();
+        while statements.peek().is_some() {
+            let batch = statements.by_ref().take(per_batch).collect();
+            self.guest(label, batch).await?;
         }
         Ok(())
     }
@@ -863,27 +979,20 @@ impl SuiteRun {
             ));
         }
         let expr = vec!["body"; copies].join(" || ");
-        let over = self
-            .guest(
-                "cell-over-cap",
-                vec![query(
-                    &format!("SELECT {expr} AS wide FROM conformance_cells WHERE id = 1"),
-                    Vec::new(),
-                    1,
-                )],
-            )
-            .await;
-        match over {
-            Ok(_) => failed(format!(
-                "a {}-byte cell under maxCellBytes {cap} was returned instead of a \
-                 limit_exceeded error",
-                body.len().saturating_mul(copies)
-            )),
-            Err(err) => expect_limit(
-                &err,
-                &["maxCellBytes", "maxResultBytes", "maxAtomicResultBytes"],
+        self.expect_refusal(
+            "cell-over-cap",
+            query(
+                &format!("SELECT {expr} AS wide FROM conformance_cells WHERE id = 1"),
+                Vec::new(),
+                1,
             ),
-        }
+            &["maxCellBytes", "maxResultBytes", "maxAtomicResultBytes"],
+            &format!(
+                "a {}-byte cell under maxCellBytes {cap}",
+                body.len().saturating_mul(copies)
+            ),
+        )
+        .await
     }
 
     /// Rows whose total passes the inline byte caps are a typed refusal
@@ -905,39 +1014,30 @@ impl SuiteRun {
             ));
         }
         let body = "x".repeat(width);
-        for i in 0..rows {
-            let id = 1_000 + i64::try_from(i).unwrap_or(i64::MAX);
-            if let Err(err) = self
-                .guest(
-                    "bytes-seed",
-                    vec![exec(
-                        "INSERT INTO conformance_cells (id, body) VALUES (?, ?)",
-                        vec![DbValue::Int64(id), DbValue::Text(body.clone())],
-                    )],
+        let seeds = (0..rows)
+            .map(|i| {
+                let id = 1_000 + i64::try_from(i).unwrap_or(i64::MAX);
+                exec(
+                    "INSERT INTO conformance_cells (id, body) VALUES (?, ?)",
+                    vec![DbValue::Int64(id), DbValue::Text(body.clone())],
                 )
-                .await
-            {
-                return failed(format!("seeding {rows} cells of {width} bytes: {err}"));
-            }
+            })
+            .collect();
+        if let Err(err) = self.seed("bytes-seed", seeds, width).await {
+            return failed(format!("seeding {rows} cells of {width} bytes: {err}"));
         }
         let rows_u32 = u32::try_from(rows).unwrap_or(u32::MAX);
-        let over = self
-            .guest(
-                "bytes-over-cap",
-                vec![query(
-                    "SELECT body FROM conformance_cells WHERE id >= 1000 ORDER BY id",
-                    Vec::new(),
-                    rows_u32,
-                )],
-            )
-            .await;
-        match over {
-            Ok(_) => failed(format!(
-                "{rows} cells of {width} bytes passed maxResultBytes {cap} inline \
-                 instead of a limit_exceeded error"
-            )),
-            Err(err) => expect_limit(&err, &["maxResultBytes", "maxAtomicResultBytes"]),
-        }
+        self.expect_refusal(
+            "bytes-over-cap",
+            query(
+                "SELECT body FROM conformance_cells WHERE id >= 1000 ORDER BY id",
+                Vec::new(),
+                rows_u32,
+            ),
+            &["maxResultBytes", "maxAtomicResultBytes"],
+            &format!("{rows} cells of {width} bytes under maxResultBytes {cap}"),
+        )
+        .await
     }
 
     /// `executeStreamed` matches the advertisement: `unsupported` without a
@@ -998,34 +1098,40 @@ impl SuiteRun {
         let Some(seeded) = seeded_rows else {
             return Outcome::Skipped("result_rows seeded no rows past maxResultRows".into());
         };
-        if seeded > self.caps.max_streamed_result_rows {
-            return Outcome::Passed;
+        let inline_cap = self.caps.max_result_rows;
+        let want = seeded.min(self.caps.max_streamed_result_rows);
+        if want <= inline_cap {
+            return Outcome::Skipped(format!(
+                "maxStreamedResultRows {} leaves no streamed read past maxResultRows {inline_cap}",
+                self.caps.max_streamed_result_rows
+            ));
         }
         let read = self
             .guest_streamed(
                 "streamed-past-inline",
                 vec![query(
-                    "SELECT id FROM conformance_rows WHERE id > 0 ORDER BY id",
+                    &format!(
+                        "SELECT id FROM conformance_rows WHERE id > 0 ORDER BY id LIMIT {want}"
+                    ),
                     Vec::new(),
-                    seeded,
+                    want,
                 )],
             )
             .await;
         match read {
             Ok(reply) => {
                 let got = reply.statements.first().map_or(0, |s| s.rows.len());
-                if got == usize::try_from(seeded).unwrap_or(usize::MAX) {
+                if got == usize::try_from(want).unwrap_or(usize::MAX) {
                     Outcome::Passed
                 } else {
                     failed(format!(
-                        "a streamed read of {seeded} rows (past maxResultRows {}) returned {got}",
-                        self.caps.max_result_rows
+                        "a streamed read of {want} rows (past maxResultRows {inline_cap}) \
+                         returned {got}"
                     ))
                 }
             }
             Err(err) => failed(format!(
-                "a streamed read of {seeded} rows (past maxResultRows {}): {err}",
-                self.caps.max_result_rows
+                "a streamed read of {want} rows (past maxResultRows {inline_cap}): {err}"
             )),
         }
     }
@@ -1161,22 +1267,24 @@ impl NativeAdapter {
         let stdout = child.stdout.take().ok_or("the guest has no stdout")?;
         let (client, rpc) = bookclerk_plugin_abi::connect_plugin(stdout, stdin, 64 * 1024);
         tokio::task::spawn_local(rpc);
-        tokio::time::timeout(std::time::Duration::from_secs(30), client.describe())
+        tokio::time::timeout(GUEST_STARTUP_TIMEOUT, client.describe())
             .await
             .map_err(|_| "describe timed out".to_string())?
             .map_err(|err| format!("describe: {err}"))?;
-        let opened = client
-            .open(
-                &bookclerk_plugin_abi::Invocation {
-                    id: "database".into(),
-                    ..Default::default()
-                },
-                bookclerk_plugin_abi::HostBindings {
-                    values,
-                    ..Default::default()
-                },
-            )
+        let invocation = bookclerk_plugin_abi::Invocation {
+            id: "database".into(),
+            ..Default::default()
+        };
+        let open = client.open(
+            &invocation,
+            bookclerk_plugin_abi::HostBindings {
+                values,
+                ..Default::default()
+            },
+        );
+        let opened = tokio::time::timeout(GUEST_STARTUP_TIMEOUT, open)
             .await
+            .map_err(|_| "open timed out".to_string())?
             .map_err(|err| format!("open: {err}"))?;
         let database = opened
             .database_adapter

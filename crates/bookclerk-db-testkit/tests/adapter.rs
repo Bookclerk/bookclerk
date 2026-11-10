@@ -13,8 +13,9 @@ use std::cell::Cell;
 use async_trait::async_trait;
 use bookclerk_db_testkit::adapter::{run_adapter_suite, Case, Outcome};
 use bookclerk_plugin_abi::{
-    AdapterDatabaseSession, AdapterExecuteRequest, Database, DbCapabilities, DbValue, ExecuteReply,
-    ExecuteStream, GuestReceiptPersist, PluginError, PluginErrorCode,
+    AdapterDatabaseSession, AdapterExecuteRequest, Database, DbCapabilities, DbColumn,
+    DbResultSelection, DbRow, DbTiming, DbType, DbValue, ExecuteReply, ExecuteStream,
+    GuestReceiptPersist, PluginError, PluginErrorCode, StatementResult,
 };
 
 /// One way to break the contract.
@@ -32,6 +33,9 @@ enum Fault {
     DropsReceiptPayload,
     /// A streamed budget is advertised but `executeStreamed` is refused.
     RefusesStreaming,
+    /// A read the adapter would refuse as over a cap is answered with an
+    /// oversized result instead, leaving the refusal to the host.
+    ReturnsOverCap,
 }
 
 /// A database whose sessions apply `fault` around the SQLite adapter.
@@ -81,12 +85,17 @@ impl AdapterDatabaseSession for FaultySession {
         if self.fault == Fault::DropsReceiptPayload {
             request.guest_receipt = GuestReceiptPersist::default();
         }
+        let over_cap = over_cap_reply(&request);
         let reply = self.inner.execute(request).await;
-        match (self.fault, reply) {
-            (Fault::UntypedLimits, Err(err)) if err.code == PluginErrorCode::LimitExceeded => {
-                Err(PluginError::unavailable(err.message))
-            }
-            (Fault::BytesAsText, Ok(mut reply)) => {
+        match self.fault {
+            Fault::UntypedLimits => reply.map_err(|err| {
+                if err.code == PluginErrorCode::LimitExceeded {
+                    PluginError::unavailable(err.message)
+                } else {
+                    err
+                }
+            }),
+            Fault::BytesAsText => reply.map(|mut reply| {
                 for stmt in &mut reply.statements {
                     for row in &mut stmt.rows {
                         for value in &mut row.values {
@@ -96,9 +105,16 @@ impl AdapterDatabaseSession for FaultySession {
                         }
                     }
                 }
-                Ok(reply)
-            }
-            (_, reply) => reply,
+                reply
+            }),
+            Fault::ReturnsOverCap => match reply {
+                Err(err) if err.code == PluginErrorCode::LimitExceeded => Ok(over_cap),
+                reply => reply,
+            },
+            Fault::None
+            | Fault::UnstableCapabilities
+            | Fault::DropsReceiptPayload
+            | Fault::RefusesStreaming => reply,
         }
     }
 
@@ -114,6 +130,40 @@ impl AdapterDatabaseSession for FaultySession {
 
     async fn close(&self) -> Result<(), PluginError> {
         self.inner.close().await
+    }
+}
+
+/// A reply to `request` that returns one row more than every row-reading
+/// statement allows, as an adapter that never refuses would.
+fn over_cap_reply(request: &AdapterExecuteRequest) -> ExecuteReply {
+    let statements = request
+        .request
+        .statements
+        .iter()
+        .map(|stmt| match stmt.result_selection {
+            DbResultSelection::Rows => StatementResult {
+                rows: (0..=stmt.max_rows)
+                    .map(|_| DbRow {
+                        values: vec![DbValue::Int64(0)],
+                    })
+                    .collect(),
+                columns: vec![DbColumn {
+                    name: "id".into(),
+                    db_type: DbType::Int64,
+                }],
+                rows_affected: 0,
+            },
+            DbResultSelection::AffectedRows | DbResultSelection::Discard => StatementResult {
+                rows: Vec::new(),
+                columns: Vec::new(),
+                rows_affected: 0,
+            },
+        })
+        .collect();
+    ExecuteReply {
+        operation_id: request.request.operation_id.clone(),
+        statements,
+        timing: DbTiming::default(),
     }
 }
 
@@ -187,4 +237,21 @@ async fn a_dropped_receipt_payload_fails_replay() {
 async fn an_advertised_but_refused_stream_fails_the_streamed_case() {
     let outcomes = outcomes_under(Fault::RefusesStreaming).await;
     assert_eq!(failed_cases(&outcomes), vec![Case::Streamed]);
+}
+
+#[tokio::test]
+async fn an_adapter_that_leaves_refusal_to_the_host_fails_every_limit_case() {
+    let outcomes = outcomes_under(Fault::ReturnsOverCap).await;
+    assert_eq!(
+        failed_cases(&outcomes),
+        vec![Case::ResultRows, Case::CellBytes, Case::ResultBytes]
+    );
+    for (case, outcome) in &outcomes {
+        if let Outcome::Failed(reason) = outcome {
+            assert!(
+                reason.contains("only the host's reply check"),
+                "{case}: {reason}"
+            );
+        }
+    }
 }
