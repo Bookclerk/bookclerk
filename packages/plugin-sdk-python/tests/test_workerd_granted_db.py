@@ -790,3 +790,18 @@ class GrantedChannelErrorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PluginError) as ctx:
             await env.DB.limits()
         self.assertIs(ctx.exception, raised)
+
+    async def test_transport_inline_reply_without_a_body_is_internal(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError
+
+        class _Silent(_ChannelErrorTransport):
+            async def executeBytes(self, body: Any) -> bytes:  # noqa: N802  (Workers RPC method name)
+                self.methods.append(("executeBytes", bytes(body)))
+                return b""
+
+        # Without limits the read goes inline, through `executeBytes`.
+        env = self._env(_Silent(limits=404))
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.prepare("SELECT 1").all()
+        self.assertEqual(ctx.exception.code, "internal")
+        self.assertIn("granted execute reply missing body", str(ctx.exception))
