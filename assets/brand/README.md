@@ -24,13 +24,19 @@ installed.
 
 ## Web assets
 
-- `web/favicon.ico` — multi-resolution Windows/browser icon
+- `web/favicon.ico` — Windows/browser icon at 16, 32 and 48 px (larger
+  sizes belong in the PNGs, not the ICO)
 - `web/favicon-16x16.png`
 - `web/favicon-32x32.png`
+- `web/favicon-96x96.png` — desktop favicon, downscaled from
+  `png/mark/bookclerk-mark-1024.png`
 - `web/apple-touch-icon.png` — 180 × 180
 - `web/android-chrome-192x192.png`
 - `web/android-chrome-512x512.png`
 - `web/site.webmanifest`
+
+The website also publishes `svg/bookclerk-mark.svg` as its scalable
+`/favicon.svg`.
 
 ## Brand colors
 

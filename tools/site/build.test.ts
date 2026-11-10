@@ -341,12 +341,35 @@ test("the build publishes pages, styles, headers and brand assets", () => {
       "social-card.png",
       "link-icon.svg",
       "favicon.ico",
+      "favicon.svg",
+      "favicon-16x16.png",
+      "favicon-32x32.png",
+      "favicon-96x96.png",
+      "apple-touch-icon.png",
+      "android-chrome-192x192.png",
+      "android-chrome-512x512.png",
       "bookclerk-mark.svg",
       "site.webmanifest",
     ]) {
       assert.ok(site.files.includes(name), name);
     }
     assert.match(site.page("_headers"), /Content-Security-Policy: default-src 'none'/);
+    // Every icon the page head declares is published, and the head declares
+    // the full set favicon checkers and search engines look for.
+    const head = site.page("index.html");
+    for (const href of head.matchAll(
+      /<link rel="(?:icon|apple-touch-icon|manifest)"[^>]*href="\/([^"]+)"/g,
+    )) {
+      assert.ok(site.files.includes(href[1] ?? ""), href[0]);
+    }
+    for (const tag of [
+      '<link rel="icon" type="image/svg+xml" href="/favicon.svg">',
+      '<link rel="icon" type="image/png" sizes="96x96" href="/favicon-96x96.png">',
+      '<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">',
+      '<meta name="apple-mobile-web-app-title" content="Bookclerk">',
+    ]) {
+      assert.ok(head.includes(tag), tag);
+    }
     // The Worker renders /sitemap; only its shell is baked.
     assert.ok(!site.files.includes("sitemap.html"));
   } finally {
