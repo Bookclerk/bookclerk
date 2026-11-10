@@ -213,7 +213,11 @@ jobs:
             cgroup=""
           fi
           (
-            if [ -n "$cgroup" ]; then echo "$BASHPID" | sudo tee "$cgroup/cgroup.procs" >/dev/null; fi
+            # Read BASHPID here: inside the pipeline it would name the echo.
+            self=$BASHPID
+            if [ -n "$cgroup" ] && ! echo "$self" | sudo tee "$cgroup/cgroup.procs" >/dev/null; then
+              echo "::warning::Could not move cargo-mutants into its cgroup; running uncapped"
+            fi
             exec timeout --signal=INT --kill-after=5m 240m \
               cargo mutants --workspace --in-diff "$RUNNER_TEMP/pr.diff" --in-place --no-shuffle --output "$RUNNER_TEMP"
           ) &
@@ -265,8 +269,17 @@ jobs:
           if [ -n "$cgroup" ] && [ -r "$cgroup/memory.events" ]; then
             kills=$(awk '$1 == "oom_kill" { print $2 }' "$cgroup/memory.events")
             if [ "${kills:-0}" -gt 0 ]; then
-              echo "::notice::The memory cap stopped ${kills} process(es); their mutants count as caught or unviable"
+              echo "::notice::The memory cap stopped ${kills} process(es)"
             fi
+          fi
+          # A killed test binary fails its test run, so cargo-mutants counts the
+          # mutant as caught. When the kill lands on the cargo process itself,
+          # cargo-mutants records an unattributed "Failure" that no list file
+          # holds; name those so the summary is not read as complete.
+          outcomes="$RUNNER_TEMP/mutants.out/outcomes.json"
+          if [ -r "$outcomes" ]; then
+            jq -r '.outcomes[] | select(.summary == "Failure" and .scenario != "Baseline") | .scenario.Mutant.name // "unnamed mutant"' "$outcomes" \
+              | while read -r name; do echo "::warning title=Unattributed mutant failure::${name}"; done
           fi
           exit 0
 

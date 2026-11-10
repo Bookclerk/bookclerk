@@ -1131,9 +1131,12 @@ the starting point of the next scheduled one.
    and the summary says why a run stopped early.
 6. Those checks are too slow for a mutant that allocates without bound, so
    cargo-mutants also runs in a cgroup capped at all but 1.5 GiB of the
-   runner's memory. The kernel then kills that mutant's test instead of
-   starving the runner, and the run goes on. The log notes the cap and how
-   many processes it stopped.
+   runner's memory. The kernel then kills the largest process in it,
+   normally that mutant's test, instead of starving the runner, and the
+   mutant counts as caught. The log notes the cap and how many processes it
+   stopped. When the cgroup cannot be set up, a warning says so and the run
+   goes on uncapped. A kill that lands on cargo itself leaves the mutant
+   unclassified; each one gets its own warning, because no list holds it.
 
 The job summary shows the share of mutants the tests caught and lists the
 missed ones. The full results, with a log per mutant, are in the
