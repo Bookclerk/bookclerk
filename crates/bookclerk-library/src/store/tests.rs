@@ -330,10 +330,22 @@ async fn remap_account_moves_books() {
         .await
         .unwrap();
 
+    let library = |revisions: &crate::control_plane::LiveRevisions| {
+        revisions
+            .iter()
+            .find(|(topic, _)| *topic == crate::control_plane::LiveTopic::Library)
+            .map(|(_, revision)| revision.0)
+            .unwrap()
+    };
+    let before = crate::control_plane::live_revisions(&store).await.unwrap();
     store
         .remap_account_id("audible", "email@example.com", "amzn1.account.CID")
         .await
         .unwrap();
+    // One moved title bumps once; the leftover delete finds nothing and
+    // does not bump.
+    let after = crate::control_plane::live_revisions(&store).await.unwrap();
+    assert_eq!(library(&after), library(&before) + 1);
 
     assert!(store
         .get_account("audible", "email@example.com")

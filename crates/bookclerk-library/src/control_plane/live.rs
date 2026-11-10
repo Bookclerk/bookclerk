@@ -408,13 +408,14 @@ impl LibraryStore {
                 .execute(insert.as_query())
                 .await
                 .map_err(LibraryError::Orm)?;
+            // The row has committed, so it bumps whatever the identity says.
+            self.bump_after_oversized_write(topic).await;
             let id = i64::try_from(inserted.last_insert_id())
                 .ok()
                 .filter(|id| *id > 0)
                 .ok_or_else(|| {
                     LibraryError::Other(anyhow::anyhow!("live insert returned no usable identity"))
                 })?;
-            self.bump_after_oversized_write(topic).await;
             return Ok(id);
         }
         write.sql = crate::proxy_insert_returning_identity(
@@ -637,6 +638,10 @@ mod tests {
             changed_topics(&reranked, &dropped),
             vec![LiveTopic::Discover]
         );
+        // Dropping someone with no stored shelves changes nothing.
+        store.forget_discover_subject(&subject).await.unwrap();
+        let again = live_revisions(&store).await.unwrap();
+        assert!(changed_topics(&dropped, &again).is_empty());
         assert_eq!(LiveTopic::Discover.as_str(), "discover");
     }
 
