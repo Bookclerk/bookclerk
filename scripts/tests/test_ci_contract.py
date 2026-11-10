@@ -417,6 +417,9 @@ class WorkflowContractTests(unittest.TestCase):
         job = self.jobs[FAIL_FAST_JOB]
         self.assertEqual(job["if"], "github.event_name == 'merge_group' || inputs.private-head")
         self.assertEqual(job["permissions"], {"actions": "write"})
+        # Outlasts the queue's 300-minute status check timeout
+        # (docs/contributing/ci.md#branch-protection-and-the-merge-queue).
+        self.assertGreater(job["timeout-minutes"], 300)
         self.assertNotIn("needs", job, "must watch from the start of the run")
         for step in job["steps"]:
             self.assertNotIn("uses", step, "must not check out or run repository code")

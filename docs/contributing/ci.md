@@ -136,7 +136,10 @@ nextest stops at the first test that fails its retry. The
 `merge-queue-fail-fast` job cancels the rest of the run as soon as any job
 fails, so `CI Gate` reports at once and the queue ejects the group without
 waiting for the slowest job. It also cancels the run of a group the queue
-has dropped (see [Superseded merge groups](#superseded-merge-groups)).
+has dropped (see [Superseded merge groups](#superseded-merge-groups)). Its
+310-minute timeout outlasts the merge queue's 300-minute status check
+timeout, so the job keeps watching for as long as the queue waits for a
+group.
 
 That job runs no repository code and is the only one with
 `actions: write`. Pull requests run every selected test and job to the
