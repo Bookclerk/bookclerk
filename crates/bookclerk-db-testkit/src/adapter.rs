@@ -794,6 +794,18 @@ impl SuiteRun {
         what: &str,
     ) -> Outcome {
         let operation_id = self.op(label);
+        self.expect_refusal_as(operation_id, statement, limits, what)
+            .await
+    }
+
+    /// [`Self::expect_refusal`] under an explicit operation id.
+    async fn expect_refusal_as(
+        &self,
+        operation_id: String,
+        statement: TypedDbStatement,
+        limits: &[&str],
+        what: &str,
+    ) -> Outcome {
         let policy = self.policy();
         let session = self.session.as_ref();
         let adapter_answered = Cell::new(false);
@@ -861,17 +873,73 @@ impl SuiteRun {
             }
             Err(err) => return failed(format!("a {cap}-row read (maxResultRows): {err}")),
         }
-        self.expect_refusal(
-            "rows-over-cap",
-            query(
-                "SELECT id FROM conformance_rows WHERE id > 0 ORDER BY id",
-                Vec::new(),
-                cap,
-            ),
-            &["maxResultRows"],
-            &format!("a {seed}-row read under maxResultRows {cap}"),
+        // The same read twice under one operation id: a retry must meet the
+        // same typed refusal, not a receipt the refused attempt left behind.
+        let over = query(
+            "SELECT id FROM conformance_rows WHERE id > 0 AND body = 'r' ORDER BY id",
+            Vec::new(),
+            cap,
+        );
+        let operation_id = self.op("rows-over-cap");
+        let what = format!("a {seed}-row read under maxResultRows {cap}");
+        let first = self
+            .expect_refusal_as(
+                operation_id.clone(),
+                over.clone(),
+                &["maxResultRows"],
+                &what,
+            )
+            .await;
+        if first != Outcome::Passed {
+            return first;
+        }
+        if let Outcome::Failed(reason) = self
+            .expect_refusal_as(
+                operation_id.clone(),
+                over.clone(),
+                &["maxResultRows"],
+                &what,
+            )
+            .await
+        {
+            return failed(format!("a retry under the same operation id: {reason}"));
+        }
+        // Once the data no longer passes the cap, the same retry reads it:
+        // the refused attempts left no unfinished receipt behind.
+        if let Err(err) = self.relabel_rows("r", "s").await {
+            return failed(err);
+        }
+        let retry = match self.guest_with_id(operation_id, vec![over]).await {
+            Ok(reply) if reply.statements.first().is_some_and(|s| s.rows.is_empty()) => {
+                Outcome::Passed
+            }
+            Ok(reply) => failed(format!(
+                "a retry of the refused read after its rows changed returned {} rows, not 0",
+                reply.statements.first().map_or(0, |s| s.rows.len())
+            )),
+            Err(err) => failed(format!(
+                "a retry of the refused read after its rows changed under {cap}: {err}"
+            )),
+        };
+        match (retry, self.relabel_rows("s", "r").await) {
+            (retry, Ok(())) => retry,
+            (Outcome::Failed(reason), Err(restore)) => failed(format!("{reason}; then {restore}")),
+            (Outcome::Passed | Outcome::Skipped(_), Err(restore)) => failed(restore),
+        }
+    }
+
+    /// Sets `body` from `from` to `to` on every seeded `conformance_rows` row.
+    async fn relabel_rows(&mut self, from: &str, to: &str) -> Result<(), String> {
+        self.guest(
+            "rows-relabel",
+            vec![exec(
+                "UPDATE conformance_rows SET body = ? WHERE id > 0 AND body = ?",
+                vec![DbValue::Text(to.into()), DbValue::Text(from.into())],
+            )],
         )
         .await
+        .map(drop)
+        .map_err(|err| format!("relabelling seeded rows {from:?} to {to:?}: {err}"))
     }
 
     /// Inserts rows `1..=count` into `conformance_rows`.

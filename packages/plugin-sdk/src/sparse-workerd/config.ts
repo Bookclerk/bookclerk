@@ -88,6 +88,22 @@ function singleFileName(value: string, label: string): string {
 const SDK_JS_MODULE_NAMES = ["@bookclerk/plugin-sdk/workerd", "@bookclerk/plugin-sdk"] as const;
 const SDK_PY_WORKERD_MODULE = "bookclerk_plugin_sdk/workerd.py";
 const SDK_PY_INIT_MODULE = "bookclerk_plugin_sdk/__init__.py";
+/**
+ * SDK modules `workerd.py` imports inside the isolate, injected beside it as
+ * `[isolate module path, source file name, embedded file name]`. With
+ * `__init__.py` and `workerd.py` this is the Python SDK's in-package import
+ * closure, lazy imports included; the launcher (`bookclerk-workerd`) and the
+ * Python sparse config inject the same list.
+ */
+const SDK_PY_SIBLING_MODULES: ReadonlyArray<readonly [string, string, string]> = [
+  ["bookclerk_plugin_sdk/_abi.py", "_abi.py", "sdk-product-abi.py"],
+  ["bookclerk_plugin_sdk/_capnp.py", "_capnp.py", "sdk-capnp.py"],
+  ["bookclerk_plugin_sdk/_wire.py", "_wire.py", "sdk-wire.py"],
+  ["bookclerk_plugin_sdk/guest_sql.py", "guest_sql.py", "sdk-guest-sql.py"],
+  ["bookclerk_plugin_sdk/limits.py", "limits.py", "sdk-limits.py"],
+  ["bookclerk_plugin_sdk/plugin_migration.py", "plugin_migration.py", "sdk-plugin-migration.py"],
+  ["bookclerk_plugin_sdk/db_value.py", "db_value.py", "sdk-db-value.py"],
+];
 const PYODIDE_EGRESS_HOSTS = ["cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org"] as const;
 
 const SDK_PY_INIT = `"""Bookclerk plugin SDK (workerd isolate).
@@ -269,12 +285,9 @@ function isLegacySdkEmbed(name: string): boolean {
     n === "@bookclerk/plugin-sdk" ||
     n === "@bookclerk/plugin-sdk/workerd" ||
     n === "@bookclerk/plugin-sdk/workerd.js" ||
-    n === "bookclerk_plugin_sdk/workerd.py" ||
-    n === "bookclerk_plugin_sdk/db_value.py" ||
-    n === "bookclerk_plugin_sdk/_abi.py" ||
-    n === "bookclerk_plugin_sdk/guest_sql.py" ||
-    n === "bookclerk_plugin_sdk/limits.py" ||
-    n === "bookclerk_plugin_sdk/__init__.py"
+    n === SDK_PY_WORKERD_MODULE ||
+    n === SDK_PY_INIT_MODULE ||
+    SDK_PY_SIBLING_MODULES.some(([modName]) => modName === n)
   );
 }
 
@@ -523,13 +536,7 @@ export function materializeConfig(
     writeGenerated("sdk-init.py", SDK_PY_INIT);
     // Modules imported by workerd.py / db_value.py inside the isolate.
     const pySdkDir = path.dirname(pySrc);
-    const pySiblings: Array<[string, string, string]> = [
-      ["bookclerk_plugin_sdk/_abi.py", "_abi.py", "sdk-product-abi.py"],
-      ["bookclerk_plugin_sdk/guest_sql.py", "guest_sql.py", "sdk-guest-sql.py"],
-      ["bookclerk_plugin_sdk/limits.py", "limits.py", "sdk-limits.py"],
-      ["bookclerk_plugin_sdk/db_value.py", "db_value.py", "sdk-db-value.py"],
-    ];
-    for (const [modName, srcName, embedFile] of pySiblings) {
+    for (const [modName, srcName, embedFile] of SDK_PY_SIBLING_MODULES) {
       const src = assertPathInside(pySdkDir, srcName);
       if (!fs.existsSync(src)) {
         throw new Error(`Python workerd SDK module ${srcName} not found beside ${pySrc}`);

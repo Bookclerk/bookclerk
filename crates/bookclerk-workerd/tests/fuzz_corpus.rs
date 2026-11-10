@@ -138,3 +138,39 @@ fn granted_http_regressions_stay_fixed() {
         .is_err());
     assert!(out.is_empty());
 }
+
+/// The `workerd_control` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/workerd_control.rs"]
+mod workerd_control_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/workerd_control.rs` with the shared oracle.
+// Test code: a missing or unreadable corpus is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_workerd_control_holds_invariants() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/workerd_control")
+        .canonicalize()
+        .expect("canonicalize workerd_control corpus");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("workerd_control corpus")
+        .map(|entry| entry.expect("entry").path())
+        .filter_map(|path| path.canonicalize().ok())
+        .filter(|path| path.starts_with(&dir) && path.is_file())
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "empty workerd_control corpus");
+    let mut accepted = 0;
+    for path in &files {
+        let data = std::fs::read(path).expect("read");
+        workerd_control_oracle::check(&data);
+        if bookclerk_workerd::control::listen_port(&data, bookclerk_workerd::control::RPC_SOCKET)
+            .is_some()
+        {
+            accepted += 1;
+        }
+    }
+    // `listen_rpc.json` and `listen_rpc_crlf.json` are the only real control
+    // lines for the RPC socket; every other seed must be refused.
+    assert_eq!(accepted, 2, "seeds read as RPC listen events");
+}

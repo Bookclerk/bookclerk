@@ -392,10 +392,22 @@ async fn remap_account_moves_books() {
         .await
         .unwrap();
 
+    let library = |revisions: &crate::control_plane::LiveRevisions| {
+        revisions
+            .iter()
+            .find(|(topic, _)| *topic == crate::control_plane::LiveTopic::Library)
+            .map(|(_, revision)| revision.0)
+            .unwrap()
+    };
+    let before = crate::control_plane::live_revisions(&store).await.unwrap();
     store
         .remap_account_id("audible", "email@example.com", "amzn1.account.CID")
         .await
         .unwrap();
+    // One moved title bumps once; the leftover delete finds nothing and
+    // does not bump.
+    let after = crate::control_plane::live_revisions(&store).await.unwrap();
+    assert_eq!(library(&after), library(&before) + 1);
 
     assert!(store
         .get_account("audible", "email@example.com")
@@ -1438,10 +1450,11 @@ async fn webauthn_credential_crud() {
     assert_eq!(replayed, taken);
 }
 
-/// The flag is one `UPDATE` sent to the plugin: no interactive transaction,
-/// and an unknown user is reported from the affected-row count (#733).
+/// The flag is one batch sent to the plugin (the `UPDATE` and its users
+/// counter bump): no interactive transaction, and an unknown user is
+/// reported from the affected-row count (#733).
 #[tokio::test]
-async fn totp_enabled_flag_is_one_statement_without_an_interactive_transaction() {
+async fn totp_enabled_flag_is_one_batch_without_an_interactive_transaction() {
     for profile in crate::test_support::Profile::ALL {
         let kit = crate::test_support::sqlite::memory(profile).await;
         let store = kit.store();
@@ -1449,10 +1462,16 @@ async fn totp_enabled_flag_is_one_statement_without_an_interactive_transaction()
             .create_user(UserRole::Member, Some("Mfa User"), None)
             .await
             .unwrap();
+        let batches_before = kit.batch_sizes().len();
         store.set_user_totp_enabled(user.id, true).await.unwrap();
         assert!(store.get_user(user.id).await.unwrap().unwrap().totp_enabled);
         assert_eq!(kit.refused_begins(), 0, "{}", profile.name());
-        assert_eq!(kit.batch_sizes(), [1], "{}", profile.name());
+        assert_eq!(
+            &kit.batch_sizes()[batches_before..],
+            [2],
+            "{}",
+            profile.name()
+        );
         let err = store
             .set_user_totp_enabled(user.id + 1_000, true)
             .await
@@ -6096,6 +6115,7 @@ async fn stale_wake_delivery_update_does_not_clear(store: &LibraryStore) {
     let now = chrono::Utc::now().to_rfc3339();
     let woken = super::event_outbox::wake_deliveries_fenced_on(
         store.db(),
+        Some(store),
         store.leftover_in_process(),
         &trigger_id,
         "token-b",
@@ -6124,6 +6144,7 @@ async fn stale_wake_delivery_update_does_not_clear(store: &LibraryStore) {
 
     let stale = super::event_outbox::wake_deliveries_fenced_on(
         store.db(),
+        Some(store),
         store.leftover_in_process(),
         &trigger_id,
         "token-a",
@@ -7483,4 +7504,86 @@ async fn job_retention_and_listing_read_through_their_indexes() {
     .await;
     assert!(list.contains("idx_jobs_created"), "{list}");
     assert!(!list.contains("TEMP B-TREE"), "{list}");
+}
+
+#[tokio::test]
+async fn works_page_by_id_and_embedding_hashes_read_in_bulk_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        store
+            .upsert_account("audible", "acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        for i in 0..5 {
+            let mut book =
+                NewBook::minimal(format!("B00PAGE{i}"), "acct", "us", format!("Page {i}"));
+            book.authors = Some(format!("Author {i}"));
+            store.upsert_book(&book).await.unwrap();
+        }
+        let mut expected: Vec<String> = store
+            .list_works()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|work| work.id)
+            .collect();
+        expected.sort();
+        assert_eq!(expected.len(), 5, "{name}");
+
+        // Pages of two walk every work once, in id order, with names filled.
+        let mut walked = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let page = store.list_works_page(after.as_deref(), 2).await.unwrap();
+            assert!(page.len() <= 2, "{name}");
+            assert!(page.iter().all(|work| !work.credits.is_empty()), "{name}");
+            let Some(last) = page.last() else { break };
+            after = Some(last.id.clone());
+            walked.extend(page.into_iter().map(|work| work.id));
+        }
+        assert_eq!(walked, expected, "{name}");
+
+        store
+            .upsert_embedding("work", &expected[0], "m", 2, &[0, 0], "h0")
+            .await
+            .unwrap();
+        store
+            .upsert_embedding("work", &expected[1], "m", 2, &[0, 0], "h1")
+            .await
+            .unwrap();
+        store
+            .upsert_embedding("work", &expected[1], "other", 2, &[0, 0], "x")
+            .await
+            .unwrap();
+        store
+            .upsert_embedding("work", "gone", "m", 2, &[0, 0], "hg")
+            .await
+            .unwrap();
+        let hashes = store
+            .embedding_text_hashes("work", "m", &expected)
+            .await
+            .unwrap();
+        assert_eq!(hashes.len(), 2, "{name}");
+        assert_eq!(hashes[&expected[0]], "h0", "{name}");
+        assert_eq!(hashes[&expected[1]], "h1", "{name}");
+
+        assert_eq!(
+            store.prune_orphan_work_embeddings().await.unwrap(),
+            1,
+            "{name}"
+        );
+        assert_eq!(
+            store.prune_orphan_work_embeddings().await.unwrap(),
+            0,
+            "{name}"
+        );
+        assert_eq!(
+            store.list_embeddings("work", "m").await.unwrap().len(),
+            2,
+            "{name}"
+        );
+        assert_eq!(kit.refused_begins(), 0, "{name}");
+    }
 }

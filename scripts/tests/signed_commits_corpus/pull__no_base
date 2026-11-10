@@ -1,0 +1,19 @@
+{
+ "number": 7,
+ "state": "open",
+ "user": {
+  "login": "alice",
+  "id": 101,
+  "type": "User"
+ },
+ "commits": 2,
+ "head": {
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "ref": "feature",
+  "repo": {
+   "id": 700
+  }
+ },
+ "base": null,
+ "title": "`x` | [y](z)"
+}

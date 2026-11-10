@@ -180,8 +180,8 @@ DOC_FILES = frozenset(
 )
 # Tests and fixtures the plan job runs on every event, before any check.
 PLAN_JOB_TEST_PREFIX = "scripts/tests/"
-# Scripts that only plan-job tests exercise (the CLA checker and the
-# maintainer review check run in their own workflows, from the default
+# Scripts that only plan-job tests exercise (the CLA checker, the
+# maintainer review check and the signed commits check run in their own workflows, from the default
 # branch, and build nothing; the coverage gate
 # runs in CI Gate on every run, as does the Web API contract report, Codecov reads its settings itself, and the
 # bundle uploader in tools/codecov only runs in coverage-upload.yml; the
@@ -194,6 +194,7 @@ PLAN_JOB_SCRIPT_FILES = frozenset(
     {
         "scripts/cla_check.py",
         "scripts/maintainer_review.py",
+        "scripts/signed_commits.py",
         "scripts/cla_branch/README.md",
         "scripts/cla_branch/setup-rulesets.sh",
         "scripts/coverage_gate.py",
@@ -276,6 +277,7 @@ JOB_CHECKS: dict[str, tuple[str, ...]] = {
         "plugin_sdk_abi",
         "python_sdk",
         "workerd_guests",
+        "plugin_examples",
         "author_surface",
         "fmt",
         "clippy",
@@ -373,6 +375,10 @@ class Guest:
     runtime: str
     rel_dir: str
     package: str | None
+    # An example whose own suite opens its ``[[databases]]`` binding through
+    # the SDK test kit: ``plugin.toml`` declares a binding and ``package.json``
+    # a ``test`` script, so ``bookclerk-plugin test`` runs it per profile.
+    plugin_tests: bool = False
 
 
 @dataclass
@@ -653,8 +659,37 @@ def discover_guests(workspace_root: str | Path, index: PackageIndex) -> dict[str
                 runtime=str(data.get("runtime", "native")),
                 rel_dir=rel_dir,
                 package=by_dir.get(rel_dir),
+                plugin_tests=tier == "example" and has_plugin_tests(manifest.parent, data),
             )
     return out
+
+
+def has_plugin_tests(plugin_dir: Path, manifest: Mapping[str, Any]) -> bool:
+    """Whether ``bookclerk-plugin test`` has a database suite to run here.
+
+    The plugin declares a ``[[databases]]`` binding and its ``package.json``
+    has a ``test`` script (the runner the command picks first).
+
+    Args:
+        plugin_dir: Directory holding ``plugin.toml``.
+        manifest: The parsed ``plugin.toml``.
+
+    Returns:
+        ``True`` when both hold.
+
+    Raises:
+        PlanError: When ``package.json`` exists but is not valid JSON.
+    """
+    if not manifest.get("databases"):
+        return False
+    package_json = plugin_dir / "package.json"
+    if not package_json.is_file():
+        return False
+    try:
+        scripts = json.loads(package_json.read_text(encoding="utf-8")).get("scripts") or {}
+    except (OSError, ValueError) as exc:
+        raise PlanError(f"cannot parse {package_json}: {exc}") from exc
+    return isinstance(scripts.get("test"), str)
 
 
 def list_changed_paths(
@@ -802,6 +837,7 @@ class _Surfaces:
         self.fixture_checks: dict[str, list[str]] = {}
         self.check_input_checks: dict[str, list[str]] = {}
         self.workerd_guests: list[str] = []
+        self.plugin_examples: list[str] = []
 
 
 def build_plan(
@@ -957,6 +993,8 @@ def build_plan(
                 surf.e2e_ids.setdefault(guest.id, f"guest files {path}")
                 if guest.tier != "example" and guest.runtime == "workerd":
                     surf.workerd_guests.append(path)
+                if guest.plugin_tests:
+                    surf.plugin_examples.append(path)
                 classified = True
         if any(glob_match(path, p) for p in rel.e2e_full_paths):
             surf.e2e_full.append(path)
@@ -1084,6 +1122,10 @@ def _select_checks(
     guests_why = [f"path {p}" for p in surf.workerd_guests + surf.ts_sdk]
     if guests_why and any(g.tier != "example" and g.runtime == "workerd" for g in guest_map.values()):
         _select(plan, "workerd_guests", guests_why)
+    # Database examples run their suites against the TypeScript SDK's test kit.
+    examples_why = [f"path {p}" for p in surf.plugin_examples + surf.ts_sdk]
+    if examples_why and any(g.plugin_tests for g in guest_map.values()):
+        _select(plan, "plugin_examples", examples_why)
     for check, paths in surf.fixture_checks.items():
         _select(plan, check, [f"shared fixture {p}" for p in paths])
     for check, paths in surf.check_input_checks.items():

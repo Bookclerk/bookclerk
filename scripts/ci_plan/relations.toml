@@ -19,6 +19,9 @@ paths = [
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_abi.py",
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/guest_sql.py",
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/limits.py",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_capnp.py",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_wire.py",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/plugin_migration.py",
 ]
 # Injected into every workerd isolate: check the workerd-runtime guests,
 # not the whole installation.
@@ -101,7 +104,12 @@ paths = ["fuzz/corpus/mp4_parse/**"]
 
 [[test_input]]
 package = "bookclerk-workerd"
-paths = ["fuzz/corpus/granted_http/**"]
+# The workerd_control oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/granted_http/**",
+    "fuzz/corpus/workerd_control/**",
+    "fuzz/oracles/workerd_control.rs",
+]
 
 [[test_input]]
 package = "bookclerk-plugin-manifest"
@@ -186,9 +194,15 @@ checks = ["plugin_sdk_abi", "python_sdk"]
 # builds the executable and re-runs when its package changes, on top of the
 # package's own selection (unlike `fixture`, ownership still applies).
 [[check_input]]
-# The TS and Python `createTestDatabase` wrappers spawn `bookclerk-db-testkit`.
+# The TS and Python `createTestDatabase` wrappers spawn `bookclerk-db-testkit`,
+# and the database examples' suites spawn it through them.
 paths = ["crates/bookclerk-db-testkit/**"]
-checks = ["plugin_sdk_abi", "python_sdk"]
+checks = ["plugin_sdk_abi", "python_sdk", "plugin_examples"]
+
+[[check_input]]
+# `bookclerk-plugin test` runs each database example's suite per profile.
+paths = ["crates/bookclerk-plugin-tools/**"]
+checks = ["plugin_examples"]
 
 # Workspace executables launched by a package's tests. Built before the tests
 # run; a change to one re-runs the launching package's tests (no further

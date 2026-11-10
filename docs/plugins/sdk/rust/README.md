@@ -40,10 +40,15 @@ A `[[databases]]` binding is taken from the `open` bindings with
 `DatabaseBinding::take_named_from_bindings` and used as on D1
 (`prepare`, `bind`, `all`, `first`, `batch`). Its `limits()` returns the
 session's `DbCapabilities`; `all()` reads through the session's streamed
-budget when it advertises one, and `chunk()` splits a long statement list
+budget when it advertises one, `iterate()` walks the same read one row at
+a time without holding the whole result, and `chunk()` splits a long statement list
 into batches that each fit one request. Any cap that is hit is a
 `PluginError` with `PluginErrorCode::LimitExceeded` and a typed `limit()`;
-see [Working within database limits](../../database-limits.md).
+see [Working within database limits](../../database-limits.md). A guest's
+tests open the same binding with `bookclerk_db_testkit::BindingDatabase`
+under `bookclerk_db_testkit::selected_profile()`, so `bookclerk-plugin test .`
+runs them under every profile (see
+[Testing against the limits](../../database-limits.md#testing-against-the-limits)).
 
 ## The socket proxy
 

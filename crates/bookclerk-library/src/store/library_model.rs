@@ -19,8 +19,8 @@ use uuid::Uuid;
 use super::{now_str, parse_dt, LibraryStore, NewBook};
 use crate::atomic_ops::{atomic_status, DbAtomicParams};
 use crate::entities::{
-    credits, edition_identifiers, editions, expressions, holdings, resolution_overrides,
-    series_entries, store_listings, work_identifiers, works,
+    credits, edition_identifiers, editions, embeddings, expressions, holdings,
+    resolution_overrides, series_entries, store_listings, work_identifiers, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::library_link::{
@@ -803,6 +803,26 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError`] when a read fails.
     pub async fn owned_work_for(&self, query: &TitleQuery<'_>) -> Result<Option<String>> {
+        let Some(work_id) = self.work_for(query).await? else {
+            return Ok(None);
+        };
+        if self.book_uuids_for_work(&work_id).await?.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(work_id))
+    }
+
+    /// The existing work `query` belongs to, held by a library title or
+    /// not, when the resolver finds one; `None` when it would make a new
+    /// work. Nothing is written. A wish stores this id when it is created,
+    /// so the queue and the shelves compare works, not words.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when a read fails. A query that cannot form
+    /// a valid listing (a blank title, or a field over the listing limits)
+    /// names no work.
+    pub async fn work_for(&self, query: &TitleQuery<'_>) -> Result<Option<String>> {
         let Some(listing) = listing_from_query(query) else {
             return Ok(None);
         };
@@ -814,13 +834,7 @@ impl LibraryStore {
         };
         let snapshot = self.listing_snapshot(&listing, &holder).await?;
         let plan = resolve::resolve(&listing, &holding, &snapshot, &mut UuidIds::default());
-        let Some(work_id) = planned_work_id(&plan, &snapshot) else {
-            return Ok(None);
-        };
-        if self.book_uuids_for_work(&work_id).await?.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(work_id))
+        Ok(planned_work_id(&plan, &snapshot))
     }
 
     /// Resolves `listing` into the library and records `holding` of it.
@@ -1219,6 +1233,111 @@ impl LibraryStore {
         let mut works = vec![map_work(work)];
         self.fill_work_names(&mut works).await?;
         Ok(works.pop())
+    }
+
+    /// Lists up to `limit` works with ids after `after_id`, in id order, with
+    /// their work-level credits and series.
+    ///
+    /// A keyset page: pass the last id of one page as `after_id` of the
+    /// next, and stop at a short page. Unlike [`Self::list_works`] it never
+    /// reads the whole table at once.
+    ///
+    /// # Arguments
+    ///
+    /// * `after_id` - Exclusive lower bound on `works.id`; `None` starts at
+    ///   the first work.
+    /// * `limit` - Page size, clamped to 1..=500.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn list_works_page(
+        &self,
+        after_id: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<WorkRecord>> {
+        let mut query = works::Entity::find().order_by_asc(works::Column::Id);
+        if let Some(after) = after_id {
+            query = query.filter(works::Column::Id.gt(after));
+        }
+        let mut works: Vec<WorkRecord> = query
+            .limit(limit.clamp(1, 500))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_work)
+            .collect();
+        self.fill_work_names(&mut works).await?;
+        Ok(works)
+    }
+
+    /// Stored text hashes of the `model` embeddings of `target_kind` targets
+    /// among `target_ids`, keyed by target id. Targets with no embedding are
+    /// absent.
+    ///
+    /// Reads in chunks sized from the adapter's bind limit, so one call
+    /// replaces a lookup per target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn embedding_text_hashes(
+        &self,
+        target_kind: &str,
+        model: &str,
+        target_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        /// One stored hash, decoded by column name: the host database proxy
+        /// does not keep the select order, so a positional tuple read could
+        /// swap the columns.
+        #[derive(Debug, sea_orm::FromQueryResult)]
+        struct StoredHash {
+            /// `embeddings.target_id`.
+            target_id: String,
+            /// `embeddings.text_hash`.
+            text_hash: String,
+        }
+        let mut hashes = std::collections::HashMap::with_capacity(target_ids.len());
+        for chunk in target_ids.chunks(self.lookup_chunk()) {
+            let rows = embeddings::Entity::find()
+                .select_only()
+                .column(embeddings::Column::TargetId)
+                .column(embeddings::Column::TextHash)
+                .filter(embeddings::Column::TargetKind.eq(target_kind))
+                .filter(embeddings::Column::Model.eq(model))
+                .filter(embeddings::Column::TargetId.is_in(chunk.iter().cloned()))
+                .into_model::<StoredHash>()
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            hashes.extend(rows.into_iter().map(|row| (row.target_id, row.text_hash)));
+        }
+        Ok(hashes)
+    }
+
+    /// Deletes work embeddings (every model) whose work no longer exists,
+    /// and answers how many it removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the delete fails.
+    pub async fn prune_orphan_work_embeddings(&self) -> Result<u64> {
+        use sea_orm::sea_query::Query;
+        Ok(embeddings::Entity::delete_many()
+            .filter(embeddings::Column::TargetKind.eq("work"))
+            .filter(
+                embeddings::Column::TargetId.not_in_subquery(
+                    Query::select()
+                        .column(works::Column::Id)
+                        .from(works::Entity)
+                        .to_owned(),
+                ),
+            )
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .rows_affected)
     }
 
     /// Lists every work by title, with its work-level credits and series.
@@ -1947,6 +2066,60 @@ mod store_tests {
                 .unwrap()
                 .is_none());
         }
+        // `work_for` names the work whether or not it is held, and nothing
+        // for a title the library has never seen.
+        let dune_work = store
+            .work_for(&TitleQuery {
+                title: "Dune",
+                authors: herbert,
+                ..TitleQuery::default()
+            })
+            .await
+            .unwrap()
+            .expect("an existing work");
+        assert!(store
+            .work_for(&TitleQuery {
+                title: "Project Hail Mary",
+                authors: Some("Andy Weir"),
+                ..TitleQuery::default()
+            })
+            .await
+            .unwrap()
+            .is_none());
+
+        // Two wishes for that work from two stores' identifiers are one
+        // queue entry, and the entry carries the work.
+        for (title, asin, isbn) in [
+            ("Dune", Some("B002V1OF70"), None),
+            ("Dune (Unabridged)", None, Some("9781427201447")),
+        ] {
+            store
+                .create_title_request(&crate::NewTitleRequest {
+                    uuid: None,
+                    identity_id: None,
+                    title: title.into(),
+                    authors: Some("Frank Herbert".into()),
+                    asin: asin.map(str::to_string),
+                    isbn: isbn.map(str::to_string),
+                    notes: None,
+                    status: crate::RequestStatus::Open,
+                    work_key: String::new(),
+                    work_id: Some(dune_work.clone()),
+                    resolved_book_uuid: None,
+                    cover_url: None,
+                })
+                .await
+                .unwrap();
+        }
+        let queue = store.list_global_request_queue().await.unwrap();
+        assert_eq!(queue.len(), 1, "{queue:?}");
+        assert_eq!(queue[0].work_id.as_deref(), Some(dune_work.as_str()));
+        assert!(
+            !queue[0].work_key.starts_with("work:"),
+            "clients match on the bibliographic key: {}",
+            queue[0].work_key
+        );
+        assert_eq!(queue[0].wish_count, 2);
     }
 
     #[tokio::test]

@@ -26,7 +26,7 @@ use bookclerk_library::{
 };
 use bookclerk_source::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, ContentSource,
-    SourceRegistry,
+    PurchaseHintOpts, SourceError, SourceRegistry,
 };
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -84,6 +84,39 @@ pub const STARTER_GENRES: [&str; 6] = [
 
 /// Hits asked of a store for one starter genre.
 const STARTER_GENRE_HITS: usize = 24;
+
+/// Most distinct titles one store is asked to price at the end of a fetch,
+/// in one `purchase_hints` call. Audible and Chirp take this in a few
+/// upstream requests; a store that loops stops at its own budget and the
+/// rest stay unpriced until a card asks live.
+pub const PRICE_PRECOMPUTE_LIMIT: usize = 120;
+
+/// Most remembered prices one store keeps in its row of the store-call
+/// cache, oldest dropped first. About 130 bytes each once escaped, so the
+/// row stays well under the database plugins' 256 KiB cell limit.
+const PRICE_MEMO_MAX_ENTRIES: usize = 1_000;
+
+/// One candidate's price as last fetched from its store.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RememberedPrice {
+    /// List price in integer cents of `currency`.
+    cents: Option<i64>,
+    /// ISO 4217 currency code.
+    currency: Option<String>,
+    /// Display price from the store.
+    label: Option<String>,
+    /// When the store answered; older than [`STORE_CALL_MAX_AGE`] is asked again.
+    at: DateTime<Utc>,
+}
+
+impl RememberedPrice {
+    /// Writes this price onto `candidate`.
+    fn apply(&self, candidate: &mut StorefrontCandidate) {
+        candidate.price_cents = self.cents;
+        candidate.currency.clone_from(&self.currency);
+        candidate.price_label.clone_from(&self.label);
+    }
+}
 
 /// Most bytes a stored feed's JSON may take once escaped as a JSON string.
 ///
@@ -313,6 +346,8 @@ pub struct FetchReport {
     pub candidates: usize,
     /// Stores whose fetch failed outright, by plugin id.
     pub stores_failed: Vec<String>,
+    /// Candidates that carry a price from the fetch, across stores.
+    pub priced: usize,
 }
 
 /// Fetches one subject's storefront candidates and stores them store by store.
@@ -376,7 +411,7 @@ pub async fn fetch_subject_candidates(
     let base = total / stores.len();
     let extra = total % stores.len();
 
-    let mut tasks: JoinSet<(String, Vec<StorefrontCandidate>, bool)> = JoinSet::new();
+    let mut tasks: JoinSet<(String, Vec<StorefrontCandidate>, bool, usize)> = JoinSet::new();
     for (index, source) in stores.into_iter().enumerate() {
         // Split the total budget so the stores together never exceed it; a
         // store whose share is zero is not asked and keeps its stored rows.
@@ -391,7 +426,7 @@ pub async fn fetch_subject_candidates(
         let exclude_sets = opts.exclude_graphicaudio_series_sets;
         tasks.spawn(async move {
             let id = source.id().to_string();
-            let (hits, ok) = fetch_one_store(
+            let (mut hits, ok) = fetch_one_store(
                 &library,
                 source.as_ref(),
                 &seeds,
@@ -401,11 +436,16 @@ pub async fn fetch_subject_candidates(
                 exclude_sets,
             )
             .await;
-            (id, hits, ok)
+            let priced = if ok {
+                price_candidates(&library, source.as_ref(), &mut hits, &region).await
+            } else {
+                0
+            };
+            (id, hits, ok, priced)
         });
     }
     while let Some(joined) = tasks.join_next().await {
-        let Ok((store, candidates, ok)) = joined else {
+        let Ok((store, candidates, ok, priced)) = joined else {
             tracing::warn!("a discover store fetch task stopped before it finished");
             continue;
         };
@@ -413,6 +453,7 @@ pub async fn fetch_subject_candidates(
             report.stores_failed.push(store);
             continue;
         }
+        report.priced += priced;
         let mut map: HashMap<String, StorefrontCandidate> = HashMap::new();
         for c in candidates {
             insert_candidate(&mut map, c, &owned.0, &owned.1, &owned.2);
@@ -440,10 +481,134 @@ pub async fn fetch_subject_candidates(
         seeds = report.seeds,
         stores = report.stores_saved,
         candidates = report.candidates,
+        priced = report.priced,
         failed = ?report.stores_failed,
         "stored discover candidates"
     );
     Ok(report)
+}
+
+/// Prices one store's candidates, so cards show a price before any live
+/// lookup.
+///
+/// Prices answered in the last day come from the store's row in the
+/// store-call cache, shared by every subject, so a refresh after a wish asks
+/// the store only about titles it has not priced. The rest, up to
+/// [`PRICE_PRECOMPUTE_LIMIT`], go in one `purchase_hints` call. A store
+/// paused for rate limiting is not asked; one that asks to slow down is
+/// paused for live lookups too. A failure or timeout leaves the rest
+/// unpriced.
+///
+/// # Returns
+///
+/// How many candidates carry a price from this pass.
+async fn price_candidates(
+    library: &LibraryStore,
+    source: &dyn ContentSource,
+    candidates: &mut [StorefrontCandidate],
+    region: &str,
+) -> usize {
+    let id = source.id().to_string();
+    let memo_key = call_key(&id, "prices", &[region]);
+    let now = Utc::now();
+    let mut memo: HashMap<String, RememberedPrice> = library
+        .get_discover_store_call(&memo_key, STORE_CALL_MAX_AGE)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default();
+    memo.retain(|_, price| price.at + STORE_CALL_MAX_AGE > now);
+    let mut priced = 0;
+    for candidate in candidates.iter_mut() {
+        if candidate.price_cents.is_none() {
+            if let Some(price) = memo.get(&candidate.product_id) {
+                price.apply(candidate);
+                priced += 1;
+            }
+        }
+    }
+    // One question per title: seeds that found the same product share it.
+    let mut asked = HashSet::new();
+    let unpriced: Vec<usize> = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.price_cents.is_none() && !c.product_id.trim().is_empty())
+        .filter(|(_, c)| asked.insert(c.product_id.clone()))
+        .map(|(i, _)| i)
+        .take(PRICE_PRECOMPUTE_LIMIT)
+        .collect();
+    if unpriced.is_empty() || crate::purchase::store_breaker_open(&id, std::time::Instant::now()) {
+        return priced;
+    }
+    let opts: Vec<PurchaseHintOpts> = unpriced
+        .iter()
+        .map(|&i| {
+            let c = &candidates[i];
+            PurchaseHintOpts {
+                product_id: Some(c.product_id.clone()),
+                title: Some(c.title.clone()),
+                authors: c.authors.clone(),
+                asin: c.asin.clone(),
+                isbn: c.isbn.clone(),
+                region: region.to_string(),
+                with_price: true,
+            }
+        })
+        .collect();
+    let answers = match tokio::time::timeout(STORE_CALL_TIMEOUT, source.purchase_hints(&opts)).await
+    {
+        Ok(Ok(answers)) => answers,
+        Ok(Err(SourceError::RateLimited(wait))) => {
+            crate::purchase::note_store_rate_limit(&id, wait, std::time::Instant::now());
+            return priced;
+        }
+        Ok(Err(err)) => {
+            tracing::debug!(store = %id, error = %err, "candidate pricing failed");
+            return priced;
+        }
+        Err(_) => {
+            tracing::debug!(store = %id, "candidate pricing timed out");
+            return priced;
+        }
+    };
+    let mut learned = false;
+    for (&i, answer) in unpriced.iter().zip(answers) {
+        let Some(hint) = answer else { continue };
+        // The list price: what someone without an account there pays.
+        let cents = hint.list_price_cents.or(hint.price_cents);
+        let label = hint.list_price_label.or(hint.price_label);
+        if cents.is_none() && label.is_none() {
+            continue;
+        }
+        let price = RememberedPrice {
+            cents,
+            currency: hint.currency,
+            label,
+            at: now,
+        };
+        let product_id = candidates[i].product_id.clone();
+        for candidate in candidates.iter_mut().filter(|c| c.product_id == product_id) {
+            price.apply(candidate);
+            priced += 1;
+        }
+        memo.insert(product_id, price);
+        learned = true;
+    }
+    if learned {
+        if memo.len() > PRICE_MEMO_MAX_ENTRIES {
+            let mut ages: Vec<DateTime<Utc>> = memo.values().map(|p| p.at).collect();
+            ages.sort_unstable();
+            let cutoff = ages[memo.len() - PRICE_MEMO_MAX_ENTRIES];
+            memo.retain(|_, price| price.at >= cutoff);
+        }
+        if let Ok(json) = serde_json::to_string(&memo) {
+            if let Err(err) = library.put_discover_store_call(&memo_key, &id, &json).await {
+                tracing::debug!(store = %id, error = %err, "candidate price memo write failed");
+            }
+        }
+    }
+    priced
 }
 
 /// Alternates book and wishlist seeds, so a store's call budget reaches
@@ -813,6 +978,8 @@ mod tests {
         deals: Option<Vec<&'static str>>,
         /// Calls made to the store (cached answers do not count).
         calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        /// Price lookups made to the store.
+        price_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
 
     #[async_trait::async_trait]
@@ -900,6 +1067,30 @@ mod tests {
                 origin: String::from("related"),
                 ..CatalogHit::default()
             }])
+        }
+
+        /// Every product costs 12.34 at this store.
+        async fn purchase_hint(
+            &self,
+            opts: &PurchaseHintOpts,
+        ) -> bookclerk_source::Result<Option<bookclerk_source::SourcePurchaseHint>> {
+            self.price_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.id == "limited" {
+                return Err(SourceError::RateLimited(Some(Duration::from_secs(60))));
+            }
+            Ok(opts
+                .product_id
+                .clone()
+                .map(|product_id| bookclerk_source::SourcePurchaseHint {
+                    product_id,
+                    title: opts.title.clone(),
+                    url: None,
+                    price_cents: Some(1_234),
+                    currency: Some(String::from("USD")),
+                    price_label: Some(String::from("$12.34")),
+                    ..Default::default()
+                }))
         }
     }
 
@@ -1145,6 +1336,7 @@ mod tests {
             id: "up",
             deals: Some(vec!["d1", "d2", "d3"]),
             calls: std::sync::Arc::default(),
+            price_calls: std::sync::Arc::default(),
         }));
         let opts = RecommendOptions::default();
         assert!(stored_subject_feed(&library, &subject, &[])
@@ -1156,10 +1348,19 @@ mod tests {
             .await
             .unwrap();
         // Alice's book and Bob's blended-in book each seed an expand call;
-        // the deals come regardless.
+        // the deals come regardless, and every candidate was priced in the
+        // same fetch.
         assert_eq!(fetched.seeds, 2);
         assert_eq!(fetched.candidates, 5);
+        assert_eq!(fetched.priced, 5);
         let stored = library.list_discover_candidates(&subject).await.unwrap();
+        assert!(stored.iter().all(|c| {
+            serde_json::from_str::<StorefrontCandidate>(&c.candidate_json)
+                .unwrap()
+                .price_label
+                .as_deref()
+                == Some("$12.34")
+        }));
         let near = stored
             .iter()
             .map(|c| serde_json::from_str::<StorefrontCandidate>(&c.candidate_json).unwrap())
@@ -1198,6 +1399,75 @@ mod tests {
             .is_none());
     }
 
+    /// A candidate stub at `product_id`, unpriced.
+    fn unpriced(product_id: &str) -> StorefrontCandidate {
+        hit_to_candidate(
+            "fake",
+            CatalogHit {
+                product_id: product_id.into(),
+                title: format!("Title {product_id}"),
+                ..CatalogHit::default()
+            },
+        )
+    }
+
+    /// Prices answered once are remembered for every later fetch, so a
+    /// refresh only asks the store about titles it has not priced.
+    #[tokio::test]
+    async fn a_price_is_asked_for_once_a_day() {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let price_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let store = FakeStore {
+            id: "memo",
+            deals: Some(Vec::new()),
+            calls: std::sync::Arc::default(),
+            price_calls: std::sync::Arc::clone(&price_calls),
+        };
+        // Two seeds found "a": one question, both copies priced.
+        let mut first = vec![unpriced("a"), unpriced("b"), unpriced("a")];
+        assert_eq!(
+            price_candidates(&library, &store, &mut first, "us").await,
+            3
+        );
+        assert_eq!(price_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let mut again = vec![unpriced("a"), unpriced("b"), unpriced("c")];
+        assert_eq!(
+            price_candidates(&library, &store, &mut again, "us").await,
+            3
+        );
+        // Only "c" reached the store; "a" and "b" came from the memo.
+        assert_eq!(price_calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert!(again
+            .iter()
+            .all(|c| c.price_label.as_deref() == Some("$12.34")));
+    }
+
+    /// A 429 during a fetch pauses the store, and a paused store is not asked.
+    #[tokio::test]
+    async fn a_rate_limited_store_is_left_alone_by_the_fetch() {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let price_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let store = FakeStore {
+            id: "limited",
+            deals: Some(Vec::new()),
+            calls: std::sync::Arc::default(),
+            price_calls: std::sync::Arc::clone(&price_calls),
+        };
+        for _ in 0..2 {
+            let mut batch = vec![unpriced("a"), unpriced("b")];
+            assert_eq!(
+                price_candidates(&library, &store, &mut batch, "us").await,
+                0
+            );
+            assert!(batch.iter().all(|c| c.price_cents.is_none()));
+        }
+        assert_eq!(price_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     #[tokio::test]
     async fn each_store_saves_alone_and_a_failed_store_keeps_its_rows() {
         let library = bookclerk_plugin_database_sqlite::open_store_memory()
@@ -1220,11 +1490,13 @@ mod tests {
             id: "up",
             deals: Some(vec!["a", "b"]),
             calls: std::sync::Arc::clone(&up_calls),
+            price_calls: std::sync::Arc::default(),
         }));
         registry.register(std::sync::Arc::new(FakeStore {
             id: "down",
             deals: None,
             calls: std::sync::Arc::clone(&down_calls),
+            price_calls: std::sync::Arc::default(),
         }));
         let opts = RecommendOptions::default();
 
@@ -1274,6 +1546,7 @@ mod tests {
             id: "quiet",
             deals: Some(Vec::new()),
             calls: std::sync::Arc::clone(&calls),
+            price_calls: std::sync::Arc::default(),
         }));
         let opts = RecommendOptions::default();
         for _ in 0..2 {
@@ -1299,6 +1572,7 @@ mod tests {
                 id,
                 deals: Some(vec!["d1"]),
                 calls: std::sync::Arc::clone(&calls),
+                price_calls: std::sync::Arc::default(),
             }));
         }
         for (total, expected) in [(0, 0), (1, 1), (4, 4)] {

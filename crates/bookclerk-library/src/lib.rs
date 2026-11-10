@@ -154,8 +154,9 @@ pub use session_client::{classify_session_client, SessionClientInfo};
 pub use sql_plan::{
     authorize_typed_request, compile_claim_event_delivery, compile_named_request,
     execute_guest_atomic_with, interpret_typed_exec, proxy_insert_returning_identity,
-    proxy_read_kind, proxy_write_kind, validate_execute_reply, validate_plan,
-    validate_streamed_execute_reply, wake_page_for_max_binds, AtomicSession, CompiledAtomic,
+    proxy_read_kind, proxy_write_kind, unquote_sea_identifiers, validate_execute_reply,
+    validate_plan, validate_streamed_execute_reply, wake_page_for_max_binds, AtomicSession,
+    CompiledAtomic,
 };
 pub use store::{
     event_outbox::{deliver_after_for, prepare_publish_domain_event, EventPruneStep},
@@ -172,6 +173,7 @@ pub use store::{
         RecordPruneStep, AUDIT_RETENTION_DAYS, CONFIGURATION_CHANGE_RETENTION_DAYS,
         STORAGE_SCAN_STALE_DAYS, TOKEN_HISTORY_DAYS, UPLOAD_HISTORY_DAYS,
     },
+    search_feed::ListingRef,
     set_dispatch_chunk_for_test, wishlist_identities_match, BookPage, CatalogEnrichmentFields,
     DiscoverSubject, EditionFile, FileOwner, FileRole, LibraryStore, NewBook, NewListeningProgress,
     NewTitleRequest, NewTitleRequestSource, SavedFilterRecord, ScannedTitle, SeedScope,

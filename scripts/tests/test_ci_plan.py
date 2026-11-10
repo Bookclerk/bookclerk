@@ -57,6 +57,7 @@ from ci_plan.plan import (  # noqa: E402
     STEP_GATED_JOBS,
     build_plan,
     discover_guests,
+    has_plugin_tests,
     glob_match,
     list_changed_paths,
     load_relations,
@@ -569,6 +570,42 @@ class ScenarioTests(unittest.TestCase):
         p = plan("packages/plugin-sdk/src/workerd.ts")
         self.assertIn("path packages/plugin-sdk/src/workerd.ts", p.checks["workerd_guests"]["why"])
 
+    def test_database_example_selects_plugin_examples(self) -> None:
+        p = plan("examples/plugins-echo-workerd-ts/src/notes.ts")
+        self.assertTrue(GUESTS["echo_workerd_ts"].plugin_tests)
+        self.assertIn("path examples/plugins-echo-workerd-ts/src/notes.ts", p.checks["plugin_examples"]["why"])
+        self.assertEqual(p.params("e2e")["scope"], ["echo_workerd_ts"])
+
+    def test_example_without_a_database_suite_skips_plugin_examples(self) -> None:
+        # Declares `[[databases]]` but has no `package.json` test script.
+        self.assertFalse(GUESTS["echo_native_rust"].plugin_tests)
+        self.assertFalse(plan("examples/plugins-echo-workerd-fetch/README.md").selected("plugin_examples"))
+        self.assertFalse(
+            plan("crates/bookclerk-plugins/optional/metadata-openlibrary/src/client.ts").selected("plugin_examples")
+        )
+
+    def test_typescript_sdk_test_kit_and_runner_select_plugin_examples(self) -> None:
+        self.assertIn(
+            "path packages/plugin-sdk/src/testkit.ts",
+            plan("packages/plugin-sdk/src/testkit.ts").checks["plugin_examples"]["why"],
+        )
+        for path in ("crates/bookclerk-db-testkit/src/binding.rs", "crates/bookclerk-plugin-tools/src/profiles.rs"):
+            self.assertTrue(plan(path).selected("plugin_examples"), path)
+
+    def test_has_plugin_tests_needs_a_binding_and_a_test_script(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            db = {"databases": [{"binding": "DB"}]}
+            self.assertFalse(has_plugin_tests(d, db))
+            (d / "package.json").write_text('{"scripts": {"build": "tsc"}}', encoding="utf-8")
+            self.assertFalse(has_plugin_tests(d, db))
+            (d / "package.json").write_text('{"scripts": {"test": "node --test"}}', encoding="utf-8")
+            self.assertTrue(has_plugin_tests(d, db))
+            self.assertFalse(has_plugin_tests(d, {}))
+            (d / "package.json").write_text("{", encoding="utf-8")
+            with self.assertRaises(PlanError):
+                has_plugin_tests(d, db)
+
     def test_manifest_change_compiles_package(self) -> None:
         p = plan("crates/bookclerk-naming/Cargo.toml")
         self.assertTrue(p.packages["bookclerk-naming"].compiled)
@@ -875,6 +912,28 @@ class CoverageCommandTests(unittest.TestCase):
         self.assertNotIn("--test-reporter=lcov", node)
         with mock.patch.object(execute, "workerd_guest_dirs", return_value=[]):
             self.assertEqual(len(commands(p, "workerd_guests")), 2)
+
+    def test_plugin_examples_build_check_and_run_every_profile(self) -> None:
+        example = Path("/ws/examples/plugins-echo-workerd-ts")
+        p = plan("examples/plugins-echo-workerd-ts/src/notes.ts")
+        with mock.patch.object(execute, "plugin_example_dirs", return_value=[example]):
+            planned = [c for _, c in planned_commands(artifact(p), "plugin_examples", CTX)]
+        argv = [c.argv for c in planned]
+        self.assertEqual(argv[:2], [["npm", "ci"], ["npm", "run", "build"]])
+        self.assertIn(["cargo", "build", "-p", "bookclerk-db-testkit", "--bin", "bookclerk-db-testkit"], argv)
+        self.assertIn(["cargo", "build", "-p", "bookclerk-plugin-tools", "--bin", "bookclerk-plugin"], argv)
+        clear = argv.index([sys.executable, "-c", execute._CLEAR_MODULES])
+        self.assertEqual(argv[clear + 1], ["npm", "run", "build"])
+        self.assertEqual(argv[clear + 2], [sys.executable, "-c", execute._MODULES_DRIFT])
+        run = planned[-1]
+        self.assertEqual(run.argv, [str(CTX.bin_dir / "bookclerk-plugin"), "test", "examples/plugins-echo-workerd-ts"])
+        self.assertEqual(run.env["BOOKCLERK_DB_TESTKIT"], str(CTX.bin_dir / "bookclerk-db-testkit"))
+        with mock.patch.object(execute, "plugin_example_dirs", return_value=[]):
+            self.assertEqual(len(commands(p, "plugin_examples")), 4)
+
+    def test_plugin_example_dirs_finds_the_database_examples(self) -> None:
+        dirs = [d.relative_to(REPO).as_posix() for d in execute.plugin_example_dirs(REPO)]
+        self.assertEqual(dirs, ["examples/plugins-echo-workerd-ts"])
 
     def test_workerd_guest_dirs_finds_the_typescript_guests(self) -> None:
         dirs = [d.relative_to(REPO).as_posix() for d in execute.workerd_guest_dirs(REPO)]

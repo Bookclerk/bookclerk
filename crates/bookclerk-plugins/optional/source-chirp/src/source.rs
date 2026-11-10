@@ -35,6 +35,9 @@ impl Default for ChirpSource {
     }
 }
 
+/// Most audiobooks priced by one aliased GraphQL query.
+const PRICE_BATCH_IDS: usize = 50;
+
 impl ChirpSource {
     /// Returns a Chirp source aimed at the production GraphQL endpoint.
     #[must_use]
@@ -430,16 +433,19 @@ impl ChirpSource {
             return Ok(hints);
         }
         let client = ChirpClient::new(&self.graphql_url);
-        let prices = match client.audiobook_pricings(&ids).await {
-            Ok(prices) => prices,
-            Err(crate::error::ChirpError::RateLimited(wait)) => {
-                return Err(bookclerk_storefront::SourceError::RateLimited(wait));
+        let mut prices = std::collections::HashMap::new();
+        for chunk in ids.chunks(PRICE_BATCH_IDS) {
+            match client.audiobook_pricings(chunk).await {
+                Ok(found) => prices.extend(found),
+                Err(crate::error::ChirpError::RateLimited(wait)) => {
+                    return Err(bookclerk_storefront::SourceError::RateLimited(wait));
+                }
+                Err(err) => {
+                    tracing::debug!(error = %err, "chirp batch pricing failed");
+                    break;
+                }
             }
-            Err(err) => {
-                tracing::debug!(error = %err, "chirp batch pricing failed");
-                return Ok(hints);
-            }
-        };
+        }
         for (hint, query) in hints.iter_mut().zip(opts) {
             if let (true, Some(h)) = (query.with_price, hint.as_mut()) {
                 if let Some(pricing) = prices.get(&h.product_id) {
