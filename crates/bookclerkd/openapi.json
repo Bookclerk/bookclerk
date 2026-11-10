@@ -15276,6 +15276,136 @@
         "x-bookclerk-access": "The operator, or any library session."
       }
     },
+    "/api/discover/refresh": {
+      "post": {
+        "tags": [
+          "Discover"
+        ],
+        "summary": "Queues a storefront fetch and ranking for the caller's shelves now, as\nthe Discover page's Refresh button asks. Unchanged store calls answer\nfrom the day's cache, so a refresh is cheap; a fetch already waiting\nabsorbs the request.",
+        "operationId": "discover_refresh",
+        "responses": {
+          "200": {
+            "description": "Stored Discover state of the caller's shelves, with `updating` set once the fetch is queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoverStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller has no portal identity.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Unauthorized"
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The job queue is full, so the fetch was not queued.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "job queue is full"
+              }
+            }
+          },
+          "500": {
+            "description": "The lookup failed, or the fetch could not be queued.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session."
+      }
+    },
     "/api/discover/recommendations": {
       "get": {
         "tags": [
@@ -28039,7 +28169,8 @@
         "description": "Stored Discover state of the caller's shelves.",
         "required": [
           "subject",
-          "ready"
+          "ready",
+          "updating"
         ],
         "properties": {
           "subject": {
@@ -28075,6 +28206,11 @@
             ],
             "description": "RFC 3339 time the caller's last storefront fetch finished, when any.",
             "example": "2026-11-06T00:29:41+00:00"
+          },
+          "updating": {
+            "type": "boolean",
+            "description": "True while a fetch or ranking for the caller is waiting or running.",
+            "example": false
           }
         }
       },
@@ -34559,6 +34695,11 @@
                 "type": "null"
               }
             ]
+          },
+          "incomplete": {
+            "type": "boolean",
+            "description": "True when the batch deadline cut this lookup short: the hints are the\nquery's trusted seeds alone, so a client should not keep the answer\nand asks again later. Omitted (false) for a finished lookup.",
+            "example": false
           }
         }
       },
@@ -35411,6 +35552,22 @@
             "format": "int64",
             "description": "Number of distinct users who wishlisted this title (may exceed `wishers.len()`).",
             "example": 3
+          },
+          "seed_title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title of the book or wish the storefront was asked about to find this\ncard, when it came from such an expansion.",
+            "example": "Dune"
+          },
+          "starter_genre": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Starter genre this card was browsed from while the taste was thin.",
+            "example": "Science Fiction"
           }
         }
       },

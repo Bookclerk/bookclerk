@@ -8,12 +8,11 @@
 //! the active version's artifact into a content-addressed cache and spawn
 //! from there; moving the pointer (update, rollback) wakes every node.
 //!
-//! Small archives may be stored in `plugin_artifacts` when no shared
-//! location exists (the `blob:sha256:<hex>` artifact URL); larger ones stay
-//! where the artifact URL points (a registry, an operator bucket, or a
-//! shared `file:` path).
+//! Small archives may be stored in the library when no shared location
+//! exists (the `blob:sha256:<hex>` artifact URL, see [`super::artifacts`]);
+//! larger ones stay where the artifact URL points (a registry, an operator
+//! bucket, or a shared `file:` path).
 
-use base64::Engine as _;
 use chrono::Utc;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
@@ -22,15 +21,12 @@ use serde::{Deserialize, Serialize};
 use super::documents::ConfigActor;
 use super::node_queue::{notify_all_nodes, NodeMessage};
 use super::schemas::{pin_version_schema, SchemaPin, SchemaPinOutcome};
-use crate::entities::{plugin_artifacts, plugin_installs, plugin_versions};
+use crate::entities::{plugin_installs, plugin_versions};
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
-/// Largest archive stored in `plugin_artifacts` (base64 stays under
-/// D1's row cap).
-pub const MAX_ARTIFACT_BLOB_BYTES: usize = 1_048_576;
-
-/// Artifact URL scheme of an archive stored in `plugin_artifacts`.
+/// Artifact URL scheme of an archive stored in the library
+/// ([`super::artifacts::put_artifact_blob`]).
 pub const ARTIFACT_BLOB_SCHEME: &str = "blob:sha256:";
 
 /// One downloadable artifact of a version.
@@ -531,75 +527,4 @@ pub async fn approve_version_grant(
     )
     .await;
     Ok(row)
-}
-
-/// Stores a small archive and returns its `blob:sha256:<hex>` URL.
-///
-/// # Errors
-///
-/// Returns an error when the archive exceeds [`MAX_ARTIFACT_BLOB_BYTES`] or
-/// the write fails.
-pub async fn put_artifact_blob(store: &LibraryStore, bytes: &[u8]) -> Result<String> {
-    if bytes.len() > MAX_ARTIFACT_BLOB_BYTES {
-        return Err(LibraryError::Invalid(format!(
-            "archive of {} bytes exceeds the {MAX_ARTIFACT_BLOB_BYTES}-byte library blob cap; \
-             install it from a shared location instead",
-            bytes.len()
-        )));
-    }
-    let sha = {
-        use sha2::{Digest, Sha256};
-        Sha256::digest(bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    };
-    let model = plugin_artifacts::ActiveModel {
-        sha256: Set(sha.clone()),
-        data: Set(base64::engine::general_purpose::STANDARD.encode(bytes)),
-        size: Set(i64::try_from(bytes.len()).unwrap_or(i64::MAX)),
-        created_at: Set(Utc::now().to_rfc3339()),
-    };
-    plugin_artifacts::Entity::insert(model)
-        .on_conflict(
-            OnConflict::column(plugin_artifacts::Column::Sha256)
-                .do_nothing()
-                .to_owned(),
-        )
-        .exec_without_returning(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok(format!("{ARTIFACT_BLOB_SCHEME}{sha}"))
-}
-
-/// Reads an archive stored by [`put_artifact_blob`].
-///
-/// # Errors
-///
-/// Returns an error when the read fails or the stored bytes do not match
-/// their digest.
-pub async fn load_artifact_blob(store: &LibraryStore, sha256: &str) -> Result<Option<Vec<u8>>> {
-    let Some(row) = plugin_artifacts::Entity::find_by_id(sha256.to_string())
-        .one(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-    else {
-        return Ok(None);
-    };
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(row.data.as_bytes())
-        .map_err(|err| LibraryError::Other(anyhow::anyhow!("version blob is not base64: {err}")))?;
-    let actual = {
-        use sha2::{Digest, Sha256};
-        Sha256::digest(&bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    };
-    if actual != sha256 {
-        return Err(LibraryError::Other(anyhow::anyhow!(
-            "version blob {sha256} does not match its digest"
-        )));
-    }
-    Ok(Some(bytes))
 }

@@ -508,7 +508,9 @@ class ScenarioTests(unittest.TestCase):
         self.assertTrue({"library_queue", "library_totp", "library_vectors"} <= set(lib.params("postgres")["steps"]))
         self.assertNotIn("binding_schema", lib.params("postgres")["steps"])
         pg = plan("crates/bookclerk-plugins/optional/database-postgres/src/main.rs")
-        self.assertEqual(sorted(pg.params("postgres")["steps"]), ["binding_schema", "rpc_like"])
+        self.assertEqual(
+            sorted(pg.params("postgres")["steps"]), ["adapter_conformance", "binding_schema", "rpc_like"]
+        )
 
     def test_e2e_full_takes_precedence_over_subsets(self) -> None:
         p = plan(

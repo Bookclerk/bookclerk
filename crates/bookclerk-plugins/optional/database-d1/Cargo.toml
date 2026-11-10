@@ -38,6 +38,7 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+bookclerk-db-testkit.workspace = true
 bookclerk-library = { workspace = true, features = ["test-support"] }
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

@@ -45,6 +45,9 @@ pub enum PluginErrorCode {
     /// A negotiated database limit was exceeded; [`PluginError::limit`]
     /// names which one.
     LimitExceeded,
+    /// The backend asked the guest to slow down (HTTP 429 or its
+    /// equivalent); [`PluginError::retry_after`] says for how long.
+    RateLimited,
     /// Unrecognized wire code. See [`PluginError::wire_str`].
     Unknown,
 }
@@ -67,6 +70,7 @@ impl PluginErrorCode {
             Self::Cancelled => "cancelled",
             Self::Conflict => "conflict",
             Self::LimitExceeded => "limit_exceeded",
+            Self::RateLimited => "rate_limited",
             Self::Unknown => "unknown",
         }
     }
@@ -88,6 +92,7 @@ impl PluginErrorCode {
             "cancelled" | "canceled" => Self::Cancelled,
             "conflict" | "unique" | "constraint" | "unique_constraint" => Self::Conflict,
             "limit_exceeded" | "limitExceeded" => Self::LimitExceeded,
+            "rate_limited" | "rateLimited" | "too_many_requests" => Self::RateLimited,
             "timeout" | "timed_out" => Self::DeadlineExceeded,
             "retryable" => Self::Unavailable,
             _ => Self::Unknown,
@@ -207,6 +212,43 @@ impl PluginError {
     #[must_use]
     pub fn unavailable(message: impl Into<String>) -> Self {
         Self::new(PluginErrorCode::Unavailable, message)
+    }
+
+    /// Convenience for [`PluginErrorCode::RateLimited`].
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - Human-readable explanation (which backend, which call).
+    /// * `retry_after` - How long the backend asked to be left alone, when
+    ///   it said (its `Retry-After`); stored as `details.retryAfterMs`.
+    #[must_use]
+    pub fn rate_limited(
+        message: impl Into<String>,
+        retry_after: Option<std::time::Duration>,
+    ) -> Self {
+        let mut err = Self::new(PluginErrorCode::RateLimited, message);
+        if let Some(wait) = retry_after {
+            let ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
+            err.details = Some(
+                std::iter::once((String::from("retryAfterMs"), serde_json::Value::from(ms)))
+                    .collect(),
+            );
+        }
+        err
+    }
+
+    /// How long a [`PluginErrorCode::RateLimited`] error asks the caller to
+    /// wait, when the backend said (`details.retryAfterMs`).
+    #[must_use]
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        if self.code != PluginErrorCode::RateLimited {
+            return None;
+        }
+        self.details
+            .as_ref()
+            .and_then(|d| d.get("retryAfterMs"))
+            .and_then(serde_json::Value::as_u64)
+            .map(std::time::Duration::from_millis)
     }
 
     /// Convenience for [`PluginErrorCode::PayloadTooLarge`].
@@ -413,6 +455,37 @@ impl<'de> Deserialize<'de> for PluginError {
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rate_limit_keeps_its_wait_across_the_wire() {
+        let err =
+            PluginError::rate_limited("slow down", Some(std::time::Duration::from_millis(1500)));
+        assert_eq!(err.code, PluginErrorCode::RateLimited);
+        assert_eq!(err.wire_str(), "rate_limited");
+        assert_eq!(
+            err.retry_after(),
+            Some(std::time::Duration::from_millis(1500))
+        );
+        assert_eq!(
+            err.details.as_ref().and_then(|d| d.get("retryAfterMs")),
+            Some(&serde_json::Value::from(1500u64))
+        );
+        assert!(PluginError::rate_limited("slow down", None)
+            .retry_after()
+            .is_none());
+        // Another code never reports a wait, even with the detail present.
+        let mut other = PluginError::internal("x");
+        other.details = err.details.clone();
+        assert!(other.retry_after().is_none());
+        assert_eq!(
+            PluginErrorCode::from_wire("rate_limited"),
+            PluginErrorCode::RateLimited
+        );
+        assert_eq!(
+            PluginErrorCode::from_wire("too_many_requests"),
+            PluginErrorCode::RateLimited
+        );
+    }
 
     #[test]
     fn unknown_wire_code_is_preserved() {

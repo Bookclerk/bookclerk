@@ -293,6 +293,10 @@ query BookclerkAudiobookPricing($id: ID!) {
 }
 "#;
 
+/// The `currentProduct` fields a pricing query reads; shared by the single
+/// and the aliased batch query.
+const PRICING_FIELDS: &str = "id discountPrice discountedPriceCents listingPrice isFreeListing hotDeal purchaseUrl salableInCurrentCountry savingsPercent showListingPrice";
+
 /// Authenticated Chirp GraphQL helper.
 #[derive(Debug, Clone)]
 pub struct ChirpClient {
@@ -392,6 +396,15 @@ impl ChirpClient {
             .send()
             .await?;
         let status = resp.status();
+        if status.as_u16() == 429 {
+            let wait = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .map(std::time::Duration::from_secs);
+            return Err(ChirpError::RateLimited(wait));
+        }
         let text = resp.text().await?;
         if !status.is_success() {
             return Err(ChirpError::api(format!(
@@ -523,6 +536,68 @@ impl ChirpClient {
             return Ok(None);
         }
         Ok(serde_json::from_value(product.clone()).ok())
+    }
+
+    /// Live pricing for several audiobooks in one GraphQL request, by id.
+    ///
+    /// Each id is an aliased `audiobook(id:)` field of one query, so a page
+    /// of cards costs one request. Ids Chirp does not know are absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request fails, including
+    /// [`ChirpError::RateLimited`] when Chirp asks to slow down.
+    pub async fn audiobook_pricings(
+        &self,
+        ids: &[String],
+    ) -> Result<std::collections::HashMap<String, ChirpProductPricing>> {
+        let ids: Vec<&str> = ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .collect();
+        let mut out = std::collections::HashMap::new();
+        if ids.is_empty() {
+            return Ok(out);
+        }
+        let mut query = String::from("query BookclerkAudiobookPricings(");
+        for i in 0..ids.len() {
+            if i > 0 {
+                query.push_str(", ");
+            }
+            query.push_str(&format!("$id{i}: ID!"));
+        }
+        query.push_str(") {\n");
+        for i in 0..ids.len() {
+            query.push_str(&format!(
+                "  a{i}: audiobook(id: $id{i}) {{ id currentProduct {{ {PRICING_FIELDS} }} }}\n"
+            ));
+        }
+        query.push('}');
+        let mut variables = serde_json::Map::new();
+        for (i, id) in ids.iter().enumerate() {
+            variables.insert(format!("id{i}"), Value::from(*id));
+        }
+        let parsed = self
+            .graphql(
+                "BookclerkAudiobookPricings",
+                &query,
+                Value::Object(variables),
+                false,
+            )
+            .await?;
+        for (i, id) in ids.iter().enumerate() {
+            let Some(product) = parsed.pointer(&format!("/data/a{i}/currentProduct")) else {
+                continue;
+            };
+            if product.is_null() {
+                continue;
+            }
+            if let Ok(pricing) = serde_json::from_value::<ChirpProductPricing>(product.clone()) {
+                out.insert((*id).to_string(), pricing);
+            }
+        }
+        Ok(out)
     }
 
     /// Catalog search (`audiobooks(query:)`) — no auth required.

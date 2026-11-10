@@ -1988,6 +1988,12 @@ impl Drop for PluginSession {
 
 /// Maps ABI errors onto host [`PluginError`].
 fn map_abi(err: bookclerk_plugin_sdk::PluginError) -> PluginError {
+    if err.code == bookclerk_plugin_sdk::PluginErrorCode::RateLimited {
+        return PluginError::RateLimited {
+            retry_after: err.retry_after(),
+            message: err.message,
+        };
+    }
     let code = err.wire_str().to_string();
     PluginError::from_abi(Some(&code), err.message)
 }
@@ -2021,6 +2027,10 @@ fn host_err_to_abi(err: PluginError) -> bookclerk_plugin_abi::PluginError {
         PluginError::Abi { code, message } => {
             bookclerk_plugin_abi::PluginError::from_wire(&code, message)
         }
+        PluginError::RateLimited {
+            message,
+            retry_after,
+        } => bookclerk_plugin_abi::PluginError::rate_limited(message, retry_after),
         other => bookclerk_plugin_abi::PluginError::internal(other.to_string()),
     }
 }
