@@ -655,6 +655,41 @@ class DraftDeferredWorkflowTests(unittest.TestCase):
         self.assertIn("github.event.workflow_run.id", conc["group"])
 
 
+    # Jobs that never run on a pull request, or hold a runner only briefly.
+    UNSLOTTED_CI_JOBS = {"plan", "macos", "windows-cluster", "merge-queue-fail-fast", "ci-gate"}
+    # Pull request jobs may hold at most this many runners at once (of the 20 the plan allows).
+    PR_SLOT_BUDGET = 12
+
+    def test_pull_request_jobs_take_turns_in_slots(self) -> None:
+        """Heavy pull request jobs wait in shared slots and never drop a waiting run."""
+        wf_dir = REPO / ".github" / "workflows"
+        slots: set[str] = set()
+        for name, extra in (("ci.yml", self.UNSLOTTED_CI_JOBS), ("codeql.yml", {"languages"}), ("cflite-pr.yml", set())):
+            wf = yaml.safe_load((wf_dir / name).read_text(encoding="utf-8"))
+            for job, body in wf["jobs"].items():
+                if job in extra:
+                    continue
+                with self.subTest(workflow=name, job=job):
+                    conc = body.get("concurrency")
+                    self.assertIsInstance(conc, dict, "pull request job without a slot")
+                    # `queue: max` keeps up to 100 waiting jobs; the default keeps one
+                    # and cancels the rest. It can't be combined with cancel-in-progress.
+                    self.assertEqual(conc.get("queue"), "max")
+                    self.assertNotIn("cancel-in-progress", conc)
+                    group = conc["group"]
+                    self.assertTrue(group.startswith("${{ github.event_name == 'pull_request' && "), group)
+                    # Every other event gets a group of its own, so it never waits.
+                    self.assertIn("github.run_id", group)
+                    self.assertIn("github.run_attempt", group)
+                    found = re.findall(r"'((?:ci|cflite)-pr-slot[a-z0-9-]*)'", group)
+                    found += [
+                        f"codeql-pr-slot-{lang}" for lang in re.findall(r"'(rust|other)'", group)
+                    ]
+                    self.assertTrue(found, group)
+                    slots.update(found)
+        self.assertLessEqual(len(slots), self.PR_SLOT_BUDGET, sorted(slots))
+
+
 class OsvRemediationWorkflowTest(unittest.TestCase):
     """`osv-remediate.yml` never rebuilds a remediation PR that is already open."""
 
