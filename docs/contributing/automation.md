@@ -142,6 +142,7 @@ GitHub App as [Dependabot auto-merge](#dependabot-auto-merge), not
 | `docs-publish.yml` | Commits and release tags on the `bookclerk-docs` repository ([docs publishing](#docs-publishing)) |
 | `merge-queue-requeue.yml` | Auto-merge on a pull request the queue removed only because a job never got a runner ([re-enqueue](ci.md#merge-queue-re-enqueue)) |
 | `cla.yml` | Signature commits on the `cla-signatures` branch, the only writer its ruleset allows; the check's pull request comment and `Bookclerk CLA` check run ([CLA check](licensing.md#the-cla-check)) |
+| `maintainer-review.yml` | The `Maintainer review` check run and the `touches-ci-or-build` label ([maintainer review](#maintainer-review)) |
 
 The probes share `.github/actions/api-drift-report`:
 
@@ -215,6 +216,62 @@ signed and attributed to the App.
 
 `osv-advisories.yml` seals its verdict report with `FUZZ_CRASH_BUNDLE_KEY`
 too, and its intermediate evidence with `OSV_REMEDIATION_BUNDLE_KEY`.
+
+## Maintainer review
+
+Anyone can open a pull request, and a fork's pull request runs its own
+copy of the CI workflows, both on the pull request and in the merge queue.
+So a green `CI Gate` on an outside contribution only proves that its own
+workflows passed. The `Maintainer review` check makes sure someone with
+write access has read the change before it can merge:
+
+- A pull request passes when its author has write access to the
+  repository, or is Dependabot or the automation App.
+- Any other author's pull request passes only once someone with write
+  access, other than the author, approves its **current head commit**, and
+  no such reviewer's latest review asks for changes. Every push needs a
+  fresh approval.
+- For those pull requests, the check's page lists the changed files that
+  run in CI or at build time, or have no text diff, and the pull request
+  gets the `touches-ci-or-build` label. The list covers:
+  - workflows and actions, scripts and Cargo configuration (`.github/`,
+    `scripts/`, `.cargo/`);
+  - the Dev Container, packaging, the lint tools and fuzz corpora;
+  - build scripts, manifests and lockfiles anywhere (`build.rs`,
+    `Cargo.toml`, `Cargo.lock`, `package.json`, `uv.lock` and the like);
+  - toolchain and container files (`.tool-versions`,
+    `rust-toolchain.toml`, `Dockerfile`);
+  - binary files, and diffs too large to show.
+
+  Read those files in full before approving.
+- The check belongs to the head commit, and passes while any open pull
+  request on that commit passes: a maintainer who opened or approved one of
+  them vouched for exactly that commit, so a second pull request on it
+  can't block it.
+- Merge groups pass: every pull request in one already passed the check to
+  enter the queue.
+
+The check needs the approval to be on the head commit, so it never trusts
+an approval given before a later push. When it doesn't update after you
+approve, press **Re-run** on the check.
+
+`maintainer-review-trigger.yml` runs on `pull_request` and
+`pull_request_review` with no token permissions and no secrets.
+`maintainer-review.yml` then runs from the default branch on
+`workflow_run`, reads the pull request, its reviews and its changed files
+through the API (`scripts/maintainer_review.py`), and posts the check as
+the automation App. It never checks out or runs pull request code. A
+first-time contributor's trigger run waits for a maintainer to approve
+workflow runs, and until then no check arrives and the pull request stays
+blocked.
+
+### Setup
+
+1. The App's **Checks** and **Pull requests** permissions (see
+   [Automation App](#automation-app)) cover the check run and the label.
+2. Once `maintainer-review.yml` is on `main`, add `Maintainer review` to
+   the required status checks of the default branch's ruleset, expected
+   from the automation App, like `Bookclerk CLA`.
 
 ## OSV remediation
 

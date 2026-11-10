@@ -1,0 +1,9 @@
+{
+ "permission": "none",
+ "role_name": "none",
+ "user": {
+  "login": "alice",
+  "id": 101,
+  "type": "User"
+ }
+}
