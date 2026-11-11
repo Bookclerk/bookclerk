@@ -1243,6 +1243,21 @@ class WriteChunksTests(unittest.IsolatedAsyncioTestCase):
             await db.write_chunks([], key="k", max_statements=2), {"next": 0, "done": True}
         )
 
+    async def test_a_cap_left_out_keeps_the_sessions(self) -> None:
+        async def limits() -> Any:
+            return {**SQLITE_CAPS, "maxRequestBytes": 1024}
+
+        db = create_database_binding(self._execute, limits=limits)
+        wide = [
+            db.prepare("INSERT INTO t VALUES (?)").bind({"kind": "text", "value": "x" * 300})
+            for _ in range(4)
+        ]
+        # Only max_statements is given; the session's byte cap still splits.
+        done = await db.write_chunks(wide, key="wide", max_statements=4)
+        self.assertEqual(done, {"next": 4, "done": True})
+        self.assertGreater(len(self.committed), 1)
+        self.assertEqual(sum(n for _, n in self.committed), 4)
+
 
 async def _reply_async(reply: Any) -> Any:
     return reply

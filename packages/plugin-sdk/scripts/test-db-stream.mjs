@@ -1189,6 +1189,29 @@ for (const setup of [
     (err) => err.code === "invalid_params" && err.next === 6,
   );
   assert.deepEqual(await db.writeChunks([], { key: "k", ...caps }), { next: 0, done: true });
+
+  // A cap left out keeps the session's: with only `maxStatements` given,
+  // the session's 1024-byte request cap still splits 300-byte rows.
+  const sized = [];
+  const capped = createDatabaseBinding({
+    limits: async () => ({ ...sqliteCaps, maxRequestBytes: 1024 }),
+    async execute(req) {
+      sized.push(req.statements.length);
+      return inlineReply(req);
+    },
+  });
+  const wide = Array.from({ length: 4 }, () =>
+    capped.prepare("INSERT INTO t VALUES (?)").bind({ kind: "text", value: "x".repeat(300) }),
+  );
+  assert.deepEqual(await capped.writeChunks(wide, { key: "wide", maxStatements: 4 }), {
+    next: 4,
+    done: true,
+  });
+  assert.ok(sized.length > 1, "the session's byte cap still splits the write");
+  assert.equal(
+    sized.reduce((a, b) => a + b, 0),
+    4,
+  );
 }
 
 // `chunkIndexes`: every run encodes within the byte cap, covers each

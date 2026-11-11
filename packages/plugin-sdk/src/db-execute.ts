@@ -985,10 +985,14 @@ export function createDatabaseBinding(
           ),
         );
       }
-      const caps =
-        opts.maxStatements !== undefined || opts.maxRequestBytes !== undefined
-          ? { maxStatements: opts.maxStatements ?? 0, maxRequestBytes: opts.maxRequestBytes ?? 0 }
-          : undefined;
+      // A cap left out keeps the session's, as in `chunk()`.
+      const caps: { maxStatements?: number; maxRequestBytes?: number } = {};
+      if (opts.maxStatements !== undefined) {
+        caps.maxStatements = opts.maxStatements;
+      }
+      if (opts.maxRequestBytes !== undefined) {
+        caps.maxRequestBytes = opts.maxRequestBytes;
+      }
       const batches: PreparedStatement[][] = [];
       try {
         for await (const b of binding.chunk(statements.slice(from), caps)) {

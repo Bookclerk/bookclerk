@@ -774,13 +774,13 @@ class DatabaseBinding:
                     f"write_chunks start {start} is not within the {len(statements)} statements",
                 ),
             )
-        explicit = max_statements is not None or max_request_bytes is not None
         batches: list[list[PreparedStatement]] = []
         try:
+            # A cap left as None keeps the session's, as in :meth:`chunk`.
             async for b in self.chunk(
                 statements[start:],
-                max_statements=(max_statements or 0) if explicit else None,
-                max_request_bytes=(max_request_bytes or 0) if explicit else None,
+                max_statements=max_statements,
+                max_request_bytes=max_request_bytes,
             ):
                 batches.append(b)
         except Exception as err:

@@ -8494,7 +8494,13 @@ function createDatabaseBinding(transport, options = {}) {
       if (!Number.isInteger(from) || from < 0 || from > statements.length) {
         throw fail(from, PluginError.fromWire("invalid_params", `writeChunks from ${String(from)} is not within the ${String(statements.length)} statements`));
       }
-      const caps = opts.maxStatements !== void 0 || opts.maxRequestBytes !== void 0 ? { maxStatements: opts.maxStatements ?? 0, maxRequestBytes: opts.maxRequestBytes ?? 0 } : void 0;
+      const caps = {};
+      if (opts.maxStatements !== void 0) {
+        caps.maxStatements = opts.maxStatements;
+      }
+      if (opts.maxRequestBytes !== void 0) {
+        caps.maxRequestBytes = opts.maxRequestBytes;
+      }
       const batches = [];
       try {
         for await (const b of binding.chunk(statements.slice(from), caps)) {
