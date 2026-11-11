@@ -4170,13 +4170,21 @@ mod store_tests {
     #[tokio::test]
     async fn lookups_are_sized_on_the_request_a_read_sends() {
         use crate::entities::store_listings;
+        use std::sync::Mutex;
         let store = store().await;
         let ids: Vec<String> = (0..4).map(|_| uuid::Uuid::new_v4().to_string()).collect();
-        let stmt = crate::control_plane::sea_exec(
-            &store_listings::Entity::find()
-                .filter(store_listings::Column::ProductId.is_in(ids.iter().cloned())),
-        )
-        .unwrap();
+        for id in &ids {
+            let listing = resolve::Listing::from_draft(&dune("audible", id)).unwrap();
+            store
+                .record_listing(&listing, &account("a1"))
+                .await
+                .unwrap();
+        }
+        let query = |part: &[String]| {
+            store_listings::Entity::find()
+                .filter(store_listings::Column::ProductId.is_in(part.iter().cloned()))
+        };
+        let stmt = crate::control_plane::sea_exec(&query(&ids)).unwrap();
         let short = crate::control_plane::batch::request("live.admit", vec![stmt.clone()]);
         let short_bytes = bookclerk_plugin_abi::encoded_execute_request_bytes(&short)
             .unwrap()
@@ -4187,13 +4195,37 @@ mod store_tests {
         // Fits the short request exactly, but not the one a read sends.
         assert!(store.admits_statement(&stmt));
         assert!(!store.admits_read(&stmt));
+        let admits = |part: &[String]| {
+            store.admits_read(&crate::control_plane::sea_exec(&query(part)).unwrap())
+        };
+        assert!(admits(&ids[..1]), "one id fits the read");
+        // Every call starting at the same id is a probe until the last,
+        // which is the statement sent.
+        let calls = Mutex::new(Vec::<(String, usize)>::new());
         let rows = find_chunked::<store_listings::Entity, _>(&store, &ids, |part| {
-            store_listings::Entity::find()
-                .filter(store_listings::Column::ProductId.is_in(part.iter().cloned()))
+            calls.lock().unwrap().push((part[0].clone(), part.len()));
+            query(part)
         })
         .await
         .unwrap();
-        assert!(rows.is_empty());
+        let mut sent = std::collections::BTreeMap::new();
+        for (first, len) in calls.into_inner().unwrap() {
+            let at = ids.iter().position(|id| *id == first).unwrap();
+            sent.insert(at, len);
+        }
+        assert!(sent.len() > 1, "the lookup is narrowed: {sent:?}");
+        let mut next = 0;
+        for (at, len) in sent {
+            assert_eq!(at, next, "chunks cover the ids in order");
+            assert!(admits(&ids[at..at + len]), "{len} ids at {at}");
+            next = at + len;
+        }
+        assert_eq!(next, ids.len());
+        let mut found: Vec<String> = rows.into_iter().map(|row| row.product_id).collect();
+        found.sort();
+        let mut want = ids.clone();
+        want.sort();
+        assert_eq!(found, want, "every seeded row is read once");
     }
 
     /// A chunk whose reply is refused as over a result limit is read again
