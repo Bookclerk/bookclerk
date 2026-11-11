@@ -176,9 +176,9 @@ pub use store::{
     search_feed::ListingRef,
     set_dispatch_chunk_for_test, wishlist_identities_match, BookPage, CatalogEnrichmentFields,
     DiscoverSubject, EditionFile, FileOwner, FileRole, LibraryStore, NewBook, NewListeningProgress,
-    NewTitleRequest, NewTitleRequestSource, SavedFilterRecord, ScannedTitle, SeedScope,
-    StoredCandidate, StoredFeed, UserBookFields, WishlistIdentity, ACQUIRE_WRITER,
-    BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
+    NewTitleRequest, NewTitleRequestSource, QueueRank, SavedFilterRecord, ScannedTitle, SeedScope,
+    StoredCandidate, StoredFeed, StoredQueueRank, UserBookFields, WishlistIdentity, ACQUIRE_WRITER,
+    BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT, MAX_QUEUE_REASONS,
 };
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

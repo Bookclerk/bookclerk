@@ -3,7 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::generated::{
-    Brand, CliSchema, ConfigOption, Entrypoint, PluginCapabilities, PortalAuthMode,
+    Brand, CatalogCapabilities, CliSchema, ConfigOption, Entrypoint, PluginCapabilities,
+    PortalAuthMode,
 };
 use crate::limits::{ScalarLimits, PRODUCT_API_VERSION};
 
@@ -55,6 +56,10 @@ pub struct PluginDescribe {
     /// Embedded CLI schema (same shape as `cliDescribe`); empty when unused.
     #[serde(default)]
     pub cli: CliSchema,
+    /// Catalog behaviours a storefront declares (ISBN detail lookup, ...);
+    /// all false for other kinds and for storefronts that declare none.
+    #[serde(default)]
+    pub catalog: CatalogCapabilities,
 }
 
 impl Default for PluginDescribe {
@@ -73,6 +78,7 @@ impl Default for PluginDescribe {
             brand: None,
             config_options: Vec::new(),
             cli: CliSchema::default(),
+            catalog: CatalogCapabilities::default(),
         }
     }
 }

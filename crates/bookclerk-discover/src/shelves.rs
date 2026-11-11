@@ -810,49 +810,82 @@ pub fn flatten_feed(feed: &DiscoverFeed, limit: usize) -> Vec<Recommendation> {
     out
 }
 
-/// Fewest items a shelf keeps while [`encode_feed_within`] shrinks a feed.
+/// Fewest items a shelf keeps while [`fit_feed_within`] shrinks a feed.
 const FIT_MIN_ITEMS: usize = 4;
 
-/// Characters of a description kept once [`encode_feed_within`] has shrunk
-/// every shelf to [`FIT_MIN_ITEMS`] and the feed is still too large.
+/// Characters of a description kept once [`fit_feed_within`] finds a feed
+/// too large. A card shows a few lines at most, and the title dialog asks
+/// for the whole blurb when the stored one is short or ends in `…`.
 const FIT_DESCRIPTION_CHARS: usize = 300;
 
-/// Encodes `feed` as JSON that stays within `budget` bytes once stored,
-/// shrinking it first.
+/// Reasons a card keeps once [`fit_feed_within`] finds a feed too large.
+/// The page shows the first one it does not already show as a badge.
+const FIT_REASONS: usize = 3;
+
+/// Encodes `feed` with `encode` so it stays within `budget` bytes once
+/// stored, shrinking it first.
 ///
 /// A stored feed is one database cell, and the database plugins refuse a
 /// cell or result over their `maxResultBytes` (256 KiB for the first-party
 /// adapters). They count a row as JSON, where the feed is itself a JSON
 /// string, so every quote and backslash in it takes two bytes and a control
 /// character six. The budget is checked against that escaped form, which
-/// is never shorter than the feed itself. Each round cuts every shelf to three quarters of the longest
-/// shelf, down to [`FIT_MIN_ITEMS`]. Then descriptions are shortened to
-/// [`FIT_DESCRIPTION_CHARS`]. Then shelves are dropped from the end. The
-/// top of each shelf is kept, since shelves are sorted best first.
+/// is never shorter than the feed itself.
+///
+/// What the page does not show goes first, so shelves keep their cards: the
+/// descriptions are shortened to [`FIT_DESCRIPTION_CHARS`] (they were 42%
+/// of a measured demo feed), then each card keeps [`FIT_REASONS`] reasons
+/// and loses `seed_categories`. Only then is every shelf cut, a round at a
+/// time, to three quarters of the longest shelf, down to
+/// [`FIT_MIN_ITEMS`], and last shelves are dropped from the end. The top of
+/// each shelf is kept, since shelves are sorted best first.
 ///
 /// # Arguments
 ///
 /// * `feed` - Feed to encode; trimmed in place when it is too large.
 /// * `budget` - Most bytes the encoded feed may take as an escaped JSON
 ///   string.
+/// * `encode` - Encodes the feed in its stored form.
 ///
 /// # Returns
 ///
-/// The encoded feed (unescaped). An empty feed is returned even when `budget` is
-/// smaller than it.
+/// The encoded feed (unescaped). An empty feed is returned even when
+/// `budget` is smaller than it.
 ///
 /// # Errors
 ///
-/// Returns the JSON encoding error.
-pub fn encode_feed_within(
+/// Returns the error `encode` returns.
+pub(crate) fn fit_feed_within(
     feed: &mut DiscoverFeed,
     budget: usize,
+    encode: impl Fn(&DiscoverFeed) -> Result<String, serde_json::Error>,
 ) -> Result<String, serde_json::Error> {
     let mut descriptions_cut = false;
+    let mut extras_cut = false;
     loop {
-        let json = serde_json::to_string(feed)?;
+        let json = encode(feed)?;
         if serde_json::to_string(&json)?.len() <= budget {
             return Ok(json);
+        }
+        if !descriptions_cut {
+            descriptions_cut = true;
+            for item in feed.shelves.iter_mut().flat_map(|s| s.items.iter_mut()) {
+                if let Some(text) = item.description.as_mut() {
+                    if let Some((end, _)) = text.char_indices().nth(FIT_DESCRIPTION_CHARS) {
+                        text.truncate(end);
+                        text.push('…');
+                    }
+                }
+            }
+            continue;
+        }
+        if !extras_cut {
+            extras_cut = true;
+            for item in feed.shelves.iter_mut().flat_map(|s| s.items.iter_mut()) {
+                item.reasons.truncate(FIT_REASONS);
+                item.seed_categories = None;
+            }
+            continue;
         }
         let longest = feed
             .shelves
@@ -867,18 +900,6 @@ pub fn encode_feed_within(
             }
             continue;
         }
-        if !descriptions_cut {
-            descriptions_cut = true;
-            for item in feed.shelves.iter_mut().flat_map(|s| s.items.iter_mut()) {
-                if let Some(text) = item.description.as_mut() {
-                    if let Some((end, _)) = text.char_indices().nth(FIT_DESCRIPTION_CHARS) {
-                        text.truncate(end);
-                        text.push('…');
-                    }
-                }
-            }
-            continue;
-        }
         if feed.shelves.pop().is_none() {
             return Ok(json);
         }
@@ -888,6 +909,15 @@ pub fn encode_feed_within(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Encodes `feed` as plain JSON within `budget`, as the stored form
+    /// does once pool metadata is left out.
+    fn encode_feed_within(
+        feed: &mut DiscoverFeed,
+        budget: usize,
+    ) -> Result<String, serde_json::Error> {
+        fit_feed_within(feed, budget, serde_json::to_string)
+    }
 
     fn rec(title: &str, score: f64, categories: &[&str]) -> Recommendation {
         let mut r = Recommendation {
@@ -1237,6 +1267,89 @@ mod tests {
             assert!(s.items.len() < 12 && s.items.len() >= FIT_MIN_ITEMS);
             assert_eq!(s.items[0].title, format!("{}-0", s.id));
         }
+    }
+
+    /// The demo feed measured on 2026-11-09: eleven shelves (eight full, three
+    /// with only 3 or 4 candidates), about half the cards with a
+    /// 1,600-character description, and the rest of a card near 1 KB. With
+    /// 15 cards on a full shelf it is over the stored budget; shortening the
+    /// descriptions alone brings it under, so every shelf keeps its cards and
+    /// every reason.
+    #[test]
+    fn a_measured_feed_keeps_fifteen_cards_on_a_full_shelf() {
+        let card = |shelf: usize, i: usize| Recommendation {
+            description: i.is_multiple_of(2).then(|| "Blurb text. ".repeat(137)),
+            reasons: (0..5)
+                .map(|r| format!("reason {r} for this card, words"))
+                .collect(),
+            genres: Some("Science Fiction & Fantasy, Epic, Adventure, ".repeat(6)),
+            cover_url: Some(format!(
+                "https://covers.example/{shelf}/{i}/{}",
+                "c".repeat(60)
+            )),
+            seed_categories: Some("Fiction, Fantasy, Epic".into()),
+            ..rec(&format!("Book {shelf}-{i}"), 0.0, &[])
+        };
+        let mut feed = DiscoverFeed {
+            shelves: [15, 15, 15, 15, 4, 15, 15, 15, 3, 15, 4]
+                .into_iter()
+                .enumerate()
+                .map(|(n, len)| DiscoverShelf {
+                    id: format!("shelf{n}"),
+                    title: format!("Shelf {n}"),
+                    subtitle: None,
+                    items: (0..len).map(|i| card(n, i)).collect(),
+                })
+                .collect(),
+            shelf_kinds: Vec::new(),
+            state: None,
+            computed_at: None,
+        };
+        let budget = 192 * 1024;
+        let whole = serde_json::to_string(&serde_json::to_string(&feed).unwrap())
+            .unwrap()
+            .len();
+        assert!(whole > budget, "fixture is only {whole} bytes");
+
+        let json = encode_feed_within(&mut feed, budget).unwrap();
+        assert!(serde_json::to_string(&json).unwrap().len() <= budget);
+        let lens: Vec<usize> = feed.shelves.iter().map(|s| s.items.len()).collect();
+        assert_eq!(lens, [15, 15, 15, 15, 4, 15, 15, 15, 3, 15, 4]);
+        for shelf in &feed.shelves {
+            assert_eq!(shelf.items[0].reasons.len(), 5);
+            let text = shelf.items[0].description.as_deref().unwrap();
+            assert_eq!(text.chars().count(), FIT_DESCRIPTION_CHARS + 1);
+        }
+    }
+
+    /// Past shortened descriptions, reasons and seed categories go before
+    /// any card does.
+    #[test]
+    fn reasons_are_cut_before_cards() {
+        let card = |i: usize| Recommendation {
+            reasons: (0..40)
+                .map(|r| format!("a fairly long reason number {r}"))
+                .collect(),
+            seed_categories: Some("Fiction, Fantasy".into()),
+            ..rec(&format!("Book{i}"), 0.0, &[])
+        };
+        let mut feed = DiscoverFeed {
+            shelves: vec![DiscoverShelf {
+                id: "a".into(),
+                title: "A".into(),
+                subtitle: None,
+                items: (0..8).map(card).collect(),
+            }],
+            shelf_kinds: Vec::new(),
+            state: None,
+            computed_at: None,
+        };
+        let whole = serde_json::to_string(&feed).unwrap().len();
+        encode_feed_within(&mut feed, whole / 2).unwrap();
+        let items = &feed.shelves[0].items;
+        assert_eq!(items.len(), 8);
+        assert!(items.iter().all(|c| c.reasons.len() == FIT_REASONS));
+        assert!(items.iter().all(|c| c.seed_categories.is_none()));
     }
 
     /// The budget counts the feed as the database stores it, a JSON string,

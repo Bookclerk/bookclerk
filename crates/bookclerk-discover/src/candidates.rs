@@ -92,9 +92,15 @@ pub struct StorefrontCandidate {
     /// Abridged flag when the storefront provided one.
     #[serde(default)]
     pub is_abridged: Option<bool>,
-    /// Position within the Audible page that produced this hit (for merge rank).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub audible_rank: Option<u32>,
+    /// The storefront's own 1-based search rank for this hit (its declared
+    /// `CatalogHit.rankHint`); catalog search merges stores by it for
+    /// relevance and popularity sorts. `None` when no store ranked it.
+    #[serde(
+        default,
+        alias = "audible_rank",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub store_rank: Option<u32>,
 }
 
 /// Options for storefront candidate expansion.
@@ -314,7 +320,7 @@ pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCa
         rating_overall: hit.rating_overall,
         rating_count: hit.rating_count,
         is_abridged: hit.is_abridged,
-        audible_rank: None,
+        store_rank: None,
     }
 }
 
@@ -670,7 +676,7 @@ mod tests {
                 rating_overall: None,
                 rating_count: None,
                 is_abridged: None,
-                audible_rank: None,
+                store_rank: None,
             },
             &owned_asins,
             &owned_isbns,
@@ -707,7 +713,7 @@ mod tests {
                 rating_overall: None,
                 rating_count: None,
                 is_abridged: None,
-                audible_rank: None,
+                store_rank: None,
             },
             &owned_asins,
             &owned_isbns,
@@ -744,7 +750,7 @@ mod tests {
                 rating_overall: None,
                 rating_count: None,
                 is_abridged: None,
-                audible_rank: None,
+                store_rank: None,
             },
             &owned_asins,
             &owned_isbns,
