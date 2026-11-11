@@ -447,9 +447,8 @@ impl LibraryStore {
     ///
     /// Used when classic Libation stored an email `AccountId` and a later
     /// login/scan discovers Audible `customer_id`. Holdings move to `to`
-    /// with `holding_removed` / `holding_added` events
-    /// ([`Self::move_account_holdings`]) before the old account row, whose
-    /// foreign key would otherwise drop them, is deleted.
+    /// with `holding_removed` / `holding_added` events before the old
+    /// account row, whose foreign key would otherwise drop them, is deleted.
     ///
     /// # Errors
     ///
