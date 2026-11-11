@@ -235,7 +235,7 @@ pub async fn run_discover_feed(
     }
     let has_books = library.count_books(None).await? > 0;
     let use_onnx = has_books && cfg.discovery.embeddings_enabled;
-    // One embedder at a time, as the request-queue route does.
+    // One embedder at a time, as the request-queue ranking job does.
     let _gate = state
         .discover_gate
         .clone()
@@ -282,6 +282,8 @@ pub async fn run_discover_feed(
         subject = %subject.key(),
         scope = report.scope.as_str(),
         shelves = report.shelves,
+        cards = report.cards,
+        bytes = report.stored_bytes,
         "stored discover feed"
     );
     // Open Discover pages on this node re-read at once; other nodes see the
@@ -589,6 +591,19 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::OK, "{sequel}");
         assert!(sequel["work_id"].is_string(), "{sequel}");
         assert_ne!(sequel["work_id"], owned["work_id"], "{sequel}");
+    }
+
+    /// A wish whose title is over the listing limits names no work, so it is a
+    /// bad request.
+    #[tokio::test]
+    async fn an_overlong_wish_title_is_a_bad_request() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, _library) = crate::node_api::tests::test_state(&files).await;
+        let app = crate::api::router(std::sync::Arc::clone(&state), None);
+        let long = "x".repeat(10_000);
+        let (status, body) =
+            post_json(&app, "/api/wishlist", serde_json::json!({ "title": long })).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
     }
 
     #[tokio::test]

@@ -723,9 +723,11 @@ pub fn merge_candidate_metadata(into: &mut StorefrontCandidate, from: &Storefron
         }
         _ => {}
     }
-    if into.audible_rank.is_none() {
-        into.audible_rank = from.audible_rank;
-    }
+    // Best (lowest) rank any store gave the work.
+    into.store_rank = match (into.store_rank, from.store_rank) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
     if into.is_abridged.is_none() {
         into.is_abridged = from.is_abridged;
     }

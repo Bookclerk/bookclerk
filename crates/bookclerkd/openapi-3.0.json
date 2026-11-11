@@ -17419,7 +17419,8 @@
         "tags": [
           "Wishlist"
         ],
-        "summary": "Ranks the shared open-request queue without warming ONNX embeddings.",
+        "summary": "Reads the shared open-request queue from its stored ranking.",
+        "description": "The `discover_request_queue` job ranks the queue against household taste\nwhen a taste event says it may have moved; this route joins that stored\nranking with the open requests and the live wish counts, so it reads no\nbooks, listening history or embedder. When an entry has no stored ranking\nyet, or the ranking is older than a day, the route queues a pass and\nanswers with what it has.",
         "operationId": "list_request_queue",
         "responses": {
           "200": {
@@ -17471,7 +17472,7 @@
             }
           },
           "500": {
-            "description": "The queue could not be ranked.",
+            "description": "The queue could not be read.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -17482,13 +17483,27 @@
             }
           },
           "503": {
-            "description": "Discover is shutting down; try again. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
-            "content": {
-              "text/plain": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
                 "schema": {
-                  "type": "string"
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
                 },
-                "example": "discover gate closed"
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
               }
             }
           },
@@ -30013,6 +30028,7 @@
           "plugin_scheduled",
           "discover_candidates",
           "discover_feed",
+          "discover_request_queue",
           "cache_sweep",
           "search_index_rebuild",
           "invalid"

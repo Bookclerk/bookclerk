@@ -4694,8 +4694,9 @@ async fn discover_status_for_caller(
     let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
         .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
     // A feed that does not decode (another release wrote it) counts as
-    // missing, so it is ranked again and not reported ready.
-    let feed = bookclerk_discover::stored_subject_feed(&library, &subject, &[])
+    // missing, so it is ranked again and not reported ready. Status needs
+    // only the feed's presence and times, so card metadata is not joined.
+    let feed = bookclerk_discover::stored_subject_feed_state(&library, &subject)
         .await
         .map_err(internal_err)?;
     let fetched = library
@@ -6125,69 +6126,43 @@ fn hydrate_queue_wishers(
     }
 }
 
-/// Ranks the shared open-request queue without warming ONNX embeddings.
+/// Reads the shared open-request queue from its stored ranking.
+///
+/// The `discover_request_queue` job ranks the queue against household taste
+/// when a taste event says it may have moved; this route joins that stored
+/// ranking with the open requests and the live wish counts, so it reads no
+/// books, listening history or embedder. When an entry has no stored ranking
+/// yet, or the ranking is older than a day, the route queues a pass and
+/// answers with what it has.
 #[utoipa::path(
     get,
     path = "/api/request-queue",
     responses(
         (status = 200, description = "Open requests, ranked.", body = Vec<bookclerk_discover::RankedQueueEntry>),
-        (status = 500, description = "The queue could not be ranked.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
-        (status = 503, description = "Discover is shutting down; try again.", body = String, content_type = "text/plain", example = json!("discover gate closed")),
+        (status = 500, description = "The queue could not be read.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
     ),
 )]
-async fn list_request_queue(
+pub(crate) async fn list_request_queue(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<bookclerk_discover::RankedQueueEntry>>, (StatusCode, String)> {
-    let cfg = state.config.read().await.clone();
     let library = state.library_snapshot().await;
-
-    // Empty shared queue: skip discover_gate + ONNX. Opening the embedder alone
-    // often exceeds the 8s API timeout and surfaces as a Wishlist 504.
-    let open_requests = library
-        .list_title_requests(Some(RequestStatus::Open))
+    let queue = bookclerk_discover::read_request_queue(&library)
         .await
         .map_err(internal_err)?;
-    if open_requests.is_empty() {
-        return Ok(Json(Vec::new()));
+    if queue.stale {
+        // Folds into a pass already waiting; a failure leaves the next read
+        // or taste event to queue it.
+        if let Err(err) = crate::request_queue_job::enqueue_request_queue_rank(
+            &state,
+            JobTrigger::Scheduler,
+            std::time::Duration::ZERO,
+        )
+        .await
+        {
+            tracing::warn!(error = %err, "could not queue the request queue ranking");
+        }
     }
-
-    let _discover = state
-        .discover_gate
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "discover gate closed".into(),
-            )
-        })?;
-
-    // Do not warm ONNX here. Wish-count already dominates ranking, and MiniLM
-    // cold-start alone blows the global 8s API timeout (Wishlist 504 after the
-    // first title is wishlisted). Author/category taste still applies without
-    // embeddings when a library exists.
-    let opts = bookclerk_discover::RecommendOptions {
-        limit: cfg.discovery.recommend_limit.max(24),
-        embedding_model: String::from(bookclerk_discover::MODEL_LOCAL_HASH_V1),
-        region: String::from("us"),
-        include_purchase_hints: false,
-        external_user_id: None,
-        include_listening: true,
-        listening_providers: Vec::new(),
-        fetch_storefront_candidates: false,
-        storefront_seed_limit: 0,
-        storefront_max_remote_calls: 0,
-        exclude_graphicaudio_series_sets: cfg.discovery.exclude_graphicaudio_series_sets,
-        disabled_shelves: Vec::new(),
-        models_dir: None,
-        embed_intra_threads: cfg.discovery.embed_intra_threads,
-        embeddings_enabled: false,
-    };
-    let sources = state.sources.read().await;
-    let mut rows = bookclerk_discover::rank_global_request_queue(&library, &sources, &opts)
-        .await
-        .map_err(internal_err)?;
+    let mut rows = queue.entries;
     let files = crate::profile::files_dir(&state).await;
     for row in &mut rows {
         hydrate_queue_wishers(&mut row.wishers, files.as_deref(), &state.covers);

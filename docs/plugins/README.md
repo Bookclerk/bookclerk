@@ -275,6 +275,22 @@ cd ../../examples/plugins-echo-workerd-ts && npm ci && npm run typecheck
    pong: hello
    ```
 
+3. The TypeScript workerd Echo (`echo_workerd_ts`) also keeps a `notes`
+   table on its own `[[databases]]` binding, a worked example of the
+   [database helpers](database-limits.md#a-worked-example):
+
+   ```console
+   $ bookclerk plugins echo_workerd_ts notes-add --body "remember" --count 3
+   stored 3; 3 in total
+   $ bookclerk plugins echo_workerd_ts notes-list
+   1: remember
+   2: remember
+   3: remember
+   ```
+
+   Run its tests under every database profile with
+   `cargo plugin -- test examples/plugins-echo-workerd-ts`.
+
 ## Distribution
 
 What you ship depends on the runtime:

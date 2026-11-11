@@ -105,9 +105,34 @@ operator, a household user, or a portal identity) has a **subject key**
    exceed the inline limit (`maxResultBytes`). A stored feed is one cell,
    and the plugin counts a row as JSON, where each quote or backslash in
    the feed takes two bytes.
-   So the feed is kept under 192 KiB in that escaped form: if it is larger,
-   every shelf is cut to its best items (down to four), then long
-   descriptions are shortened, then the last shelves are dropped. Writing a
+   So the stored feed keeps **card references**, not whole cards. Each card
+   keeps what is personal to the person (its shelf, order, score, reasons,
+   shelf tags, prices and wishers) and its identity (title, authors,
+   series, store editions). The catalog metadata that the person's
+   `discover_candidates` rows already hold (description, cover, subtitle,
+   publisher, length, date, genres, language and narrators) is left out
+   and joined back from those rows when the page reads the feed, in pages
+   that stay under the inline result limit. A field is left out only when
+   that join gives it back unchanged: metadata merged in from another
+   store edition is left out when that edition's candidate row gives the
+   same value, and stays on the card when no row does. A card with no
+   stored candidate, such as a wish, keeps its metadata. A fetch that
+   changes candidates before the page reads the feed changes what the join
+   fills in: an updated row shows its new metadata, a removed row lets
+   another edition's row fill the field, and a field no row holds stays
+   empty until the ranking that fetch queues replaces the feed.
+   `GET /api/discover/status` needs only whether a feed exists and when it
+   was ranked, so it reads the feed without the join.
+
+   The stored feed carries a format number. A feed in another format, such
+   as the whole cards an older release stored, reads as missing and is
+   ranked again. The ranking job logs the stored feed's size and card count
+   (`stored discover feed`). As a backstop the stored feed is kept under
+   192 KiB in that escaped form: if it is ever larger, long descriptions
+   left on cards are shortened to 300 characters, then each card keeps
+   three reasons and drops `seed_categories`, then every shelf is cut to
+   its best items (down to four), and last the final shelves are dropped.
+   Writing a
    feed replaces the old row without reading it, so an old feed that is too
    large to read cannot block its replacement.
 
@@ -174,6 +199,9 @@ events:
 | `wishlist_changed` | A wishlist entry is added or changes status, or an open one is deleted with its user. | A fetch for the person who wished (their seeds changed), and a ranking for everyone else with shelves (wish counts changed). |
 | `listening_synced` | A listening sync changed, for some stored row, whose it is, which owned book or work it matched, its authors, whether they started it, which quarter they are in, or whether they finished it. | A fetch for everyone with shelves. |
 | `book_acquired` | The household acquires a book. | A fetch for everyone with shelves. |
+
+Every one of the three events also queues one ranking of the shared
+[request queue](#request-queue).
 
 Each job it queues may only run 30 seconds later, so the changes of one
 sync or one browsing session fold into a single job per person. The one
@@ -268,6 +296,15 @@ never holds up Discover again.
 `discovery.embeddings_enabled = false` (the default, or CLI `--hash` / `?no`
 paths that pass `prefer_onnx = false`) skips ONNX and uses local-hash directly.
 
+### Refreshing work vectors
+
+`embed_dirty_works` keeps one vector per work and model in `embeddings`,
+stamped with a hash of the text it was computed from. It first deletes the
+vectors of works that no longer exist, then walks `works` in id order, 128
+at a time. Each page costs one read of the works, one read of their stored
+hashes, and one embedder call for the works whose text changed, so a large
+library is neither held in memory at once nor read one hash per work.
+
 ### OSV / `paste`
 
 With the `onnx-embeddings` feature, `fastembed` → `tokenizers` (and related
@@ -344,6 +381,7 @@ title is **not** in the household library.
   weight. Each row includes `wishers` (tiny profile pictures: upload /
   Gravatar / SSO / monogram) for the people who have the title open. Discover's
   `requests` shelf (the first row) carries the same `wishers` / `wish_count` fields.
+  The route only reads a stored ranking; see [Request queue](#request-queue).
 - Identity merge: a wish is resolved to a library work when it is created
   (`LibraryStore::work_for`, the same resolution a scanned listing gets)
   and stores the `work_id`; wishes with the same work are one queue entry,
@@ -367,11 +405,42 @@ title is **not** in the household library.
   title-meta gap-fills via source `catalog_detail` (explore audiobook payload
   or product-page JSON-LD / `.audiobook-genres`: narrator, runtime, description,
   publisher, genres, abridged). After multi-store search ranks a page, Discover
-  may call Libro `catalog_detail` on lean ISBN-bearing rows (bounded timeout)
-  so list cards get genres/runtime without N+1 product fetches inside each
-  store’s `search_catalog`.
+  asks the stores that declare `catalog.detailByIsbn` (Libro.fm today) to fill
+  lean rows by ISBN (bounded timeout), so list cards get genres/runtime without
+  N+1 product fetches inside each store’s `search_catalog`. See
+  [Catalog search capabilities](../plugins/abi.md#catalog-search-capabilities).
 
 Multi-region storefronts are deferred (US default for now).
+
+### Request queue
+
+The shared queue is ranked by a job, not inside the page request. Ranking
+reads the whole library and listening history, so doing it per request
+held the Discover gate and slowed every Wishlist load as libraries grew.
+
+1. A `discover_request_queue` job ranks every open entry against household
+   taste. It stores one row per entry in `discover_request_queue`: the
+   entry key (the work id every wish names), the `work_id`, the taste score, up to
+   six taste reasons and whether the library already holds the work. It
+   copies no title, cover or price: those stay with the wishes.
+2. Discover's consumer (see [Taste events](#taste-events)) queues the job
+   on every `wishlist_changed`, `book_acquired` and `listening_synced`,
+   after the same 30-second debounce. The queue is not personalized, so one
+   job serves everyone, and its dedup key folds a burst of events into one
+   pass.
+3. `GET /api/request-queue` reads the open wishes, joins each entry with its
+   stored row, and adds the wish-count boost and the wish reasons from the
+   live counts. It hides entries the last pass found in the library. An
+   entry wished since that pass shows straight away with no taste score,
+   so its wish count alone places it.
+4. When an entry has no stored row, or the ranking is older than a day, the
+   read queues a pass and still answers with what it has. The day limit
+   covers taste changes no event announces, such as a removed book.
+
+> [!NOTE]
+> The entry key changes when wishes are keyed by work and edition rather
+> than by `work_key`. Store titles and prices for the queue move to the
+> shared store listing pool, not to this table.
 
 ## Configuration
 
@@ -416,7 +485,7 @@ disables the hard filter
 | `q` | Query (min 2 chars) |
 | `page_size` | Default 24, clamp 1–48 (`limit` still accepted) |
 | `cursor` | Opaque hex cursor (per-source page counters + query fingerprint) |
-| `sort` | `relevance` (default) / `popularity` / `rating` / `title` / `author` / `price` / `length` — Audible page order for relevance/popularity; host re-ranks price/length/rating/title/author. Rating sort uses a Bayesian average of `rating_overall` with `rating_count` (prior mean 4.0, strength 100) so tiny sample 5.0s do not outrank high-volume 4.8s |
+| `sort` | `relevance` (default) / `popularity` / `rating` / `title` / `author` / `price` / `length` — storefront rank (`rankHint`, declared by Audible today) for relevance/popularity; host re-ranks price/length/rating/title/author. Rating sort uses a Bayesian average of `rating_overall` with `rating_count` (prior mean 4.0, strength 100) so tiny sample 5.0s do not outrank high-volume 4.8s |
 | `sort_dir` | `asc` / `desc` (defaults: desc for relevance/popularity/rating/price; asc for title/author/length). Relevance ignores direction for ranking |
 | `field` | Optional scoped search: `author` / `narrator` / `series` / `genre` |
 | `lang` | Default language (BCP-47); hard-include when `language` omitted |

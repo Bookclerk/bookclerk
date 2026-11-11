@@ -26,7 +26,9 @@ mod metadata_enrich;
 mod precompute;
 mod purchase;
 mod recommend;
+mod request_queue;
 mod shelves;
+mod stored_feed;
 mod title_meta;
 mod ttl_cache;
 
@@ -46,7 +48,7 @@ pub use catalog_search::{
 pub use embed::OnnxEmbedder;
 pub use embed::{
     default_embedding_model_id, embed_dirty_works, embedding_model_id, open_embedder,
-    text_for_work, CosineHit, Embedder, HashEmbedder, MODEL_ALL_MINILM_L6_V2_Q,
+    text_for_work, CosineHit, Embedder, HashEmbedder, EMBED_PAGE_WORKS, MODEL_ALL_MINILM_L6_V2_Q,
     MODEL_LOCAL_HASH_V1,
 };
 pub use identity::{
@@ -60,9 +62,9 @@ pub use metadata_enrich::{
 };
 pub use precompute::{
     fetch_subject_candidates, load_subject_taste, rank_subject_feed, stored_subject_feed,
-    FetchReport, RankReport, StoredSubjectFeed, SubjectTaste, HOUSEHOLD_BLEND_WEIGHT,
-    OWN_TASTE_THRESHOLD, STARTER_GENRES, STARTER_GENRE_MIN_SEEDS, STORE_CALL_MAX_AGE,
-    STORE_CALL_TIMEOUT, STORE_FETCH_DEADLINE,
+    stored_subject_feed_state, FetchReport, RankReport, StoredSubjectFeed, SubjectTaste,
+    HOUSEHOLD_BLEND_WEIGHT, OWN_TASTE_THRESHOLD, STARTER_GENRES, STARTER_GENRE_MIN_SEEDS,
+    STORE_CALL_MAX_AGE, STORE_CALL_TIMEOUT, STORE_FETCH_DEADLINE,
 };
 pub use purchase::{
     best_purchase_hint, best_purchase_hint_preferring, format_money_label,
@@ -72,8 +74,11 @@ pub use purchase::{
     RATE_LIMIT_FIRST_PAUSE, RATE_LIMIT_MAX_PAUSE,
 };
 pub use recommend::{
-    combine_wishlist_score, listening_engagement, rank_global_request_queue, recommend,
+    combine_wishlist_score, listening_engagement, rank_request_queue_taste, recommend,
     recommend_feed, RankedQueueEntry, RecommendOptions, Recommendation, WISH_COUNT_WEIGHT,
+};
+pub use request_queue::{
+    queue_entry_key, read_request_queue, StoredRequestQueue, REQUEST_QUEUE_MAX_AGE,
 };
 pub use shelves::{
     build_discover_feed, flatten_feed, shelf_is_disabled, shelf_kind_catalog, DiscoverFeed,

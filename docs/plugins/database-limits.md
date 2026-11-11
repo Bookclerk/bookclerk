@@ -20,6 +20,7 @@ binding's `limits()` returns them. The ones that shape plugin code:
 | --- | --- |
 | `maxRequestBytes` | One encoded request: the statements, their binds and the retry identity |
 | `maxStatements` | Statements in one request (`batch()` or `exec()`) |
+| `maxPayloadBytes` | One statement: its SQL and bound values together (3,667 bytes on D1) |
 | `maxBinds` | Bind parameters in one statement |
 | `maxCellBytes` | One TEXT or BYTES cell in a reply |
 | `maxResultRows` / `maxResultBytes` | A reply read inline: rows and encoded bytes per statement |
@@ -171,6 +172,12 @@ const caps = await env.DB.limits();
 const perStatement = Math.floor(caps.maxBinds / COLUMNS);
 ```
 
+Caps on replies matter for writes too. A TEXT value up to `maxPayloadBytes`
+can be written on a session whose `maxCellBytes` is smaller (the minimum
+advertisement allows 3,667-byte statements but 1,024-byte cells), and the
+row it lands in can then never be read back. Check what you store against
+`maxCellBytes` before sending it.
+
 ## Interactive transactions
 
 External database adapters refuse `begin()`: the adapter session answers
@@ -315,11 +322,33 @@ cargo plugin -- test . --profile minimum -- --grep notes   # one profile, runner
 ```
 
 Every profile runs even after one fails, and the report names the ones
-that did. `cargo test-staged` covers the migrations of every staged plugin
+that did. CI runs `bookclerk-plugin test` on every example that declares
+`[[databases]]` and has a `test` script (the `plugin_examples` check; see
+[CI](../contributing/ci.md)).
+
+`cargo test-staged` covers the migrations of every staged plugin
 the same way: the registration each `[[databases]]` binding answers is
 applied on a plugin-owned unit under every profile, so a migration the
 minimum advertisement refuses fails there rather than at enrollment on an
 operator's adapter.
+
+### A worked example
+
+`examples/plugins-echo-workerd-ts/` keeps a `notes` table on its `DB`
+binding and follows this page end to end:
+
+- `src/notes.ts` registers the table through `databaseMigrations`, writes
+  with `chunk()` and `batch()` (reporting how many notes the committed
+  batches stored when a later one fails), refuses a note past
+  `maxCellBytes` before sending it, and handles `limit_exceeded` by its
+  `limit`.
+- Its `listNotes()` reads with one `iterate()` when the session streams.
+  When it does not, it pages by `id` (never `OFFSET`), sized from
+  `maxResultRows`, halved when a page passes `maxResultBytes` and grown
+  back after a full page.
+- `test/notes.test.ts` and `test/index.test.ts` open the binding with
+  `createTestDatabase()` and size every assertion from `db.limits()`, so
+  the same suite passes under `first-party`, `d1` and `minimum`.
 
 ### A database adapter's own suite
 

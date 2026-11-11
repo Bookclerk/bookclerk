@@ -19,8 +19,8 @@ use uuid::Uuid;
 use super::{now_str, parse_dt, LibraryStore, NewBook};
 use crate::atomic_ops::{atomic_status, DbAtomicParams};
 use crate::entities::{
-    credits, edition_identifiers, editions, expressions, holdings, resolution_overrides,
-    series_entries, store_listings, work_identifiers, works,
+    credits, edition_identifiers, editions, embeddings, expressions, holdings,
+    resolution_overrides, series_entries, store_listings, work_identifiers, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::library_link::{
@@ -1532,6 +1532,111 @@ impl LibraryStore {
         Ok(works.pop())
     }
 
+    /// Lists up to `limit` works with ids after `after_id`, in id order, with
+    /// their work-level credits and series.
+    ///
+    /// A keyset page: pass the last id of one page as `after_id` of the
+    /// next, and stop at a short page. Unlike [`Self::list_works`] it never
+    /// reads the whole table at once.
+    ///
+    /// # Arguments
+    ///
+    /// * `after_id` - Exclusive lower bound on `works.id`; `None` starts at
+    ///   the first work.
+    /// * `limit` - Page size, clamped to 1..=500.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn list_works_page(
+        &self,
+        after_id: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<WorkRecord>> {
+        let mut query = works::Entity::find().order_by_asc(works::Column::Id);
+        if let Some(after) = after_id {
+            query = query.filter(works::Column::Id.gt(after));
+        }
+        let mut works: Vec<WorkRecord> = query
+            .limit(limit.clamp(1, 500))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_work)
+            .collect();
+        self.fill_work_names(&mut works).await?;
+        Ok(works)
+    }
+
+    /// Stored text hashes of the `model` embeddings of `target_kind` targets
+    /// among `target_ids`, keyed by target id. Targets with no embedding are
+    /// absent.
+    ///
+    /// Reads in chunks sized from the adapter's bind limit, so one call
+    /// replaces a lookup per target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn embedding_text_hashes(
+        &self,
+        target_kind: &str,
+        model: &str,
+        target_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        /// One stored hash, decoded by column name: the host database proxy
+        /// does not keep the select order, so a positional tuple read could
+        /// swap the columns.
+        #[derive(Debug, sea_orm::FromQueryResult)]
+        struct StoredHash {
+            /// `embeddings.target_id`.
+            target_id: String,
+            /// `embeddings.text_hash`.
+            text_hash: String,
+        }
+        let mut hashes = std::collections::HashMap::with_capacity(target_ids.len());
+        for chunk in target_ids.chunks(self.lookup_chunk()) {
+            let rows = embeddings::Entity::find()
+                .select_only()
+                .column(embeddings::Column::TargetId)
+                .column(embeddings::Column::TextHash)
+                .filter(embeddings::Column::TargetKind.eq(target_kind))
+                .filter(embeddings::Column::Model.eq(model))
+                .filter(embeddings::Column::TargetId.is_in(chunk.iter().cloned()))
+                .into_model::<StoredHash>()
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            hashes.extend(rows.into_iter().map(|row| (row.target_id, row.text_hash)));
+        }
+        Ok(hashes)
+    }
+
+    /// Deletes work embeddings (every model) whose work no longer exists,
+    /// and answers how many it removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the delete fails.
+    pub async fn prune_orphan_work_embeddings(&self) -> Result<u64> {
+        use sea_orm::sea_query::Query;
+        Ok(embeddings::Entity::delete_many()
+            .filter(embeddings::Column::TargetKind.eq("work"))
+            .filter(
+                embeddings::Column::TargetId.not_in_subquery(
+                    Query::select()
+                        .column(works::Column::Id)
+                        .from(works::Entity)
+                        .to_owned(),
+                ),
+            )
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .rows_affected)
+    }
+
     /// Lists every work by title, with its work-level credits and series.
     ///
     /// # Errors
@@ -2418,6 +2523,49 @@ mod store_tests {
             store.work_for(&query).await.unwrap().as_deref(),
             Some(work_id.as_str())
         );
+    }
+
+    /// A wish read back takes its title and authors from its work and its
+    /// identifiers from the edition it named, since it copies none of them.
+    #[tokio::test]
+    async fn a_wish_reads_its_title_and_identifiers_through_its_work() {
+        let store = self::store().await;
+        let wish = |title: &str, asin: Option<&str>, isbn: Option<&str>| crate::NewTitleRequest {
+            uuid: None,
+            identity_id: None,
+            title: title.into(),
+            authors: Some("Ursula K. Le Guin".into()),
+            asin: asin.map(str::to_string),
+            isbn: isbn.map(str::to_string),
+            notes: None,
+            status: crate::RequestStatus::Open,
+            resolved_book_uuid: None,
+            cover_url: None,
+        };
+        let by_isbn = store
+            .create_title_request(&wish("The Dispossessed", None, Some("9780061054884")))
+            .await
+            .unwrap();
+        assert_eq!(by_isbn.title, "The Dispossessed");
+        assert_eq!(by_isbn.authors.as_deref(), Some("Ursula K. Le Guin"));
+        assert_eq!(by_isbn.isbn.as_deref(), Some("9780061054884"));
+        assert!(by_isbn.asin.is_none());
+        assert!(by_isbn.edition_id.is_some());
+        assert_eq!(by_isbn.work_key, "isbn:9780061054884");
+        let by_asin = store
+            .create_title_request(&wish("The Left Hand of Darkness", Some("B000FC1ICM"), None))
+            .await
+            .unwrap();
+        assert_eq!(by_asin.asin.as_deref(), Some("B000FC1ICM"));
+        // A title alone still names a work, with no edition to read from.
+        let bare = store
+            .create_title_request(&wish("The Lathe of Heaven", None, None))
+            .await
+            .unwrap();
+        assert!(bare.asin.is_none() && bare.isbn.is_none());
+        assert_eq!(bare.title, "The Lathe of Heaven");
+        let listed = store.list_title_requests(None).await.unwrap();
+        assert_eq!(listed.len(), 3, "{listed:?}");
     }
 
     #[tokio::test]

@@ -21,6 +21,18 @@ author CLI, is the
 ([`docs/plugins/sdk/rust/README.md`](../../docs/plugins/sdk/rust/README.md)
 in this repository). The crate's reference follows it on the same page.
 
+## Database
+
+With the `db` feature a guest takes its `[[databases]]` binding with
+`DatabaseBinding::take_named_from_bindings` and uses it as on D1
+(`prepare`, `bind`, `all`, `batch`), plus `limits()` and `chunk()` for
+staying within the adapter's caps; a cap that is hit is a `PluginError`
+with `PluginErrorCode::LimitExceeded`. Tests open the same binding with
+`bookclerk_db_testkit::BindingDatabase`, and `bookclerk-plugin test .`
+runs them under every capability profile. See
+[Working within database limits](https://bookclerk.app/docs/plugins/database-limits)
+([`docs/plugins/database-limits.md`](../../docs/plugins/database-limits.md)).
+
 ## API documentation
 
 Rustdoc for this crate is generated with the workspace API docs:
