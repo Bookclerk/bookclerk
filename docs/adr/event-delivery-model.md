@@ -40,7 +40,8 @@ callers await a promise, and long work is a durable job.
 
 1. **Subscriptions belong to the deployment.** Each node heartbeats a
    catalog row for every instance its deployments run (`present` or
-   `placed`), with the consented subscriptions of its manifest, whether
+   `placed`), with the consented subscriptions of what it would run (the
+   active installed version and its grant, or a host-local tree), whether
    or not the guest is up. A matching event gets a delivery for that
    instance at publish time, and the delivery waits as `pending` until
    the instance runs. Fan-out stays per instance.

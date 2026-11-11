@@ -641,7 +641,9 @@ supports_suspend = false
   to spawn) keeps its enabled row, so matching events get a delivery for it
   at publish time; the delivery waits as `pending` until the instance runs.
   Subscriptions are the consented `[[events.consumers]]` and
-  `[[queues.consumers]]` rows of the discovered manifest.
+  `[[queues.consumers]]` rows of what the deployment would run: the active
+  installed version and its grant, or the discovered manifest for a
+  plugin with no cluster install.
 - The catalog key is the node id from `node-identity.json`. Nodes don't
   delete catalog rows they lack.
 - A plugin is live when any heartbeating node (60 s TTL) has it enabled.

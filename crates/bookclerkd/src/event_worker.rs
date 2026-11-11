@@ -12,7 +12,8 @@ use bookclerk_integrations::{
     QueueResult, QueueSubscription,
 };
 use bookclerk_library::control_plane::{
-    list_all_plugin_instances, list_present_deployments_for_node, route_ranks, RouteRank,
+    list_all_plugin_instances, list_present_deployments_for_node, load_active_version, route_ranks,
+    RouteRank,
 };
 use bookclerk_library::{
     catalog_subscribers_for_event, subscription_matches_event, wake_grants_from_subscriptions,
@@ -250,13 +251,19 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
         }
     }
     for deployed in &dormant {
-        // A plugin this node cannot discover cannot run here either; its
-        // row is left to expire with the heartbeat TTL.
-        let Some(subs) = granted_by_key.get(&deployed.key) else {
-            continue;
+        // Resolve what would run the way deployment reconcile does: the
+        // active installed version first, then a host-local tree found by
+        // discovery. A plugin with neither cannot run here; its row is left
+        // to expire with the heartbeat TTL.
+        let subs = match active_version_subscriptions(&library, &deployed.key).await {
+            Some(subs) => subs,
+            None => match granted_by_key.get(&deployed.key) {
+                Some(subs) => subs.clone(),
+                None => continue,
+            },
         };
         if let Err(err) = library
-            .upsert_event_subscriber(&node_id, &deployed.instance_id, subs, true)
+            .upsert_event_subscriber(&node_id, &deployed.instance_id, &subs, true)
             .await
         {
             warn!(
@@ -348,6 +355,51 @@ async fn deployed_subscribers(library: &LibraryStore, node_id: &str) -> Vec<Depl
     deployed_from_rows(&deployments, &keys)
 }
 
+/// Granted subscriptions of the active installed version of `plugin_key`.
+///
+/// Returns `None` when the key has no cluster install, so the caller falls
+/// back to a host-local tree. An install whose manifest, key or grant does
+/// not parse would not be spawned either, so it subscribes to nothing.
+async fn active_version_subscriptions(
+    library: &LibraryStore,
+    plugin_key: &str,
+) -> Option<Vec<EventCatalogSubscription>> {
+    let version = match load_active_version(library, plugin_key).await {
+        Ok(version) => version?,
+        Err(err) => {
+            warn!(plugin_key, error = %err, "active version read for event catalog failed");
+            return None;
+        }
+    };
+    Some(
+        installed_version_subscriptions(&version).unwrap_or_else(|err| {
+            warn!(plugin_key, error = %err, "active version cannot subscribe");
+            Vec::new()
+        }),
+    )
+}
+
+/// Granted subscriptions declared by one installed version row.
+///
+/// # Errors
+///
+/// Returns a message when the stored manifest, plugin key or grant does not
+/// parse.
+fn installed_version_subscriptions(
+    version: &bookclerk_library::control_plane::PluginVersion,
+) -> Result<Vec<EventCatalogSubscription>, String> {
+    let manifest = bookclerk_plugin_host::PluginManifest::parse(&version.manifest_toml)
+        .map_err(|err| err.to_string())?;
+    let key = bookclerk_plugin_catalog::PluginKey::parse(&version.plugin_key)
+        .map_err(|err| err.to_string())?;
+    let grant = bookclerk_plugin_host::version_grant(version).map_err(|err| err.to_string())?;
+    Ok(granted_manifest_subscriptions(
+        &manifest,
+        &key,
+        Some(&grant),
+    ))
+}
+
 /// Pair each running deployment with its instance's PluginKey.
 ///
 /// Rows whose desired state does not run here, or whose instance is gone,
@@ -397,10 +449,9 @@ fn event_node_id(files_dir: &Path) -> String {
 
 /// Map `[[events.consumers]]` rows onto the durable catalog JSON shape.
 fn catalog_from_manifest(
-    plugin: &bookclerk_plugin_host::DiscoveredPlugin,
+    manifest: &bookclerk_plugin_host::PluginManifest,
 ) -> Vec<EventCatalogSubscription> {
-    plugin
-        .manifest
+    manifest
         .events
         .consumers
         .iter()
@@ -424,10 +475,9 @@ fn catalog_from_manifest(
 
 /// Map `[[queues.consumers]]` rows onto the durable catalog JSON shape.
 fn queue_catalog_from_manifest(
-    plugin: &bookclerk_plugin_host::DiscoveredPlugin,
+    manifest: &bookclerk_plugin_host::PluginManifest,
 ) -> Vec<EventCatalogSubscription> {
-    plugin
-        .manifest
+    manifest
         .queues
         .consumers
         .iter()
@@ -464,15 +514,25 @@ fn granted_catalog_subscriptions(
     plugin: &bookclerk_plugin_host::DiscoveredPlugin,
     stored: Option<&bookclerk_plugin_host::PluginGrant>,
 ) -> Vec<EventCatalogSubscription> {
-    let requested = bookclerk_plugin_host::consent_request(&plugin.manifest, plugin.plugin_key());
+    granted_manifest_subscriptions(&plugin.manifest, plugin.plugin_key(), stored)
+}
+
+/// [`granted_catalog_subscriptions`] for a manifest that is not on disk,
+/// such as the active installed version of a cluster install.
+fn granted_manifest_subscriptions(
+    manifest: &bookclerk_plugin_host::PluginManifest,
+    plugin_key: &bookclerk_plugin_catalog::PluginKey,
+    stored: Option<&bookclerk_plugin_host::PluginGrant>,
+) -> Vec<EventCatalogSubscription> {
+    let requested = bookclerk_plugin_host::consent_request(manifest, plugin_key);
     let effective = stored.map(|g| bookclerk_plugin_host::effective_grant(g, &requested));
     let admitted = effective
         .as_ref()
         .map(|g| g.consumers.clone())
         .unwrap_or_default();
-    let mut rows = filter_catalog_by_granted_consumers(&catalog_from_manifest(plugin), &admitted);
+    let mut rows = filter_catalog_by_granted_consumers(&catalog_from_manifest(manifest), &admitted);
     rows.extend(
-        queue_catalog_from_manifest(plugin)
+        queue_catalog_from_manifest(manifest)
             .into_iter()
             .filter(|row| {
                 effective
@@ -1913,9 +1973,8 @@ mod tests {
             .is_some());
     }
 
-    fn discovered_echo(root: &std::path::Path) -> bookclerk_plugin_host::DiscoveredPlugin {
-        std::fs::create_dir_all(root).unwrap();
-        let toml = r#"
+    /// Manifest of the echo test plugin: one `book_acquired` consumer.
+    const ECHO_TOML: &str = r#"
 api_version = 3
 id = "echo"
 version = "0.1.0"
@@ -1930,6 +1989,10 @@ mode = "deny"
 type = "book_acquired"
 schema_versions = [1]
 "#;
+
+    fn discovered_echo(root: &std::path::Path) -> bookclerk_plugin_host::DiscoveredPlugin {
+        std::fs::create_dir_all(root).unwrap();
+        let toml = ECHO_TOML;
         std::fs::write(root.join("plugin.toml"), toml).unwrap();
         let command = root.join("guest");
         std::fs::write(&command, b"#!/bin/sh\n").unwrap();
@@ -2068,6 +2131,145 @@ queue = "other"
         assert!(
             !live.iter().any(|row| row.plugin_id == key && row.enabled),
             "the plugin key itself does not subscribe beside its instance: {live:?}"
+        );
+    }
+
+    /// Key of the echo plugin installed as a cluster version in tests.
+    const INSTALLED_ECHO_KEY: &str = "cargo:https://index.crates.io/#bookclerk-plugin-echo";
+
+    /// The echo manifest as an installed version row, with `grant_json`.
+    fn installed_echo(grant_json: String) -> bookclerk_library::control_plane::PluginVersion {
+        bookclerk_library::control_plane::PluginVersion {
+            plugin_key: INSTALLED_ECHO_KEY.into(),
+            version: "0.1.0".into(),
+            manifest_id: "echo".into(),
+            manifest_toml: ECHO_TOML.into(),
+            settings: bookclerk_plugin_abi::SettingsSchema::default(),
+            artifacts: vec![bookclerk_library::control_plane::PluginArtifact {
+                target: "any".into(),
+                url: format!(
+                    "{}{}",
+                    bookclerk_library::control_plane::ARTIFACT_BLOB_SCHEME,
+                    "a".repeat(64)
+                ),
+                format: "tar.gz".into(),
+                archive_root: ".".into(),
+                archive_sha256: "a".repeat(64),
+                payload_root_sha256: "b".repeat(64),
+                executable: "guest".into(),
+            }],
+            publisher_verified: true,
+            grant_json,
+            coordinate: String::new(),
+            installed_at: String::new(),
+            installed_by: String::new(),
+        }
+    }
+
+    /// The full consent request of the installed echo version, as JSON.
+    fn installed_echo_grant() -> String {
+        let manifest = bookclerk_plugin_host::PluginManifest::parse(ECHO_TOML).unwrap();
+        let key = bookclerk_plugin_catalog::PluginKey::parse(INSTALLED_ECHO_KEY).unwrap();
+        serde_json::to_string(&bookclerk_plugin_host::consent_request(&manifest, &key)).unwrap()
+    }
+
+    #[test]
+    fn an_installed_version_without_a_grant_subscribes_to_nothing() {
+        assert!(installed_version_subscriptions(&installed_echo(String::new())).is_err());
+        let mut broken = installed_echo(installed_echo_grant());
+        broken.manifest_toml = "not a manifest".into();
+        assert!(installed_version_subscriptions(&broken).is_err());
+        let rows =
+            installed_version_subscriptions(&installed_echo(installed_echo_grant())).unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.event_type.as_str())
+                .collect::<Vec<_>>(),
+            ["book_acquired"]
+        );
+    }
+
+    /// Deploys a fresh instance of `key` on this node and refreshes the catalog.
+    async fn deploy_and_heartbeat(
+        state: &AppState,
+        store: &LibraryStore,
+        files: &std::path::Path,
+        key: &str,
+    ) -> PluginInstanceId {
+        let actor = bookclerk_library::control_plane::ConfigActor::Bootstrap;
+        let instance =
+            bookclerk_library::control_plane::create_plugin_instance(store, &actor, key, "")
+                .await
+                .unwrap();
+        bookclerk_library::control_plane::ensure_plugin_deployment(
+            store,
+            &actor,
+            &instance.id,
+            &event_node_id(files),
+            DesiredState::Present,
+        )
+        .await
+        .unwrap();
+        upsert_event_subscriber_catalog(state).await;
+        instance.id
+    }
+
+    #[tokio::test]
+    async fn a_deployed_installed_version_subscribes_without_a_local_tree() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, store) = crate::node_api::tests::test_state(&files).await;
+        let actor = bookclerk_library::control_plane::ConfigActor::Bootstrap;
+        bookclerk_library::control_plane::add_plugin_version(
+            &store,
+            &actor,
+            installed_echo(installed_echo_grant()),
+        )
+        .await
+        .unwrap();
+        bookclerk_library::control_plane::activate_version(
+            &store,
+            &actor,
+            INSTALLED_ECHO_KEY,
+            "0.1.0",
+            &event_node_id(files.path()),
+        )
+        .await
+        .unwrap();
+
+        let instance = deploy_and_heartbeat(&state, &store, files.path(), INSTALLED_ECHO_KEY).await;
+
+        let live = store.list_live_event_subscribers().await.unwrap();
+        let row = live
+            .iter()
+            .find(|row| row.plugin_id == instance.as_str())
+            .unwrap_or_else(|| panic!("no catalog row for the installed instance: {live:?}"));
+        assert!(row.enabled, "{row:?}");
+        assert_eq!(
+            row.subscriptions
+                .iter()
+                .map(|sub| sub.event_type.as_str())
+                .collect::<Vec<_>>(),
+            ["book_acquired"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deployed_plugin_with_nothing_to_run_does_not_subscribe() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, store) = crate::node_api::tests::test_state(&files).await;
+
+        let instance = deploy_and_heartbeat(
+            &state,
+            &store,
+            files.path(),
+            "cargo:https://index.crates.io/#bookclerk-plugin-missing",
+        )
+        .await;
+
+        let live = store.list_live_event_subscribers().await.unwrap();
+        assert!(
+            !live.iter().any(|row| row.plugin_id == instance.as_str()),
+            "{live:?}"
         );
     }
 
