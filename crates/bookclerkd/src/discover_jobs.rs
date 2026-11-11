@@ -540,6 +540,11 @@ mod tests {
         )
     }
 
+    /// The uuid of the one library title stored.
+    async fn book_uuid(library: &bookclerk_library::LibraryStore) -> String {
+        library.list_books(None).await.unwrap().remove(0).uuid
+    }
+
     /// Pending Discover jobs as `(kind, subject)` pairs.
     async fn queued(library: &bookclerk_library::LibraryStore) -> Vec<(JobKind, String)> {
         let mut jobs: Vec<(JobKind, String)> = library
@@ -556,7 +561,7 @@ mod tests {
     }
 
     /// A wish records the library work it resolves to, and a sequel of an
-    /// owned book is not that work.
+    /// owned book gets a catalog work of its own.
     #[tokio::test]
     async fn a_wish_stores_the_work_it_resolves_to() {
         let files = tempfile::tempdir().unwrap();
@@ -576,10 +581,29 @@ mod tests {
         let wish = |title: &str| serde_json::json!({ "title": title, "authors": "Frank Herbert" });
         let (status, owned) = post_json(&app, "/api/wishlist", wish("Dune")).await;
         assert_eq!(status, axum::http::StatusCode::OK, "{owned}");
-        assert!(owned["work_id"].is_string(), "{owned}");
+        let dune_work = library.work_id_for_book(&book_uuid(&library).await).await;
+        assert_eq!(
+            owned["work_id"].as_str(),
+            dune_work.unwrap().as_deref(),
+            "{owned}"
+        );
         let (status, sequel) = post_json(&app, "/api/wishlist", wish("Dune Messiah")).await;
         assert_eq!(status, axum::http::StatusCode::OK, "{sequel}");
-        assert!(sequel["work_id"].is_null(), "{sequel}");
+        assert!(sequel["work_id"].is_string(), "{sequel}");
+        assert_ne!(sequel["work_id"], owned["work_id"], "{sequel}");
+    }
+
+    /// A wish whose title is over the listing limits names no work, so it is a
+    /// bad request.
+    #[tokio::test]
+    async fn an_overlong_wish_title_is_a_bad_request() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, _library) = crate::node_api::tests::test_state(&files).await;
+        let app = crate::api::router(std::sync::Arc::clone(&state), None);
+        let long = "x".repeat(10_000);
+        let (status, body) =
+            post_json(&app, "/api/wishlist", serde_json::json!({ "title": long })).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
     }
 
     #[tokio::test]

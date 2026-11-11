@@ -387,7 +387,7 @@ pub struct UserIntegrationHint {
 /// Recent unfinished listening hint for admin user lists.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct UserListeningHint {
-    /// Display title when the provider reported one.
+    /// Title of the work being listened to, when the library knows it.
     #[schema(example = "The Left Hand of Darkness")]
     pub title: Option<String>,
     /// Integration / storefront provider id.
@@ -704,6 +704,27 @@ pub struct WorkRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// One user's own state for one work (`user_title_state`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserTitleState {
+    /// The user (`users.id`) the state belongs to.
+    pub user_id: i64,
+    /// The work (`works.id`) the state is about.
+    pub work_id: String,
+    /// Whether the user finished the work.
+    pub is_finished: bool,
+    /// The user's overall rating (0 to 5), when given.
+    pub rating_overall: Option<f64>,
+    /// The user's narration rating (0 to 5), when given.
+    pub rating_performance: Option<f64>,
+    /// The user's story rating (0 to 5), when given.
+    pub rating_story: Option<f64>,
+    /// The user's tags, as one serialized string, when any.
+    pub tags: Option<String>,
+    /// When the state was last written.
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Listening progress snapshot from an external player (e.g. AudioBookshelf).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListeningProgressRecord {
@@ -715,20 +736,12 @@ pub struct ListeningProgressRecord {
     pub provider: String,
     /// User id at the external provider.
     pub external_user_id: String,
-    /// Foreign key to `books.uuid`.
-    pub book_uuid: Option<String>,
-    /// Canonical work id this edition or request resolves to.
-    pub work_id: Option<String>,
+    /// The work the item resolved to through its identifiers.
+    pub work_id: String,
+    /// The edition the item's identifiers name, when exactly one does.
+    pub edition_id: Option<String>,
     /// Provider-native listening-progress item id.
     pub external_item_id: String,
-    /// Display title of the work or edition.
-    pub title: Option<String>,
-    /// Comma-separated or JSON author list from the storefront.
-    pub authors: Option<String>,
-    /// Amazon ASIN when known; otherwise null.
-    pub asin: Option<String>,
-    /// ISBN-10/13 when known; otherwise null.
-    pub isbn: Option<String>,
     /// Fractional progress 0.0–1.0 when the provider reports it.
     pub progress: Option<f64>,
     /// Current playback position within the title, in seconds.
@@ -967,16 +980,16 @@ pub struct TitleRequestRecord {
     /// Foreign key to `portal_identities.id`.
     #[schema(example = 7)]
     pub identity_id: Option<i64>,
-    /// Display title of the work or edition.
+    /// Display title: the title of the wish's work.
     #[schema(example = "The Left Hand of Darkness")]
     pub title: String,
-    /// Comma-separated or JSON author list from the storefront.
+    /// Comma-separated authors: the work's author credits in billing order.
     #[schema(example = "Ursula K. Le Guin")]
     pub authors: Option<String>,
-    /// Amazon ASIN when known; otherwise null.
+    /// Amazon ASIN from the wish's storefront sources, when one carries it.
     #[schema(example = "B002V0QK4C")]
     pub asin: Option<String>,
-    /// ISBN-10/13 when known; otherwise null.
+    /// ISBN-10/13 from the wish's storefront sources, when one carries it.
     #[schema(example = "9780441478125")]
     pub isbn: Option<String>,
     /// Free-form operator or requester notes.
@@ -984,13 +997,19 @@ pub struct TitleRequestRecord {
     pub notes: Option<String>,
     /// Lifecycle status for the row (user, request, …).
     pub status: RequestStatus,
-    /// Stable bibliographic key (`isbn:…` / `asin:…` / `soft:…`) for aggregation.
+    /// Bibliographic card key (`isbn:…` / `asin:…` / `soft:…`) clients use
+    /// to match a wish to a catalog card. Derived from the work's title and
+    /// authors and the sources' identifiers on every read, never stored.
     #[serde(default)]
     #[schema(example = "isbn:9780441478125")]
     pub work_key: String,
-    /// Canonical work id this edition or request resolves to.
+    /// The work the wish is for; wishes for one work are one queue entry.
     #[schema(example = "7c1e9a2b-3d4f-4e5a-9b6c-8d7e0f1a2b3c")]
-    pub work_id: Option<String>,
+    pub work_id: String,
+    /// The edition the wish named, when the library knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "0b8e3f2a-5c1d-5e7f-9a2b-4c6d8e0f1a3b")]
+    pub edition_id: Option<String>,
     /// Library `books.uuid` once the wishlist item is fulfilled.
     #[schema(example = "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31")]
     pub resolved_book_uuid: Option<String>,
@@ -1141,13 +1160,11 @@ impl QueueWisher {
 /// Aggregated global request-queue entry (one work, many wishers).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalQueueEntry {
-    /// Stable merge key used to group editions into a work.
+    /// Bibliographic card key of the newest wish (see
+    /// [`TitleRequestRecord::work_key`]); clients match cards on it.
     pub work_key: String,
-    /// The library work the wishes resolved to when they were created, when
-    /// the resolver found one. Entries with the same work id are one work
-    /// whatever their identifiers say.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub work_id: Option<String>,
+    /// The work every wish of this entry is for: the queue groups by it.
+    pub work_id: String,
     /// Display title of the work or edition.
     pub title: String,
     /// Comma-separated or JSON author list from the storefront.

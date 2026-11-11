@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use bookclerk_library::{GlobalQueueEntry, LibraryStore, QueueRank};
 
 use crate::error::Result;
-use crate::identity::merge_global_queue_entries;
 use crate::recommend::RankedQueueEntry;
 
 /// How old the stored ranking may get before a read asks for a new pass,
@@ -21,18 +20,12 @@ use crate::recommend::RankedQueueEntry;
 /// still reach the queue within a day.
 pub const REQUEST_QUEUE_MAX_AGE: chrono::Duration = chrono::Duration::hours(24);
 
-/// The key a queue entry's stored ranking is filed under.
-///
-/// Wishes resolved to a library work are one entry whatever identifiers each
-/// wisher's store gave, so they key by that work (`work:<id>`); the rest key
-/// by the entry's bibliographic `work_key`. When wishes are re-keyed by work
-/// and edition, this becomes the work id alone.
+/// The key a queue entry's stored ranking is filed under: the library work
+/// its wishes are for. Every wish names a work, so one work is one entry
+/// whatever identifiers each wisher's store gave.
 #[must_use]
 pub fn queue_entry_key(entry: &GlobalQueueEntry) -> String {
-    match entry.work_id.as_deref().map(str::trim) {
-        Some(work_id) if !work_id.is_empty() => format!("work:{work_id}"),
-        _ => entry.work_key.clone(),
-    }
+    entry.work_id.clone()
 }
 
 /// The shared request queue as a read builds it.
@@ -59,7 +52,7 @@ pub struct StoredRequestQueue {
 ///
 /// Returns the library read error.
 pub async fn read_request_queue(library: &LibraryStore) -> Result<StoredRequestQueue> {
-    let queue = merge_global_queue_entries(library.list_global_request_queue().await?);
+    let queue = library.list_global_request_queue().await?;
     if queue.is_empty() {
         return Ok(StoredRequestQueue::default());
     }
@@ -76,11 +69,11 @@ pub async fn read_request_queue(library: &LibraryStore) -> Result<StoredRequestQ
     })
 }
 
-/// Joins merged queue entries with their stored rankings and sorts them.
+/// Joins queue entries with their stored rankings and sorts them.
 ///
 /// # Arguments
 ///
-/// * `queue` - Merged open queue entries.
+/// * `queue` - Open queue entries, one per work.
 /// * `ranks` - Stored rankings by [`queue_entry_key`].
 /// * `stale` - Set when an entry has no stored ranking.
 fn join_ranks(
@@ -117,11 +110,11 @@ fn join_ranks(
 mod tests {
     use super::*;
 
-    /// An open queue entry for `title`, keyed `work_key`, with `wishes` wishes.
-    fn entry(work_key: &str, work_id: Option<&str>, title: &str, wishes: i64) -> GlobalQueueEntry {
+    /// An open queue entry for `title` on work `work_id`, with `wishes` wishes.
+    fn entry(work_id: &str, title: &str, wishes: i64) -> GlobalQueueEntry {
         GlobalQueueEntry {
-            work_key: work_key.into(),
-            work_id: work_id.map(str::to_string),
+            work_key: format!("soft:{title}"),
+            work_id: work_id.into(),
             title: title.into(),
             authors: None,
             asin: None,
@@ -153,7 +146,7 @@ mod tests {
             key.to_string(),
             QueueRank {
                 entry_key: key.into(),
-                work_id: None,
+                work_id: Some(key.into()),
                 owned,
                 taste_score: score,
                 reasons: vec![reason.into()],
@@ -162,16 +155,8 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_keys_by_its_work_when_it_has_one() {
-        assert_eq!(
-            queue_entry_key(&entry("isbn:1", Some("w1"), "A", 1)),
-            "work:w1"
-        );
-        assert_eq!(
-            queue_entry_key(&entry("isbn:1", Some("  "), "A", 1)),
-            "isbn:1"
-        );
-        assert_eq!(queue_entry_key(&entry("isbn:1", None, "A", 1)), "isbn:1");
+    fn an_entry_keys_by_its_work() {
+        assert_eq!(queue_entry_key(&entry("w1", "A", 1)), "w1");
     }
 
     /// Stored taste orders the queue, the live wish count still dominates,
@@ -179,16 +164,16 @@ mod tests {
     #[test]
     fn the_read_joins_stored_taste_with_live_wishes() {
         let queue = vec![
-            entry("isbn:liked", None, "Liked", 1),
-            entry("isbn:plain", None, "Plain", 1),
-            entry("isbn:popular", None, "Popular", 3),
-            entry("isbn:held", Some("w-held"), "Held", 5),
+            entry("w-liked", "Liked", 1),
+            entry("w-plain", "Plain", 1),
+            entry("w-popular", "Popular", 3),
+            entry("w-held", "Held", 5),
         ];
         let ranks: HashMap<String, QueueRank> = [
-            rank("isbn:liked", false, 0.8, "matches liked author (Ada)"),
-            rank("isbn:plain", false, 0.1, "x"),
-            rank("work:w-held", true, 0.0, "x"),
-            rank("isbn:popular", false, 0.0, "y"),
+            rank("w-liked", false, 0.8, "matches liked author (Ada)"),
+            rank("w-plain", false, 0.1, "x"),
+            rank("w-held", true, 0.0, "x"),
+            rank("w-popular", false, 0.0, "y"),
         ]
         .into_iter()
         .collect();
@@ -205,7 +190,7 @@ mod tests {
 
         let mut stale = false;
         let mut fresh = queue;
-        fresh.push(entry("isbn:new", None, "New", 1));
+        fresh.push(entry("w-new", "New", 1));
         let joined = join_ranks(fresh, &ranks, &mut stale);
         assert!(stale, "an entry wished since the last pass needs one");
         assert!(joined

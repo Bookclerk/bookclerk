@@ -15,8 +15,7 @@ pub struct Model {
     /// Surrogate primary key assigned by the database.
     #[sea_orm(primary_key)]
     pub id: i64,
-    /// The queue entry the row ranks: `work:<work id>` when the entry's wishes
-    /// resolved to a library work, otherwise the entry's `work_key`.
+    /// The queue entry the row ranks: the library work id its wishes are for.
     #[sea_orm(unique)]
     pub entry_key: String,
     /// Library work (`works.id`) the entry's wishes resolved to, when any.

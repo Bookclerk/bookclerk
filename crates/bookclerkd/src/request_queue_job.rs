@@ -136,8 +136,6 @@ mod tests {
             isbn: Some(isbn.into()),
             notes: None,
             status: RequestStatus::Open,
-            work_key: format!("isbn:{isbn}"),
-            work_id: None,
             resolved_book_uuid: None,
             cover_url: None,
         }
@@ -160,7 +158,7 @@ mod tests {
     async fn the_route_reads_the_stored_ranking() {
         let files = tempfile::tempdir().expect("tempdir");
         let (state, library) = crate::node_api::tests::test_state(&files).await;
-        library
+        let first = library
             .create_title_request(&wish("First", "9780000000001"))
             .await
             .expect("wish");
@@ -183,7 +181,7 @@ mod tests {
         assert_eq!(summary, "entries=1 owned=0");
         let stored = library.list_request_queue_ranks().await.expect("ranks");
         assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].rank.entry_key, "isbn:9780000000001");
+        assert_eq!(stored[0].rank.entry_key, first.work_id);
         let queue = bookclerk_discover::read_request_queue(&library)
             .await
             .expect("read");

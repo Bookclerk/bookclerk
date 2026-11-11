@@ -680,7 +680,6 @@ export function DiscoverPage({
         authors: title.authors ?? undefined,
         asin: title.asin ?? undefined,
         isbn: title.isbn ?? undefined,
-        work_key: workKey || undefined,
         store_editions: editions,
         purchase_hints: "purchase_hints" in title ? (title.purchase_hints ?? undefined) : undefined,
         cover_url: title.cover_url ?? undefined,

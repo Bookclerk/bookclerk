@@ -5394,9 +5394,6 @@ struct CreateRequestBody {
     /// Optional priced storefront links snapshotted at wishlist time.
     #[serde(default)]
     purchase_hints: Vec<bookclerk_discover::PurchaseHint>,
-    /// Optional stable work key; when omitted one is derived from bib fields.
-    #[schema(example = "work:9780441478125")]
-    work_key: Option<String>,
     /// Optional cover image URL snapshotted onto the request.
     #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     cover_url: Option<String>,
@@ -5986,31 +5983,6 @@ fn split_csv_query(raw: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// Returns the client work key, or derives one from ASIN/ISBN/title/edition identity.
-fn work_key_for_request(body: &CreateRequestBody) -> String {
-    if let Some(key) = body
-        .work_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return key.to_string();
-    }
-    let (source, product_id) = body
-        .store_editions
-        .first()
-        .map(|e| (Some(e.source.as_str()), Some(e.product_id.as_str())))
-        .unwrap_or((None, None));
-    bookclerk_discover::work_map_key(
-        body.asin.as_deref(),
-        body.isbn.as_deref(),
-        &body.title,
-        body.authors.as_deref(),
-        source,
-        product_id.or(body.asin.as_deref()).or(body.isbn.as_deref()),
-    )
-}
-
 /// Lists open wishlist rows for the caller (portal identity or operator-owned).
 #[utoipa::path(
     get,
@@ -6201,7 +6173,8 @@ pub(crate) async fn list_request_queue(
     Ok(Json(rows))
 }
 
-/// Inserts a title request after requiring a non-empty title and deriving a work key.
+/// Inserts a title request after requiring a non-empty title; the library
+/// resolves it into the work it is for.
 async fn create_request_inner(
     state: &AppState,
     headers: &HeaderMap,
@@ -6213,22 +6186,7 @@ async fn create_request_inner(
     let identity_id = auth::caller_portal_identity(state, headers)
         .await
         .map(|identity| identity.id);
-    let work_key = work_key_for_request(&body);
     let library = state.library_snapshot().await;
-    // The work this wish is for, when the library already knows it, so the
-    // queue and the shelves compare works rather than titles. A lookup
-    // failure leaves the id unset; the readers fall back to the resolver.
-    let work_id = library
-        .work_for(&bookclerk_library::TitleQuery {
-            title: &body.title,
-            authors: body.authors.as_deref(),
-            asin: body.asin.as_deref(),
-            isbn: body.isbn.as_deref(),
-            series: None,
-            series_index: None,
-        })
-        .await
-        .unwrap_or_default();
     let mut row = library
         .create_title_request(&NewTitleRequest {
             uuid: None,
@@ -6239,13 +6197,15 @@ async fn create_request_inner(
             isbn: body.isbn.clone(),
             notes: body.notes.clone(),
             status: RequestStatus::Open,
-            work_key,
-            work_id,
             resolved_book_uuid: None,
             cover_url: body.cover_url.clone(),
         })
         .await
-        .map_err(internal_err)?;
+        .map_err(|err| match err {
+            // A title over the listing limits names no work.
+            bookclerk_library::LibraryError::Invalid(message) => (StatusCode::BAD_REQUEST, message),
+            other => internal_err(other),
+        })?;
 
     let mut sources = wishlist_sources_from_body(&body);
     // Soft-resolve live prices / additional storefronts and merge into snapshots.

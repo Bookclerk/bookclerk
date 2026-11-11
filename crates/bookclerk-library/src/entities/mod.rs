@@ -80,6 +80,7 @@ pub mod title_request_sources;
 pub mod title_requests;
 pub mod user_invites;
 pub mod user_preferences;
+pub mod user_title_state;
 pub mod users;
 pub mod webauthn_challenges;
 pub mod webauthn_credentials;

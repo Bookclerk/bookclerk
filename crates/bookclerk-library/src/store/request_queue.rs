@@ -28,8 +28,7 @@ pub const MAX_QUEUE_REASONS: usize = 6;
 /// The taste ranking of one queue entry, as the ranking job computed it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueueRank {
-    /// The entry this ranks: `work:<work id>` for wishes resolved to a
-    /// library work, otherwise the entry's `work_key`.
+    /// The entry this ranks: the library work id its wishes are for.
     pub entry_key: String,
     /// Library work the entry's wishes resolved to, when any.
     pub work_id: Option<String>,
