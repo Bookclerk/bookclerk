@@ -19,6 +19,7 @@ use crate::column_read::SelectColumnExt;
 use crate::control_plane::{bump_if_stamped, bump_on, exec_bumped_via, sea_probe, Bump, LiveTopic};
 use crate::entities::{
     books, domain_events, event_deliveries, event_outbox_stats, event_subscriber_nodes,
+    plugin_instances,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{
@@ -2572,24 +2573,32 @@ impl LibraryStore {
         }
         page.last_scanned = after;
         page.expired_event_ids = self
-            .expired_event_ids(&read.subscriber_ids, &page.events)
+            .expired_event_ids(&read.plugin_key, &page.events)
             .await?;
         Ok(page)
     }
 
-    /// Ids of `events` whose delivery to any of `subscriber_ids` expired.
+    /// Ids of `events` whose delivery to `plugin_key` or any of its
+    /// instances expired.
+    ///
+    /// Every read is bounded: instance ids come in keyset pages of
+    /// `maxResultRows`, and each delivery query selects distinct event ids
+    /// from at most `maxResultRows` events, so several expired subscribers
+    /// of one event still count as one row.
     ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when a read fails.
     async fn expired_event_ids(
         &self,
-        subscriber_ids: &[String],
+        plugin_key: &str,
         events: &[DomainEventRecord],
     ) -> Result<Vec<String>> {
-        if subscriber_ids.is_empty() || events.is_empty() {
+        if plugin_key.is_empty() || events.is_empty() {
             return Ok(Vec::new());
         }
+        let mut subscriber_ids = vec![plugin_key.to_string()];
+        subscriber_ids.extend(self.plugin_instance_ids(plugin_key).await?);
         let ids: Vec<String> = events.iter().map(|event| event.id.clone()).collect();
         // One bind for the state; the rest split between the two id lists.
         let room = usize::try_from(self.max_binds.saturating_sub(1))
@@ -2603,17 +2612,50 @@ impl LibraryStore {
         let mut expired = std::collections::BTreeSet::new();
         for subscribers in subscriber_ids.chunks(subscribers_per) {
             for event_chunk in ids.chunks(events_per) {
-                let rows = event_deliveries::Entity::find()
+                let rows: Vec<String> = event_deliveries::Entity::find()
                     .filter(event_deliveries::Column::State.eq(STATE_EXPIRED))
                     .filter(event_deliveries::Column::PluginId.is_in(subscribers.to_vec()))
                     .filter(event_deliveries::Column::EventId.is_in(event_chunk.to_vec()))
+                    .distinct()
+                    .into_column(event_deliveries::Column::EventId)
                     .all(&self.db)
                     .await
                     .map_err(LibraryError::from_db_err)?;
-                expired.extend(rows.into_iter().map(|row| row.event_id));
+                expired.extend(rows);
             }
         }
         Ok(ids.into_iter().filter(|id| expired.contains(id)).collect())
+    }
+
+    /// Instance ids of `plugin_key`, read in keyset pages of
+    /// `maxResultRows` so a plugin with many instances stays within the
+    /// adapter's result cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    async fn plugin_instance_ids(&self, plugin_key: &str) -> Result<Vec<String>> {
+        let page = u64::from(self.max_result_rows.max(1));
+        let mut out: Vec<String> = Vec::new();
+        loop {
+            let mut query = plugin_instances::Entity::find()
+                .filter(plugin_instances::Column::PluginKey.eq(plugin_key));
+            if let Some(last) = out.last() {
+                query = query.filter(plugin_instances::Column::PluginInstanceId.gt(last.clone()));
+            }
+            let rows: Vec<String> = query
+                .order_by_asc(plugin_instances::Column::PluginInstanceId)
+                .limit(page)
+                .into_column(plugin_instances::Column::PluginInstanceId)
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            let full = u64::try_from(rows.len()).unwrap_or(u64::MAX) >= page;
+            out.extend(rows);
+            if !full {
+                return Ok(out);
+            }
+        }
     }
 
     /// Delete terminal deliveries past their retention windows, then empty events.

@@ -2042,9 +2042,10 @@ pub struct EventStreamRead {
     /// `Some` limits the read to one account's events; `None` reads every
     /// account, as delivery does for a host-wide invocation.
     pub account_id: Option<String>,
-    /// Catalog ids the reader's deliveries are filed under, used to report
-    /// which returned events it missed.
-    pub subscriber_ids: Vec<String>,
+    /// The reader's PluginKey. Its deliveries are filed under this key and
+    /// under each of its instance ids; they report which returned events it
+    /// missed. Empty reports none.
+    pub plugin_key: String,
     /// `[events].retention_days`: nothing older is returned.
     pub retention_days: u64,
     /// Most events to return (at least one).

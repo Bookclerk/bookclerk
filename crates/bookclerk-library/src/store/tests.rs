@@ -7951,7 +7951,7 @@ async fn the_event_stream_returns_matching_events_in_order_under_every_profile()
             start: EventStreamStart::Oldest,
             subscriptions: vec![audio, EventCatalogSubscription::new("title_added", vec![1])],
             account_id: None,
-            subscriber_ids: vec!["echo".into()],
+            plugin_key: "echo".into(),
             retention_days: 7,
             limit: 2,
             now: chrono::Utc::now(),
@@ -8005,89 +8005,134 @@ async fn the_event_stream_returns_matching_events_in_order_under_every_profile()
 
 #[tokio::test]
 async fn the_event_stream_reports_missed_events_and_the_retention_window() {
-    let kit = crate::test_support::sqlite::memory(crate::test_support::Profile::ALL[0]).await;
-    let store = kit.store();
-    let first = expect_created(
-        persist_outbox_event(store, outbox_spec("book_acquired", "gap:1", "{}"))
-            .await
-            .unwrap(),
-    );
-    let second = expect_created(
-        persist_outbox_event(store, outbox_spec("book_acquired", "gap:2", "{}"))
-            .await
-            .unwrap(),
-    );
-    store
-        .dispatch_event_deliveries(&first, &[EventSubscriber::plugin("echo")], "op-gap")
-        .await
-        .unwrap();
-    store
-        .dispatch_event_deliveries(&second, &[EventSubscriber::plugin("echo")], "op-gap-2")
-        .await
-        .unwrap();
-    // No live catalog row, so expiry uses the whole window.
-    let expired = store
-        .expire_unleased_event_deliveries(1, chrono::Utc::now() + chrono::Duration::days(2))
-        .await
-        .unwrap();
-    assert_eq!(expired, 2);
-    let now = chrono::Utc::now();
-    let read = EventStreamRead {
-        start: EventStreamStart::Oldest,
-        subscriptions: vec![EventCatalogSubscription::new("book_acquired", vec![1])],
-        account_id: None,
-        subscriber_ids: vec!["echo".into(), "other".into()],
-        retention_days: 7,
-        limit: 10,
-        now,
+    use crate::control_plane::{create_plugin_instance, ConfigActor};
+    const KEY: &str = "platform:bookclerk/echo";
+    let operator = ConfigActor::Operator {
+        id: "operator".into(),
     };
-    let page = store.read_event_stream(&read).await.unwrap();
-    assert_eq!(page.expired_event_ids, vec![first.clone(), second.clone()]);
-    let stranger = EventStreamRead {
-        subscriber_ids: vec!["stranger".into()],
-        ..read.clone()
-    };
-    assert!(store
-        .read_event_stream(&stranger)
-        .await
-        .unwrap()
-        .expired_event_ids
-        .is_empty());
+    for profile in crate::test_support::Profile::ALL {
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        // Two instances, so the instance lookup takes more than one page
+        // under the smallest result cap.
+        let mut subscribers = vec![EventSubscriber::plugin(KEY)];
+        for display in ["one", "two"] {
+            let instance = create_plugin_instance(store, &operator, KEY, display)
+                .await
+                .unwrap();
+            subscribers.push(EventSubscriber::plugin(instance.id.to_string()));
+        }
+        let other = create_plugin_instance(store, &operator, "platform:bookclerk/other", "")
+            .await
+            .unwrap();
+        let first = expect_created(
+            persist_outbox_event(store, outbox_spec("book_acquired", "gap:1", "{}"))
+                .await
+                .unwrap(),
+        );
+        let second = expect_created(
+            persist_outbox_event(store, outbox_spec("book_acquired", "gap:2", "{}"))
+                .await
+                .unwrap(),
+        );
+        let kept = expect_created(
+            persist_outbox_event(store, outbox_spec("book_acquired", "gap:3", "{}"))
+                .await
+                .unwrap(),
+        );
+        // `first` expires for the key and both instances: three rows for one
+        // event, which must still report it once.
+        store
+            .dispatch_event_deliveries(&first, &subscribers, "op-gap")
+            .await
+            .unwrap();
+        store
+            .dispatch_event_deliveries(&second, &subscribers[2..], "op-gap-2")
+            .await
+            .unwrap();
+        // Another plugin's expired delivery is not this reader's gap.
+        store
+            .dispatch_event_deliveries(
+                &kept,
+                &[EventSubscriber::plugin(other.id.to_string())],
+                "op-gap-3",
+            )
+            .await
+            .unwrap();
+        // No live catalog row, so expiry uses the whole window.
+        let expired = store
+            .expire_unleased_event_deliveries(1, chrono::Utc::now() + chrono::Duration::days(2))
+            .await
+            .unwrap();
+        assert_eq!(expired, 5, "{name}");
+        let now = chrono::Utc::now();
+        let read = EventStreamRead {
+            start: EventStreamStart::Oldest,
+            subscriptions: vec![EventCatalogSubscription::new("book_acquired", vec![1])],
+            account_id: None,
+            plugin_key: KEY.into(),
+            retention_days: 7,
+            limit: 10,
+            now,
+        };
+        let page = store.read_event_stream(&read).await.unwrap();
+        assert_eq!(page.events.len(), 3, "{name}");
+        assert_eq!(
+            page.expired_event_ids,
+            vec![first.clone(), second.clone()],
+            "{name}"
+        );
+        let stranger = EventStreamRead {
+            plugin_key: "platform:bookclerk/stranger".into(),
+            ..read.clone()
+        };
+        assert!(
+            store
+                .read_event_stream(&stranger)
+                .await
+                .unwrap()
+                .expired_event_ids
+                .is_empty(),
+            "{name}"
+        );
 
-    let old = EventStreamRead {
-        start: EventStreamStart::Since(now - chrono::Duration::days(30)),
-        ..read.clone()
-    };
-    let page = store.read_event_stream(&old).await.unwrap();
-    assert!(page.truncated);
-    assert_eq!(page.events.len(), 2);
-    let stale_cursor = EventStreamRead {
-        start: EventStreamStart::After {
-            created_at: (now - chrono::Duration::days(30)).to_rfc3339(),
-            id: "x".into(),
-        },
-        ..read.clone()
-    };
-    assert!(
-        store
-            .read_event_stream(&stale_cursor)
-            .await
-            .unwrap()
-            .truncated
-    );
-    let later = EventStreamRead {
-        now: now + chrono::Duration::days(8),
-        ..read.clone()
-    };
-    assert!(
-        store
-            .read_event_stream(&later)
-            .await
-            .unwrap()
-            .events
-            .is_empty(),
-        "events older than the window are not returned"
-    );
+        let old = EventStreamRead {
+            start: EventStreamStart::Since(now - chrono::Duration::days(30)),
+            ..read.clone()
+        };
+        let page = store.read_event_stream(&old).await.unwrap();
+        assert!(page.truncated, "{name}");
+        assert_eq!(page.events.len(), 3, "{name}");
+        let stale_cursor = EventStreamRead {
+            start: EventStreamStart::After {
+                created_at: (now - chrono::Duration::days(30)).to_rfc3339(),
+                id: "x".into(),
+            },
+            ..read.clone()
+        };
+        assert!(
+            store
+                .read_event_stream(&stale_cursor)
+                .await
+                .unwrap()
+                .truncated,
+            "{name}"
+        );
+        let later = EventStreamRead {
+            now: now + chrono::Duration::days(8),
+            ..read.clone()
+        };
+        assert!(
+            store
+                .read_event_stream(&later)
+                .await
+                .unwrap()
+                .events
+                .is_empty(),
+            "events older than the window are not returned ({name})"
+        );
+    }
 }
 
 #[tokio::test]
@@ -8123,7 +8168,7 @@ async fn the_event_stream_scan_budget_stops_and_resumes() {
         start: EventStreamStart::Oldest,
         subscriptions: vec![audio],
         account_id: None,
-        subscriber_ids: Vec::new(),
+        plugin_key: String::new(),
         retention_days: 7,
         limit: 1,
         now: chrono::Utc::now(),

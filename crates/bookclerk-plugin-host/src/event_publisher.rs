@@ -292,7 +292,7 @@ impl EventPublisher for OutboxEventPublisher {
                 .cloned()
                 .collect(),
             account_id: (!self.account_id.is_empty()).then(|| self.account_id.clone()),
-            subscriber_ids: self.subscriber_ids().await?,
+            plugin_key: self.plugin_id.clone(),
             retention_days: self.readers.retention_days,
             limit: usize::try_from(query.limit).unwrap_or(usize::MAX),
             now: chrono::Utc::now(),
@@ -315,30 +315,6 @@ impl EventPublisher for OutboxEventPublisher {
             expired_event_ids: page.expired_event_ids,
             truncated: page.truncated,
         })
-    }
-}
-
-impl OutboxEventPublisher {
-    /// Catalog ids this plugin's deliveries are filed under: its PluginKey
-    /// and every instance of it.
-    ///
-    /// # Errors
-    ///
-    /// Returns `unavailable` when the instance list cannot be read.
-    async fn subscriber_ids(&self) -> Result<Vec<String>> {
-        let instances = bookclerk_library::control_plane::list_plugin_instances_for_key(
-            &self.store,
-            &self.plugin_id,
-        )
-        .await
-        .map_err(|err| PluginError::unavailable(format!("instance read failed: {err}")))?;
-        let mut ids = vec![self.plugin_id.clone()];
-        ids.extend(
-            instances
-                .into_iter()
-                .map(|instance| instance.id.to_string()),
-        );
-        Ok(ids)
     }
 }
 
