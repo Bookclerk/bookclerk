@@ -19,8 +19,14 @@ pub struct Model {
     pub call_key: String,
     /// Storefront plugin id that answered.
     pub source: String,
-    /// RFC 3339 timestamp of the call.
+    /// RFC 3339 timestamp of the call. The Unix epoch (expired) while an
+    /// answer is being written.
     pub fetched_at: String,
+    /// Random token of the write that owns the row. A replacement takes the
+    /// row over by writing its own token; the hits and fetch time of an
+    /// older write still in progress are then refused, so two answers are
+    /// never mixed.
+    pub writer: String,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).

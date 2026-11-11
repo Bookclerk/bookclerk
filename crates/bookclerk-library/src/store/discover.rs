@@ -90,6 +90,92 @@ fn candidate_upsert(
     ]
 }
 
+/// The statements that replace one cached storefront answer, in the order
+/// they must run.
+struct StoreCallStatements {
+    /// Claims the call row for this write (its token, an expired fetch
+    /// time) and deletes the previous answer's hits; one atomic group.
+    head: Vec<TypedDbStatement>,
+    /// One insert per hit, each applied only while the row carries this
+    /// write's token.
+    hits: Vec<TypedDbStatement>,
+    /// Writes the fetch time, only while the row carries this write's token.
+    stamp: TypedDbStatement,
+}
+
+/// Builds the statements that replace the answer cached under `call_key`.
+///
+/// # Arguments
+///
+/// * `call_key` - The call's key.
+/// * `source` - Storefront plugin id that answered.
+/// * `writer` - This write's random token, which fences its hits and stamp
+///   against a later write of the same call.
+/// * `hits` - The listings, in the store's order.
+fn store_call_statements(
+    call_key: &str,
+    source: &str,
+    writer: &str,
+    hits: &[StoreCallHit],
+) -> StoreCallStatements {
+    let expired = DateTime::<Utc>::UNIX_EPOCH.to_rfc3339();
+    let head = vec![
+        batch::exec(
+            "UPDATE discover_store_calls SET source = ?, fetched_at = ?, writer = ? \
+             WHERE call_key = ?",
+            vec![
+                batch::text(source),
+                batch::text(&expired),
+                batch::text(writer),
+                batch::text(call_key),
+            ],
+        ),
+        batch::exec(
+            "INSERT OR IGNORE INTO discover_store_calls (call_key, source, fetched_at, writer) \
+             VALUES (?, ?, ?, ?)",
+            vec![
+                batch::text(call_key),
+                batch::text(source),
+                batch::text(&expired),
+                batch::text(writer),
+            ],
+        ),
+        batch::exec(
+            "DELETE FROM discover_store_call_hits WHERE call_key = ?",
+            vec![batch::text(call_key)],
+        ),
+    ];
+    let hits = (0_i64..)
+        .zip(hits)
+        .map(|(position, hit)| {
+            batch::exec(
+                "INSERT OR IGNORE INTO discover_store_call_hits \
+                 (call_key, position, listing_id, origin, rank_hint) \
+                 SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM discover_store_calls \
+                 WHERE call_key = ? AND writer = ?)",
+                vec![
+                    batch::text(call_key),
+                    batch::int(position),
+                    batch::text(&hit.listing_id),
+                    batch::text(&hit.origin),
+                    batch::int_opt(hit.rank_hint.map(i64::from)),
+                    batch::text(call_key),
+                    batch::text(writer),
+                ],
+            )
+        })
+        .collect();
+    let stamp = batch::exec(
+        "UPDATE discover_store_calls SET fetched_at = ? WHERE call_key = ? AND writer = ?",
+        vec![
+            batch::text(&now_str()),
+            batch::text(call_key),
+            batch::text(writer),
+        ],
+    );
+    StoreCallStatements { head, hits, stamp }
+}
+
 /// One title a store returned for a subject, as written: the shared
 /// listing it is, plus why the subject got it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -556,7 +642,11 @@ impl LibraryStore {
     /// and deletes the old hits; the new fetch time is written last, in the
     /// final batch. A reader between batches, or after a batch fails, sees
     /// an expired answer and asks the store again, never a fresh answer
-    /// with only part of its hits.
+    /// with only part of its hits. Each write claims the call row with its
+    /// own random token, and its hits and fetch time apply only while the
+    /// row still carries that token, so two concurrent answers to one call
+    /// are never mixed: the later claim wins, and the earlier write adds
+    /// nothing after it.
     ///
     /// # Arguments
     ///
@@ -573,56 +663,18 @@ impl LibraryStore {
         source: &str,
         hits: &[StoreCallHit],
     ) -> Result<()> {
-        let now = now_str();
-        let expired = DateTime::<Utc>::UNIX_EPOCH.to_rfc3339();
+        let writer = uuid::Uuid::new_v4().simple().to_string();
+        let parts = store_call_statements(call_key, source, &writer, hits);
         let mut batches = WriteBatches::new(self.db_capabilities(), "discover store call");
-        let head = vec![
-            batch::exec(
-                "UPDATE discover_store_calls SET source = ?, fetched_at = ? WHERE call_key = ?",
-                vec![
-                    batch::text(source),
-                    batch::text(&expired),
-                    batch::text(call_key),
-                ],
-            ),
-            batch::exec(
-                "INSERT OR IGNORE INTO discover_store_calls (call_key, source, fetched_at) \
-                 VALUES (?, ?, ?)",
-                vec![
-                    batch::text(call_key),
-                    batch::text(source),
-                    batch::text(&expired),
-                ],
-            ),
-            batch::exec(
-                "DELETE FROM discover_store_call_hits WHERE call_key = ?",
-                vec![batch::text(call_key)],
-            ),
-        ];
-        if let Some(full) = batches.push_group(head)? {
+        if let Some(full) = batches.push_group(parts.head)? {
             self.run_candidate_batch(full).await?;
         }
-        for (position, hit) in (0_i64..).zip(hits) {
-            let stmt = batch::exec(
-                "INSERT OR IGNORE INTO discover_store_call_hits \
-                 (call_key, position, listing_id, origin, rank_hint) VALUES (?, ?, ?, ?, ?)",
-                vec![
-                    batch::text(call_key),
-                    batch::int(position),
-                    batch::text(&hit.listing_id),
-                    batch::text(&hit.origin),
-                    batch::int_opt(hit.rank_hint.map(i64::from)),
-                ],
-            );
+        for stmt in parts.hits {
             if let Some(full) = batches.push(stmt)? {
                 self.run_candidate_batch(full).await?;
             }
         }
-        let stamp = batch::exec(
-            "UPDATE discover_store_calls SET fetched_at = ? WHERE call_key = ?",
-            vec![batch::text(&now), batch::text(call_key)],
-        );
-        if let Some(full) = batches.push(stamp)? {
+        if let Some(full) = batches.push(parts.stamp)? {
             self.run_candidate_batch(full).await?;
         }
         if let Some(last) = batches.finish() {
@@ -1166,6 +1218,58 @@ mod tests {
             .map(|c| c.source)
             .collect();
         assert_eq!(order, vec![String::from("chirp"), String::from("libro")]);
+    }
+
+    #[tokio::test]
+    async fn concurrent_answers_to_one_call_are_never_mixed() {
+        let store = store().await;
+        let day = chrono::Duration::hours(24);
+        let pool = refs(&store, &["a", "b", "c", "d"]).await;
+        let run = |statements: Vec<TypedDbStatement>| {
+            let store = &store;
+            async move { store.run_candidate_batch(statements).await.unwrap() }
+        };
+        let first = super::store_call_statements("k1", "libro", "w1", &hits(&pool[..2]));
+        let second = super::store_call_statements("k1", "libro", "w2", &hits(&pool[2..]));
+        // The second write claims the call while the first is between
+        // batches: the first write's hits and stamp no longer apply.
+        run(first.head).await;
+        run(second.head).await;
+        run(first.hits).await;
+        run(vec![first.stamp]).await;
+        assert!(
+            store
+                .get_discover_store_call("k1", day)
+                .await
+                .unwrap()
+                .is_none(),
+            "a taken-over write never marks the answer fresh"
+        );
+        run(second.hits).await;
+        run(vec![second.stamp]).await;
+        assert_eq!(
+            store.get_discover_store_call("k1", day).await.unwrap(),
+            Some(hits(&pool[2..]))
+        );
+        // A write taken over after its hits landed loses them to the new
+        // claim, and its late stamp changes nothing.
+        let third = super::store_call_statements("k1", "libro", "w3", &hits(&pool[..1]));
+        let fourth = super::store_call_statements("k1", "libro", "w4", &hits(&pool[1..2]));
+        run(third.head).await;
+        run(third.hits).await;
+        run(fourth.head).await;
+        run(vec![third.stamp]).await;
+        assert!(store
+            .get_discover_store_call("k1", day)
+            .await
+            .unwrap()
+            .is_none());
+        run(fourth.hits).await;
+        run(vec![fourth.stamp]).await;
+        assert_eq!(
+            store.get_discover_store_call("k1", day).await.unwrap(),
+            Some(hits(&pool[1..2]))
+        );
     }
 
     #[tokio::test]

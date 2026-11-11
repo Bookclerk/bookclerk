@@ -399,7 +399,7 @@ pub async fn fetch_subject_candidates(
     let base = total / stores.len();
     let extra = total % stores.len();
 
-    let mut tasks: JoinSet<(String, Vec<PooledCandidate>, bool, usize)> = JoinSet::new();
+    let mut tasks: JoinSet<(String, StoreFetch, usize)> = JoinSet::new();
     for (index, source) in stores.into_iter().enumerate() {
         // Split the total budget so the stores together never exceed it; a
         // store whose share is zero is not asked and keeps its stored rows.
@@ -414,7 +414,7 @@ pub async fn fetch_subject_candidates(
         let exclude_sets = opts.exclude_graphicaudio_series_sets;
         tasks.spawn(async move {
             let id = source.id().to_string();
-            let (mut hits, ok) = fetch_one_store(
+            let mut fetched = fetch_one_store(
                 &library,
                 source.as_ref(),
                 &seeds,
@@ -424,20 +424,20 @@ pub async fn fetch_subject_candidates(
                 exclude_sets,
             )
             .await;
-            let priced = if ok {
-                price_candidates(&library, source.as_ref(), &mut hits, &region).await
+            let priced = if fetched.answered {
+                price_candidates(&library, source.as_ref(), &mut fetched.candidates, &region).await
             } else {
                 0
             };
-            (id, hits, ok, priced)
+            (id, fetched, priced)
         });
     }
     while let Some(joined) = tasks.join_next().await {
-        let Ok((store, candidates, ok, priced)) = joined else {
+        let Ok((store, fetched, priced)) = joined else {
             tracing::warn!("a discover store fetch task stopped before it finished");
             continue;
         };
-        if !ok {
+        if !fetched.answered {
             report.stores_failed.push(store);
             continue;
         }
@@ -446,7 +446,8 @@ pub async fn fetch_subject_candidates(
         // leaving out titles the library holds. Merging editions of one
         // work across stores is the ranking's job.
         let mut seen = HashSet::new();
-        let rows: Vec<CandidateRef> = candidates
+        let mut rows: Vec<CandidateRef> = fetched
+            .candidates
             .into_iter()
             .filter(|p| !candidate_is_owned(&p.candidate, &owned.0, &owned.1, &owned.2))
             .filter(|p| seen.insert(p.listing_id.clone()))
@@ -458,6 +459,25 @@ pub async fn fetch_subject_candidates(
                 starter_genre: p.candidate.starter_genre,
             })
             .collect();
+        if !fetched.complete {
+            // Some title could not be placed in the pool this time. Keep
+            // the store's stored rows the new answer does not name, so a
+            // title the store still sells is not dropped until a complete
+            // fetch replaces them.
+            let kept = library
+                .list_discover_candidates(subject)
+                .await?
+                .into_iter()
+                .filter(|c| c.source == store && seen.insert(c.listing.id.clone()))
+                .map(|c| CandidateRef {
+                    listing_id: c.listing.id,
+                    origin: c.origin,
+                    seed_title: c.seed_title,
+                    seed_categories: c.seed_categories,
+                    starter_genre: c.starter_genre,
+                });
+            rows.extend(kept);
+        }
         library
             .replace_discover_candidates(subject, &store, taste.scope, &rows)
             .await?;
@@ -616,11 +636,9 @@ fn interleave_seeds(books: Vec<SeedTitle>, wishes: Vec<SeedTitle>) -> Vec<SeedTi
 ///
 /// # Returns
 ///
-/// The store's candidates with their pool listings, and `false` when no
-/// call returned a title (so the store's stored rows are kept rather than
-/// wiped). An empty answer counts as no answer: plugin adapters report some
-/// guest failures as an empty success, and those must not erase the
-/// store's shelves.
+/// A [`StoreFetch`]: the store's candidates with their pool listings,
+/// whether any call returned a title, and whether every answer was stored
+/// whole.
 async fn fetch_one_store(
     library: &LibraryStore,
     source: &dyn ContentSource,
@@ -629,7 +647,7 @@ async fn fetch_one_store(
     region: &str,
     budget: usize,
     exclude_series_sets: bool,
-) -> (Vec<PooledCandidate>, bool) {
+) -> StoreFetch {
     let id = source.id().to_string();
     let store = StoreRef {
         id: &id,
@@ -639,9 +657,14 @@ async fn fetch_one_store(
     let mut out = Vec::new();
     let mut calls = 0usize;
     let mut answered = 0usize;
+    let mut complete = true;
     // Deals first: one call, and they fill the deals shelf whatever the seeds.
     if budget == 0 {
-        return (out, false);
+        return StoreFetch {
+            candidates: out,
+            answered: false,
+            complete,
+        };
     }
     let deal_key = call_key(&id, "deals", &[]);
     let keep = |p: &PooledCandidate| {
@@ -649,7 +672,10 @@ async fn fetch_one_store(
             && id.eq_ignore_ascii_case("graphicaudio")
             && crate::candidates::looks_like_series_set(&p.candidate.title))
     };
-    if let Some(hits) = cached_or_call(library, &store, &deal_key, || source.list_deals(32)).await {
+    if let Some(answer) = cached_or_call(library, &store, &deal_key, || source.list_deals(32)).await
+    {
+        complete &= answer.complete;
+        let hits = answer.candidates;
         answered += usize::from(!hits.is_empty());
         out.extend(hits.into_iter().filter(|p| keep(p)));
     }
@@ -676,9 +702,12 @@ async fn fetch_one_store(
                 &s.region,
             ],
         );
-        let hits = cached_or_call(library, &store, &key, || source.expand_candidates(s, 24)).await;
+        let answer =
+            cached_or_call(library, &store, &key, || source.expand_candidates(s, 24)).await;
         calls += 1;
-        let Some(hits) = hits else { continue };
+        let Some(answer) = answer else { continue };
+        complete &= answer.complete;
+        let hits = answer.candidates;
         answered += usize::from(!hits.is_empty());
         for mut p in hits.into_iter().filter(|p| keep(p)) {
             p.candidate = apply_seed_title(p.candidate, seed);
@@ -699,9 +728,11 @@ async fn fetch_one_store(
             field: Some(CatalogSearchField::Genre),
             language: None,
         };
-        let hits = cached_or_call(library, &store, &key, || source.search_catalog(&search)).await;
+        let answer = cached_or_call(library, &store, &key, || source.search_catalog(&search)).await;
         calls += 1;
-        let Some(hits) = hits else { continue };
+        let Some(answer) = answer else { continue };
+        complete &= answer.complete;
+        let hits = answer.candidates;
         answered += usize::from(!hits.is_empty());
         for mut p in hits.into_iter().filter(|p| keep(p)) {
             p.candidate.starter_genre = Some(genre.clone());
@@ -711,7 +742,35 @@ async fn fetch_one_store(
             out.push(p);
         }
     }
-    (out, answered > 0)
+    StoreFetch {
+        candidates: out,
+        answered: answered > 0,
+        complete,
+    }
+}
+
+/// What one store's fetch produced.
+struct StoreFetch {
+    /// The candidates with their pool listings, in the order asked.
+    candidates: Vec<PooledCandidate>,
+    /// Whether any call returned a title. An empty answer counts as no
+    /// answer: plugin adapters report some guest failures as an empty
+    /// success, and those must not erase the store's shelves, so a fetch
+    /// with no answer keeps the stored rows.
+    answered: bool,
+    /// Whether every answer was stored whole. `false` when a title could
+    /// not be placed in the pool this time; the store's stored rows are
+    /// then kept beside the new ones, so the title is not dropped.
+    complete: bool,
+}
+
+/// One storefront answer read from the pool.
+struct StoreAnswer {
+    /// The answer's candidates, in its order.
+    candidates: Vec<PooledCandidate>,
+    /// `false` when some of its titles could not be placed in the pool this
+    /// time and are missing from `candidates` (the answer was not cached).
+    complete: bool,
 }
 
 /// The store a fetch is asking, as the pool needs it.
@@ -736,12 +795,14 @@ struct StoreRef<'a> {
 /// `None` when the call failed or timed out; the failure is logged, not
 /// cached. An empty answer is returned but not cached either, since it may
 /// be a guest failure the adapter softened, so the next subject asks again.
+/// An answer with titles that could not be placed in the pool is returned
+/// without them, marked incomplete, and not cached.
 async fn cached_or_call<F, Fut>(
     library: &LibraryStore,
     store: &StoreRef<'_>,
     key: &str,
     call: F,
-) -> Option<Vec<PooledCandidate>>
+) -> Option<StoreAnswer>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = bookclerk_source::Result<Vec<CatalogHit>>>,
@@ -752,7 +813,12 @@ where
         .await
     {
         Ok(Some(hits)) => match pooled(library, id, &hits).await {
-            Ok(Some(found)) => return Some(found),
+            Ok(Some(found)) => {
+                return Some(StoreAnswer {
+                    candidates: found,
+                    complete: true,
+                })
+            }
             // A listing the answer named is gone; ask the store again.
             Ok(None) => {}
             Err(err) => tracing::debug!(store = %id, error = %err, "discover pool read failed"),
@@ -772,7 +838,10 @@ where
         }
     };
     if hits.is_empty() {
-        return Some(Vec::new());
+        return Some(StoreAnswer {
+            candidates: Vec::new(),
+            complete: true,
+        });
     }
     let now = Utc::now();
     let listings: Vec<_> = hits
@@ -806,7 +875,10 @@ where
         }
     }
     match pooled(library, id, &call_hits).await {
-        Ok(found) => Some(found.unwrap_or_default()),
+        Ok(found) => Some(StoreAnswer {
+            candidates: found.unwrap_or_default(),
+            complete: recorded.unresolved == 0,
+        }),
         Err(err) => {
             tracing::warn!(store = %id, error = %err, "discover pool read failed");
             None

@@ -92,7 +92,9 @@ operator, a household user, or a portal identity) has a **subject key**
    rides in the last batch, so a reader can briefly see part of a store's
    new rows beside its old ones. A store whose calls all fail or come back empty keeps its
    previous rows, since a plugin adapter can report a guest failure as an
-   empty answer. The
+   empty answer. A store with an answer that had a title the pool could not
+   place this time keeps its previous rows beside the new ones, so that
+   title is not dropped until a complete fetch replaces them. The
    finished fetch is recorded in `discover_fetches`, so a fetch that found
    nothing new still counts as fresh for a day.
 2. **Feed** (`discover_feeds`): when the fetch finishes it admits a
@@ -151,7 +153,10 @@ call. The cache stores the parsed answer, not the store's raw reply: the
 listings it returned, in order, in `discover_store_call_hits`, each with how
 the store found it and its rank. Failed and empty answers, and answers none of whose titles could be stored,
 are not cached. The fetch time is written after the hits, so an answer cut
-off part way reads as expired.
+off part way reads as expired. Each write claims the cached call with its
+own token, and its hits and fetch time apply only while the call still
+carries it, so two members refreshing one call at once never leave a mix of
+both answers.
 
 ### Shared listing pool
 

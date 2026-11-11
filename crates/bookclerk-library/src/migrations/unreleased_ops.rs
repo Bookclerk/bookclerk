@@ -636,7 +636,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         call_key TEXT NOT NULL UNIQUE,
         source TEXT NOT NULL,
-        fetched_at TEXT NOT NULL
+        fetched_at TEXT NOT NULL,
+        writer TEXT NOT NULL DEFAULT ''
     )",
     ),
     MigrationOp::Schema(

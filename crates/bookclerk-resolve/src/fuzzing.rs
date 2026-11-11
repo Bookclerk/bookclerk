@@ -365,12 +365,39 @@ pub fn run_case(data: &[u8]) -> Result<usize, String> {
             continue;
         };
         if as_catalog {
-            // A catalog listing holds nothing, never announces a holding or
-            // its own new link, keeps every invariant and changes nothing
+            // A catalog listing is placed exactly where a scan holding it
+            // would be: the held plan on the same rows is the oracle, and
+            // the replay below checks held placements against the shared
+            // identifiers. It also holds nothing, never announces a holding
+            // or its own new link, keeps every invariant and changes nothing
             // when seen again.
+            let held = {
+                let snapshot = catalog.snapshot(&listing, &holding.holder);
+                let mut ids = catalog.ids.clone();
+                crate::resolve::resolve(&listing, &holding, &snapshot, &mut ids)
+            };
             let plan = catalog
                 .record_catalog(&listing)
                 .map_err(|err| err.to_string())?;
+            let placement = |p: &crate::model::Plan| {
+                (
+                    p.listing.id.clone(),
+                    p.listing.edition_id.clone(),
+                    p.link,
+                    p.work_reason,
+                    p.new_work.as_ref().map(|w| w.id.clone()),
+                    p.new_expression.as_ref().map(|e| e.id.clone()),
+                    p.new_edition.as_ref().map(|e| e.id.clone()),
+                )
+            };
+            if placement(&plan) != placement(&held) {
+                return Err(format!(
+                    "catalog listing {:?} placed as {:?}, a held scan as {:?}",
+                    listing.key,
+                    placement(&plan),
+                    placement(&held)
+                ));
+            }
             let announced = plan.events.iter().any(|e| match e {
                 crate::model::Event::HoldingAdded { .. } => true,
                 crate::model::Event::EditionLinked { .. } => plan.listing_is_new,
