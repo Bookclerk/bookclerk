@@ -1204,7 +1204,7 @@ mod tests {
             rating_overall: rating,
             rating_count: count,
             is_abridged: None,
-            audible_rank: None,
+            store_rank: None,
             starter_genre: None,
         }
     }
