@@ -95,7 +95,10 @@ export function raw(markup: string): SafeHtml {
 export const DASHBOARD_CSP =
   "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
 
-/** Headers every dashboard response carries. */
+/**
+ * Headers every dashboard response carries; the Worker adds CLOSED_HEADERS
+ * (cross-origin.ts) to every answer as well, and these agree with them.
+ */
 export const SECURITY_HEADERS = {
   "Content-Security-Policy": DASHBOARD_CSP,
   "Cache-Control": CACHE_CONTROL.noStore,
