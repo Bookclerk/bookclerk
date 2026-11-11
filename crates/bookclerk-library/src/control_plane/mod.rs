@@ -11,6 +11,7 @@ mod artifacts;
 pub(crate) mod batch;
 mod branch_catalog;
 mod cache;
+mod catalog_lookup;
 mod clerks;
 mod cluster_links;
 mod cron_fires;
@@ -63,13 +64,19 @@ pub use cache::{
     DEFAULT_CACHE_UNVIEWED_DAYS, MAX_CACHE_BUDGET_BYTES, MAX_CACHE_UNVIEWED_DAYS,
     MIN_CACHE_BUDGET_BYTES,
 };
+pub use catalog_lookup::{
+    answer_questions, ask_branches, branch_listing_key, branch_listings_for_works,
+    catalog_listing_opted_out, pending_questions, record_answers, set_catalog_listing_opt_out,
+    trusted_branches, works_of_interest, AnswerReport, AnswersRecorded, AskReport, BranchListing,
+    BRANCH_LISTING_PREFIX, BRANCH_LISTING_TTL, LOOKUP_ANSWER_TTL, LOOKUP_RESEND,
+};
 pub use clerks::{library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents};
 pub use cluster_links::{
     decode_spki_pin, join_cycle, join_overflows_ancestry, leave_cluster_link, library_ancestry,
     list_cluster_links, load_cluster_link, load_cluster_link_keys, mark_cluster_link_revoked,
-    record_cluster_link, set_cluster_link_ancestry, set_cluster_link_sharing,
-    set_cluster_link_state, ClusterLink, ClusterLinkKeys, NewClusterLink, CLUSTER_LINK_ACTIVE,
-    CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
+    record_cluster_link, set_cluster_link_ancestry, set_cluster_link_listing,
+    set_cluster_link_sharing, set_cluster_link_state, ClusterLink, ClusterLinkKeys, NewClusterLink,
+    CLUSTER_LINK_ACTIVE, CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
 };
 pub use cron_fires::{
     claim_cron_fire, ensure_cron_cursor, load_cron_cursor, CronCursor, CronFireClaim,

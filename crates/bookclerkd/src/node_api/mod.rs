@@ -32,6 +32,7 @@
 mod artifacts;
 pub mod branch;
 mod host_catalog;
+mod host_lookup;
 mod host_requests;
 mod host_results;
 pub mod tls;

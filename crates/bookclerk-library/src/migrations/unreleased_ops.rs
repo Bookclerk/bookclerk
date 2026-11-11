@@ -1373,7 +1373,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         enrolled_at TEXT NOT NULL,
         share_books INTEGER NOT NULL DEFAULT 1 CHECK (share_books IN (0, 1)),
         include_branches INTEGER NOT NULL DEFAULT 1 CHECK (include_branches IN (0, 1)),
-        ancestry_json TEXT NOT NULL DEFAULT '[]'
+        ancestry_json TEXT NOT NULL DEFAULT '[]',
+        list_members_books INTEGER NOT NULL DEFAULT 1 CHECK (list_members_books IN (0, 1))
     )",
     ),
     MigrationOp::Schema(
@@ -1518,6 +1519,31 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_branch_titles_node ON branch_titles(node_id, state)",
+    ),
+    // Catalog lookup on a library (`control_plane::catalog_lookup`): one
+    // question per branch node and work, pulled by the branch. `sent_at` is
+    // when it last went out, `answered_at` when the branch answered (with
+    // editions or "not here"); an answer older than a day is asked again.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS catalog_lookups (
+        node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        asked_at TEXT NOT NULL,
+        sent_at TEXT,
+        answered_at TEXT,
+        PRIMARY KEY (node_id, work_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_catalog_lookups_pending ON catalog_lookups(node_id, answered_at, asked_at)",
+    ),
+    // On a branch: members who keep their books out of what this branch
+    // lists to the libraries it joined (listed by default).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS catalog_listing_optouts (
+        user_id INTEGER PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL
+    )",
     ),
     // Last claimed fire per plugin cron schedule (`control_plane::cron_fires`).
     // `claim` is the token of the batch that last moved the cursor; the job

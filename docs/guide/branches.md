@@ -58,6 +58,16 @@ A branch you joined as a Member receives only work for your own store
 accounts. A branch joined by an Administrator or Owner can receive any
 work from the library.
 
+## What the library can see of your books
+
+A library can ask your branch whether it can supply a book its people are
+looking at. Your branch answers with the books in its own library: always
+yours, and your members' books unless you turn off **List my members'
+books** for that library. Each member can also keep their own books out.
+
+The library sees the book and that your branch can supply it. It never
+sees whose account it's on. Nothing is copied until someone asks for it.
+
 ## Leave a library
 
 On the branch, open **Settings → Library → Leave library**.

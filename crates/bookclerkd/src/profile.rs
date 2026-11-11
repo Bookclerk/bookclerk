@@ -426,6 +426,80 @@ pub async fn patch_profile(
     .into_response())
 }
 
+/// Whether the caller's books are listed to the libraries this install is
+/// a branch of (`GET` / `PUT /api/auth/profile/catalog-listing`).
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogListing {
+    /// `true` (the default): the libraries this install joined can see,
+    /// when they ask, that it can supply the caller's books. `false` keeps
+    /// them out of those answers; the owner's books are always listed.
+    #[schema(example = true)]
+    pub listed: bool,
+}
+
+/// Reads whether the caller's books are listed to the libraries this
+/// install is a branch of.
+#[utoipa::path(
+    get,
+    path = "/api/auth/profile/catalog-listing",
+    responses(
+        (status = 200, description = "The caller's listing choice.", body = CatalogListing),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The session is impersonating a user, is a plain operator session, or has no first-party user."),
+        (status = 500, description = "The library could not be read."),
+    ),
+)]
+pub async fn get_catalog_listing(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<CatalogListing>, StatusCode> {
+    let user_id = require_self_user_id(&state, &headers).await?;
+    let library = state.library_snapshot().await;
+    let opted_out = bookclerk_library::control_plane::catalog_listing_opted_out(&library, user_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(CatalogListing { listed: !opted_out }))
+}
+
+/// Sets whether the caller's books are listed to the libraries this install
+/// is a branch of.
+#[utoipa::path(
+    put,
+    path = "/api/auth/profile/catalog-listing",
+    request_body = CatalogListing,
+    responses(
+        (status = 200, description = "The caller's listing choice after the change.", body = CatalogListing),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The session is impersonating a user, is a plain operator session, or has no first-party user."),
+        (status = 500, description = "The library could not be written."),
+    ),
+)]
+pub async fn put_catalog_listing(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<CatalogListing>,
+) -> Result<Json<CatalogListing>, StatusCode> {
+    let user_id = require_self_user_id(&state, &headers).await?;
+    let library = state.library_snapshot().await;
+    bookclerk_library::control_plane::set_catalog_listing_opt_out(&library, user_id, !body.listed)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let _ = library
+        .insert_security_audit_event(
+            &format!("user:{user_id}"),
+            "catalog_listing_changed",
+            Some(&format!(
+                r#"{{"user_id":{user_id},"listed":{}}}"#,
+                body.listed
+            )),
+        )
+        .await;
+    Ok(Json(CatalogListing {
+        listed: body.listed,
+    }))
+}
+
 /// Accepts a JPEG/PNG/WebP upload and stores it under `files_dir/avatars`.
 #[utoipa::path(
     put,
@@ -1092,5 +1166,61 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Sends `method` to the catalog-listing route with `cookie` and
+    /// returns the status and body.
+    async fn catalog_listing(
+        app: &axum::Router,
+        method: &str,
+        cookie: Option<&str>,
+        body: &str,
+    ) -> (StatusCode, String) {
+        let mut request = Request::builder()
+            .method(method)
+            .uri("/api/auth/profile/catalog-listing")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, cookie);
+        }
+        let res = app
+            .clone()
+            .oneshot(request.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_member_can_keep_their_books_out_of_catalog_answers() {
+        let (_state, app, library) = phase2_harness("op-token-catalog-listing").await;
+        let cookie = portal_cookie_for(&library, "test", "member-ext").await;
+        assert_eq!(
+            catalog_listing(&app, "GET", None, "").await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            catalog_listing(&app, "GET", Some(&cookie), "").await,
+            (StatusCode::OK, r#"{"listed":true}"#.to_string()),
+            "listed by default"
+        );
+        assert_eq!(
+            catalog_listing(&app, "PUT", Some(&cookie), r#"{"listed":false}"#).await,
+            (StatusCode::OK, r#"{"listed":false}"#.to_string())
+        );
+        assert_eq!(
+            catalog_listing(&app, "GET", Some(&cookie), "").await,
+            (StatusCode::OK, r#"{"listed":false}"#.to_string())
+        );
+        assert_eq!(
+            catalog_listing(&app, "PUT", Some(&cookie), r#"{"listed":true}"#).await,
+            (StatusCode::OK, r#"{"listed":true}"#.to_string())
+        );
+        assert_eq!(
+            catalog_listing(&app, "GET", Some(&cookie), "").await.1,
+            r#"{"listed":true}"#
+        );
     }
 }

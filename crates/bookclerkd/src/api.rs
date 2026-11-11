@@ -1259,6 +1259,10 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(auth::revoke_session))
         .routes(routes!(crate::profile::patch_profile))
         .routes(routes!(
+            crate::profile::get_catalog_listing,
+            crate::profile::put_catalog_listing
+        ))
+        .routes(routes!(
             crate::profile::put_avatar,
             crate::profile::delete_avatar
         ))

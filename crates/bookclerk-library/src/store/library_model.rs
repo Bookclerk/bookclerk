@@ -1001,6 +1001,25 @@ impl LibraryStore {
         Ok(planned_work_id(&plan, &snapshot))
     }
 
+    /// The work of the stored edition `listing` would join, without
+    /// writing anything: `Some` only when the resolver places it on an
+    /// edition this library already has (through a shared identifier), so
+    /// no new work, expression or edition, and no title match, is involved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when a read fails.
+    pub async fn existing_edition_work(
+        &self,
+        listing: &resolve::Listing,
+    ) -> Result<Option<String>> {
+        let (plan, snapshot) = self.dry_run(listing).await?;
+        if plan.new_edition.is_some() || plan.new_expression.is_some() {
+            return Ok(None);
+        }
+        Ok(planned_work_id(&plan, &snapshot))
+    }
+
     /// Resolves `listing` against the stored rows without writing: the
     /// plan [`Self::record_listing`] would write, and the snapshot it read.
     ///
