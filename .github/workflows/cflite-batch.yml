@@ -239,7 +239,10 @@ jobs:
         uses: ./.github/actions/cflite-private-run
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          fuzz-seconds: 600
+          # A ceiling, not a duration: each target's merge stops when it
+          # finishes, but gets this divided by the targets left as a hard
+          # deadline, and the corpora grow every night.
+          fuzz-seconds: 3600
           mode: prune
           sanitizer: address
 

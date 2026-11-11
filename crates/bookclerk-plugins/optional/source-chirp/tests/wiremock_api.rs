@@ -299,6 +299,23 @@ async fn a_page_of_titles_is_priced_in_one_aliased_query() {
 }
 
 #[tokio::test]
+async fn many_titles_are_split_across_queries() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(graphql_response(serde_json::json!({ "data": {} })))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let opts: Vec<PurchaseHintOpts> = (0..120).map(|i| priced(&i.to_string())).collect();
+    let hints = ChirpSource::with_graphql_url(server.uri())
+        .purchase_hints(&opts)
+        .await
+        .unwrap();
+    assert_eq!(hints.len(), 120);
+}
+
+#[tokio::test]
 async fn a_429_reaches_the_host_with_its_wait() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

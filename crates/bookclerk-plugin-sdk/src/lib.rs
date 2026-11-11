@@ -73,18 +73,18 @@ pub use net::{
 };
 pub use pass_fd::{fd_proc_path, recv_passed_fd, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV};
 pub use protocol::{
-    methods, Abridgement, AccountCredential, AuthenticateUserParams, Brand, CatalogDetail,
-    CatalogDetailParams, CatalogField, CatalogHit, CatalogHits, CatalogSort, ChapterMarker, CliArg,
-    CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
-    ConfigOption, ConfigOptionValue, Credit, CreditLevel, CreditRole, EventPollResult,
-    ExpandCandidatesParams, ExpressionKind, ExternalUser, FetchOptions, FetchTitleParams,
-    Identifier, IdentifierScheme, ListDealsParams, ListeningProgress, LoginCompleteParams,
-    LoginParams, LoginResult, LoginStartResult, MediaKind, OutputLocalContextDto,
-    OutputS3ContextDto, PlainFetch, PlainPart, PortalAuthMode, PurchaseHint, PurchaseHintParams,
-    PurchaseHintResult, PurchaseHintsParams, PurchaseHintsResult, RevokeAccountParams,
-    S3CredentialsDto, ScanBook, ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams,
-    SeriesEntry, SourceAccount, SourceAccounts, SyncListeningResult, WorkKind, MAX_RPC_LINE_BYTES,
-    PROTOCOL_NAME,
+    methods, Abridgement, AccountCredential, AuthenticateUserParams, Brand, CatalogCapabilities,
+    CatalogDetail, CatalogDetailParams, CatalogField, CatalogHit, CatalogHits, CatalogSort,
+    ChapterMarker, CliArg, CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams,
+    CliInvokeResult, CliSchema, ConfigOption, ConfigOptionValue, Credit, CreditLevel, CreditRole,
+    EventPollResult, ExpandCandidatesParams, ExpressionKind, ExternalUser, FetchOptions,
+    FetchTitleParams, Identifier, IdentifierScheme, ListDealsParams, ListeningProgress,
+    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MediaKind,
+    OutputLocalContextDto, OutputS3ContextDto, PlainFetch, PlainPart, PortalAuthMode, PurchaseHint,
+    PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, PurchaseHintsResult,
+    RevokeAccountParams, S3CredentialsDto, ScanBook, ScanLibraryParams, ScanPage, ScanParams,
+    SearchCatalogParams, SeriesEntry, SourceAccount, SourceAccounts, SyncListeningResult, WorkKind,
+    MAX_RPC_LINE_BYTES, PROTOCOL_NAME,
 };
 
 pub use bookclerk_plugin_abi::{

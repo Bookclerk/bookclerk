@@ -217,30 +217,8 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                 isbn,
                 notes,
             } => {
-                let work_key = bookclerk_discover::work_map_key(
-                    asin.as_deref(),
-                    isbn.as_deref(),
-                    &title,
-                    authors.as_deref(),
-                    None,
-                    asin.as_deref().or(isbn.as_deref()),
-                );
-                let row = library
-                    .create_title_request(&NewTitleRequest {
-                        uuid: None,
-                        identity_id: None,
-                        title,
-                        authors,
-                        asin,
-                        isbn,
-                        notes,
-                        status: RequestStatus::Open,
-                        work_key,
-                        work_id: None,
-                        resolved_book_uuid: None,
-                        cover_url: None,
-                    })
-                    .await?;
+                let request = wish_request(title, authors, asin, isbn, notes);
+                let row = library.create_title_request(&request).await?;
                 format_out::emit(format, &row, || {
                     format_out::line(format!("wishlisted {}", row.uuid));
                 })?;
@@ -288,4 +266,84 @@ async fn sync_listening(
     let host = crate::registry::open_host(cfg).await?;
     let registry = crate::registry::integrations(&host).await?;
     Ok(registry.sync_listening_progress_all(library).await)
+}
+
+/// Builds the open wishlist request `discover wishlist add` stores.
+///
+/// The library resolves the wish into its work when it stores it (making a
+/// catalog work for a book it does not know yet), as the web API's wishes
+/// are.
+///
+/// # Arguments
+///
+/// * `title`, `authors`, `asin`, `isbn`, `notes` - The wish as typed.
+///
+/// # Returns
+///
+/// The request to hand to [`LibraryStore::create_title_request`].
+fn wish_request(
+    title: String,
+    authors: Option<String>,
+    asin: Option<String>,
+    isbn: Option<String>,
+    notes: Option<String>,
+) -> NewTitleRequest {
+    NewTitleRequest {
+        uuid: None,
+        identity_id: None,
+        title,
+        authors,
+        asin,
+        isbn,
+        notes,
+        status: RequestStatus::Open,
+        resolved_book_uuid: None,
+        cover_url: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A wish for a work the library holds names that work; a sequel with
+    /// a similar title names a new catalog work of its own.
+    #[tokio::test]
+    async fn a_wish_records_the_work_it_resolves_to() {
+        let store = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        store
+            .upsert_account("libro", "reader@example.com", "us", None, true, "libro")
+            .await
+            .unwrap();
+        let mut book =
+            bookclerk_library::NewBook::minimal("p1", "reader@example.com", "us", "Dune");
+        book.source = "libro".into();
+        book.plugin_key = "libro".into();
+        book.authors = Some("Frank Herbert".into());
+        let book = store.upsert_book(&book).await.unwrap();
+        let dune = store.work_id_for_book(&book.uuid).await.unwrap().unwrap();
+
+        let author = || Some("Frank Herbert".to_string());
+        let owned = store
+            .create_title_request(&wish_request("Dune".into(), author(), None, None, None))
+            .await
+            .unwrap();
+        assert_eq!(owned.work_id, dune);
+        assert_eq!(owned.status, RequestStatus::Open);
+        assert!(!owned.work_key.is_empty());
+        let sequel = store
+            .create_title_request(&wish_request(
+                "Dune Messiah".into(),
+                author(),
+                None,
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_ne!(sequel.work_id, dune);
+        assert_eq!(sequel.title, "Dune Messiah");
+    }
 }

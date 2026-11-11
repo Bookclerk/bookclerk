@@ -29,7 +29,7 @@ use chrono::Utc;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use uuid::Uuid;
 
-use super::batch::{self, exec, int, request, text};
+use super::batch::{self, exec, int, query, request, text};
 use crate::entities::plugin_cron_cursors;
 use crate::error::{LibraryError, Result};
 use crate::models::{plugin_scheduled_dedup_key, JobKind, JobPayload, JobState, JobTrigger};
@@ -224,6 +224,12 @@ pub async fn claim_cron_fire(
                         text(cron),
                         text(&claim),
                     ],
+                ),
+                // The job id is fresh, so it exists exactly when the insert
+                // above went in.
+                super::bump_if_any(
+                    super::LiveTopic::Jobs,
+                    query("SELECT 1 FROM jobs WHERE id = ?", vec![text(&job_id)], 1),
                 ),
             ],
         ),

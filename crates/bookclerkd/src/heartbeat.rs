@@ -89,6 +89,10 @@ async fn beat(
             state.covers.sweep_in_background();
         }
     }
+    if status.is_ok() {
+        // Same ordering as the sweep: a node-pinned job only after the beat.
+        crate::search_index::queue_rebuild_if_missing(state, &node_id).await;
+    }
     crate::cache_jobs::sweep_if_overdue(state);
     (sampler, status)
 }

@@ -20,6 +20,7 @@ binding's `limits()` returns them. The ones that shape plugin code:
 | --- | --- |
 | `maxRequestBytes` | One encoded request: the statements, their binds and the retry identity |
 | `maxStatements` | Statements in one request (`batch()` or `exec()`) |
+| `maxPayloadBytes` | One statement: its SQL and bound values together (3,667 bytes on D1) |
 | `maxBinds` | Bind parameters in one statement |
 | `maxCellBytes` | One TEXT or BYTES cell in a reply |
 | `maxResultRows` / `maxResultBytes` | A reply read inline: rows and encoded bytes per statement |
@@ -47,7 +48,10 @@ try {
 
 In Python the same error is `PluginError` with `err.code == "limit_exceeded"`
 and `err.limit.limit`; in Rust it is `PluginError` with
-`err.code == PluginErrorCode::LimitExceeded` and `err.limit()`.
+`err.code == PluginErrorCode::LimitExceeded` and `err.limit()`. A workerd
+author isolate gets the same typed error even though its binding crosses
+Workers RPC to the adapter isolate: the error travels inside the reply (see
+[Database errors between the isolates](../internals/workerd-bridge.md#database-errors-between-the-isolates)).
 
 ## Reads: `all()` streams when the session can
 
@@ -167,6 +171,12 @@ tighter one applies, the same cap `chunk()` splits to.
 const caps = await env.DB.limits();
 const perStatement = Math.floor(caps.maxBinds / COLUMNS);
 ```
+
+Caps on replies matter for writes too. A TEXT value up to `maxPayloadBytes`
+can be written on a session whose `maxCellBytes` is smaller (the minimum
+advertisement allows 3,667-byte statements but 1,024-byte cells), and the
+row it lands in can then never be read back. Check what you store against
+`maxCellBytes` before sending it.
 
 ## Interactive transactions
 
@@ -308,15 +318,54 @@ opens a fixed profile passes all three runs while testing only that one:
 ```sh
 cargo build -p bookclerk-db-testkit
 cargo plugin -- test examples/plugins-echo-workerd-ts
+cargo plugin -- test examples/plugins-echo-workerd-python   # pytest, with the Python SDK importable
+cargo plugin -- test examples/plugins-echo-native-rust      # cargo test
 cargo plugin -- test . --profile minimum -- --grep notes   # one profile, runner arguments after --
 ```
 
 Every profile runs even after one fails, and the report names the ones
-that did. `cargo test-staged` covers the migrations of every staged plugin
+that did. CI runs `bookclerk-plugin test` on every example that declares
+`[[databases]]` and has a suite the command can run, a `test` script in
+`package.json`, a `pyproject.toml` or a `Cargo.toml` (the
+`plugin_examples` check; see [CI](../contributing/ci.md)).
+
+`cargo test-staged` covers the migrations of every staged plugin
 the same way: the registration each `[[databases]]` binding answers is
 applied on a plugin-owned unit under every profile, so a migration the
 minimum advertisement refuses fails there rather than at enrollment on an
 operator's adapter.
+
+### A worked example
+
+`examples/plugins-echo-workerd-ts/` keeps a `notes` table on its `DB`
+binding and follows this page end to end:
+
+- `src/notes.ts` registers the table through `databaseMigrations`, writes
+  with `chunk()` and `batch()` (reporting how many notes the committed
+  batches stored when a later one fails), refuses a note past
+  `maxCellBytes` before sending it, and handles `limit_exceeded` by its
+  `limit`.
+- Its `listNotes()` reads with one `iterate()` when the session streams.
+  When it does not, it pages by `id` (never `OFFSET`), sized from
+  `maxResultRows`, halved when a page passes `maxResultBytes` and grown
+  back after a full page.
+- `test/notes.test.ts` and `test/index.test.ts` open the binding with
+  `createTestDatabase()` and size every assertion from `db.limits()`, so
+  the same suite passes under `first-party`, `d1` and `minimum`.
+
+`examples/plugins-echo-workerd-python/` is the same example in Python:
+`modules/notes.py` registers the table through `database_migrations`,
+handles a refusal by `PluginError.limit`, and reads with `iterate()` or
+the same key-paged walk. Its `tests/` open the binding with
+`create_test_database()` and run under pytest, which `bookclerk-plugin
+test` picks from its `pyproject.toml`.
+
+`examples/plugins-echo-native-rust/` is the native Rust version:
+`src/notes.rs` answers `database_migrations` for the `DB` binding, reads
+`PluginError::limit()`, and its `NotesReader` reads with
+`PreparedStatement::iterate()` or the same key-paged walk. Its `tests/`
+open the binding with `bookclerk_db_testkit::BindingDatabase` under
+`selected_profile()` and run under `cargo test`.
 
 ### A database adapter's own suite
 
@@ -350,7 +399,7 @@ that returns an oversized result and leaves the refusal to the host:
 | `values` | Return every value as the variant it was written: `Int64` extremes, `Float64`, multibyte and `b64:` text, bytes, `Boolean` and typed NULL |
 | `atomic_batch` | Leave nothing of a batch whose last statement fails |
 | `max_statements` / `max_binds` | Accept a batch of exactly `maxStatements` statements, and a statement with `maxBinds` binds, or with as many as `maxPayloadBytes` / `maxRequestBytes` admit when that is fewer (as on every first-party adapter) |
-| `result_rows` | Return `maxResultRows` rows, and refuse one more with `limit_exceeded` (`maxResultRows`) instead of truncating or returning it |
+| `result_rows` | Return `maxResultRows` rows, refuse one more with `limit_exceeded` (`maxResultRows`) instead of truncating or returning it, refuse a retry under the same operation id the same way, and serve that retry once the data fits |
 | `cell_bytes` / `result_bytes` | Round-trip a cell as wide as one bind can carry (up to 32 KiB), and refuse a cell built past `maxCellBytes` or a result past the inline byte caps with `limit_exceeded` |
 | `streamed` | Answer `executeStreamed` with the same rows as `execute`, and with a result past `maxResultRows`, when it advertises a streamed budget; answer `unsupported` when it does not |
 | `receipt_replay` / `receipt_conflict` | Replay a retried batch's first reply without applying it again (the retry after a lost reply), and refuse the same operation id with another request as `conflict` |
@@ -366,10 +415,15 @@ so it is for tests only.
 The first-party adapters run the suite in CI: sqlite in process and as its
 guest binary, Postgres as its guest binary against every supported major
 (the `postgres` check's `adapter_conformance` step), and D1 against its
-mocked HTTP API. The D1 run pins one known gap: on a binding, D1 answers an
-over-cap read as retryable `unavailable` because the receipt-wrapped batch
-has committed before the size is known
-([#847](https://github.com/Bookclerk/bookclerk/issues/847)).
+mocked HTTP API.
+
+> [!NOTE]
+> D1 commits a batch before it can size the result. A batch that only reads
+> (on a binding, a guest batch whose own statements are all reads) answers a
+> result past a cap with `limit_exceeded`, because nothing it asked for was
+> written; D1 finalizes the host's receipt as a read-only one, so a retry runs
+> the read again. A batch that also writes answers the same cap failure as
+> retryable `unavailable`, since its writes may have committed.
 
 ## Checklist
 

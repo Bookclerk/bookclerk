@@ -16,17 +16,17 @@
 //! Prefer product docs under `docs/plugins/README.md` for jail / capability rules.
 
 pub use bookclerk_plugin_abi::{
-    Abridgement, AccountCredential, AuthenticateUserParams, Brand, CatalogDetail,
-    CatalogDetailParams, CatalogField, CatalogHit, CatalogHits, CatalogSort, ChapterMarker, CliArg,
-    CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
-    ConfigOption, ConfigOptionValue, Credit, CreditLevel, CreditRole, EventPollResult,
-    ExpandCandidatesParams, ExpressionKind, ExternalUser, FetchOptions, FetchTitleParams,
-    Identifier, IdentifierScheme, ListDealsParams, ListeningProgress, LoginCompleteParams,
-    LoginParams, LoginResult, LoginStartResult, MediaKind, OutputLocalContextDto,
-    OutputS3ContextDto, PlainFetch, PlainPart, PortalAuthMode, PurchaseHint, PurchaseHintParams,
-    PurchaseHintResult, PurchaseHintsParams, PurchaseHintsResult, RevokeAccountParams,
-    S3CredentialsDto, ScanBook, ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams,
-    SeriesEntry, SourceAccount, SourceAccounts, SyncListeningResult, WorkKind,
+    Abridgement, AccountCredential, AuthenticateUserParams, Brand, CatalogCapabilities,
+    CatalogDetail, CatalogDetailParams, CatalogField, CatalogHit, CatalogHits, CatalogSort,
+    ChapterMarker, CliArg, CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams,
+    CliInvokeResult, CliSchema, ConfigOption, ConfigOptionValue, Credit, CreditLevel, CreditRole,
+    EventPollResult, ExpandCandidatesParams, ExpressionKind, ExternalUser, FetchOptions,
+    FetchTitleParams, Identifier, IdentifierScheme, ListDealsParams, ListeningProgress,
+    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MediaKind,
+    OutputLocalContextDto, OutputS3ContextDto, PlainFetch, PlainPart, PortalAuthMode, PurchaseHint,
+    PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, PurchaseHintsResult,
+    RevokeAccountParams, S3CredentialsDto, ScanBook, ScanLibraryParams, ScanPage, ScanParams,
+    SearchCatalogParams, SeriesEntry, SourceAccount, SourceAccounts, SyncListeningResult, WorkKind,
 };
 
 /// Logical ABI identifier for diagnostics (not a `plugin.toml` field).

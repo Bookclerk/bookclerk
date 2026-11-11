@@ -27,10 +27,20 @@ name = "plugin.py"
 path = "plugin.py"
 type = "python"
 
+[[modules]]
+name = "notes.py"
+path = "notes.py"
+type = "python"
+
 [capabilities.network]
 mode = "deny"
 
 [vars]
+
+# Isolated plugin-owned database (Workers-style named binding): the `notes`
+# table that `modules/notes.py` keeps, created by `database_migrations("DB")`.
+[[databases]]
+binding = "DB"
 
 [[events.consumers]]
 type = "book_acquired"

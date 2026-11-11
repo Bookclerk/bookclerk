@@ -17,15 +17,22 @@ kind = "integration"
 id = "echo_native_rust"
 display_name = "Echo Integration (native Rust)"
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "bookclerk-plugin-echo-native-rust"
 path = "src/main.rs"
 
 [dependencies]
 async-trait.workspace = true
-bookclerk-plugin-abi.workspace = true
 bookclerk-plugin-sdk.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util"] }
+
+# The tests open the `DB` binding in memory under the profile
+# `bookclerk-plugin test` names; the shipped binary does not link the kit.
+[dev-dependencies]
+bookclerk-db-testkit.workspace = true
 
 [lints]
 workspace = true

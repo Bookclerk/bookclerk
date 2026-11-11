@@ -236,6 +236,9 @@ struct PluginDescribe {
   configOptions @11 :List(ConfigOption);
   # Embedded CLI schema (same shape as `PluginCli.describe`); empty when unused.
   cli @12 :CliSchema;
+  # Catalog behaviours a storefront declares so the host can use any store
+  # for catalog search without naming it; all false for other kinds.
+  catalog @13 :CatalogCapabilities;
 }
 
 # Marks a scalar field whose zero value (empty `Text` / `Data`, numeric `0`)
@@ -1209,6 +1212,17 @@ struct PluginCapabilities {
   crons @8 :List(Text);
 }
 
+# Catalog behaviours a storefront declares in `describe()`. Catalog search
+# reads them instead of special-casing plugin ids; every flag defaults to
+# false, so a guest that says nothing keeps the plain behaviour.
+struct CatalogCapabilities {
+  # True when `catalogDetail` resolves a bare ISBN (sent in both `productId`
+  # and `isbn`) to a full bibliographic record. Catalog search then asks this
+  # store to fill description, narrators, runtime and genres on lean result
+  # rows from any store that carry an ISBN.
+  detailByIsbn @0 :Bool;
+}
+
 # Portal Accounts connect mode for storefronts.
 enum PortalAuthMode {
   # Guest did not declare a mode; the host assumes password login.
@@ -2016,6 +2030,13 @@ struct CatalogHit {
   seriesEntries @23 :List(SeriesEntry);
   # Product id of the parent podcast show, for a podcast episode.
   parentProductId @24 :Text $optional;
+  # The storefront's own rank for this hit in `searchCatalog` results:
+  # 1-based position in the store's ordering for the requested sort across
+  # all pages (page 2 of 20-hit pages starts at 21), or a store-wide
+  # popularity rank when the store has one. 0 means unranked. Catalog search
+  # merges stores by it for relevance and popularity sorts and puts unranked
+  # hits after ranked ones. Other catalog methods leave it 0.
+  rankHint @25 :UInt32 $optional;
 }
 
 # Success payload of the catalog list methods.

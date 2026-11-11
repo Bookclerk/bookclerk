@@ -5,11 +5,11 @@
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    serve, Bindings, Brand, CatalogDetailParams, CatalogHit, ContentSource as ContentSourceRole,
-    Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
-    LoginParams, LoginResult, PlainFetch, PluginDescribe, PluginError, PluginWorker,
-    PortalAuthMode, PurchaseHint, PurchaseHintParams, ScalarLimits, ScanPage, ScanParams,
-    SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    serve, Bindings, Brand, CatalogCapabilities, CatalogDetailParams, CatalogHit,
+    ContentSource as ContentSourceRole, Entrypoints, ExpandCandidatesParams, FetchTitleParams,
+    HealthOk, Invocation, ListDealsParams, LoginParams, LoginResult, PlainFetch, PluginDescribe,
+    PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams, ScalarLimits,
+    ScanPage, ScanParams, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_storefront::abi::{expand_seed_from_params, page_from_cursor};
 use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
@@ -39,6 +39,11 @@ impl PluginWorker for LibroRoot {
                 accent: "#2F6B53".into(),
                 icon_url: Some("https://www.google.com/s2/favicons?domain=libro.fm&sz=128".into()),
             }),
+            // Libro.fm's catalog details answer any audiobook ISBN, so catalog
+            // search uses it to fill lean rows from every store.
+            catalog: CatalogCapabilities {
+                detail_by_isbn: true,
+            },
             ..PluginDescribe::default()
         })
     }

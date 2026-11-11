@@ -3094,7 +3094,7 @@ var RevokeAccountParamsCodec = {
   }
 };
 var CatalogHitCodec = {
-  dataWords: 5,
+  dataWords: 6,
   pointerCount: 17,
   write(s, v, caps) {
     s.setText(0, v.productId ?? "");
@@ -3170,6 +3170,9 @@ var CatalogHitCodec = {
     if (v.parentProductId !== void 0) {
       s.setText(16, v.parentProductId ?? "");
     }
+    if (v.rankHint !== void 0) {
+      s.setUint32(10, v.rankHint ?? 0);
+    }
   },
   read(s, caps) {
     const out = {
@@ -3244,6 +3247,10 @@ var CatalogHitCodec = {
     if (!(parentProductIdValue === "")) {
       out.parentProductId = parentProductIdValue;
     }
+    const rankHintValue = s.getUint32(10);
+    if (!(rankHintValue === 0)) {
+      out.rankHint = rankHintValue;
+    }
     return out;
   }
 };
@@ -3253,7 +3260,7 @@ var CatalogHitsCodec = {
   write(s, v, caps) {
     {
       const list = v.hits ?? [];
-      const items = s.initStructList(0, list.length, 5, 17);
+      const items = s.initStructList(0, list.length, 6, 17);
       for (let i = 0; i < items.length; i++) {
         CatalogHitCodec.write(items[i], list[i], caps);
       }
@@ -3261,7 +3268,7 @@ var CatalogHitsCodec = {
   },
   read(s, caps) {
     return {
-      hits: s.getStructList(0, 5, 17).map((item) => CatalogHitCodec.read(item, caps))
+      hits: s.getStructList(0, 6, 17).map((item) => CatalogHitCodec.read(item, caps))
     };
   }
 };
@@ -3304,13 +3311,13 @@ var CatalogDetailCodec = {
   write(s, v, caps) {
     s.setBool(0, v.found ?? false);
     if (v.hit != null) {
-      CatalogHitCodec.write(s.initStruct(0, 5, 17), v.hit, caps);
+      CatalogHitCodec.write(s.initStruct(0, 6, 17), v.hit, caps);
     }
   },
   read(s, caps) {
     return {
       found: s.getBool(0),
-      hit: CatalogHitCodec.read(s.getStruct(0, 5, 17), caps)
+      hit: CatalogHitCodec.read(s.getStruct(0, 6, 17), caps)
     };
   }
 };
@@ -8159,6 +8166,16 @@ function decodeExecuteResultReply(bytes) {
   }
   throw new Error("unknown ExecuteResultReply union member");
 }
+function encodeDbCapabilitiesReply(outcome) {
+  return encodeMessage(DbCapabilitiesReplyCodec, "ok" in outcome ? { kind: "ok", value: outcome.ok } : {
+    kind: "err",
+    value: {
+      code: outcome.err.code,
+      message: outcome.err.message,
+      details: outcome.err.details ?? ""
+    }
+  });
+}
 function decodeDbCapabilitiesReply(bytes) {
   const reply = decodeMessage(DbCapabilitiesReplyCodec, bytes);
   if (reply.kind === "ok") {
@@ -9255,6 +9272,9 @@ function opSql(op) {
     if ("data" in op && typeof op.data === "string") {
       return op.data;
     }
+    if ("value" in op && typeof op.value === "string") {
+      return op.value;
+    }
   }
   return "";
 }
@@ -9584,16 +9604,7 @@ function invocationEnv(rawEnv, context) {
         if (entry.database) {
           merged[entry.name] = entry.database;
         } else if (entry.transport) {
-          const transport = entry.transport;
-          const limits = transport.limits;
-          const executeStreamed = transport.executeStreamed;
-          merged[entry.name] = createDatabaseBinding({
-            execute: (request) => transport.execute(request),
-            ...typeof limits === "function" ? { limits: () => limits.call(transport) } : {},
-            ...typeof executeStreamed === "function" ? {
-              executeStreamed: (request) => executeStreamed.call(transport, request)
-            } : {}
-          });
+          merged[entry.name] = transportDatabase(entry.transport);
         }
       }
     }
@@ -9613,6 +9624,17 @@ function invocationEnv(rawEnv, context) {
     }
   }
   return Object.freeze(merged);
+}
+function transportDatabase(entry) {
+  const transport = entry;
+  const execute = typeof transport.executeBytes === "function" ? async (request) => decodeExecuteResultReply(await transport.executeBytes(encodeExecuteRequest(request))) : (request) => transport.execute(request);
+  const readLimits = typeof transport.limitsBytes === "function" ? async () => decodeDbCapabilitiesReply(await transport.limitsBytes()) : typeof transport.limits === "function" ? () => transport.limits() : void 0;
+  const streamed = typeof transport.openStreamedBytes === "function" ? (request) => transport.openStreamedBytes(encodeExecuteRequest(request)) : typeof transport.executeStreamed === "function" ? (request) => transport.executeStreamed(request) : void 0;
+  return createDatabaseBinding({
+    execute,
+    ...readLimits ? { limits: readLimits } : {},
+    ...streamed ? { executeStreamed: streamed } : {}
+  });
 }
 function applyInvocationEnv(instance, context) {
   const target = instance;
@@ -11208,12 +11230,16 @@ var GrantedDatabase = class extends RpcTarget {
    * @returns Unpacked `ExecuteResultReply` message.
    */
   async executeBytes(bytes) {
-    const resp = await this.#granted.fetch("http://granted/db/execute", {
-      method: "POST",
-      headers: { ...this.#auth, "content-type": "application/octet-stream" },
-      body: bytes
-    });
-    return grantedDatabaseBody(resp);
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/execute", {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/octet-stream" },
+        body: bytes
+      });
+      return await grantedDatabaseBody(resp);
+    } catch (err) {
+      return encodeExecuteResultReply({ err: wirePluginError(err) });
+    }
   }
   /**
    * Run one typed atomic batch answered as stream frames
@@ -11239,15 +11265,20 @@ var GrantedDatabase = class extends RpcTarget {
    * locally).
    *
    * @param bytes - Unpacked `ExecuteRequest` message.
-   * @returns Every `ExecuteStreamFrame`, concatenated.
+   * @returns Every `ExecuteStreamFrame`, concatenated; a channel failure is
+   *   one `err` frame.
    */
   async executeStreamedBytes(bytes) {
-    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
-      method: "POST",
-      headers: { ...this.#auth, "content-type": "application/octet-stream" },
-      body: bytes
-    });
-    return grantedDatabaseBody(resp, "executeStreamed");
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/octet-stream" },
+        body: bytes
+      });
+      return await grantedDatabaseBody(resp, "executeStreamed");
+    } catch (err) {
+      return errFrame(err);
+    }
   }
   /**
    * Same frames, as the channel delivers them (a `ReadableStream` when it
@@ -11255,18 +11286,23 @@ var GrantedDatabase = class extends RpcTarget {
    * frames as they arrive.
    *
    * @param bytes - Unpacked `ExecuteRequest` message.
-   * @returns The response body: the frame sequence.
+   * @returns The response body: the frame sequence; a channel failure is
+   *   one `err` frame.
    */
   async openStreamedBytes(bytes) {
-    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
-      method: "POST",
-      headers: { ...this.#auth, "content-type": "application/octet-stream" },
-      body: bytes
-    });
-    if (!resp.ok) {
-      await grantedDatabaseBody(resp, "executeStreamed");
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/octet-stream" },
+        body: bytes
+      });
+      if (!resp.ok) {
+        await grantedDatabaseBody(resp, "executeStreamed");
+      }
+      return resp.body ?? new Uint8Array(0);
+    } catch (err) {
+      return errFrame(err);
     }
-    return resp.body ?? new Uint8Array(0);
   }
   /**
    * Negotiated limits of the granted session (`GET /db/limits`).
@@ -11279,16 +11315,31 @@ var GrantedDatabase = class extends RpcTarget {
   /**
    * Same answer as Cap'n Proto bytes (Python authors decode locally).
    *
-   * @returns Unpacked `DbCapabilitiesReply` message.
+   * @returns Unpacked `DbCapabilitiesReply` message; a channel failure is
+   *   its `err` arm.
    */
   async limitsBytes() {
-    const resp = await this.#granted.fetch("http://granted/db/limits", {
-      method: "GET",
-      headers: { ...this.#auth }
-    });
-    return grantedDatabaseBody(resp, "limits");
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/limits", {
+        method: "GET",
+        headers: { ...this.#auth }
+      });
+      return await grantedDatabaseBody(resp, "limits");
+    } catch (err) {
+      return encodeDbCapabilitiesReply({ err: wirePluginError(err) });
+    }
   }
 };
+function wirePluginError(err) {
+  if (err instanceof PluginError) {
+    return { code: err.wireCode, message: err.message, details: err.detailsText };
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return { code: "unavailable", message: `database grant: ${message}`, details: "" };
+}
+function errFrame(err) {
+  return encodeMessage(ExecuteStreamFrameCodec, { kind: "err", value: wirePluginError(err) });
+}
 async function grantedDatabaseBody(resp, method = "execute") {
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");

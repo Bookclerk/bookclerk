@@ -123,7 +123,7 @@ pub use models::{
     QueueWisher, RequestStatus, SecurityAuditEvent, StoredPasskey, TitleRequestRecord,
     TitleRequestSourceRecord, UserIntegrationHint, UserInviteRecord, UserListeningHint,
     UserPreferences, UserPresenceExtras, UserRecord, UserRole, UserSsoPicture, UserStatus,
-    WishlistPurchaseHint, WishlistStoreEdition, WorkRecord, CORE_EVENTS_QUEUE,
+    UserTitleState, WishlistPurchaseHint, WishlistStoreEdition, WorkRecord, CORE_EVENTS_QUEUE,
     EVENT_DELIVERY_MAX_ATTEMPTS, EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS,
     JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN, MAX_QUEUE_WISHERS,
     NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES, QUEUE_CONTENT_TYPE_JSON,
@@ -154,8 +154,9 @@ pub use session_client::{classify_session_client, SessionClientInfo};
 pub use sql_plan::{
     authorize_typed_request, compile_claim_event_delivery, compile_named_request,
     execute_guest_atomic_with, interpret_typed_exec, proxy_insert_returning_identity,
-    proxy_read_kind, proxy_write_kind, validate_execute_reply, validate_plan,
-    validate_streamed_execute_reply, wake_page_for_max_binds, AtomicSession, CompiledAtomic,
+    proxy_read_kind, proxy_write_kind, unquote_sea_identifiers, validate_execute_reply,
+    validate_plan, validate_streamed_execute_reply, wake_page_for_max_binds, AtomicSession,
+    CompiledAtomic,
 };
 pub use store::{
     event_outbox::{deliver_after_for, prepare_publish_domain_event, EventPruneStep},
@@ -173,11 +174,12 @@ pub use store::{
         STORAGE_SCAN_STALE_DAYS, TOKEN_HISTORY_DAYS, UPLOAD_HISTORY_DAYS,
     },
     scan_state::{plan_pass, PassStart, ScanState, FULL_PASS_INTERVAL, RESUME_CURSOR_TTL},
-    set_dispatch_chunk_for_test, wishlist_identities_match, BookPage, CatalogEnrichmentFields,
-    DiscoverSubject, EditionFile, FileOwner, FileRole, LibraryStore, NewBook, NewListeningProgress,
-    NewTitleRequest, NewTitleRequestSource, SavedFilterRecord, ScannedTitle, SeedScope,
-    StoredCandidate, StoredFeed, UserBookFields, WishlistIdentity, ACQUIRE_WRITER,
-    BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
+    search_feed::ListingRef,
+    set_dispatch_chunk_for_test, BookPage, CatalogEnrichmentFields, DiscoverSubject, EditionFile,
+    FileOwner, FileRole, LibraryStore, NewBook, NewListeningProgress, NewTitleRequest,
+    NewTitleRequestSource, QueueRank, SavedFilterRecord, ScannedTitle, SeedScope, StoredCandidate,
+    StoredFeed, StoredQueueRank, UserBookFields, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT,
+    BOOK_PAGE_MAX_LIMIT, MAX_QUEUE_REASONS,
 };
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

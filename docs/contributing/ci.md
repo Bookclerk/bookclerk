@@ -135,7 +135,11 @@ A merge group only needs to know whether it can land, so it fails fast.
 nextest stops at the first test that fails its retry. The
 `merge-queue-fail-fast` job cancels the rest of the run as soon as any job
 fails, so `CI Gate` reports at once and the queue ejects the group without
-waiting for the slowest job.
+waiting for the slowest job. It also cancels the run of a group the queue
+has dropped (see [Superseded merge groups](#superseded-merge-groups)). Its
+310-minute timeout outlasts the merge queue's 300-minute status check
+timeout, so the job keeps watching for as long as the queue waits for a
+group.
 
 That job runs no repository code and is the only one with
 `actions: write`. Pull requests run every selected test and job to the
@@ -273,6 +277,7 @@ paths):
 | A declared `test_guests` executable | The launching package's tests re-run, with no propagation |
 | `ui/`, `packages/plugin-sdk*/`, ABI scripts | The UI, SDK ABI and API-doc checks |
 | A first-party workerd guest without a Cargo package (`crates/bookclerk-plugins/<tier>/<name>/`) | Its type-check, build and tests (`workerd_guests`) and its staged E2E. `packages/plugin-sdk/` also selects `workerd_guests`, because the guests type-check against it |
+| A reference example that declares `[[databases]]` and has a `test` script in `package.json`, a `pyproject.toml` or a `Cargo.toml` (`examples/plugins-<name>/`) | Its checks and suite under every database profile (`plugin_examples`) and its staged E2E. `crates/bookclerk-db-testkit/` and `crates/bookclerk-plugin-tools/` also select `plugin_examples`, as do `packages/plugin-sdk/` (with a TypeScript example), `packages/plugin-sdk-python/` (with a Python one) and anything that affects a Rust example's tests, such as the Rust SDK |
 | `docs/**` | The website tests (`site_test`) |
 | `tools/site/**`, `assets/brand/**` | The website tests and audit (`site_test`, `site_audit`) |
 | `tools/diagnostics-collector/**` | The collector's tests (`collector_test`) |
@@ -408,7 +413,7 @@ when a step matches no test. Name such tests `postgres_*`.
 | Job | Runs when | Checks |
 | --- | --- | --- |
 | `plan` | Always | Planner, executor, contract and guardrail tests; DB isolation and docs lints; `resolve`; the `ci-plan` artifact |
-| `fmt / clippy / docs` | Any of its checks is selected | `lint`, `ui`, `plugin_sdk_abi`, `python_sdk`, `workerd_guests`, `author_surface`, `fmt`, `clippy`, `clippy_publish`, `api_docs`, `doctest`, `store_free` |
+| `fmt / clippy / docs` | Any of its checks is selected | `lint`, `ui`, `plugin_sdk_abi`, `python_sdk`, `workerd_guests`, `plugin_examples`, `author_surface`, `fmt`, `clippy`, `clippy_publish`, `api_docs`, `doctest`, `store_free` |
 | `unit + integration tests` | `rust_test` is selected | nextest over the affected packages (the workspace on the full suite), custom-harness targets, feature test runs, bench and example builds |
 | `staged plugin installation (e2e)` | `e2e` is selected | Builds, installs and stages the guests in scope, then the `bookclerk-plugin-e2e` staged targets |
 | `release build + small-VPS envelope (<lto> LTO)` | A shipped binary (hosts, helpers, platform guests) is compiled-affected (`release`), or an `[envelope].paths` input changed, an `[envelope].packages` member is compiled-affected, or the full suite (`envelope`) | Each selected check as its own step; see [Release build](#release-build) and [Small-VPS envelope](#small-vps-envelope) |
@@ -484,6 +489,19 @@ executable first (`cargo build -p bookclerk-db-testkit`) and name it to the
 SDK tests as `BOOKCLERK_DB_TESTKIT`: the SDKs' `createTestDatabase` wrappers
 spawn it (see [Working within database limits](../plugins/database-limits.md#a-plugins-own-binding)),
 so both checks need the Rust toolchain.
+
+The `plugin_examples` check builds the kit and the `bookclerk-plugin`
+author CLI, then runs `bookclerk-plugin test <dir>` on each database
+example, which runs the example's own suite once per profile
+(`first-party`, `d1`, `minimum`; see
+[The suite under every profile](../plugins/database-limits.md#the-suite-under-every-profile)).
+Before that, a TypeScript example is type-checked against the built
+TypeScript SDK and its `modules/` rebuilt (a committed tree that differs is
+drift, as in `workerd_guests`). A Python example is checked with `ruff
+check` and `ruff format --check`, then tested with pytest in the Python
+SDK's locked environment (the one `python_sdk` uses) with the SDK imported
+from its sources. A Rust example is a workspace package that `fmt` and
+`clippy` already cover, so it only runs its `cargo test` suite.
 
 To fix formatting locally:
 
@@ -1272,9 +1290,21 @@ the Workers' lockfiles do not change. Settings live in
 [`scripts/stryker.config.json`](../../scripts/stryker.config.json):
 
 - `inPlace`, because some tests read repository files by relative path.
+  Stryker then rewrites the sources it mutates on disk while it runs, so
+  the step sets `MUTATION_TESTING=1` and each Worker's `vitest.config.ts`
+  leaves out the tests that read its own source text
+  (`tools/site/worker-source.test.ts`,
+  `tools/diagnostics-collector/cache-control-source.test.ts`). Those tests
+  would fail on the instrumented code. A mutant never shows in the source
+  text, because Stryker switches mutants on at run time, and the one
+  function they call, the collector's `assetUrlsModule`, has its own test
+  in `cache-control.test.ts`. Every other run keeps them.
 - A `tsconfigFile` that does not exist, because TypeScript 7 has no
   JavaScript API for Stryker's tsconfig rewriting. Type checking stays
   with each Worker's `npm run typecheck`.
+- `disableTypeChecks` off, so Stryker does not add `// @ts-nocheck` to
+  every file. That would change the collector's hashed dashboard assets,
+  and Vitest does not check types anyway.
 - `vitest.related` off, because the Workers runtime loads modules outside
   Vitest's module graph, so Vitest cannot tell which tests import a file.
 - `incremental`, writing to `reports/mutation/mutation.json`, because only
@@ -1287,7 +1317,7 @@ To reproduce a Worker's run locally, from its directory:
 
 ```sh
 npm install --no-save @stryker-mutator/core@10.1.1 @stryker-mutator/vitest-runner@10.1.1
-npx stryker run ../../scripts/stryker.config.json --mutate "src/page.ts:10-20"
+MUTATION_TESTING=1 npx stryker run ../../scripts/stryker.config.json --mutate "src/page.ts:10-20"
 ```
 
 The report lands in `reports/mutation/mutation.json`. Delete that folder
@@ -1297,7 +1327,10 @@ afterwards: incremental mode reuses the results in it on the next run.
 
 The [`mutation-python.yml`](../../.github/workflows/mutation-python.yml)
 workflow does the same for the Python plugin SDK
-(`packages/plugin-sdk-python`) with [mutmut](https://mutmut.readthedocs.io/):
+(`packages/plugin-sdk-python`) with [mutmut](https://mutmut.readthedocs.io/).
+Before mutmut starts, it installs capnp and builds the
+`bookclerk-db-testkit` binary that `tests/test_testkit.py` drives, as CI's
+`python_sdk` check does, so no test run builds it:
 
 1. It finds the lines changed since the last run under the SDK's `src/`:
    the lines added, placed in the new file, and the lines deleted, placed
@@ -1347,9 +1380,13 @@ SDK's `pyproject.toml`, under `[tool.mutmut]`: the package to mutate, the
 generated modules to leave alone (the same list ruff excludes, which a
 test checks) and the test folder.
 
-To reproduce the run locally, from `packages/plugin-sdk-python`:
+To reproduce the run locally, build the testkit first (it needs Rust and
+capnp, as the workflow installs), then run mutmut from
+`packages/plugin-sdk-python`:
 
 ```sh
+cargo build -p bookclerk-db-testkit --bin bookclerk-db-testkit
+export BOOKCLERK_DB_TESTKIT="$(git rev-parse --show-toplevel)/target/debug/bookclerk-db-testkit"
 python3 -m venv /tmp/mutmut && /tmp/mutmut/bin/pip install pytest "mutmut==3.8.1"
 /tmp/mutmut/bin/mutmut run "bookclerk_plugin_sdk.tools.x_check_plugin__mutmut_*"
 /tmp/mutmut/bin/mutmut show bookclerk_plugin_sdk.tools.x_check_plugin__mutmut_3
@@ -1397,7 +1434,10 @@ Configure repository rulesets or branch protection so the **required** CI check 
 **`CI Gate`** (plus the OSV check), **not** every matrix child. The
 `Bookclerk CLA` and `Maintainer review` checks are required too, expected
 from the automation App (see [the CLA check](licensing.md#the-cla-check) and
-[maintainer review](automation.md#maintainer-review)).
+[maintainer review](automation.md#maintainer-review)). The ruleset also
+requires signed commits; the `Signed commits` check explains a pull request
+that its unsigned commits keep out of the queue (see
+[signed commits](automation.md#signed-commits)).
 
 > [!WARNING]
 > Skipped `release`, `confinement`, `native-gateway`, `tray` and macOS jobs
@@ -1413,11 +1453,88 @@ Queue settings:
 
 - squash;
 - "only merge non-failing pull requests";
-- build concurrency around 5.
+- build concurrency 1;
+- merge limits: minimum 1, maximum 5, wait time 5 minutes;
+- status check timeout 300 minutes.
 
 With a queue required, "require branches to be up to date" no longer
 matters. The queue tests each entry against the current `main`, stacked on
 the entries ahead of it.
+
+### Sizing the queue to the runner pool
+
+The organization runs on GitHub Free, which allows 20 hosted jobs at once
+across every workflow, and hosted runners serve queued jobs first come,
+first served. A job from a pull request gets no priority over one from a
+merge group, or the other way round.
+
+The merge queue starts one `merge_group` run per entry it builds, each
+holding the entries ahead of it. Merge limits don't change that: GitHub
+documents that they "do not combine `merge_group` builds" and only decide
+how many passing entries land at once. Build concurrency is the only
+setting that caps how many groups test at the same time.
+
+One merge group asks for about 22 jobs: the 19 CI jobs (17 of them start
+together right after `plan`), plus OSV-Scanner, the CLA check and the
+coverage upload. Most finish within 10 minutes. The unit tests (about
+30 minutes), the fat-LTO release build (about 23), `fmt / clippy / docs`
+(about 16), the two long Windows jobs and `merge-queue fail-fast`, which
+holds a runner until the run ends, keep going. Uncontended, a group takes
+about 35 minutes and averages about 6 runners.
+
+| Build concurrency | Merge-group runners (peak, typical) | Left for pull requests |
+| --- | --- | --- |
+| 1 | about 19, then about 6 after 10 minutes | about 14 most of the time |
+| 2 | up to 20 when fan-outs overlap, about 12 typical | about 8, none at overlaps |
+| 3 or more | the whole pool | none until the groups drain |
+
+Build concurrency was 2 on 9 to 10 November 2026, yet up to three runs
+built at once: the third was the leftover run of a group the queue had
+already dropped (see [Superseded merge groups](#superseded-merge-groups)).
+
+Build concurrency 1 keeps about two thirds of the pool for pull request
+checks. It caps the queue at one landing about every 35 minutes, about
+1.7 pull requests an hour, so a queue 10 deep takes about 6 hours to drain.
+More concurrency helps only while the pool is idle: on a quiet 9 November
+2026, overlapping groups landed about 3 an hour. On the busy night of
+9 to 10 November, with two groups and leftover runs building, merge-group jobs waited
+10 to 25 minutes for a runner, runs took about 65 minutes, and the queue
+landed about 1.3 an hour while pull request checks waited behind it.
+
+It also makes a failure cheap. With several groups building, a failure
+(including a flaky test) ejects the head entry and rebuilds every group
+behind it. With one group, nothing else was building, so nothing is
+rebuilt. "Jump to the front" likewise restarts only the one group in
+progress.
+
+The status check timeout counts from the moment a group requests its
+checks, including the time its jobs wait for runners. On 10 November 2026,
+with pull request jobs holding most of the pool, a green group ran past the
+earlier 120-minute timeout and was ejected, so the timeout is now 300
+minutes.
+
+Raise build concurrency again only when the pool grows, for example a paid
+plan or a self-hosted runner reserved for `merge_group`.
+
+### Superseded merge groups
+
+The queue rebuilds its groups when an entry ahead fails or leaves, when a
+pull request jumps to the front, or when one is dequeued. It deletes each
+dropped group's `gh-readonly-queue/main/pr-<number>-<sha>` branch, but
+GitHub doesn't cancel that group's run, and the workflow's `concurrency`
+never cancels a `merge_group` run. The run would keep asking for its
+22 jobs although nothing can merge from it.
+
+`merge-queue-fail-fast` therefore checks the group's branch
+(`github.event.merge_group.head_ref`) with `git ls-remote --exit-code` on
+every pass and cancels the run once the branch is gone. It starts with the
+run, so it gets a runner before the jobs that fan out after `plan`. The
+queue also deletes a group's branch after merging it, so the check comes
+after the job's `CI Gate` test, and the job looks again for a started
+`CI Gate` just before it cancels. A transport error counts as the branch
+being present. A cancelled run doesn't trigger
+[re-enqueue](#merge-queue-re-enqueue), because its jobs carry no
+not-acquired annotation.
 
 ### macOS job
 

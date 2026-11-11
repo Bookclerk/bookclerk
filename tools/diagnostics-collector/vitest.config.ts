@@ -23,6 +23,15 @@ if (COMPATIBILITY_DATE === undefined) throw new Error("wrangler.toml has no comp
 /** Tests that run outside the Workers runtime. */
 const NODE_TESTS = ["summary.fuzz.test.ts"];
 
+/**
+ * Tests that read the Worker's source text. The nightly mutation run sets
+ * MUTATION_TESTING=1 to leave them out: Stryker rewrites the sources in
+ * place while it runs, so they would fail on its instrumented code, and a
+ * mutant never shows in the text, because Stryker switches mutants on at run
+ * time. Every other run, CI's included, keeps them.
+ */
+const SOURCE_TESTS = process.env.MUTATION_TESTING === "1" ? ["cache-control-source.test.ts"] : [];
+
 export default defineConfig({
   test: {
     // node:test had no per-test timeout; the fuzz tests and coverage runs
@@ -55,7 +64,7 @@ export default defineConfig({
         test: {
           name: "workers",
           include: ["*.test.ts"],
-          exclude: NODE_TESTS,
+          exclude: [...NODE_TESTS, ...SOURCE_TESTS],
           setupFiles: ["test-support/workers-setup.ts"],
           // Vitest empties CSS imports it does not process; cache-control.test.ts
           // hashes the dashboard's styles, so it must see them as they are.

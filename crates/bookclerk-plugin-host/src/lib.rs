@@ -118,7 +118,7 @@ pub use consent::{
     require_grant, spawn_config_for_grant, spawn_grant, validate_approved_grant,
     validate_described_capabilities, validate_described_config_options,
     windows_session_active_processes, GrantedEventConsumer, PendingStructural, PluginGrant,
-    PluginGrantStore, GRANTS_FILE, GRANT_SCHEMA_VERSION, KNOWN_HOST_BINDINGS,
+    PluginGrantStore, GRANTS_FILE, GRANT_SCHEMA_VERSION, KNOWN_HOST_BINDINGS, PENDING_HEADER,
     PLUGIN_JAIL_ACTIVE_PROCESSES_MAX, PLUGIN_JAIL_CPU_CORES_DEFAULT, PLUGIN_JAIL_CPU_RATE_DEFAULT,
     PLUGIN_JAIL_CPU_RATE_MAX, PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT, PLUGIN_JAIL_EXTRA_PROCESSES_MAX,
     PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX, PLUGIN_STATE_BUDGET_MIB_DEFAULT,
@@ -188,8 +188,9 @@ pub use registry::{
 };
 pub use remote_consent::{
     approve_remote_request, narrow_remote_grant, remote_consent, remote_consent_state,
-    remote_consent_view, remote_platform_auto_approval, remote_request_within,
-    remote_row_consent_state, RemoteApprovalError, RemoteConsentState, RemoteNarrowing,
+    remote_consent_view, remote_platform_auto_approval, remote_request_changes,
+    remote_request_within, remote_row_changes, remote_row_consent_state, RemoteApprovalError,
+    RemoteConsentState, RemoteNarrowing,
 };
 pub use rpc_session::{
     plugin_instance_key, ExecutorIdentity, GuestDatabaseFactory, PluginSession, PluginStorage,

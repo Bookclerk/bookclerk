@@ -834,6 +834,11 @@ struct PluginConsentResponse {
     /// Previously approved grant, when one is stored.
     existing: Option<PluginGrantView>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// What the request asks for beyond the stored grant (a plugin upgrade
+    /// that widened its capabilities); absent when no grant is stored. The
+    /// plugin keeps running under the stored grant until these are approved.
+    pending: Option<PluginConsentPending>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     /// Optional portal or manifest branding for the dialog.
     brand: Option<PluginConsentBrand>,
     /// Host-capped resource defaults (workerd budgets + shared disk). Always set.
@@ -842,6 +847,40 @@ struct PluginConsentResponse {
     /// the request's `ownUserAgentHosts`.
     #[schema(example = "bookclerk/0.1.0 (+https://bookclerk.app)")]
     host_user_agent: String,
+}
+
+/// The difference between a plugin's request and its stored grant.
+#[derive(Debug, Clone, Default, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct PluginConsentPending {
+    /// Operator-facing lines naming every capability awaiting consent, the
+    /// same lines `bookclerk plugins info` and `bookclerk plugins approve`
+    /// print; empty when the stored grant covers the request.
+    #[schema(example = json!(["Awaiting consent (not automatically approved):", "  fetch hosts: any public website (*)"]))]
+    lines: Vec<String>,
+    /// Fetch host patterns the request adds (`*` is any public host).
+    #[schema(example = json!(["*"]))]
+    domains: Vec<String>,
+    /// TCP `host:ports` the request adds, narrowed to the new ports.
+    tcp: Vec<TcpGrantView>,
+    /// CIDRs the request adds.
+    #[schema(example = json!(["192.168.1.0/24"]))]
+    address_cidrs: Vec<String>,
+    /// Whether the request newly asks to follow undeclared public redirects.
+    #[schema(example = false)]
+    allow_undeclared_public_redirects: bool,
+}
+
+impl From<&bookclerk_plugin_host::PendingStructural> for PluginConsentPending {
+    fn from(pending: &bookclerk_plugin_host::PendingStructural) -> Self {
+        Self {
+            lines: pending.summary_lines(),
+            domains: pending.domains.iter().cloned().collect(),
+            tcp: pending.tcp.iter().map(TcpGrantView::from).collect(),
+            address_cidrs: pending.address_cidrs.iter().cloned().collect(),
+            allow_undeclared_public_redirects: pending.undeclared_public_redirects,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -1015,7 +1054,9 @@ struct BooksQuery {
     account: Option<String>,
     /// Optional `AcquireStatus` wire-string filter.
     status: Option<String>,
-    /// Full-text search query; empty skips the search index.
+    /// Full-text search over this node's search index. Hits are sorted by
+    /// title and every hit counts toward `total` (there is no hit cap); an
+    /// empty value skips the index.
     q: Option<String>,
     /// Page size, clamped to 1–500 (default 40).
     limit: Option<usize>,
@@ -3246,7 +3287,12 @@ fn build_approved_grant(
     }
     if let Some(flag) = grant_override.allow_undeclared_public_redirects {
         approved.allow_undeclared_public_redirects = flag;
-        approved.operator_allow_undeclared_public_redirects = Some(flag);
+        // Record an operator choice only when it departs from the manifest.
+        // Echoing the baseline back (the dialog always submits the box) is
+        // not an answer, so a later version that asks for redirects still
+        // waits for consent instead of reading as already refused.
+        approved.operator_allow_undeclared_public_redirects =
+            (flag != baseline.allow_undeclared_public_redirects).then_some(flag);
     }
     if let Some(hosts) = grant_override.own_user_agent_hosts {
         approved.own_user_agent_hosts = Some(vec_to_set(hosts));
@@ -3348,8 +3394,11 @@ async fn get_plugin_consent(
     let existing = store
         .get_by_plugin_key(plugin.plugin_key().canonical())
         .cloned();
+    let pending = existing
+        .as_ref()
+        .map(|grant| pending_structural(grant, &request));
     let covered = existing.as_ref().is_some_and(|grant| {
-        grant_covers(grant, &request) && pending_structural(grant, &request).is_empty()
+        grant_covers(grant, &request) && pending.as_ref().is_some_and(|p| p.is_empty())
     });
     let brand = plugin_consent_brand(&state, plugin).await;
     let limits = plugin_consent_limits(plugin, cfg.plugins.jail.cpu_rate_percent);
@@ -3367,6 +3416,7 @@ async fn get_plugin_consent(
         covered,
         summary,
         existing: existing.as_ref().map(PluginGrantView::from_grant),
+        pending: pending.as_ref().map(PluginConsentPending::from),
         brand,
         limits,
         host_user_agent: bookclerk_plugin_manifest::host_user_agent(),
@@ -3417,15 +3467,19 @@ async fn post_plugin_consent(
         PluginRuntimeKind::Workerd => "workerd",
     }
     .to_string();
+    // An approval can leave a structural capability unticked; it stays
+    // pending, so the answer says so instead of claiming coverage.
+    let pending = pending_structural(&approved, &request);
     Ok(Json(PluginConsentResponse {
         plugin_id: plugin.alias().to_string(),
         plugin_key: plugin.plugin_key().canonical().to_string(),
         provenance: plugin.identity.provenance.to_string(),
         runtime,
         request: PluginGrantView::from_grant(&request),
-        covered: true,
+        covered: pending.is_empty(),
         summary,
         existing: Some(PluginGrantView::from_grant(&approved)),
+        pending: Some(PluginConsentPending::from(&pending)),
         brand,
         limits,
         host_user_agent: bookclerk_plugin_manifest::host_user_agent(),
@@ -4640,8 +4694,9 @@ async fn discover_status_for_caller(
     let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
         .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
     // A feed that does not decode (another release wrote it) counts as
-    // missing, so it is ranked again and not reported ready.
-    let feed = bookclerk_discover::stored_subject_feed(&library, &subject, &[])
+    // missing, so it is ranked again and not reported ready. Status needs
+    // only the feed's presence and times, so card metadata is not joined.
+    let feed = bookclerk_discover::stored_subject_feed_state(&library, &subject)
         .await
         .map_err(internal_err)?;
     let fetched = library
@@ -5184,25 +5239,34 @@ async fn list_books(
     // browsing. Account *linking* and acquire remain capability-gated; store
     // connect is User-only.
     //
-    // Both branches filter, sort, and page in SQL. Search still uses Tantivy
-    // to choose at most 500 uuids; those rows are loaded in batches and only
-    // the requested page is returned.
+    // Without a query, filtering, sorting and paging run in SQL. With one,
+    // the node's search index matches, sorts by title, pages and counts,
+    // so no hit cap applies; only the page's uuids are hydrated from SQL.
+    // Account and status are read from SQL, not the index, so a filtered
+    // search takes every hit and lets SQL filter and page them.
 
     let page = if let Some(q) = query.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         let index_dir = state.config.read().await.paths().search_index_dir.clone();
         // Offloaded: Tantivy query work would otherwise block this request task.
-        let hits = SearchEngine::open_and_search(index_dir, q.to_string(), 500)
-            .await
-            .map_err(books_query_error)?;
-        let uuids = hits
-            .into_iter()
-            .map(|hit| hit.uuid)
-            .filter(|uuid| !uuid.is_empty())
-            .collect::<Vec<_>>();
-        library
-            .list_books_by_uuid_page(&uuids, account, status, limit as u64, offset as u64)
-            .await
-            .map_err(books_query_error)?
+        if account.is_none() && status.is_none() {
+            let hits = SearchEngine::open_and_search_page(index_dir, q.to_string(), offset, limit)
+                .await
+                .map_err(books_query_error)?;
+            let mut page = library
+                .list_books_by_uuid_page(&hits.uuids, None, None, limit as u64, 0)
+                .await
+                .map_err(books_query_error)?;
+            page.total = hits.total;
+            page
+        } else {
+            let uuids = SearchEngine::open_and_match_uuids(index_dir, q.to_string())
+                .await
+                .map_err(books_query_error)?;
+            library
+                .list_books_by_uuid_page(&uuids, account, status, limit as u64, offset as u64)
+                .await
+                .map_err(books_query_error)?
+        }
     } else {
         library
             .list_books_filtered_page(account, status, limit as u64, offset as u64)
@@ -5330,9 +5394,6 @@ struct CreateRequestBody {
     /// Optional priced storefront links snapshotted at wishlist time.
     #[serde(default)]
     purchase_hints: Vec<bookclerk_discover::PurchaseHint>,
-    /// Optional stable work key; when omitted one is derived from bib fields.
-    #[schema(example = "work:9780441478125")]
-    work_key: Option<String>,
     /// Optional cover image URL snapshotted onto the request.
     #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     cover_url: Option<String>,
@@ -5922,31 +5983,6 @@ fn split_csv_query(raw: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// Returns the client work key, or derives one from ASIN/ISBN/title/edition identity.
-fn work_key_for_request(body: &CreateRequestBody) -> String {
-    if let Some(key) = body
-        .work_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return key.to_string();
-    }
-    let (source, product_id) = body
-        .store_editions
-        .first()
-        .map(|e| (Some(e.source.as_str()), Some(e.product_id.as_str())))
-        .unwrap_or((None, None));
-    bookclerk_discover::work_map_key(
-        body.asin.as_deref(),
-        body.isbn.as_deref(),
-        &body.title,
-        body.authors.as_deref(),
-        source,
-        product_id.or(body.asin.as_deref()).or(body.isbn.as_deref()),
-    )
-}
-
 /// Lists open wishlist rows for the caller (portal identity or operator-owned).
 #[utoipa::path(
     get,
@@ -6090,69 +6126,43 @@ fn hydrate_queue_wishers(
     }
 }
 
-/// Ranks the shared open-request queue without warming ONNX embeddings.
+/// Reads the shared open-request queue from its stored ranking.
+///
+/// The `discover_request_queue` job ranks the queue against household taste
+/// when a taste event says it may have moved; this route joins that stored
+/// ranking with the open requests and the live wish counts, so it reads no
+/// books, listening history or embedder. When an entry has no stored ranking
+/// yet, or the ranking is older than a day, the route queues a pass and
+/// answers with what it has.
 #[utoipa::path(
     get,
     path = "/api/request-queue",
     responses(
         (status = 200, description = "Open requests, ranked.", body = Vec<bookclerk_discover::RankedQueueEntry>),
-        (status = 500, description = "The queue could not be ranked.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
-        (status = 503, description = "Discover is shutting down; try again.", body = String, content_type = "text/plain", example = json!("discover gate closed")),
+        (status = 500, description = "The queue could not be read.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
     ),
 )]
-async fn list_request_queue(
+pub(crate) async fn list_request_queue(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<bookclerk_discover::RankedQueueEntry>>, (StatusCode, String)> {
-    let cfg = state.config.read().await.clone();
     let library = state.library_snapshot().await;
-
-    // Empty shared queue: skip discover_gate + ONNX. Opening the embedder alone
-    // often exceeds the 8s API timeout and surfaces as a Wishlist 504.
-    let open_requests = library
-        .list_title_requests(Some(RequestStatus::Open))
+    let queue = bookclerk_discover::read_request_queue(&library)
         .await
         .map_err(internal_err)?;
-    if open_requests.is_empty() {
-        return Ok(Json(Vec::new()));
+    if queue.stale {
+        // Folds into a pass already waiting; a failure leaves the next read
+        // or taste event to queue it.
+        if let Err(err) = crate::request_queue_job::enqueue_request_queue_rank(
+            &state,
+            JobTrigger::Scheduler,
+            std::time::Duration::ZERO,
+        )
+        .await
+        {
+            tracing::warn!(error = %err, "could not queue the request queue ranking");
+        }
     }
-
-    let _discover = state
-        .discover_gate
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "discover gate closed".into(),
-            )
-        })?;
-
-    // Do not warm ONNX here. Wish-count already dominates ranking, and MiniLM
-    // cold-start alone blows the global 8s API timeout (Wishlist 504 after the
-    // first title is wishlisted). Author/category taste still applies without
-    // embeddings when a library exists.
-    let opts = bookclerk_discover::RecommendOptions {
-        limit: cfg.discovery.recommend_limit.max(24),
-        embedding_model: String::from(bookclerk_discover::MODEL_LOCAL_HASH_V1),
-        region: String::from("us"),
-        include_purchase_hints: false,
-        external_user_id: None,
-        include_listening: true,
-        listening_providers: Vec::new(),
-        fetch_storefront_candidates: false,
-        storefront_seed_limit: 0,
-        storefront_max_remote_calls: 0,
-        exclude_graphicaudio_series_sets: cfg.discovery.exclude_graphicaudio_series_sets,
-        disabled_shelves: Vec::new(),
-        models_dir: None,
-        embed_intra_threads: cfg.discovery.embed_intra_threads,
-        embeddings_enabled: false,
-    };
-    let sources = state.sources.read().await;
-    let mut rows = bookclerk_discover::rank_global_request_queue(&library, &sources, &opts)
-        .await
-        .map_err(internal_err)?;
+    let mut rows = queue.entries;
     let files = crate::profile::files_dir(&state).await;
     for row in &mut rows {
         hydrate_queue_wishers(&mut row.wishers, files.as_deref(), &state.covers);
@@ -6163,7 +6173,8 @@ async fn list_request_queue(
     Ok(Json(rows))
 }
 
-/// Inserts a title request after requiring a non-empty title and deriving a work key.
+/// Inserts a title request after requiring a non-empty title; the library
+/// resolves it into the work it is for.
 async fn create_request_inner(
     state: &AppState,
     headers: &HeaderMap,
@@ -6175,7 +6186,6 @@ async fn create_request_inner(
     let identity_id = auth::caller_portal_identity(state, headers)
         .await
         .map(|identity| identity.id);
-    let work_key = work_key_for_request(&body);
     let library = state.library_snapshot().await;
     let mut row = library
         .create_title_request(&NewTitleRequest {
@@ -6187,13 +6197,15 @@ async fn create_request_inner(
             isbn: body.isbn.clone(),
             notes: body.notes.clone(),
             status: RequestStatus::Open,
-            work_key,
-            work_id: None,
             resolved_book_uuid: None,
             cover_url: body.cover_url.clone(),
         })
         .await
-        .map_err(internal_err)?;
+        .map_err(|err| match err {
+            // A title over the listing limits names no work.
+            bookclerk_library::LibraryError::Invalid(message) => (StatusCode::BAD_REQUEST, message),
+            other => internal_err(other),
+        })?;
 
     let mut sources = wishlist_sources_from_body(&body);
     // Soft-resolve live prices / additional storefronts and merge into snapshots.
@@ -7033,6 +7045,48 @@ mod tests {
     }
 
     #[test]
+    fn echoing_the_redirect_default_is_not_an_operator_answer() {
+        use bookclerk_plugin_host::{pending_structural, PluginGrant};
+
+        let baseline = PluginGrant {
+            plugin_id: "demo".into(),
+            network_mode: "outbound".into(),
+            ..PluginGrant::empty()
+        };
+        let echoed = build_approved_grant(
+            &baseline,
+            Some(PluginGrantOverride {
+                allow_undeclared_public_redirects: Some(false),
+                ..PluginGrantOverride::default()
+            }),
+        )
+        .expect("echo the default");
+        assert_eq!(echoed.operator_allow_undeclared_public_redirects, None);
+
+        // A later version asking for redirects still waits for consent.
+        let upgrade = PluginGrant {
+            allow_undeclared_public_redirects: true,
+            ..baseline.clone()
+        };
+        assert!(pending_structural(&echoed, &upgrade).undeclared_public_redirects);
+
+        // Refusing what the manifest asks for is recorded as a refusal.
+        let refused = build_approved_grant(
+            &upgrade,
+            Some(PluginGrantOverride {
+                allow_undeclared_public_redirects: Some(false),
+                ..PluginGrantOverride::default()
+            }),
+        )
+        .expect("refuse redirects");
+        assert_eq!(
+            refused.operator_allow_undeclared_public_redirects,
+            Some(false)
+        );
+        assert!(!pending_structural(&refused, &upgrade).undeclared_public_redirects);
+    }
+
+    #[test]
     fn listen_validation_uses_effective_auth_flag() {
         let mut cfg = Config::default();
         cfg.daemon.listen = ListenAddrs::parse_list("0.0.0.0:8787").unwrap();
@@ -7320,6 +7374,146 @@ mode = "deny"
         )
         .unwrap();
         root
+    }
+
+    /// Stages a native plugin asking for `tcp` (a TOML array of TCP grants).
+    fn stage_network_plugin(files: &std::path::Path, tcp: &str) {
+        let root = files.join("plugins").join("net_echo");
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("guest");
+        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(
+            root.join("plugin.toml"),
+            format!(
+                r#"
+api_version = 3
+id = "net_echo"
+version = "0.1.0"
+runtime = "native"
+command = "./guest"
+entrypoints = ["cli"]
+
+[capabilities.network]
+mode = "outbound"
+tcp = {tcp}
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    /// An `AppState` over `cfg` with an in-memory library and auth off.
+    async fn consent_test_state(cfg: Config) -> std::sync::Arc<super::AppState> {
+        use bookclerk_integrations::IntegrationRegistry;
+        use bookclerk_library::LibraryStore;
+        use bookclerk_plugin_host::{DatabaseRegistry, DestinationRegistry};
+        use bookclerk_source::SourceRegistry;
+        use std::sync::Arc;
+        use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
+
+        let library = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("sqlite memory"),
+        );
+        Arc::new(super::AppState {
+            config: Arc::new(RwLock::new(cfg)),
+            library: Arc::new(RwLock::new(library)),
+            database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
+            job_notify: Arc::new(Notify::new()),
+            job_runtime: Arc::new(RwLock::new(())),
+            work_lock: Mutex::new(()),
+            discover_gate: Arc::new(Semaphore::new(1)),
+            integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
+            sources: Arc::new(RwLock::new(SourceRegistry::new())),
+            destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
+            auth: Arc::new(RwLock::new(Arc::new(crate::auth::OperatorAuthState::new(
+                String::new(),
+                12,
+                false,
+                5,
+                30,
+            )))),
+            reload_lock: Mutex::new(()),
+            listen_reload: Arc::new(Notify::new()),
+            last_bound_listen: RwLock::new(None),
+            tray: RwLock::new(None),
+            tray_handoff: Mutex::new(None),
+            deployment_runtime: std::sync::OnceLock::new(),
+            node_api_tls_bound: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
+            covers: Arc::new(crate::covers::CoverService::detached()),
+        })
+    }
+
+    /// An upgrade that adds a TCP port is reported as pending (#700), and
+    /// approving it clears that.
+    #[tokio::test]
+    async fn plugin_consent_reports_what_an_upgrade_adds() {
+        use axum::extract::{Path, Query, State};
+        use axum::Json;
+
+        let files = tempfile::tempdir().unwrap();
+        stage_network_plugin(
+            files.path(),
+            r#"[{ host = "db.store.example", ports = [5432] }]"#,
+        );
+        let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+        let plugin = bookclerk_plugin_host::discover_plugins(&cfg)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.manifest.id == "net_echo")
+            .expect("staged plugin");
+        let approved =
+            bookclerk_plugin_host::consent_request(&plugin.manifest, plugin.plugin_key());
+        let mut store = bookclerk_plugin_host::PluginGrantStore::default();
+        store.upsert(approved);
+        store.save(files.path()).unwrap();
+
+        // The upgrade asks for another port on the same host.
+        stage_network_plugin(
+            files.path(),
+            r#"[{ host = "db.store.example", ports = [5432, 6432] }]"#,
+        );
+        let state = consent_test_state(cfg).await;
+        let Json(before) = super::get_plugin_consent(
+            State(state.clone()),
+            Path("net_echo".to_string()),
+            Query(super::PluginConsentQuery::default()),
+        )
+        .await
+        .expect("consent");
+        let body = serde_json::to_value(&before).unwrap();
+        assert_eq!(body["covered"], false, "{body}");
+        assert_eq!(
+            body["pending"]["tcp"],
+            serde_json::json!([{ "host": "db.store.example", "ports": [6432] }])
+        );
+        assert!(body["pending"]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l == "  raw TCP connect: db.store.example:[6432]"));
+
+        let Json(after) = super::post_plugin_consent(
+            State(state.clone()),
+            Path("net_echo".to_string()),
+            Query(super::PluginConsentQuery::default()),
+            Json(super::PluginConsentApproveRequest {
+                approve: true,
+                grant: None,
+            }),
+        )
+        .await
+        .expect("approve");
+        let body = serde_json::to_value(&after).unwrap();
+        assert_eq!(body["covered"], true, "{body}");
+        assert_eq!(body["pending"]["lines"], serde_json::json!([]));
     }
 
     fn write_logo_svg(root: &std::path::Path, svg: &str) {
@@ -8808,8 +9002,43 @@ mode = "deny"
         .await
         .unwrap();
         assert_eq!(searched.books.len(), 8);
-        assert!(searched.total >= 8);
-        assert!(searched.total <= 20);
+        assert_eq!(searched.total, 20, "every hit counts, not only one page");
+        assert_eq!(searched.books[0].title, "Title 00000");
+        // The index pages in title order, so the next page continues it.
+        let next = super::list_books(
+            State(state.clone()),
+            HeaderMap::new(),
+            Query(super::BooksQuery {
+                account: None,
+                status: None,
+                q: Some("Title".into()),
+                limit: Some(8),
+                offset: Some(16),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(next.total, 20);
+        let titles: Vec<&str> = next.books.iter().map(|b| b.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            ["Title 00016", "Title 00017", "Title 00018", "Title 00019"]
+        );
+        // A status filter is read from the database, not the index.
+        let failed = super::list_books(
+            State(state.clone()),
+            HeaderMap::new(),
+            Query(super::BooksQuery {
+                account: None,
+                status: Some("error".into()),
+                q: Some("Title".into()),
+                limit: Some(40),
+                offset: Some(0),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(failed.total, 2);
 
         let account_b = super::list_books(
             State(state),

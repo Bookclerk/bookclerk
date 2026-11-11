@@ -5,8 +5,8 @@
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    serve, Bindings, Brand, CatalogHit, ContentSource as ContentSourceRole, Entrypoints,
-    ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
+    serve, Bindings, Brand, CatalogCapabilities, CatalogHit, ContentSource as ContentSourceRole,
+    Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch, PluginDescribe,
     PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams,
     PurchaseHintsParams, RevokeAccountParams, ScalarLimits, ScanPage, ScanParams,
@@ -42,6 +42,11 @@ impl PluginWorker for AudibleRoot {
                     "https://www.google.com/s2/favicons?domain=audible.com&sz=128".into(),
                 ),
             }),
+            // Audible's catalog details take an ASIN, not an ISBN; its search
+            // hits carry `rank_hint` instead.
+            catalog: CatalogCapabilities {
+                detail_by_isbn: false,
+            },
             ..PluginDescribe::default()
         })
     }

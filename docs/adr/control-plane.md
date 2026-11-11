@@ -1,7 +1,9 @@
 # ADR: Control plane — bootstrap, host identity, and database configuration
 
 - **Status:** Accepted for Phase 0, Phase 1, and Phase 2; Phase 3 decided and
-  implemented (Refs #192)
+  implemented (Refs #192). The live socket's change detection (count and
+  newest-stamp reads per poll) is superseded by per-topic counters
+  (2026-11-10, see [Live socket](#live-socket-and-the-host-consent-screen)).
 - **Date:** 2026-09-29 (Phase 2 and the Phase 3 decision: 2026-10-13; the
   cluster-install decision, the Phase 3 implementation, and the node and
   install/deploy terminology: 2026-10-14)
@@ -1653,6 +1655,12 @@ which topics changed; the SPA then re-reads its ordinary routes.
   client hears `hello` is never absorbed into it. Rejected:
   a table of change events or database triggers, which the SQL-v1
   contract would have to carry on every backend.
+  **Superseded** by the data-model scale audit (item 6): the per-poll
+  counts and newest-stamp reads grew with every table, so each topic now
+  has one counter row in `live_topic_revisions` that every write bumps in
+  its own atomic batch (plain SQL-v1 `UPDATE`, no triggers), and a poll
+  reads only those rows. See
+  [Node API → The live socket](../internals/node-api.md#the-live-socket-apilive).
 - **SPA.** One shared client (`ui/src/lib/live.ts`) per page;
   `useLiveRefresh(topics, refresh, {pollMs, openPollMs})` replaces the
   polling timers of Status, Library, Settings → Nodes and User Management.

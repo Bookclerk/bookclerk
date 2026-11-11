@@ -2100,7 +2100,7 @@ name = "bookclerk-plugin-echo-native-rust"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "bookclerk-plugin-abi",
+ "bookclerk-db-testkit",
  "bookclerk-plugin-sdk",
  "tokio",
 ]

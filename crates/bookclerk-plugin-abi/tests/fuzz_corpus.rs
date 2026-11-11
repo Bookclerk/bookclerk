@@ -130,17 +130,17 @@ fn fuzz_corpus_abi_roundtrip_is_identity() {
 
 /// `read_any_message` selectors of the structured book records, whose seeds
 /// live in `fuzz/corpus/{abi_decode,abi_roundtrip}/structured_*.bin`.
-const SCAN_PAGE_SELECTOR: u8 = 29;
+const SCAN_PAGE_SELECTOR: u8 = 30;
 /// See [`SCAN_PAGE_SELECTOR`].
-const CATALOG_HITS_SELECTOR: u8 = 46;
+const CATALOG_HITS_SELECTOR: u8 = 47;
 /// See [`SCAN_PAGE_SELECTOR`].
-const METADATA_RECORDS_SELECTOR: u8 = 94;
+const METADATA_RECORDS_SELECTOR: u8 = 95;
 /// See [`SCAN_PAGE_SELECTOR`].
-const METADATA_CHAPTERS_SELECTOR: u8 = 97;
+const METADATA_CHAPTERS_SELECTOR: u8 = 98;
 /// See [`SCAN_PAGE_SELECTOR`].
-const COVER_FETCH_PARAMS_SELECTOR: u8 = 99;
+const COVER_FETCH_PARAMS_SELECTOR: u8 = 100;
 /// See [`SCAN_PAGE_SELECTOR`].
-const COVER_IMAGES_SELECTOR: u8 = 102;
+const COVER_IMAGES_SELECTOR: u8 = 103;
 
 /// A scan page with every structured book record and paging field filled.
 fn structured_scan_page() -> bookclerk_plugin_abi::ScanPage {
@@ -223,6 +223,7 @@ fn structured_catalog_hits() -> bookclerk_plugin_abi::CatalogHits {
                 role: CreditRole::Author,
                 ..Credit::default()
             }],
+            rank_hint: Some(21),
             ..CatalogHit::default()
         }],
     }

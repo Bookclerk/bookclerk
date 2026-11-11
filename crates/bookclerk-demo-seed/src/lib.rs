@@ -707,9 +707,6 @@ pub async fn seed(
                 isbn: hit.and_then(|h| present(h.isbn().as_ref())),
                 notes: None,
                 status: RequestStatus::Open,
-                // Empty: the store derives the work key from title and author.
-                work_key: String::new(),
-                work_id: None,
                 resolved_book_uuid: None,
                 cover_url: hit.and_then(|h| present(h.cover_url.as_ref())),
             })

@@ -10,7 +10,7 @@
 mod engine;
 mod query;
 
-pub use engine::{SearchEngine, SearchHit};
+pub use engine::{SearchEngine, SearchHit, SearchPage};
 pub use query::normalize_lucene_query;
 
 use thiserror::Error;
@@ -24,6 +24,11 @@ pub enum SearchError {
     /// Index open / writer / commit failure (operator-facing detail).
     #[error("search index error: {0}")]
     Index(String),
+
+    /// Another writer (a rebuild, an event refresh, or the CLI) holds the
+    /// index lock; the write can be retried shortly.
+    #[error("search index is busy with another writer")]
+    Busy,
 
     /// Query parse failure after Lucene-style normalization.
     #[error("invalid search query: {0}")]

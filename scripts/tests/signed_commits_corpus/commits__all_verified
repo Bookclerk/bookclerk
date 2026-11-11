@@ -1,0 +1,46 @@
+[
+ {
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "commit": {
+   "message": "feat: x\n\n[evil](https://example.com)",
+   "author": {
+    "name": "`x` | y",
+    "email": "a@b"
+   },
+   "verification": {
+    "verified": true,
+    "reason": "valid",
+    "signature": null,
+    "payload": null,
+    "verified_at": null
+   }
+  },
+  "author": {
+   "login": "alice",
+   "id": 101,
+   "type": "User"
+  }
+ },
+ {
+  "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "commit": {
+   "message": "feat: x\n\n[evil](https://example.com)",
+   "author": {
+    "name": "`x` | y",
+    "email": "a@b"
+   },
+   "verification": {
+    "verified": true,
+    "reason": "valid",
+    "signature": null,
+    "payload": null,
+    "verified_at": null
+   }
+  },
+  "author": {
+   "login": "alice",
+   "id": 101,
+   "type": "User"
+  }
+ }
+]

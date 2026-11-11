@@ -192,8 +192,15 @@ impl JobTransport for InProcessJobTransport {
             JobKind::DiscoverFeed => {
                 crate::discover_jobs::run_discover_feed(&self.state, &cmd.payload, Some(&ctx)).await
             }
+            JobKind::DiscoverRequestQueue => {
+                crate::request_queue_job::run_discover_request_queue(&self.state, Some(&ctx)).await
+            }
             JobKind::CacheSweep => {
                 crate::cache_jobs::run_cache_sweep(&self.state, &cmd.payload, Some(&ctx)).await
+            }
+            JobKind::SearchIndexRebuild => {
+                crate::search_index::run_search_index_rebuild(&self.state, &cmd.payload, Some(&ctx))
+                    .await
             }
             JobKind::Invalid => anyhow::bail!("invalid_job"),
         }

@@ -117,6 +117,85 @@ pub fn remote_request_within(reviewed: &PluginGrant, requested: &PluginGrant) ->
         && !budget_wider(reviewed, requested)
 }
 
+/// Operator-facing lines naming what `requested` asks for beyond `reviewed`.
+///
+/// The same lines (and header) the local consent flow prints for a widened
+/// plugin ([`crate::PendingStructural::summary_lines`]), plus network turned
+/// on and larger budgets, which only an owner request can change. Network
+/// destinations are compared exactly as [`remote_request_within`] compares
+/// them (whole TCP grants, exact patterns and ranges), so the lines are
+/// empty exactly when that holds.
+///
+/// # Arguments
+///
+/// * `reviewed` - The owner's request as this host's operator approved it.
+/// * `requested` - The owner's current request.
+///
+/// # Returns
+///
+/// A header line then one indented line per kind of widening, or nothing.
+#[must_use]
+pub fn remote_request_changes(reviewed: &PluginGrant, requested: &PluginGrant) -> Vec<String> {
+    // The reviewed request's denials are the owner's narrowing, not answers
+    // this host gave, so only its effective sets count as reviewed.
+    let mut baseline = reviewed.clone();
+    baseline.operator_denied_domains.clear();
+    baseline.operator_denied_tcp.clear();
+    baseline.operator_denied_cidrs.clear();
+    baseline.operator_allow_undeclared_public_redirects = None;
+    let mut pending = crate::consent::pending_structural(&baseline, requested);
+    // The gate compares destinations exactly; so does its diff, or a
+    // regrouped TCP grant would need reapproval with nothing listed.
+    pending.domains = requested
+        .domains
+        .difference(&reviewed.domains)
+        .cloned()
+        .collect();
+    pending.tcp = requested.tcp.difference(&reviewed.tcp).cloned().collect();
+    pending.address_cidrs = requested
+        .address_cidrs
+        .difference(&reviewed.address_cidrs)
+        .cloned()
+        .collect();
+    let mut lines = pending.summary_lines();
+    let mut extra = Vec::new();
+    if outbound(&requested.network_mode) && !outbound(&reviewed.network_mode) {
+        extra.push("  network: outbound (reviewed with network denied)".to_string());
+    }
+    if budget_wider(reviewed, requested) {
+        extra.push("  resource budgets: larger than reviewed".to_string());
+    }
+    if !extra.is_empty() {
+        if lines.is_empty() {
+            lines.push(crate::consent::PENDING_HEADER.to_string());
+        }
+        lines.extend(extra);
+    }
+    lines
+}
+
+/// [`remote_request_changes`] for a stored consent row: what the owner's
+/// current request asks for beyond the request the operator approved.
+///
+/// Empty when nothing was approved yet (the whole request is new), when
+/// the request stays within the approval, or when either grant does not
+/// parse (the row's state already says `invalid_grant`).
+#[must_use]
+pub fn remote_row_changes(
+    row: &bookclerk_library::control_plane::RemotePluginConsent,
+) -> Vec<String> {
+    let Some(reviewed) = row.approved_request_json.as_deref() else {
+        return Vec::new();
+    };
+    match (
+        serde_json::from_str::<PluginGrant>(reviewed),
+        serde_json::from_str::<PluginGrant>(&row.requested_grant_json),
+    ) {
+        (Ok(reviewed), Ok(requested)) => remote_request_changes(&reviewed, &requested),
+        _ => Vec::new(),
+    }
+}
+
 /// The consent an operator gives to `requested` with `narrowing` applied.
 ///
 /// # Errors
@@ -468,8 +547,9 @@ pub fn remote_row_consent_state(
 /// CLI so both answer the same fields: the request (version, grant, the
 /// archive this host would fetch, and its `request_digest`), the approval
 /// (`approved_version`, `grant`, `approved_at`, `approved_by`), `revoked_at`,
-/// `updated_at`, and the `state` ([`remote_row_consent_state`]). A stored
-/// grant that does not parse shows as `null`.
+/// `updated_at`, the `state` ([`remote_row_consent_state`]), and `pending`,
+/// what the request asks for beyond the approval ([`remote_row_changes`]).
+/// A stored grant that does not parse shows as `null`.
 #[must_use]
 pub fn remote_consent_view(
     row: &bookclerk_library::control_plane::RemotePluginConsent,
@@ -496,6 +576,7 @@ pub fn remote_consent_view(
         "revoked_at": row.revoked_at,
         "updated_at": row.updated_at,
         "state": remote_row_consent_state(row).as_str(),
+        "pending": remote_row_changes(row),
     })
 }
 
@@ -671,6 +752,61 @@ mod tests {
 
     fn json(grant: &PluginGrant) -> String {
         serde_json::to_string(grant).unwrap()
+    }
+
+    #[test]
+    fn changes_name_what_a_new_request_widens() {
+        let reviewed = requested();
+        assert!(remote_request_changes(&reviewed, &reviewed).is_empty());
+
+        let mut wider = reviewed.clone();
+        wider
+            .domains
+            .insert(bookclerk_plugin_manifest::ANY_PUBLIC_HOST.to_string());
+        wider.tcp = [TcpGrant {
+            host: "db.store.example".into(),
+            ports: vec![5432, 6432],
+        }]
+        .into();
+        wider.bindings.insert("plugin_kv".into());
+        wider.memory_mib = Some(1024);
+        assert!(!remote_request_within(&reviewed, &wider));
+        let lines = remote_request_changes(&reviewed, &wider);
+        assert_eq!(lines[0], crate::PENDING_HEADER);
+        for expected in [
+            "  bindings: plugin_kv",
+            "  fetch hosts: any public website (*)",
+            "  raw TCP connect: db.store.example:[5432,6432]",
+            "  resource budgets: larger than reviewed",
+        ] {
+            assert!(lines.iter().any(|l| l == expected), "{expected}: {lines:?}");
+        }
+
+        // A domain the owner had denied when the host reviewed it, and now
+        // asks for, is new to this host.
+        let mut owner_denied = reviewed.clone();
+        owner_denied
+            .operator_denied_domains
+            .insert("img.store.example".into());
+        let mut asks_again = reviewed.clone();
+        asks_again.domains.insert("img.store.example".into());
+        assert!(remote_request_changes(&owner_denied, &asks_again)
+            .iter()
+            .any(|l| l == "  fetch hosts: img.store.example"));
+
+        // Network turned on gets its own line under the header.
+        let mut denied = reviewed.clone();
+        denied.network_mode = "deny".into();
+        let lines = remote_request_changes(&denied, &reviewed);
+        assert_eq!(lines[0], crate::PENDING_HEADER);
+        assert!(lines
+            .iter()
+            .any(|l| l == "  network: outbound (reviewed with network denied)"));
+
+        // A narrower request changes nothing.
+        let mut narrower = reviewed.clone();
+        narrower.domains.remove("cdn.store.example");
+        assert!(remote_request_changes(&reviewed, &narrower).is_empty());
     }
 
     #[test]

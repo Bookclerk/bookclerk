@@ -108,6 +108,7 @@ function normalizeIsbn(raw: string): string {
 
 function wishMatchesRec(req: TitleRequest, rec: Recommendation): boolean {
   if (req.status !== "open") return false;
+  if (req.work_id && rec.work_id && req.work_id === rec.work_id) return true;
   if (req.work_key && rec.work_key && req.work_key === rec.work_key) return true;
   if (req.work_key && rec.asin) {
     const key = `asin:${rec.asin.toUpperCase()}`;
@@ -679,7 +680,6 @@ export function DiscoverPage({
         authors: title.authors ?? undefined,
         asin: title.asin ?? undefined,
         isbn: title.isbn ?? undefined,
-        work_key: workKey || undefined,
         store_editions: editions,
         purchase_hints: "purchase_hints" in title ? (title.purchase_hints ?? undefined) : undefined,
         cover_url: title.cover_url ?? undefined,

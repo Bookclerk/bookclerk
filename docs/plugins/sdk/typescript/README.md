@@ -133,6 +133,33 @@ npx bookclerk-plugin types .            # writes bookclerk-configuration.d.ts
 npx bookclerk-plugin types . --out src/env.d.ts
 ```
 
+## Testing database code
+
+`createTestDatabase()` from `@bookclerk/plugin-sdk/testkit` gives a
+Node test suite the same binding a host grants, served by the
+`bookclerk-db-testkit` executable under one capability profile with the
+plugin's `databaseMigrations` applied. `bookclerk-plugin test .` runs the
+suite once per profile (`first-party`, `d1` and `minimum`), so code that
+passes on the shipped adapters is also proven against D1's caps and the
+smallest advertisement a host accepts:
+
+```ts
+import { createTestDatabase } from "@bookclerk/plugin-sdk/testkit";
+
+const db = await createTestDatabase({ migrations: MIGRATIONS }); // profile from `bookclerk-plugin test`
+try {
+  await addNotes(db.binding, ["hello"]);
+} finally {
+  await db.close();
+}
+```
+
+The `echo_workerd_ts` example (`examples/plugins-echo-workerd-ts/`) is a
+worked plugin: a `notes` table it writes with `chunk()`, lists with
+`iterate()` or key-paged reads, sizes with `limits()`, and tests under
+every profile. See
+[Testing against the limits](../../database-limits.md#testing-against-the-limits).
+
 ## Author tools
 
 ```bash

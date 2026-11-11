@@ -1,4 +1,4 @@
-# Starts the maintainer review check for a pull request.
+# Starts the maintainer review and signed commits checks for a pull request.
 #
 # This workflow does nothing itself. It runs on `pull_request` and
 # `pull_request_review`, so it gets a read-only token and no secrets, and a
@@ -6,16 +6,18 @@
 # the `Maintainer review` workflow (maintainer-review.yml) runs on
 # `workflow_run` from the default branch with the App token it needs, reads
 # the pull request and its reviews through the API, and reports the
-# `Maintainer review` check run.
+# `Maintainer review` check run. Its completion also starts the
+# `Signed commits` workflow (signed-commits.yml) the same way, for pull
+# request runs, so one trigger job per event serves both checks.
 #
 # Nothing here is trusted: a pull request that edits, renames or deletes this
-# file can only start the check, start it late, or never start it, and a
-# required `Maintainer review` check that never arrives keeps the pull
-# request blocked. The check finds the pull request from the run's head
-# commit, branch and repository, which GitHub sets, not from anything this
-# run produces.
+# file can only start the checks, start them late, or never start them, and
+# a required check that never arrives keeps the pull request blocked. The
+# checks find the pull request from the run's head commit, branch and
+# repository, which GitHub sets, not from anything this run produces.
 #
-# See docs/contributing/automation.md#maintainer-review.
+# See docs/contributing/automation.md#maintainer-review and
+# docs/contributing/automation.md#signed-commits.
 
 name: Maintainer review trigger
 

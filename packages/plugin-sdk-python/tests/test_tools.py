@@ -614,10 +614,11 @@ def test_refuse_symlink_blocks_bookclerk_dir_link(tmp_path: Path):
         .replace('[[kv_namespaces]]\nbinding = "KV"\n', ""),
         encoding="utf-8",
     )
-    (modules / "plugin.py").write_text(
-        (ECHO_PY / "modules" / "plugin.py").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    for name in ("plugin.py", "notes.py"):
+        (modules / name).write_text(
+            (ECHO_PY / "modules" / name).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
     outside = tmp_path / "outside_dir"
     outside.mkdir()
     (plugin / ".bookclerk").symlink_to(outside)
@@ -676,10 +677,11 @@ def test_sync_embed_optional_vendor(tmp_path: Path):
     )
     modules = staging / "modules"
     modules.mkdir()
-    (modules / "plugin.py").write_text(
-        (ECHO_PY / "modules" / "plugin.py").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    for name in ("plugin.py", "notes.py"):
+        (modules / name).write_text(
+            (ECHO_PY / "modules" / name).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
     assert "synced" in sync_embed(staging)
     assert (modules / "bookclerk_plugin_sdk" / "workerd.py").is_file()
     assert "ok" in check_plugin(staging)
@@ -1730,3 +1732,181 @@ def test_own_user_agent_hosts_are_put_in_ascii_form() -> None:
         "*.xn--fa-hia.de",
         "xy.example",
     ]
+
+
+def test_format_manifest_writes_the_defaults_a_manifest_leaves_out():
+    import tomllib
+
+    rendered = format_manifest(
+        {
+            "api_version": 3,
+            "id": "echo",
+            "workerd": {
+                "compatibility_date": "2026-08-01",
+                "main_module": "index.js",
+                "limits": {},
+            },
+            "modules": [{"name": "index.js"}],
+            "events": {"consumers": [{"type": "book.added", "filter": {}}]},
+            "cli": {"commands": [{"name": "greet", "args": [{"name": "who"}]}]},
+            "oidc": {
+                "clients": [
+                    {
+                        "client_id": "echo",
+                        "callback_path": "/cb",
+                        "origin_config_key": "origin",
+                    }
+                ]
+            },
+        }
+    )
+    parsed = tomllib.loads(rendered)
+    assert parsed["runtime"] == "native"
+    assert "args" not in parsed
+    workerd = parsed["workerd"]
+    assert "compatibility_flags" not in workerd
+    assert "limits" not in workerd
+    assert workerd["modules_dir"] == "modules"
+    assert workerd["entrypoint"] == "default"
+    assert parsed["modules"] == [{"name": "index.js", "type": "js"}]
+    consumer = parsed["events"]["consumers"][0]
+    assert consumer["schema_versions"] == [1]
+    assert consumer["resource_class"] == "network"
+    assert "filter" not in consumer
+    assert parsed["capabilities"]["network"] == {"mode": "deny"}
+    assert parsed["cli"]["commands"][0]["args"][0]["kind"] == "string"
+    client = parsed["oidc"]["clients"][0]
+    assert client["public_client"] is True
+    assert client["issue_refresh_token"] is True
+    assert rendered.endswith("\n") and not rendered.endswith("\n\n")
+
+
+def test_format_manifest_keeps_the_values_a_manifest_gives():
+    import tomllib
+
+    def limits_of(limits: dict[str, int]) -> dict[str, Any]:
+        rendered = format_manifest(
+            {
+                "api_version": 3,
+                "id": "echo",
+                "runtime": "workerd",
+                "args": ["--serve", "--quiet"],
+                "workerd": {
+                    "compatibility_date": "2026-08-01",
+                    "compatibility_flags": ["nodejs_compat"],
+                    "main_module": "index.js",
+                    "limits": limits,
+                },
+                "events": {
+                    "consumers": [
+                        {
+                            "type": "book.added",
+                            "resource_class": "cpu",
+                            "filter": {"source": "libro"},
+                        }
+                    ]
+                },
+                "oidc": {
+                    "clients": [
+                        {
+                            "client_id": "echo",
+                            "callback_path": "/cb",
+                            "public_client": False,
+                            "issue_refresh_token": False,
+                            "origin_config_key": "origin",
+                        }
+                    ]
+                },
+            }
+        )
+        return tomllib.loads(rendered)
+
+    parsed = limits_of({"subrequests": 5})
+    assert parsed["args"] == ["--serve", "--quiet"]
+    assert parsed["workerd"]["compatibility_flags"] == ["nodejs_compat"]
+    assert parsed["workerd"]["limits"] == {"subrequests": 5}
+    assert limits_of({"cpu_ms": 50})["workerd"]["limits"] == {"cpu_ms": 50}
+    consumer = parsed["events"]["consumers"][0]
+    assert consumer["resource_class"] == "cpu"
+    assert consumer["filter"] == {"source": "libro"}
+    client = parsed["oidc"]["clients"][0]
+    assert client["public_client"] is False
+    assert client["issue_refresh_token"] is False
+
+
+def _echo_python_copy(tmp_path: Path, modules_dir: str | None) -> Path:
+    """Copy the Python workerd example with its modules under ``modules_dir``.
+
+    ``None`` leaves ``modules_dir`` out of the manifest, so the default applies.
+    """
+    plugin = tmp_path / "py"
+    shutil.copytree(ECHO_PY, plugin)
+    toml = (plugin / "plugin.toml").read_text(encoding="utf-8")
+    if modules_dir is None:
+        toml = toml.replace('modules_dir = "modules"\n', "")
+    else:
+        toml = toml.replace('modules_dir = "modules"', f"modules_dir = {modules_dir!r}")
+        (plugin / "modules").rename(plugin / modules_dir)
+    (plugin / "plugin.toml").write_text(toml, encoding="utf-8")
+    return plugin
+
+
+@pytest.mark.parametrize("modules_dir", [None, "src"])
+def test_package_python_workerd_vendors_the_sdk_under_its_modules(
+    tmp_path: Path, modules_dir: str | None
+) -> None:
+    from bookclerk_plugin_sdk.tools import _sdk_workerd_embed_src
+
+    plugin = _echo_python_copy(tmp_path, modules_dir)
+    archive = package_plugin(plugin, tmp_path / "dist")
+    assert archive.name == "bookclerk-plugin-echo_workerd_python-1.0.0-workerd.tar.gz"
+    members = _members(archive)
+    folder = modules_dir or "modules"
+    assert members["./plugin.toml"][1] == (plugin / "plugin.toml").read_bytes()
+    assert members[f"./{folder}/plugin.py"][1] == (plugin / folder / "plugin.py").read_bytes()
+    assert members[f"./{folder}/bookclerk_plugin_sdk/__init__.py"][1] == (
+        b'"""Bookclerk plugin SDK (vendored for workerd)."""\n'
+    )
+    assert (
+        members[f"./{folder}/bookclerk_plugin_sdk/workerd.py"][1]
+        == _sdk_workerd_embed_src().read_bytes()
+    )
+
+
+def test_package_python_workerd_replaces_an_authored_sdk_folder(tmp_path: Path) -> None:
+    plugin = _echo_python_copy(tmp_path, None)
+    (plugin / "modules" / "bookclerk_plugin_sdk").mkdir()
+    (plugin / "modules" / "bookclerk_plugin_sdk" / "__init__.py").write_text(
+        "stale\n", encoding="utf-8"
+    )
+    members = _members(package_plugin(plugin, tmp_path / "dist"))
+    assert members["./modules/bookclerk_plugin_sdk/__init__.py"][1].startswith(b'"""Bookclerk')
+
+
+def test_package_treats_a_manifest_without_runtime_as_native(tmp_path: Path) -> None:
+    plugin = _native_plugin(tmp_path)
+    toml = (plugin / "plugin.toml").read_text(encoding="utf-8")
+    (plugin / "plugin.toml").write_text(toml.replace('runtime = "native"\n', ""), encoding="utf-8")
+    members = _members(package_plugin(plugin, tmp_path / "dist"))
+    assert set(members) == {"./plugin.toml", "./echo-tools"}
+
+
+@pytest.mark.parametrize("logo", ["logo.png", "assets/img/logo.png"])
+def test_package_copies_an_embedded_logo_at_any_depth(tmp_path: Path, logo: str) -> None:
+    plugin = _native_plugin(tmp_path)
+    toml = (plugin / "plugin.toml").read_text(encoding="utf-8")
+    toml = toml.replace('runtime = "native"', f'logo = {logo!r}\nruntime = "native"')
+    (plugin / "plugin.toml").write_text(toml, encoding="utf-8")
+    (plugin / logo).parent.mkdir(parents=True, exist_ok=True)
+    (plugin / logo).write_bytes(b"\x89PNG")
+    members = _members(package_plugin(plugin, tmp_path / "dist"))
+    assert members[f"./{logo}"][1] == b"\x89PNG"
+
+
+def test_package_writes_the_archive_readable_but_not_executable(tmp_path: Path) -> None:
+    import os
+
+    umask = os.umask(0)
+    os.umask(umask)
+    archive = package_plugin(_native_plugin(tmp_path), tmp_path / "dist")
+    assert archive.stat().st_mode & 0o777 == 0o644 & ~umask

@@ -106,7 +106,7 @@ Each enum is a Rust enum matched exhaustively, a capnp enum on the wire, and a
 | `store_listings` | What a store sells: `plugin_key`, `marketplace`, `product_id`, the edition, store ratings and price, a `metadata_json` snapshot, `observed_at` | `(plugin_key, marketplace, product_id)` |
 | `holdings` | Ownership of a listing by an account, or by a branch (`node:<node_id>` provenance), with entitlement (`purchase`, `plus`, `loan`, `free`) and `purchased_at` | `(listing_id, holder)` |
 | `edition_files` | A file of an edition at a destination, with `role` (`audio`, `part`, `chapter`, `pdf`, `cover`, `sidecar`, `transcript`, `epub`), digest, quality and writer | `(destination, storage_key)` |
-| `user_title_state` | One user's finished flag, rating, tags and progress for a work | `(user_id, work_id)` |
+| `user_title_state` | One user's finished flag, ratings and tags for a work (listening progress stays per provider in `listening_progress`, keyed by work) | `(user_id, work_id)` |
 | `resolution_overrides` | An Administrator's manual merge or split, which the resolver obeys | `(subject_kind, subject_id)` |
 
 Identifiers have a strength, fixed per scheme:

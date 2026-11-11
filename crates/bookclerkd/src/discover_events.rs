@@ -7,7 +7,9 @@
 //! [`DISCOVER_CONSUMER_ID`], on the durable outbox for those types, and each
 //! delivery queues the Discover jobs the change affects, each claimable only
 //! after [`EVENT_DEBOUNCE`] so a burst of changes folds into one refresh per
-//! person. See `docs/internals/discovery.md`, *Taste events*.
+//! person. Every event also queues one ranking of the shared request queue
+//! ([`crate::request_queue_job`]). See `docs/internals/discovery.md`, *Taste
+//! events*.
 
 use std::time::Duration;
 
@@ -22,6 +24,7 @@ use tracing::{debug, warn};
 use crate::api::AppState;
 use crate::discover_jobs::{enqueue_discover_candidates, enqueue_discover_feed};
 use crate::jobs::AdmitJob;
+use crate::request_queue_job::{enqueue_request_queue_rank, request_queue_ranked_since};
 
 /// Catalog id of Discover's consumer. The `host:` scheme is not a plugin
 /// key provenance (`cargo:`, `platform:`, `path:` …) nor a node consumer
@@ -255,6 +258,15 @@ async fn queue_for(
         }
         let admitted =
             enqueue_discover_feed(state, subject, JobTrigger::Scheduler, EVENT_DEBOUNCE).await?;
+        if needs_retry(library, &admitted).await? {
+            outcome = Queued::Later;
+        }
+    }
+    // Every taste event can move the shared request queue: a wish adds or
+    // drops an entry, an acquire hides one, listening shifts taste.
+    if !request_queue_ranked_since(library, since).await? {
+        let admitted =
+            enqueue_request_queue_rank(state, JobTrigger::Scheduler, EVENT_DEBOUNCE).await?;
         if needs_retry(library, &admitted).await? {
             outcome = Queued::Later;
         }
@@ -627,8 +639,6 @@ mod tests {
                 isbn: None,
                 notes: None,
                 status: RequestStatus::Open,
-                work_key: String::new(),
-                work_id: None,
                 resolved_book_uuid: None,
                 cover_url: None,
             })
@@ -652,6 +662,19 @@ mod tests {
         assert!(
             jobs.iter().all(|j| j.run_after > Utc::now()),
             "refreshes wait out the debounce"
+        );
+        // The shared request queue is ranked again too, once for everyone.
+        let passes: Vec<JobRecord> = library
+            .list_jobs(100)
+            .await
+            .expect("jobs")
+            .into_iter()
+            .filter(|j| j.kind == JobKind::DiscoverRequestQueue)
+            .collect();
+        assert_eq!(passes.len(), 1, "{passes:?}");
+        assert!(
+            passes[0].run_after > Utc::now(),
+            "the pass waits out the debounce"
         );
         let run_after = |kind: JobKind| {
             jobs.iter()

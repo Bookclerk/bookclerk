@@ -6,7 +6,6 @@
 use bookclerk_enrich::{
     canonicalize_isbn, clean_author_for_compares, clean_title_for_compares, levenshtein_similarity,
 };
-use bookclerk_library::GlobalQueueEntry;
 
 use crate::candidates::StorefrontCandidate;
 use crate::recommend::Recommendation;
@@ -724,9 +723,11 @@ pub fn merge_candidate_metadata(into: &mut StorefrontCandidate, from: &Storefron
         }
         _ => {}
     }
-    if into.audible_rank.is_none() {
-        into.audible_rank = from.audible_rank;
-    }
+    // Best (lowest) rank any store gave the work.
+    into.store_rank = match (into.store_rank, from.store_rank) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
     if into.is_abridged.is_none() {
         into.is_abridged = from.is_abridged;
     }
@@ -891,199 +892,6 @@ pub fn push_shelf_category(categories: &mut Vec<String>, kind: &str) {
     categories.push(kind.to_ascii_lowercase());
 }
 
-/// Merge wishlist queue rows that share ISBN/ASIN or soft title+author identity.
-///
-/// Sums `wish_count`, unions store editions / purchase hints, and prefers
-/// richer bibliographic metadata (longer strings / filled optionals). ISBN-keyed
-/// `work_key` wins when available.
-///
-/// # Arguments
-///
-/// * `entries` - `entries` input for this call.
-///
-/// # Returns
-///
-/// Collected results (may be empty).
-#[must_use]
-pub fn merge_global_queue_entries(entries: Vec<GlobalQueueEntry>) -> Vec<GlobalQueueEntry> {
-    let mut merged: Vec<GlobalQueueEntry> = Vec::new();
-    for entry in entries {
-        if let Some(existing) = merged.iter_mut().find(|e| {
-            identities_match(
-                WorkIdentity::new(
-                    e.asin.as_deref(),
-                    e.isbn.as_deref(),
-                    &e.title,
-                    e.authors.as_deref(),
-                )
-                .with_series(e.series.as_deref())
-                .with_series_index(e.series_index.as_deref()),
-                WorkIdentity::new(
-                    entry.asin.as_deref(),
-                    entry.isbn.as_deref(),
-                    &entry.title,
-                    entry.authors.as_deref(),
-                )
-                .with_series(entry.series.as_deref())
-                .with_series_index(entry.series_index.as_deref()),
-            )
-        }) {
-            existing.wish_count += entry.wish_count;
-            for uuid in entry.sample_uuids {
-                if existing.sample_uuids.len() >= 8 {
-                    break;
-                }
-                if !existing.sample_uuids.contains(&uuid) {
-                    existing.sample_uuids.push(uuid);
-                }
-            }
-            for wisher in entry.wishers {
-                existing.push_wisher(wisher);
-            }
-            if entry.first_requested_at < existing.first_requested_at {
-                existing.first_requested_at = entry.first_requested_at;
-            }
-            if entry.last_requested_at > existing.last_requested_at {
-                existing.last_requested_at = entry.last_requested_at;
-            }
-            if entry.title.len() > existing.title.len() && !entry.title.is_empty() {
-                existing.title = entry.title;
-            }
-            fill_opt_string(&mut existing.authors, entry.authors.as_deref());
-            fill_opt_string(&mut existing.cover_url, entry.cover_url.as_deref());
-            fill_opt_string(&mut existing.description, entry.description.as_deref());
-            fill_opt_string(&mut existing.subtitle, entry.subtitle.as_deref());
-            fill_opt_string(&mut existing.narrators, entry.narrators.as_deref());
-            fill_opt_string(&mut existing.series, entry.series.as_deref());
-            fill_opt_string(&mut existing.series_index, entry.series_index.as_deref());
-            fill_opt_string(&mut existing.publisher, entry.publisher.as_deref());
-            fill_opt_string(&mut existing.genres, entry.genres.as_deref());
-            fill_opt_string(&mut existing.language, entry.language.as_deref());
-            fill_opt_string(&mut existing.published_at, entry.published_at.as_deref());
-            if existing.length_minutes.is_none() {
-                existing.length_minutes = entry.length_minutes;
-            }
-            if existing.asin.is_none() {
-                existing.asin = entry.asin;
-            }
-            if existing.isbn.is_none() {
-                existing.isbn = entry.isbn.map(|i| {
-                    let n = canonicalize_isbn(&i);
-                    if n.is_empty() {
-                        i
-                    } else {
-                        n
-                    }
-                });
-            } else if let Some(isbn) = existing.isbn.as_mut() {
-                let n = canonicalize_isbn(isbn);
-                if !n.is_empty() {
-                    *isbn = n;
-                }
-            }
-            existing.description = bookclerk_library::pick_better_description(
-                existing.description.as_deref(),
-                entry.description.as_deref(),
-            );
-            for ed in entry.store_editions {
-                push_wishlist_edition(&mut existing.store_editions, ed);
-            }
-            for hint in entry.purchase_hints {
-                push_wishlist_purchase_hint(&mut existing.purchase_hints, hint);
-            }
-            // Prefer the strongest bibliographic key.
-            existing.work_key = work_map_key(
-                existing.asin.as_deref(),
-                existing.isbn.as_deref(),
-                &existing.title,
-                existing.authors.as_deref(),
-                None,
-                None,
-            );
-        } else {
-            let mut entry = entry;
-            if let Some(isbn) = entry.isbn.as_mut() {
-                let n = canonicalize_isbn(isbn);
-                if !n.is_empty() {
-                    *isbn = n;
-                }
-            }
-            entry.work_key = work_map_key(
-                entry.asin.as_deref(),
-                entry.isbn.as_deref(),
-                &entry.title,
-                entry.authors.as_deref(),
-                None,
-                None,
-            );
-            merged.push(entry);
-        }
-    }
-    merged
-}
-
-/// Appends a wishlist edition unless source or source+id already exists; empty ids are dropped.
-fn push_wishlist_edition(
-    editions: &mut Vec<bookclerk_library::WishlistStoreEdition>,
-    edition: bookclerk_library::WishlistStoreEdition,
-) {
-    if edition.source.trim().is_empty() || edition.product_id.trim().is_empty() {
-        return;
-    }
-    if editions.iter().any(|e| {
-        e.source.eq_ignore_ascii_case(&edition.source)
-            && e.product_id.eq_ignore_ascii_case(&edition.product_id)
-    }) {
-        return;
-    }
-    if editions
-        .iter()
-        .any(|e| e.source.eq_ignore_ascii_case(&edition.source))
-    {
-        return;
-    }
-    editions.push(edition);
-}
-
-/// Merges overlapping hint fields (richest-wins) or appends a new source+id row.
-fn push_wishlist_purchase_hint(
-    hints: &mut Vec<bookclerk_library::WishlistPurchaseHint>,
-    hint: bookclerk_library::WishlistPurchaseHint,
-) {
-    if hint.source.trim().is_empty() || hint.product_id.trim().is_empty() {
-        return;
-    }
-    if let Some(existing) = hints.iter_mut().find(|h| {
-        h.source.eq_ignore_ascii_case(&hint.source)
-            && h.product_id.eq_ignore_ascii_case(&hint.product_id)
-    }) {
-        // Richest-wins for overlapping hint fields.
-        fill_opt_string(&mut existing.title, hint.title.as_deref());
-        fill_opt_string(&mut existing.url, hint.url.as_deref());
-        fill_opt_string(&mut existing.currency, hint.currency.as_deref());
-        fill_opt_string(&mut existing.price_label, hint.price_label.as_deref());
-        fill_opt_string(
-            &mut existing.list_price_label,
-            hint.list_price_label.as_deref(),
-        );
-        fill_opt_string(
-            &mut existing.member_price_label,
-            hint.member_price_label.as_deref(),
-        );
-        if existing.price_cents.is_none() {
-            existing.price_cents = hint.price_cents;
-        }
-        if existing.list_price_cents.is_none() {
-            existing.list_price_cents = hint.list_price_cents;
-        }
-        if existing.member_price_cents.is_none() {
-            existing.member_price_cents = hint.member_price_cents;
-        }
-        return;
-    }
-    hints.push(hint);
-}
-
 /// Fills an empty optional string, or replaces it when the incoming value is longer.
 fn fill_opt_string(slot: &mut Option<String>, incoming: Option<&str>) {
     let Some(v) = incoming.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -1169,6 +977,133 @@ mod tests {
         assert!(works_match("Dune", herbert, "Dune", herbert));
     }
 
+    /// A bare Audible candidate with a rating and its vote count.
+    fn rated(rating: Option<f64>, count: Option<i64>) -> StorefrontCandidate {
+        StorefrontCandidate {
+            source: "audible".into(),
+            product_id: "B00TEST".into(),
+            title: "Adventure".into(),
+            authors: None,
+            narrators: None,
+            series: None,
+            series_index: None,
+            asin: Some("B00TEST".into()),
+            isbn: None,
+            cover_url: None,
+            seed_categories: None,
+            origin: "test".into(),
+            seed_title: None,
+            store_editions: vec![StoreEdition::new("audible", "B00TEST")],
+            subtitle: None,
+            description: None,
+            publisher: None,
+            length_minutes: None,
+            published_at: None,
+            categories: None,
+            language: None,
+            price_cents: None,
+            currency: None,
+            price_label: None,
+            rating_overall: rating,
+            rating_count: count,
+            is_abridged: None,
+            store_rank: None,
+            starter_genre: None,
+        }
+    }
+
+    #[test]
+    fn a_counted_rating_replaces_an_uncounted_one() {
+        let mut into = rated(Some(4.0), None);
+        merge_candidate_metadata(&mut into, &rated(Some(4.5), Some(10)));
+        assert_eq!(
+            (into.rating_overall, into.rating_count),
+            (Some(4.5), Some(10))
+        );
+        let mut into = rated(Some(4.0), Some(20));
+        merge_candidate_metadata(&mut into, &rated(Some(4.5), Some(10)));
+        assert_eq!(
+            (into.rating_overall, into.rating_count),
+            (Some(4.0), Some(20))
+        );
+    }
+
+    #[test]
+    fn a_rating_with_more_votes_wins() {
+        let mut into = rated(Some(4.0), Some(10));
+        merge_candidate_metadata(&mut into, &rated(Some(4.5), Some(20)));
+        assert_eq!(
+            (into.rating_overall, into.rating_count),
+            (Some(4.5), Some(20))
+        );
+        let mut into = rated(Some(4.0), Some(10));
+        merge_candidate_metadata(&mut into, &rated(Some(4.5), Some(10)));
+        assert_eq!(
+            (into.rating_overall, into.rating_count),
+            (Some(4.0), Some(10))
+        );
+    }
+
+    #[test]
+    fn merging_canonicalizes_an_existing_isbn() {
+        let mut into = rated(None, None);
+        into.isbn = Some("978-1-234-56789-0".into());
+        merge_candidate_metadata(&mut into, &rated(None, None));
+        let canonical = canonicalize_isbn("978-1-234-56789-0");
+        assert!(!canonical.is_empty() && canonical != "978-1-234-56789-0");
+        assert_eq!(into.isbn.as_deref(), Some(canonical.as_str()));
+    }
+
+    #[test]
+    fn merging_keeps_the_longer_title() {
+        let titled = |title: &str| StorefrontCandidate {
+            title: title.into(),
+            ..rated(None, None)
+        };
+        let mut into = titled("Dune");
+        merge_candidate_metadata(&mut into, &titled("Dune: Book One"));
+        assert_eq!(into.title, "Dune: Book One");
+        merge_candidate_metadata(&mut into, &titled("Dune"));
+        assert_eq!(into.title, "Dune: Book One");
+        merge_candidate_metadata(&mut into, &titled("Dune: Book 1ne"));
+        assert_eq!(into.title, "Dune: Book One");
+    }
+
+    #[test]
+    fn merging_appends_each_new_origin_once() {
+        let from = |origin: &str| StorefrontCandidate {
+            origin: origin.into(),
+            ..rated(None, None)
+        };
+        let mut into = from("seed");
+        merge_candidate_metadata(&mut into, &from("series"));
+        assert_eq!(into.origin, "seed; series");
+        merge_candidate_metadata(&mut into, &from("series"));
+        merge_candidate_metadata(&mut into, &from(""));
+        assert_eq!(into.origin, "seed; series");
+    }
+
+    #[test]
+    fn series_indices_conflict_only_when_both_parse_and_differ() {
+        assert!(series_indices_conflict(Some("1"), Some("2")));
+        assert!(series_indices_conflict(Some("Book 1.5"), Some("1")));
+        assert!(!series_indices_conflict(Some("1"), Some("1.0")));
+        assert!(!series_indices_conflict(Some("1"), None));
+        assert!(!series_indices_conflict(None, None));
+    }
+
+    #[test]
+    fn primary_author_cleaned_takes_the_first_person() {
+        let first = primary_author_cleaned(Some("Andy Weir - foreword, Ray Porter"));
+        assert_eq!(
+            first,
+            cleaned_author_list(Some("Andy Weir")).into_iter().next()
+        );
+        assert!(first.is_some_and(|a| !a.is_empty() && a != "ray porter"));
+        assert_eq!(primary_author_cleaned(Some("  ")), None);
+        assert_eq!(primary_author_cleaned(None), None);
+    }
+
     #[test]
     fn isbn_preferred_over_asin() {
         let key = hard_work_key(Some("B00TEST"), Some("978-1-234-56789-0")).unwrap();
@@ -1210,123 +1145,6 @@ mod tests {
             "Project Hail Mary",
             Some("Andy Weir"),
         ));
-    }
-
-    #[test]
-    fn merge_queue_sums_wish_counts_across_asin_isbn() {
-        use bookclerk_library::{QueueWisher, WishlistPurchaseHint, WishlistStoreEdition};
-        use chrono::Utc;
-        let now = Utc::now();
-        let merged = merge_global_queue_entries(vec![
-            GlobalQueueEntry {
-                work_key: "asin:B00HAIL".into(),
-                title: "Hail Mary".into(),
-                authors: Some("Andy Weir".into()),
-                asin: Some("B00HAIL".into()),
-                isbn: None,
-                cover_url: Some("https://img.example/a.jpg".into()),
-                description: Some("Short".into()),
-                subtitle: None,
-                narrators: Some("Ray Porter".into()),
-                series: None,
-                series_index: None,
-                publisher: None,
-                length_minutes: Some(960),
-                published_at: None,
-                genres: Some("Sci-Fi".into()),
-                language: Some("en".into()),
-                store_editions: vec![WishlistStoreEdition {
-                    source: "audible".into(),
-                    product_id: "B00HAIL".into(),
-                }],
-                purchase_hints: vec![WishlistPurchaseHint {
-                    source: "audible".into(),
-                    product_id: "B00HAIL".into(),
-                    title: Some("Hail Mary".into()),
-                    url: Some("https://audible.example/B00HAIL".into()),
-                    ..Default::default()
-                }],
-                wish_count: 1,
-                wishers: vec![QueueWisher {
-                    identity_id: Some(1),
-                    display_name: Some("alice".into()),
-                    ..QueueWisher::default()
-                }],
-                sample_uuids: vec!["a".into()],
-                first_requested_at: now,
-                last_requested_at: now,
-            },
-            GlobalQueueEntry {
-                work_key: "isbn:9781234567890".into(),
-                title: "Project Hail Mary".into(),
-                authors: Some("Andy Weir".into()),
-                asin: None,
-                isbn: Some("9781234567890".into()),
-                cover_url: Some("https://img.example/longer-cover-path.jpg".into()),
-                description: Some("A much longer description of the novel.".into()),
-                subtitle: Some("A Novel".into()),
-                narrators: None,
-                series: None,
-                series_index: None,
-                publisher: Some("Ballantine".into()),
-                length_minutes: None,
-                published_at: Some("2021-05-04".into()),
-                genres: None,
-                language: None,
-                store_editions: vec![WishlistStoreEdition {
-                    source: "libro".into(),
-                    product_id: "9781234567890".into(),
-                }],
-                purchase_hints: vec![WishlistPurchaseHint {
-                    source: "libro".into(),
-                    product_id: "9781234567890".into(),
-                    title: Some("Project Hail Mary".into()),
-                    url: Some("https://libro.example/9781234567890".into()),
-                    price_cents: Some(1499),
-                    currency: Some("USD".into()),
-                    price_label: Some("$14.99".into()),
-                    ..Default::default()
-                }],
-                wish_count: 2,
-                wishers: vec![QueueWisher {
-                    identity_id: Some(2),
-                    display_name: Some("bob".into()),
-                    ..QueueWisher::default()
-                }],
-                sample_uuids: vec!["b".into()],
-                // Asked for earlier and again later than the first entry:
-                // the merge keeps the widest span.
-                first_requested_at: now - chrono::Duration::hours(1),
-                last_requested_at: now + chrono::Duration::hours(1),
-            },
-        ]);
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].wish_count, 3);
-        assert_eq!(
-            merged[0].first_requested_at,
-            now - chrono::Duration::hours(1)
-        );
-        assert_eq!(
-            merged[0].last_requested_at,
-            now + chrono::Duration::hours(1)
-        );
-        assert!(merged[0].work_key.starts_with("isbn:"));
-        assert_eq!(merged[0].title, "Project Hail Mary");
-        assert_eq!(
-            merged[0].cover_url.as_deref(),
-            Some("https://img.example/longer-cover-path.jpg")
-        );
-        assert_eq!(
-            merged[0].description.as_deref(),
-            Some("A much longer description of the novel.")
-        );
-        assert_eq!(merged[0].subtitle.as_deref(), Some("A Novel"));
-        assert_eq!(merged[0].narrators.as_deref(), Some("Ray Porter"));
-        assert_eq!(merged[0].publisher.as_deref(), Some("Ballantine"));
-        assert_eq!(merged[0].length_minutes, Some(960));
-        assert_eq!(merged[0].store_editions.len(), 2);
-        assert_eq!(merged[0].purchase_hints.len(), 2);
-        assert_eq!(merged[0].wishers.len(), 2);
     }
 
     #[test]

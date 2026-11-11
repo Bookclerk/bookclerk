@@ -6,9 +6,10 @@
 //! few bulk statements:
 //!
 //! - [`LibraryStore::match_listening_items`] resolves every item's ASIN and
-//!   ISBN through the indexed `edition_identifiers` table to a work, and to
-//!   an owned `books` row through the indexed `asin` / `isbn` columns. It
-//!   never matches by title.
+//!   ISBN through the indexed `edition_identifiers` table to a work (and an
+//!   edition when exactly one carries the identifier). It never matches by
+//!   title. A row is keyed by that work; an item whose identifiers name no
+//!   work is not stored.
 //! - [`LibraryStore::portal_identity_ids`] reads the portal identities of
 //!   every reported user in one lookup per chunk.
 //! - [`LibraryStore::upsert_listening_progress_batch`] reads the stored rows
@@ -24,7 +25,7 @@ use sea_orm::{ColumnTrait, EntityTrait, FromQueryResult, QueryFilter, QuerySelec
 use super::write_batches::WriteBatches;
 use super::{map_listening, now_str, LibraryStore, NewListeningProgress};
 use crate::control_plane::batch;
-use crate::entities::{books, edition_identifiers, listening_progress, portal_identities};
+use crate::entities::{edition_identifiers, listening_progress, portal_identities};
 use crate::error::{LibraryError, Result};
 use crate::models::ListeningProgressRecord;
 
@@ -41,11 +42,11 @@ pub struct ListeningIdentifiers {
 /// What one listening item resolved to in the library.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ListeningMatch {
-    /// Owned `books.uuid` carrying the same ASIN (preferred) or ISBN, when
-    /// one does.
-    pub book_uuid: Option<String>,
     /// Work the item's identifiers resolve to, when they name exactly one.
     pub work_id: Option<String>,
+    /// Edition carrying the identifier that decided the work, when exactly
+    /// one edition carries it.
+    pub edition_id: Option<String>,
 }
 
 /// One stored listening row a batched write produced.
@@ -70,15 +71,6 @@ struct EditionByValue {
     edition_id: String,
 }
 
-/// One owned book's UUID and the identifier column a lookup read.
-#[derive(Debug, FromQueryResult)]
-struct BookByIdentifier {
-    /// `books.uuid`.
-    uuid: String,
-    /// The `asin` or `isbn` column, aliased to `identifier`.
-    identifier: Option<String>,
-}
-
 /// One portal identity's external user id and row id.
 #[derive(Debug, FromQueryResult)]
 struct IdentityByUser {
@@ -91,22 +83,15 @@ struct IdentityByUser {
 /// Stored identity of one listening row: provider, external user, item.
 type ListeningKey = (String, String, String);
 
-/// Owned books found for one normalised identifier, by `books.uuid`.
-type BooksByIdentifier = BTreeMap<String, BTreeSet<String>>;
-
 impl LibraryStore {
-    /// Resolves many listening items to owned books and works in a few bulk
-    /// lookups.
+    /// Resolves many listening items to works in a few bulk lookups.
     ///
     /// The item's ASIN is tried first, then its ISBN; the first one that
-    /// names an owned book or a work decides both, so they never come from
-    /// different identifiers. For that identifier, the work comes from the
+    /// names a work decides it. For that identifier, the work comes from the
     /// editions whose `edition_identifiers` carry it (an ASIN in any
-    /// marketplace), used only when those editions agree on one work, and
-    /// otherwise from the owned book. The owned book is the one whose
-    /// `asin` / `isbn` column holds the item's spelling or its normalised
-    /// form (an ASIN also in lower case; lowest UUID when several do).
-    /// Titles are never compared.
+    /// marketplace), used only when those editions agree on one work; the
+    /// edition is kept when exactly one carries it. Titles are never
+    /// compared.
     ///
     /// # Arguments
     ///
@@ -114,7 +99,8 @@ impl LibraryStore {
     ///
     /// # Returns
     ///
-    /// One match per item, in the same order.
+    /// One match per item, in the same order; an item no identifier
+    /// resolves has neither a work nor an edition.
     ///
     /// # Errors
     ///
@@ -156,78 +142,31 @@ impl LibraryStore {
             )
             .await?;
 
-        let raw_asins: BTreeSet<String> = items
-            .iter()
-            .filter_map(|i| i.asin.as_deref().map(str::trim))
-            .filter(|raw| !raw.is_empty())
-            .map(str::to_string)
-            .chain(asins.iter().cloned())
-            .chain(asins.iter().map(|a| a.to_ascii_lowercase()))
-            .collect();
-        let raw_isbns: BTreeSet<String> = items
-            .iter()
-            .filter_map(|i| i.isbn.as_deref().map(str::trim))
-            .filter(|raw| !raw.is_empty())
-            .map(str::to_string)
-            .chain(isbns.iter().cloned())
-            .collect();
-        let (books_by_asin, books_by_isbn) =
-            self.books_by_identifiers(&raw_asins, &raw_isbns).await?;
-
-        let unique_work = |editions: Option<&BTreeSet<String>>| -> Option<String> {
-            let works: BTreeSet<&String> = editions?
+        let resolve = |editions: Option<&BTreeSet<String>>| -> Option<ListeningMatch> {
+            let editions = editions?;
+            let works: BTreeSet<&String> = editions
                 .iter()
                 .filter_map(|edition| work_of_edition.get(edition))
                 .collect();
-            match works.len() {
-                1 => works.into_iter().next().cloned(),
-                _ => None,
+            if works.len() != 1 {
+                return None;
             }
+            Some(ListeningMatch {
+                work_id: works.into_iter().next().cloned(),
+                edition_id: match editions.len() {
+                    1 => editions.iter().next().cloned(),
+                    _ => None,
+                },
+            })
         };
-        let first_book = |found: Option<&BTreeSet<String>>| found?.iter().next().cloned();
-
-        let mut matches: Vec<ListeningMatch> = normalised
+        Ok(normalised
             .iter()
             .map(|(asin, isbn)| {
-                // The first identifier that names anything decides both the
-                // book and the work, so the two never come from different
-                // identifiers (and so never from different works).
-                let by = |book: Option<String>, work: Option<String>| {
-                    (book.is_some() || work.is_some()).then_some(ListeningMatch {
-                        book_uuid: book,
-                        work_id: work,
-                    })
-                };
-                by(
-                    first_book(asin.as_ref().and_then(|a| books_by_asin.get(a))),
-                    unique_work(asin.as_ref().and_then(|a| editions_by_asin.get(a))),
-                )
-                .or_else(|| {
-                    by(
-                        first_book(isbn.as_ref().and_then(|i| books_by_isbn.get(i))),
-                        unique_work(isbn.as_ref().and_then(|i| editions_by_isbn.get(i))),
-                    )
-                })
-                .unwrap_or_default()
+                resolve(asin.as_ref().and_then(|a| editions_by_asin.get(a)))
+                    .or_else(|| resolve(isbn.as_ref().and_then(|i| editions_by_isbn.get(i))))
+                    .unwrap_or_default()
             })
-            .collect();
-
-        // Items whose identifiers name no work fall back to their owned
-        // book's work, read for all of them at once.
-        let fallback: Vec<String> = matches
-            .iter()
-            .filter(|m| m.work_id.is_none())
-            .filter_map(|m| m.book_uuid.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        if !fallback.is_empty() {
-            let works = self.work_ids_for_books(&fallback).await?;
-            for m in matches.iter_mut().filter(|m| m.work_id.is_none()) {
-                m.work_id = m.book_uuid.as_ref().and_then(|b| works.get(b).cloned());
-            }
-        }
-        Ok(matches)
+            .collect())
     }
 
     /// Editions carrying each identifier value of `scheme`, in any
@@ -266,71 +205,6 @@ impl LibraryStore {
                 .map_err(LibraryError::Orm)?;
             for row in rows {
                 found.entry(row.value).or_default().insert(row.edition_id);
-            }
-        }
-        Ok(found)
-    }
-
-    /// Owned books whose `asin` or `isbn` column holds one of the given
-    /// spellings, keyed by the normalised identifier.
-    ///
-    /// # Arguments
-    ///
-    /// * `asins` - ASIN spellings to look up (raw and normalised).
-    /// * `isbns` - ISBN spellings to look up (raw and normalised).
-    ///
-    /// # Returns
-    ///
-    /// `(by_asin, by_isbn)`: book UUIDs keyed by normalised ASIN and ISBN.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
-    async fn books_by_identifiers(
-        &self,
-        asins: &BTreeSet<String>,
-        isbns: &BTreeSet<String>,
-    ) -> Result<(BooksByIdentifier, BooksByIdentifier)> {
-        Ok((
-            self.books_by_column(IdentifierScheme::Asin, books::Column::Asin, asins)
-                .await?,
-            self.books_by_column(IdentifierScheme::Isbn, books::Column::Isbn, isbns)
-                .await?,
-        ))
-    }
-
-    /// Owned books whose `column` holds one of `spellings`, keyed by the
-    /// value normalised for `scheme`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
-    async fn books_by_column(
-        &self,
-        scheme: IdentifierScheme,
-        column: books::Column,
-        spellings: &BTreeSet<String>,
-    ) -> Result<BooksByIdentifier> {
-        let spellings: Vec<String> = spellings.iter().cloned().collect();
-        let mut found = BooksByIdentifier::new();
-        for part in spellings.chunks(self.lookup_chunk()) {
-            let rows = books::Entity::find()
-                .select_only()
-                .column(books::Column::Uuid)
-                .column_as(column, "identifier")
-                .filter(column.is_in(part.iter().cloned()))
-                .into_model::<BookByIdentifier>()
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?;
-            for row in rows {
-                if let Some(key) = row
-                    .identifier
-                    .as_deref()
-                    .and_then(|raw| normalize_identifier(scheme, raw))
-                {
-                    found.entry(key).or_default().insert(row.uuid);
-                }
             }
         }
         Ok(found)
@@ -504,13 +378,9 @@ fn written_row(row: &ListeningProgressRecord) -> NewListeningProgress {
         identity_id: row.identity_id,
         provider: row.provider.clone(),
         external_user_id: row.external_user_id.clone(),
-        book_uuid: row.book_uuid.clone(),
         work_id: row.work_id.clone(),
+        edition_id: row.edition_id.clone(),
         external_item_id: row.external_item_id.clone(),
-        title: row.title.clone(),
-        authors: row.authors.clone(),
-        asin: row.asin.clone(),
-        isbn: row.isbn.clone(),
         progress: row.progress,
         current_time_seconds: row.current_time_seconds,
         duration_seconds: row.duration_seconds,
@@ -520,9 +390,10 @@ fn written_row(row: &ListeningProgressRecord) -> NewListeningProgress {
 }
 
 /// One report merged over the current row, as
-/// [`LibraryStore::upsert_listening_progress`] merges it: the identity,
-/// matched book and work, text and last-listened time keep the current
-/// value when the report has none; progress fields take the report's.
+/// [`LibraryStore::upsert_listening_progress`] merges it: the work is the
+/// report's (its identifiers resolved it just now); the identity, edition
+/// and last-listened time keep the current value when the report has none;
+/// progress fields take the report's.
 /// A non-finite number is stored as unknown.
 ///
 /// # Arguments
@@ -541,13 +412,9 @@ fn merge_listening(
         identity_id: report.identity_id.or(current.and_then(|c| c.identity_id)),
         provider: report.provider.clone(),
         external_user_id: report.external_user_id.clone(),
-        book_uuid: keep(&report.book_uuid, current.map(|c| &c.book_uuid)),
-        work_id: keep(&report.work_id, current.map(|c| &c.work_id)),
+        work_id: report.work_id.clone(),
+        edition_id: keep(&report.edition_id, current.map(|c| &c.edition_id)),
         external_item_id: report.external_item_id.clone(),
-        title: keep(&report.title, current.map(|c| &c.title)),
-        authors: keep(&report.authors, current.map(|c| &c.authors)),
-        asin: keep(&report.asin, current.map(|c| &c.asin)),
-        isbn: keep(&report.isbn, current.map(|c| &c.isbn)),
         progress: finite(report.progress),
         current_time_seconds: finite(report.current_time_seconds),
         duration_seconds: finite(report.duration_seconds),
@@ -585,12 +452,8 @@ fn listening_upsert(row: &NewListeningProgress, now: &str) -> [TypedDbStatement;
         batch::exec(
             "UPDATE listening_progress SET \
              identity_id = COALESCE(?, identity_id), \
-             book_uuid = COALESCE(?, book_uuid), \
-             work_id = COALESCE(?, work_id), \
-             title = COALESCE(?, title), \
-             authors = COALESCE(?, authors), \
-             asin = COALESCE(?, asin), \
-             isbn = COALESCE(?, isbn), \
+             work_id = ?, \
+             edition_id = COALESCE(?, edition_id), \
              progress = ?, current_time_seconds = ?, duration_seconds = ?, \
              is_finished = ?, \
              last_listened_at = COALESCE(?, last_listened_at), \
@@ -598,12 +461,8 @@ fn listening_upsert(row: &NewListeningProgress, now: &str) -> [TypedDbStatement;
              WHERE provider = ? AND external_user_id = ? AND external_item_id = ?",
             vec![
                 batch::int_opt(row.identity_id),
-                batch::text_opt(row.book_uuid.as_deref()),
-                batch::text_opt(row.work_id.as_deref()),
-                batch::text_opt(row.title.as_deref()),
-                batch::text_opt(row.authors.as_deref()),
-                batch::text_opt(row.asin.as_deref()),
-                batch::text_opt(row.isbn.as_deref()),
+                batch::text(&row.work_id),
+                batch::text_opt(row.edition_id.as_deref()),
                 float_opt(row.progress),
                 float_opt(row.current_time_seconds),
                 float_opt(row.duration_seconds),
@@ -617,21 +476,17 @@ fn listening_upsert(row: &NewListeningProgress, now: &str) -> [TypedDbStatement;
         ),
         batch::exec(
             "INSERT OR IGNORE INTO listening_progress \
-             (identity_id, provider, external_user_id, book_uuid, work_id, external_item_id, \
-              title, authors, asin, isbn, progress, current_time_seconds, duration_seconds, \
-              is_finished, last_listened_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (identity_id, provider, external_user_id, work_id, edition_id, external_item_id, \
+              progress, current_time_seconds, duration_seconds, is_finished, last_listened_at, \
+              updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             vec![
                 batch::int_opt(row.identity_id),
                 batch::text(&row.provider),
                 batch::text(&row.external_user_id),
-                batch::text_opt(row.book_uuid.as_deref()),
-                batch::text_opt(row.work_id.as_deref()),
+                batch::text(&row.work_id),
+                batch::text_opt(row.edition_id.as_deref()),
                 batch::text(&row.external_item_id),
-                batch::text_opt(row.title.as_deref()),
-                batch::text_opt(row.authors.as_deref()),
-                batch::text_opt(row.asin.as_deref()),
-                batch::text_opt(row.isbn.as_deref()),
                 float_opt(row.progress),
                 float_opt(row.current_time_seconds),
                 float_opt(row.duration_seconds),
@@ -649,25 +504,47 @@ mod tests {
     use crate::store::NewBook;
     use crate::test_support::{sqlite, Profile};
 
-    /// A report of `item` for `user` on the `abs` provider at `progress`.
-    fn report(user: &str, item: &str, progress: f64) -> NewListeningProgress {
+    /// A report of `item` for `user` on the `abs` provider at `progress`,
+    /// about `work`.
+    fn report(user: &str, item: &str, work: &str, progress: f64) -> NewListeningProgress {
         NewListeningProgress {
             identity_id: None,
             provider: "abs".into(),
             external_user_id: user.into(),
-            book_uuid: None,
-            work_id: None,
+            work_id: work.into(),
+            edition_id: None,
             external_item_id: item.into(),
-            title: None,
-            authors: None,
-            asin: None,
-            isbn: None,
             progress: Some(progress),
             current_time_seconds: None,
             duration_seconds: None,
             is_finished: false,
             last_listened_at: None,
         }
+    }
+
+    /// A catalog work for `title`, made the way a wish makes one.
+    async fn work(store: &LibraryStore, title: &str) -> String {
+        store
+            .work_for_wish(&crate::TitleQuery {
+                title,
+                authors: Some("Frank Herbert"),
+                ..crate::TitleQuery::default()
+            })
+            .await
+            .unwrap()
+            .0
+    }
+
+    /// The edition a library title with `uuid` reaches.
+    async fn edition_of(store: &LibraryStore, uuid: &str) -> Option<String> {
+        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+        let book = crate::entities::books::Entity::find()
+            .filter(crate::entities::books::Column::Uuid.eq(uuid))
+            .one(store.db())
+            .await
+            .unwrap()
+            .unwrap();
+        store.edition_id_for_book(&book).await.unwrap()
     }
 
     /// Identifiers with an optional ASIN and ISBN.
@@ -697,7 +574,10 @@ mod tests {
                 .unwrap();
             let dune_work = store.work_id_for_book(&dune.uuid).await.unwrap();
             let other_work = store.work_id_for_book(&other.uuid).await.unwrap();
+            let dune_edition = edition_of(store, &dune.uuid).await;
+            let other_edition = edition_of(store, &other.uuid).await;
             assert!(dune_work.is_some(), "{name}");
+            assert!(dune_edition.is_some(), "{name}");
             assert_ne!(dune_work, other_work, "{name}");
 
             let matches = store
@@ -717,12 +597,12 @@ mod tests {
                 .await
                 .unwrap();
             let want_dune = ListeningMatch {
-                book_uuid: Some(dune.uuid.clone()),
                 work_id: dune_work.clone(),
+                edition_id: dune_edition.clone(),
             };
             let want_other = ListeningMatch {
-                book_uuid: Some(other.uuid.clone()),
                 work_id: other_work.clone(),
+                edition_id: other_edition.clone(),
             };
             assert_eq!(
                 matches,
@@ -742,7 +622,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_owned_book_without_an_edition_identifier_lends_its_work() {
+    async fn an_identifier_on_two_works_names_neither() {
         for profile in Profile::ALL {
             let kit = sqlite::memory(profile).await;
             let store = kit.store();
@@ -750,25 +630,21 @@ mod tests {
                 .upsert_account("audible", "a1", "us", None, true, "audible")
                 .await
                 .unwrap();
-            let mut dune = NewBook::minimal("B00DUNE001", "a1", "US", "Dune");
-            dune.isbn = Some("9780441172719".into());
-            let dune = store.upsert_book(&dune).await.unwrap();
-            let work = store.work_id_for_book(&dune.uuid).await.unwrap();
-            // The edition loses its identifiers; the book still carries them.
-            edition_identifiers::Entity::delete_many()
-                .exec(store.db())
-                .await
-                .unwrap();
+            // Two different books that a store gave the same ISBN.
+            for (product, title) in [("B00DUNE001", "Dune"), ("B00OTHER01", "Other")] {
+                let mut book = NewBook::minimal(product, "a1", "US", title);
+                book.isbn = Some("9780441172719".into());
+                store.upsert_book(&book).await.unwrap();
+            }
             let matches = store
-                .match_listening_items(&[ids(Some("B00DUNE001"), None)])
+                .match_listening_items(&[ids(None, Some("9780441172719"))])
                 .await
                 .unwrap();
             assert_eq!(
                 matches,
-                vec![ListeningMatch {
-                    book_uuid: Some(dune.uuid),
-                    work_id: work,
-                }]
+                vec![ListeningMatch::default()],
+                "{}",
+                profile.name()
             );
         }
     }
@@ -806,35 +682,50 @@ mod tests {
             let kit = sqlite::memory(profile).await;
             let store = kit.store();
             let name = profile.name();
-            let mut seeded = report("u1", "kept", 0.1);
-            seeded.title = Some("Dune".into());
-            seeded.authors = Some("Frank Herbert".into());
+            let dune = work(store, "Dune").await;
+            let messiah = work(store, "Dune Messiah").await;
+            store
+                .upsert_account("audible", "a1", "us", None, true, "audible")
+                .await
+                .unwrap();
+            let book = store
+                .upsert_book(&NewBook::minimal(
+                    "B00DUNE001",
+                    "a1",
+                    "US",
+                    "Children of Dune",
+                ))
+                .await
+                .unwrap();
+            let edition = edition_of(store, &book.uuid).await;
+            let mut seeded = report("u1", "kept", &dune, 0.1);
+            seeded.edition_id.clone_from(&edition);
             seeded.last_listened_at = Some(chrono::Utc::now());
             let stored = store.upsert_listening_progress(&seeded).await.unwrap();
             let sent_before = kit.batch_sizes().len();
 
-            // The stored row: text left out keeps its value, progress moves.
-            let mut kept = report("u1", "kept", 0.4);
+            // The stored row: the edition left out keeps its value, the
+            // work and progress move.
+            let mut kept = report("u1", "kept", &messiah, 0.4);
             kept.is_finished = true;
             // A new row reported twice: the second report wins where it
-            // speaks and keeps the first's text where it does not.
-            let mut first = report("u2", "new", 0.2);
-            first.authors = Some("Ursula K. Le Guin".into());
-            first.work_id = Some("work-1".into());
-            let mut second = report("u2", "new", 0.3);
+            // speaks and keeps the first's edition where it does not.
+            let mut first = report("u2", "new", &dune, 0.2);
+            first.edition_id.clone_from(&edition);
+            let mut second = report("u2", "new", &dune, 0.3);
             second.progress = Some(f64::NAN);
             second.current_time_seconds = Some(90.0);
             let mut rows = vec![kept, first, second];
             // Enough rows to need several batches under every profile.
-            rows.extend((0..40).map(|i| report("u3", &format!("bulk{i:02}"), 0.5)));
+            rows.extend((0..40).map(|i| report("u3", &format!("bulk{i:02}"), &dune, 0.5)));
 
             let writes = store.upsert_listening_progress_batch(&rows).await.unwrap();
             assert_eq!(writes.len(), 42, "{name}");
 
             let kept = &writes[0];
             assert_eq!(kept.before.as_ref().map(|b| b.id), Some(stored.id));
-            assert_eq!(kept.after.title.as_deref(), Some("Dune"), "{name}");
-            assert_eq!(kept.after.authors.as_deref(), Some("Frank Herbert"));
+            assert_eq!(kept.after.work_id, messiah, "{name}");
+            assert_eq!(kept.after.edition_id, edition, "{name}");
             assert_eq!(kept.after.progress, Some(0.4));
             assert!(kept.after.is_finished);
             assert_eq!(
@@ -844,8 +735,8 @@ mod tests {
 
             let new = &writes[1];
             assert!(new.before.is_none(), "{name}");
-            assert_eq!(new.after.authors.as_deref(), Some("Ursula K. Le Guin"));
-            assert_eq!(new.after.work_id.as_deref(), Some("work-1"));
+            assert_eq!(new.after.edition_id, edition);
+            assert_eq!(new.after.work_id, dune);
             assert_eq!(new.after.progress, None, "a NaN is stored as unknown");
             assert_eq!(new.after.current_time_seconds, Some(90.0));
 
@@ -862,10 +753,8 @@ mod tests {
                     .unwrap_or_else(|| panic!("{name}: row stored"));
                 let row = written_row(&row);
                 assert_eq!(row.identity_id, write.after.identity_id);
-                assert_eq!(row.book_uuid, write.after.book_uuid);
                 assert_eq!(row.work_id, write.after.work_id);
-                assert_eq!(row.title, write.after.title);
-                assert_eq!(row.authors, write.after.authors);
+                assert_eq!(row.edition_id, write.after.edition_id);
                 assert_eq!(row.progress, write.after.progress);
                 assert_eq!(row.current_time_seconds, write.after.current_time_seconds);
                 assert_eq!(row.is_finished, write.after.is_finished);

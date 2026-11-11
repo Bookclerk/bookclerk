@@ -6,11 +6,12 @@
 
 use std::path::{Path, PathBuf};
 
-use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
-use tantivy::collector::TopDocs;
-use tantivy::query::QueryParser;
-use tantivy::schema::{Field, Schema, Value, STORED, STRING, TEXT};
-use tantivy::{doc, Index, IndexWriter, ReloadPolicy, TantivyDocument};
+use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore, ListingRef};
+use tantivy::collector::{Count, TopDocs};
+use tantivy::directory::error::LockError;
+use tantivy::query::{Query, QueryParser};
+use tantivy::schema::{Field, Schema, Value, FAST, STORED, STRING, TEXT};
+use tantivy::{doc, Index, IndexWriter, Order, ReloadPolicy, TantivyDocument, TantivyError, Term};
 
 use crate::query::normalize_lucene_query;
 use crate::{Result, SearchError};
@@ -30,8 +31,53 @@ pub struct SearchHit {
     pub score: f32,
 }
 
+/// One page of search hits in title order, and how many documents match.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchPage {
+    /// Library uuids of the page's hits (lowercased, as indexed), in
+    /// case-insensitive title order, then uuid.
+    pub uuids: Vec<String>,
+    /// Documents that match the query, before paging.
+    pub total: usize,
+}
+
+/// Version of the document layout. An index written under another layout
+/// is discarded and rebuilt, and [`SearchEngine::is_complete`] only
+/// accepts a rebuild of this one.
+const SCHEMA_VERSION: u32 = 2;
+
+/// Name of the file a finished rebuild leaves in the index directory.
+fn complete_marker() -> String {
+    format!("bookclerk-complete-v{SCHEMA_VERSION}")
+}
+
+/// Serializes replacing an index of an older layout within this process.
+static REPLACE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Writer heap of an event refresh: Tantivy's one-thread minimum, since a
+/// refresh writes a handful of documents.
+const REFRESH_WRITER_HEAP: usize = 15_000_000;
+
+/// First pause [`SearchEngine::rebuild_waiting`] takes after finding the
+/// index busy; each later pause doubles up to [`BUSY_PAUSE_MAX`].
+const BUSY_PAUSE_FIRST: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Longest pause between [`SearchEngine::rebuild_waiting`] attempts.
+const BUSY_PAUSE_MAX: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Maps a Tantivy error to [`SearchError::Busy`] when another writer holds
+/// the index lock, else to [`SearchError::Index`].
+fn writer_error(err: TantivyError) -> SearchError {
+    match err {
+        TantivyError::LockFailure(LockError::LockBusy, _) => SearchError::Busy,
+        other => SearchError::Index(other.to_string()),
+    }
+}
+
 /// On-disk Tantivy search engine (classic Lucene `SearchEngine` parity).
 pub struct SearchEngine {
+    /// Index directory, where the rebuild marker lives.
+    dir: PathBuf,
     /// On-disk Tantivy index opened under `search_index/`.
     index: Index,
     /// Stored lowercase `product_id` (classic Lucene `id`).
@@ -62,6 +108,11 @@ pub struct SearchEngine {
     acquired: Field,
     /// Stored `true`/`false` for listener finished flag.
     finished: Field,
+    /// The title's listing ([`ListingRef::term`]); an event refresh deletes
+    /// by it.
+    listing: Field,
+    /// Fast sort key: ASCII-lowercased title, NUL, stored uuid.
+    sort: Field,
 }
 
 /// Starting page width for a catalog rebuild.
@@ -136,16 +187,34 @@ impl SearchEngine {
         let all = schema_builder.add_text_field("all", TEXT);
         let acquired = schema_builder.add_text_field("acquired", STRING | STORED);
         let finished = schema_builder.add_text_field("finished", STRING | STORED);
+        let listing = schema_builder.add_text_field("listing", STRING);
+        let sort = schema_builder.add_text_field("sort", STRING | FAST);
         let schema = schema_builder.build();
 
-        let index = Index::open_or_create(
-            tantivy::directory::MmapDirectory::open(dir)
-                .map_err(|err| SearchError::Index(err.to_string()))?,
-            schema,
-        )
+        let index = match Self::open_index(dir, schema.clone()) {
+            Err(TantivyError::SchemaError(_)) => {
+                // An index of an older layout: it is a cache of the
+                // library, so it is replaced and the missing marker asks
+                // for a rebuild. Opens that race here replace it once: the
+                // later one opens again under the lock and finds the new
+                // index.
+                let _replacing = REPLACE_LOCK
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match Self::open_index(dir, schema.clone()) {
+                    Err(TantivyError::SchemaError(_)) => {
+                        Self::discard_index(dir)?;
+                        Self::open_index(dir, schema)
+                    }
+                    other => other,
+                }
+            }
+            other => other,
+        }
         .map_err(|err| SearchError::Index(err.to_string()))?;
 
         Ok(Self {
+            dir: dir.to_path_buf(),
             index,
             id,
             uuid,
@@ -161,7 +230,47 @@ impl SearchEngine {
             all,
             acquired,
             finished,
+            listing,
+            sort,
         })
+    }
+
+    /// Opens or creates the Tantivy index in `dir` under `schema`.
+    fn open_index(dir: &Path, schema: Schema) -> tantivy::Result<Index> {
+        let directory = tantivy::directory::MmapDirectory::open(dir)
+            .map_err(|err| TantivyError::SystemError(err.to_string()))?;
+        Index::open_or_create(directory, schema)
+    }
+
+    /// Removes an index of another layout from `dir`.
+    ///
+    /// Only a directory that holds a Tantivy `meta.json` is touched, so a
+    /// misconfigured path that names something else is refused rather than
+    /// emptied.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Index`] when `dir` is not a Tantivy index or
+    /// cannot be removed and recreated.
+    fn discard_index(dir: &Path) -> Result<()> {
+        if !dir.join("meta.json").is_file() {
+            return Err(SearchError::Index(format!(
+                "{} holds no search index to replace",
+                dir.display()
+            )));
+        }
+        tracing::info!(dir = %dir.display(), "replacing a search index of an older layout");
+        std::fs::remove_dir_all(dir).map_err(|err| SearchError::Index(err.to_string()))?;
+        std::fs::create_dir_all(dir).map_err(|err| SearchError::Index(err.to_string()))
+    }
+
+    /// True when a full rebuild of the current layout has finished in `dir`.
+    ///
+    /// An index that was never rebuilt, was deleted, or was written under
+    /// an older layout is not complete; the daemon queues a rebuild for it.
+    #[must_use]
+    pub fn is_complete(dir: &Path) -> bool {
+        dir.join(complete_marker()).is_file()
     }
 
     /// Rebuild the entire index from the library DB.
@@ -175,10 +284,7 @@ impl SearchEngine {
     ///
     /// Returns an error when the operation fails.
     pub async fn rebuild(&self, library: &LibraryStore) -> Result<usize> {
-        let mut writer = self
-            .index
-            .writer(50_000_000)
-            .map_err(|err| SearchError::Index(err.to_string()))?;
+        let mut writer = self.index.writer(50_000_000).map_err(writer_error)?;
         writer
             .delete_all_documents()
             .map_err(|err| SearchError::Index(err.to_string()))?;
@@ -204,7 +310,182 @@ impl SearchEngine {
         writer
             .commit()
             .map_err(|err| SearchError::Index(err.to_string()))?;
+        std::fs::write(self.dir.join(complete_marker()), b"")
+            .map_err(|err| SearchError::Index(err.to_string()))?;
         Ok(count)
+    }
+
+    /// Rebuilds the index like [`Self::rebuild`], waiting while another
+    /// writer holds it.
+    ///
+    /// A running daemon refreshes its index from library events, and each
+    /// refresh holds the writer for a moment (a daemon rebuild holds it for
+    /// longer). A rebuild that finds the index busy has written nothing, so
+    /// it pauses (100 ms, doubling to 2 s) and tries again until `max_wait`
+    /// has passed.
+    ///
+    /// # Arguments
+    ///
+    /// * `library` - The library the titles are read from.
+    /// * `max_wait` - How long to keep trying while the index is busy.
+    ///
+    /// # Returns
+    ///
+    /// How many titles the index now holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Busy`] when the index is still busy after
+    /// `max_wait`, and any other error of [`Self::rebuild`] at once.
+    pub async fn rebuild_waiting(
+        &self,
+        library: &LibraryStore,
+        max_wait: std::time::Duration,
+    ) -> Result<usize> {
+        let deadline = tokio::time::Instant::now() + max_wait;
+        let mut pause = BUSY_PAUSE_FIRST;
+        let mut announced = false;
+        loop {
+            match self.rebuild(library).await {
+                Err(SearchError::Busy) if tokio::time::Instant::now() + pause <= deadline => {
+                    if !announced {
+                        tracing::info!(
+                            dir = %self.dir.display(),
+                            "search index is busy with another writer; waiting to rebuild"
+                        );
+                        announced = true;
+                    }
+                    tokio::time::sleep(pause).await;
+                    pause = (pause * 2).min(BUSY_PAUSE_MAX);
+                }
+                outcome => return outcome,
+            }
+        }
+    }
+
+    /// Replaces the documents of `listings` with the library titles that
+    /// sell them now.
+    ///
+    /// Every document carrying a listing's term is deleted and each title
+    /// [`LibraryStore::books_of_listing`] still finds is added again, so a
+    /// title whose row is gone (a holding removed, an account revoked)
+    /// leaves the index, and one that changed is replaced.
+    ///
+    /// # Arguments
+    ///
+    /// * `library` - The library the titles are read from.
+    /// * `listings` - The listings an event touched.
+    ///
+    /// # Returns
+    ///
+    /// How many documents were written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Busy`] when another writer holds the index,
+    /// [`SearchError::Library`] when a read fails, or
+    /// [`SearchError::Index`] when the write fails.
+    pub async fn refresh_listings(
+        &self,
+        library: &LibraryStore,
+        listings: &[ListingRef],
+    ) -> Result<usize> {
+        let mut titles = Vec::new();
+        for listing in listings {
+            titles.push((listing, library.books_of_listing(listing).await?));
+        }
+        let mut writer = self.refresh_writer()?;
+        let mut count = 0usize;
+        for (listing, books) in &titles {
+            writer.delete_term(Term::from_field_text(self.listing, &listing.term()));
+            for book in books {
+                // A title whose listing spelling changed still has a
+                // document under the old term; its uuid finds it.
+                writer.delete_term(Term::from_field_text(
+                    self.uuid,
+                    &book.uuid.to_ascii_lowercase(),
+                ));
+                self.add_book(&mut writer, book)?;
+            }
+            count += books.len();
+        }
+        Self::commit_refresh(writer)?;
+        Ok(count)
+    }
+
+    /// Replaces the documents of the titles `uuids` with their rows now, and
+    /// drops any whose row is gone.
+    ///
+    /// # Arguments
+    ///
+    /// * `library` - The library the titles are read from.
+    /// * `uuids` - Library `books.uuid` values.
+    ///
+    /// # Returns
+    ///
+    /// How many documents were written.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::refresh_listings`].
+    pub async fn refresh_titles(&self, library: &LibraryStore, uuids: &[String]) -> Result<usize> {
+        let mut titles = Vec::new();
+        for uuid in uuids {
+            titles.push((uuid, library.get_book_by_uuid(uuid).await?));
+        }
+        let mut writer = self.refresh_writer()?;
+        let mut count = 0usize;
+        for (uuid, book) in &titles {
+            writer.delete_term(Term::from_field_text(self.uuid, &uuid.to_ascii_lowercase()));
+            if let Some(book) = book {
+                self.add_book(&mut writer, book)?;
+                count += 1;
+            }
+        }
+        Self::commit_refresh(writer)?;
+        Ok(count)
+    }
+
+    /// Commits a refresh, then lets the merges it started finish, so a
+    /// burst of events (a first scan) does not leave one tiny segment per
+    /// event behind.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Index`] when the commit or a merge fails.
+    fn commit_refresh(mut writer: IndexWriter) -> Result<()> {
+        writer
+            .commit()
+            .map_err(|err| SearchError::Index(err.to_string()))?;
+        writer
+            .wait_merging_threads()
+            .map_err(|err| SearchError::Index(err.to_string()))
+    }
+
+    /// Forgets that the index was fully rebuilt, so the daemon queues a new
+    /// rebuild. For a change a refresh cannot place, such as an event whose
+    /// listing is already gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Index`] when the marker cannot be removed.
+    pub fn mark_incomplete(&self) -> Result<()> {
+        match std::fs::remove_file(self.dir.join(complete_marker())) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(SearchError::Index(err.to_string())),
+        }
+    }
+
+    /// A one-thread writer for a small refresh.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Busy`] when another writer holds the lock.
+    fn refresh_writer(&self) -> Result<IndexWriter> {
+        self.index
+            .writer_with_num_threads(1, REFRESH_WRITER_HEAP)
+            .map_err(writer_error)
     }
 
     /// Indexes one library row; missing optional strings become empty, bools become `true`/`false`.
@@ -225,6 +506,7 @@ impl SearchEngine {
             book.series.as_deref().unwrap_or(""),
             book.tags.as_deref().unwrap_or(""),
         );
+        let sort_key = format!("{}\u{0}{}", book.title.to_ascii_lowercase(), book.uuid);
         writer
             .add_document(doc!(
                 self.id => book.product_id.to_ascii_lowercase(),
@@ -241,6 +523,8 @@ impl SearchEngine {
                 self.all => all_text,
                 self.acquired => acquired,
                 self.finished => finished,
+                self.listing => ListingRef::of_book(book).term(),
+                self.sort => sort_key,
             ))
             .map_err(|err| SearchError::Index(err.to_string()))?;
         Ok(())
@@ -276,44 +560,10 @@ impl SearchEngine {
     ///
     /// Returns an error when the operation fails.
     pub fn search(&self, raw_query: &str, limit: usize) -> Result<Vec<SearchHit>> {
-        let query_str = normalize_lucene_query(raw_query);
-        if query_str.is_empty() {
+        let Some(query) = self.parse(raw_query)? else {
             return Ok(Vec::new());
-        }
-
-        // Each HTTP search opens its own reader and drops it. A commit watcher
-        // would spawn a thread per request and panic if that spawn fails,
-        // which the books handler turns into an empty 500.
-        let reader = self
-            .index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::Manual)
-            .try_into()
-            .map_err(|err| SearchError::Index(err.to_string()))?;
-
-        let searcher = reader.searcher();
-        let parser = QueryParser::for_index(
-            &self.index,
-            vec![
-                self.all,
-                self.title,
-                self.authors,
-                self.narrators,
-                self.series,
-                self.tags,
-                self.id,
-                self.uuid,
-                self.product_id,
-                self.isbn,
-                self.asin,
-                self.acquired,
-                self.finished,
-            ],
-        );
-
-        let query = parser
-            .parse_query(&query_str)
-            .map_err(|err| SearchError::Query(format!("{err}")))?;
+        };
+        let searcher = self.reader()?.searcher();
 
         // Classic `-n 0` means every hit. Cap at the index size so TopDocs
         // never gets a zero limit (which panics) while still returning all
@@ -366,6 +616,176 @@ impl SearchEngine {
             });
         }
         Ok(hits)
+    }
+
+    /// Opens an index and reads one title-ordered page of a query's hits
+    /// without blocking the caller's task (see [`Self::open_and_search`]).
+    ///
+    /// # Errors
+    ///
+    /// Propagates index-open and query failures.
+    pub async fn open_and_search_page(
+        dir: PathBuf,
+        query: String,
+        offset: usize,
+        limit: usize,
+    ) -> Result<SearchPage> {
+        tokio::task::spawn_blocking(move || Self::open(&dir)?.search_page(&query, offset, limit))
+            .await
+            .map_err(|err| SearchError::Index(format!("search task join error: {err}")))?
+    }
+
+    /// Opens an index and lists every hit of a query without blocking the
+    /// caller's task (see [`Self::open_and_search`]).
+    ///
+    /// # Errors
+    ///
+    /// Propagates index-open and query failures.
+    pub async fn open_and_match_uuids(dir: PathBuf, query: String) -> Result<Vec<String>> {
+        tokio::task::spawn_blocking(move || Self::open(&dir)?.match_uuids(&query))
+            .await
+            .map_err(|err| SearchError::Index(format!("search task join error: {err}")))?
+    }
+
+    /// One page of a query's hits in case-insensitive title order, with the
+    /// number of matching documents.
+    ///
+    /// Sorting, paging and counting all happen in the index, so no hit cap
+    /// applies and only `limit` uuids leave it. Blocking.
+    ///
+    /// # Arguments
+    ///
+    /// * `raw_query` - Lucene-style query (normalized before parse).
+    /// * `offset` - Hits to skip.
+    /// * `limit` - Most hits to return; 0 returns only the count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Query`] for a query that does not parse, or
+    /// [`SearchError::Index`] when the index cannot be read.
+    pub fn search_page(&self, raw_query: &str, offset: usize, limit: usize) -> Result<SearchPage> {
+        let Some(query) = self.parse(raw_query)? else {
+            return Ok(SearchPage::default());
+        };
+        let searcher = self.reader()?.searcher();
+        let total = searcher
+            .search(&query, &Count)
+            .map_err(|err| SearchError::Index(err.to_string()))?;
+        // Tantivy sizes its collector buffer from `offset + limit`, so both
+        // are bounded by the hits first: a huge `offset` from a query string
+        // must not ask for a huge allocation.
+        let take = limit.min(total.saturating_sub(offset));
+        if take == 0 {
+            return Ok(SearchPage {
+                uuids: Vec::new(),
+                total,
+            });
+        }
+        let uuids = self.page_uuids(&searcher, query.as_ref(), offset, take)?;
+        Ok(SearchPage { uuids, total })
+    }
+
+    /// The uuids of hits `offset..offset + take` in title order, read from
+    /// one searcher; the caller keeps both within the hit count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Index`] when the index cannot be read.
+    fn page_uuids(
+        &self,
+        searcher: &tantivy::Searcher,
+        query: &dyn Query,
+        offset: usize,
+        take: usize,
+    ) -> Result<Vec<String>> {
+        let page = TopDocs::with_limit(take)
+            .and_offset(offset)
+            .order_by_string_fast_field("sort", Order::Asc);
+        let docs = searcher
+            .search(query, &page)
+            .map_err(|err| SearchError::Index(err.to_string()))?;
+        let mut uuids = Vec::with_capacity(docs.len());
+        for (_, addr) in docs {
+            let doc: TantivyDocument = searcher
+                .doc(addr)
+                .map_err(|err| SearchError::Index(err.to_string()))?;
+            if let Some(uuid) = doc.get_first(self.uuid).and_then(|v| v.as_str()) {
+                uuids.push(uuid.to_string());
+            }
+        }
+        Ok(uuids)
+    }
+
+    /// The uuid of every document a query matches, in title order.
+    ///
+    /// For callers that must filter the hits by something the index does
+    /// not hold authoritatively; there is no cap. The count and the hits
+    /// come from one searcher, so a commit in between cannot cut the list
+    /// short. Blocking.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::search_page`].
+    pub fn match_uuids(&self, raw_query: &str) -> Result<Vec<String>> {
+        let Some(query) = self.parse(raw_query)? else {
+            return Ok(Vec::new());
+        };
+        let searcher = self.reader()?.searcher();
+        let total = searcher
+            .search(&query, &Count)
+            .map_err(|err| SearchError::Index(err.to_string()))?;
+        if total == 0 {
+            return Ok(Vec::new());
+        }
+        self.page_uuids(&searcher, query.as_ref(), 0, total)
+    }
+
+    /// A reader on the latest commit.
+    ///
+    /// Each search opens its own reader and drops it. A commit watcher
+    /// would spawn a thread per request and panic if that spawn fails,
+    /// which the books handler turns into an empty 500.
+    fn reader(&self) -> Result<tantivy::IndexReader> {
+        self.index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .map_err(|err| SearchError::Index(err.to_string()))
+    }
+
+    /// Parses a Lucene-style query over the searchable fields, or `None`
+    /// when it normalizes to nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Query`] when the query does not parse.
+    fn parse(&self, raw_query: &str) -> Result<Option<Box<dyn Query>>> {
+        let query_str = normalize_lucene_query(raw_query);
+        if query_str.is_empty() {
+            return Ok(None);
+        }
+        let parser = QueryParser::for_index(
+            &self.index,
+            vec![
+                self.all,
+                self.title,
+                self.authors,
+                self.narrators,
+                self.series,
+                self.tags,
+                self.id,
+                self.uuid,
+                self.product_id,
+                self.isbn,
+                self.asin,
+                self.acquired,
+                self.finished,
+            ],
+        );
+        parser
+            .parse_query(&query_str)
+            .map(Some)
+            .map_err(|err| SearchError::Query(format!("{err}")))
     }
 }
 
@@ -471,6 +891,250 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// A store with one account and `titles` minimal rows on it.
+    async fn store_with(titles: &[(&str, &str)]) -> LibraryStore {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        library
+            .upsert_account("audible", "acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        for (product, title) in titles {
+            library
+                .upsert_book(&NewBook::minimal(*product, "acct", "us", *title))
+                .await
+                .unwrap();
+        }
+        library
+    }
+
+    #[tokio::test]
+    async fn pages_hits_in_title_order_with_the_full_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = store_with(&[
+            ("B3", "gamma shelf"),
+            ("B1", "Alpha shelf"),
+            ("B2", "beta shelf"),
+            ("B4", "unrelated"),
+        ])
+        .await;
+        let engine = SearchEngine::open(dir.path()).unwrap();
+        engine.rebuild(&library).await.unwrap();
+
+        let uuid_of = |product: &'static str| {
+            let library = &library;
+            async move {
+                library
+                    .get_book(product, "acct")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .uuid
+                    .to_ascii_lowercase()
+            }
+        };
+        let first = engine.search_page("shelf", 0, 2).unwrap();
+        assert_eq!(first.total, 3);
+        assert_eq!(first.uuids, vec![uuid_of("B1").await, uuid_of("B2").await]);
+        let second = engine.search_page("shelf", 2, 2).unwrap();
+        assert_eq!(second.total, 3);
+        assert_eq!(second.uuids, vec![uuid_of("B3").await]);
+        assert_eq!(
+            engine.search_page("shelf", 0, 0).unwrap(),
+            SearchPage {
+                uuids: Vec::new(),
+                total: 3
+            }
+        );
+        assert_eq!(engine.match_uuids("shelf").unwrap().len(), 3);
+        // An offset from a query string cannot size the collector.
+        assert_eq!(
+            engine.search_page("shelf", usize::MAX, 500).unwrap(),
+            SearchPage {
+                uuids: Vec::new(),
+                total: 3
+            }
+        );
+        assert_eq!(
+            engine.search_page("  ", 0, 10).unwrap(),
+            SearchPage::default()
+        );
+        assert!(engine.match_uuids("nothing-matches").unwrap().is_empty());
+    }
+
+    /// The old handler kept the best 500 hits and dropped the rest.
+    #[tokio::test]
+    async fn search_has_no_hit_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        library
+            .upsert_account("audible", "acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let n = 520usize;
+        for i in 0..n {
+            library
+                .upsert_book(&NewBook::minimal(
+                    format!("C{i:05}"),
+                    "acct",
+                    "us",
+                    format!("Common {i:05}"),
+                ))
+                .await
+                .unwrap();
+        }
+        let engine = SearchEngine::open(dir.path()).unwrap();
+        engine.rebuild(&library).await.unwrap();
+        let tail = engine.search_page("common", 510, 40).unwrap();
+        assert_eq!(tail.total, n);
+        assert_eq!(tail.uuids.len(), 10);
+        assert_eq!(engine.match_uuids("common").unwrap().len(), n);
+    }
+
+    #[tokio::test]
+    async fn only_a_finished_rebuild_marks_the_index_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = store_with(&[("B1", "Alpha")]).await;
+        let engine = SearchEngine::open(dir.path()).unwrap();
+        assert!(!SearchEngine::is_complete(dir.path()));
+        engine.rebuild(&library).await.unwrap();
+        assert!(SearchEngine::is_complete(dir.path()));
+        engine.mark_incomplete().unwrap();
+        assert!(!SearchEngine::is_complete(dir.path()));
+        engine.mark_incomplete().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_index_of_an_older_layout_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut old = Schema::builder();
+            let title = old.add_text_field("title", TEXT | STORED);
+            let index = Index::create_in_dir(dir.path(), old.build()).unwrap();
+            let mut writer: IndexWriter = index.writer(15_000_000).unwrap();
+            writer.add_document(doc!(title => "Old")).unwrap();
+            writer.commit().unwrap();
+        }
+        std::fs::write(dir.path().join("bookclerk-complete-v1"), b"").unwrap();
+        let engine = SearchEngine::open(dir.path()).unwrap();
+        assert!(!SearchEngine::is_complete(dir.path()));
+        assert!(!dir.path().join("bookclerk-complete-v1").exists());
+        assert!(engine.search("old", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_directory_that_is_not_an_index_is_never_emptied() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("keep.txt"), b"x").unwrap();
+        assert!(SearchEngine::discard_index(dir.path()).is_err());
+        assert!(dir.path().join("keep.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn a_listing_refresh_replaces_its_titles_and_drops_stale_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = store_with(&[("B1", "Moved title"), ("B2", "Kept title")]).await;
+        let engine = SearchEngine::open(dir.path()).unwrap();
+        engine.rebuild(&library).await.unwrap();
+        let moved = library.get_book("B1", "acct").await.unwrap().unwrap();
+
+        // The row moves to another account; the index still has the old one.
+        library
+            .upsert_account("audible", "acct-2", "us", None, true, "audible")
+            .await
+            .unwrap();
+        library
+            .remap_account_id("audible", "acct", "acct-2")
+            .await
+            .unwrap();
+        let hits = engine.search("moved", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].account_id, "acct");
+
+        let written = engine
+            .refresh_listings(&library, &[ListingRef::of_book(&moved)])
+            .await
+            .unwrap();
+        assert_eq!(written, 1);
+        let hits = engine.search("moved", 10).unwrap();
+        assert_eq!(hits.len(), 1, "the stale document is gone");
+        assert_eq!(hits[0].account_id, "acct-2");
+        assert_eq!(engine.search("kept", 10).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_title_refresh_picks_up_a_new_row_and_drops_a_missing_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = store_with(&[]).await;
+        let engine = SearchEngine::open(dir.path()).unwrap();
+        engine.rebuild(&library).await.unwrap();
+        let saved = library
+            .upsert_book(&NewBook::minimal("B9", "acct", "us", "Fresh title"))
+            .await
+            .unwrap();
+        assert!(engine.search("fresh", 10).unwrap().is_empty());
+        let written = engine
+            .refresh_titles(&library, &[saved.uuid.clone(), "no-such-title".into()])
+            .await
+            .unwrap();
+        assert_eq!(written, 1);
+        assert_eq!(engine.search("fresh", 10).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_second_writer_is_reported_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = store_with(&[("B1", "Alpha")]).await;
+        let engine = SearchEngine::open(dir.path()).unwrap();
+        let _held = engine.refresh_writer().unwrap();
+        assert!(matches!(
+            engine.refresh_titles(&library, &[]).await,
+            Err(SearchError::Busy)
+        ));
+        assert!(matches!(
+            engine.rebuild(&library).await,
+            Err(SearchError::Busy)
+        ));
+    }
+
+    #[tokio::test]
+    async fn rebuild_waiting_runs_once_the_writer_is_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = store_with(&[("B1", "Alpha"), ("B2", "Beta")]).await;
+        let engine = SearchEngine::open(dir.path()).unwrap();
+        let held = engine.refresh_writer().unwrap();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            drop(held);
+        });
+        let indexed = engine
+            .rebuild_waiting(&library, std::time::Duration::from_secs(30))
+            .await
+            .unwrap();
+        release.await.unwrap();
+        assert_eq!(indexed, 2);
+        assert_eq!(engine.search("alpha", 10).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rebuild_waiting_gives_up_after_max_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = store_with(&[("B1", "Alpha")]).await;
+        let engine = SearchEngine::open(dir.path()).unwrap();
+        let _held = engine.refresh_writer().unwrap();
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            engine
+                .rebuild_waiting(&library, std::time::Duration::from_millis(500))
+                .await,
+            Err(SearchError::Busy)
+        ));
+        assert!(started.elapsed() <= std::time::Duration::from_secs(5));
     }
 
     #[test]

@@ -159,6 +159,7 @@ impl From<CatalogHit> for abi::CatalogHit {
             credits: hit.credits,
             series_entries: hit.series_entries,
             parent_product_id: hit.parent_product_id,
+            rank_hint: hit.rank_hint.filter(|rank| *rank > 0),
         }
     }
 }
@@ -191,6 +192,7 @@ impl From<abi::CatalogHit> for CatalogHit {
             credits: hit.credits,
             series_entries: hit.series_entries,
             parent_product_id: hit.parent_product_id,
+            rank_hint: hit.rank_hint.filter(|rank| *rank > 0),
         }
     }
 }

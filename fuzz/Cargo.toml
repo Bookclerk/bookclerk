@@ -74,6 +74,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "workerd_control"
+path = "fuzz_targets/workerd_control.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "cover_sink_key"
 path = "fuzz_targets/cover_sink_key.rs"
 test = false
