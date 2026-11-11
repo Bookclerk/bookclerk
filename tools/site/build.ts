@@ -358,9 +358,13 @@ const FONT_FILE = /^(?:[a-z0-9-]+\.woff2|OFL-[a-z0-9]+\.txt)$/;
 /** Brand assets copied from assets/brand/ (source path, published name). */
 const BRAND_FILES: readonly (readonly [string, string])[] = [
   ["svg/bookclerk-mark.svg", "bookclerk-mark.svg"],
+  // The scalable favicon is the mark itself, under the name favicon checkers
+  // and crawlers look for.
+  ["svg/bookclerk-mark.svg", "favicon.svg"],
   ["web/favicon.ico", "favicon.ico"],
   ["web/favicon-16x16.png", "favicon-16x16.png"],
   ["web/favicon-32x32.png", "favicon-32x32.png"],
+  ["web/favicon-96x96.png", "favicon-96x96.png"],
   ["web/apple-touch-icon.png", "apple-touch-icon.png"],
   ["web/android-chrome-192x192.png", "android-chrome-192x192.png"],
   ["web/android-chrome-512x512.png", "android-chrome-512x512.png"],
