@@ -4109,7 +4109,7 @@ impl LibraryStore {
     /// Upsert a page of scanned titles: the flat rows as
     /// [`Self::upsert_scanned_title`] writes each one, read and written per
     /// page in batches sized from the database plugin's limits, then every
-    /// title's listing resolved as one page ([`Self::record_listing_page`]),
+    /// title's listing resolved as one page (`record_listing_page`),
     /// so titles the library already holds as the store describes them cost
     /// no reads of their own.
     ///
