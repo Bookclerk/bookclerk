@@ -9,7 +9,8 @@
 //!
 //! - parsing, decoding and validation never panic;
 //! - [`parse_event_read_json`] accepts exactly the JSON objects whose keys
-//!   are request fields, and an accepted request round-trips through JSON;
+//!   are request fields holding values of the field's type, and an
+//!   accepted request round-trips through JSON;
 //! - [`validate_event_read_request`] accepts the request, against a fixed
 //!   consent, exactly when the independent restatement below does, with
 //!   the same error code and the same resolved start, types and limit;
@@ -155,10 +156,23 @@ fn check_request(request: &EventReadRequest) {
 // Oracle: a failed expectation is an invariant violation the fuzzer reports.
 #[allow(clippy::expect_used)]
 fn check_json(body: &[u8]) {
+    // Restated independently: a JSON object whose every key is a request
+    // field of the right type (`after` text, `sinceUnixMs` a u64, `types` a
+    // list of text, `limit` a u32). Duplicate keys keep the last value, as
+    // the parser's own JSON pass does.
+    let field_ok = |key: &str, value: &serde_json::Value| match key {
+        "after" => value.is_string(),
+        "sinceUnixMs" => value.as_u64().is_some(),
+        "types" => value
+            .as_array()
+            .is_some_and(|list| list.iter().all(serde_json::Value::is_string)),
+        "limit" => value.as_u64().is_some_and(|n| u32::try_from(n).is_ok()),
+        _ => false,
+    };
     let shape_ok = match serde_json::from_slice::<serde_json::Value>(body) {
-        Ok(serde_json::Value::Object(map)) => {
-            map.keys().all(|key| REQUEST_FIELDS.contains(&key.as_str()))
-        }
+        Ok(serde_json::Value::Object(map)) => map
+            .iter()
+            .all(|(key, value)| REQUEST_FIELDS.contains(&key.as_str()) && field_ok(key, value)),
         _ => false,
     };
     match parse_event_read_json(body) {
@@ -169,7 +183,10 @@ fn check_json(body: &[u8]) {
             assert_eq!(again, request, "request round-trips through JSON");
             check_request(&request);
         }
-        Err(err) => assert_eq!(err.code, PluginErrorCode::InvalidParams),
+        Err(err) => {
+            assert_eq!(err.code, PluginErrorCode::InvalidParams);
+            assert!(!shape_ok, "refused a well-typed request object: {err}");
+        }
     }
 }
 
