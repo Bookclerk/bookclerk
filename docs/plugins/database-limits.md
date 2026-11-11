@@ -164,39 +164,45 @@ loop for you and tells you how far it got, so a long write can stop and
 carry on later without writing anything twice:
 
 ```ts
+// `checkpoint.writeKey` was made (a random UUID) and saved before the
+// first batch; see step 1 below.
 const progress = await env.DB.writeChunks(inserts, {
-  key: `${job.idempotencyKey}:seen`,
+  key: checkpoint.writeKey,
   from: checkpoint.next ?? 0,
   stop: () => Date.now() > deadline,
 });
 if (!progress.done) {
-  job.suspend({ checkpoint: { next: progress.next } });
+  job.suspend({ checkpoint: { writeKey: checkpoint.writeKey, next: progress.next } });
   return;
 }
 ```
 
 ```python
 progress = await self.env.DB.write_chunks(
-    inserts, key=f"{job.idempotency_key}:seen", start=checkpoint.get("next", 0),
+    inserts, key=checkpoint["write_key"], start=checkpoint.get("next", 0),
     stop=lambda _next: time.monotonic() > deadline,
 )
 ```
 
 ```rust
-let key = format!("{}:seen", invocation.idempotency_key);
 let progress = db
-    .write_chunks(inserts, checkpoint.next, &key, None, |_| Instant::now() > deadline)
+    .write_chunks(inserts, checkpoint.next, &checkpoint.write_key, None, |_| {
+        Instant::now() > deadline
+    })
     .await?;
 ```
 
-1. Build the same list of statements on every call. `from` (`start` in
+1. Give the write a key of its own before its first batch (a random UUID
+   works) and save it, for example in the job's checkpoint, so every
+   later call passes the same key.
+2. Build the same list of statements on every call. `from` (`start` in
    Python) is how many of them are already committed; pass `0` the first
    time.
-2. The helper commits the batches `chunk()` makes from that point on.
+3. The helper commits the batches `chunk()` makes from that point on.
    Before each batch it asks `stop`; returning true pauses there.
-3. It returns `next`, the statements committed so far, and `done`. Store
+4. It returns `next`, the statements committed so far, and `done`. Store
    `next` in your checkpoint and pass it back as `from` to resume.
-4. When a batch fails, the error carries `next` too (`WriteChunksError`).
+5. When a batch fails, the error carries `next` too (`WriteChunksError`).
 
 Each batch is sent with an operation id made from `key` and the batch's
 offset, so a resent batch has the same id as the first try. If a batch
@@ -205,10 +211,12 @@ again and the host replays the stored result instead of writing the rows a
 second time. For that to hold, `key` must name one write on every run
 (at most 256 bytes), and the list and the caps must stay the same between
 calls with that key. Otherwise a resent batch no longer matches what was
-stored and the host answers `conflict`. Build the key from the job's
-idempotency key plus a step, as above: it stays the same when the job
-suspends or is retried. The job's `id` names one attempt and changes, so
-it is not a key.
+stored and the host answers `conflict`. A key must also never name a
+second write: the job's idempotency key repeats for every fire of a
+schedule, so on its own it would replay an earlier fire's receipts, and
+the job's `id` names one attempt and changes on resume. A UUID saved
+before the first batch is neither; one made fresh on a retry would not
+find the earlier receipts.
 
 > [!NOTE]
 > The host keeps a batch's receipt for 24 hours. A batch resent after that

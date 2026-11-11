@@ -789,10 +789,11 @@ class DatabaseBinding:
             raise fail(start, err) from err
         next_offset = start
         for b in batches:
-            if stop is not None and stop(next_offset):
-                return {"next": next_offset, "done": False}
-            retry = RetryToken(write_chunks_operation_id(key, next_offset), "")
             try:
+                # A ``stop`` that raises still reports how far the write got.
+                if stop is not None and stop(next_offset):
+                    return {"next": next_offset, "done": False}
+                retry = RetryToken(write_chunks_operation_id(key, next_offset), "")
                 await self.batch(b, retry=retry)
             except Exception as err:
                 raise fail(next_offset, err) from err

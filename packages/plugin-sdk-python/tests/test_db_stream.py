@@ -1211,6 +1211,20 @@ class WriteChunksTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([n for _, n in self.committed], [2, 2, 1])
         self.assertEqual(self.committed[1][0], write_chunks_operation_id("k", 2))
 
+    async def test_stop_that_raises_reports_progress(self) -> None:
+        db = create_database_binding(self._execute)
+        stmts = self._statements(db)
+
+        def stop(n: int) -> bool:
+            if n >= 2:
+                raise RuntimeError("deadline clock failed")
+            return False
+
+        with self.assertRaises(WriteChunksError) as ctx:
+            await db.write_chunks(stmts, key="k", stop=stop, max_statements=2, max_request_bytes=0)
+        self.assertEqual(ctx.exception.next, 2)
+        self.assertEqual([n for _, n in self.committed], [2])
+
     async def test_lost_reply_is_replayed_on_resume(self) -> None:
         self.lose_reply_at = 2
         db = create_database_binding(self._execute)
