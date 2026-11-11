@@ -181,8 +181,10 @@ jobs:
           permission-pull-requests: write
 
       # GitHub refuses to update the branch of a queued pull request (#881).
-      # The queued floors land with it, and the next merge raises them again
-      # from newer coverage, so this run leaves the branch alone and says so.
+      # The queued floors land with it, and a later merge raises them further
+      # if its own coverage allows, so this run leaves the branch alone and
+      # says so. The lookups here and in "Enable auto-merge" match only this
+      # repository's branch: a fork's pull request can share the branch name.
       - name: Check for a queued pull request
         if: steps.ratchet.outputs.raise == 'true'
         id: queued
@@ -190,7 +192,7 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           set -euo pipefail
-          pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head ci/coverage-floors --state open --json number --jq '.[0].number // empty')"
+          pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head ci/coverage-floors --base main --state open --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // empty')"
           queued=false
           if [[ -n "$pr" ]]; then
             queued="$(gh api graphql \
@@ -200,7 +202,7 @@ jobs:
           fi
           echo "queued=$queued" >> "$GITHUB_OUTPUT"
           if [[ "$queued" == "true" ]]; then
-            message="Coverage floors pull request #$pr is in the merge queue, so its branch cannot be updated. The next merge raises the floors again."
+            message="Coverage floors pull request #$pr is in the merge queue, so its branch cannot be updated. A later merge raises the floors further if its coverage allows."
             echo "::notice title=Coverage floors::$message"
             echo "$message" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -236,7 +238,7 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           set -euo pipefail
-          pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head ci/coverage-floors --state open --json number --jq '.[0].number // empty')"
+          pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head ci/coverage-floors --base main --state open --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // empty')"
           if [[ -z "$pr" ]]; then
             echo "No open coverage floors pull request."
             exit 0

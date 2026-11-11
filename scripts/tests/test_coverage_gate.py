@@ -736,6 +736,11 @@ class RatchetTest(unittest.TestCase):
         self.assertIn('echo "queued=$queued" >> "$GITHUB_OUTPUT"', check["run"])
         for name in ("Create or update pull request", "Enable auto-merge"):
             self.assertIn("steps.queued.outputs.queued != 'true'", steps[names.index(name)]["if"])
+        # Both lookups match only this repository's branch into main: a
+        # fork's pull request can use the same branch name.
+        for name in ("Check for a queued pull request", "Enable auto-merge"):
+            self.assertIn("--base main", steps[names.index(name)]["run"])
+            self.assertIn("map(select(.isCrossRepository | not))", steps[names.index(name)]["run"])
 
 
 class MainTest(unittest.TestCase):
