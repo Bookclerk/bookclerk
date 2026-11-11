@@ -561,14 +561,27 @@ pub(crate) fn insert_candidate(
             existing.source = c.source.clone();
             existing.product_id = c.product_id.clone();
         }
-        let new_key = candidate_map_key(&existing);
-        map.insert(new_key, existing);
+        insert_keyed(map, existing);
         return;
     }
 
+    insert_keyed(map, c);
+}
+
+/// Inserts `c` under its map key, kept apart from a different-language
+/// edition already stored under the same key.
+///
+/// A soft key names only the title and authors, so an edition kept apart
+/// for its language would otherwise replace the other one. Both a new
+/// candidate and a merged one are reinserted through here, so a later hit
+/// for the qualified edition never falls back to the bare key.
+///
+/// # Arguments
+///
+/// * `map` - Candidates by key; `c` must not be in it.
+/// * `c` - The candidate to store.
+fn insert_keyed(map: &mut HashMap<String, StorefrontCandidate>, c: StorefrontCandidate) {
     let mut key = candidate_map_key(&c);
-    // A soft key names only the title and authors, so an edition kept
-    // apart above for its language would replace the other one.
     if map
         .get(&key)
         .is_some_and(|other| languages_differ(c.language.as_deref(), other.language.as_deref()))
@@ -875,14 +888,16 @@ mod tests {
         let none = HashSet::new();
         let mut map = HashMap::new();
         for c in [
-            edition("es", Some("Spanish")),
             edition("en", Some("English")),
+            edition("es", Some("Spanish")),
+            edition("es-2", Some("Spanish")),
             edition("unknown", None),
         ] {
             insert_candidate(&mut map, c, &none, &none, &none);
         }
-        // The Spanish and English editions stay apart; the one with no
-        // language still merges into the first match.
+        // The Spanish and English editions stay apart, a second Spanish hit
+        // merges into the Spanish one without displacing the English one,
+        // and the one with no language still merges into a match.
         assert_eq!(map.len(), 2, "{:?}", map.keys());
         let languages: HashSet<Option<String>> = map.values().map(|c| c.language.clone()).collect();
         assert!(languages.contains(&Some("English".into())));
