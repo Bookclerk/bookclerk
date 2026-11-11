@@ -289,6 +289,33 @@ fn replay_payload(
     encode_guest_replay_payload(&guest_reply)
 }
 
+/// Host UPDATE that finalizes this batch's own stub as a read-only receipt
+/// when the batch failed after its stub committed.
+///
+/// For an adapter whose stub commits before it sees the result (D1), a
+/// read-only guest batch that fails a result cap has committed only the
+/// host's bookkeeping. Finalizing the stub with
+/// [`GUEST_READ_ONLY_REPLAY_PAYLOAD`] leaves the receipt as a successful
+/// read would have: a retry under the same operation id runs the reads
+/// again and fails the same cap, instead of finding an unfinished claim.
+/// Only a `claimed` row with this request's hash is touched, so another
+/// request's receipt under the same id is left alone.
+#[must_use]
+pub fn guest_receipt_read_only_finalize_stmt(
+    operation_id: &str,
+    guest_hash: &str,
+) -> TypedDbStatement {
+    typed_exec(
+        "UPDATE bookclerk_receipts SET payload = ?, status = 'ok' \
+         WHERE operation_id = ? AND request_hash = ? AND status = 'claimed'",
+        vec![
+            DbValue::Text(GUEST_READ_ONLY_REPLAY_PAYLOAD.into()),
+            DbValue::Text(operation_id.into()),
+            DbValue::Text(guest_hash.into()),
+        ],
+    )
+}
+
 /// Host UPDATE that promotes a claimed stub to a durable `ok` payload.
 fn finalize_claimed_payload(payload: &str, operation_id: &str) -> TypedDbStatement {
     typed_exec(
@@ -600,6 +627,21 @@ mod tests {
         assert!(!guest_batch_is_read_only(&returning, 1));
         assert!(!guest_batch_is_read_only(&reads, 0), "no guest statements");
         assert!(!guest_batch_is_read_only(&reads, 9), "hint past the wrap");
+    }
+
+    #[test]
+    fn read_only_finalize_touches_only_this_requests_claimed_stub() {
+        let stmt = guest_receipt_read_only_finalize_stmt("guest-op", "hash-a");
+        assert!(stmt.sql.contains("status = 'claimed'"), "{}", stmt.sql);
+        assert!(stmt.sql.contains("request_hash = ?"), "{}", stmt.sql);
+        assert_eq!(
+            stmt.parameters,
+            vec![
+                DbValue::Text(GUEST_READ_ONLY_REPLAY_PAYLOAD.into()),
+                DbValue::Text("guest-op".into()),
+                DbValue::Text("hash-a".into()),
+            ]
+        );
     }
 
     #[test]

@@ -86,6 +86,7 @@ jobs:
       check_plugin_sdk_abi: ${{ steps.resolve.outputs.check_plugin_sdk_abi }}
       check_python_sdk: ${{ steps.resolve.outputs.check_python_sdk }}
       check_workerd_guests: ${{ steps.resolve.outputs.check_workerd_guests }}
+      check_plugin_examples: ${{ steps.resolve.outputs.check_plugin_examples }}
       check_author_surface: ${{ steps.resolve.outputs.check_author_surface }}
       check_fmt: ${{ steps.resolve.outputs.check_fmt }}
       check_clippy: ${{ steps.resolve.outputs.check_clippy }}
@@ -195,6 +196,8 @@ jobs:
           "$PY" scripts/tests/test_image_release_tags.py
           "$PY" scripts/tests/test_demo_image.py
           "$PY" scripts/tests/test_cla_check.py
+          "$PY" scripts/tests/test_maintainer_review.py
+          "$PY" scripts/tests/test_signed_commits.py
           "$PY" scripts/tests/test_coverage_gate.py
           "$PY" scripts/tests/test_contract_coverage.py
           "$PY" scripts/tests/test_worker_startup.py
@@ -411,6 +414,10 @@ jobs:
         env:
           CI_COVERAGE_DIR: ${{ runner.temp }}/coverage
         run: python3 scripts/ci-exec.py run workerd_guests
+
+      - name: Plugin examples under every database profile
+        if: needs.plan.outputs.check_plugin_examples == 'true'
+        run: python3 scripts/ci-exec.py run plugin_examples
 
       # The Python SDK's and the guests' coverage reports, and the JUnit
       # reports Codecov Test Analytics reads. Failed tests still upload their
@@ -1318,15 +1325,16 @@ jobs:
     name: merge-queue fail-fast
     if: github.event_name == 'merge_group' || inputs.private-head
     runs-on: ubuntu-latest
-    timeout-minutes: 130
+    timeout-minutes: 310
     permissions:
       actions: write
     steps:
-      - name: Cancel the run when a job fails
+      - name: Cancel the run when a job fails or the group is gone
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
+          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
         run: |
           set -uo pipefail
           while true; do
@@ -1339,6 +1347,21 @@ jobs:
             # then on it reports the result, and a cancel would stop it.
             if grep -qE '^(in_progress|completed)\|[^|]*\|(.* / )?CI Gate$' <<<"$jobs"; then
               exit 0
+            fi
+            # The queue deletes a dropped group's branch; its run can't merge
+            # (docs/contributing/ci.md#superseded-merge-groups). Exit code 2
+            # means the ref is missing; a transport error just retries. The
+            # queue also deletes a merged group's branch, so look again for a
+            # started CI Gate first.
+            if [ -n "$QUEUE_REF" ]; then
+              git ls-remote --exit-code "https://github.com/$GH_REPO.git" "$QUEUE_REF" >/dev/null
+              if [ $? -eq 2 ] && started=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+                  --jq '.jobs[] | select(.status != "queued") | .name') &&
+                ! grep -qE '^(.* / )?CI Gate$' <<<"$started"; then
+                echo "::error::cancelling the merge-group run: $QUEUE_REF no longer exists"
+                gh run cancel "$RUN_ID"
+                exit 0
+              fi
             fi
             failed=$(grep -E '^completed\|(failure|timed_out)\|' <<<"$jobs" || true)
             # Cancel only while another job is still running or waiting.

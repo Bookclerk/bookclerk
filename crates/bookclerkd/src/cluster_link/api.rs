@@ -34,7 +34,8 @@ use bookclerk_library::control_plane::{
     ClusterLink, RemoteApprover, RemotePluginConsent,
 };
 use bookclerk_plugin_host::{
-    approve_remote_request, remote_row_consent_state, RemoteApprovalError, RemoteNarrowing,
+    approve_remote_request, remote_row_changes, remote_row_consent_state, RemoteApprovalError,
+    RemoteNarrowing,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -73,6 +74,7 @@ pub(crate) fn consent_json(row: &RemotePluginConsent) -> RemoteConsentView {
         revoked_at: row.revoked_at.clone(),
         updated_at: row.updated_at.clone(),
         state: remote_row_consent_state(row).as_str(),
+        pending: remote_row_changes(row),
     }
 }
 
@@ -165,6 +167,9 @@ pub struct RemoteConsentView {
     /// How this host stands on the request: `consented`, `awaiting_host_consent` (no approval, or a revoked one), `awaiting_host_reapproval` (the owner changed the request or the archive since the approval), or `invalid_grant` (a grant that does not parse).
     #[schema(example = "consented")]
     pub state: &'static str,
+    /// What the owner's current request asks for beyond the request the operator approved, as the operator-facing lines the CLI prints; empty when nothing was approved yet or the request stays within the approval.
+    #[schema(example = json!(["Awaiting consent (not automatically approved):", "  fetch hosts: any public website (*)"]))]
+    pub pending: Vec<String>,
 }
 
 /// Schema for the grant members of [`RemoteConsentView`].

@@ -14,6 +14,11 @@ use crate::client::{CatalogAudiobook, ChirpClient, DEFAULT_GRAPHQL_URL};
 /// Describe / config id for this store (`chirp`).
 pub const ID: &str = "chirp";
 
+/// How long [`ChirpSource::purchase_hints`] keeps starting title lookups for
+/// titles without a Chirp product id. Well under the host's 10 s batch
+/// deadline, so the pricing query for every resolved title lands in time.
+pub const RESOLVE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Chirp catalog client used by the guest's discovery entrypoints.
 ///
 /// Construct with [`ChirpSource::new`]; use [`ChirpSource::with_graphql_url`]
@@ -29,6 +34,9 @@ impl Default for ChirpSource {
         Self::new()
     }
 }
+
+/// Most audiobooks priced by one aliased GraphQL query.
+const PRICE_BATCH_IDS: usize = 50;
 
 impl ChirpSource {
     /// Returns a Chirp source aimed at the production GraphQL endpoint.
@@ -294,7 +302,18 @@ impl ChirpSource {
                     Some(a) => format!("{title} {a}"),
                     None => title.to_string(),
                 };
-                let tip = client.typeahead(&q).await.unwrap_or_default();
+                let tip = match client.typeahead(&q).await {
+                    Ok(tip) => tip,
+                    // The store's "slow down" stops the lookup and reaches
+                    // the host, which pauses the store.
+                    Err(crate::error::ChirpError::RateLimited(wait)) => {
+                        return Err(bookclerk_storefront::SourceError::RateLimited(wait));
+                    }
+                    Err(err) => {
+                        tracing::debug!(error = %err, "chirp typeahead failed");
+                        crate::client::TypeaheadCatalog::default()
+                    }
+                };
                 tip.audiobooks
                     .into_iter()
                     .find(|hit| {
@@ -328,12 +347,113 @@ impl ChirpSource {
 
         if opts.with_price {
             if let Some(ref mut h) = hint {
-                if let Ok(Some(pricing)) = client.audiobook_pricing(&h.product_id).await {
-                    apply_chirp_pricing(h, &pricing);
+                match client.audiobook_pricing(&h.product_id).await {
+                    Ok(Some(pricing)) => apply_chirp_pricing(h, &pricing),
+                    Ok(None) => {}
+                    // The store's own "slow down" reaches the host; other
+                    // failures leave the card unpriced.
+                    Err(crate::error::ChirpError::RateLimited(wait)) => {
+                        return Err(bookclerk_storefront::SourceError::RateLimited(wait));
+                    }
+                    Err(err) => {
+                        tracing::debug!(error = %err, "chirp pricing failed");
+                    }
                 }
             }
         }
         Ok(hint)
+    }
+
+    /// Resolves purchase hints for several titles, pricing them in one
+    /// aliased GraphQL request instead of one per card.
+    ///
+    /// Titles whose Chirp product id is known resolve first, without a
+    /// search; the rest are looked up by title until the 5 s `RESOLVE_BUDGET` runs
+    /// out, and a title not tried by then answers `None`, which the host
+    /// does not take as an answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bookclerk_storefront::SourceError::RateLimited`] when Chirp
+    /// asks to slow down, during a title lookup or the pricing query; other
+    /// failures leave the cards unpriced.
+    pub async fn purchase_hints(
+        &self,
+        opts: &[PurchaseHintOpts],
+    ) -> bookclerk_storefront::Result<Vec<Option<SourcePurchaseHint>>> {
+        self.purchase_hints_within(opts, RESOLVE_BUDGET).await
+    }
+
+    /// [`Self::purchase_hints`] with a chosen title-lookup budget.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::purchase_hints`].
+    async fn purchase_hints_within(
+        &self,
+        opts: &[PurchaseHintOpts],
+        budget: std::time::Duration,
+    ) -> bookclerk_storefront::Result<Vec<Option<SourcePurchaseHint>>> {
+        let deadline = tokio::time::Instant::now() + budget;
+        let known = |q: &PurchaseHintOpts| {
+            q.product_id
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|s| !s.is_empty())
+        };
+        let mut hints: Vec<Option<SourcePurchaseHint>> = vec![None; opts.len()];
+        // Known products first, so a slow lookup never costs them a price.
+        let mut order: Vec<usize> = (0..opts.len()).collect();
+        order.sort_by_key(|&i| !known(&opts[i]));
+        for i in order {
+            let unpriced = PurchaseHintOpts {
+                with_price: false,
+                ..opts[i].clone()
+            };
+            if known(&opts[i]) {
+                hints[i] = self.purchase_hint(&unpriced).await?;
+                continue;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            match tokio::time::timeout_at(deadline, self.purchase_hint(&unpriced)).await {
+                Ok(resolved) => hints[i] = resolved?,
+                // Out of lookup time: the rest stay untried.
+                Err(_) => break,
+            }
+        }
+        let ids: Vec<String> = hints
+            .iter()
+            .zip(opts)
+            .filter(|(hint, query)| query.with_price && hint.is_some())
+            .filter_map(|(hint, _)| hint.as_ref().map(|h| h.product_id.clone()))
+            .collect();
+        if ids.is_empty() {
+            return Ok(hints);
+        }
+        let client = ChirpClient::new(&self.graphql_url);
+        let mut prices = std::collections::HashMap::new();
+        for chunk in ids.chunks(PRICE_BATCH_IDS) {
+            match client.audiobook_pricings(chunk).await {
+                Ok(found) => prices.extend(found),
+                Err(crate::error::ChirpError::RateLimited(wait)) => {
+                    return Err(bookclerk_storefront::SourceError::RateLimited(wait));
+                }
+                Err(err) => {
+                    tracing::debug!(error = %err, "chirp batch pricing failed");
+                    break;
+                }
+            }
+        }
+        for (hint, query) in hints.iter_mut().zip(opts) {
+            if let (true, Some(h)) = (query.with_price, hint.as_mut()) {
+                if let Some(pricing) = prices.get(&h.product_id) {
+                    apply_chirp_pricing(h, pricing);
+                }
+            }
+        }
+        Ok(hints)
     }
 
     /// Lists up to `limit` titles on the storefront's current deals shelf.
@@ -637,6 +757,29 @@ mod tests {
         assert_eq!(language_fetch_limit(35, true), 40);
         assert_eq!(language_fetch_limit(50, true), 50);
         assert_eq!(language_fetch_limit(usize::MAX, true), usize::MAX);
+    }
+
+    /// With no lookup time left, a title without a product id is left
+    /// untried while a known product still resolves, without calling Chirp.
+    #[tokio::test]
+    async fn known_products_resolve_before_the_lookup_budget() {
+        let source = ChirpSource::with_graphql_url("http://127.0.0.1:9/graphql");
+        let by_title = PurchaseHintOpts {
+            title: Some("Title Only".into()),
+            region: "us".into(),
+            ..PurchaseHintOpts::default()
+        };
+        let known = PurchaseHintOpts {
+            product_id: Some("42".into()),
+            region: "us".into(),
+            ..PurchaseHintOpts::default()
+        };
+        let hints = source
+            .purchase_hints_within(&[by_title, known], std::time::Duration::ZERO)
+            .await
+            .unwrap();
+        assert!(hints[0].is_none());
+        assert_eq!(hints[1].as_ref().unwrap().product_id, "42");
     }
 
     #[tokio::test]

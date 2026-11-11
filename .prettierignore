@@ -24,6 +24,7 @@ crates/bookclerk-library/fixtures/guest_receipt/
 crates/bookclerk-plugin-abi/schema/
 crates/bookclerk-plugin-manifest/schema/
 examples/plugins-echo-workerd-rust/modules/pkg/
+examples/plugins-echo-workerd-ts/modules/
 crates/bookclerk-plugins/optional/covers/modules/
 crates/bookclerk-plugins/optional/metadata-audnexus/modules/
 crates/bookclerk-plugins/optional/metadata-openlibrary/modules/

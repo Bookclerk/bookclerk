@@ -31,6 +31,7 @@ import {
 import { cn, pageWidthClass } from "@/lib/utils";
 import { formatDuration } from "@/lib/libraryFilters";
 import { queueDiscoverSearch } from "@/lib/routes";
+import { myWishFor } from "@/lib/myWish";
 
 /**
  * Wishlist view — personal wishes and the global request queue.
@@ -90,10 +91,9 @@ export function WishlistPage({
       const [w, q] = await Promise.all([fetchWishlist(), fetchRequestQueue()]);
       setMine(w);
       setQueue(q);
-      const myKeys = new Map(w.map((r) => [r.work_key, r.uuid]));
       const baseMine = w.map((r) => attachWishersFromQueue(catalogTitleFromRequest(r), q));
       const baseQueue = q.map((entry) =>
-        catalogTitleFromQueueEntry(entry, myKeys.get(entry.work_key) ?? null),
+        catalogTitleFromQueueEntry(entry, myWishFor(w, entry)?.uuid ?? null),
       );
       setMineTitles(baseMine);
       setQueueTitles(baseQueue);
@@ -148,7 +148,6 @@ export function WishlistPage({
         authors: title.authors ?? undefined,
         asin: title.asin ?? undefined,
         isbn: title.isbn ?? undefined,
-        work_key: title.work_key || undefined,
         store_editions: title.store_editions ?? undefined,
         purchase_hints: title.purchase_hints ?? undefined,
         cover_url: title.cover_url ?? undefined,
@@ -185,8 +184,6 @@ export function WishlistPage({
     await signOut(role);
     onLogout();
   }
-
-  const myKeys = new Set(mine.map((r) => r.work_key).filter(Boolean));
 
   return (
     <div className="flex h-full flex-col">
@@ -335,7 +332,7 @@ export function WishlistPage({
                               title.authors ?? "Unknown author",
                               formatSeriesLabel(title.series, title.series_index),
                               title.length_minutes ? formatDuration(title.length_minutes) : null,
-                              myKeys.has(title.work_key) ? "on your list" : null,
+                              entry && myWishFor(mine, entry) ? "on your list" : null,
                             ]
                               .filter(Boolean)
                               .join(" · ")}

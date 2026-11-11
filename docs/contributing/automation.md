@@ -142,6 +142,8 @@ GitHub App as [Dependabot auto-merge](#dependabot-auto-merge), not
 | `docs-publish.yml` | Commits and release tags on the `bookclerk-docs` repository ([docs publishing](#docs-publishing)) |
 | `merge-queue-requeue.yml` | Auto-merge on a pull request the queue removed only because a job never got a runner ([re-enqueue](ci.md#merge-queue-re-enqueue)) |
 | `cla.yml` | Signature commits on the `cla-signatures` branch, the only writer its ruleset allows; the check's pull request comment and `Bookclerk CLA` check run ([CLA check](licensing.md#the-cla-check)) |
+| `maintainer-review.yml` | The `Maintainer review` check run and the `touches-ci-or-build` label ([maintainer review](#maintainer-review)) |
+| `signed-commits.yml` | The `Signed commits` check run and the pull request comment on how to sign ([signed commits](#signed-commits)) |
 
 The probes share `.github/actions/api-drift-report`:
 
@@ -216,6 +218,106 @@ signed and attributed to the App.
 `osv-advisories.yml` seals its verdict report with `FUZZ_CRASH_BUNDLE_KEY`
 too, and its intermediate evidence with `OSV_REMEDIATION_BUNDLE_KEY`.
 
+## Maintainer review
+
+Anyone can open a pull request, and a fork's pull request runs its own
+copy of the CI workflows, both on the pull request and in the merge queue.
+So a green `CI Gate` on an outside contribution only proves that its own
+workflows passed. The `Maintainer review` check makes sure someone with
+write access has read the change before it can merge:
+
+- A pull request passes when its author has write access to the
+  repository, or is Dependabot or the automation App.
+- Any other author's pull request passes only once someone with write
+  access, other than the author, approves its **current head commit**, and
+  no such reviewer's latest review asks for changes. Every push needs a
+  fresh approval.
+- For those pull requests, the check's page lists the changed files that
+  run in CI or at build time, or have no text diff, and the pull request
+  gets the `touches-ci-or-build` label. The list covers:
+  - workflows and actions, scripts and Cargo configuration (`.github/`,
+    `scripts/`, `.cargo/`);
+  - the Dev Container, packaging, the lint tools and fuzz corpora;
+  - build scripts, manifests and lockfiles anywhere (`build.rs`,
+    `Cargo.toml`, `Cargo.lock`, `package.json`, `uv.lock` and the like);
+  - toolchain and container files (`.tool-versions`,
+    `rust-toolchain.toml`, `Dockerfile`);
+  - binary files, and diffs too large to show.
+
+  Read those files in full before approving.
+- The check belongs to the head commit, and passes while any open pull
+  request on that commit passes: a maintainer who opened or approved one of
+  them vouched for exactly that commit, so a second pull request on it
+  can't block it.
+- Merge groups pass: every pull request in one already passed the check to
+  enter the queue.
+
+The check needs the approval to be on the head commit, so it never trusts
+an approval given before a later push. When it doesn't update after you
+approve, press **Re-run** on the check.
+
+`maintainer-review-trigger.yml` runs on `pull_request` and
+`pull_request_review` with no token permissions and no secrets.
+`maintainer-review.yml` then runs from the default branch on
+`workflow_run`, reads the pull request, its reviews and its changed files
+through the API (`scripts/maintainer_review.py`), and posts the check as
+the automation App. It never checks out or runs pull request code. A
+first-time contributor's trigger run waits for a maintainer to approve
+workflow runs, and until then no check arrives and the pull request stays
+blocked.
+
+### Setup
+
+1. The App's **Checks** and **Pull requests** permissions (see
+   [Automation App](#automation-app)) cover the check run and the label.
+2. Once `maintainer-review.yml` is on `main`, add `Maintainer review` to
+   the required status checks of the default branch's ruleset, expected
+   from the automation App, like `Bookclerk CLA`.
+
+## Signed commits
+
+The default branch's ruleset accepts only commits that GitHub shows as
+**Verified**. A pull request with an unsigned commit still passes CI and
+can be approved, but GitHub never lets it into the merge queue, and
+nothing on the pull request says why. The `Signed commits` check says why:
+
+- It fails while any of the pull request's commits isn't verified, whoever
+  wrote it. The ruleset exempts nobody, so neither does the check. It
+  judges only pull requests into the default branch, the one the ruleset
+  protects.
+- It keeps one comment on such a pull request, posted as the automation
+  App and edited in place on every push. The comment lists each unverified
+  commit with GitHub's reason (not signed, a key that isn't a signing key,
+  an unverified email, and so on), then the steps to set up SSH signing,
+  re-sign the commits without changing them (a rebase from where the branch
+  left the default branch), and force-push.
+- Once every commit is verified, the check passes and the comment says so.
+  A pull request whose commits were always verified gets no comment.
+- The check belongs to the head commit and passes while any open pull
+  request on that commit passes; the ruleset still judges each pull
+  request's own commits. Merge groups pass.
+
+When it doesn't update after GitHub finishes verifying a signature, press
+**Re-run** on the check.
+
+`signed-commits.yml` runs from the default branch on `workflow_run` when
+the unprivileged `Maintainer review trigger` workflow completes for a pull
+request event (opened, pushed to, reopened), so one trigger job serves both
+checks. It reads the pull request's commits and comments through the API
+(`scripts/signed_commits.py`) and never checks out or runs pull request
+code. Like the maintainer review check, it waits for a maintainer to
+approve a first-time contributor's workflow runs.
+
+### Setup
+
+1. The App's **Checks** and **Pull requests** permissions (see
+   [Automation App](#automation-app)) cover the check run and the comment.
+2. Optionally, once `signed-commits.yml` is on `main`, add `Signed commits`
+   to the required status checks of the default branch's ruleset, expected
+   from the automation App. The ruleset's **Require signed commits** rule
+   already blocks the merge, so requiring the check only makes the reason
+   show among the failed checks.
+
 ## OSV remediation
 
 `osv-remediate.yml` runs after every successful full OSV scan of `main`
@@ -223,6 +325,12 @@ too, and its intermediate evidence with `OSV_REMEDIATION_BUNDLE_KEY`.
 without a preceding scan. It reads the open OSV-Scanner
 alerts in **Security → Code scanning** and looks each advisory up on
 api.osv.dev, with its aliases.
+
+A request to api.osv.dev or the GitHub API that times out, drops its
+connection or gets a 408, 429 or 5xx answer is tried up to four times,
+2, 4 and 8 seconds apart, or longer when a `Retry-After` header asks for
+up to a minute. A request that still fails, and any other error, stops
+the run with an error message.
 
 When OSV doesn't know an alert's rule id, the other advisory ids in the
 alert's rule and message text stand in for it. That happens, for example,
@@ -509,6 +617,9 @@ in step with this one, as Markdown that the website and agents read.
   `main` commit matches because a burst skipped it, the release's build is
   committed beside `main`, parented on its head without moving it, and
   that commit is tagged. An existing tag is never moved.
+- **A release's commit must be on `main`.** The build refuses a release
+  whose tag names a commit the default branch doesn't contain (see
+  [release tags](packaging.md#release-tags)).
 
 ### The tree
 

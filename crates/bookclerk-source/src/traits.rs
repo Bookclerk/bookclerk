@@ -195,6 +195,28 @@ pub trait ContentSource: Send + Sync {
         Ok(None)
     }
 
+    /// Whether [`Self::catalog_detail_by_isbn`] resolves any audiobook ISBN to
+    /// a full record (the guest's declared `CatalogCapabilities.detailByIsbn`).
+    ///
+    /// Catalog search asks every source that returns `true` to fill lean
+    /// result rows from other stores, instead of naming one storefront.
+    /// Default: `false`.
+    fn answers_catalog_detail_by_isbn(&self) -> bool {
+        false
+    }
+
+    /// Full catalog record for an ISBN, from a source that declares
+    /// [`Self::answers_catalog_detail_by_isbn`].
+    ///
+    /// Default: [`Self::catalog_detail`] with the ISBN as the product id.
+    ///
+    /// # Errors
+    ///
+    /// Returns the source's error; external guests soft-fail to `Ok(None)`.
+    async fn catalog_detail_by_isbn(&self, isbn: &str) -> Result<Option<CatalogHit>> {
+        self.catalog_detail(isbn).await
+    }
+
     /// Expand related / series / author candidates from a taste seed.
     ///
     /// Default: empty. `limit` caps returned hits (sources may also budget HTTP).
@@ -209,6 +231,28 @@ pub trait ContentSource: Send + Sync {
     async fn purchase_hint(&self, opts: &PurchaseHintOpts) -> Result<Option<SourcePurchaseHint>> {
         let _ = opts;
         Ok(None)
+    }
+
+    /// Resolve purchase hints for several titles in one call, one answer
+    /// per query in order.
+    ///
+    /// Default: [`Self::purchase_hint`] for each query, stopping at the
+    /// first error. A store whose catalog prices many products per request
+    /// overrides this to make one request. A [`SourceError::RateLimited`]
+    /// error applies to the whole batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first query's error.
+    async fn purchase_hints(
+        &self,
+        opts: &[PurchaseHintOpts],
+    ) -> Result<Vec<Option<SourcePurchaseHint>>> {
+        let mut out = Vec::with_capacity(opts.len());
+        for query in opts {
+            out.push(self.purchase_hint(query).await?);
+        }
+        Ok(out)
     }
 
     /// Current deals / promos for discovery shelves.

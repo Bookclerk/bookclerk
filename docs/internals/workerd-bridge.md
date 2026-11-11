@@ -35,6 +35,34 @@ gateway ends) so a blocking stdin read cannot lock stdout.
 cannot read gateway state. See [guest-jail.md](guest-jail.md) and
 the [Workers RPC ADR](../adr/plugin-workers-rpc-workerd.md).
 
+## The bridge socket
+
+The bridge listens on an ephemeral loopback port that only the launcher
+dials. The launcher never picks a port number for workerd to bind:
+
+- **Unix:** the launcher binds `127.0.0.1:0` and hands the listener to
+  workerd with `--socket-fd=rpc=<fd>`. Linux Landlock `OutboundListen`
+  allows `bind(port=0)` only, so workerd could not bind a chosen port.
+- **Windows:** workerd has no `--socket-fd`, so it binds `127.0.0.1:0`
+  itself and reports the port with `--control-fd=1`, one JSON line on its
+  stdout: `{"event":"listen","socket":"rpc","port":53117}`. Isolates write
+  `console.*` output to the same stdout, so the generated config turns on
+  structured logging, and `bookclerk_workerd::control::listen_port` accepts
+  only an object with exactly the three control keys. The `workerd_control`
+  fuzz target checks that no log line reads as a control message.
+
+The launcher forwards workerd's stdout and stderr to its own log line by
+line. It keeps at most 16 KiB of each line and drops the rest, so isolate
+output cannot make it buffer or log an unbounded line.
+
+> [!NOTE]
+> The launcher used to reserve a port on Windows, release it and pass it to
+> workerd. Another process could take the port in between, and because
+> workerd runs in a different AppContainer the bind then failed with
+> `WSAEACCES` (10013) instead of "address in use" (issue #781). If workerd
+> exits before it reports a port, the launcher fails at once with workerd's
+> log rather than waiting out the readiness timeout.
+
 The launcher is a `PluginWorker` toward the host. Every host call is turned
 into exactly one HTTP request to the isolate; the isolate keeps no cross-request
 state except database-adapter sessions (below). Three route families exist:
@@ -50,6 +78,13 @@ grant tokens and asks the isolate which entrypoint families the covering
 grant lets it export; the isolate does not retain the `Bindings`. That is
 why `PluginWorker.open` / `describe` / `shutdown` stay JSON while everything
 that *is* an ABI method call travels as Cap'n bytes on `/invoke`.
+
+The launcher talks to the bridge with its own small HTTP/1.1 client on
+`127.0.0.1:<port>` (`BridgeHttp`), for the `/health` check as for every other
+route. It never reads proxy environment variables (`ALL_PROXY`,
+`HTTPS_PROXY`, `HTTP_PROXY`), so `Bearer <BRIDGE_TOKEN>` cannot reach a proxy
+the launcher inherited. Its other requests, such as the `workerd` download,
+keep the usual proxy handling.
 
 ## `POST /invoke`
 
@@ -175,3 +210,38 @@ codecs, typed SQL helpers) into one ES module with `scripts/build-embed.mjs`
 on drift; `scripts/gen-plugin-abi.py --check` and `scripts/sync-workerd-pin.py --check`
 keep the Rust (`crates/bookclerk-plugin-sdk/embed/`) and Python
 (`bookclerk_plugin_sdk/bridge/`) mirrors byte-identical.
+
+A Python isolate gets the Python SDK the same way: the launcher injects
+`bookclerk_plugin_sdk/__init__.py` (a stub), `workerd.py` and every module
+`workerd.py` reaches at run time (`_abi`, `_capnp`, `_wire`, `guest_sql`,
+`limits`, `plugin_migration`, `db_value`), and skips a vendored copy of any of
+them so it is not packaged twice. `_wire.py` (the generated codecs, about
+260 KB) is only compiled when the isolate imports `db_value`, so a guest
+without a database binding does not pay for it. The list lives in
+`SDK_PY_MODULES` (`crates/bookclerk-workerd/src/config.rs`) and in both SDKs'
+sparse workerd configs; tests in the launcher and the Python SDK walk the
+SDK's imports and fail when one reaches a module the list leaves out.
+
+## Database errors between the isolates
+
+The author never holds a database grant: the adapter isolate hands it one
+`GrantedDatabaseTransport` per `[[databases]]` binding, and the author calls
+it over Workers RPC. An error thrown across that hop arrives as a plain error
+without its `PluginError` code or `details`, so the transport's `*Bytes`
+methods (`executeBytes`, `executeStreamedBytes`, `openStreamedBytes`,
+`limitsBytes`) never throw for a channel failure. They encode it into the
+reply instead, using the ABI's existing `err` arms:
+
+| Method | Failure is reported as |
+| --- | --- |
+| `executeBytes` | `ExecuteResultReply.err` |
+| `executeStreamedBytes`, `openStreamedBytes` | one `ExecuteStreamFrame.err` frame |
+| `limitsBytes` | `DbCapabilitiesReply.err` |
+
+The channel status maps as in the route table above: `404` / `405` are
+`unsupported` (an older host), `413` is `limit_exceeded` with the parsed cap in
+`details`, `401` is `unauthorized`, anything else (or a fetch that throws) is
+`unavailable`. Both author SDKs read through these methods and decode the
+reply locally, so `err.limit` survives a `413` and an `unsupported` streamed
+read still falls back to the inline read. If the RPC call itself fails, the
+Python SDK reports it as `unavailable`.

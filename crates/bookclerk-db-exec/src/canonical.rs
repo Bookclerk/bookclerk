@@ -19,6 +19,14 @@ pub fn canonical_statement(
     Statement::from_sql_and_values(CANONICAL_TRANSPORT, sql, values)
 }
 
+/// Renders a SeaORM query builder as a canonical statement (`?`
+/// placeholders, SQLite-shaped identifiers quoting) for host batches; the
+/// adapter lowers it after RPC.
+#[must_use]
+pub fn build_canonical<Q: sea_orm::QueryTrait>(query: &Q) -> Statement {
+    query.build(CANONICAL_TRANSPORT)
+}
+
 /// Executes already-canonical host SQL. Never desugars or physically lowers.
 ///
 /// # Errors

@@ -29,6 +29,10 @@ default = []
 host-helpers = ["dep:bookclerk-library"]
 
 [[test]]
+name = "adapter_conformance"
+required-features = ["host-helpers"]
+
+[[test]]
 name = "claim_redeem_txn"
 required-features = ["host-helpers"]
 
@@ -65,6 +69,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 bookclerk-db-guest.workspace = true
+bookclerk-db-testkit.workspace = true
 bookclerk-plugin-abi = { workspace = true, features = ["host"] }
 bookclerk-library = { workspace = true, features = ["test-support"] }
 chrono.workspace = true

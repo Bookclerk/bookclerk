@@ -232,6 +232,9 @@ struct PluginDescribe {
   configOptions @11 :List(ConfigOption);
   # Embedded CLI schema (same shape as `PluginCli.describe`); empty when unused.
   cli @12 :CliSchema;
+  # Catalog behaviours a storefront declares so the host can use any store
+  # for catalog search without naming it; all false for other kinds.
+  catalog @13 :CatalogCapabilities;
 }
 
 # Marks a scalar field whose zero value (empty `Text` / `Data`, numeric `0`)
@@ -995,6 +998,13 @@ interface ContentSource {
   revokeAccount @13 (
       params :RevokeAccountParams  # Account id and its stored credentials.
   ) -> (result :EmptyReply);
+  # Purchase links / price hints for several titles in one call, so a guest
+  # whose backend prices many products per request makes one request for a
+  # page of cards. A guest that cannot batch answers each query as
+  # `purchaseHint` would.
+  purchaseHints @14 (
+      params :PurchaseHintsParams  # The titles to price, in order.
+  ) -> (result :PurchaseHintsReply);
 }
 
 # `remoteLibrary` entrypoint: long-running remote-library lifecycle (start /
@@ -1117,6 +1127,10 @@ enum PluginErrorCode $jsonEnum {
   # `maxRequestBytes`, ...). `details` names the limit, its cap and the value
   # that exceeded it.
   limitExceeded @12;
+  # The backend asked the guest to slow down (HTTP 429 or its equivalent).
+  # `details.retryAfterMs` says how long the host should leave this
+  # backend alone, when the backend said so.
+  rateLimited @13;
 }
 
 #############################################################################
@@ -1192,6 +1206,17 @@ struct PluginCapabilities {
   # (`scheduled(controller)` trigger, `[triggers] crons`), normalized to
   # single spaces.
   crons @8 :List(Text);
+}
+
+# Catalog behaviours a storefront declares in `describe()`. Catalog search
+# reads them instead of special-casing plugin ids; every flag defaults to
+# false, so a guest that says nothing keeps the plain behaviour.
+struct CatalogCapabilities {
+  # True when `catalogDetail` resolves a bare ISBN (sent in both `productId`
+  # and `isbn`) to a full bibliographic record. Catalog search then asks this
+  # store to fill description, narrators, runtime and genres on lean result
+  # rows from any store that carry an ISBN.
+  detailByIsbn @0 :Bool;
 }
 
 # Portal Accounts connect mode for storefronts.
@@ -1981,6 +2006,13 @@ struct CatalogHit {
   seriesEntries @23 :List(SeriesEntry);
   # Product id of the parent podcast show, for a podcast episode.
   parentProductId @24 :Text $optional;
+  # The storefront's own rank for this hit in `searchCatalog` results:
+  # 1-based position in the store's ordering for the requested sort across
+  # all pages (page 2 of 20-hit pages starts at 21), or a store-wide
+  # popularity rank when the store has one. 0 means unranked. Catalog search
+  # merges stores by it for relevance and popularity sorts and puts unranked
+  # hits after ranked ones. Other catalog methods leave it 0.
+  rankHint @25 :UInt32 $optional;
 }
 
 # Success payload of the catalog list methods.
@@ -2054,6 +2086,29 @@ struct PurchaseHintReply {
   union {
     # Success: hint or not-found marker.
     ok @0 :PurchaseHintResult;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Params of `ContentSource.purchaseHints`: the titles to price together.
+struct PurchaseHintsParams {
+  # One query per title, each as for `purchaseHint`; at most `maxListPage`.
+  queries @0 :List(PurchaseHintParams);
+}
+
+# Success payload of `ContentSource.purchaseHints`.
+struct PurchaseHintsResult {
+  # One answer per query, in the order the queries were sent.
+  results @0 :List(PurchaseHintResult);
+}
+
+# Result union of `ContentSource.purchaseHints`. A whole-batch `err` (for
+# example `rateLimited`) applies to every query in it.
+struct PurchaseHintsReply {
+  union {
+    # Success: an answer per query.
+    ok @0 :PurchaseHintsResult;
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }

@@ -43,6 +43,9 @@ pub const KV_EXPIRY_LEASE: &str = "maintenance.kv";
 /// Lease of the session duty (expired operator sessions, OIDC RP states,
 /// WebAuthn challenges).
 pub const SESSION_EXPIRY_LEASE: &str = "maintenance.sessions";
+/// Lease of the record retention duty (expired credentials and tokens,
+/// finished uploads, abandoned scan inventories, old audit rows).
+pub const RECORD_RETENTION_LEASE: &str = "maintenance.records";
 /// Lease a schema migration runs under (see
 /// [`crate::apply_host_schema_with_batch_opts`]).
 pub const MIGRATION_LEASE: &str = "schema.migrate";

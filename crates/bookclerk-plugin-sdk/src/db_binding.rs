@@ -2,17 +2,20 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bookclerk_plugin_abi::{
-    encoded_execute_request_bytes, guest_statement_kind, DbCapabilities, DbPlanStatementKind,
-    DbResultSelection, DbTiming, DbValue, ExecuteReply, ExecuteRequest, ExecuteStreamLimits,
+    encoded_execute_request_bytes, guest_statement_kind, DbCapabilities, DbColumn,
+    DbPlanStatementKind, DbResultSelection, DbRow, DbTiming, DbValue, ExecuteReply, ExecuteRequest,
+    ExecuteStreamBody, ExecuteStreamDecoder, ExecuteStreamFrame, ExecuteStreamLimits,
     LimitExceeded, PluginError, PluginErrorCode, Result, StatementResult, TypedDbStatement,
 };
 use bookclerk_plugin_abi::{Bindings, GuestDatabase};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::Mutex;
 
 static OP_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -321,40 +324,7 @@ impl DatabaseBinding {
         batch: Vec<TypedDbStatement>,
         retry: Option<RetryToken>,
     ) -> Result<ExecuteReply> {
-        if batch.is_empty() {
-            return Err(PluginError::invalid_params(
-                "execute statements must be non-empty",
-            ));
-        }
-        let token = retry.or_else(|| self.options.retry.clone());
-        let (operation_id, request_hash) = match token {
-            Some(t) => (t.operation_id, t.request_hash),
-            None => (new_operation_id(), String::new()),
-        };
-        let request = ExecuteRequest {
-            operation_id,
-            request_hash,
-            statements: batch,
-            deadline_unix_ms: self.options.deadline_unix_ms,
-        };
-        let encoded = encoded_execute_request_bytes(&request)?;
-        let session_caps = self.session_limits().await;
-        // The tighter of the binding's configured cap and the session's, so
-        // an oversized request fails locally with the typed error the host
-        // would raise (the same cap `chunk()` splits to).
-        let cap = tighter_cap(
-            self.options.max_request_bytes,
-            session_caps
-                .as_ref()
-                .map_or(0, |caps| caps.max_request_bytes),
-        );
-        if cap > 0 && encoded.len() > cap as usize {
-            return Err(PluginError::limit_exceeded(LimitExceeded::new(
-                "maxRequestBytes",
-                u64::from(cap),
-                u64::try_from(encoded.len()).unwrap_or(u64::MAX),
-            )));
-        }
+        let (request, session_caps) = self.request_for(batch, retry).await?;
         let Some(caps) = session_caps.filter(DbCapabilities::streams_results) else {
             return reply_for(&request, self.session.execute(request.clone()).await?);
         };
@@ -374,6 +344,58 @@ impl DatabaseBinding {
             }
             other => reply_for(&request, other?),
         }
+    }
+
+    /// The request `batch` is sent as, and the session's limits.
+    ///
+    /// The retry token is `retry`, else the binding's default, else a fresh
+    /// operation id. The encoded request is held to the tighter of the
+    /// binding's and the session's `max_request_bytes`, so an oversized
+    /// request fails locally with the typed error the host would raise (the
+    /// same cap `chunk()` splits to).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::invalid_params`] when the batch is empty or
+    /// cannot be encoded, and a typed `limit_exceeded` (`maxRequestBytes`)
+    /// when the encoded request is over the cap.
+    async fn request_for(
+        &self,
+        batch: Vec<TypedDbStatement>,
+        retry: Option<RetryToken>,
+    ) -> Result<(ExecuteRequest, Option<DbCapabilities>)> {
+        if batch.is_empty() {
+            return Err(PluginError::invalid_params(
+                "execute statements must be non-empty",
+            ));
+        }
+        let token = retry.or_else(|| self.options.retry.clone());
+        let (operation_id, request_hash) = match token {
+            Some(t) => (t.operation_id, t.request_hash),
+            None => (new_operation_id(), String::new()),
+        };
+        let request = ExecuteRequest {
+            operation_id,
+            request_hash,
+            statements: batch,
+            deadline_unix_ms: self.options.deadline_unix_ms,
+        };
+        let encoded = encoded_execute_request_bytes(&request)?;
+        let session_caps = self.session_limits().await;
+        let cap = tighter_cap(
+            self.options.max_request_bytes,
+            session_caps
+                .as_ref()
+                .map_or(0, |caps| caps.max_request_bytes),
+        );
+        if cap > 0 && encoded.len() > cap as usize {
+            return Err(PluginError::limit_exceeded(LimitExceeded::new(
+                "maxRequestBytes",
+                u64::from(cap),
+                u64::try_from(encoded.len()).unwrap_or(u64::MAX),
+            )));
+        }
+        Ok((request, session_caps))
     }
 
     /// # Errors
@@ -523,6 +545,38 @@ impl PreparedStatement {
         Ok(statement_result_to_d1_result(&stmt, &reply.timing))
     }
 
+    /// Rows one at a time from the same single-snapshot streamed read as
+    /// [`Self::all`], without holding the whole result.
+    ///
+    /// ```ignore
+    /// let mut rows = db.prepare("SELECT id, path FROM edition_files").iterate(None);
+    /// while let Some(row) = rows.next().await {
+    ///     let row = row?;
+    ///     // ...
+    /// }
+    /// ```
+    ///
+    /// Nothing is sent until the first [`RowStream::next`]. On a session
+    /// that streams, rows are decoded as their frames arrive and each is
+    /// handed out once, so memory stays near one frame however large
+    /// the result is. The read still fails closed (`limit_exceeded`) past
+    /// the session's streamed budget, after the rows that fit were handed
+    /// out. On a session that does not stream, or answers `unsupported`
+    /// before any row arrived, the rows come from one inline read like
+    /// [`Self::all`]. Dropping the stream stops reading it.
+    #[must_use]
+    pub fn iterate(self, retry: Option<RetryToken>) -> RowStream {
+        let statement = self.as_all();
+        let binding = statement.binding.clone();
+        RowStream {
+            binding,
+            state: RowStreamState::Unopened {
+                statement: Box::new(statement),
+                retry,
+            },
+        }
+    }
+
     /// # Errors
     ///
     /// Returns [`PluginError::invalid_params`] when terminal intent is missing.
@@ -544,6 +598,348 @@ impl PreparedStatement {
             result_selection: intent.selection,
         })
     }
+}
+
+/// Bytes [`RowStream`] reads from a streamed reply per step.
+const ROW_STREAM_READ_BYTES: usize = 64 * 1024;
+
+/// Rows of one read, handed out one at a time
+/// ([`PreparedStatement::iterate`]).
+///
+/// Each row is a column name → value map, the shape [`D1Result::results`]
+/// holds. The stream ends (`None`) after the last row, or after the first
+/// error it yields.
+pub struct RowStream {
+    /// The binding the read goes through.
+    binding: DatabaseBinding,
+    /// Where the read is.
+    state: RowStreamState,
+}
+
+impl std::fmt::Debug for RowStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = match &self.state {
+            RowStreamState::Unopened { .. } => "unopened",
+            RowStreamState::Inline { .. } => "inline",
+            RowStreamState::Streamed(_) => "streamed",
+            RowStreamState::Done => "done",
+        };
+        f.debug_struct("RowStream").field("state", &state).finish()
+    }
+}
+
+/// Where a [`RowStream`] is.
+enum RowStreamState {
+    /// Nothing sent yet.
+    Unopened {
+        /// The read, with row-returning intent.
+        statement: Box<PreparedStatement>,
+        /// Retry identity for the read.
+        retry: Option<RetryToken>,
+    },
+    /// Rows of an inline reply, handed out in order.
+    Inline {
+        /// Result columns.
+        columns: Vec<DbColumn>,
+        /// Rows not yet handed out.
+        rows: std::vec::IntoIter<DbRow>,
+    },
+    /// A streamed reply being decoded.
+    Streamed(Box<StreamedRows>),
+    /// Every row was handed out, or an error was.
+    Done,
+}
+
+/// The frames of a streamed reply in flight.
+enum StreamedBody {
+    /// Frames already in memory, read from `at`.
+    Inline {
+        /// Every frame.
+        bytes: Vec<u8>,
+        /// Bytes already fed to the decoder.
+        at: usize,
+    },
+    /// Frames read on demand.
+    Reader(Pin<Box<dyn AsyncRead + Send>>),
+}
+
+/// A streamed read: the decoder, which keeps no rows, and the rows it
+/// handed out that the caller has not taken yet (at most one read window).
+struct StreamedRows {
+    /// The request, kept to check the reply and for the inline fallback.
+    request: ExecuteRequest,
+    /// The frames.
+    body: StreamedBody,
+    /// Read buffer for a reader body.
+    buf: Vec<u8>,
+    /// Budget the stream is held to.
+    limits: ExecuteStreamLimits,
+    /// Streaming decoder.
+    decoder: ExecuteStreamDecoder,
+    /// Columns of the statement whose rows are arriving.
+    columns: Vec<DbColumn>,
+    /// Rows decoded but not yet handed out.
+    pending: VecDeque<DbRow>,
+    /// Rows handed out so far, held to the statement's `max_rows`.
+    yielded: usize,
+    /// The failure that ended the stream, yielded once the rows the
+    /// decoder accepted ahead of it are handed out.
+    failure: Option<PluginError>,
+}
+
+/// What one step of a streamed read produced.
+enum StreamStep {
+    /// More rows may be pending; look again.
+    Continue,
+    /// The stream ended cleanly.
+    End,
+}
+
+impl RowStream {
+    /// The next row, `None` once the read is over.
+    ///
+    /// # Errors
+    ///
+    /// Yields (once, then `None`) the error the read fails with: a typed
+    /// `limit_exceeded` past the session's budget, the adapter's error, an
+    /// `unavailable` when the stream breaks off, or `invalid_params` when
+    /// the reply does not answer the request or carries more rows than the
+    /// statement's `max_rows`.
+    pub async fn next(&mut self) -> Option<Result<HashMap<String, DbValue>>> {
+        loop {
+            match std::mem::replace(&mut self.state, RowStreamState::Done) {
+                RowStreamState::Done => return None,
+                RowStreamState::Unopened { statement, retry } => {
+                    match self.open(&statement, retry).await {
+                        Ok(state) => self.state = state,
+                        Err(err) => return Some(Err(err)),
+                    }
+                }
+                RowStreamState::Inline { columns, mut rows } => {
+                    let row = rows.next()?;
+                    let map = row_map(&columns, row);
+                    self.state = RowStreamState::Inline { columns, rows };
+                    return Some(Ok(map));
+                }
+                RowStreamState::Streamed(mut streamed) => {
+                    if let Some(row) = streamed.pending.pop_front() {
+                        streamed.yielded = streamed.yielded.saturating_add(1);
+                        if let Err(err) = check_max_rows(&streamed.request, streamed.yielded) {
+                            return Some(Err(err));
+                        }
+                        let map = row_map(&streamed.columns, row);
+                        self.state = RowStreamState::Streamed(streamed);
+                        return Some(Ok(map));
+                    }
+                    match streamed.step().await {
+                        Ok(StreamStep::Continue) => {
+                            self.state = RowStreamState::Streamed(streamed);
+                        }
+                        Ok(StreamStep::End) => return None,
+                        // Nothing was handed out yet, so the read can still
+                        // be served inline, as `all()` would be.
+                        Err(err)
+                            if err.code == PluginErrorCode::Unsupported
+                                && streamed.yielded == 0 =>
+                        {
+                            match self.inline(streamed.request).await {
+                                Ok(state) => self.state = state,
+                                Err(err) => return Some(Err(err)),
+                            }
+                        }
+                        Err(err) => return Some(Err(err)),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Sends the read: streamed when the session advertises a streamed
+    /// budget and serves it, inline otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns the request's own errors (see [`DatabaseBinding::execute`])
+    /// and the session's error for the read.
+    async fn open(
+        &self,
+        statement: &PreparedStatement,
+        retry: Option<RetryToken>,
+    ) -> Result<RowStreamState> {
+        let (request, caps) = self
+            .binding
+            .request_for(vec![statement.as_typed()?], retry)
+            .await?;
+        let Some(caps) = caps.filter(DbCapabilities::streams_results) else {
+            return self.inline(request).await;
+        };
+        let stream = match self.binding.session.execute_streamed(request.clone()).await {
+            Ok(stream) => stream,
+            Err(err) if err.code == PluginErrorCode::Unsupported => {
+                return self.inline(request).await;
+            }
+            Err(err) => return Err(err),
+        };
+        let body = match stream.into_body() {
+            ExecuteStreamBody::Inline(bytes) => StreamedBody::Inline { bytes, at: 0 },
+            ExecuteStreamBody::Reader(reader) => StreamedBody::Reader(reader),
+        };
+        let limits = ExecuteStreamLimits::from_capabilities(&caps);
+        Ok(RowStreamState::Streamed(Box::new(StreamedRows {
+            request,
+            body,
+            buf: Vec::new(),
+            limits,
+            decoder: ExecuteStreamDecoder::streaming(limits),
+            columns: Vec::new(),
+            pending: VecDeque::new(),
+            yielded: 0,
+            failure: None,
+        })))
+    }
+
+    /// Reads `request` inline and hands its rows out.
+    ///
+    /// # Errors
+    ///
+    /// Returns the session's error, or [`PluginError::invalid_params`] when
+    /// the reply does not answer `request`.
+    async fn inline(&self, request: ExecuteRequest) -> Result<RowStreamState> {
+        let reply = reply_for(
+            &request,
+            self.binding.session.execute(request.clone()).await?,
+        )?;
+        // `reply_for` checked there is exactly one result.
+        let result = reply.statements.into_iter().next().unwrap_or_default();
+        Ok(RowStreamState::Inline {
+            columns: result.columns,
+            rows: result.rows.into_iter(),
+        })
+    }
+}
+
+impl StreamedRows {
+    /// Feeds the decoder one read window, queueing the rows it completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the decoder's error (a typed `limit_exceeded`, a malformed
+    /// or out-of-sequence frame, or the adapter's `err` frame),
+    /// [`PluginError::unavailable`] when the reader fails or the stream
+    /// ends early, and [`PluginError::invalid_params`] when the head does
+    /// not answer the request.
+    async fn step(&mut self) -> Result<StreamStep> {
+        if let Some(err) = self.failure.take() {
+            return Err(err);
+        }
+        // The body is read to its end even after the final frame, so bytes
+        // trailing it are refused as `collect()` refuses them.
+        let chunk: &[u8] = match &mut self.body {
+            StreamedBody::Inline { bytes, at } => {
+                let start = *at;
+                let end = bytes.len().min(start.saturating_add(ROW_STREAM_READ_BYTES));
+                *at = end;
+                &bytes[start..end]
+            }
+            StreamedBody::Reader(reader) => {
+                self.buf.resize(ROW_STREAM_READ_BYTES, 0);
+                let n = reader.read(&mut self.buf).await.map_err(|err| {
+                    PluginError::unavailable(format!("streamed reply read failed: {err}"))
+                })?;
+                &self.buf[..n]
+            }
+        };
+        if chunk.is_empty() {
+            // The body is exhausted: the decoder reports whether the reply
+            // was whole.
+            // The stream ends here (`next` never steps again after `End`),
+            // so the spent decoder is swapped for an idle one.
+            let spent = std::mem::replace(
+                &mut self.decoder,
+                ExecuteStreamDecoder::streaming(self.limits),
+            );
+            spent.finish()?;
+            return Ok(StreamStep::End);
+        }
+        let mut frames = Vec::new();
+        let pushed = self.decoder.push_frames(chunk, &mut frames);
+        for frame in frames {
+            match frame {
+                ExecuteStreamFrame::Head {
+                    operation_id,
+                    statement_count,
+                } => check_stream_head(&self.request, &operation_id, statement_count)?,
+                ExecuteStreamFrame::Statement { columns, .. } => self.columns = columns,
+                ExecuteStreamFrame::Rows(rows) => self.pending.extend(rows),
+                // The decoder records the outcome; `finish` reports it.
+                ExecuteStreamFrame::End(_) | ExecuteStreamFrame::Err(_) => {}
+            }
+        }
+        if let Err(err) = pushed {
+            // Rows accepted ahead of the failure are handed out first.
+            if self.pending.is_empty() {
+                return Err(err);
+            }
+            // The decoder latched the failure; it is not fed again.
+            self.failure = Some(err);
+        }
+        Ok(StreamStep::Continue)
+    }
+}
+
+/// Checks a streamed head answers `request`: the same operation id (a
+/// request sent without one takes the id the host minted) and one result
+/// per statement.
+///
+/// # Errors
+///
+/// Returns [`PluginError::invalid_params`] when the head is for another
+/// request.
+fn check_stream_head(
+    request: &ExecuteRequest,
+    operation_id: &str,
+    statement_count: u32,
+) -> Result<()> {
+    if !request.operation_id.is_empty() && operation_id != request.operation_id {
+        return Err(PluginError::invalid_params(format!(
+            "reply answers operation {operation_id}, not {}",
+            request.operation_id
+        )));
+    }
+    if usize::try_from(statement_count).ok() != Some(request.statements.len()) {
+        return Err(PluginError::invalid_params(format!(
+            "reply carries {statement_count} results for {} statements",
+            request.statements.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Checks `yielded` rows are within the first statement's `max_rows`.
+///
+/// # Errors
+///
+/// Returns [`PluginError::invalid_params`] past a non-zero `max_rows`.
+fn check_max_rows(request: &ExecuteRequest, yielded: usize) -> Result<()> {
+    let Some(statement) = request.statements.first() else {
+        return Ok(());
+    };
+    let max_rows = usize::try_from(statement.max_rows).unwrap_or(usize::MAX);
+    if statement.max_rows > 0 && yielded > max_rows {
+        return Err(PluginError::invalid_params(format!(
+            "reply carries more than {max_rows} rows for statement 0, which asked for at most {max_rows}"
+        )));
+    }
+    Ok(())
+}
+
+/// One row as a column name → value map, taking the row's values.
+fn row_map(columns: &[DbColumn], row: DbRow) -> HashMap<String, DbValue> {
+    columns
+        .iter()
+        .map(|c| c.name.clone())
+        .zip(row.values)
+        .collect()
 }
 
 /// The smallest statement a request can carry, used to measure the others.
@@ -876,6 +1272,34 @@ mod tests {
         Err(PluginErrorCode),
         /// A stream whose `err` frame is `unsupported`.
         UnsupportedFrame,
+        /// Frames of a reply with this many rows, behind a reader.
+        Reader(usize),
+        /// Frames of a reply with this many rows, cut before the end frame
+        /// is whole.
+        Truncated(usize),
+        /// Frames of a reply with this many rows, then trailing bytes.
+        Trailing(usize),
+        /// Frames whose head and statement arrive, then an `unsupported`
+        /// error frame after this many rows.
+        UnsupportedAfter(usize),
+        /// A reader that fails.
+        BrokenReader,
+        /// A stream whose `err` frame is `unsupported`, and an inline read
+        /// that fails.
+        UnsupportedFrameInlineFails,
+    }
+
+    /// A reader that always fails.
+    struct FailingReader;
+
+    impl AsyncRead for FailingReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("wire cut")))
+        }
     }
 
     /// A session that advertises `caps` and counts every call.
@@ -948,6 +1372,9 @@ mod tests {
     impl GuestDatabase for StreamingSession {
         async fn execute(&self, request: ExecuteRequest) -> Result<ExecuteReply> {
             self.inline.fetch_add(1, Ordering::SeqCst);
+            if matches!(self.answer, StreamAnswer::UnsupportedFrameInlineFails) {
+                return Err(PluginError::unavailable("inline read failed"));
+            }
             Ok(reply_with_rows(&request, 1))
         }
 
@@ -966,13 +1393,50 @@ mod tests {
                     &reply_with_rows(&request, *rows),
                 ),
                 StreamAnswer::Err(code) => Err(PluginError::new(*code, "streamed answer")),
-                StreamAnswer::UnsupportedFrame => {
+                StreamAnswer::UnsupportedFrame | StreamAnswer::UnsupportedFrameInlineFails => {
                     Ok(bookclerk_plugin_abi::ExecuteStream::from_frames(
                         bookclerk_plugin_abi::encode_execute_stream_error(
                             &PluginError::unsupported("no stream"),
                         )?,
                     ))
                 }
+                StreamAnswer::Reader(rows) => {
+                    Ok(bookclerk_plugin_abi::ExecuteStream::reader(Box::pin(
+                        std::io::Cursor::new(bookclerk_plugin_abi::encode_execute_stream(
+                            &reply_with_rows(&request, *rows),
+                        )?),
+                    )))
+                }
+                StreamAnswer::Truncated(rows) => {
+                    let mut frames = bookclerk_plugin_abi::encode_execute_stream(
+                        &reply_with_rows(&request, *rows),
+                    )?;
+                    frames.truncate(frames.len() - 3);
+                    Ok(bookclerk_plugin_abi::ExecuteStream::inline(frames))
+                }
+                StreamAnswer::Trailing(rows) => {
+                    let mut frames = bookclerk_plugin_abi::encode_execute_stream(
+                        &reply_with_rows(&request, *rows),
+                    )?;
+                    frames.extend_from_slice(&[0u8; 8]);
+                    Ok(bookclerk_plugin_abi::ExecuteStream::inline(frames))
+                }
+                StreamAnswer::UnsupportedAfter(rows) => {
+                    let mut frames = bookclerk_plugin_abi::encode_execute_stream(
+                        &reply_with_rows(&request, *rows),
+                    )?;
+                    let end = bookclerk_plugin_abi::encoded_execute_stream_frame_bytes(
+                        &ExecuteStreamFrame::End(reply_with_rows(&request, 0).timing),
+                    )?;
+                    frames.truncate(frames.len() - end.len());
+                    frames.extend(bookclerk_plugin_abi::encode_execute_stream_error(
+                        &PluginError::unsupported("gave up"),
+                    )?);
+                    Ok(bookclerk_plugin_abi::ExecuteStream::inline(frames))
+                }
+                StreamAnswer::BrokenReader => Ok(bookclerk_plugin_abi::ExecuteStream::reader(
+                    Box::pin(FailingReader),
+                )),
             }
         }
     }
@@ -1545,5 +2009,278 @@ mod tests {
             DbPlanStatementKind::Returning
         );
         let _ = hash;
+    }
+
+    /// Every row `stream` hands out, then the error it ended with, if any;
+    /// checks the stream stays ended after that.
+    async fn drain(mut stream: RowStream) -> (Vec<HashMap<String, DbValue>>, Option<PluginError>) {
+        let mut rows = Vec::new();
+        let mut failure = None;
+        while let Some(row) = stream.next().await {
+            match row {
+                Ok(row) => rows.push(row),
+                Err(err) => {
+                    failure = Some(err);
+                    break;
+                }
+            }
+        }
+        assert!(stream.next().await.is_none(), "the stream stays ended");
+        assert_eq!(format!("{stream:?}"), r#"RowStream { state: "done" }"#);
+        (rows, failure)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn iterate_hands_out_streamed_rows_in_order() {
+        // Inline frames and a reader body several read windows long.
+        for answer in [StreamAnswer::Rows(300), StreamAnswer::Reader(6000)] {
+            let expected = match answer {
+                StreamAnswer::Rows(n) | StreamAnswer::Reader(n) => n,
+                _ => unreachable!(),
+            };
+            let session = StreamingSession::new(DbCapabilities::advertised_sqlite(), answer);
+            let binding = DatabaseBinding::from_session(session.clone());
+            let stream = binding.prepare("SELECT id, title FROM books").iterate(None);
+            assert_eq!(format!("{stream:?}"), r#"RowStream { state: "unopened" }"#);
+            assert_eq!(session.counts(), (0, 0, 0), "nothing is sent before next()");
+            let (rows, failure) = drain(stream).await;
+            assert!(failure.is_none(), "{failure:?}");
+            assert_eq!(rows.len(), expected);
+            for (i, row) in rows.iter().enumerate() {
+                assert_eq!(
+                    row.get("id"),
+                    Some(&DbValue::Int64(i64::try_from(i).expect("small")))
+                );
+                assert_eq!(row.get("title"), Some(&DbValue::Text(format!("Title {i}"))));
+            }
+            assert_eq!(session.counts(), (0, 1, 1));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn iterate_reads_inline_when_the_session_does_not_stream() {
+        let mut inline_only = DbCapabilities::advertised_sqlite();
+        inline_only.max_streamed_result_bytes = 0;
+        inline_only.max_streamed_result_rows = 0;
+        for (caps, answer, expected) in [
+            (inline_only, StreamAnswer::Rows(3), (1, 0, 1)),
+            (
+                DbCapabilities::advertised_sqlite(),
+                StreamAnswer::Err(PluginErrorCode::Unsupported),
+                (1, 1, 1),
+            ),
+            // An `unsupported` err frame before any row still falls back.
+            (
+                DbCapabilities::advertised_sqlite(),
+                StreamAnswer::UnsupportedFrame,
+                (1, 1, 1),
+            ),
+            (
+                DbCapabilities::advertised_sqlite(),
+                StreamAnswer::UnsupportedAfter(0),
+                (1, 1, 1),
+            ),
+        ] {
+            let session = StreamingSession::new(caps, answer);
+            let mut stream = DatabaseBinding::from_session(session.clone())
+                .prepare("SELECT id, title FROM books")
+                .iterate(None);
+            let first = stream.next().await.expect("one row").expect("inline row");
+            assert_eq!(first.get("id"), Some(&DbValue::Int64(0)));
+            assert_eq!(format!("{stream:?}"), r#"RowStream { state: "inline" }"#);
+            let (rest, failure) = drain(stream).await;
+            assert!(rest.is_empty() && failure.is_none());
+            assert_eq!(session.counts(), expected);
+        }
+
+        // A session whose limits fail reads inline too.
+        let session = Arc::new(RecordingSession {
+            last: Mutex::new(None),
+        });
+        let (rows, failure) = drain(
+            DatabaseBinding::from_session(session.clone())
+                .prepare("SELECT n FROM t")
+                .iterate(None),
+        )
+        .await;
+        assert!(failure.is_none());
+        assert_eq!(rows.len(), 1);
+        let sent = session.last.lock().expect("lock").clone().expect("sent");
+        assert_eq!(sent.statements[0].result_selection, DbResultSelection::Rows);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn iterate_surfaces_stream_failures_once() {
+        let mut tiny = DbCapabilities::advertised_sqlite();
+        tiny.max_streamed_result_bytes = 4096;
+        tiny.max_streamed_result_rows = 4;
+        let cases = [
+            (
+                DbCapabilities::advertised_sqlite(),
+                StreamAnswer::Err(PluginErrorCode::Unavailable),
+                PluginErrorCode::Unavailable,
+                0,
+            ),
+            (
+                tiny,
+                StreamAnswer::Rows(9),
+                PluginErrorCode::LimitExceeded,
+                0,
+            ),
+            (
+                DbCapabilities::advertised_sqlite(),
+                StreamAnswer::Truncated(5),
+                PluginErrorCode::Unavailable,
+                5,
+            ),
+            (
+                DbCapabilities::advertised_sqlite(),
+                // The rows ahead of the trailing bytes are still handed out.
+                StreamAnswer::Trailing(2),
+                PluginErrorCode::InvalidParams,
+                2,
+            ),
+            // Once rows were handed out the read cannot restart behind them.
+            (
+                DbCapabilities::advertised_sqlite(),
+                StreamAnswer::UnsupportedAfter(3),
+                PluginErrorCode::Unsupported,
+                3,
+            ),
+            (
+                DbCapabilities::advertised_sqlite(),
+                StreamAnswer::BrokenReader,
+                PluginErrorCode::Unavailable,
+                0,
+            ),
+        ];
+        for (caps, answer, code, handed) in cases {
+            let session = StreamingSession::new(caps, answer);
+            let (rows, failure) = drain(
+                DatabaseBinding::from_session(session.clone())
+                    .prepare("SELECT id, title FROM books")
+                    .iterate(None),
+            )
+            .await;
+            let err = failure.expect("the read fails");
+            assert_eq!(err.code, code, "{err}");
+            assert_eq!(rows.len(), handed, "{err}");
+            assert_eq!(session.counts().0, 0, "no inline retry: {err}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn iterate_reports_a_failing_inline_fallback_and_its_state() {
+        // The stream answers `unsupported` before any row, and the inline
+        // read it falls back to fails: that failure is the caller's.
+        let session = StreamingSession::new(
+            DbCapabilities::advertised_sqlite(),
+            StreamAnswer::UnsupportedFrameInlineFails,
+        );
+        let (rows, failure) = drain(
+            DatabaseBinding::from_session(session.clone())
+                .prepare("SELECT id FROM books")
+                .iterate(None),
+        )
+        .await;
+        assert!(rows.is_empty());
+        assert_eq!(
+            failure.expect("inline failure").code,
+            PluginErrorCode::Unavailable
+        );
+        assert_eq!(session.counts(), (1, 1, 1));
+
+        // Mid-read, the stream reports that it is streaming.
+        let session =
+            StreamingSession::new(DbCapabilities::advertised_sqlite(), StreamAnswer::Rows(2));
+        let mut stream = DatabaseBinding::from_session(session)
+            .prepare("SELECT id FROM books")
+            .iterate(None);
+        stream.next().await.expect("a row").expect("first row");
+        assert_eq!(format!("{stream:?}"), r#"RowStream { state: "streamed" }"#);
+        let (rest, failure) = drain(stream).await;
+        assert_eq!(rest.len(), 1);
+        assert!(failure.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn iterate_holds_the_reply_to_the_request() {
+        let tampers: [(&str, Tamper); 2] = [
+            ("another operation", |mut reply| {
+                reply.operation_id = "someone-else".into();
+                reply
+            }),
+            ("an extra result", |mut reply| {
+                let extra = reply.statements[0].clone();
+                reply.statements.push(extra);
+                reply
+            }),
+        ];
+        for stream in [true, false] {
+            for (what, tamper) in &tampers {
+                let binding = DatabaseBinding::from_session(Arc::new(TamperingSession {
+                    caps: DbCapabilities::advertised_sqlite(),
+                    stream,
+                    tamper: *tamper,
+                }));
+                let (rows, failure) =
+                    drain(binding.prepare("SELECT id FROM books").iterate(None)).await;
+                let err = failure.unwrap_or_else(|| panic!("{what} must be refused"));
+                assert_eq!(err.code, PluginErrorCode::InvalidParams, "{what}");
+                assert!(rows.is_empty(), "{what}");
+            }
+        }
+
+        // A streamed reply with more rows than the statement asked for stops
+        // at the cap.
+        let session =
+            StreamingSession::new(DbCapabilities::advertised_sqlite(), StreamAnswer::Rows(3));
+        let binding = DatabaseBinding::from_session_with(
+            session,
+            DatabaseBindingOptions {
+                max_result_rows: 2,
+                ..DatabaseBindingOptions::default()
+            },
+        );
+        let (rows, failure) = drain(binding.prepare("SELECT id FROM books").iterate(None)).await;
+        assert_eq!(rows.len(), 2);
+        let err = failure.expect("a third row");
+        assert_eq!(err.code, PluginErrorCode::InvalidParams, "{err}");
+        assert!(err.message.contains("at most 2"), "{err}");
+
+        // A head without an operation id check: the request always carries
+        // one, but a minted id is accepted for an anonymous request.
+        let anonymous = ExecuteRequest {
+            operation_id: String::new(),
+            request_hash: String::new(),
+            statements: Vec::new(),
+            deadline_unix_ms: 0,
+        };
+        check_stream_head(&anonymous, "host-minted", 0).expect("minted id accepted");
+        check_max_rows(&anonymous, 10).expect("no statement, no cap");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn iterate_refuses_an_oversized_request_before_sending() {
+        let session =
+            StreamingSession::new(DbCapabilities::advertised_sqlite(), StreamAnswer::Rows(1));
+        let binding = DatabaseBinding::from_session_with(
+            session.clone(),
+            DatabaseBindingOptions {
+                max_request_bytes: 64,
+                ..DatabaseBindingOptions::default()
+            },
+        );
+        let (rows, failure) = drain(
+            binding
+                .prepare("SELECT id FROM books WHERE title = ?")
+                .bind(vec![DbValue::Text("x".repeat(512))])
+                .iterate(None),
+        )
+        .await;
+        assert!(rows.is_empty());
+        let err = failure.expect("over the request cap");
+        assert_eq!(err.code, PluginErrorCode::LimitExceeded, "{err}");
+        assert_eq!(session.counts().1, 0, "nothing was sent");
     }
 }

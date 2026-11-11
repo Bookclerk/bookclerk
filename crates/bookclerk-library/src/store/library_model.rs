@@ -19,8 +19,8 @@ use uuid::Uuid;
 use super::{now_str, parse_dt, LibraryStore, NewBook};
 use crate::atomic_ops::{atomic_status, DbAtomicParams};
 use crate::entities::{
-    credits, edition_identifiers, editions, expressions, holdings, resolution_overrides,
-    series_entries, store_listings, work_identifiers, works,
+    credits, edition_identifiers, editions, embeddings, expressions, holdings,
+    resolution_overrides, series_entries, store_listings, work_identifiers, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::library_link::{
@@ -646,6 +646,285 @@ pub fn listing_from_book(
     resolve::Listing::from_draft(&draft)
 }
 
+/// A title someone asks about (a wish, a catalog card): what the resolver
+/// needs to say which work it belongs to.
+#[derive(Debug, Clone, Default)]
+pub struct TitleQuery<'a> {
+    /// Display title.
+    pub title: &'a str,
+    /// Comma-separated authors, when known.
+    pub authors: Option<&'a str>,
+    /// Audible ASIN, when known.
+    pub asin: Option<&'a str>,
+    /// ISBN, when known.
+    pub isbn: Option<&'a str>,
+    /// Series name, when known.
+    pub series: Option<&'a str>,
+    /// Position in the series, when known.
+    pub series_index: Option<&'a str>,
+}
+
+/// Plugin key of the synthetic listing a [`TitleQuery`] is resolved as. It
+/// names no plugin, so it never matches a stored listing.
+const TITLE_QUERY_PLUGIN: &str = "bookclerk-query";
+
+/// The listing the resolver sees for a [`TitleQuery`]: a book, with the
+/// query's identifiers, author credits and series. Kind, language and
+/// abridgement are left unknown, so the resolver only joins an existing
+/// edition through a shared identifier and otherwise finds the work by its
+/// identifiers or its title-and-author match key.
+///
+/// # Returns
+///
+/// `None` when the query cannot form a valid listing (a blank title, or a
+/// field over the listing limits): no stored work can match it.
+fn listing_from_query(query: &TitleQuery<'_>) -> Option<resolve::Listing> {
+    let mut identifiers = Vec::new();
+    if let Some(asin) = query.asin.map(str::trim).filter(|a| !a.is_empty()) {
+        identifiers.push((resolve::IdentifierScheme::Asin, asin.to_string(), None));
+    }
+    if let Some(isbn) = query.isbn.map(str::trim).filter(|i| !i.is_empty()) {
+        identifiers.push((resolve::IdentifierScheme::Isbn, isbn.to_string(), None));
+    }
+    let credits = query
+        .authors
+        .map(resolve::names::split_display_names)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|name| (name, resolve::CreditRole::Author, None))
+        .collect();
+    let product_id = query
+        .asin
+        .or(query.isbn)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("title:{}", query.title.trim().to_lowercase()));
+    let draft = resolve::ListingDraft {
+        plugin_key: TITLE_QUERY_PLUGIN.to_string(),
+        marketplace: None,
+        product_id,
+        work_kind: Some(resolve::WorkKind::Book),
+        expression_kind: None,
+        media_kind: None,
+        language: None,
+        abridgement: None,
+        title: query.title.to_string(),
+        subtitle: None,
+        published_at: None,
+        duration_minutes: None,
+        categories: None,
+        identifiers,
+        credits,
+        series: query
+            .series
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| (s.to_string(), query.series_index.map(str::to_string)))
+            .into_iter()
+            .collect(),
+        parent_product_id: None,
+    };
+    match resolve::Listing::from_draft(&draft) {
+        Ok(listing) => Some(listing),
+        Err(err) => {
+            tracing::debug!(error = %err, "title query is not a valid listing; it matches no work");
+            None
+        }
+    }
+}
+
+/// Namespace of the name-based (version 5) UUIDs that catalog work ids are.
+const CATALOG_WORK_NAMESPACE: Uuid = Uuid::from_u128(0x2d7a_91c4_0b5e_5f38_a6e2_7c19_d40b_83f6);
+
+/// The id of a catalog work (a work a wish made, with no edition): a
+/// version 5 UUID over its kind and match key, so every wish for the same
+/// new book, on any node, names the same work. A work with no match key
+/// (no title words) gets the resolver's fresh id instead.
+fn catalog_work_id(work: &resolve::WorkRow) -> String {
+    if work.match_key.is_empty() {
+        return work.id.clone();
+    }
+    let name = format!("work\0{}\0{}", work.kind.as_str(), work.match_key);
+    Uuid::new_v5(&CATALOG_WORK_NAMESPACE, name.as_bytes()).to_string()
+}
+
+/// The ids a catalog work's rows are written under, in place of the fresh
+/// ids the dry-run plan minted.
+struct CatalogIds {
+    /// `(planned, written)` work id.
+    work: (String, String),
+    /// `(planned, written)` expression id, when the plan made one.
+    expression: Option<(String, String)>,
+    /// `(planned, written)` edition id, when the plan made one.
+    edition: Option<(String, String)>,
+}
+
+impl CatalogIds {
+    /// The ids for `plan`'s new rows, with the work written as `work_id`.
+    ///
+    /// The expression's id is a version 5 UUID over the work id and the
+    /// expression's kind, language, abridgement and credit key; the
+    /// edition keeps the plan's id, which is already derived from the
+    /// query's listing key ([`edition_id_for_listing`]).
+    fn new(plan: &resolve::Plan, work_id: &str) -> Self {
+        let planned_work = plan
+            .new_work
+            .as_ref()
+            .map(|w| w.id.clone())
+            .unwrap_or_default();
+        let expression = plan.new_expression.as_ref().map(|x| {
+            let name = format!(
+                "expression\0{work_id}\0{}\0{}\0{}\0{}",
+                x.kind.as_str(),
+                x.language.as_deref().unwrap_or(""),
+                x.abridgement.as_str(),
+                x.credit_key
+            );
+            (
+                x.id.clone(),
+                Uuid::new_v5(&CATALOG_WORK_NAMESPACE, name.as_bytes()).to_string(),
+            )
+        });
+        let edition = plan
+            .new_edition
+            .as_ref()
+            .map(|e| (e.id.clone(), e.id.clone()));
+        Self {
+            work: (planned_work, work_id.to_string()),
+            expression,
+            edition,
+        }
+    }
+
+    /// The written id of the planned row `planned` at `level`, or `None`
+    /// when it is not one of the catalog rows.
+    fn remap(&self, level: resolve::Level, planned: &str) -> Option<String> {
+        let pair = match level {
+            resolve::Level::Work => Some(&self.work),
+            resolve::Level::Expression => self.expression.as_ref(),
+            resolve::Level::Edition => self.edition.as_ref(),
+        }?;
+        (pair.0 == planned).then(|| pair.1.clone())
+    }
+}
+
+/// The statements that write a catalog work's rows: the work, then its
+/// expression and edition when the plan made them, then the edition's
+/// identifiers, each `INSERT OR IGNORE` (canonical SQL-v1) so a repeat or a
+/// concurrent wish is a no-op. A strong identifier another edition already
+/// carries is skipped by its unique key.
+///
+/// # Arguments
+///
+/// * `plan` - The dry-run plan for the wish's query.
+/// * `work` - The plan's new work.
+/// * `ids` - The ids the rows are written under.
+/// * `now` - `created_at` / `updated_at` (RFC 3339).
+fn catalog_statements(
+    plan: &resolve::Plan,
+    work: &resolve::WorkRow,
+    ids: &CatalogIds,
+    now: &str,
+) -> Vec<bookclerk_plugin_abi::TypedDbStatement> {
+    use crate::control_plane::batch::{exec, int_opt, text, text_opt};
+    let mut statements = vec![exec(
+        "INSERT OR IGNORE INTO works (id, kind, title, match_key, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+        vec![
+            text(&ids.work.1),
+            text(work.kind.as_str()),
+            text(&work.title),
+            text(&work.match_key),
+            text(now),
+            text(now),
+        ],
+    )];
+    let (Some(x), Some((_, expression_id))) = (&plan.new_expression, &ids.expression) else {
+        return statements;
+    };
+    statements.push(exec(
+        "INSERT OR IGNORE INTO expressions \
+         (id, work_id, kind, language, abridgement, credit_key, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        vec![
+            text(expression_id),
+            text(&ids.work.1),
+            text(x.kind.as_str()),
+            text_opt(x.language.as_deref()),
+            text(x.abridgement.as_str()),
+            text(&x.credit_key),
+            text(now),
+            text(now),
+        ],
+    ));
+    let (Some(e), Some((_, edition_id))) = (&plan.new_edition, &ids.edition) else {
+        return statements;
+    };
+    statements.push(exec(
+        "INSERT OR IGNORE INTO editions \
+         (id, expression_id, media_kind, title, subtitle, published_at, duration_minutes, \
+          created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        vec![
+            text(edition_id),
+            text(expression_id),
+            text(e.media_kind.as_str()),
+            text(&e.title),
+            text_opt(e.subtitle.as_deref()),
+            text_opt(e.published_at.as_deref()),
+            int_opt(e.duration_minutes),
+            text(now),
+            text(now),
+        ],
+    ));
+    for row in plan
+        .edition_identifiers
+        .iter()
+        .filter(|row| &row.edition_id == edition_id)
+    {
+        statements.push(exec(
+            "INSERT OR IGNORE INTO edition_identifiers \
+             (edition_id, scheme, value, marketplace, strength, strong_key, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            vec![
+                text(edition_id),
+                text(row.key.scheme.as_str()),
+                text(&row.key.value),
+                text(&row.key.marketplace),
+                text(row.key.strength().as_str()),
+                text_opt(row.key.strong_key().as_deref()),
+                text(now),
+            ],
+        ));
+    }
+    statements
+}
+
+/// The work a dry-run plan reached, or `None` when it would make a new one.
+fn planned_work_id(plan: &resolve::Plan, snapshot: &resolve::Snapshot) -> Option<String> {
+    if plan.new_work.is_some() {
+        return None;
+    }
+    if let Some(expression) = &plan.new_expression {
+        return Some(expression.work_id.clone());
+    }
+    let expression_id = match &plan.new_edition {
+        Some(edition) => edition.expression_id.clone(),
+        None => snapshot
+            .editions
+            .iter()
+            .find(|e| e.id == plan.listing.edition_id)?
+            .expression_id
+            .clone(),
+    };
+    snapshot
+        .expressions
+        .iter()
+        .find(|e| e.id == expression_id)
+        .map(|e| e.work_id.clone())
+}
+
 /// The holding a flat library row describes.
 #[must_use]
 pub fn holding_from_book(book: &NewBook) -> resolve::HoldingDraft {
@@ -658,7 +937,7 @@ pub fn holding_from_book(book: &NewBook) -> resolve::HoldingDraft {
 
 impl LibraryStore {
     /// Ids bound per `IN (...)` lookup on this store's backend.
-    fn lookup_chunk(&self) -> usize {
+    pub(super) fn lookup_chunk(&self) -> usize {
         lookup_chunk(self.max_binds)
     }
 
@@ -674,6 +953,156 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         Ok(found > 0)
+    }
+
+    /// The work in the library that `query` belongs to, when the library
+    /// holds one.
+    ///
+    /// The query is resolved exactly as a scanned listing would be (shared
+    /// identifiers first, then the work's identifiers, then the work-level
+    /// title-and-author match), but nothing is written. A query that would
+    /// make a new work, or whose work no library title resolves to, is not
+    /// owned: *Dune Messiah* is its own work beside *Dune*. A query that
+    /// cannot form a valid listing (a blank title, or a field over the
+    /// listing limits) matches no work, so it is not owned either.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when a read fails.
+    pub async fn owned_work_for(&self, query: &TitleQuery<'_>) -> Result<Option<String>> {
+        let Some(work_id) = self.work_for(query).await? else {
+            return Ok(None);
+        };
+        if self.book_uuids_for_work(&work_id).await?.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(work_id))
+    }
+
+    /// The existing work `query` belongs to, held by a library title or
+    /// not, when the resolver finds one; `None` when it would make a new
+    /// work. Nothing is written. A wish stores this id when it is created,
+    /// so the queue and the shelves compare works, not words.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when a read fails. A query that cannot form
+    /// a valid listing (a blank title, or a field over the listing limits)
+    /// names no work.
+    pub async fn work_for(&self, query: &TitleQuery<'_>) -> Result<Option<String>> {
+        let Some(listing) = listing_from_query(query) else {
+            return Ok(None);
+        };
+        let (plan, snapshot) = self.dry_run(&listing).await?;
+        Ok(planned_work_id(&plan, &snapshot))
+    }
+
+    /// Resolves `listing` against the stored rows without writing: the
+    /// plan [`Self::record_listing`] would write, and the snapshot it read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when a read fails.
+    async fn dry_run(
+        &self,
+        listing: &resolve::Listing,
+    ) -> Result<(resolve::Plan, resolve::Snapshot)> {
+        let holder = resolve::Holder::Account(String::from("query"));
+        let holding = resolve::HoldingDraft {
+            holder: holder.clone(),
+            entitlement: resolve::Entitlement::Purchase,
+            purchased_at: None,
+        };
+        let snapshot = self.listing_snapshot(listing, &holder).await?;
+        let plan = resolve::resolve(listing, &holding, &snapshot, &mut UuidIds::default());
+        Ok((plan, snapshot))
+    }
+
+    /// The work a wish for `query` is for, made when the library has none.
+    ///
+    /// The query is resolved exactly as [`Self::work_for`] resolves it. When
+    /// that names an existing work (held by a library title or not), that is
+    /// the work. Otherwise a catalog work is written as one atomic batch:
+    /// the work, an expression and an edition carrying the wish's ASIN and
+    /// ISBN (a non-acquirable catalog edition, as the data model ADR keeps
+    /// catalog results), then their credits and series. No store listing or
+    /// holding is written, so the library does not hold it. A later wish
+    /// with the same identifiers joins that edition, and a later scan of the
+    /// book finds the work through the work matcher (same title, authors
+    /// and kind), so wishes and the scanned title share the work.
+    ///
+    /// Every id is derived (the work's from its match key, the edition's
+    /// from the query, the expression's from both) and every row is
+    /// inserted with `INSERT OR IGNORE`, so two wishes for one new book made
+    /// at once (on one node or two) name the same rows.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - The wished title, authors, identifiers and series.
+    ///
+    /// # Returns
+    ///
+    /// The work, and the existing edition the query's identifiers reached
+    /// (`None` when they reached none).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] when the query cannot form a valid
+    /// listing (a blank title, or a field over the listing limits), and
+    /// [`LibraryError`] when a read or write fails.
+    pub async fn work_for_wish(&self, query: &TitleQuery<'_>) -> Result<(String, Option<String>)> {
+        let Some(listing) = listing_from_query(query) else {
+            return Err(LibraryError::Invalid(String::from(
+                "a wish needs a title within the listing limits",
+            )));
+        };
+        let (plan, snapshot) = self.dry_run(&listing).await?;
+        let edition = plan
+            .new_edition
+            .is_none()
+            .then(|| plan.listing.edition_id.clone());
+        if let Some(work_id) = planned_work_id(&plan, &snapshot) {
+            return Ok((work_id, edition));
+        }
+        let Some(planned) = &plan.new_work else {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "the resolver reached no work for wish {:?}",
+                listing.title
+            )));
+        };
+        let work_id = catalog_work_id(planned);
+        let ids = CatalogIds::new(&plan, &work_id);
+        let statements = catalog_statements(&plan, planned, &ids, &now_str());
+        let operation_id = format!("catalog-work-{}", Uuid::new_v4());
+        self.execute_host_batch(crate::control_plane::batch::request(
+            &operation_id,
+            statements,
+        ))
+        .await?;
+        let mut catalog_plan = plan.clone();
+        catalog_plan.credits = plan
+            .credits
+            .iter()
+            .filter_map(|c| {
+                let mut c = c.clone();
+                c.target_id = ids.remap(c.level, &c.target_id)?;
+                Some(c)
+            })
+            .collect();
+        catalog_plan.series = plan
+            .series
+            .iter()
+            .filter(|s| s.work_id == planned.id)
+            .cloned()
+            .map(|mut s| {
+                s.work_id.clone_from(&work_id);
+                s
+            })
+            .collect();
+        for batch in credit_batches(&catalog_plan) {
+            self.run_write_credits(batch).await?;
+        }
+        Ok((work_id, ids.edition.map(|(_, id)| id)))
     }
 
     /// Resolves `listing` into the library and records `holding` of it.
@@ -773,7 +1202,6 @@ impl LibraryStore {
 
     /// Reads the stored rows that bear on `listing`, as the resolver's
     /// [`resolve::Snapshot`] contract describes.
-    #[cfg(test)]
     async fn listing_snapshot(
         &self,
         listing: &resolve::Listing,
@@ -1057,6 +1485,35 @@ impl LibraryStore {
         Ok((snapshot, stored_row))
     }
 
+    /// Loads many works by id, with their work-level credits, narrators and
+    /// series, in chunked bulk reads.
+    ///
+    /// # Arguments
+    ///
+    /// * `ids` - Work ids; unknown ids are left out of the result.
+    ///
+    /// # Returns
+    ///
+    /// The works found, keyed by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn works_by_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<std::collections::BTreeMap<String, WorkRecord>> {
+        let mut found: Vec<WorkRecord> = find_chunked(&self.db, self.lookup_chunk(), ids, |part| {
+            works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
+        })
+        .await?
+        .into_iter()
+        .map(map_work)
+        .collect();
+        self.fill_work_names(&mut found).await?;
+        Ok(found.into_iter().map(|w| (w.id.clone(), w)).collect())
+    }
+
     /// Loads a work by id, with its work-level credits and series.
     ///
     /// # Errors
@@ -1073,6 +1530,111 @@ impl LibraryStore {
         let mut works = vec![map_work(work)];
         self.fill_work_names(&mut works).await?;
         Ok(works.pop())
+    }
+
+    /// Lists up to `limit` works with ids after `after_id`, in id order, with
+    /// their work-level credits and series.
+    ///
+    /// A keyset page: pass the last id of one page as `after_id` of the
+    /// next, and stop at a short page. Unlike [`Self::list_works`] it never
+    /// reads the whole table at once.
+    ///
+    /// # Arguments
+    ///
+    /// * `after_id` - Exclusive lower bound on `works.id`; `None` starts at
+    ///   the first work.
+    /// * `limit` - Page size, clamped to 1..=500.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn list_works_page(
+        &self,
+        after_id: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<WorkRecord>> {
+        let mut query = works::Entity::find().order_by_asc(works::Column::Id);
+        if let Some(after) = after_id {
+            query = query.filter(works::Column::Id.gt(after));
+        }
+        let mut works: Vec<WorkRecord> = query
+            .limit(limit.clamp(1, 500))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_work)
+            .collect();
+        self.fill_work_names(&mut works).await?;
+        Ok(works)
+    }
+
+    /// Stored text hashes of the `model` embeddings of `target_kind` targets
+    /// among `target_ids`, keyed by target id. Targets with no embedding are
+    /// absent.
+    ///
+    /// Reads in chunks sized from the adapter's bind limit, so one call
+    /// replaces a lookup per target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn embedding_text_hashes(
+        &self,
+        target_kind: &str,
+        model: &str,
+        target_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        /// One stored hash, decoded by column name: the host database proxy
+        /// does not keep the select order, so a positional tuple read could
+        /// swap the columns.
+        #[derive(Debug, sea_orm::FromQueryResult)]
+        struct StoredHash {
+            /// `embeddings.target_id`.
+            target_id: String,
+            /// `embeddings.text_hash`.
+            text_hash: String,
+        }
+        let mut hashes = std::collections::HashMap::with_capacity(target_ids.len());
+        for chunk in target_ids.chunks(self.lookup_chunk()) {
+            let rows = embeddings::Entity::find()
+                .select_only()
+                .column(embeddings::Column::TargetId)
+                .column(embeddings::Column::TextHash)
+                .filter(embeddings::Column::TargetKind.eq(target_kind))
+                .filter(embeddings::Column::Model.eq(model))
+                .filter(embeddings::Column::TargetId.is_in(chunk.iter().cloned()))
+                .into_model::<StoredHash>()
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            hashes.extend(rows.into_iter().map(|row| (row.target_id, row.text_hash)));
+        }
+        Ok(hashes)
+    }
+
+    /// Deletes work embeddings (every model) whose work no longer exists,
+    /// and answers how many it removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the delete fails.
+    pub async fn prune_orphan_work_embeddings(&self) -> Result<u64> {
+        use sea_orm::sea_query::Query;
+        Ok(embeddings::Entity::delete_many()
+            .filter(embeddings::Column::TargetKind.eq("work"))
+            .filter(
+                embeddings::Column::TargetId.not_in_subquery(
+                    Query::select()
+                        .column(works::Column::Id)
+                        .from(works::Entity)
+                        .to_owned(),
+                ),
+            )
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .rows_affected)
     }
 
     /// Lists every work by title, with its work-level credits and series.
@@ -1291,7 +1853,7 @@ impl LibraryStore {
     }
 
     /// Each edition's work, through its expression.
-    async fn works_of_editions(
+    pub(super) async fn works_of_editions(
         &self,
         edition_ids: BTreeSet<String>,
     ) -> Result<std::collections::BTreeMap<String, String>> {
@@ -1339,49 +1901,83 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when a read fails.
     pub async fn book_uuids_for_work(&self, work_id: &str) -> Result<Vec<String>> {
+        Ok(self
+            .book_uuids_for_works(&[work_id.to_string()])
+            .await?
+            .remove(work_id)
+            .unwrap_or_default())
+    }
+
+    /// The library titles (`books.uuid`) whose listings reach each of
+    /// `work_ids`, in chunked bulk reads.
+    ///
+    /// # Arguments
+    ///
+    /// * `work_ids` - Works to look up.
+    ///
+    /// # Returns
+    ///
+    /// Each work with at least one library title, mapped to its titles'
+    /// uuids in ascending order; works no title reaches are absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn book_uuids_for_works(
+        &self,
+        work_ids: &[String],
+    ) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
         use crate::entities::books;
-        let expression_ids: Vec<String> = expressions::Entity::find()
-            .filter(expressions::Column::WorkId.eq(work_id))
-            .select_only()
-            .column(expressions::Column::Id)
-            .into_tuple::<String>()
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        if expression_ids.is_empty() {
-            return Ok(Vec::new());
-        }
+        use std::collections::BTreeMap;
         let chunk = self.lookup_chunk();
-        let edition_ids: Vec<String> = find_chunked(&self.db, chunk, &expression_ids, |part| {
-            editions::Entity::find()
-                .filter(editions::Column::ExpressionId.is_in(part.iter().cloned()))
-        })
-        .await?
-        .into_iter()
-        .map(|e| e.id)
-        .collect();
-        if edition_ids.is_empty() {
-            return Ok(Vec::new());
+        let work_of_expression: BTreeMap<String, String> =
+            find_chunked(&self.db, chunk, work_ids, |part| {
+                expressions::Entity::find()
+                    .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
+            })
+            .await?
+            .into_iter()
+            .map(|x| (x.id, x.work_id))
+            .collect();
+        if work_of_expression.is_empty() {
+            return Ok(BTreeMap::new());
         }
+        let expression_ids: Vec<String> = work_of_expression.keys().cloned().collect();
+        let work_of_edition: BTreeMap<String, String> =
+            find_chunked(&self.db, chunk, &expression_ids, |part| {
+                editions::Entity::find()
+                    .filter(editions::Column::ExpressionId.is_in(part.iter().cloned()))
+            })
+            .await?
+            .into_iter()
+            .filter_map(|e| Some((e.id, work_of_expression.get(&e.expression_id)?.clone())))
+            .collect();
+        if work_of_edition.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let edition_ids: Vec<String> = work_of_edition.keys().cloned().collect();
         let listings = find_chunked(&self.db, chunk, &edition_ids, |part| {
             store_listings::Entity::find()
                 .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
         })
         .await?;
-        let keys: BTreeSet<(String, String, String)> = listings
+        let work_of_key: BTreeMap<(String, String, String), String> = listings
             .into_iter()
-            .map(|l| (l.plugin_key, l.marketplace, l.product_id))
+            .filter_map(|l| {
+                let work = work_of_edition.get(&l.edition_id)?.clone();
+                Some(((l.plugin_key, l.marketplace, l.product_id), work))
+            })
             .collect();
-        let product_ids: Vec<String> = keys
-            .iter()
+        let product_ids: Vec<String> = work_of_key
+            .keys()
             .map(|(_, _, product)| product.clone())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let mut uuids = BTreeSet::new();
-        for chunk in product_ids.chunks(self.lookup_chunk()) {
+        let mut found: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for part in product_ids.chunks(chunk) {
             for b in books::Entity::find()
-                .filter(books::Column::ProductId.is_in(chunk.iter().cloned()))
+                .filter(books::Column::ProductId.is_in(part.iter().cloned()))
                 .all(&self.db)
                 .await
                 .map_err(LibraryError::Orm)?
@@ -1391,12 +1987,15 @@ impl LibraryStore {
                     resolve::stored_marketplace(&b.marketplace),
                     b.product_id,
                 );
-                if keys.contains(&key) {
-                    uuids.insert(b.uuid);
+                if let Some(work) = work_of_key.get(&key) {
+                    found.entry(work.clone()).or_default().insert(b.uuid);
                 }
             }
         }
-        Ok(uuids.into_iter().collect())
+        Ok(found
+            .into_iter()
+            .map(|(work, uuids)| (work, uuids.into_iter().collect()))
+            .collect())
     }
 
     /// Fills a work's enrichment fields; `None` keeps the stored value.
@@ -1712,6 +2311,274 @@ mod store_tests {
             entitlement: resolve::Entitlement::Purchase,
             purchased_at: None,
         }
+    }
+
+    /// A wish is owned only when the resolver puts it in a work the library
+    /// holds: the sequel of an owned book is its own work.
+    #[tokio::test]
+    async fn a_title_query_is_owned_through_its_work_not_its_words() {
+        let store = self::store().await;
+        store
+            .upsert_account("audible", "acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let mut dune = crate::NewBook::minimal("B002V1OF70", "acct", "us", "Dune");
+        dune.authors = Some("Frank Herbert".into());
+        dune.asin = Some("B002V1OF70".into());
+        dune.isbn = Some("9780593288368".into());
+        dune.series = Some("Dune".into());
+        dune.series_index = Some("1".into());
+        store.upsert_book(&dune).await.unwrap();
+        let herbert = Some("Frank Herbert");
+
+        // The same ASIN, or the same title and author (a wish's ISBN alone
+        // is a weak identifier, which never joins an edition whose
+        // expression the query knows nothing about): owned.
+        for query in [
+            TitleQuery {
+                title: "Dune",
+                asin: Some("B002V1OF70"),
+                ..TitleQuery::default()
+            },
+            TitleQuery {
+                title: "Dune",
+                authors: herbert,
+                isbn: Some("978-0-593-28836-8"),
+                ..TitleQuery::default()
+            },
+            TitleQuery {
+                title: "Dune",
+                authors: herbert,
+                ..TitleQuery::default()
+            },
+        ] {
+            assert!(
+                store.owned_work_for(&query).await.unwrap().is_some(),
+                "{query:?}"
+            );
+        }
+        // The sequel, by title or by its own ISBN, is another work.
+        for query in [
+            TitleQuery {
+                title: "Dune Messiah",
+                authors: herbert,
+                isbn: Some("9781427202376"),
+                ..TitleQuery::default()
+            },
+            TitleQuery {
+                title: "Children of Dune",
+                authors: herbert,
+                ..TitleQuery::default()
+            },
+        ] {
+            assert!(
+                store.owned_work_for(&query).await.unwrap().is_none(),
+                "{query:?}"
+            );
+        }
+        // A work nobody holds is not owned even when it exists.
+        assert!(store
+            .owned_work_for(&TitleQuery {
+                title: "Project Hail Mary",
+                authors: Some("Andy Weir"),
+                ..TitleQuery::default()
+            })
+            .await
+            .unwrap()
+            .is_none());
+        // A query that is not a valid listing (a title over the listing
+        // limit, or a blank one) matches no work instead of failing.
+        let long_title = "Dune ".repeat(1000);
+        for title in [long_title.as_str(), "  "] {
+            assert!(store
+                .owned_work_for(&TitleQuery {
+                    title,
+                    authors: herbert,
+                    ..TitleQuery::default()
+                })
+                .await
+                .unwrap()
+                .is_none());
+        }
+        // `work_for` names the work whether or not it is held, and nothing
+        // for a title the library has never seen.
+        let dune_work = store
+            .work_for(&TitleQuery {
+                title: "Dune",
+                authors: herbert,
+                ..TitleQuery::default()
+            })
+            .await
+            .unwrap()
+            .expect("an existing work");
+        assert!(store
+            .work_for(&TitleQuery {
+                title: "Project Hail Mary",
+                authors: Some("Andy Weir"),
+                ..TitleQuery::default()
+            })
+            .await
+            .unwrap()
+            .is_none());
+
+        // Two wishes for that work from two stores' identifiers are one
+        // queue entry, and the entry carries the work.
+        for (title, asin, isbn) in [
+            ("Dune", Some("B002V1OF70"), None),
+            ("Dune", None, Some("9781427201447")),
+        ] {
+            let wish = store
+                .create_title_request(&crate::NewTitleRequest {
+                    uuid: None,
+                    identity_id: None,
+                    title: title.into(),
+                    authors: Some("Frank Herbert".into()),
+                    asin: asin.map(str::to_string),
+                    isbn: isbn.map(str::to_string),
+                    notes: None,
+                    status: crate::RequestStatus::Open,
+                    resolved_book_uuid: None,
+                    cover_url: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(wish.work_id, dune_work);
+        }
+        let queue = store.list_global_request_queue().await.unwrap();
+        assert_eq!(queue.len(), 1, "{queue:?}");
+        assert_eq!(queue[0].work_id, dune_work);
+        assert!(
+            !queue[0].work_key.starts_with("work:"),
+            "clients match on the bibliographic key: {}",
+            queue[0].work_key
+        );
+        // The operator wished once for the work: the second is the same wish.
+        assert_eq!(queue[0].wish_count, 1);
+    }
+
+    #[tokio::test]
+    async fn a_wish_for_a_new_book_makes_one_catalog_work_and_edition() {
+        let store = self::store().await;
+        let query = TitleQuery {
+            title: "Project Hail Mary",
+            authors: Some("Andy Weir"),
+            asin: Some("B08GB58KD5"),
+            isbn: None,
+            series: Some("Standalone"),
+            series_index: Some("1"),
+        };
+        let (work_id, edition) = store.work_for_wish(&query).await.unwrap();
+        let edition = edition.expect("the ASIN made a catalog edition");
+        // The same wish again, and a wish naming only the ASIN under a
+        // different title, reach the same rows.
+        assert_eq!(
+            store.work_for_wish(&query).await.unwrap(),
+            (work_id.clone(), Some(edition.clone()))
+        );
+        let by_asin = store
+            .work_for_wish(&TitleQuery {
+                title: "Hail Mary",
+                asin: Some("b08gb58kd5"),
+                ..TitleQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(by_asin.0, work_id);
+        assert_eq!(works::Entity::find().all(&store.db).await.unwrap().len(), 1);
+        assert_eq!(
+            editions::Entity::find().all(&store.db).await.unwrap().len(),
+            1
+        );
+        // The catalog work carries the wish's title, authors and series, and
+        // the library holds nothing of it.
+        let work = store.get_work(&work_id).await.unwrap().unwrap();
+        assert_eq!(work.title, "Project Hail Mary");
+        assert_eq!(work.credits, vec![String::from("Andy Weir")]);
+        assert_eq!(work.series, vec![String::from("Standalone")]);
+        assert!(store
+            .book_uuids_for_work(&work_id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(holdings::Entity::find()
+            .all(&store.db)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(store.owned_work_for(&query).await.unwrap().is_none());
+        // A later scan of the book finds the catalog work by its title and
+        // author, so the wish and the library title share it.
+        let mut draft = dune("audible", "B08GB58KD5");
+        draft.title = String::from("Project Hail Mary");
+        draft.credits = vec![(String::from("Andy Weir"), resolve::CreditRole::Author, None)];
+        draft.series.clear();
+        draft.identifiers.clear();
+        let listing = resolve::Listing::from_draft(&draft).unwrap();
+        let plan = store
+            .record_listing(&listing, &account("a1"))
+            .await
+            .unwrap();
+        assert!(plan.new_work.is_none(), "{plan:?}");
+        assert_eq!(
+            store.work_for(&query).await.unwrap().as_deref(),
+            Some(work_id.as_str())
+        );
+    }
+
+    /// A wish read back takes its title and authors from its work and its
+    /// identifiers from the edition it named, since it copies none of them.
+    #[tokio::test]
+    async fn a_wish_reads_its_title_and_identifiers_through_its_work() {
+        let store = self::store().await;
+        let wish = |title: &str, asin: Option<&str>, isbn: Option<&str>| crate::NewTitleRequest {
+            uuid: None,
+            identity_id: None,
+            title: title.into(),
+            authors: Some("Ursula K. Le Guin".into()),
+            asin: asin.map(str::to_string),
+            isbn: isbn.map(str::to_string),
+            notes: None,
+            status: crate::RequestStatus::Open,
+            resolved_book_uuid: None,
+            cover_url: None,
+        };
+        let by_isbn = store
+            .create_title_request(&wish("The Dispossessed", None, Some("9780061054884")))
+            .await
+            .unwrap();
+        assert_eq!(by_isbn.title, "The Dispossessed");
+        assert_eq!(by_isbn.authors.as_deref(), Some("Ursula K. Le Guin"));
+        assert_eq!(by_isbn.isbn.as_deref(), Some("9780061054884"));
+        assert!(by_isbn.asin.is_none());
+        assert!(by_isbn.edition_id.is_some());
+        assert_eq!(by_isbn.work_key, "isbn:9780061054884");
+        let by_asin = store
+            .create_title_request(&wish("The Left Hand of Darkness", Some("B000FC1ICM"), None))
+            .await
+            .unwrap();
+        assert_eq!(by_asin.asin.as_deref(), Some("B000FC1ICM"));
+        // A title alone still names a work, with no edition to read from.
+        let bare = store
+            .create_title_request(&wish("The Lathe of Heaven", None, None))
+            .await
+            .unwrap();
+        assert!(bare.asin.is_none() && bare.isbn.is_none());
+        assert_eq!(bare.title, "The Lathe of Heaven");
+        let listed = store.list_title_requests(None).await.unwrap();
+        assert_eq!(listed.len(), 3, "{listed:?}");
+    }
+
+    #[tokio::test]
+    async fn a_wish_needs_a_title() {
+        let store = self::store().await;
+        let err = store
+            .work_for_wish(&TitleQuery {
+                title: "  ",
+                ..TitleQuery::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LibraryError::Invalid(_)), "{err:?}");
     }
 
     #[tokio::test]

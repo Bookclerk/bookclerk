@@ -3,8 +3,9 @@
 This page shows how to write a Bookclerk plugin in Python with
 `bookclerk-plugin-sdk` (`api_version = 3`). A Python plugin is a Python
 Worker in a workerd isolate; `bookclerk-workerd` injects
-`bookclerk_plugin_sdk.workerd` into the isolate, so you import it rather
-than vendor a path.
+`bookclerk_plugin_sdk.workerd` and the modules it uses (including
+`bookclerk_plugin_sdk.db_value` for database bindings) into the isolate, so
+you import them rather than vendor a path.
 
 | Import | What it holds |
 | --- | --- |
@@ -114,6 +115,28 @@ typed `Env` protocol from `plugin.toml`:
 ```bash
 python -m bookclerk_plugin_sdk types .   # writes bookclerk_configuration.py
 ```
+
+## Testing database code
+
+`create_test_database()` from `bookclerk_plugin_sdk.testkit` gives a
+pytest suite the same binding a host grants, served by the
+`bookclerk-db-testkit` executable under one capability profile with the
+plugin's `database_migrations` applied. `bookclerk-plugin test .` runs the
+suite once per profile (`first-party`, `d1` and `minimum`):
+
+```python
+from bookclerk_plugin_sdk.testkit import create_test_database
+
+async with await create_test_database(migrations=MIGRATIONS) as db:  # profile from `bookclerk-plugin test`
+    await db.binding.prepare("INSERT INTO notes (body) VALUES (?)").bind(body).run()
+```
+
+The `echo_workerd_python` example (`examples/plugins-echo-workerd-python/`)
+is a worked plugin: a `notes` table it writes with `chunk()`, lists with
+`iterate()` or key-paged reads, sizes with `limits()`, and tests under
+every profile. A plugin's own `pyproject.toml` is what makes
+`bookclerk-plugin test` run pytest. See
+[Testing against the limits](../../database-limits.md#testing-against-the-limits).
 
 ## Author tools
 

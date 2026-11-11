@@ -1920,10 +1920,30 @@ export interface PluginConsentResponse {
   covered: boolean;
   summary: string[];
   existing?: PluginGrant;
+  /**
+   * What the request asks for beyond the stored grant (a plugin upgrade that
+   * widened its capabilities); absent when no grant is stored. The plugin runs
+   * under the stored grant until these are approved.
+   */
+  pending?: PluginConsentPending;
   brand?: PluginConsentBrand;
   limits: PluginConsentLimits;
   /** The `User-Agent` the host sends, except to the request's `ownUserAgentHosts`. */
   host_user_agent?: string;
+}
+
+/** The difference between a plugin's request and its stored grant. */
+export interface PluginConsentPending {
+  /** Operator-facing lines naming every capability awaiting consent (the CLI prints the same). */
+  lines: string[];
+  /** Fetch host patterns the request adds (`*` is any public host). */
+  domains: string[];
+  /** TCP `host:ports` the request adds, narrowed to the new ports. */
+  tcp: { host: string; ports: number[] }[];
+  /** CIDRs the request adds. */
+  addressCidrs: string[];
+  /** Whether the request newly asks to follow undeclared public redirects. */
+  allowUndeclaredPublicRedirects: boolean;
 }
 
 function consentQuery(pluginKey?: string): string {
@@ -2500,6 +2520,11 @@ export interface RemoteConsentView {
   updated_at?: string;
   /** Whether the guest may run here now, or what it waits on. */
   state: RemoteConsentState;
+  /**
+   * What the current request asks for beyond the request this host approved,
+   * as the lines the CLI prints; empty when nothing was approved yet.
+   */
+  pending?: string[];
 }
 
 /** `GET /api/config/cluster-consents`. */
@@ -3063,6 +3088,12 @@ export interface PurchaseHint {
 export interface PurchaseHintsResponse {
   hints: PurchaseHint[];
   best: PurchaseHint | null;
+  /**
+   * True when the server's batch deadline cut the lookup short: the hints are
+   * links without prices, so the answer is not cached and should be asked
+   * for again later.
+   */
+  incomplete?: boolean;
 }
 
 /**
@@ -3104,6 +3135,10 @@ export interface Recommendation {
   wishers?: QueueWisher[];
   /** Distinct wisher count (may exceed `wishers.length`). */
   wish_count?: number;
+  /** Title of the book or wish the storefront was asked about to find this card. */
+  seed_title?: string | null;
+  /** Starter genre this card was browsed from while the taste was thin. */
+  starter_genre?: string | null;
 }
 
 /**
@@ -3159,8 +3194,8 @@ export type DiscoverFeedState = "ready" | "refreshing" | "preparing";
 /**
  * Wishlist / title-request row from `/api/wishlist`.
  *
- * Represents a user ask for a title (and optional acquire queue linkage via
- * `resolved_book_uuid` / `work_key`).
+ * Represents a user ask for a work (and optional acquire queue linkage via
+ * `resolved_book_uuid`).
  */
 export interface TitleRequest {
   id: number;
@@ -3172,8 +3207,12 @@ export interface TitleRequest {
   isbn: string | null;
   notes: string | null;
   status: string;
+  /** Bibliographic key derived from the wish's identifiers, for display matching. */
   work_key: string;
-  work_id: string | null;
+  /** Library work the wish is for; every wish names one. */
+  work_id: string;
+  /** Edition the wish named, when its identifiers reached exactly one. */
+  edition_id?: string | null;
   resolved_book_uuid: string | null;
   cover_url?: string | null;
   /** Same-origin path of this cover's processed images; see {@link coverSrc}. */
@@ -3225,6 +3264,11 @@ export interface QueueWisher {
  */
 export interface GlobalQueueEntry {
   work_key: string;
+  /**
+   * Library work the entry's wishes are for. Wishes for one work share an
+   * entry even when their `work_key`s differ, so match on this first.
+   */
+  work_id: string;
   title: string;
   authors: string | null;
   asin: string | null;
@@ -3325,6 +3369,38 @@ export interface CatalogSearchPage {
   next_cursor?: string | null;
   sort: string;
   sort_dir?: string;
+}
+
+/** Stored state of the caller's Discover shelves (`GET /api/discover/status`). */
+export interface DiscoverStatus {
+  subject: string;
+  ready: boolean;
+  scope?: string | null;
+  feed_computed_at?: string | null;
+  candidates_fetched_at?: string | null;
+  /** True while a fetch or ranking for the caller is waiting or running. */
+  updating: boolean;
+}
+
+/**
+ * Queues a storefront fetch and ranking for the caller's shelves now, as
+ * the Refresh button asks. A fetch already waiting absorbs the request.
+ *
+ * @returns The caller's Discover status once the fetch is queued.
+ */
+export async function requestDiscoverRefresh(): Promise<DiscoverStatus> {
+  const res = await fetchWithTimeout(
+    "/api/discover/refresh",
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    },
+    8_000,
+    "Discover refresh",
+  );
+  return parseJson(res);
 }
 
 /**
@@ -3547,7 +3623,10 @@ export function fetchPurchaseHints(body: PurchaseHintsQuery): Promise<PurchaseHi
     purchaseHintsQueue.push({
       query: body,
       resolve: (value) => {
-        clientCacheSet(purchaseHintsClientCache, key, value, PURCHASE_HINTS_CLIENT_TTL_MS);
+        // An unfinished lookup is not kept, so the next ask reaches the server.
+        if (!value.incomplete) {
+          clientCacheSet(purchaseHintsClientCache, key, value, PURCHASE_HINTS_CLIENT_TTL_MS);
+        }
         resolve(value);
       },
       reject,
@@ -3872,7 +3951,6 @@ export async function createWishlistItem(body: {
   asin?: string;
   isbn?: string;
   notes?: string;
-  work_key?: string;
   store_editions?: StoreEdition[];
   purchase_hints?: PurchaseHint[];
   cover_url?: string | null;

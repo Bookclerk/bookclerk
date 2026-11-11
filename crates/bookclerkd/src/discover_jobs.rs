@@ -235,7 +235,7 @@ pub async fn run_discover_feed(
     }
     let has_books = library.count_books(None).await? > 0;
     let use_onnx = has_books && cfg.discovery.embeddings_enabled;
-    // One embedder at a time, as the request-queue route does.
+    // One embedder at a time, as the request-queue ranking job does.
     let _gate = state
         .discover_gate
         .clone()
@@ -282,6 +282,8 @@ pub async fn run_discover_feed(
         subject = %subject.key(),
         scope = report.scope.as_str(),
         shelves = report.shelves,
+        cards = report.cards,
+        bytes = report.stored_bytes,
         "stored discover feed"
     );
     // Open Discover pages on this node re-read at once; other nodes see the
@@ -294,6 +296,28 @@ pub async fn run_discover_feed(
         report.shelves,
         report.candidates
     ))
+}
+
+/// True when a fetch or ranking for `subject` is waiting or running, so the
+/// page can say its shelves are being rebuilt.
+///
+/// # Errors
+///
+/// Returns the library read error.
+pub async fn subject_refresh_active(
+    library: &bookclerk_library::LibraryStore,
+    subject: &DiscoverSubject,
+) -> anyhow::Result<bool> {
+    let payload = JobPayload {
+        subject: Some(subject.key()),
+        ..JobPayload::default()
+    };
+    for kind in [JobKind::DiscoverCandidates, JobKind::DiscoverFeed] {
+        if library.job_is_active(&kind.dedup_key(&payload)).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// What a read of a subject's stored feed should queue.
@@ -474,6 +498,53 @@ mod tests {
         )
     }
 
+    /// Sends an empty JSON `POST` to `uri` and decodes the JSON answer.
+    async fn post(app: &axum::Router, uri: &str) -> (axum::http::StatusCode, serde_json::Value) {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let request = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(uri)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// Sends a JSON `POST` of `body` to `uri` and decodes the JSON answer.
+    async fn post_json(
+        app: &axum::Router,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let request = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(uri)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// The uuid of the one library title stored.
+    async fn book_uuid(library: &bookclerk_library::LibraryStore) -> String {
+        library.list_books(None).await.unwrap().remove(0).uuid
+    }
+
     /// Pending Discover jobs as `(kind, subject)` pairs.
     async fn queued(library: &bookclerk_library::LibraryStore) -> Vec<(JobKind, String)> {
         let mut jobs: Vec<(JobKind, String)> = library
@@ -487,6 +558,52 @@ mod tests {
             .collect();
         jobs.sort_by_key(|(kind, subject)| (kind.as_str().to_string(), subject.clone()));
         jobs
+    }
+
+    /// A wish records the library work it resolves to, and a sequel of an
+    /// owned book gets a catalog work of its own.
+    #[tokio::test]
+    async fn a_wish_stores_the_work_it_resolves_to() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, library) = crate::node_api::tests::test_state(&files).await;
+        library
+            .upsert_account("libro", "reader@example.com", "us", None, true, "libro")
+            .await
+            .unwrap();
+        let mut book =
+            bookclerk_library::NewBook::minimal("p1", "reader@example.com", "us", "Dune");
+        book.source = "libro".into();
+        book.plugin_key = "libro".into();
+        book.authors = Some("Frank Herbert".into());
+        library.upsert_book(&book).await.unwrap();
+        let app = crate::api::router(std::sync::Arc::clone(&state), None);
+
+        let wish = |title: &str| serde_json::json!({ "title": title, "authors": "Frank Herbert" });
+        let (status, owned) = post_json(&app, "/api/wishlist", wish("Dune")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{owned}");
+        let dune_work = library.work_id_for_book(&book_uuid(&library).await).await;
+        assert_eq!(
+            owned["work_id"].as_str(),
+            dune_work.unwrap().as_deref(),
+            "{owned}"
+        );
+        let (status, sequel) = post_json(&app, "/api/wishlist", wish("Dune Messiah")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{sequel}");
+        assert!(sequel["work_id"].is_string(), "{sequel}");
+        assert_ne!(sequel["work_id"], owned["work_id"], "{sequel}");
+    }
+
+    /// A wish whose title is over the listing limits names no work, so it is a
+    /// bad request.
+    #[tokio::test]
+    async fn an_overlong_wish_title_is_a_bad_request() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, _library) = crate::node_api::tests::test_state(&files).await;
+        let app = crate::api::router(std::sync::Arc::clone(&state), None);
+        let long = "x".repeat(10_000);
+        let (status, body) =
+            post_json(&app, "/api/wishlist", serde_json::json!({ "title": long })).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
     }
 
     #[tokio::test]
@@ -541,6 +658,24 @@ mod tests {
         assert!(summary.contains("scope=household"), "{summary}");
         assert!(summary.ends_with("passes=1"), "{summary}");
 
+        // The handlers ran here, not under the worker, so their rows are
+        // still pending: the page reports the rebuild as in progress.
+        let (_, feed) = get(&app, "/api/discover/recommendations").await;
+        assert_eq!(feed["state"], "refreshing");
+        let (_, report) = get(&app, "/api/discover/status").await;
+        assert_eq!(report["updating"], true);
+        {
+            use sea_orm::ConnectionTrait;
+            library
+                .db()
+                .execute_unprepared(
+                    "UPDATE jobs SET state = 'succeeded' \
+                     WHERE kind IN ('discover_candidates', 'discover_feed')",
+                )
+                .await
+                .unwrap();
+        }
+
         // A fetch that found nothing still counts as fresh: the feed is ready
         // and nothing more is queued.
         let jobs_before = queued(&library).await;
@@ -555,6 +690,36 @@ mod tests {
         assert_eq!(report["ready"], true);
         assert_eq!(report["scope"], "household");
         assert!(report["candidates_fetched_at"].is_string());
+        assert_eq!(report["updating"], false);
+
+        // The Refresh button queues a fetch now and reports it.
+        let (status, report) = post(&app, "/api/discover/refresh").await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{report}");
+        assert_eq!(report["updating"], true);
+        assert_eq!(
+            queued(&library).await,
+            vec![(JobKind::DiscoverCandidates, String::from("operator"))]
+        );
+        let (_, feed) = get(&app, "/api/discover/recommendations").await;
+        assert_eq!(feed["state"], "refreshing");
+        // A second press finds the fetch waiting, which counts as queued.
+        let (status, report) = post(&app, "/api/discover/refresh").await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{report}");
+        assert_eq!(queued(&library).await.len(), 1);
+        {
+            use sea_orm::ConnectionTrait;
+            library
+                .db()
+                .execute_unprepared("UPDATE jobs SET state = 'succeeded'")
+                .await
+                .unwrap();
+        }
+        // A full job queue is reported, not answered as queued.
+        let max_pending = std::mem::replace(&mut state.config.write().await.jobs.max_pending, 0);
+        let (status, _) = post(&app, "/api/discover/refresh").await;
+        assert_eq!(status, axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert!(queued(&library).await.is_empty());
+        state.config.write().await.jobs.max_pending = max_pending;
 
         // A feed another release wrote, which does not decode, counts as
         // missing, so the page shows placeholders until a ranking replaces it.

@@ -15,6 +15,10 @@
 //! - Lost replies and lock contention can be injected
 //!   ([`TestDatabase::lose_next_replies`], [`TestDatabase::lock_next_requests`]).
 //!
+//! [`adapter`] is the other side of the same contract: a conformance suite
+//! a database adapter plugin runs on an empty unit, in process or as its
+//! spawned guest, to prove it keeps the SQL-v1 contract the host relies on.
+//!
 //! [`fixtures`] generates realistic rows near the caps, and [`paging`] checks
 //! that a paged listing returns what the full listing returns. Ordinary
 //! SeaORM reads through [`TestDatabase::connection`] are held to the engine
@@ -26,9 +30,11 @@ use bookclerk_plugin_abi::DbCapabilities;
 use bookclerk_plugin_database_sqlite::sqlite::SqliteProxy;
 use sea_orm::{DatabaseConnection, DbBackend, DbErr};
 
+pub mod adapter;
 pub mod binding;
 pub mod fixtures;
 
+pub use adapter::{assert_adapter_conforms, run_adapter_suite, AdapterReport};
 pub use binding::BindingDatabase;
 
 pub use bookclerk_library::test_support::{paging, Profile, INTERACTIVE_TRANSACTIONS_REFUSED};

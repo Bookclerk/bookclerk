@@ -527,6 +527,7 @@ pub(super) async fn record_handoff(
             .concat(),
         ));
     }
+    statements.push(super::bump_if_stamped(super::LiveTopic::Jobs, &now)?);
     let operation_id = format!(
         "handoff-{}-{}-{}",
         fence.job_id,
@@ -1001,6 +1002,7 @@ async fn store_guarded_write_back(
                         text(node_id),
                     ],
                 ),
+                super::bump_if_stamped(super::LiveTopic::Jobs, &now)?,
             ],
         ),
     )

@@ -7,7 +7,9 @@
 //! [`DISCOVER_CONSUMER_ID`], on the durable outbox for those types, and each
 //! delivery queues the Discover jobs the change affects, each claimable only
 //! after [`EVENT_DEBOUNCE`] so a burst of changes folds into one refresh per
-//! person. See `docs/internals/discovery.md`, *Taste events*.
+//! person. Every event also queues one ranking of the shared request queue
+//! ([`crate::request_queue_job`]). See `docs/internals/discovery.md`, *Taste
+//! events*.
 
 use std::time::Duration;
 
@@ -22,6 +24,7 @@ use tracing::{debug, warn};
 use crate::api::AppState;
 use crate::discover_jobs::{enqueue_discover_candidates, enqueue_discover_feed};
 use crate::jobs::AdmitJob;
+use crate::request_queue_job::{enqueue_request_queue_rank, request_queue_ranked_since};
 
 /// Catalog id of Discover's consumer. The `host:` scheme is not a plugin
 /// key provenance (`cargo:`, `platform:`, `path:` …) nor a node consumer
@@ -33,6 +36,11 @@ pub const DISCOVER_CONSUMER_ID: &str = "host:discover";
 /// How long a queued refresh waits before it may run, so the changes of
 /// one sync or one browsing session fold into a single job per person.
 pub const EVENT_DEBOUNCE: Duration = Duration::from_secs(30);
+
+/// How long the wish owner's own fetch waits: they are looking at the page,
+/// so their shelves follow their wish quickly, while a few wishes in a row
+/// still fold into one job.
+pub const OWNER_DEBOUNCE: Duration = Duration::from_secs(5);
 
 /// Redeliveries before a delivery is dead-lettered. A delivery is retried
 /// (after [`EVENT_DEBOUNCE`]) only while a job it needs has already started,
@@ -222,7 +230,7 @@ async fn queue_for(
         Taste::Wishlist { identity_id: None } | Taste::Household => None,
     };
     let with_feeds = library.list_discover_feed_subjects().await?;
-    let plan = plan_refresh(taste, owner, with_feeds);
+    let plan = plan_refresh(taste, owner.clone(), with_feeds);
     let mut outcome = Queued::Done;
     // Host-initiated, like the daily refresh: no person asked for it.
     // A retry skips subjects an earlier attempt already covered, so jobs
@@ -232,9 +240,14 @@ async fn queue_for(
         if covered_since(library, JobKind::DiscoverCandidates, subject, since).await? {
             continue;
         }
+        // The wish owner waits less: they just acted and are watching.
+        let delay = if matches!(taste, Taste::Wishlist { .. }) && Some(subject) == owner.as_ref() {
+            OWNER_DEBOUNCE
+        } else {
+            EVENT_DEBOUNCE
+        };
         let admitted =
-            enqueue_discover_candidates(state, subject, JobTrigger::Scheduler, EVENT_DEBOUNCE)
-                .await?;
+            enqueue_discover_candidates(state, subject, JobTrigger::Scheduler, delay).await?;
         if needs_retry(library, &admitted).await? {
             outcome = Queued::Later;
         }
@@ -245,6 +258,15 @@ async fn queue_for(
         }
         let admitted =
             enqueue_discover_feed(state, subject, JobTrigger::Scheduler, EVENT_DEBOUNCE).await?;
+        if needs_retry(library, &admitted).await? {
+            outcome = Queued::Later;
+        }
+    }
+    // Every taste event can move the shared request queue: a wish adds or
+    // drops an entry, an acquire hides one, listening shifts taste.
+    if !request_queue_ranked_since(library, since).await? {
+        let admitted =
+            enqueue_request_queue_rank(state, JobTrigger::Scheduler, EVENT_DEBOUNCE).await?;
         if needs_retry(library, &admitted).await? {
             outcome = Queued::Later;
         }
@@ -617,8 +639,6 @@ mod tests {
                 isbn: None,
                 notes: None,
                 status: RequestStatus::Open,
-                work_key: String::new(),
-                work_id: None,
                 resolved_book_uuid: None,
                 cover_url: None,
             })
@@ -642,6 +662,29 @@ mod tests {
         assert!(
             jobs.iter().all(|j| j.run_after > Utc::now()),
             "refreshes wait out the debounce"
+        );
+        // The shared request queue is ranked again too, once for everyone.
+        let passes: Vec<JobRecord> = library
+            .list_jobs(100)
+            .await
+            .expect("jobs")
+            .into_iter()
+            .filter(|j| j.kind == JobKind::DiscoverRequestQueue)
+            .collect();
+        assert_eq!(passes.len(), 1, "{passes:?}");
+        assert!(
+            passes[0].run_after > Utc::now(),
+            "the pass waits out the debounce"
+        );
+        let run_after = |kind: JobKind| {
+            jobs.iter()
+                .find(|j| j.kind == kind)
+                .map(|j| j.run_after)
+                .expect("job")
+        };
+        assert!(
+            run_after(JobKind::DiscoverCandidates) < run_after(JobKind::DiscoverFeed),
+            "the wish owner's fetch waits less than the others' ranking"
         );
         let acked = library
             .get_event_delivery(&delivery.id)

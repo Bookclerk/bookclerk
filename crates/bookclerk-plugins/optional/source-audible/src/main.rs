@@ -5,12 +5,12 @@
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    serve, Bindings, Brand, CatalogHit, ContentSource as ContentSourceRole, Entrypoints,
-    ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
+    serve, Bindings, Brand, CatalogCapabilities, CatalogHit, ContentSource as ContentSourceRole,
+    Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch, PluginDescribe,
     PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams,
-    RevokeAccountParams, ScalarLimits, ScanParams, ScanSummary, SearchCatalogParams,
-    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    PurchaseHintsParams, RevokeAccountParams, ScalarLimits, ScanParams, ScanSummary,
+    SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_source_audible::catalog;
 use bookclerk_storefront::abi::{
@@ -44,6 +44,11 @@ impl PluginWorker for AudibleRoot {
                     "https://www.google.com/s2/favicons?domain=audible.com&sz=128".into(),
                 ),
             }),
+            // Audible's catalog details take an ASIN, not an ISBN; its search
+            // hits carry `rank_hint` instead.
+            catalog: CatalogCapabilities {
+                detail_by_isbn: false,
+            },
             ..PluginDescribe::default()
         })
     }
@@ -178,7 +183,24 @@ impl ContentSourceRole for AudibleContentSource {
         catalog::purchase_hint(&PurchaseHintOpts::from(params))
             .await
             .map(|hint| hint.map(Into::into))
-            .map_err(internal)
+            .map_err(PluginError::from)
+    }
+
+    /// One catalog request prices up to fifty titles, so a page of cards
+    /// is one call.
+    async fn purchase_hints(
+        &self,
+        params: PurchaseHintsParams,
+    ) -> Result<Vec<Option<PurchaseHint>>, PluginError> {
+        let opts: Vec<PurchaseHintOpts> = params
+            .queries
+            .into_iter()
+            .map(PurchaseHintOpts::from)
+            .collect();
+        catalog::purchase_hints(&opts)
+            .await
+            .map(|hints| hints.into_iter().map(|h| h.map(Into::into)).collect())
+            .map_err(PluginError::from)
     }
 
     /// Audible has no deals feed; answer an empty list rather than

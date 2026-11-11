@@ -70,7 +70,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_uuid ON books(uuid)"),
     // Search hydration matches `lower(uuid)`. A btree on the expression keeps
     // that predicate off a table scan. Stored uuids that differ only by ASCII
     // case stay distinct rows. Postgres lowering wraps the argument as
@@ -100,7 +99,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_books_page_account_status ON books(account_id, acquire_status, title COLLATE NOCASE, uuid)",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_pdf_status ON books(pdf_status)"),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_tags ON books(tags)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_series_asin ON books(series_asin)"),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_books_content_kind ON books(content_kind)",
@@ -180,9 +178,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_claim_tickets_hash ON claim_tickets(token_hash)",
-    ),
-    MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_claim_tickets_identity ON claim_tickets(identity_id)",
     ),
     MigrationOp::Schema(
@@ -200,9 +195,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_portal_sessions_hash ON portal_sessions(token_hash)",
-    ),
-    MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS operator_sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         token_hash TEXT NOT NULL UNIQUE,
@@ -215,9 +207,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         device_type TEXT,
         client_label TEXT
     )",
-    ),
-    MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_operator_sessions_hash ON operator_sessions(token_hash)",
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS security_audit_events (
@@ -434,19 +423,34 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         PRIMARY KEY (listing_id, kind, subject_ids)
     )",
     ),
+    // One user's own state for a work (docs/adr/library-data-model.md):
+    // finished flag, ratings and tags. Members who share a storefront
+    // account each keep their own.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS user_title_state (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        is_finished INTEGER NOT NULL DEFAULT 0,
+        rating_overall REAL,
+        rating_performance REAL,
+        rating_story REAL,
+        tags TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, work_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_user_title_state_work ON user_title_state(work_id)",
+    ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS listening_progress (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         identity_id INTEGER,
         provider TEXT NOT NULL,
         external_user_id TEXT NOT NULL,
-        book_uuid TEXT,
-        work_id TEXT,
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        edition_id TEXT REFERENCES editions(id) ON DELETE SET NULL,
         external_item_id TEXT NOT NULL,
-        title TEXT,
-        authors TEXT,
-        asin TEXT,
-        isbn TEXT,
         progress REAL,
         current_time_seconds REAL,
         duration_seconds REAL,
@@ -458,28 +462,28 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_listening_book ON listening_progress(book_uuid)",
+        r"CREATE INDEX IF NOT EXISTS idx_listening_work ON listening_progress(work_id)",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_listening_work ON listening_progress(work_id)",
+        r"CREATE INDEX IF NOT EXISTS idx_listening_identity ON listening_progress(identity_id)",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_listening_user ON listening_progress(provider, external_user_id)",
     ),
+    // A wish names the work it is for; the title, authors and identifiers
+    // live on the work and on the wish's storefront sources, never copied
+    // here. `edition_id` is set when the wish named an edition the library
+    // knows.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS title_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         uuid TEXT NOT NULL UNIQUE,
         identity_id INTEGER,
-        title TEXT NOT NULL,
-        authors TEXT,
-        asin TEXT,
-        isbn TEXT,
+        work_id TEXT NOT NULL REFERENCES works(id),
+        edition_id TEXT REFERENCES editions(id) ON DELETE SET NULL,
         notes TEXT,
         status TEXT NOT NULL DEFAULT 'open',
         preferred_source TEXT,
-        work_id TEXT,
-        work_key TEXT NOT NULL DEFAULT '',
         resolved_book_uuid TEXT,
         cover_url TEXT,
         created_at TEXT NOT NULL,
@@ -488,13 +492,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_title_requests_status ON title_requests(status)",
+        r"CREATE INDEX IF NOT EXISTS idx_title_requests_status_created ON title_requests(status, created_at)",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_title_requests_identity ON title_requests(identity_id)",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_title_requests_work_key ON title_requests(work_key)",
+        r"CREATE INDEX IF NOT EXISTS idx_title_requests_work ON title_requests(work_id, status)",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_title_requests_identity_status ON title_requests(identity_id, status)",
@@ -618,6 +622,20 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         fetched_at TEXT NOT NULL
     )",
     ),
+    // Stored taste ranking of the shared request queue: one row per queue
+    // entry, refreshed by the `discover_request_queue` job. Entry metadata
+    // and wish counts stay on `title_requests` and are joined at read time.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS discover_request_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_key TEXT NOT NULL UNIQUE,
+        work_id TEXT,
+        owned INTEGER NOT NULL DEFAULT 0,
+        taste_score REAL NOT NULL DEFAULT 0,
+        reasons_json TEXT NOT NULL DEFAULT '[]',
+        ranked_at TEXT NOT NULL
+    )",
+    ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS encrypted_secrets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -663,9 +681,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_user_invites_hash ON user_invites(token_hash)",
-    ),
-    MigrationOp::Schema(
         r#"CREATE TABLE IF NOT EXISTS oidc_clients (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         client_id TEXT NOT NULL UNIQUE,
@@ -695,9 +710,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_oidc_auth_codes_hash ON oidc_auth_codes(code_hash)",
-    ),
-    MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS oidc_refresh_tokens (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         token_hash TEXT NOT NULL UNIQUE,
@@ -708,9 +720,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         revoked_at TEXT,
         created_at TEXT NOT NULL
     )",
-    ),
-    MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_oidc_refresh_hash ON oidc_refresh_tokens(token_hash)",
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS oidc_rp_states (
@@ -800,7 +809,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(resource_class, state, run_after, priority)",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_jobs_dedup ON jobs(dedup_key, state)"),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state)"),
     MigrationOp::Schema(
         r"CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_dedup_active
         ON jobs(dedup_key) WHERE state IN ('pending', 'running')",
@@ -867,9 +875,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_domain_events_queue ON domain_events(queue_name, created_at, id)",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_domain_events_dispatch ON domain_events(dispatch_state, created_at)",
-    ),
-    MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_domain_events_dispatch_created ON domain_events(dispatch_state, created_at, id)",
     ),
     MigrationOp::Schema(
@@ -915,9 +920,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_event_deliveries_plugin_order ON event_deliveries(plugin_id, ordering_key, created_at)",
-    ),
-    MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_event_deliveries_state ON event_deliveries(state)",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_event_deliveries_wake ON event_deliveries(state, wake_event_type)",
@@ -1249,9 +1251,18 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS plugin_artifacts (
         sha256 TEXT PRIMARY KEY NOT NULL,
-        data TEXT NOT NULL,
         size INTEGER NOT NULL,
+        chunk_bytes INTEGER NOT NULL,
         created_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_artifact_chunks (
+        sha256 TEXT NOT NULL,
+        chunk_bytes INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        data BLOB NOT NULL,
+        PRIMARY KEY (sha256, chunk_bytes, seq)
     )",
     ),
     MigrationOp::Schema(
@@ -1375,6 +1386,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_updated ON books(updated_at)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_jobs_updated ON jobs(updated_at)"),
     MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_jobs_state_finished ON jobs(state, finished_at)",
+    ),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at)"),
+    MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_event_deliveries_updated ON event_deliveries(updated_at)",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_users_updated ON users(updated_at)"),
@@ -1447,6 +1462,19 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         PRIMARY KEY (plugin_instance_id, cron),
         FOREIGN KEY (plugin_instance_id) REFERENCES plugin_instances(plugin_instance_id)
     )",
+    ),
+    // One change counter per live-socket topic, bumped in the same batch as
+    // every write to the topic's table (`control_plane::live`).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS live_topic_revisions (
+        topic TEXT PRIMARY KEY NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 0
+    )",
+    ),
+    MigrationOp::Data(
+        r"INSERT OR IGNORE INTO live_topic_revisions (topic, revision) VALUES
+        ('library', 0), ('jobs', 0), ('deliveries', 0), ('nodes', 0), ('config', 0),
+        ('consents', 0), ('clusters', 0), ('users', 0), ('discover', 0)",
     ),
 ];
 

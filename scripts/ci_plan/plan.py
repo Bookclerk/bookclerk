@@ -180,8 +180,9 @@ DOC_FILES = frozenset(
 )
 # Tests and fixtures the plan job runs on every event, before any check.
 PLAN_JOB_TEST_PREFIX = "scripts/tests/"
-# Scripts that only plan-job tests exercise (the CLA checker runs in its own
-# workflow, from the default branch, and builds nothing; the coverage gate
+# Scripts that only plan-job tests exercise (the CLA checker, the
+# maintainer review check and the signed commits check run in their own workflows, from the default
+# branch, and build nothing; the coverage gate
 # runs in CI Gate on every run, as does the Web API contract report, Codecov reads its settings itself, and the
 # bundle uploader in tools/codecov only runs in coverage-upload.yml; the
 # mutation testing reports, settings and starting commit only run in mutation.yml,
@@ -192,6 +193,8 @@ PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 PLAN_JOB_SCRIPT_FILES = frozenset(
     {
         "scripts/cla_check.py",
+        "scripts/maintainer_review.py",
+        "scripts/signed_commits.py",
         "scripts/cla_branch/README.md",
         "scripts/cla_branch/setup-rulesets.sh",
         "scripts/coverage_gate.py",
@@ -274,6 +277,7 @@ JOB_CHECKS: dict[str, tuple[str, ...]] = {
         "plugin_sdk_abi",
         "python_sdk",
         "workerd_guests",
+        "plugin_examples",
         "author_surface",
         "fmt",
         "clippy",
@@ -371,6 +375,10 @@ class Guest:
     runtime: str
     rel_dir: str
     package: str | None
+    # An example whose own suite opens its ``[[databases]]`` binding through
+    # an SDK test kit: the runner ``bookclerk-plugin test`` picks for it
+    # (``npm`` or ``pytest``, see ``plugin_test_runner``), or ``None``.
+    plugin_tests: str | None = None
 
 
 @dataclass
@@ -651,8 +659,58 @@ def discover_guests(workspace_root: str | Path, index: PackageIndex) -> dict[str
                 runtime=str(data.get("runtime", "native")),
                 rel_dir=rel_dir,
                 package=by_dir.get(rel_dir),
+                plugin_tests=plugin_test_runner(manifest.parent, data) if tier == "example" else None,
             )
     return out
+
+
+def plugin_test_runner(plugin_dir: Path, manifest: Mapping[str, Any]) -> str | None:
+    """The runner ``bookclerk-plugin test`` uses for a database suite here.
+
+    The plugin must declare a ``[[databases]]`` binding. The runner then
+    follows ``bookclerk-plugin``'s own choice: ``npm`` when ``package.json``
+    has a ``test`` script, else ``pytest`` when there is a ``pyproject.toml``,
+    else ``cargo`` when there is a ``Cargo.toml``.
+
+    Args:
+        plugin_dir: Directory holding ``plugin.toml``.
+        manifest: The parsed ``plugin.toml``.
+
+    Returns:
+        ``"npm"``, ``"pytest"``, ``"cargo"``, or ``None`` when there is no
+        database suite.
+
+    Raises:
+        PlanError: When ``package.json`` exists but is not valid JSON.
+    """
+    if not manifest.get("databases"):
+        return None
+    package_json = plugin_dir / "package.json"
+    if package_json.is_file():
+        try:
+            scripts = json.loads(package_json.read_text(encoding="utf-8")).get("scripts") or {}
+        except (OSError, ValueError) as exc:
+            raise PlanError(f"cannot parse {package_json}: {exc}") from exc
+        if isinstance(scripts.get("test"), str):
+            return "npm"
+    if (plugin_dir / "pyproject.toml").is_file():
+        return "pytest"
+    if (plugin_dir / "Cargo.toml").is_file():
+        return "cargo"
+    return None
+
+
+def example_runners(guest_map: Mapping[str, Guest]) -> list[str]:
+    """The runners the database examples' suites need, sorted.
+
+    Args:
+        guest_map: Every discovered guest.
+
+    Returns:
+        Each distinct :attr:`Guest.plugin_tests` runner (``"cargo"``,
+        ``"npm"``, ``"pytest"``).
+    """
+    return sorted({g.plugin_tests for g in guest_map.values() if g.plugin_tests})
 
 
 def list_changed_paths(
@@ -800,6 +858,7 @@ class _Surfaces:
         self.fixture_checks: dict[str, list[str]] = {}
         self.check_input_checks: dict[str, list[str]] = {}
         self.workerd_guests: list[str] = []
+        self.plugin_examples: list[str] = []
 
 
 def build_plan(
@@ -955,6 +1014,8 @@ def build_plan(
                 surf.e2e_ids.setdefault(guest.id, f"guest files {path}")
                 if guest.tier != "example" and guest.runtime == "workerd":
                     surf.workerd_guests.append(path)
+                if guest.plugin_tests:
+                    surf.plugin_examples.append(path)
                 classified = True
         if any(glob_match(path, p) for p in rel.e2e_full_paths):
             surf.e2e_full.append(path)
@@ -1082,10 +1143,26 @@ def _select_checks(
     guests_why = [f"path {p}" for p in surf.workerd_guests + surf.ts_sdk]
     if guests_why and any(g.tier != "example" and g.runtime == "workerd" for g in guest_map.values()):
         _select(plan, "workerd_guests", guests_why)
+    # Database examples run their suites against their SDK's test kit: the
+    # TypeScript SDK for `npm` suites, the Python SDK for `pytest` ones. A
+    # `cargo` example is a workspace package, so it is selected whenever its
+    # tests are affected: its own sources or tests, the Rust SDK, or the kit
+    # it opens the binding with (a dev-dependency).
+    runners = example_runners(guest_map)
+    examples_why = [f"path {p}" for p in surf.plugin_examples]
+    if "npm" in runners:
+        examples_why += [f"path {p}" for p in surf.ts_sdk]
+    if "pytest" in runners:
+        examples_why += [f"path {p}" for p in surf.python_sdk]
+    cargo_examples = {g.package for g in guest_map.values() if g.plugin_tests == "cargo" and g.package}
+    examples_why += _why(sel, (compiled | tests) & cargo_examples, "database example affected")
+    if examples_why:
+        _select(plan, "plugin_examples", examples_why)
     for check, paths in surf.fixture_checks.items():
         _select(plan, check, [f"shared fixture {p}" for p in paths])
     for check, paths in surf.check_input_checks.items():
         _select(plan, check, [f"check input {p}" for p in paths])
+    _record_example_runners(plan, guest_map)
     if surf.lint:
         _select(plan, "lint", [f"path {p}" for p in surf.lint])
 
@@ -1214,6 +1291,22 @@ def _select_checks(
         _select(plan, "release", [f"shipped binary {n} compiled" for n in shipped], mode="affected", packages=shipped)
 
 
+def _record_example_runners(plan: Plan, guest_map: Mapping[str, Guest]) -> None:
+    """Name the test runners a selected ``plugin_examples`` check needs.
+
+    However the check was selected (an example's files, an SDK, the kit, or
+    the full suite), the job installs Node for ``npm`` suites and uv for
+    ``pytest`` ones from this list; ``cargo`` suites need neither, and the
+    job runs only the examples whose runner is listed.
+
+    Args:
+        plan: The plan being built.
+        guest_map: Every discovered guest.
+    """
+    if plan.selected("plugin_examples"):
+        plan.checks["plugin_examples"]["params"]["runners"] = example_runners(guest_map)
+
+
 def _finalize_full(
     plan: Plan, index: PackageIndex, rel: Relations, guest_map: Mapping[str, Guest]
 ) -> Plan:
@@ -1249,6 +1342,7 @@ def _finalize_full(
     plan.checks["e2e"]["params"] = {"scope": "full"}
     plan.checks["release"]["params"] = {"mode": "full"}
     plan.checks["postgres"]["params"] = {"steps": list(rel.postgres_steps)}
+    _record_example_runners(plan, guest_map)
     _expand_prereqs(plan, index, rel, guest_map)
     _derive_jobs(plan)
     return plan

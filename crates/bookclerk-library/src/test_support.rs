@@ -269,8 +269,8 @@ impl ProfileAtomic {
 
 /// Maps the error a guest answered with onto the library error the host
 /// reports for a named operation: a typed limit stays a limit, an
-/// ambiguous transport outcome (the batch may have been applied) is
-/// `Unavailable`, anything else is an operation failure.
+/// ambiguous transport outcome (the batch may have been applied) or a
+/// rate limit is `Unavailable`, anything else is an operation failure.
 fn from_guest_error(err: PluginError) -> LibraryError {
     if let Some(limit) = err.limit() {
         return LibraryError::LimitExceeded(limit);
@@ -278,7 +278,8 @@ fn from_guest_error(err: PluginError) -> LibraryError {
     match err.code {
         PluginErrorCode::Unavailable
         | PluginErrorCode::Cancelled
-        | PluginErrorCode::DeadlineExceeded => LibraryError::Unavailable(err.to_string()),
+        | PluginErrorCode::DeadlineExceeded
+        | PluginErrorCode::RateLimited => LibraryError::Unavailable(err.to_string()),
         PluginErrorCode::InvalidParams
         | PluginErrorCode::Unauthorized
         | PluginErrorCode::Forbidden

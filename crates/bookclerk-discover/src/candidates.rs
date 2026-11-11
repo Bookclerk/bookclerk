@@ -46,6 +46,10 @@ pub struct StorefrontCandidate {
     pub origin: String,
     /// Owned-library title that seeded this related / similar candidate.
     pub seed_title: Option<String>,
+    /// Starter genre this candidate was browsed from (display name), set
+    /// only on hits of a starter-genre search for a thin taste.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starter_genre: Option<String>,
     /// Known storefront editions of this work (including the primary source).
     #[serde(default)]
     pub store_editions: Vec<StoreEdition>,
@@ -88,9 +92,15 @@ pub struct StorefrontCandidate {
     /// Abridged flag when the storefront provided one.
     #[serde(default)]
     pub is_abridged: Option<bool>,
-    /// Position within the Audible page that produced this hit (for merge rank).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub audible_rank: Option<u32>,
+    /// The storefront's own 1-based search rank for this hit (its declared
+    /// `CatalogHit.rankHint`); catalog search merges stores by it for
+    /// relevance and popularity sorts. `None` when no store ranked it.
+    #[serde(
+        default,
+        alias = "audible_rank",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub store_rank: Option<u32>,
 }
 
 /// Options for storefront candidate expansion.
@@ -295,6 +305,7 @@ pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCa
         seed_categories: None,
         origin: hit.origin,
         seed_title: None,
+        starter_genre: None,
         store_editions: Vec::new(),
         subtitle: hit.subtitle,
         description: hit.description,
@@ -309,7 +320,7 @@ pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCa
         rating_overall: hit.rating_overall,
         rating_count: hit.rating_count,
         is_abridged: hit.is_abridged,
-        audible_rank: None,
+        store_rank: None,
     }
 }
 
@@ -650,6 +661,7 @@ mod tests {
                 seed_categories: None,
                 origin: "audible author".into(),
                 seed_title: None,
+                starter_genre: None,
                 store_editions: Vec::new(),
                 subtitle: None,
                 description: None,
@@ -664,7 +676,7 @@ mod tests {
                 rating_overall: None,
                 rating_count: None,
                 is_abridged: None,
-                audible_rank: None,
+                store_rank: None,
             },
             &owned_asins,
             &owned_isbns,
@@ -686,6 +698,7 @@ mod tests {
                 seed_categories: None,
                 origin: "libro related".into(),
                 seed_title: None,
+                starter_genre: None,
                 store_editions: Vec::new(),
                 subtitle: None,
                 description: None,
@@ -700,7 +713,7 @@ mod tests {
                 rating_overall: None,
                 rating_count: None,
                 is_abridged: None,
-                audible_rank: None,
+                store_rank: None,
             },
             &owned_asins,
             &owned_isbns,
@@ -722,6 +735,7 @@ mod tests {
                 seed_categories: None,
                 origin: "chirp search".into(),
                 seed_title: None,
+                starter_genre: None,
                 store_editions: Vec::new(),
                 subtitle: None,
                 description: None,
@@ -736,7 +750,7 @@ mod tests {
                 rating_overall: None,
                 rating_count: None,
                 is_abridged: None,
-                audible_rank: None,
+                store_rank: None,
             },
             &owned_asins,
             &owned_isbns,

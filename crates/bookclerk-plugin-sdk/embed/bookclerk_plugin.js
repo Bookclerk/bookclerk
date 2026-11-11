@@ -27,7 +27,7 @@ var MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES = 262144;
 var FEATURE_SCALAR_LIMITS = "rpc.scalarLimits";
 var FEATURE_STREAMS = "rpc.streams";
 var FEATURE_STORAGE_COPY = "storage.copy";
-var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded"];
+var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited"];
 var CLI_ARG_KINDS = ["string", "bool", "int", "path"];
 var WORK_KINDS = ["book", "podcastShow", "podcastEpisode", "drama"];
 var EXPRESSION_KINDS = ["narration", "text", "translation", "dramatisation", "podcastAudio"];
@@ -3092,7 +3092,7 @@ var RevokeAccountParamsCodec = {
   }
 };
 var CatalogHitCodec = {
-  dataWords: 5,
+  dataWords: 6,
   pointerCount: 17,
   write(s, v, caps) {
     s.setText(0, v.productId ?? "");
@@ -3168,6 +3168,9 @@ var CatalogHitCodec = {
     if (v.parentProductId !== void 0) {
       s.setText(16, v.parentProductId ?? "");
     }
+    if (v.rankHint !== void 0) {
+      s.setUint32(10, v.rankHint ?? 0);
+    }
   },
   read(s, caps) {
     const out = {
@@ -3242,6 +3245,10 @@ var CatalogHitCodec = {
     if (!(parentProductIdValue === "")) {
       out.parentProductId = parentProductIdValue;
     }
+    const rankHintValue = s.getUint32(10);
+    if (!(rankHintValue === 0)) {
+      out.rankHint = rankHintValue;
+    }
     return out;
   }
 };
@@ -3251,7 +3258,7 @@ var CatalogHitsCodec = {
   write(s, v, caps) {
     {
       const list = v.hits ?? [];
-      const items = s.initStructList(0, list.length, 5, 17);
+      const items = s.initStructList(0, list.length, 6, 17);
       for (let i = 0; i < items.length; i++) {
         CatalogHitCodec.write(items[i], list[i], caps);
       }
@@ -3259,7 +3266,7 @@ var CatalogHitsCodec = {
   },
   read(s, caps) {
     return {
-      hits: s.getStructList(0, 5, 17).map((item) => CatalogHitCodec.read(item, caps))
+      hits: s.getStructList(0, 6, 17).map((item) => CatalogHitCodec.read(item, caps))
     };
   }
 };
@@ -3302,13 +3309,13 @@ var CatalogDetailCodec = {
   write(s, v, caps) {
     s.setBool(0, v.found ?? false);
     if (v.hit != null) {
-      CatalogHitCodec.write(s.initStruct(0, 5, 17), v.hit, caps);
+      CatalogHitCodec.write(s.initStruct(0, 6, 17), v.hit, caps);
     }
   },
   read(s, caps) {
     return {
       found: s.getBool(0),
-      hit: CatalogHitCodec.read(s.getStruct(0, 5, 17), caps)
+      hit: CatalogHitCodec.read(s.getStruct(0, 6, 17), caps)
     };
   }
 };
@@ -3469,6 +3476,75 @@ var PurchaseHintReplyCodec = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("PurchaseHintReply", disc);
+    }
+  }
+};
+var PurchaseHintsParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.queries ?? [];
+      const items = s.initStructList(0, list.length, 1, 6);
+      for (let i = 0; i < items.length; i++) {
+        PurchaseHintParamsCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      queries: s.getStructList(0, 1, 6).map((item) => PurchaseHintParamsCodec.read(item, caps))
+    };
+  }
+};
+var PurchaseHintsResultCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.results ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        PurchaseHintResultCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      results: s.getStructList(0, 1, 1).map((item) => PurchaseHintResultCodec.read(item, caps))
+    };
+  }
+};
+var PurchaseHintsReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          PurchaseHintsResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("PurchaseHintsReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: PurchaseHintsResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("PurchaseHintsReply", disc);
     }
   }
 };
@@ -6248,6 +6324,34 @@ var ContentSourceRevokeAccountResultsCodec = {
     };
   }
 };
+var ContentSourcePurchaseHintsParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      PurchaseHintsParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: PurchaseHintsParamsCodec.read(s.getStruct(0, 0, 1), caps)
+    };
+  }
+};
+var ContentSourcePurchaseHintsResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      PurchaseHintsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: PurchaseHintsReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var RemoteLibraryHealthParamsCodec = {
   dataWords: 0,
   pointerCount: 0,
@@ -8060,6 +8164,16 @@ function decodeExecuteResultReply(bytes) {
   }
   throw new Error("unknown ExecuteResultReply union member");
 }
+function encodeDbCapabilitiesReply(outcome) {
+  return encodeMessage(DbCapabilitiesReplyCodec, "ok" in outcome ? { kind: "ok", value: outcome.ok } : {
+    kind: "err",
+    value: {
+      code: outcome.err.code,
+      message: outcome.err.message,
+      details: outcome.err.details ?? ""
+    }
+  });
+}
 function decodeDbCapabilitiesReply(bytes) {
   const reply = decodeMessage(DbCapabilitiesReplyCodec, bytes);
   if (reply.kind === "ok") {
@@ -8807,6 +8921,12 @@ var METHODS = {
     searchCatalog: withParams("storefront", "searchCatalog", ContentSourceSearchCatalogParamsCodec, ContentSourceSearchCatalogResultsCodec, okHits),
     expandCandidates: withParams("storefront", "expandCandidates", ContentSourceExpandCandidatesParamsCodec, ContentSourceExpandCandidatesResultsCodec, okHits),
     purchaseHint: withParams("storefront", "purchaseHint", ContentSourcePurchaseHintParamsCodec, ContentSourcePurchaseHintResultsCodec, (value) => okValue({ found: value != null, hint: value ?? void 0 })),
+    purchaseHints: withParams("storefront", "purchaseHints", ContentSourcePurchaseHintsParamsCodec, ContentSourcePurchaseHintsResultsCodec, (value) => okValue({
+      results: asList(value).map((hint) => ({
+        found: hint != null,
+        hint: hint ?? void 0
+      }))
+    })),
     listDeals: withParams("storefront", "listDeals", ContentSourceListDealsParamsCodec, ContentSourceListDealsResultsCodec, okHits),
     health: withoutParams("storefront", "health", ContentSourceHealthParamsCodec, ContentSourceHealthResultsCodec, okHealth),
     diagnose: withoutParams("storefront", "diagnose", ContentSourceDiagnoseParamsCodec, ContentSourceDiagnoseResultsCodec, okLines),
@@ -9150,6 +9270,9 @@ function opSql(op) {
     if ("data" in op && typeof op.data === "string") {
       return op.data;
     }
+    if ("value" in op && typeof op.value === "string") {
+      return op.value;
+    }
   }
   return "";
 }
@@ -9479,16 +9602,7 @@ function invocationEnv(rawEnv, context) {
         if (entry.database) {
           merged[entry.name] = entry.database;
         } else if (entry.transport) {
-          const transport = entry.transport;
-          const limits = transport.limits;
-          const executeStreamed = transport.executeStreamed;
-          merged[entry.name] = createDatabaseBinding({
-            execute: (request) => transport.execute(request),
-            ...typeof limits === "function" ? { limits: () => limits.call(transport) } : {},
-            ...typeof executeStreamed === "function" ? {
-              executeStreamed: (request) => executeStreamed.call(transport, request)
-            } : {}
-          });
+          merged[entry.name] = transportDatabase(entry.transport);
         }
       }
     }
@@ -9508,6 +9622,17 @@ function invocationEnv(rawEnv, context) {
     }
   }
   return Object.freeze(merged);
+}
+function transportDatabase(entry) {
+  const transport = entry;
+  const execute = typeof transport.executeBytes === "function" ? async (request) => decodeExecuteResultReply(await transport.executeBytes(encodeExecuteRequest(request))) : (request) => transport.execute(request);
+  const readLimits = typeof transport.limitsBytes === "function" ? async () => decodeDbCapabilitiesReply(await transport.limitsBytes()) : typeof transport.limits === "function" ? () => transport.limits() : void 0;
+  const streamed = typeof transport.openStreamedBytes === "function" ? (request) => transport.openStreamedBytes(encodeExecuteRequest(request)) : typeof transport.executeStreamed === "function" ? (request) => transport.executeStreamed(request) : void 0;
+  return createDatabaseBinding({
+    execute,
+    ...readLimits ? { limits: readLimits } : {},
+    ...streamed ? { executeStreamed: streamed } : {}
+  });
 }
 function applyInvocationEnv(instance, context) {
   const target = instance;
@@ -10140,6 +10265,7 @@ var NamedEntrypoint = class extends WorkerEntrypoint {
     return await target.apply(this, args);
   }
 };
+var PURCHASE_HINTS_BUDGET_MS = 4e3;
 var STOREFRONT_METHODS = Object.freeze([
   "login",
   "scan",
@@ -10150,6 +10276,7 @@ var STOREFRONT_METHODS = Object.freeze([
   "searchCatalog",
   "expandCandidates",
   "purchaseHint",
+  "purchaseHints",
   "listDeals",
   "catalogDetail",
   "revokeAccount",
@@ -10238,6 +10365,29 @@ var StorefrontEntrypoint = class extends NamedEntrypoint {
    */
   purchaseHint(_params) {
     return Promise.reject(unsupported("purchaseHint"));
+  }
+  /**
+   * Purchase links / price hints for several titles in one call, one
+   * answer per query in order. The default asks {@link purchaseHint} for
+   * each query, those with a product id first, and stops starting lookups
+   * after {@link PURCHASE_HINTS_BUDGET_MS}; a store whose catalog prices
+   * many products per request overrides this to make one request. Reject with a
+   * `rate_limited` {@link PluginError} (its `details.retryAfterMs` says how
+   * long) when the store asks to slow down, so the host leaves it alone.
+   *
+   * @param params - The titles to price, in order.
+   * @returns One hint or `null` per query.
+   */
+  async purchaseHints(params) {
+    const started = Date.now();
+    const out = params.queries.map(() => null);
+    const order = params.queries.map((query, i) => ({ i, direct: Boolean(query.productId?.trim()) })).sort((a, b) => Number(b.direct) - Number(a.direct)).map((entry) => entry.i);
+    for (const i of order) {
+      if (Date.now() - started >= PURCHASE_HINTS_BUDGET_MS)
+        break;
+      out[i] = await this.purchaseHint(params.queries[i]);
+    }
+    return out;
   }
   /**
    * Current storefront deals.
@@ -11070,12 +11220,16 @@ var GrantedDatabase = class extends RpcTarget {
    * @returns Unpacked `ExecuteResultReply` message.
    */
   async executeBytes(bytes) {
-    const resp = await this.#granted.fetch("http://granted/db/execute", {
-      method: "POST",
-      headers: { ...this.#auth, "content-type": "application/octet-stream" },
-      body: bytes
-    });
-    return grantedDatabaseBody(resp);
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/execute", {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/octet-stream" },
+        body: bytes
+      });
+      return await grantedDatabaseBody(resp);
+    } catch (err) {
+      return encodeExecuteResultReply({ err: wirePluginError(err) });
+    }
   }
   /**
    * Run one typed atomic batch answered as stream frames
@@ -11101,15 +11255,20 @@ var GrantedDatabase = class extends RpcTarget {
    * locally).
    *
    * @param bytes - Unpacked `ExecuteRequest` message.
-   * @returns Every `ExecuteStreamFrame`, concatenated.
+   * @returns Every `ExecuteStreamFrame`, concatenated; a channel failure is
+   *   one `err` frame.
    */
   async executeStreamedBytes(bytes) {
-    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
-      method: "POST",
-      headers: { ...this.#auth, "content-type": "application/octet-stream" },
-      body: bytes
-    });
-    return grantedDatabaseBody(resp, "executeStreamed");
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/octet-stream" },
+        body: bytes
+      });
+      return await grantedDatabaseBody(resp, "executeStreamed");
+    } catch (err) {
+      return errFrame(err);
+    }
   }
   /**
    * Same frames, as the channel delivers them (a `ReadableStream` when it
@@ -11117,18 +11276,23 @@ var GrantedDatabase = class extends RpcTarget {
    * frames as they arrive.
    *
    * @param bytes - Unpacked `ExecuteRequest` message.
-   * @returns The response body: the frame sequence.
+   * @returns The response body: the frame sequence; a channel failure is
+   *   one `err` frame.
    */
   async openStreamedBytes(bytes) {
-    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
-      method: "POST",
-      headers: { ...this.#auth, "content-type": "application/octet-stream" },
-      body: bytes
-    });
-    if (!resp.ok) {
-      await grantedDatabaseBody(resp, "executeStreamed");
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/octet-stream" },
+        body: bytes
+      });
+      if (!resp.ok) {
+        await grantedDatabaseBody(resp, "executeStreamed");
+      }
+      return resp.body ?? new Uint8Array(0);
+    } catch (err) {
+      return errFrame(err);
     }
-    return resp.body ?? new Uint8Array(0);
   }
   /**
    * Negotiated limits of the granted session (`GET /db/limits`).
@@ -11141,16 +11305,31 @@ var GrantedDatabase = class extends RpcTarget {
   /**
    * Same answer as Cap'n Proto bytes (Python authors decode locally).
    *
-   * @returns Unpacked `DbCapabilitiesReply` message.
+   * @returns Unpacked `DbCapabilitiesReply` message; a channel failure is
+   *   its `err` arm.
    */
   async limitsBytes() {
-    const resp = await this.#granted.fetch("http://granted/db/limits", {
-      method: "GET",
-      headers: { ...this.#auth }
-    });
-    return grantedDatabaseBody(resp, "limits");
+    try {
+      const resp = await this.#granted.fetch("http://granted/db/limits", {
+        method: "GET",
+        headers: { ...this.#auth }
+      });
+      return await grantedDatabaseBody(resp, "limits");
+    } catch (err) {
+      return encodeDbCapabilitiesReply({ err: wirePluginError(err) });
+    }
   }
 };
+function wirePluginError(err) {
+  if (err instanceof PluginError) {
+    return { code: err.wireCode, message: err.message, details: err.detailsText };
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return { code: "unavailable", message: `database grant: ${message}`, details: "" };
+}
+function errFrame(err) {
+  return encodeMessage(ExecuteStreamFrameCodec, { kind: "err", value: wirePluginError(err) });
+}
 async function grantedDatabaseBody(resp, method = "execute") {
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");

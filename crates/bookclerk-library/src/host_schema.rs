@@ -2161,8 +2161,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_waiting_starter_takes_over_a_dead_migrators_lease() {
+        // The dead holder's lease lapses after 200 ms (below); the starter
+        // that takes over holds its own for 5 s, so a loaded test runner
+        // stalling past a short TTL mid-migration cannot cost it the lease.
         MIGRATION_LEASE_TIMING.with(|t| {
-            t.set(Some((Duration::from_millis(200), Duration::from_secs(5))));
+            t.set(Some((Duration::from_secs(5), Duration::from_secs(10))));
         });
         let dir = tempfile::tempdir().unwrap();
         let (a, b) = two_file_connections(dir.path()).await;

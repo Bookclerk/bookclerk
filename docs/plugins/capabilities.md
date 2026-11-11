@@ -333,6 +333,8 @@ Network destinations can be extended by the operator:
 - Operators **may deny** individual fetch hosts, TCP grants or CIDRs, so a
   later package upgrade of the same PluginKey doesn't quietly restore
   them.
+- A package upgrade can't widen the network on its own either: see
+  [Upgrades](#upgrades).
 
 Host hard caps still apply:
 
@@ -369,9 +371,28 @@ On an upgrade of the **same PluginKey**:
 
 - operator-added network destinations and operator **denials** (fetch
   hosts, TCP grants and CIDRs) survive;
-- new structural capabilities stay pending until the operator consents.
-  `grant_covers` is identity-only, so the previous approval stays usable
-  meanwhile.
+- new structural capabilities stay pending until the operator consents;
+- a **wider network** stays pending too: a fetch host the old grant didn't
+  approve (including `*`, any public website), a new TCP host or port, a
+  new CIDR, or undeclared public redirects. The plugin keeps running with
+  the network the operator approved, and the new destinations are left out
+  of its egress policy until the operator approves them. Narrowing needs
+  no consent.
+
+`grant_covers` is identity-only, so the previous approval stays usable
+meanwhile. What is pending is shown the same way everywhere:
+
+- `bookclerk plugins info <id>` (`pending_structural`) and
+  `bookclerk plugins approve <id>`, which prints it before the full request;
+- the consent dialog in **Settings**, which lists it under **New in this
+  version** with the new destinations ticked (untick one to deny it);
+- `GET /api/plugins/{id}/consent`, as `pending` (the same lines, plus the
+  new fetch hosts, TCP grants, CIDRs and redirect flag), with `covered`
+  false until it is empty.
+
+A destination the operator leaves unticked is recorded as a denial, so it
+is answered and no longer pending. Owner plugins on a cluster host follow
+the same rule through [host consent](../server/cluster-hosts.md#consent-rules).
 
 A different provenance, even with the same manifest alias, doesn't
 inherit grants.

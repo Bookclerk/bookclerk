@@ -1053,6 +1053,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The password could not be hashed, or the library could not be read or written.",
             "content": {
@@ -14302,7 +14317,7 @@
           {
             "name": "q",
             "in": "query",
-            "description": "Full-text search query; empty skips the search index.",
+            "description": "Full-text search over this node's search index. Hits are sorted by\ntitle and every hit counts toward `total` (there is no hit cap); an\nempty value skips the index.",
             "required": false,
             "schema": {
               "type": "string"
@@ -15353,6 +15368,136 @@
           },
           "500": {
             "description": "The lookup failed.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session."
+      }
+    },
+    "/api/discover/refresh": {
+      "post": {
+        "tags": [
+          "Discover"
+        ],
+        "summary": "Queues a storefront fetch and ranking for the caller's shelves now, as\nthe Discover page's Refresh button asks. Unchanged store calls answer\nfrom the day's cache, so a refresh is cheap; a fetch already waiting\nabsorbs the request.",
+        "operationId": "discover_refresh",
+        "responses": {
+          "200": {
+            "description": "Stored Discover state of the caller's shelves, with `updating` set once the fetch is queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoverStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller has no portal identity.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Unauthorized"
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The job queue is full, so the fetch was not queued.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "job queue is full"
+              }
+            }
+          },
+          "500": {
+            "description": "The lookup failed, or the fetch could not be queued.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -17274,7 +17419,8 @@
         "tags": [
           "Wishlist"
         ],
-        "summary": "Ranks the shared open-request queue without warming ONNX embeddings.",
+        "summary": "Reads the shared open-request queue from its stored ranking.",
+        "description": "The `discover_request_queue` job ranks the queue against household taste\nwhen a taste event says it may have moved; this route joins that stored\nranking with the open requests and the live wish counts, so it reads no\nbooks, listening history or embedder. When an entry has no stored ranking\nyet, or the ranking is older than a day, the route queues a pass and\nanswers with what it has.",
         "operationId": "list_request_queue",
         "responses": {
           "200": {
@@ -17326,7 +17472,7 @@
             }
           },
           "500": {
-            "description": "The queue could not be ranked.",
+            "description": "The queue could not be read.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -17337,13 +17483,27 @@
             }
           },
           "503": {
-            "description": "Discover is shutting down; try again. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
-            "content": {
-              "text/plain": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
                 "schema": {
-                  "type": "string"
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
                 },
-                "example": "discover gate closed"
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
               }
             }
           },
@@ -19416,6 +19576,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_client",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The client could not be read or stored, or an Owner's current password could not be read or checked (`oidc_client`).",
             "content": {
@@ -19653,6 +19828,21 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: client_id: invalid type: integer `1`, expected a string at line 1 column 14"
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_client",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
               }
             }
           },
@@ -19940,6 +20130,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_client",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The client could not be read or removed, or an Owner's current password could not be read or checked (`oidc_client`).",
             "content": {
@@ -20165,6 +20370,21 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_client",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
               }
             }
           },
@@ -21256,6 +21476,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_config`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "oidc_config",
+                  "message": "too many wrong passwords for this account; try again later",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The configuration file or the sealed secrets could not be written, or an Owner's current password could not be read or checked (`oidc_config`).",
             "content": {
@@ -21501,6 +21736,21 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
               }
             }
           },
@@ -21805,6 +22055,21 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
               }
             }
           },
@@ -22627,6 +22892,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The secret could not be sealed and stored, or the library could not be read.",
             "content": {
@@ -22983,6 +23263,21 @@
               }
             }
           },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
+              }
+            }
+          },
           "500": {
             "description": "The library could not be read or written.",
             "content": {
@@ -23242,6 +23537,21 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: missing field `require_second_factor` at line 1 column 2"
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout (`too_many_requests`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many wrong passwords for this account. Try again later.",
+                  "status": 429
+                }
               }
             }
           },
@@ -28063,12 +28373,6 @@
             },
             "description": "Optional priced storefront links snapshotted at wishlist time."
           },
-          "work_key": {
-            "type": "string",
-            "description": "Optional stable work key; when omitted one is derived from bib fields.",
-            "example": "work:9780441478125",
-            "nullable": true
-          },
           "cover_url": {
             "type": "string",
             "description": "Optional cover image URL snapshotted onto the request.",
@@ -28360,7 +28664,8 @@
         "description": "Stored Discover state of the caller's shelves.",
         "required": [
           "subject",
-          "ready"
+          "ready",
+          "updating"
         ],
         "properties": {
           "subject": {
@@ -28390,6 +28695,11 @@
             "description": "RFC 3339 time the caller's last storefront fetch finished, when any.",
             "example": "2026-11-06T00:29:41+00:00",
             "nullable": true
+          },
+          "updating": {
+            "type": "boolean",
+            "description": "True while a fetch or ranking for the caller is waiting or running.",
+            "example": false
           }
         }
       },
@@ -29718,7 +30028,9 @@
           "plugin_scheduled",
           "discover_candidates",
           "discover_feed",
+          "discover_request_queue",
           "cache_sweep",
+          "search_index_rebuild",
           "invalid"
         ]
       },
@@ -33289,6 +33601,62 @@
           }
         }
       },
+      "PluginConsentPending": {
+        "type": "object",
+        "description": "The difference between a plugin's request and its stored grant.",
+        "required": [
+          "lines",
+          "domains",
+          "tcp",
+          "addressCidrs",
+          "allowUndeclaredPublicRedirects"
+        ],
+        "properties": {
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Operator-facing lines naming every capability awaiting consent, the\nsame lines `bookclerk plugins info` and `bookclerk plugins approve`\nprint; empty when the stored grant covers the request.",
+            "example": [
+              "Awaiting consent (not automatically approved):",
+              "  fetch hosts: any public website (*)"
+            ]
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fetch host patterns the request adds (`*` is any public host).",
+            "example": [
+              "*"
+            ]
+          },
+          "tcp": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TcpGrantView"
+            },
+            "description": "TCP `host:ports` the request adds, narrowed to the new ports."
+          },
+          "addressCidrs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "CIDRs the request adds.",
+            "example": [
+              "192.168.1.0/24"
+            ]
+          },
+          "allowUndeclaredPublicRedirects": {
+            "type": "boolean",
+            "description": "Whether the request newly asks to follow undeclared public redirects.",
+            "example": false
+          }
+        }
+      },
       "PluginConsentResponse": {
         "type": "object",
         "description": "Consent dialog payload for one plugin.",
@@ -33632,6 +34000,63 @@
                 "example": 4,
                 "minimum": 0,
                 "nullable": true
+              }
+            },
+            "nullable": true
+          },
+          "pending": {
+            "description": "What the request asks for beyond the stored grant (a plugin upgrade\nthat widened its capabilities); absent when no grant is stored. The\nplugin keeps running under the stored grant until these are approved.",
+            "type": "object",
+            "required": [
+              "lines",
+              "domains",
+              "tcp",
+              "addressCidrs",
+              "allowUndeclaredPublicRedirects"
+            ],
+            "properties": {
+              "lines": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Operator-facing lines naming every capability awaiting consent, the\nsame lines `bookclerk plugins info` and `bookclerk plugins approve`\nprint; empty when the stored grant covers the request.",
+                "example": [
+                  "Awaiting consent (not automatically approved):",
+                  "  fetch hosts: any public website (*)"
+                ]
+              },
+              "domains": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Fetch host patterns the request adds (`*` is any public host).",
+                "example": [
+                  "*"
+                ]
+              },
+              "tcp": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/TcpGrantView"
+                },
+                "description": "TCP `host:ports` the request adds, narrowed to the new ports."
+              },
+              "addressCidrs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "CIDRs the request adds.",
+                "example": [
+                  "192.168.1.0/24"
+                ]
+              },
+              "allowUndeclaredPublicRedirects": {
+                "type": "boolean",
+                "description": "Whether the request newly asks to follow undeclared public redirects.",
+                "example": false
               }
             },
             "nullable": true
@@ -35639,6 +36064,11 @@
               }
             },
             "nullable": true
+          },
+          "incomplete": {
+            "type": "boolean",
+            "description": "True when the batch deadline cut this lookup short: the hints are the\nquery's trusted seeds alone, so a client should not keep the answer\nand asks again later. Omitted (false) for a finished lookup.",
+            "example": false
           }
         }
       },
@@ -36104,6 +36534,7 @@
         "description": "Global wishlist queue entry ranked by overall/operator recommend taste +\nheavy wish-count weight (shared order; not per-viewer personalized).",
         "required": [
           "work_key",
+          "work_id",
           "title",
           "wish_count",
           "sample_uuids",
@@ -36118,6 +36549,11 @@
             "type": "string",
             "description": "Stable map key for this work (`isbn:…`, `asin:…`, or soft title+author).",
             "example": "isbn:9780441478125"
+          },
+          "work_id": {
+            "type": "string",
+            "description": "The work every wish of this entry is for. Wishes for one work are\none entry even when their `work_key`s differ, so a client matches\nits own wishes on this id first and on `work_key` otherwise.",
+            "example": "0b7e2c1d-5f3a-4e6b-9c8d-1a2b3c4d5e6f"
           },
           "title": {
             "type": "string",
@@ -36415,6 +36851,18 @@
             "format": "int64",
             "description": "Number of distinct users who wishlisted this title (may exceed `wishers.len()`).",
             "example": 3
+          },
+          "seed_title": {
+            "type": "string",
+            "description": "Title of the book or wish the storefront was asked about to find this\ncard, when it came from such an expansion.",
+            "example": "Dune",
+            "nullable": true
+          },
+          "starter_genre": {
+            "type": "string",
+            "description": "Starter genre this card was browsed from while the taste was thin.",
+            "example": "Science Fiction",
+            "nullable": true
           }
         }
       },
@@ -36456,7 +36904,8 @@
           "request_digest",
           "grant",
           "updated_at",
-          "state"
+          "state",
+          "pending"
         ],
         "properties": {
           "cluster_id": {
@@ -36600,6 +37049,17 @@
             "type": "string",
             "description": "How this host stands on the request: `consented`, `awaiting_host_consent` (no approval, or a revoked one), `awaiting_host_reapproval` (the owner changed the request or the archive since the approval), or `invalid_grant` (a grant that does not parse).",
             "example": "consented"
+          },
+          "pending": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What the owner's current request asks for beyond the request the operator approved, as the operator-facing lines the CLI prints; empty when nothing was approved yet or the request stays within the approval.",
+            "example": [
+              "Awaiting consent (not automatically approved):",
+              "  fetch hosts: any public website (*)"
+            ]
           }
         }
       },
@@ -38015,6 +38475,7 @@
           "uuid",
           "title",
           "status",
+          "work_id",
           "created_at",
           "updated_at"
         ],
@@ -38039,24 +38500,24 @@
           },
           "title": {
             "type": "string",
-            "description": "Display title of the work or edition.",
+            "description": "Display title: the title of the wish's work.",
             "example": "The Left Hand of Darkness"
           },
           "authors": {
             "type": "string",
-            "description": "Comma-separated or JSON author list from the storefront.",
+            "description": "Comma-separated authors: the work's author credits in billing order.",
             "example": "Ursula K. Le Guin",
             "nullable": true
           },
           "asin": {
             "type": "string",
-            "description": "Amazon ASIN when known; otherwise null.",
+            "description": "Amazon ASIN from the wish's storefront sources, when one carries it.",
             "example": "B002V0QK4C",
             "nullable": true
           },
           "isbn": {
             "type": "string",
-            "description": "ISBN-10/13 when known; otherwise null.",
+            "description": "ISBN-10/13 from the wish's storefront sources, when one carries it.",
             "example": "9780441478125",
             "nullable": true
           },
@@ -38076,13 +38537,18 @@
           },
           "work_key": {
             "type": "string",
-            "description": "Stable bibliographic key (`isbn:…` / `asin:…` / `soft:…`) for aggregation.",
+            "description": "Bibliographic card key (`isbn:…` / `asin:…` / `soft:…`) clients use\nto match a wish to a catalog card. Derived from the work's title and\nauthors and the sources' identifiers on every read, never stored.",
             "example": "isbn:9780441478125"
           },
           "work_id": {
             "type": "string",
-            "description": "Canonical work id this edition or request resolves to.",
-            "example": "7c1e9a2b-3d4f-4e5a-9b6c-8d7e0f1a2b3c",
+            "description": "The work the wish is for; wishes for one work are one queue entry.",
+            "example": "7c1e9a2b-3d4f-4e5a-9b6c-8d7e0f1a2b3c"
+          },
+          "edition_id": {
+            "type": "string",
+            "description": "The edition the wish named, when the library knows it.",
+            "example": "0b8e3f2a-5c1d-5e7f-9a2b-4c6d8e0f1a3b",
             "nullable": true
           },
           "resolved_book_uuid": {
@@ -39073,7 +39539,7 @@
                 "properties": {
                   "title": {
                     "type": "string",
-                    "description": "Display title when the provider reported one.",
+                    "description": "Title of the work being listened to, when the library knows it.",
                     "example": "The Left Hand of Darkness",
                     "nullable": true
                   },
@@ -39136,7 +39602,7 @@
         "properties": {
           "title": {
             "type": "string",
-            "description": "Display title when the provider reported one.",
+            "description": "Title of the work being listened to, when the library knows it.",
             "example": "The Left Hand of Darkness",
             "nullable": true
           },

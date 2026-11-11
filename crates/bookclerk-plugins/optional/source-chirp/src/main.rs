@@ -5,11 +5,11 @@
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    serve, Bindings, Brand, CatalogHit, ContentSource as ContentSourceRole, Entrypoints,
-    ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams, LoginParams,
-    LoginResult, PlainFetch, PluginDescribe, PluginError, PluginWorker, PortalAuthMode,
-    PurchaseHint, PurchaseHintParams, ScalarLimits, ScanParams, ScanSummary, SearchCatalogParams,
-    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    serve, Bindings, Brand, CatalogCapabilities, CatalogHit, ContentSource as ContentSourceRole,
+    Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
+    LoginParams, LoginResult, PlainFetch, PluginDescribe, PluginError, PluginWorker,
+    PortalAuthMode, PurchaseHint, PurchaseHintParams, PurchaseHintsParams, ScalarLimits,
+    ScanParams, ScanSummary, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_storefront::abi::{expand_seed_from_params, DEFAULT_LIST_DEALS_LIMIT};
 use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
@@ -40,6 +40,10 @@ impl PluginWorker for ChirpRoot {
                     "https://www.google.com/s2/favicons?domain=chirpbooks.com&sz=128".into(),
                 ),
             }),
+            // Chirp has no catalog detail lookup.
+            catalog: CatalogCapabilities {
+                detail_by_isbn: false,
+            },
             ..PluginDescribe::default()
         })
     }
@@ -135,7 +139,25 @@ impl ContentSourceRole for ChirpContentSource {
             .purchase_hint(&PurchaseHintOpts::from(params))
             .await
             .map(|hint| hint.map(Into::into))
-            .map_err(internal)
+            .map_err(PluginError::from)
+    }
+
+    /// One aliased GraphQL request prices a page of cards.
+    async fn purchase_hints(
+        &self,
+        params: PurchaseHintsParams,
+    ) -> Result<Vec<Option<PurchaseHint>>, PluginError> {
+        let opts: Vec<PurchaseHintOpts> = params
+            .queries
+            .into_iter()
+            .map(PurchaseHintOpts::from)
+            .collect();
+        let source = bookclerk_plugin_source_chirp::ChirpSource::new();
+        source
+            .purchase_hints(&opts)
+            .await
+            .map(|hints| hints.into_iter().map(|h| h.map(Into::into)).collect())
+            .map_err(PluginError::from)
     }
 
     async fn list_deals(&self, params: ListDealsParams) -> Result<Vec<CatalogHit>, PluginError> {

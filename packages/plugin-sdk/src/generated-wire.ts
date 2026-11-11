@@ -763,6 +763,24 @@ export interface ContentSourceRevokeAccountResults {
 }
 
 /**
+ * Params envelope of `ContentSource.purchaseHints`.
+ *
+ * @internal
+ */
+export interface ContentSourcePurchaseHintsParams {
+  params: T.PurchaseHintsParams;
+}
+
+/**
+ * Results envelope of `ContentSource.purchaseHints`.
+ *
+ * @internal
+ */
+export interface ContentSourcePurchaseHintsResults {
+  result: T.PurchaseHintsReply;
+}
+
+/**
  * Params envelope of `RemoteLibrary.health`.
  *
  * @internal
@@ -1691,13 +1709,13 @@ export const CopyResultCodec: StructCodec<T.CopyResult> = {
 };
 
 /**
- * Wire codec for `PluginDescribe` (2 data words, 10 pointers).
+ * Wire codec for `PluginDescribe` (2 data words, 11 pointers).
  *
  * @internal
  */
 export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
   dataWords: 2,
-  pointerCount: 10,
+  pointerCount: 11,
   write(s, v, caps) {
     s.setUint32(0, v.apiVersion ?? 0);
     s.setText(0, v.id ?? "");
@@ -1728,6 +1746,9 @@ export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
     if (v.cli != null) {
       CliSchemaCodec.write(s.initStruct(9, 0, 1), v.cli, caps);
     }
+    if (v.catalog != null) {
+      CatalogCapabilitiesCodec.write(s.initStruct(10, 1, 0), v.catalog, caps);
+    }
   },
   read(s, caps) {
     const out: T.PluginDescribe = {
@@ -1743,6 +1764,7 @@ export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
       brand: BrandCodec.read(s.getStruct(7, 0, 6), caps),
       configOptions: s.getStructList(8, 0, 3).map((item) => ConfigOptionCodec.read(item, caps)),
       cli: CliSchemaCodec.read(s.getStruct(9, 0, 1), caps),
+      catalog: CatalogCapabilitiesCodec.read(s.getStruct(10, 1, 0), caps),
     };
     const passwordEnvVarValue = s.getText(5);
     if (!(passwordEnvVarValue === "")) {
@@ -3060,7 +3082,7 @@ export const DescribeReplyCodec: StructCodec<T.DescribeReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          PluginDescribeCodec.write(s.initStruct(0, 2, 10), v.value, caps);
+          PluginDescribeCodec.write(s.initStruct(0, 2, 11), v.value, caps);
         }
         break;
       case "err":
@@ -3077,7 +3099,7 @@ export const DescribeReplyCodec: StructCodec<T.DescribeReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: PluginDescribeCodec.read(s.getStruct(0, 2, 10), caps) };
+        return { kind: "ok", value: PluginDescribeCodec.read(s.getStruct(0, 2, 11), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -3406,6 +3428,26 @@ export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
       queueConsumers: s.getTextList(6),
       queueProducers: s.getTextList(7),
       crons: s.getTextList(8),
+    };
+  },
+};
+
+/**
+ * Wire codec for `CatalogCapabilities` (1 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const CatalogCapabilitiesCodec: StructCodec<T.CatalogCapabilities> = {
+  dataWords: 1,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.detailByIsbn ?? false);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      detailByIsbn: s.getBool(0),
     };
   },
 };
@@ -5020,12 +5062,12 @@ export const RevokeAccountParamsCodec: StructCodec<T.RevokeAccountParams> = {
 };
 
 /**
- * Wire codec for `CatalogHit` (5 data words, 17 pointers).
+ * Wire codec for `CatalogHit` (6 data words, 17 pointers).
  *
  * @internal
  */
 export const CatalogHitCodec: StructCodec<T.CatalogHit> = {
-  dataWords: 5,
+  dataWords: 6,
   pointerCount: 17,
   write(s, v, caps) {
     s.setText(0, v.productId ?? "");
@@ -5101,6 +5143,9 @@ export const CatalogHitCodec: StructCodec<T.CatalogHit> = {
     if (v.parentProductId !== undefined) {
       s.setText(16, v.parentProductId ?? "");
     }
+    if (v.rankHint !== undefined) {
+      s.setUint32(10, v.rankHint ?? 0);
+    }
   },
   read(s, caps) {
     const out: T.CatalogHit = {
@@ -5175,6 +5220,10 @@ export const CatalogHitCodec: StructCodec<T.CatalogHit> = {
     if (!(parentProductIdValue === "")) {
       out.parentProductId = parentProductIdValue;
     }
+    const rankHintValue = s.getUint32(10);
+    if (!(rankHintValue === 0)) {
+      out.rankHint = rankHintValue;
+    }
     return out;
   },
 };
@@ -5190,7 +5239,7 @@ export const CatalogHitsCodec: StructCodec<T.CatalogHits> = {
   write(s, v, caps) {
     {
       const list = v.hits ?? [];
-      const items = s.initStructList(0, list.length, 5, 17);
+      const items = s.initStructList(0, list.length, 6, 17);
       for (let i = 0; i < items.length; i++) {
         CatalogHitCodec.write(items[i]!, list[i]!, caps);
       }
@@ -5198,7 +5247,7 @@ export const CatalogHitsCodec: StructCodec<T.CatalogHits> = {
   },
   read(s, caps) {
     return {
-      hits: s.getStructList(0, 5, 17).map((item) => CatalogHitCodec.read(item, caps)),
+      hits: s.getStructList(0, 6, 17).map((item) => CatalogHitCodec.read(item, caps)),
     };
   },
 };
@@ -5253,13 +5302,13 @@ export const CatalogDetailCodec: StructCodec<T.CatalogDetail> = {
   write(s, v, caps) {
     s.setBool(0, v.found ?? false);
     if (v.hit != null) {
-      CatalogHitCodec.write(s.initStruct(0, 5, 17), v.hit, caps);
+      CatalogHitCodec.write(s.initStruct(0, 6, 17), v.hit, caps);
     }
   },
   read(s, caps) {
     return {
       found: s.getBool(0),
-      hit: CatalogHitCodec.read(s.getStruct(0, 5, 17), caps),
+      hit: CatalogHitCodec.read(s.getStruct(0, 6, 17), caps),
     };
   },
 };
@@ -5444,6 +5493,93 @@ export const PurchaseHintReplyCodec: StructCodec<T.PurchaseHintReply> = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("PurchaseHintReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `PurchaseHintsParams` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const PurchaseHintsParamsCodec: StructCodec<T.PurchaseHintsParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.queries ?? [];
+      const items = s.initStructList(0, list.length, 1, 6);
+      for (let i = 0; i < items.length; i++) {
+        PurchaseHintParamsCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      queries: s.getStructList(0, 1, 6).map((item) => PurchaseHintParamsCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `PurchaseHintsResult` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const PurchaseHintsResultCodec: StructCodec<T.PurchaseHintsResult> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.results ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        PurchaseHintResultCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      results: s.getStructList(0, 1, 1).map((item) => PurchaseHintResultCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `PurchaseHintsReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const PurchaseHintsReplyCodec: StructCodec<T.PurchaseHintsReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          PurchaseHintsResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("PurchaseHintsReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: PurchaseHintsResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("PurchaseHintsReply", disc);
     }
   },
 };
@@ -10055,6 +10191,46 @@ export const ContentSourceRevokeAccountResultsCodec: StructCodec<ContentSourceRe
   read(s, caps) {
     return {
       result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `ContentSource.purchaseHints` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ContentSourcePurchaseHintsParamsCodec: StructCodec<ContentSourcePurchaseHintsParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      PurchaseHintsParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: PurchaseHintsParamsCodec.read(s.getStruct(0, 0, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `ContentSource.purchaseHints` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ContentSourcePurchaseHintsResultsCodec: StructCodec<ContentSourcePurchaseHintsResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      PurchaseHintsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: PurchaseHintsReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

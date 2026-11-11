@@ -399,6 +399,7 @@ async fn totp_status(
     responses(
         (status = 200, description = "A pending secret, its otpauth URL and a QR code SVG.", body = TotpEnrollment),
         (status = 401, description = "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong."),
+        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout."),
         (status = 409, description = "TOTP is already on."),
         (status = 500, description = "The secret could not be sealed and stored, or the library could not be read."),
     ),
@@ -498,6 +499,7 @@ async fn enroll_finish(
     responses(
         (status = 200, description = "TOTP is off.", body = crate::auth::OkResponse),
         (status = 401, description = "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong."),
+        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout."),
         (status = 500, description = "The library could not be read or written."),
     ),
 )]
@@ -651,6 +653,38 @@ struct MfaPolicyPut {
     current_password: Option<String>,
 }
 
+/// JSON error for a failed step-up check on `PUT /api/auth/mfa-policy`.
+///
+/// # Arguments
+///
+/// * `status` - The status [`require_operator_or_recent_owner`] returned.
+///
+/// # Returns
+///
+/// `reauth_required` for a 401, `internal_error` for a 500,
+/// `too_many_requests` for a 429 (the account is locked out) and `forbidden`
+/// for everything else, each with that status.
+fn mfa_policy_gate_error(status: StatusCode) -> Response {
+    let (error, message) = if status == StatusCode::UNAUTHORIZED {
+        (
+            "reauth_required",
+            "Recent authentication is required to change the MFA policy.",
+        )
+    } else if status == StatusCode::INTERNAL_SERVER_ERROR {
+        (
+            "internal_error",
+            "The current password could not be checked.",
+        )
+    } else if status == StatusCode::TOO_MANY_REQUESTS {
+        (
+            "too_many_requests",
+            "Too many wrong passwords for this account. Try again later.",
+        )
+    } else {
+        ("forbidden", "You cannot change the MFA policy.")
+    };
+    crate::auth::json_auth_error(status, error, message)
+}
 /// Persists `daemon.auth.require_second_factor` to `config.toml`.
 #[utoipa::path(
     put,
@@ -662,6 +696,7 @@ struct MfaPolicyPut {
             ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "reauth_required", "message": "Recent authentication is required to change the MFA policy.", "status": 401}))),
             ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
         )),
+        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`too_many_requests`).", body = crate::http_error::ErrorJson, example = json!({"error": "too_many_requests", "message": "Too many wrong passwords for this account. Try again later.", "status": 429})),
         (status = 403, description = "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
             ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
@@ -679,22 +714,7 @@ async fn put_mfa_policy(
 ) -> Result<Json<MfaPolicy>, Response> {
     require_operator_or_recent_owner(&state, &headers, body.current_password.as_deref())
         .await
-        .map_err(|status| {
-            let (error, message) = if status == StatusCode::UNAUTHORIZED {
-                (
-                    "reauth_required",
-                    "Recent authentication is required to change the MFA policy.",
-                )
-            } else if status == StatusCode::INTERNAL_SERVER_ERROR {
-                (
-                    "internal_error",
-                    "The current password could not be checked.",
-                )
-            } else {
-                ("forbidden", "You cannot change the MFA policy.")
-            };
-            crate::auth::json_auth_error(status, error, message)
-        })?;
+        .map_err(mfa_policy_gate_error)?;
     let auth = state.auth_snapshot().await;
     let operator_recovery = authorize_operator_bearer_only(&auth, &headers)
         || resolve_operator_session(&state, &auth, &headers)
@@ -749,6 +769,17 @@ async fn put_mfa_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn mfa_policy_lockout_answers_too_many_requests() {
+        use http_body_util::BodyExt;
+
+        let res = mfa_policy_gate_error(StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "too_many_requests");
+    }
     use axum::body::Body;
     use axum::http::{header, Request, StatusCode};
     use http_body_util::BodyExt;

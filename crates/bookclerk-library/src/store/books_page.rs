@@ -144,8 +144,7 @@ impl LibraryStore {
 
     /// Pages books whose uuid is in `uuids`, then applies account and status.
     ///
-    /// `uuids` is capped at [`BOOK_PAGE_MAX_LIMIT`] (the search-hit cap).
-    /// Lists longer than one `IN` list (64 uuids, fewer when the adapter's
+    /// `uuids` may hold every hit of a search; there is no cap. Lists longer than one `IN` list (64 uuids, fewer when the adapter's
     /// `maxPayloadBytes` or `maxBinds` holds fewer) are ordered from narrow
     /// `uuid, title` reads, then only the requested page is loaded. Shorter
     /// lists sort and page in SQL, in pieces that shrink when a result would
@@ -170,10 +169,6 @@ impl LibraryStore {
                 total: 0,
             });
         }
-        let capped = uuids
-            .len()
-            .min(usize::try_from(BOOK_PAGE_MAX_LIMIT).unwrap_or(500));
-        let uuids = &uuids[..capped];
         let limit = limit.clamp(1, BOOK_PAGE_MAX_LIMIT);
         let chunk = self.uuid_chunk(uuids, account_id, status);
         if uuids.len() <= chunk {
@@ -1202,7 +1197,7 @@ mod tests {
     }
 
     /// Exact hydration `uuid IN (?, …)` stays bare so Postgres can use
-    /// `idx_books_uuid` and `UNIQUE(uuid)`.
+    /// the `UNIQUE(uuid)` index.
     #[test]
     fn exact_hydration_sql_keeps_uuid_in_list_bare() {
         let (page_sql, _) = statements_for(BOOK_PAGE_COLUMNS, UuidMatch::Exact, 2, false, false);
@@ -1238,7 +1233,7 @@ mod tests {
             .unwrap_or("");
         assert!(
             predicate.contains("uuid IN ($1, $2)") && !predicate.contains("COLLATE"),
-            "exact uuid IN must stay bare so idx_books_uuid matches: {predicate}"
+            "exact uuid IN must stay bare so the UNIQUE(uuid) index matches: {predicate}"
         );
     }
 

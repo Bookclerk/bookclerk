@@ -13,6 +13,7 @@
     clippy::expect_used
 )]
 
+pub mod adapter;
 pub mod atomic;
 pub mod d1;
 

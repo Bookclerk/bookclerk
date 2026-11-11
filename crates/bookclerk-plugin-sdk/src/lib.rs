@@ -57,7 +57,7 @@ pub use db::{db_value_from_sea, proxy_rows_from_typed};
 pub use db_binding::{
     chunk_indexes, execute_reply_to_d1_results, statement_result_to_d1_result, ChunkCaps,
     D1ExecResult, D1Meta, D1Result, DatabaseBinding, DatabaseBindingOptions, PreparedStatement,
-    RetryToken,
+    RetryToken, RowStream,
 };
 pub use error::{Result, SdkError};
 pub use fetch_dir::{fetch_work_dir, upload_file_path, FetchWorkDir, UploadFile};
@@ -73,17 +73,18 @@ pub use net::{
 };
 pub use pass_fd::{fd_proc_path, recv_passed_fd, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV};
 pub use protocol::{
-    methods, Abridgement, AccountCredential, AuthenticateUserParams, Brand, CatalogDetail,
-    CatalogDetailParams, CatalogField, CatalogHit, CatalogHits, CatalogSort, ChapterMarker, CliArg,
-    CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
-    ConfigOption, ConfigOptionValue, Credit, CreditLevel, CreditRole, EventPollResult,
-    ExpandCandidatesParams, ExpressionKind, ExternalUser, FetchOptions, FetchTitleParams,
-    Identifier, IdentifierScheme, ListDealsParams, ListeningProgress, LoginCompleteParams,
-    LoginParams, LoginResult, LoginStartResult, MediaKind, OutputLocalContextDto,
-    OutputS3ContextDto, PlainFetch, PlainPart, PortalAuthMode, PurchaseHint, PurchaseHintParams,
-    PurchaseHintResult, RevokeAccountParams, S3CredentialsDto, ScanBook, ScanLibraryParams,
-    ScanParams, ScanSummary, SearchCatalogParams, SeriesEntry, SourceAccount, SourceAccounts,
-    SyncListeningResult, WorkKind, MAX_RPC_LINE_BYTES, PROTOCOL_NAME,
+    methods, Abridgement, AccountCredential, AuthenticateUserParams, Brand, CatalogCapabilities,
+    CatalogDetail, CatalogDetailParams, CatalogField, CatalogHit, CatalogHits, CatalogSort,
+    ChapterMarker, CliArg, CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams,
+    CliInvokeResult, CliSchema, ConfigOption, ConfigOptionValue, Credit, CreditLevel, CreditRole,
+    EventPollResult, ExpandCandidatesParams, ExpressionKind, ExternalUser, FetchOptions,
+    FetchTitleParams, Identifier, IdentifierScheme, ListDealsParams, ListeningProgress,
+    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MediaKind,
+    OutputLocalContextDto, OutputS3ContextDto, PlainFetch, PlainPart, PortalAuthMode, PurchaseHint,
+    PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, PurchaseHintsResult,
+    RevokeAccountParams, S3CredentialsDto, ScanBook, ScanLibraryParams, ScanParams, ScanSummary,
+    SearchCatalogParams, SeriesEntry, SourceAccount, SourceAccounts, SyncListeningResult, WorkKind,
+    MAX_RPC_LINE_BYTES, PROTOCOL_NAME,
 };
 
 pub use bookclerk_plugin_abi::{

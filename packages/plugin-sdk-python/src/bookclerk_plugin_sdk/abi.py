@@ -26,6 +26,7 @@ PluginErrorCode = Literal[
     "cancelled",
     "conflict",
     "limit_exceeded",
+    "rate_limited",
 ]
 """Stable `PluginError.code` strings. Unknown future codes are forwarded
 as-is; SDKs surface them as a local `unknown` while keeping the raw wire
@@ -304,6 +305,8 @@ class PluginDescribe(TypedDict):
         configOptions: Discoverable config option groups for source UIs.
         cli: Embedded CLI schema (same shape as `PluginCli.describe`); empty when
             unused.
+        catalog: Catalog behaviours a storefront declares so the host can use any store
+            for catalog search without naming it; all false for other kinds.
     """
 
     apiVersion: int
@@ -319,6 +322,7 @@ class PluginDescribe(TypedDict):
     brand: Brand
     configOptions: list[ConfigOption]
     cli: CliSchema
+    catalog: CatalogCapabilities
 
 
 class OidcClientTemplate(TypedDict):
@@ -2004,6 +2008,20 @@ class ContentSource(Protocol):
         """
         ...
 
+    async def purchase_hints(self, params: PurchaseHintsParams) -> PurchaseHintsReply:
+        """Purchase links / price hints for several titles in one call, so a guest
+        whose backend prices many products per request makes one request for a
+        page of cards. A guest that cannot batch answers each query as
+        `purchaseHint` would.
+
+        Args:
+            params: The titles to price, in order.
+
+        Returns:
+            ``PurchaseHintsReply``
+        """
+        ...
+
 
 class RemoteLibrary(Protocol):
     """`remoteLibrary` entrypoint: long-running remote-library lifecycle (start /
@@ -2245,6 +2263,21 @@ class PluginCapabilities(TypedDict):
     queueConsumers: list[str]
     queueProducers: list[str]
     crons: list[str]
+
+
+class CatalogCapabilities(TypedDict):
+    """Catalog behaviours a storefront declares in `describe()`. Catalog search
+    reads them instead of special-casing plugin ids; every flag defaults to
+    false, so a guest that says nothing keeps the plain behaviour.
+
+    Attributes:
+        detailByIsbn: True when `catalogDetail` resolves a bare ISBN (sent in both
+            `productId` and `isbn`) to a full bibliographic record. Catalog search then
+            asks this store to fill description, narrators, runtime and genres on lean
+            result rows from any store that carry an ISBN.
+    """
+
+    detailByIsbn: bool
 
 
 class Brand(TypedDict):
@@ -3256,6 +3289,12 @@ class CatalogHit(TypedDict):
         seriesEntries: Series the work belongs to.
         parentProductId: Product id of the parent podcast show, for a podcast episode.
             Omitted when absent (wire zero value).
+        rankHint: The storefront's own rank for this hit in `searchCatalog` results:
+            1-based position in the store's ordering for the requested sort across all
+            pages (page 2 of 20-hit pages starts at 21), or a store-wide popularity rank
+            when the store has one. 0 means unranked. Catalog search merges stores by it
+            for relevance and popularity sorts and puts unranked hits after ranked ones.
+            Other catalog methods leave it 0. Omitted when absent (wire zero value).
     """
 
     productId: str
@@ -3283,6 +3322,7 @@ class CatalogHit(TypedDict):
     credits: list[Credit]
     seriesEntries: list[SeriesEntry]
     parentProductId: NotRequired[str]
+    rankHint: NotRequired[int]
 
 
 class CatalogHits(TypedDict):
@@ -3454,6 +3494,63 @@ PurchaseHintReply = Union[
     PurchaseHintReplyErr,
 ]
 """Result union of `ContentSource.purchaseHint`."""
+
+
+class PurchaseHintsParams(TypedDict):
+    """Params of `ContentSource.purchaseHints`: the titles to price together.
+
+    Attributes:
+        queries: One query per title, each as for `purchaseHint`; at most `maxListPage`.
+    """
+
+    queries: list[PurchaseHintParams]
+
+
+class PurchaseHintsResult(TypedDict):
+    """Success payload of `ContentSource.purchaseHints`.
+
+    Attributes:
+        results: One answer per query, in the order the queries were sent.
+    """
+
+    results: list[PurchaseHintResult]
+
+
+class PurchaseHintsReplyOk(TypedDict):
+    """``PurchaseHintsReply`` member ``ok``.
+
+    Success: an answer per query.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: an answer per query.
+    """
+
+    kind: Literal["ok"]
+    value: PurchaseHintsResult
+
+
+class PurchaseHintsReplyErr(TypedDict):
+    """``PurchaseHintsReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+PurchaseHintsReply = Union[
+    PurchaseHintsReplyOk,
+    PurchaseHintsReplyErr,
+]
+"""Result union of `ContentSource.purchaseHints`. A whole-batch `err` (for
+example `rateLimited`) applies to every query in it.
+"""
 
 
 class ScanLibraryParams(TypedDict):
@@ -6022,6 +6119,7 @@ __all__ = [
     "CoverFetcher",
     "EventConsumerSpec",
     "PluginCapabilities",
+    "CatalogCapabilities",
     "Brand",
     "ConfigOption",
     "ConfigOptionValue",
@@ -6095,6 +6193,11 @@ __all__ = [
     "PurchaseHintReplyOk",
     "PurchaseHintReplyErr",
     "PurchaseHintReply",
+    "PurchaseHintsParams",
+    "PurchaseHintsResult",
+    "PurchaseHintsReplyOk",
+    "PurchaseHintsReplyErr",
+    "PurchaseHintsReply",
     "ScanLibraryParams",
     "AuthenticateUserParams",
     "ExternalUser",
