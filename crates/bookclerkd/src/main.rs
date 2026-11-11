@@ -18,6 +18,7 @@ mod cluster_link;
 mod config_authority;
 mod covers;
 mod cron_worker;
+mod cross_origin;
 mod csrf;
 mod discover_events;
 mod discover_jobs;
