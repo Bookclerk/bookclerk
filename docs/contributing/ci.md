@@ -1294,9 +1294,10 @@ the Workers' lockfiles do not change. Settings live in
   leaves out the tests that read its own source text
   (`tools/site/worker-source.test.ts`,
   `tools/diagnostics-collector/cache-control-source.test.ts`). Those tests
-  would fail on the instrumented code, and they cannot catch a mutant
-  anyway, because Stryker switches mutants on at run time. Every other run
-  keeps them.
+  would fail on the instrumented code. A mutant never shows in the source
+  text, because Stryker switches mutants on at run time, and the one
+  function they call, the collector's `assetUrlsModule`, has its own test
+  in `cache-control.test.ts`. Every other run keeps them.
 - A `tsconfigFile` that does not exist, because TypeScript 7 has no
   JavaScript API for Stryker's tsconfig rewriting. Type checking stays
   with each Worker's `npm run typecheck`.

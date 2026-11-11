@@ -5,9 +5,10 @@
 //
 // The nightly mutation run leaves this file out (MUTATION_TESTING in
 // vitest.config.ts). Stryker rewrites the sources in place while it runs,
-// so these checks would read its instrumented code and fail, and they
-// cannot catch a mutant anyway: Stryker switches mutants on at run time,
-// never in the text these tests read.
+// so these checks would read its instrumented code and fail. A mutant
+// never shows in the text they read, because Stryker switches mutants on at
+// run time; assetUrlsModule, which the second test calls, has its own test
+// in cache-control.test.ts, so mutation runs still check it.
 
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";

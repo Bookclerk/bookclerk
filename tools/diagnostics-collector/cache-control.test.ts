@@ -10,6 +10,7 @@ import { describe, it } from "vitest";
 import {
   ASSETS_PATH,
   assetOf,
+  assetUrlsModule,
   contentHash,
   hashedName,
   HASHED_ASSETS,
@@ -154,6 +155,27 @@ describe("hashed dashboard files", () => {
     for (const file of HASHED_ASSETS) {
       assert.equal(ASSET_URLS[file], `${ASSETS_PATH}${names[file]}`);
     }
+  });
+
+  it("assetUrlsModule writes one URL per hashed file, in table order", () => {
+    const names = { "dashboard.css": "a.css", "dashboard.js": "b.js" } as Record<
+      HashedAsset,
+      string
+    >;
+    assert.deepEqual([...HASHED_ASSETS], ["dashboard.css", "dashboard.js"]);
+    assert.equal(
+      assetUrlsModule(names),
+      [
+        "// Written by `npm run hash-assets` (scripts/hash-assets.ts); do not edit.",
+        "",
+        "/** URL of each hashed dashboard file (see asset-names.ts). */",
+        "export const ASSET_URLS = {",
+        `  "dashboard.css": "${ASSETS_PATH}a.css",`,
+        `  "dashboard.js": "${ASSETS_PATH}b.js",`,
+        "} as const;",
+        "",
+      ].join("\n"),
+    );
   });
 
   it("assetOf reads only hashed names of known files", () => {
