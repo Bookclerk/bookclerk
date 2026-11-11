@@ -184,7 +184,7 @@ pub use store::{
     set_dispatch_chunk_for_test, AcquiredBookKey, BookPage, CandidateRef, CatalogEnrichmentFields,
     DiscoverSubject, EditionFile, FileOwner, FileRole, LibraryStore, NewBook, NewListeningProgress,
     NewTitleRequest, NewTitleRequestSource, QueueRank, SavedFilterRecord, ScannedTitle, SeedScope,
-    StoreCallHit, StoredCandidate, StoredFeed, StoredQueueRank, UserBookFields,
+    StoreCallHit, StoredCandidate, StoredFeed, StoredQueueRank, UserBookFields, WishWork,
     ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
     MAX_QUEUE_REASONS,
 };

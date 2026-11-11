@@ -651,8 +651,8 @@ impl LibraryStore {
     ///
     /// A listing is deleted when no store reported it since `cutoff` and
     /// nobody holds it, no Discover subject has it as a candidate, no
-    /// cached storefront call lists it and no resolution override names
-    /// it. Its offers go with it. The edition, expression and work it
+    /// cached storefront call lists it, no wish names it and no resolution
+    /// override names it. Its offers go with it. The edition, expression and work it
     /// made stay, since other rows (a wish, a later scan) may use them.
     ///
     /// # Returns
@@ -673,6 +673,7 @@ impl LibraryStore {
                      AND NOT EXISTS (SELECT 1 FROM holdings h WHERE h.listing_id = l.id) \
                      AND NOT EXISTS (SELECT 1 FROM discover_candidates c WHERE c.listing_id = l.id) \
                      AND NOT EXISTS (SELECT 1 FROM discover_store_call_hits s WHERE s.listing_id = l.id) \
+                     AND NOT EXISTS (SELECT 1 FROM title_request_sources w WHERE w.listing_id = l.id) \
                      AND NOT EXISTS (SELECT 1 FROM resolution_overrides o \
                        WHERE o.subject_kind = 'listing' AND o.subject_id = l.id) \
                      LIMIT {PRUNE_BATCH})"
@@ -1031,6 +1032,100 @@ mod tests {
                 .unwrap(),
             1,
             "the pruned listing's offer went with it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wish_is_for_its_pooled_listing_and_keeps_it() {
+        let store = store().await;
+        let listing_id = store
+            .record_catalog_listings(&[title("9780000000003")])
+            .await
+            .unwrap()
+            .ids[0]
+            .clone()
+            .unwrap();
+        let record = store
+            .catalog_listings(std::slice::from_ref(&listing_id))
+            .await
+            .unwrap()
+            .remove(0);
+        let work = crate::WishWork {
+            work_id: record.work_id.clone().unwrap(),
+            edition_id: Some(record.edition_id.clone()),
+        };
+        // The browser's title differs from the store's; the wish is still
+        // for the listing's work, not one its text would find.
+        let wish = crate::NewTitleRequest {
+            uuid: None,
+            identity_id: None,
+            title: String::from("A browser title"),
+            authors: None,
+            asin: None,
+            isbn: None,
+            notes: None,
+            status: crate::RequestStatus::Open,
+            resolved_book_uuid: None,
+            cover_url: None,
+        };
+        let row = store
+            .create_title_request_for(&wish, Some(&work))
+            .await
+            .unwrap();
+        let stored = crate::entities::title_requests::Entity::find_by_id(row.id)
+            .one(store.db())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.work_id, work.work_id);
+        assert_eq!(stored.edition_id, work.edition_id);
+        let source = crate::NewTitleRequestSource {
+            source: String::from("libro"),
+            product_id: String::from("9780000000003"),
+            description: Some(String::from("The browser's blurb.")),
+            listing_id: Some(listing_id.clone()),
+            ..crate::NewTitleRequestSource::default()
+        };
+        store
+            .upsert_title_request_sources(row.id, std::slice::from_ref(&source))
+            .await
+            .unwrap();
+        // A later merge without a listing keeps the one already named.
+        store
+            .upsert_title_request_sources(
+                row.id,
+                &[crate::NewTitleRequestSource {
+                    listing_id: None,
+                    ..source
+                }],
+            )
+            .await
+            .unwrap();
+        let named = crate::entities::title_request_sources::Entity::find()
+            .one(store.db())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(named.listing_id.as_deref(), Some(listing_id.as_str()));
+        // The browser's text stays on the wish; the pool keeps the store's.
+        assert_eq!(named.description.as_deref(), Some("The browser's blurb."));
+        assert_eq!(
+            store
+                .catalog_listings(std::slice::from_ref(&listing_id))
+                .await
+                .unwrap()[0]
+                .detail
+                .description
+                .as_deref(),
+            Some("About 9780000000003.")
+        );
+        // A listing a wish names is not pruned however old it is.
+        assert_eq!(
+            store
+                .prune_catalog_listings(Utc::now() + chrono::Duration::days(30))
+                .await
+                .unwrap(),
+            0
         );
     }
 }

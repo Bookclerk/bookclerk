@@ -583,6 +583,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         member_price_cents INTEGER,
         member_price_label TEXT,
         observed_at TEXT,
+        listing_id TEXT REFERENCES store_listings(id) ON DELETE SET NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(title_request_id, source, product_id),
@@ -591,6 +592,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_trs_request ON title_request_sources(title_request_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_trs_listing ON title_request_sources(listing_id)",
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS embeddings (

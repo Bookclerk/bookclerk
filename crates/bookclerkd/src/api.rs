@@ -6173,8 +6173,15 @@ pub(crate) async fn list_request_queue(
     Ok(Json(rows))
 }
 
-/// Inserts a title request after requiring a non-empty title; the library
-/// resolves it into the work it is for.
+/// Marketplace a wish's store editions are looked up in.
+const WISH_REGION: &str = "us";
+
+/// Inserts a title request after requiring a non-empty title.
+///
+/// The server asks each store about the editions the wish names and places
+/// their answers in the shared listing pool; the wish is for the work the
+/// first such listing resolved to, and otherwise for the work its own text
+/// resolves to.
 async fn create_request_inner(
     state: &AppState,
     headers: &HeaderMap,
@@ -6187,28 +6194,8 @@ async fn create_request_inner(
         .await
         .map(|identity| identity.id);
     let library = state.library_snapshot().await;
-    let mut row = library
-        .create_title_request(&NewTitleRequest {
-            uuid: None,
-            identity_id,
-            title: body.title.clone(),
-            authors: body.authors.clone(),
-            asin: body.asin.clone(),
-            isbn: body.isbn.clone(),
-            notes: body.notes.clone(),
-            status: RequestStatus::Open,
-            resolved_book_uuid: None,
-            cover_url: body.cover_url.clone(),
-        })
-        .await
-        .map_err(|err| match err {
-            // A title over the listing limits names no work.
-            bookclerk_library::LibraryError::Invalid(message) => (StatusCode::BAD_REQUEST, message),
-            other => internal_err(other),
-        })?;
 
-    let mut sources = wishlist_sources_from_body(&body);
-    // Soft-resolve live prices / additional storefronts and merge into snapshots.
+    // Live prices and further storefronts, from the stores themselves.
     let hint_query = bookclerk_discover::PurchaseHintsQuery {
         title: body.title.clone(),
         authors: body.authors.clone(),
@@ -6217,22 +6204,66 @@ async fn create_request_inner(
         candidate_source: None,
         candidate_product_id: None,
         store_editions: body.store_editions.clone(),
-        region: Some(String::from("us")),
+        region: Some(String::from(WISH_REGION)),
         preferred_sources: Vec::new(),
     };
-    {
+    let mut sources = wishlist_sources_from_body(&body);
+    let pooled = {
         let registry = state.sources.read().await;
-        match bookclerk_discover::resolve_purchase_hints(&registry, &hint_query).await {
-            Ok(resolved) => {
-                for hint in resolved.hints {
-                    sources.push(source_from_purchase_hint(&hint, &body));
-                }
-            }
+        let hints = match bookclerk_discover::resolve_purchase_hints(&registry, &hint_query).await {
+            Ok(resolved) => resolved.hints,
             Err(err) => {
                 tracing::debug!(error = %err, "wishlist purchase-hint resolve soft-failed");
+                Vec::new()
             }
+        };
+        for hint in &hints {
+            sources.push(source_from_purchase_hint(hint, &body));
         }
+        // The server asks each store about the editions the wish names and
+        // keeps only the stores' answers in the shared pool; the browser's
+        // text and prices stay on the wish's own rows.
+        let editions: Vec<(String, String)> = sources
+            .iter()
+            .map(|s| (s.source.clone(), s.product_id.clone()))
+            .collect();
+        bookclerk_discover::pool_wish_editions(&library, &registry, &editions, &hints, WISH_REGION)
+            .await
+    };
+    for source in &mut sources {
+        let source_id = source.source.trim().to_ascii_lowercase();
+        let product_id = source.product_id.trim();
+        source.listing_id = pooled
+            .iter()
+            .find(|p| p.source == source_id && p.product_id == product_id)
+            .map(|p| p.listing_id.clone());
     }
+    // The wish is for the work of the first pooled edition it names, as the
+    // pool resolved it; a wish naming none falls back to its own text.
+    let work = pooled.iter().find_map(|p| p.work.clone());
+
+    let mut row = library
+        .create_title_request_for(
+            &NewTitleRequest {
+                uuid: None,
+                identity_id,
+                title: body.title.clone(),
+                authors: body.authors.clone(),
+                asin: body.asin.clone(),
+                isbn: body.isbn.clone(),
+                notes: body.notes.clone(),
+                status: RequestStatus::Open,
+                resolved_book_uuid: None,
+                cover_url: body.cover_url.clone(),
+            },
+            work.as_ref(),
+        )
+        .await
+        .map_err(|err| match err {
+            // A title over the listing limits names no work.
+            bookclerk_library::LibraryError::Invalid(message) => (StatusCode::BAD_REQUEST, message),
+            other => internal_err(other),
+        })?;
 
     if !sources.is_empty() {
         row = library
@@ -6348,6 +6379,7 @@ fn source_from_purchase_hint(
         list_price_label: hint.list_price_label.clone(),
         member_price_cents: hint.member_price_cents,
         member_price_label: hint.member_price_label.clone(),
+        listing_id: None,
     }
 }
 

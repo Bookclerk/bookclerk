@@ -5143,6 +5143,34 @@ impl LibraryStore {
     ///
     /// Returns a crate error when the database operation fails or inputs are invalid.
     pub async fn create_title_request(&self, req: &NewTitleRequest) -> Result<TitleRequestRecord> {
+        self.create_title_request_for(req, None).await
+    }
+
+    /// Creates a wishlist / title-request row for a known work.
+    ///
+    /// A wish that names a store edition the server looked up is for that
+    /// listing's work: its resolution in the shared pool, with no holding.
+    /// Without one, the wish's text and identifiers find or make the work
+    /// ([`Self::work_for_wish`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `req` - Insert / update request payload.
+    /// * `work` - The work (and edition) of a pooled listing the wish
+    ///   names, or `None` to resolve it from `req`.
+    ///
+    /// # Returns
+    ///
+    /// The new wish, or the caller's open wish for the same work.
+    ///
+    /// # Errors
+    ///
+    /// Returns a crate error when the database operation fails or inputs are invalid.
+    pub async fn create_title_request_for(
+        &self,
+        req: &NewTitleRequest,
+        work: Option<&WishWork>,
+    ) -> Result<TitleRequestRecord> {
         let decoded;
         let req = if req.needs_html_entity_decode() {
             decoded = {
@@ -5160,16 +5188,20 @@ impl LibraryStore {
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
         // The wish names its work; wishing twice for one work is one wish.
-        let (work_id, edition_id) = self
-            .work_for_wish(&crate::TitleQuery {
-                title: &req.title,
-                authors: req.authors.as_deref(),
-                asin: req.asin.as_deref(),
-                isbn: req.isbn.as_deref(),
-                series: None,
-                series_index: None,
-            })
-            .await?;
+        let (work_id, edition_id) = match work {
+            Some(work) => (work.work_id.clone(), work.edition_id.clone()),
+            None => {
+                self.work_for_wish(&crate::TitleQuery {
+                    title: &req.title,
+                    authors: req.authors.as_deref(),
+                    asin: req.asin.as_deref(),
+                    isbn: req.isbn.as_deref(),
+                    series: None,
+                    series_index: None,
+                })
+                .await?
+            }
+        };
         if let Some(existing) = self.find_open_wishlist(req.identity_id, &work_id).await? {
             return self
                 .backfill_title_request_cover(&existing, req.cover_url.as_deref())
@@ -5299,6 +5331,7 @@ impl LibraryStore {
                     member_price_cents: Set(src.member_price_cents),
                     member_price_label: Set(trim_opt(src.member_price_label.as_deref())),
                     observed_at: Set(Some(now.clone())),
+                    listing_id: Set(src.listing_id.clone()),
                     created_at: Set(now.clone()),
                     updated_at: Set(now.clone()),
                 };
@@ -6441,6 +6474,15 @@ impl NewTitleRequest {
     }
 }
 
+/// The work a wish is for, read from a store listing in the shared pool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WishWork {
+    /// `works.id` of the listing's resolution.
+    pub work_id: String,
+    /// `editions.id` the listing is an edition of.
+    pub edition_id: Option<String>,
+}
+
 /// Input for upserting a per-storefront wishlist snapshot.
 #[derive(Debug, Clone, Default)]
 pub struct NewTitleRequestSource {
@@ -6494,6 +6536,10 @@ pub struct NewTitleRequestSource {
     pub member_price_cents: Option<i64>,
     /// Storefront-formatted member price for display.
     pub member_price_label: Option<String>,
+    /// The shared pool's listing for this store edition, when the server
+    /// looked it up at the store ([`crate::CatalogListing`]); `None` keeps
+    /// what the row already names.
+    pub listing_id: Option<String>,
 }
 
 impl NewTitleRequestSource {
@@ -7089,6 +7135,7 @@ fn merged_source_active(
             src.member_price_label.as_deref(),
         )),
         observed_at: Set(Some(now.to_string())),
+        listing_id: Set(src.listing_id.clone().or(model.listing_id)),
         created_at: Set(created_at),
         updated_at: Set(now.to_string()),
     }
