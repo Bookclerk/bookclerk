@@ -1198,9 +1198,22 @@ impl LibraryStore {
                 None
             }
         };
+        // The pool is read before the page writes anything, so a listing
+        // whose key or edition an earlier entry of this page wrote is
+        // resolved against the store, never against the stale pool.
+        let mut written_keys: std::collections::HashSet<&resolve::ListingKey> =
+            std::collections::HashSet::new();
+        let mut written_editions: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for (listing, holding, fill) in items {
             let settled = match &pool {
-                Some(pool) => self.settled_listing(pool, listing, holding).await,
+                Some(_) if written_keys.contains(&listing.key) => Ok(None),
+                Some(pool) => self
+                    .settled_listing(pool, listing, holding)
+                    .await
+                    .map(|plan| {
+                        plan.filter(|plan| !written_editions.contains(&plan.listing.edition_id))
+                    }),
                 None => Ok(None),
             };
             let result = match settled {
@@ -1213,13 +1226,17 @@ impl LibraryStore {
                         self.fill_work_from_book(edition_id, fill).await
                     }
                 }
-                Ok(None) | Err(_) => match self.record_listing(listing, holding).await {
-                    Ok(plan) => {
-                        self.fill_work_from_book(&plan.listing.edition_id, fill)
-                            .await
+                Ok(None) | Err(_) => {
+                    written_keys.insert(&listing.key);
+                    match self.record_listing(listing, holding).await {
+                        Ok(plan) => {
+                            written_editions.insert(plan.listing.edition_id.clone());
+                            self.fill_work_from_book(&plan.listing.edition_id, fill)
+                                .await
+                        }
+                        Err(err) => Err(err),
                     }
-                    Err(err) => Err(err),
-                },
+                }
             };
             if let Err(err) = result {
                 tracing::warn!(
@@ -3846,7 +3863,12 @@ mod store_tests {
             let refs: Vec<&resolve::Listing> = listings.iter().collect();
             let holder = resolve::Holder::Account("a1".into());
             let pool = ListingPool::load(&store, &refs, &holder).await.unwrap();
-            for holder in [holder.clone(), resolve::Holder::Account("a2".into())] {
+            // Holders are compared by position so no account id reaches a
+            // failure message.
+            for (nth, holder) in [holder.clone(), resolve::Holder::Account("a2".into())]
+                .into_iter()
+                .enumerate()
+            {
                 for listing in &listings {
                     let direct = store
                         .listing_snapshot_and_row(listing, &holder)
@@ -3865,7 +3887,7 @@ mod store_tests {
                         .unwrap();
                     assert_eq!(
                         pooled, direct,
-                        "{profile:?}: {} for {holder:?}",
+                        "{profile:?}: {} for holder {nth}",
                         listing.key.product_id
                     );
                 }
@@ -3970,6 +3992,40 @@ mod store_tests {
             let before = model_counts(&by_page).await;
             by_page.record_listing_page(&items).await;
             assert_eq!(model_counts(&by_page).await, before, "{profile:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_title_listed_twice_in_a_page_ends_as_its_last_listing_under_every_profile() {
+        use crate::entities::store_listings;
+        use crate::test_support::Profile;
+        for profile in Profile::ALL {
+            let store = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let listings = seeded(&store).await;
+            let original = listings
+                .iter()
+                .find(|l| l.key.product_id == "B001")
+                .unwrap()
+                .clone();
+            let mut renamed = dune("audible", "B001");
+            renamed.title = "Dune (Movie Tie-In)".into();
+            let renamed = resolve::Listing::from_draft(&renamed).unwrap();
+            // The renamed listing writes first; the original then settles
+            // against a pool read before that write, which must not count.
+            let items = vec![
+                (renamed, account("a1"), WorkEnrichment::default()),
+                (original, account("a1"), WorkEnrichment::default()),
+            ];
+            store.record_listing_page(&items).await;
+            let row = store_listings::Entity::find()
+                .filter(store_listings::Column::ProductId.eq("B001"))
+                .one(&store.db)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.title, items[1].0.title, "{profile:?}");
         }
     }
 }

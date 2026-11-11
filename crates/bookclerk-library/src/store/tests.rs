@@ -7697,3 +7697,27 @@ async fn a_page_of_rows_stores_what_row_by_row_upserts_store_under_every_profile
         );
     }
 }
+
+#[test]
+fn a_scan_merge_sets_only_the_columns_a_scan_owns() {
+    use sea_orm::ActiveValue;
+    let now = "2026-11-11T00:00:00+00:00";
+    let mut existing = super::new_book_row(&NewBook::minimal("B1", "a1", "us", "Dune"), now);
+    existing.id = 7;
+    existing.acquire_status = "acquired".into();
+    let mut rescan = NewBook::minimal("B1", "a1", "us", "Dune (Unabridged)");
+    rescan.authors = Some("Frank Herbert".into());
+    let merged = super::merged_book_row(&existing, &rescan, "2026-11-12T00:00:00+00:00");
+    let am = super::scan_update(existing, merged);
+    // Scan-owned columns are written; columns other writers own (acquire
+    // state, ratings, tags, enrichment) are left for the row as stored.
+    assert!(am.title.is_set());
+    assert!(am.authors.is_set());
+    assert!(am.updated_at.is_set());
+    assert!(matches!(am.acquire_status, ActiveValue::Unchanged(_)));
+    assert!(matches!(am.storage_key, ActiveValue::Unchanged(_)));
+    assert!(matches!(am.rating_overall, ActiveValue::Unchanged(_)));
+    assert!(matches!(am.tags, ActiveValue::Unchanged(_)));
+    assert!(matches!(am.description, ActiveValue::Unchanged(_)));
+    assert!(matches!(am.id, ActiveValue::Unchanged(7)));
+}

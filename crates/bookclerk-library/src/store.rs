@@ -4208,9 +4208,9 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         let model = if let Some(existing) = existing {
-            let mut am: books::ActiveModel = merged_book_row(&existing, &book, &now).into();
-            am = am.reset_all();
-            self.update_book_bumped(am).await?
+            let merged = merged_book_row(&existing, &book, &now);
+            self.update_book_bumped(scan_update(existing, merged))
+                .await?
         } else {
             let mut am = books::ActiveModel::from(new_book_row(&book, &now)).reset_all();
             am.id = NotSet;
@@ -7299,6 +7299,35 @@ fn merged_book_row(existing: &books::Model, book: &NewBook, now: &str) -> books:
     }
     now.clone_into(&mut row.updated_at);
     row
+}
+
+/// The update that writes a scan's merge (`merged`, from
+/// [`merged_book_row`]) over the loaded row `existing`: only the columns a
+/// scan owns are set, so acquire state, ratings, tags and enrichment that
+/// another writer changed since the row was read are left alone, as
+/// [`update_book_statement`] leaves them.
+fn scan_update(existing: books::Model, merged: books::Model) -> books::ActiveModel {
+    let mut am: books::ActiveModel = existing.into();
+    am.source = Set(merged.source);
+    am.asin = Set(merged.asin);
+    am.isbn = Set(merged.isbn);
+    am.marketplace = Set(merged.marketplace);
+    am.title = Set(merged.title);
+    am.authors = Set(merged.authors);
+    am.narrators = Set(merged.narrators);
+    am.series = Set(merged.series);
+    am.series_index = Set(merged.series_index);
+    am.series_asin = Set(merged.series_asin);
+    am.purchased_at = Set(merged.purchased_at);
+    am.publisher = Set(merged.publisher);
+    am.length_minutes = Set(merged.length_minutes);
+    am.is_abridged = Set(merged.is_abridged);
+    am.content_kind = Set(merged.content_kind);
+    am.categories = Set(merged.categories);
+    am.subtitle = Set(merged.subtitle);
+    am.published_at = Set(merged.published_at);
+    am.updated_at = Set(merged.updated_at);
+    am
 }
 
 /// The row a first sight of `book` stores; `id` is `0` until the database

@@ -253,10 +253,24 @@ impl ListingPool {
                 (!key.is_empty()).then(|| (key, l.work_kind.as_str().to_string()))
             })
             .collect();
-        for (key, kind) in match_keys {
-            let ids = db.works_matching(&key, &kind).await?;
-            work_ids.extend(ids.iter().cloned());
-            pool.match_keys.insert((key, kind), ids);
+        let keys: Vec<String> = match_keys
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mut matched: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+        for row in db.works_with_match_keys(&keys).await? {
+            matched
+                .entry((row.match_key.clone(), row.kind.clone()))
+                .or_default()
+                .push(row.id.clone());
+            work_ids.insert(row.id.clone());
+            pool.works.insert(row.id.clone(), Some(row));
+        }
+        for pair in match_keys {
+            let ids = matched.remove(&pair).unwrap_or_default();
+            pool.match_keys.insert(pair, ids);
         }
         let work_ids: Vec<String> = work_ids.into_iter().collect();
         for id in &work_ids {
@@ -589,6 +603,16 @@ impl SnapshotReader<'_> {
             .all(self.db())
             .await
             .map_err(LibraryError::Orm)
+    }
+
+    /// Works whose matcher key is any of `keys`, of every kind, read in
+    /// chunks the backend accepts, so a page costs a few reads however
+    /// many keys it lists.
+    pub(crate) async fn works_with_match_keys(&self, keys: &[String]) -> Result<Vec<works::Model>> {
+        find_chunked(self.db(), self.chunk(), keys, |part| {
+            works::Entity::find().filter(works::Column::MatchKey.is_in(part.iter().cloned()))
+        })
+        .await
     }
 
     /// Works with any of `ids`.
