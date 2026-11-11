@@ -400,7 +400,9 @@ languages are the normalized languages of the taste books (the subject's own,
 with the household's blended in while those are few), or the default
 preferred language (`en`) when no taste book has one. A candidate whose store
 gave no language, or one `normalize_language` does not recognize, stays, as
-in catalog search.
+in catalog search. Editions in two different known languages are never merged
+into one candidate by a title-and-author match, so dropping one language never
+drops the other edition with it.
 
 Whether a wished title is already owned is decided by the library's
 resolver (`LibraryStore::owned_work_for`), the same way a scanned listing
