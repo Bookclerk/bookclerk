@@ -482,7 +482,7 @@ pub async fn fetch_subject_candidates(
 /// lookup.
 ///
 /// A candidate whose listing has a current `non_member` offer in the pool
-/// (quoted in the last day, by any subject's fetch or a live lookup) is
+/// (quoted in the last day by any subject's fetch) is
 /// already priced. The rest, up to [`PRICE_PRECOMPUTE_LIMIT`] distinct
 /// titles, go in one `purchase_hints` call, and the answers are stored as
 /// the listings' offers: the price someone without an account pays as
@@ -646,7 +646,7 @@ async fn fetch_one_store(
     let keep = |p: &PooledCandidate| {
         !(exclude_series_sets
             && id.eq_ignore_ascii_case("graphicaudio")
-            && title_is_series_set(&p.candidate.title))
+            && crate::candidates::looks_like_series_set(&p.candidate.title))
     };
     if let Some(hits) = cached_or_call(library, &store, &deal_key, || source.list_deals(32)).await {
         answered += usize::from(!hits.is_empty());
@@ -711,13 +711,6 @@ async fn fetch_one_store(
         }
     }
     (out, answered > 0)
-}
-
-/// True when a title looks like a boxed series set (usually dropped from
-/// recommendations).
-fn title_is_series_set(title: &str) -> bool {
-    let title = title.to_ascii_lowercase();
-    title.contains("series set") || title.ends_with(" set")
 }
 
 /// The store a fetch is asking, as the pool needs it.
@@ -803,8 +796,12 @@ where
             })
         })
         .collect();
-    if let Err(err) = library.put_discover_store_call(key, id, &call_hits).await {
-        tracing::debug!(store = %id, error = %err, "discover store cache write failed");
+    // An answer none of whose titles could be stored is not cached, like an
+    // empty one, so the store is asked again next time.
+    if !call_hits.is_empty() {
+        if let Err(err) = library.put_discover_store_call(key, id, &call_hits).await {
+            tracing::debug!(store = %id, error = %err, "discover store cache write failed");
+        }
     }
     match pooled(library, id, &call_hits).await {
         Ok(found) => Some(found.unwrap_or_default()),

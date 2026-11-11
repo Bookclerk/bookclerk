@@ -552,9 +552,11 @@ impl LibraryStore {
     /// the listings it answered, replacing the previous answer's hits.
     ///
     /// The writes go as atomic host batches sized from the database
-    /// plugin's limits; the call row and the delete of the old hits ride in
-    /// the first batch, so a reader never sees the old hits under the new
-    /// fetch time.
+    /// plugin's limits. The first batch marks the call as fetched long ago
+    /// and deletes the old hits; the new fetch time is written last, in the
+    /// final batch. A reader between batches, or after a batch fails, sees
+    /// an expired answer and asks the store again, never a fresh answer
+    /// with only part of its hits.
     ///
     /// # Arguments
     ///
@@ -572,13 +574,14 @@ impl LibraryStore {
         hits: &[StoreCallHit],
     ) -> Result<()> {
         let now = now_str();
+        let expired = DateTime::<Utc>::UNIX_EPOCH.to_rfc3339();
         let mut batches = WriteBatches::new(self.db_capabilities(), "discover store call");
         let head = vec![
             batch::exec(
                 "UPDATE discover_store_calls SET source = ?, fetched_at = ? WHERE call_key = ?",
                 vec![
                     batch::text(source),
-                    batch::text(&now),
+                    batch::text(&expired),
                     batch::text(call_key),
                 ],
             ),
@@ -588,7 +591,7 @@ impl LibraryStore {
                 vec![
                     batch::text(call_key),
                     batch::text(source),
-                    batch::text(&now),
+                    batch::text(&expired),
                 ],
             ),
             batch::exec(
@@ -614,6 +617,13 @@ impl LibraryStore {
             if let Some(full) = batches.push(stmt)? {
                 self.run_candidate_batch(full).await?;
             }
+        }
+        let stamp = batch::exec(
+            "UPDATE discover_store_calls SET fetched_at = ? WHERE call_key = ?",
+            vec![batch::text(&now), batch::text(call_key)],
+        );
+        if let Some(full) = batches.push(stamp)? {
+            self.run_candidate_batch(full).await?;
         }
         if let Some(last) = batches.finish() {
             self.run_candidate_batch(last).await?;

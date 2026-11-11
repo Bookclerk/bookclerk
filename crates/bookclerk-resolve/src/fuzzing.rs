@@ -13,6 +13,8 @@
 //!   the listing reaches one and the conflict is recorded;
 //! - a work found by identifier or matcher has the listing's kind, and an
 //!   episode matched by text shares its parent show;
+//! - a catalog listing (recorded with no holding) never gains a holding
+//!   or emits an event;
 //! - resolving the same input twice changes nothing.
 //!
 //! The fuzz target and the replay test in `tests/fuzz_corpus.rs` both call
@@ -99,9 +101,15 @@ const PRODUCTS: &[&str] = &["P1", "P2", "P3", "P4", "P5", "P6", "SHOW1", "SHOW2"
 const LANGUAGES: &[Option<&str>] = &[None, Some("en"), Some("de"), Some("EN")];
 
 /// Decodes one listing and its holder from the cursor.
-fn decode(cursor: &mut Cursor<'_>) -> (ListingDraft, HoldingDraft) {
+///
+/// # Returns
+///
+/// The listing, its holder, and whether it is recorded as a catalog
+/// listing (no holding) instead of a held one.
+fn decode(cursor: &mut Cursor<'_>) -> (ListingDraft, HoldingDraft, bool) {
     let flags = cursor.byte();
     let raw_text = flags & 0b100 != 0;
+    let catalog = flags & 0b100_0000 != 0;
     let work_kind = cursor.pick(WorkKind::ALL);
     let expression_kind = cursor.pick(ExpressionKind::ALL);
     let media_kind = cursor.pick(MediaKind::ALL);
@@ -170,14 +178,33 @@ fn decode(cursor: &mut Cursor<'_>) -> (ListingDraft, HoldingDraft) {
         entitlement: Entitlement::Purchase,
         purchased_at: None,
     };
-    (draft, holding)
+    (draft, holding, catalog)
 }
 
-/// Checks the catalog's invariants after the latest link.
+/// Checks the catalog's invariants after the latest held link.
+///
+/// # Errors
+///
+/// Returns a description of the first broken invariant.
 fn check(catalog: &MemoryCatalog) -> Result<(), String> {
+    let strong = check_identifiers(catalog)?;
+    check_last_link(catalog, &strong)
+}
+
+/// Checks that each strong identifier names one edition and an edition
+/// holds one value per scheme and marketplace.
+///
+/// # Returns
+///
+/// Each strong identifier and the edition it names.
+///
+/// # Errors
+///
+/// Returns a description of the first broken invariant.
+fn check_identifiers(catalog: &MemoryCatalog) -> Result<StrongOwners, String> {
     // Strong identifiers: one edition each, one value per scheme and
     // marketplace on an edition.
-    let mut strong = std::collections::BTreeMap::new();
+    let mut strong = StrongOwners::new();
     let mut per_edition = std::collections::BTreeMap::new();
     for row in &catalog.edition_identifiers {
         if row.key.strength() != Strength::Strong {
@@ -202,6 +229,26 @@ fn check(catalog: &MemoryCatalog) -> Result<(), String> {
         }
     }
 
+    Ok(strong)
+}
+
+/// Each strong identifier and the edition id it names.
+type StrongOwners = std::collections::BTreeMap<crate::identifiers::IdentifierKey, String>;
+
+/// Checks how the most recently recorded held listing was placed.
+///
+/// Only valid straight after that listing is recorded: a later catalog
+/// listing can add identifiers that the placement checks would misread.
+///
+/// # Arguments
+///
+/// * `catalog` - The in-memory catalog.
+/// * `strong` - What [`check_identifiers`] returned for it.
+///
+/// # Errors
+///
+/// Returns a description of the first broken invariant.
+fn check_last_link(catalog: &MemoryCatalog, strong: &StrongOwners) -> Result<(), String> {
     let Some(last) = catalog.links.last() else {
         return Ok(());
     };
@@ -313,10 +360,35 @@ pub fn run_case(data: &[u8]) -> Result<usize, String> {
     let mut catalog = MemoryCatalog::default();
     let mut recorded = 0usize;
     while !cursor.rest.is_empty() && recorded < MAX_LISTINGS {
-        let (draft, holding) = decode(&mut cursor);
+        let (draft, holding, as_catalog) = decode(&mut cursor);
         let Ok(listing) = Listing::from_draft(&draft) else {
             continue;
         };
+        if as_catalog {
+            // A catalog listing holds nothing, announces nothing, keeps
+            // every invariant and changes nothing when seen again.
+            let plan = catalog
+                .record_catalog(&listing)
+                .map_err(|err| err.to_string())?;
+            if plan.holding.is_some() || plan.holding_is_new || !plan.events.is_empty() {
+                return Err(format!(
+                    "catalog listing {:?} held or announced {plan:?}",
+                    listing.key
+                ));
+            }
+            check_identifiers(&catalog)?;
+            let again = catalog
+                .record_catalog(&listing)
+                .map_err(|err| err.to_string())?;
+            if !again.is_noop() {
+                return Err(format!(
+                    "resolving catalog {:?} twice changed {again:?}",
+                    listing.key
+                ));
+            }
+            recorded += 1;
+            continue;
+        }
         catalog
             .record(&listing, &holding)
             .map_err(|err| err.to_string())?;

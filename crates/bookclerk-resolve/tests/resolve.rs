@@ -670,10 +670,10 @@ fn a_catalog_listing_holds_nothing_and_a_later_scan_joins_its_edition() {
     let catalog = c.record_catalog(&listing).unwrap();
     assert!(catalog.holding.is_none());
     assert!(!catalog.holding_is_new);
-    assert!(!catalog
-        .events
-        .iter()
-        .any(|e| matches!(e, Event::HoldingAdded { .. })));
+    assert!(
+        catalog.events.is_empty(),
+        "a catalog plan announces nothing"
+    );
     assert_eq!(c.holdings.len(), 0);
     assert_eq!(c.listings.len(), 1);
     // Seeing it in the catalog again changes nothing.
@@ -684,6 +684,10 @@ fn a_catalog_listing_holds_nothing_and_a_later_scan_joins_its_edition() {
     assert_eq!(scanned.link, LinkReason::Listing);
     assert_eq!(scanned.listing.edition_id, catalog.listing.edition_id);
     assert!(scanned.holding_is_new);
+    assert!(scanned
+        .events
+        .iter()
+        .any(|e| matches!(e, Event::HoldingAdded { .. })));
     assert_eq!(c.holdings.len(), 1);
 }
 

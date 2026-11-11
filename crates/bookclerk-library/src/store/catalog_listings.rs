@@ -372,9 +372,36 @@ impl LibraryStore {
         }
         let now = Utc::now();
         let now_text = now_str();
+        let is_fresh = |row: &store_listings::Model| {
+            chrono::DateTime::parse_from_rfc3339(&row.observed_at)
+                .is_ok_and(|seen| now.signed_duration_since(seen) <= CATALOG_LISTING_REFRESH)
+        };
+        // Stale rows this answer names are touched first, in their own
+        // batches, so a concurrent prune (which only deletes old rows)
+        // cannot remove one between the resolver reusing it and the writes
+        // below that reference it. A row pruned before the touch is simply
+        // resolved again.
+        let stale: Vec<String> = stored
+            .values()
+            .filter(|row| !is_fresh(row))
+            .map(|row| row.id.clone())
+            .collect();
+        for chunk in stale.chunks(self.lookup_chunk()) {
+            let marks = vec!["?"; chunk.len()].join(", ");
+            let mut params = vec![batch::text(&now_text)];
+            params.extend(chunk.iter().map(|id| batch::text(id)));
+            self.run_catalog_batch(vec![batch::exec(
+                &format!("UPDATE store_listings SET observed_at = ? WHERE id IN ({marks})"),
+                params,
+            )])
+            .await?;
+        }
         let mut ids = Vec::with_capacity(listings.len());
         let mut batches = WriteBatches::new(self.db_capabilities(), "catalog listing");
         let mut done: HashSet<String> = HashSet::new();
+        // Titles resolved earlier in this call, so a second copy in the
+        // same answer is not sent through the resolver again.
+        let mut resolved_now: HashMap<(String, String, String), String> = HashMap::new();
         for (input, listing) in listings.iter().zip(&parsed) {
             let Some(listing) = listing else {
                 ids.push(None);
@@ -385,22 +412,25 @@ impl LibraryStore {
                 listing.key.marketplace.clone(),
                 listing.key.product_id.clone(),
             );
-            let fresh = stored.get(&key).filter(|row| {
-                chrono::DateTime::parse_from_rfc3339(&row.observed_at)
-                    .is_ok_and(|seen| now.signed_duration_since(seen) <= CATALOG_LISTING_REFRESH)
+            let known = resolved_now.get(&key).cloned().or_else(|| {
+                stored
+                    .get(&key)
+                    .filter(|row| is_fresh(row))
+                    .map(|row| row.id.clone())
             });
-            let (id, resolved) = match fresh {
-                Some(row) => (row.id.clone(), false),
-                None => (self.record_catalog_listing(listing).await?.listing.id, true),
+            let (id, resolved) = match known {
+                Some(id) => (id, false),
+                None => {
+                    let id = self.record_catalog_listing(listing).await?.listing.id;
+                    resolved_now.insert(key.clone(), id.clone());
+                    (id, true)
+                }
             };
             // A title an answer lists twice is written once, with the
             // first copy's text and every copy's offers.
             if resolved && done.insert(id.clone()) {
                 if let Some(full) = batches.push(detail_update(&id, &input.detail, &now_text))? {
                     self.run_catalog_batch(full).await?;
-                }
-                if let Some(row) = stored.get_mut(&key) {
-                    row.observed_at.clone_from(&now_text);
                 }
             }
             for offer in input.offers.iter().filter(|o| !o.is_empty()) {
@@ -422,22 +452,29 @@ impl LibraryStore {
     ///
     /// * `offers` - `(listing id, offer)` pairs. An offer older than the
     ///   stored one for the same audience is ignored; one for a listing no
-    ///   longer stored fails its foreign key and is dropped with its batch.
+    ///   longer stored fails its foreign key and is dropped with its batch,
+    ///   while the other batches are still written.
     ///
     /// # Errors
     ///
-    /// Returns the database error.
+    /// Returns the first batch's database error, after every batch was
+    /// tried.
     pub async fn record_listing_offers(&self, offers: &[(String, ListingOffer)]) -> Result<()> {
         let mut batches = WriteBatches::new(self.db_capabilities(), "listing offer");
+        let mut first_error = None;
         for (listing_id, offer) in offers.iter().filter(|(_, o)| !o.is_empty()) {
             if let Some(full) = batches.push_group(offer_upsert(listing_id, offer).to_vec())? {
-                self.run_catalog_batch(full).await?;
+                if let Err(err) = self.run_catalog_batch(full).await {
+                    first_error.get_or_insert(err);
+                }
             }
         }
         if let Some(last) = batches.finish() {
-            self.run_catalog_batch(last).await?;
+            if let Err(err) = self.run_catalog_batch(last).await {
+                first_error.get_or_insert(err);
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Sends one chunk of catalog writes as one atomic host batch.

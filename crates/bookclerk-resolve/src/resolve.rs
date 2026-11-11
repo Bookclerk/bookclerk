@@ -708,14 +708,17 @@ fn resolve_with(
         None
     };
 
+    // A catalog plan changes nothing the library holds, so it announces
+    // nothing; the scan that later holds the listing announces it with
+    // `holding_added`.
     let mut events = Vec::new();
-    if listing_is_new || relinked {
+    if holding_row.is_some() && (listing_is_new || relinked) {
         events.push(Event::EditionLinked {
             edition_id: edition_id.clone(),
             listing_id: listing_row.id.clone(),
         });
     }
-    if edition_update.is_some() || expression_update.is_some() {
+    if holding_row.is_some() && (edition_update.is_some() || expression_update.is_some()) {
         events.push(Event::EditionUpdated {
             edition_id: edition_id.clone(),
         });

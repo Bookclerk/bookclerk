@@ -301,6 +301,10 @@ pub enum Conflict {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// A listing joined an edition, new or existing (`edition_linked`).
+    ///
+    /// Catalog plans, which hold nothing, emit no events: a listing first
+    /// stored from a catalog answer is announced by the `holding_added` of
+    /// the scan that later holds it.
     EditionLinked {
         /// The edition.
         edition_id: String,

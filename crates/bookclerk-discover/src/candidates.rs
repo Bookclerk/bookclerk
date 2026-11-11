@@ -209,7 +209,7 @@ pub async fn gather_storefront_candidates(
                     for hit in hits {
                         if opts.exclude_graphicaudio_series_sets
                             && id.eq_ignore_ascii_case("graphicaudio")
-                            && looks_like_series_set(&hit)
+                            && looks_like_series_set(&hit.title)
                         {
                             continue;
                         }
@@ -325,8 +325,8 @@ pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCa
 }
 
 /// True when the title looks like a boxed series set (usually dropped from recs).
-pub(crate) fn looks_like_series_set(hit: &CatalogHit) -> bool {
-    let title = hit.title.to_ascii_lowercase();
+pub(crate) fn looks_like_series_set(title: &str) -> bool {
+    let title = title.to_ascii_lowercase();
     title.contains("series set") || title.ends_with(" set")
 }
 

@@ -147,7 +147,9 @@ Storefront answers are cached for 24 hours in `discover_store_calls`, keyed by
 a hash of the store and the request, so people whose seeds overlap share one
 call. The cache stores the parsed answer, not the store's raw reply: the
 listings it returned, in order, in `discover_store_call_hits`, each with how
-the store found it and its rank. Failed and empty answers are not cached.
+the store found it and its rank. Failed and empty answers, and answers none of whose titles could be stored,
+are not cached. The fetch time is written after the hits, so an answer cut
+off part way reads as expired.
 
 ### Shared listing pool
 
@@ -172,10 +174,12 @@ quote never overwrites a newer one.
 
 A listing a store reported in the last day keeps its resolution and text,
 and a new answer only refreshes its offers, so members whose tastes overlap
-cost one resolution a day per title. Every `discover_candidates` job also
+cost one resolution a day per title. A `discover_candidates` job also
 deletes listings that no store has reported for a week and that nothing
-refers to: no holding, candidate, cached call or resolution override. The
-edition and work they made stay. Both jobs are deduplicated per subject, so a burst of triggers folds into
+refers to: no holding, candidate, cached call or resolution override (at
+most once an hour on each daemon). The edition and work they made stay.
+Catalog listings emit no library events; a scan that later holds one
+announces it with `holding_added`. Both jobs are deduplicated per subject, so a burst of triggers folds into
 the job already waiting.
 
 `GET /api/discover/recommendations` reads the stored feed and returns at once,
@@ -634,7 +638,8 @@ one `purchase_hints` call, so a refresh after a wish asks the store only
 about titles it has not priced. The answers are stored as the listings'
 offers: the list price as `non_member`, a member price as `member`. The
 card shows the non-member price as the store's list price and the live
-lookup refreshes it when the card scrolls into view. Member prices are
+lookup refreshes it on screen when the card scrolls into view (a live
+lookup does not write the pool). Member prices are
 applied only for stores the viewer has an account with, decided server-side
 as before. A store paused for rate limiting is not asked, a 429 here pauses
 its live lookups too, and a failure or timeout leaves the rest unpriced until

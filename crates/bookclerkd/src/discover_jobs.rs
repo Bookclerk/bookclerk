@@ -200,11 +200,17 @@ pub async fn run_discover_candidates(
         .await
         .unwrap_or(0);
     // Catalog listings no candidate, cached call, holding or override
-    // refers to any more, and no store has reported for a while.
-    let pruned_listings = library
-        .prune_catalog_listings(Utc::now() - CATALOG_LISTING_RETENTION)
-        .await
-        .unwrap_or(0);
+    // refers to any more, and no store has reported for a while. Every
+    // subject's fetch ends here, so the scan runs at most once an hour per
+    // daemon rather than once per subject.
+    let pruned_listings = if catalog_prune_due(Utc::now()) {
+        library
+            .prune_catalog_listings(Utc::now() - CATALOG_LISTING_RETENTION)
+            .await
+            .unwrap_or(0)
+    } else {
+        0
+    };
     Ok(format!(
         "subject={} seeds={} stores={} candidates={} failed={} pruned_calls={pruned} \
          pruned_listings={pruned_listings}",
@@ -220,6 +226,28 @@ pub async fn run_discover_candidates(
 /// reported it, so a title that drops off one subject's shelves and comes
 /// back within the week is not resolved again.
 const CATALOG_LISTING_RETENTION: chrono::Duration = chrono::Duration::days(7);
+
+/// Least time between two catalog listing prunes on one daemon.
+const CATALOG_PRUNE_INTERVAL: chrono::Duration = chrono::Duration::hours(1);
+
+/// Unix seconds of this daemon's last catalog listing prune (0: never).
+static LAST_CATALOG_PRUNE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// Whether this daemon should prune catalog listings now, claiming the
+/// slot when it should so concurrent jobs do not prune together.
+///
+/// # Arguments
+///
+/// * `now` - The current time.
+fn catalog_prune_due(now: chrono::DateTime<Utc>) -> bool {
+    use std::sync::atomic::Ordering;
+    let now_secs = now.timestamp();
+    let last = LAST_CATALOG_PRUNE.load(Ordering::Relaxed);
+    now_secs.saturating_sub(last) >= CATALOG_PRUNE_INTERVAL.num_seconds()
+        && LAST_CATALOG_PRUNE
+            .compare_exchange(last, now_secs, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+}
 
 /// Most rankings one `discover_feed` job runs when candidate fetches keep
 /// finishing under it; past this the next read or event queues another.
@@ -438,6 +466,15 @@ mod tests {
     use bookclerk_library::SeedScope;
 
     use super::*;
+
+    #[test]
+    fn the_catalog_prune_runs_at_most_once_an_interval() {
+        // Far in the future, so no other test's real-time claim interferes.
+        let t = Utc::now() + chrono::Duration::days(3650);
+        assert!(catalog_prune_due(t));
+        assert!(!catalog_prune_due(t + chrono::Duration::minutes(5)));
+        assert!(catalog_prune_due(t + CATALOG_PRUNE_INTERVAL));
+    }
 
     fn feed(used: Option<chrono::DateTime<Utc>>) -> bookclerk_discover::StoredSubjectFeed {
         bookclerk_discover::StoredSubjectFeed {
