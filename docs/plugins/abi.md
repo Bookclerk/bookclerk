@@ -669,7 +669,7 @@ piling up work.
   `dead_letter`. A delivery that was leased, retried, suspended or is
   resuming does not expire; `max_retries` and dead letters govern it.
 - Expiry is best effort. The hourly `maintenance.events` duty expires
-  deliveries, scanning at most 10 000 rows a run and resuming where it
+  deliveries, scanning about 10 000 rows a run and resuming where it
   stopped, so a delivery can outlive its period by an hour or more and can
   still be leased until the sweep reaches it. Retention bounds a backlog;
   it is not a delivery deadline, and the lease path does not check it.

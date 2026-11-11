@@ -2299,8 +2299,9 @@ impl LibraryStore {
     /// version and filter), as at dispatch. Host consumers (`host:` and node
     /// consumers) never expire and are left out of the scan. Expired rows stay
     /// until [`EventPruneStep::TerminalDeliveries`] removes them, so they
-    /// record which events a subscriber missed. At most 10 000
-    /// candidates are examined per call; the next call resumes where this one
+    /// record which events a subscriber missed. About 10 000
+    /// candidates are examined per call (the budget is checked after each
+    /// page, so the last page can go past it); the next call resumes where this one
     /// stopped and wraps around once it reaches the newest candidate.
     ///
     /// # Arguments
