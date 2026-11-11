@@ -302,9 +302,9 @@ pub enum Conflict {
 pub enum Event {
     /// A listing joined an edition, new or existing (`edition_linked`).
     ///
-    /// Catalog plans, which hold nothing, emit no events: a listing first
-    /// stored from a catalog answer is announced by the `holding_added` of
-    /// the scan that later holds it.
+    /// A new catalog listing (a plan with no holding) is not announced: it is
+    /// announced by the `holding_added` of the scan that later holds it. A
+    /// relink is announced by any plan.
     EditionLinked {
         /// The edition.
         edition_id: String,

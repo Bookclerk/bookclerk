@@ -779,8 +779,8 @@ where
         .iter()
         .map(|hit| catalog_listing(store.plugin_key, store.region, hit, now))
         .collect();
-    let ids = match library.record_catalog_listings(&listings).await {
-        Ok(ids) => ids,
+    let recorded = match library.record_catalog_listings(&listings).await {
+        Ok(recorded) => recorded,
         Err(err) => {
             tracing::warn!(store = %id, error = %err, "discover could not store a store answer");
             return None;
@@ -788,7 +788,7 @@ where
     };
     let call_hits: Vec<StoreCallHit> = hits
         .iter()
-        .zip(ids)
+        .zip(recorded.ids)
         .filter_map(|(hit, listing_id)| {
             Some(StoreCallHit {
                 listing_id: listing_id?,
@@ -798,8 +798,9 @@ where
         })
         .collect();
     // An answer none of whose titles could be stored is not cached, like an
-    // empty one, so the store is asked again next time.
-    if !call_hits.is_empty() {
+    // empty one, and neither is one with titles the resolver could not place
+    // this time, so the store is asked again next time.
+    if !call_hits.is_empty() && recorded.unresolved == 0 {
         if let Err(err) = library.put_discover_store_call(key, id, &call_hits).await {
             tracing::debug!(store = %id, error = %err, "discover store cache write failed");
         }
@@ -1584,6 +1585,7 @@ mod tests {
             .record_catalog_listings(&listings)
             .await
             .unwrap()
+            .ids
             .into_iter()
             .map(|id| StoreCallHit {
                 listing_id: id.unwrap(),

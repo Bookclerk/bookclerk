@@ -14,7 +14,7 @@
 //! - a work found by identifier or matcher has the listing's kind, and an
 //!   episode matched by text shares its parent show;
 //! - a catalog listing (recorded with no holding) never gains a holding
-//!   or emits an event;
+//!   and never announces a holding or its own new link;
 //! - resolving the same input twice changes nothing.
 //!
 //! The fuzz target and the replay test in `tests/fuzz_corpus.rs` both call
@@ -365,12 +365,18 @@ pub fn run_case(data: &[u8]) -> Result<usize, String> {
             continue;
         };
         if as_catalog {
-            // A catalog listing holds nothing, announces nothing, keeps
-            // every invariant and changes nothing when seen again.
+            // A catalog listing holds nothing, never announces a holding or
+            // its own new link, keeps every invariant and changes nothing
+            // when seen again.
             let plan = catalog
                 .record_catalog(&listing)
                 .map_err(|err| err.to_string())?;
-            if plan.holding.is_some() || plan.holding_is_new || !plan.events.is_empty() {
+            let announced = plan.events.iter().any(|e| match e {
+                crate::model::Event::HoldingAdded { .. } => true,
+                crate::model::Event::EditionLinked { .. } => plan.listing_is_new,
+                crate::model::Event::EditionUpdated { .. } => false,
+            });
+            if plan.holding.is_some() || plan.holding_is_new || announced {
                 return Err(format!(
                     "catalog listing {:?} held or announced {plan:?}",
                     listing.key

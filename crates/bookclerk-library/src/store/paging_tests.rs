@@ -610,7 +610,7 @@ async fn discover_candidates_are_read_whole_under_every_profile() {
                 offers: Vec::new(),
             })
             .collect();
-        let ids = store.record_catalog_listings(&titles).await.unwrap();
+        let ids = store.record_catalog_listings(&titles).await.unwrap().ids;
         let rows: Vec<crate::CandidateRef> = ids
             .into_iter()
             .map(|id| crate::CandidateRef {

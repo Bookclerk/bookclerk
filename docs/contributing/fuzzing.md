@@ -166,8 +166,8 @@ only that. The others check:
 - **`library_resolve`**: decodes up to 64 listings from small pools of
   titles, authors and identifiers, so they collide, and records each one
   into an in-memory catalog, either held or as a catalog listing (a store
-  answer nobody holds). A catalog listing never gains a holding or emits
-  an event. After every step one strong identifier maps
+  answer nobody holds). A catalog listing never gains a holding and
+  never announces a holding or its own new link. After every step one strong identifier maps
   to one edition; a weak identifier alone never joins editions of
   another media kind, work kind or an incompatible expression; strong
   identifiers naming different editions are never merged and the conflict

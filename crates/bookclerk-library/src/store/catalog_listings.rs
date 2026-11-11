@@ -302,6 +302,18 @@ fn record_of(m: store_listings::Model) -> CatalogListingRecord {
     }
 }
 
+/// What [`LibraryStore::record_catalog_listings`] stored for one answer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecordedListings {
+    /// One entry per input, in order: the listing id, or `None` for a title
+    /// that was not stored.
+    pub ids: Vec<Option<String>>,
+    /// How many valid titles could not be resolved this time (the resolver
+    /// gave up on them). An answer with any is incomplete and should not be
+    /// cached, so those titles are tried again.
+    pub unresolved: usize,
+}
+
 impl LibraryStore {
     /// Stores what a store's catalog answer reported and returns each
     /// title's listing id.
@@ -320,17 +332,20 @@ impl LibraryStore {
     ///
     /// # Returns
     ///
-    /// One entry per input, in order: the listing id, or `None` for a
-    /// title that does not form a valid listing (a blank title or key, or
-    /// a field over the listing limits).
+    /// The listing ids, one per input in order. A title that does not form
+    /// a valid listing (a blank title or key, or a field over the listing
+    /// limits) gets `None`; so does one the resolver could not place this
+    /// time, which is also counted in [`RecordedListings::unresolved`] and
+    /// does not stop the rest of the answer.
     ///
     /// # Errors
     ///
-    /// Returns [`LibraryError`] when a read or write fails.
+    /// Returns [`LibraryError`] when a read or write of the answer's rows
+    /// fails.
     pub async fn record_catalog_listings(
         &self,
         listings: &[CatalogListing],
-    ) -> Result<Vec<Option<String>>> {
+    ) -> Result<RecordedListings> {
         let parsed: Vec<Option<resolve::Listing>> = listings
             .iter()
             .map(|l| match resolve::Listing::from_draft(&l.draft) {
@@ -381,10 +396,24 @@ impl LibraryStore {
         // cannot remove one between the resolver reusing it and the writes
         // below that reference it. A row pruned before the touch is simply
         // resolved again.
+        // `stored` was read by product id alone, so it can hold other
+        // stores' rows sharing an id (an ISBN); only this answer's keys are
+        // touched.
+        let named: HashSet<(String, String, String)> = parsed
+            .iter()
+            .flatten()
+            .map(|l| {
+                (
+                    l.key.plugin_key.clone(),
+                    l.key.marketplace.clone(),
+                    l.key.product_id.clone(),
+                )
+            })
+            .collect();
         let stale: Vec<String> = stored
-            .values()
-            .filter(|row| !is_fresh(row))
-            .map(|row| row.id.clone())
+            .iter()
+            .filter(|(key, row)| named.contains(*key) && !is_fresh(row))
+            .map(|(_, row)| row.id.clone())
             .collect();
         for chunk in stale.chunks(self.lookup_chunk()) {
             let marks = vec!["?"; chunk.len()].join(", ");
@@ -402,6 +431,7 @@ impl LibraryStore {
         // Titles resolved earlier in this call, so a second copy in the
         // same answer is not sent through the resolver again.
         let mut resolved_now: HashMap<(String, String, String), String> = HashMap::new();
+        let mut unresolved = 0usize;
         for (input, listing) in listings.iter().zip(&parsed) {
             let Some(listing) = listing else {
                 ids.push(None);
@@ -420,11 +450,25 @@ impl LibraryStore {
             });
             let (id, resolved) = match known {
                 Some(id) => (id, false),
-                None => {
-                    let id = self.record_catalog_listing(listing).await?.listing.id;
-                    resolved_now.insert(key.clone(), id.clone());
-                    (id, true)
-                }
+                None => match self.record_catalog_listing(listing).await {
+                    Ok(plan) => {
+                        let id = plan.listing.id;
+                        resolved_now.insert(key.clone(), id.clone());
+                        (id, true)
+                    }
+                    Err(err) => {
+                        // One title the resolver gives up on (other writers
+                        // kept changing its rows) does not cost the answer.
+                        tracing::warn!(
+                            product = %listing.key.product_id,
+                            error = %err,
+                            "could not resolve a catalog title; it is tried again next time"
+                        );
+                        unresolved += 1;
+                        ids.push(None);
+                        continue;
+                    }
+                },
             };
             // A title an answer lists twice is written once, with the
             // first copy's text and every copy's offers.
@@ -443,7 +487,7 @@ impl LibraryStore {
         if let Some(last) = batches.finish() {
             self.run_catalog_batch(last).await?;
         }
-        Ok(ids)
+        Ok(RecordedListings { ids, unresolved })
     }
 
     /// Stores prices a store quoted for listings already in the pool.
@@ -705,7 +749,8 @@ mod tests {
         let ids = store
             .record_catalog_listings(&[title("9780000000001"), bad])
             .await
-            .unwrap();
+            .unwrap()
+            .ids;
         assert!(ids[1].is_none(), "a blank title is not a listing");
         let id = ids[0].clone().unwrap();
         let read = store
@@ -741,7 +786,8 @@ mod tests {
         let id = store
             .record_catalog_listings(std::slice::from_ref(&first))
             .await
-            .unwrap()[0]
+            .unwrap()
+            .ids[0]
             .clone()
             .unwrap();
         let mut again = first;
@@ -753,7 +799,7 @@ mod tests {
             currency: Some(String::from("USD")),
             observed_at: Utc::now(),
         }];
-        let again_id = store.record_catalog_listings(&[again]).await.unwrap()[0]
+        let again_id = store.record_catalog_listings(&[again]).await.unwrap().ids[0]
             .clone()
             .unwrap();
         assert_eq!(again_id, id);
@@ -798,7 +844,8 @@ mod tests {
         let id = store
             .record_catalog_listings(std::slice::from_ref(&catalog))
             .await
-            .unwrap()[0]
+            .unwrap()
+            .ids[0]
             .clone()
             .unwrap();
         let listing = resolve::Listing::from_draft(&catalog.draft).unwrap();
@@ -828,6 +875,7 @@ mod tests {
             .record_catalog_listings(&titles)
             .await
             .unwrap()
+            .ids
             .into_iter()
             .map(Option::unwrap)
             .collect();
@@ -841,12 +889,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_answer_touches_only_its_own_stale_listings() {
+        use sea_orm::sea_query::Expr;
+        let store = store().await;
+        let libro = title("9780000000001");
+        let mut chirp = title("9780000000001");
+        chirp.draft.plugin_key = String::from("chirp");
+        let ids = store
+            .record_catalog_listings(&[libro, chirp.clone()])
+            .await
+            .unwrap()
+            .ids;
+        let old = "2000-01-01T00:00:00+00:00";
+        store_listings::Entity::update_many()
+            .col_expr(store_listings::Column::ObservedAt, Expr::value(old))
+            .exec(store.db())
+            .await
+            .unwrap();
+        // Chirp answers again; Libro.fm's listing with the same ISBN product
+        // id is not touched.
+        let again = store.record_catalog_listings(&[chirp]).await.unwrap();
+        assert_eq!(again.unresolved, 0);
+        let seen = |id: &Option<String>| {
+            let id = id.clone().unwrap();
+            let store = &store;
+            async move {
+                store_listings::Entity::find_by_id(id)
+                    .one(store.db())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .observed_at
+            }
+        };
+        assert_eq!(seen(&ids[0]).await, old, "another store's row stays old");
+        assert_ne!(seen(&ids[1]).await, old, "the answer's own row is touched");
+    }
+
+    #[tokio::test]
     async fn only_unreferenced_old_listings_are_pruned() {
         let store = store().await;
         let ids: Vec<String> = store
             .record_catalog_listings(&[title("9780000000001"), title("9780000000002")])
             .await
             .unwrap()
+            .ids
             .into_iter()
             .map(Option::unwrap)
             .collect();

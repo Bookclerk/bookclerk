@@ -835,6 +835,7 @@ mod tests {
             .record_catalog_listings(&listings)
             .await
             .unwrap()
+            .ids
             .into_iter()
             .zip(products)
             .map(|(id, p)| CandidateRef {

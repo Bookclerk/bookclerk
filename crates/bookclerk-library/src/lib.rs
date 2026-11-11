@@ -161,7 +161,7 @@ pub use sql_plan::{
 pub use store::{
     catalog_listings::{
         CatalogListing, CatalogListingRecord, ListingDetail, ListingOffer, OfferAudience,
-        CATALOG_LISTING_REFRESH,
+        RecordedListings, CATALOG_LISTING_REFRESH,
     },
     event_outbox::{deliver_after_for, prepare_publish_domain_event, EventPruneStep},
     fallback_work_key, inject_dispatch_page_failures,

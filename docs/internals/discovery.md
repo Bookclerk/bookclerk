@@ -180,8 +180,12 @@ cost one resolution a day per title. A `discover_candidates` job also
 deletes listings that no store has reported for a week and that nothing
 refers to: no holding, candidate, cached call or resolution override (at
 most once an hour on each daemon). The edition and work they made stay.
-Catalog listings emit no library events; a scan that later holds one
-announces it with `holding_added`. Both jobs are deduplicated per subject, so a burst of triggers folds into
+A new catalog listing emits no library event; a scan that later holds it
+announces it with `holding_added`. A catalog answer that fills or relinks a
+stored edition announces that change as a scan would.
+
+The `discover_candidates` and `discover_feed` jobs are deduplicated per
+subject, so a burst of triggers folds into
 the job already waiting.
 
 `GET /api/discover/recommendations` reads the stored feed and returns at once,
