@@ -73,6 +73,11 @@ operator, a household user, or a portal identity) has a **subject key**
    (Science Fiction, Fantasy, Mystery & Thriller, Romance, History &
    Biography, Self-help) through its catalog search, as far as its call
    budget reaches, so a new library still gets shelves.
+   Every title a store returns goes into the **shared listing pool**
+   (see [Shared listing pool](#shared-listing-pool)), and the person's
+   `discover_candidates` rows are references to those listings plus what
+   is personal to them: the seed that found the title, how the store found
+   it and the starter genre.
    `storefront_max_remote_calls` is split across the stores, so all stores
    together never make more calls than it allows (deals count as one call,
    and a store whose share is zero is not asked).
@@ -85,10 +90,11 @@ operator, a household user, or a portal identity) has a **subject key**
    `maxRequestBytes` allow, not one statement per row and not an interactive
    transaction, which the external database plugins refuse. The delete
    rides in the last batch, so a reader can briefly see part of a store's
-   new rows beside its old ones. Each answer in the storefront call cache is stored
-   with one upsert. A store whose calls all fail or come back empty keeps its
+   new rows beside its old ones. A store whose calls all fail or come back empty keeps its
    previous rows, since a plugin adapter can report a guest failure as an
-   empty answer. The
+   empty answer. A store with an answer that had a title the pool could not
+   place this time keeps its previous rows beside the new ones, so that
+   title is not dropped until a complete fetch replaces them. The
    finished fetch is recorded in `discover_fetches`, so a fetch that found
    nothing new still counts as fresh for a day.
 2. **Feed** (`discover_feeds`): when the fetch finishes it admits a
@@ -109,13 +115,13 @@ operator, a household user, or a portal identity) has a **subject key**
    keeps what is personal to the person (its shelf, order, score, reasons,
    shelf tags, prices and wishers) and its identity (title, authors,
    series, store editions). The catalog metadata that the person's
-   `discover_candidates` rows already hold (description, cover, subtitle,
+   candidates' listings hold in the pool (description, cover, subtitle,
    publisher, length, date, genres, language and narrators) is left out
-   and joined back from those rows when the page reads the feed, in pages
-   that stay under the inline result limit. A field is left out only when
-   that join gives it back unchanged: metadata merged in from another
-   store edition is left out when that edition's candidate row gives the
-   same value, and stays on the card when no row does. A card with no
+   and joined back from those listings when the page reads the feed, in
+   chunks that stay under the inline result limit. A field is left out only
+   when that join gives it back unchanged: metadata merged in from another
+   store edition is left out when that edition's listing gives the same
+   value, and stays on the card when none does. A card with no
    stored candidate, such as a wish, keeps its metadata. A fetch that
    changes candidates before the page reads the feed changes what the join
    fills in: an updated row shows its new metadata, a removed row lets
@@ -143,7 +149,51 @@ operator, a household user, or a portal identity) has a **subject key**
 
 Storefront answers are cached for 24 hours in `discover_store_calls`, keyed by
 a hash of the store and the request, so people whose seeds overlap share one
-call. Failed and empty answers are not cached. Both jobs are deduplicated per subject, so a burst of triggers folds into
+call. The cache stores the parsed answer, not the store's raw reply: the
+listings it returned, in order, in `discover_store_call_hits`, each with how
+the store found it and its rank. Failed and empty answers, and answers none of whose titles could be stored,
+are not cached. The fetch time is written after the hits, so an answer cut
+off part way reads as expired. Each write claims the cached call with its
+own token, and its hits and fetch time apply only while the call still
+carries it, so two members refreshing one call at once never leave a mix of
+both answers.
+
+### Shared listing pool
+
+Catalog data has one home: the library model's `store_listings`
+([ADR](../adr/library-data-model.md)). When a store answers a Discover call,
+each title is resolved into the library the way a scanned title is (shared
+identifiers first, then the work's identifiers, then the work-level match on
+title, authors and kind), so it gets a work, an expression, an edition and a
+listing row. The listing has **no holding**, so the library does not own
+it, and a later scan of the same product finds the same listing and only
+adds its holding. Work identity always comes from that resolution, never
+from comparing display text.
+
+The store's own text for the listing is stored on the row as parsed
+columns: subtitle, authors and narrators as the store prints them, series,
+the whole synopsis (never shortened), publisher, date, length, language,
+cover, product URL, ratings and abridgement. What it costs is stored in
+`listing_offers`, one row per listing and audience: `non_member` (what
+someone without an account at the store pays) and `member`, each with the
+price, the store's label, the currency and when it was quoted. An older
+quote never overwrites a newer one.
+
+A listing a store reported in the last day keeps its resolution and text,
+and a new answer only refreshes its offers, so members whose tastes overlap
+cost one resolution a day per title. A title that other writers kept
+changing on every attempt is skipped and stays stale, so the next answer
+resolves it again, and the answer that skipped it is not cached; any other
+read or write failure fails the whole call. A `discover_candidates` job also
+deletes listings that no store has reported for a week and that nothing
+refers to: no holding, candidate, cached call or resolution override (at
+most once an hour on each daemon). The edition and work they made stay.
+A new catalog listing emits no library event; a scan that later holds it
+announces it with `holding_added`. A catalog answer that fills or relinks a
+stored edition announces that change as a scan would.
+
+The `discover_candidates` and `discover_feed` jobs are deduplicated per
+subject, so a burst of triggers folds into
 the job already waiting.
 
 `GET /api/discover/recommendations` reads the stored feed and returns at once,
@@ -350,8 +400,9 @@ finds its work: shared identifiers, then the work's identifiers, then the
 work-level title-and-author match. A wish whose work no library title
 resolves to stays on the queue, so *Dune Messiah* is not hidden by an owned
 *Dune*. Storefront candidates are dropped by owned ASIN, ISBN and product
-id, and then by work: each remaining candidate is resolved the same way
-(`LibraryStore::work_for`), and one whose work has a library title is
+id, and then by work: a candidate read from the shared listing pool uses
+the work its listing resolved into, a live store hit is resolved the same
+way (`LibraryStore::work_for`), and one whose work has a library title is
 dropped when the feed is ranked. Another store's edition of an owned book
 (a different ASIN, ISBN or narrator) therefore never reaches a shelf, such
 as **Because you wishlisted**, while a sequel stays.
@@ -603,13 +654,16 @@ without dropping prices it already shows, so one slow store never turns a
 page of cards into a failed request or a card left unpriced. Queries a
 store answered with a hint are cached for 10 minutes.
 
-Cards show a price before any lookup: at the end of each store's fetch the
-`discover_candidates` job fills in prices the store answered in the last
-day from one row per store in the store-call cache, shared by everyone, and
-prices up to 120 distinct titles of the rest in one `purchase_hints` call, so a refresh after
-a wish asks the store only about titles it has not priced. The list price is
-stored on the candidate. The card shows it as the store's list price and the
-live lookup refreshes it when the card scrolls into view. Member prices are
+Cards show a price before any lookup: a candidate read from the pool
+carries its listing's `non_member` offer when it was quoted in the last day
+(by anyone's fetch), and at the end of each store's fetch the
+`discover_candidates` job prices up to 120 distinct titles of the rest in
+one `purchase_hints` call, so a refresh after a wish asks the store only
+about titles it has not priced. The answers are stored as the listings'
+offers: the list price as `non_member`, a member price as `member`. The
+card shows the non-member price as the store's list price and the live
+lookup refreshes it on screen when the card scrolls into view (a live
+lookup does not write the pool). Member prices are
 applied only for stores the viewer has an account with, decided server-side
 as before. A store paused for rate limiting is not asked, a 429 here pauses
 its live lookups too, and a failure or timeout leaves the rest unpriced until

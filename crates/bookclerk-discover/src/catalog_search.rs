@@ -586,6 +586,7 @@ pub async fn catalog_search_page(
                             rating_count: hit.rating_count,
                             is_abridged: hit.is_abridged,
                             store_rank,
+                            work_id: None,
                         },
                     );
                 }
@@ -1311,6 +1312,7 @@ mod tests {
             rating_count: None,
             is_abridged: None,
             store_rank: Some(0),
+            work_id: None,
         }
     }
 
@@ -1564,6 +1566,7 @@ mod tests {
                     rating_count: None,
                     is_abridged: None,
                     store_rank: None,
+                    work_id: None,
                 },
             }],
         };

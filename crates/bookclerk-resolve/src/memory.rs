@@ -374,11 +374,17 @@ impl MemoryCatalog {
         }
         self.listings
             .insert(plan.listing.key.clone(), plan.listing.clone());
-        let holding_key = (plan.holding.listing_id.clone(), plan.holding.holder.clone());
-        if plan.holding_is_new == self.holdings.contains_key(&holding_key) {
-            return fail(format!("holding {holding_key:?} newness is wrong"));
+        if let Some(holding) = &plan.holding {
+            let holding_key = (holding.listing_id.clone(), holding.holder.clone());
+            if plan.holding_is_new == self.holdings.contains_key(&holding_key) {
+                return fail(format!("holding {holding_key:?} newness is wrong"));
+            }
+            self.holdings.insert(holding_key, holding.clone());
+        } else if plan.holding_is_new || plan.holding_changed {
+            return fail(String::from(
+                "a plan without a holding marks one new or changed",
+            ));
         }
-        self.holdings.insert(holding_key, plan.holding.clone());
         for conflict in &plan.conflicts {
             if !self.conflicts.contains(conflict) {
                 self.conflicts.push(conflict.clone());
@@ -427,6 +433,32 @@ impl MemoryCatalog {
             work_reason: plan.work_reason,
             parent_work_id,
         });
+        Ok(plan)
+    }
+
+    /// Resolves a catalog `listing` (nobody holds it) and applies the plan.
+    ///
+    /// Unlike [`Self::record`], nothing is added to the link log the
+    /// fuzzing replay walks, since there is no holding to replay.
+    ///
+    /// # Returns
+    ///
+    /// The applied plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApplyError`] when the plan breaks a constraint.
+    pub fn record_catalog(&mut self, listing: &Listing) -> Result<Plan, ApplyError> {
+        // The snapshot's holding lookup finds nothing for a holder no
+        // listing has; the catalog plan ignores it either way.
+        let snapshot = self.snapshot(listing, &Holder::Account(String::new()));
+        if let Some(missing) = snapshot.is_closed() {
+            return Err(ApplyError(format!("snapshot misses {missing}")));
+        }
+        let mut ids = self.ids.clone();
+        let plan = crate::resolve::resolve_catalog(listing, &snapshot, &mut ids);
+        self.ids = ids;
+        self.apply(&plan)?;
         Ok(plan)
     }
 

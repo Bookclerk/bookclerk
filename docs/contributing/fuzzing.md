@@ -176,7 +176,12 @@ only that. The others check:
   `fuzz/oracles/mux_peer.rs`, replayed from `bookclerk-plugin-sdk`.
 - **`library_resolve`**: decodes up to 64 listings from small pools of
   titles, authors and identifiers, so they collide, and records each one
-  into an in-memory catalog. After every step one strong identifier maps
+  into an in-memory catalog, either held or as a catalog listing (a store
+  answer nobody holds). A catalog listing is placed exactly where a scan
+  holding it would be (same listing, edition, link and work reason as the
+  held plan on the same rows), passes the same placement checks as a held
+  listing, never gains a holding and never announces a holding or its own
+  new link. After every step one strong identifier maps
   to one edition; a weak identifier alone never joins editions of
   another media kind, work kind or an incompatible expression; strong
   identifiers naming different editions are never merged and the conflict

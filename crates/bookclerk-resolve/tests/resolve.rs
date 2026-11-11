@@ -662,3 +662,44 @@ fn a_rescan_fills_what_the_expression_did_not_know() {
     abridged.abridgement = Some(Abridgement::Abridged);
     assert!(record(&mut c, &abridged, "l1").expression_update.is_none());
 }
+
+#[test]
+fn a_catalog_listing_holds_nothing_and_a_later_scan_joins_its_edition() {
+    let mut c = MemoryCatalog::default();
+    let listing = Listing::from_draft(&dune("audible", "B001")).unwrap();
+    let catalog = c.record_catalog(&listing).unwrap();
+    assert!(catalog.holding.is_none());
+    assert!(!catalog.holding_is_new);
+    assert!(
+        catalog.events.is_empty(),
+        "a catalog plan announces nothing"
+    );
+    assert_eq!(c.holdings.len(), 0);
+    assert_eq!(c.listings.len(), 1);
+    // Seeing it in the catalog again changes nothing.
+    assert!(c.record_catalog(&listing).unwrap().is_noop());
+    // A scan of the same product reuses the listing and edition and adds
+    // only the holding.
+    let scanned = record(&mut c, &dune("audible", "B001"), "a1");
+    assert_eq!(scanned.link, LinkReason::Listing);
+    assert_eq!(scanned.listing.edition_id, catalog.listing.edition_id);
+    assert!(scanned.holding_is_new);
+    assert!(scanned
+        .events
+        .iter()
+        .any(|e| matches!(e, Event::HoldingAdded { .. })));
+    assert_eq!(c.holdings.len(), 1);
+}
+
+#[test]
+fn a_catalog_listing_from_another_store_joins_the_held_work() {
+    let mut c = MemoryCatalog::default();
+    let held = record(&mut c, &dune("audible", "B001"), "a1");
+    let other = Listing::from_draft(&dune("libro", "9780441172719")).unwrap();
+    let plan = c.record_catalog(&other).unwrap();
+    assert_eq!(
+        work_of(&c, &plan.listing.edition_id),
+        work_of(&c, &held.listing.edition_id)
+    );
+    assert_eq!(c.holdings.len(), 1);
+}

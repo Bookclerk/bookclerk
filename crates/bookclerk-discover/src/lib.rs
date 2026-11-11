@@ -23,6 +23,7 @@ mod error;
 mod identity;
 mod listening;
 mod metadata_enrich;
+mod pool;
 mod precompute;
 mod purchase;
 mod recommend;

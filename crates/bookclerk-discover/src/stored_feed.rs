@@ -8,13 +8,15 @@
 //! keeps what is personal to the subject (shelves, order, score, reasons,
 //! shelf tags, prices, wishers) plus the card's identity (title, authors,
 //! series, ids), and leaves out each metadata field that reading it back
-//! from the pool gives again. [`join_feed`] puts those fields back when the
+//! from the pool gives again. The pool is the subject's candidates joined
+//! with their listings in the shared catalog pool (`store_listings`), so
+//! the text a card leaves out is stored once for every subject. [`join_feed`] puts those fields back when the
 //! page reads the feed.
 //!
 //! A card refers to its storefront editions, `(source, product_id)`, not to
-//! a pool row's key, so the join can move to another store of listing
-//! metadata (a shared table of store listings, say) without changing the
-//! stored format: only [`CandidatePool`] changes.
+//! a row id, so the stored format did not change when the metadata moved
+//! from per-subject candidate rows to the shared listing pool: only
+//! [`CandidatePool`] did.
 //!
 //! The rule is exact: a field is left out only when [`pool_value`] returns
 //! the same value for it, and [`join_feed`] fills a missing field from the
@@ -27,6 +29,7 @@ use std::collections::HashMap;
 use bookclerk_library::StoredCandidate;
 
 use crate::candidates::StorefrontCandidate;
+use crate::pool::candidate_from_stored;
 use crate::recommend::Recommendation;
 use crate::shelves::{fit_feed_within, DiscoverFeed};
 
@@ -55,26 +58,23 @@ pub struct CandidatePool {
 }
 
 impl CandidatePool {
-    /// Builds the pool from stored candidate rows, skipping rows that do not
-    /// decode.
+    /// Builds the pool from the subject's stored candidates.
     ///
     /// # Arguments
     ///
-    /// * `rows` - The subject's `discover_candidates` rows, oldest fetch first.
+    /// * `rows` - The subject's candidates joined with their listings,
+    ///   oldest fetch first.
     ///
     /// # Returns
     ///
-    /// The candidates keyed by their primary storefront edition.
+    /// The candidates keyed by their storefront edition.
     #[must_use]
     pub fn from_rows(rows: &[StoredCandidate]) -> Self {
+        let now = chrono::Utc::now();
         let mut by_edition = HashMap::with_capacity(rows.len());
         for row in rows {
-            match serde_json::from_str::<StorefrontCandidate>(&row.candidate_json) {
-                Ok(c) => {
-                    by_edition.insert((c.source.clone(), c.product_id.clone()), c);
-                }
-                Err(err) => tracing::debug!(error = %err, "skip an unreadable stored candidate"),
-            }
+            let c = candidate_from_stored(row, now);
+            by_edition.insert((c.source.clone(), c.product_id.clone()), c);
         }
         Self { by_edition }
     }
@@ -374,14 +374,45 @@ mod tests {
         }
     }
 
-    /// A stored row holding `c`.
+    /// A stored row whose listing holds `c`'s catalog fields.
     fn row(c: &StorefrontCandidate) -> StoredCandidate {
+        let now = chrono::Utc::now();
         StoredCandidate {
             source: c.source.clone(),
-            candidate_key: c.product_id.clone(),
+            listing: bookclerk_library::CatalogListingRecord {
+                id: format!("{}:{}", c.source, c.product_id),
+                plugin_key: c.source.clone(),
+                marketplace: String::from("us"),
+                product_id: c.product_id.clone(),
+                edition_id: String::from("e"),
+                work_id: None,
+                title: c.title.clone(),
+                categories: c.categories.clone(),
+                detail: bookclerk_library::ListingDetail {
+                    subtitle: c.subtitle.clone(),
+                    authors: c.authors.clone(),
+                    narrators: c.narrators.clone(),
+                    series: c.series.clone(),
+                    series_index: c.series_index.clone(),
+                    description: c.description.clone(),
+                    publisher: c.publisher.clone(),
+                    published_at: c.published_at.clone(),
+                    length_minutes: c.length_minutes,
+                    language: c.language.clone(),
+                    cover_url: c.cover_url.clone(),
+                    ..bookclerk_library::ListingDetail::default()
+                },
+                asin: c.asin.clone(),
+                isbn: c.isbn.clone(),
+                offers: Vec::new(),
+                observed_at: now,
+            },
             seed_scope: SeedScope::Own,
-            candidate_json: serde_json::to_string(c).unwrap(),
-            fetched_at: chrono::Utc::now(),
+            origin: c.origin.clone(),
+            seed_title: c.seed_title.clone(),
+            seed_categories: c.seed_categories.clone(),
+            starter_genre: c.starter_genre.clone(),
+            fetched_at: now,
         }
     }
 
@@ -504,12 +535,11 @@ mod tests {
         assert!(decode_stored_feed(&current.to_string()).is_some());
     }
 
-    /// An unreadable row is skipped, and a pool with none is empty.
+    /// A pool with no rows is empty, and a card with nothing left out
+    /// needs no pool.
     #[test]
-    fn an_unreadable_row_is_skipped() {
-        let mut bad = row(&candidate("audible", "B001", "Blurb."));
-        bad.candidate_json = "{".into();
-        let pool = CandidatePool::from_rows(&[bad]);
+    fn an_empty_pool_is_empty() {
+        let pool = CandidatePool::from_rows(&[]);
         assert!(pool.by_edition.is_empty());
         assert!(!feed_needs_pool(&feed(vec![Recommendation::default()])));
     }
