@@ -176,7 +176,10 @@ quote never overwrites a newer one.
 
 A listing a store reported in the last day keeps its resolution and text,
 and a new answer only refreshes its offers, so members whose tastes overlap
-cost one resolution a day per title. A `discover_candidates` job also
+cost one resolution a day per title. A title that other writers kept
+changing on every attempt is skipped and stays stale, so the next answer
+resolves it again, and the answer that skipped it is not cached; any other
+read or write failure fails the whole call. A `discover_candidates` job also
 deletes listings that no store has reported for a week and that nothing
 refers to: no holding, candidate, cached call or resolution override (at
 most once an hour on each daemon). The edition and work they made stay.

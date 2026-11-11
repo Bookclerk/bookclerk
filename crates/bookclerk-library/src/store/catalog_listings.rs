@@ -308,8 +308,8 @@ pub struct RecordedListings {
     /// One entry per input, in order: the listing id, or `None` for a title
     /// that was not stored.
     pub ids: Vec<Option<String>>,
-    /// How many valid titles could not be resolved this time (the resolver
-    /// gave up on them). An answer with any is incomplete and should not be
+    /// How many valid titles could not be resolved this time (other writers
+    /// kept changing their rows on every attempt). An answer with any is incomplete and should not be
     /// cached, so those titles are tried again.
     pub unresolved: usize,
 }
@@ -334,14 +334,17 @@ impl LibraryStore {
     ///
     /// The listing ids, one per input in order. A title that does not form
     /// a valid listing (a blank title or key, or a field over the listing
-    /// limits) gets `None`; so does one the resolver could not place this
-    /// time, which is also counted in [`RecordedListings::unresolved`] and
-    /// does not stop the rest of the answer.
+    /// limits) gets `None`; so does one whose rows other writers kept
+    /// changing on every attempt, which is also counted in
+    /// [`RecordedListings::unresolved`] and does not stop the rest of the
+    /// answer. A stored title that was not placed stays stale, so the next
+    /// answer resolves it again.
     ///
     /// # Errors
     ///
     /// Returns [`LibraryError`] when a read or write of the answer's rows
-    /// fails.
+    /// fails, including the resolver's own reads and writes; titles before
+    /// the failure may already be stored.
     pub async fn record_catalog_listings(
         &self,
         listings: &[CatalogListing],
@@ -395,7 +398,11 @@ impl LibraryStore {
         // batches, so a concurrent prune (which only deletes old rows)
         // cannot remove one between the resolver reusing it and the writes
         // below that reference it. A row pruned before the touch is simply
-        // resolved again.
+        // resolved again. The touch moves a row to just past the refresh
+        // window, not to now: far from the prune cutoff, yet still stale, so
+        // a title whose resolution fails below is resolved again next time
+        // instead of passing as fresh. A resolved row gets `now` from its
+        // detail write.
         // `stored` was read by product id alone, so it can hold other
         // stores' rows sharing an id (an ISBN); only this answer's keys are
         // touched.
@@ -415,9 +422,11 @@ impl LibraryStore {
             .filter(|(key, row)| named.contains(*key) && !is_fresh(row))
             .map(|(_, row)| row.id.clone())
             .collect();
+        let touched_text =
+            (now - CATALOG_LISTING_REFRESH - chrono::Duration::seconds(1)).to_rfc3339();
         for chunk in stale.chunks(self.lookup_chunk()) {
             let marks = vec!["?"; chunk.len()].join(", ");
-            let mut params = vec![batch::text(&now_text)];
+            let mut params = vec![batch::text(&touched_text)];
             params.extend(chunk.iter().map(|id| batch::text(id)));
             self.run_catalog_batch(vec![batch::exec(
                 &format!("UPDATE store_listings SET observed_at = ? WHERE id IN ({marks})"),
@@ -450,19 +459,19 @@ impl LibraryStore {
             });
             let (id, resolved) = match known {
                 Some(id) => (id, false),
-                None => match self.record_catalog_listing(listing).await {
-                    Ok(plan) => {
+                None => match self.try_link_listing(listing, None).await? {
+                    Some(plan) => {
                         let id = plan.listing.id;
                         resolved_now.insert(key.clone(), id.clone());
                         (id, true)
                     }
-                    Err(err) => {
-                        // One title the resolver gives up on (other writers
-                        // kept changing its rows) does not cost the answer.
+                    None => {
+                        // Other writers kept changing this title's rows; that
+                        // one title does not cost the answer. Any other
+                        // failure fails the call above.
                         tracing::warn!(
                             product = %listing.key.product_id,
-                            error = %err,
-                            "could not resolve a catalog title; it is tried again next time"
+                            "a catalog title kept changing under other writers; it is tried again next time"
                         );
                         unresolved += 1;
                         ids.push(None);
@@ -924,6 +933,51 @@ mod tests {
         };
         assert_eq!(seen(&ids[0]).await, old, "another store's row stays old");
         assert_ne!(seen(&ids[1]).await, old, "the answer's own row is touched");
+    }
+
+    #[tokio::test]
+    async fn a_failed_resolution_fails_the_call_and_leaves_the_listing_stale() {
+        use sea_orm::sea_query::Expr;
+        use sea_orm::ConnectionTrait as _;
+        let store = store().await;
+        let listing = title("9780000000002");
+        let id = store
+            .record_catalog_listings(std::slice::from_ref(&listing))
+            .await
+            .unwrap()
+            .ids[0]
+            .clone()
+            .unwrap();
+        let old = "2000-01-01T00:00:00+00:00";
+        store_listings::Entity::update_many()
+            .col_expr(store_listings::Column::ObservedAt, Expr::value(old))
+            .exec(store.db())
+            .await
+            .unwrap();
+        // The resolver's snapshot read now fails: that is a failure of the
+        // call, not a title skipped for concurrent writers.
+        store
+            .db()
+            .execute_unprepared("DROP TABLE resolution_overrides")
+            .await
+            .unwrap();
+        let refused = store.record_catalog_listings(&[listing]).await;
+        assert!(refused.is_err(), "{refused:?}");
+        // The row was touched away from the prune cutoff, but it is still
+        // stale, so the next answer resolves it instead of reusing it.
+        let seen = store_listings::Entity::find_by_id(id)
+            .one(store.db())
+            .await
+            .unwrap()
+            .unwrap()
+            .observed_at;
+        let seen = chrono::DateTime::parse_from_rfc3339(&seen).unwrap();
+        let age = Utc::now().signed_duration_since(seen);
+        assert!(age > CATALOG_LISTING_REFRESH, "still stale: {age}");
+        assert!(
+            age < chrono::Duration::days(2),
+            "kept from the prune: {age}"
+        );
     }
 
     #[tokio::test]

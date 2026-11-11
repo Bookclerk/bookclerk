@@ -1155,11 +1155,44 @@ impl LibraryStore {
 
     /// [`Self::record_listing`] and [`Self::record_catalog_listing`]: links
     /// `listing`, recording `holding` when one is given.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::try_link_listing`], plus [`LibraryError::Other`] when
+    /// other writers kept changing the rows for every attempt.
     async fn link_listing(
         &self,
         listing: &resolve::Listing,
         holding: Option<&resolve::HoldingDraft>,
     ) -> Result<resolve::Plan> {
+        self.try_link_listing(listing, holding)
+            .await?
+            .ok_or_else(|| {
+                LibraryError::Other(anyhow::anyhow!(
+                    "listing {} kept changing under concurrent writers",
+                    listing.key.product_id
+                ))
+            })
+    }
+
+    /// Links `listing` like [`Self::link_listing`], but reports running out
+    /// of attempts apart from failures.
+    ///
+    /// # Returns
+    ///
+    /// The plan that was written, or `None` when other writers changed the
+    /// rows between the read and the write on every one of the
+    /// `LINK_ATTEMPTS` attempts (nothing was written).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when a read or write fails or when the
+    /// stored rows are inconsistent.
+    pub(super) async fn try_link_listing(
+        &self,
+        listing: &resolve::Listing,
+        holding: Option<&resolve::HoldingDraft>,
+    ) -> Result<Option<resolve::Plan>> {
         // A catalog listing has no holder; a holder no row names finds no
         // stored holding, which a catalog plan ignores anyway.
         let holder = holding.map_or_else(
@@ -1201,12 +1234,9 @@ impl LibraryStore {
             for batch in credit_batches(&plan) {
                 self.run_write_credits(batch).await?;
             }
-            return Ok(plan);
+            return Ok(Some(plan));
         }
-        Err(LibraryError::Other(anyhow::anyhow!(
-            "listing {} kept changing under concurrent writers",
-            listing.key.product_id
-        )))
+        Ok(None)
     }
 
     /// Runs one link batch and returns its status (`ok` or `retry`).
