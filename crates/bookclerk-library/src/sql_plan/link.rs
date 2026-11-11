@@ -24,6 +24,9 @@ use super::named::{j_i64, j_opt_i64, j_opt_str, j_str, sql, SqlStmt};
 use crate::atomic_ops::atomic_status;
 use crate::library_link::{CreditBatchParams, LinkWorkRow, ListingLinkParams};
 
+/// Event type of a new holding; see [`plan_link_listing`].
+const HOLDING_ADDED: &str = "holding_added";
+
 /// Real bind, or a typed REAL null.
 fn j_opt_f64(n: Option<f64>) -> DbValue {
     match n {
@@ -456,20 +459,58 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             binds,
         ));
     }
+    // The typed holder columns follow from the stored key; a holding is
+    // only written while its account or node exists, so a revoked or
+    // deleted holder never gains one (and the foreign key never aborts).
+    let (kind, plugin_key, account_id, node_id, holder_exists, holder_binds) =
+        match bookclerk_resolve::Holder::parse(&p.holder) {
+            Some(bookclerk_resolve::Holder::Account(account)) => (
+                "account",
+                j_str(&p.plugin_key),
+                j_str(&account),
+                j_opt_str(None),
+                "EXISTS (SELECT 1 FROM accounts WHERE plugin_key = ? AND account_id = ?)",
+                vec![j_str(&p.plugin_key), j_str(&account)],
+            ),
+            Some(bookclerk_resolve::Holder::Node(node)) => (
+                "node",
+                j_opt_str(None),
+                j_opt_str(None),
+                j_str(&node),
+                "EXISTS (SELECT 1 FROM nodes WHERE node_id = ?)",
+                vec![j_str(&node)],
+            ),
+            // Not a holder the schema accepts: write nothing for it.
+            None => (
+                "account",
+                j_opt_str(None),
+                j_opt_str(None),
+                j_opt_str(None),
+                "1 = 0",
+                Vec::new(),
+            ),
+        };
     let mut binds = vec![
+        j_str(&p.holding_id),
         j_str(&p.listing_id),
         j_str(&p.holder),
+        j_str(kind),
+        plugin_key,
+        account_id,
+        node_id,
         j_str(&p.entitlement),
         j_opt_str(p.purchased_at.as_deref()),
         j_str(now),
         j_str(now),
     ];
+    binds.extend(holder_binds);
     binds.extend(linked_binds.clone());
     out.push(sql(
         &format!(
             "INSERT OR IGNORE INTO holdings \
-             (listing_id, holder, entitlement, purchased_at, created_at, updated_at) \
-             SELECT ?, ?, ?, ?, ?, ? WHERE {is_linked}"
+             (id, listing_id, holder, holder_kind, plugin_key, account_id, node_id, \
+              entitlement, purchased_at, created_at, updated_at) \
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE {holder_exists} AND {is_linked}"
         ),
         binds,
     ));
@@ -521,6 +562,15 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             j_str(&event.event_type),
             j_str(&event.dedup_key),
         ];
+        // `holding_added` is published only by the batch whose insert made
+        // the holding: a concurrent writer's insert wins the `UNIQUE`, and
+        // its own event names its own id.
+        let held = if event.event_type == HOLDING_ADDED {
+            binds.push(j_str(&p.holding_id));
+            " AND EXISTS (SELECT 1 FROM holdings WHERE id = ?)"
+        } else {
+            ""
+        };
         binds.extend(linked_binds.clone());
         out.push(sql(
             &format!(
@@ -533,7 +583,7 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
                     SELECT 1 FROM domain_events \
                     WHERE queue_name = 'core.events' AND account_id = ? AND source = ? \
                       AND event_type = ? AND dedup_key = ?\
-                 ) AND {is_linked}"
+                 ){held} AND {is_linked}"
             ),
             binds,
         ));

@@ -843,7 +843,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 .revoke_credentials(&acct.plugin_key, &acct.account_id)
                 .await?;
             format_out::line(format!(
-                "revoked credentials for {} (books retained, scan_enabled=false)",
+                "revoked credentials for {} (holdings removed; books and files retained, scan_enabled=false)",
                 acct.account_id
             ));
             Ok(())

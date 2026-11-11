@@ -37,6 +37,8 @@ pub struct ScanState {
     pub resume_token: String,
     /// When the last complete pass ended.
     pub last_complete_at: Option<DateTime<Utc>>,
+    /// Id of the pass in progress or last run; empty before the first.
+    pub pass_id: String,
     /// When the row was last written.
     pub updated_at: DateTime<Utc>,
 }
@@ -48,6 +50,7 @@ impl From<account_scan_state::Model> for ScanState {
             resume_cursor: row.resume_cursor,
             resume_token: row.resume_token,
             last_complete_at: parse_dt_opt(row.last_complete_at.as_deref()),
+            pass_id: row.pass_id,
             updated_at: parse_dt(&row.updated_at),
         }
     }
@@ -62,12 +65,22 @@ pub struct PassStart {
     pub sync_token: String,
     /// True when the pass resumes one that stopped part way.
     pub resumed: bool,
+    /// Id of the pass, stamped on every holding a page lists
+    /// (`holdings.seen_pass`); a resumed pass keeps the id its earlier
+    /// pages stamped.
+    pub pass_id: String,
+}
+
+/// A new pass id.
+fn new_pass_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// Decides how the next pass of an account starts.
 ///
 /// A stopped pass whose cursor is younger than [`RESUME_CURSOR_TTL`] resumes
-/// with the token it started with. Otherwise a pass starts from the
+/// with the token and pass id it started with (a row without a pass id
+/// starts over, since its earlier pages stamped no holdings). Otherwise a pass starts from the
 /// beginning, as a delta from the stored token unless no complete pass ended
 /// within [`FULL_PASS_INTERVAL`], in which case it is full.
 ///
@@ -82,13 +95,18 @@ pub fn plan_pass(state: Option<&ScanState>, now: DateTime<Utc>) -> PassStart {
             cursor: String::new(),
             sync_token: String::new(),
             resumed: false,
+            pass_id: new_pass_id(),
         };
     };
-    if !state.resume_cursor.is_empty() && now - state.updated_at <= RESUME_CURSOR_TTL {
+    if !state.resume_cursor.is_empty()
+        && !state.pass_id.is_empty()
+        && now - state.updated_at <= RESUME_CURSOR_TTL
+    {
         return PassStart {
             cursor: state.resume_cursor.clone(),
             sync_token: state.resume_token.clone(),
             resumed: true,
+            pass_id: state.pass_id.clone(),
         };
     }
     let fresh = state
@@ -102,6 +120,7 @@ pub fn plan_pass(state: Option<&ScanState>, now: DateTime<Utc>) -> PassStart {
             String::new()
         },
         resumed: false,
+        pass_id: new_pass_id(),
     }
 }
 
@@ -133,6 +152,8 @@ impl LibraryStore {
     /// * `account_id` - The account.
     /// * `cursor` - The next page's cursor.
     /// * `pass_token` - The sync token the pass started with.
+    /// * `pass_id` - The pass's id ([`PassStart::pass_id`]), kept so a
+    ///   resumed pass stamps the same one.
     ///
     /// # Errors
     ///
@@ -143,14 +164,16 @@ impl LibraryStore {
         account_id: &str,
         cursor: &str,
         pass_token: &str,
+        pass_id: &str,
     ) -> Result<()> {
         let now = super::now_str();
         self.write_scan_state(
-            "UPDATE account_scan_state SET resume_cursor = ?, resume_token = ?, updated_at = ? \
-             WHERE plugin_key = ? AND account_id = ?",
+            "UPDATE account_scan_state SET resume_cursor = ?, resume_token = ?, pass_id = ?, \
+             updated_at = ? WHERE plugin_key = ? AND account_id = ?",
             vec![
                 batch::text(cursor),
                 batch::text(pass_token),
+                batch::text(pass_id),
                 batch::text(&now),
                 batch::text(plugin_key),
                 batch::text(account_id),
@@ -162,6 +185,7 @@ impl LibraryStore {
                 resume_cursor: cursor,
                 resume_token: pass_token,
                 last_complete_at: None,
+                pass_id,
                 now: &now,
             },
         )
@@ -212,6 +236,7 @@ impl LibraryStore {
                 resume_cursor: "",
                 resume_token: "",
                 last_complete_at: complete.then_some(now.as_str()),
+                pass_id: "",
                 now: &now,
             },
         )
@@ -241,6 +266,7 @@ impl LibraryStore {
                 resume_cursor: "",
                 resume_token: "",
                 last_complete_at: None,
+                pass_id: "",
                 now: &now,
             },
         )
@@ -257,7 +283,7 @@ impl LibraryStore {
         let insert = batch::exec(
             "INSERT OR IGNORE INTO account_scan_state \
              (plugin_key, account_id, sync_token, resume_cursor, resume_token, \
-              last_complete_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+              last_complete_at, pass_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             vec![
                 batch::text(row.plugin_key),
                 batch::text(row.account_id),
@@ -265,6 +291,7 @@ impl LibraryStore {
                 batch::text(row.resume_cursor),
                 batch::text(row.resume_token),
                 batch::text_opt(row.last_complete_at),
+                batch::text(row.pass_id),
                 batch::text(row.now),
             ],
         );
@@ -292,6 +319,8 @@ struct InsertRow<'a> {
     resume_token: &'a str,
     /// `last_complete_at` to store.
     last_complete_at: Option<&'a str>,
+    /// `pass_id` to store.
+    pass_id: &'a str,
     /// Write time.
     now: &'a str,
 }
@@ -307,6 +336,7 @@ mod tests {
             resume_cursor: cursor.into(),
             resume_token: "pass-tok".into(),
             last_complete_at: complete_days_ago.map(|d| now - Duration::days(d)),
+            pass_id: "pass-1".into(),
             updated_at: now - Duration::hours(updated_hours_ago),
         }
     }
@@ -324,7 +354,27 @@ mod tests {
         let start = plan_pass(Some(&state("page:3", 1, Some(1))), Utc::now());
         assert_eq!(start.cursor, "page:3");
         assert_eq!(start.sync_token, "pass-tok");
+        assert_eq!(start.pass_id, "pass-1", "earlier pages stamped this id");
         assert!(start.resumed);
+    }
+
+    #[test]
+    fn a_stopped_pass_without_an_id_starts_over() {
+        let mut stopped = state("page:3", 1, Some(1));
+        stopped.pass_id.clear();
+        let start = plan_pass(Some(&stopped), Utc::now());
+        assert_eq!(start.cursor, "");
+        assert!(!start.resumed);
+        assert!(!start.pass_id.is_empty());
+    }
+
+    #[test]
+    fn every_new_pass_gets_a_new_id() {
+        let done = state("", 0, Some(1));
+        let a = plan_pass(Some(&done), Utc::now()).pass_id;
+        let b = plan_pass(Some(&done), Utc::now()).pass_id;
+        assert_ne!(a, b);
+        assert_ne!(a, done.pass_id);
     }
 
     #[test]
@@ -368,7 +418,7 @@ mod tests {
             );
 
             store
-                .save_scan_checkpoint("plugin:audible", "a1", "page:2", "t0")
+                .save_scan_checkpoint("plugin:audible", "a1", "page:2", "t0", "p-1")
                 .await
                 .unwrap();
             let row = store
@@ -382,6 +432,7 @@ mod tests {
                 "{profile:?}"
             );
             assert_eq!(row.sync_token, "");
+            assert_eq!(row.pass_id, "p-1", "{profile:?}");
             assert!(row.last_complete_at.is_none());
 
             store

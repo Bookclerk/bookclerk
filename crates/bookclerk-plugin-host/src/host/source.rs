@@ -581,6 +581,7 @@ impl ContentSource for ExternalSource {
                 opts: &opts,
                 account_id: account_id.clone(),
                 credential,
+                pass_id: start.pass_id.clone(),
             };
             let pass = run_pass(&mut io, &account_id, start).await?;
             summary.accounts += 1;
@@ -880,6 +881,7 @@ fn full_pass() -> bookclerk_library::PassStart {
         cursor: String::new(),
         sync_token: String::new(),
         resumed: false,
+        pass_id: String::new(),
     }
 }
 
@@ -896,6 +898,8 @@ struct LibraryPass<'a> {
     account_id: String,
     /// Its credential blob.
     credential: Vec<u8>,
+    /// The pass's id, stamped on the holdings each page lists.
+    pass_id: String,
 }
 
 impl PassIo for LibraryPass<'_> {
@@ -920,6 +924,10 @@ impl PassIo for LibraryPass<'_> {
         &mut self,
         books: Vec<bookclerk_plugin_sdk::ScanBook>,
     ) -> bookclerk_source::Result<usize> {
+        // Every product the page listed counts as still held, even one the
+        // host could not map or resolve, so it is never taken for a title
+        // that left the account.
+        let listed: Vec<String> = books.iter().map(|b| b.product_id.clone()).collect();
         let titles: Vec<_> = books
             .into_iter()
             .filter_map(|book| scanned_title(self.source.id(), book))
@@ -929,17 +937,59 @@ impl PassIo for LibraryPass<'_> {
             .upsert_scanned_titles(&titles)
             .await
             .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        self.scope
+            .mark_holdings_seen(&self.account_id, &self.pass_id, &listed)
+            .await
+            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
         Ok(stored.len())
+    }
+
+    async fn remove(&mut self, product_ids: &[String]) -> bookclerk_source::Result<()> {
+        self.scope
+            .remove_account_holdings(
+                &self.account_id,
+                bookclerk_library::HoldingSelection::Products(product_ids),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))
     }
 
     async fn checkpoint(&mut self, cursor: &str, sync_token: &str) -> bookclerk_source::Result<()> {
         self.scope
-            .save_scan_checkpoint(&self.account_id, cursor, sync_token)
+            .save_scan_checkpoint(&self.account_id, cursor, sync_token, &self.pass_id)
             .await
             .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))
     }
 
-    async fn finish(&mut self, sync_token: &str, complete: bool) -> bookclerk_source::Result<()> {
+    async fn finish(
+        &mut self,
+        sync_token: &str,
+        complete: bool,
+        full: bool,
+    ) -> bookclerk_source::Result<()> {
+        // A complete full pass listed every title the account holds, so the
+        // holdings it did not stamp are gone. They are removed before the
+        // pass is recorded as finished: a removal that fails leaves the
+        // last page's cursor, and the pass that resumes it removes them.
+        if complete && full {
+            let removed = self
+                .scope
+                .remove_account_holdings(
+                    &self.account_id,
+                    bookclerk_library::HoldingSelection::UnseenBy(&self.pass_id),
+                )
+                .await
+                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+            if removed > 0 {
+                tracing::info!(
+                    plugin = %self.source.id(),
+                    account_id = %self.account_id,
+                    removed,
+                    "full scan pass removed holdings the account no longer lists"
+                );
+            }
+        }
         self.scope
             .finish_scan_pass(&self.account_id, sync_token, complete)
             .await
@@ -1007,7 +1057,17 @@ impl PassIo for CollectPass<'_> {
         Ok(())
     }
 
-    async fn finish(&mut self, _sync_token: &str, _complete: bool) -> bookclerk_source::Result<()> {
+    async fn remove(&mut self, _product_ids: &[String]) -> bookclerk_source::Result<()> {
+        // The owner keeps no holdings state for a handed scan yet.
+        Ok(())
+    }
+
+    async fn finish(
+        &mut self,
+        _sync_token: &str,
+        _complete: bool,
+        _full: bool,
+    ) -> bookclerk_source::Result<()> {
         Ok(())
     }
 

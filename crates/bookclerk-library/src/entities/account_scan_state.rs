@@ -23,6 +23,10 @@ pub struct Model {
     pub resume_token: String,
     /// RFC 3339 time the last complete (full) pass ended; `None` before one.
     pub last_complete_at: Option<String>,
+    /// Id of the pass in progress or last run; each written page stamps it
+    /// on the holdings it listed (`holdings.seen_pass`). Empty before the
+    /// first pass.
+    pub pass_id: String,
     /// RFC 3339 time of the last write (a resume cursor's age).
     pub updated_at: String,
 }

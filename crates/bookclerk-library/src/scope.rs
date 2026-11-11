@@ -210,9 +210,48 @@ impl SourceScope {
         account_id: &str,
         cursor: &str,
         pass_token: &str,
+        pass_id: &str,
     ) -> Result<()> {
         self.store
-            .save_scan_checkpoint(&self.plugin_key, account_id, cursor, pass_token)
+            .save_scan_checkpoint(&self.plugin_key, account_id, cursor, pass_token, pass_id)
+            .await
+    }
+
+    /// Stamps scan pass `pass_id` on one of this plugin's accounts' holdings
+    /// of `product_ids` (see [`LibraryStore::mark_holdings_seen`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a write fails.
+    pub async fn mark_holdings_seen(
+        &self,
+        account_id: &str,
+        pass_id: &str,
+        product_ids: &[String],
+    ) -> Result<()> {
+        self.store
+            .mark_holdings_seen(&self.plugin_key, account_id, pass_id, product_ids)
+            .await
+    }
+
+    /// Removes one of this plugin's accounts' holdings that `selection`
+    /// names, publishing `holding_removed` for each (see
+    /// [`LibraryStore::remove_account_holdings`]).
+    ///
+    /// # Returns
+    ///
+    /// How many holdings were selected for removal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read or write fails.
+    pub async fn remove_account_holdings(
+        &self,
+        account_id: &str,
+        selection: crate::HoldingSelection<'_>,
+    ) -> Result<usize> {
+        self.store
+            .remove_account_holdings(&self.plugin_key, account_id, selection)
             .await
     }
 

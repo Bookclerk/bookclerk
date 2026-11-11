@@ -52,7 +52,7 @@ Commands for the accounts once they are connected:
 | List accounts | `bookclerk library accounts` |
 | Show library status | `bookclerk library status` |
 | Leave an account out of scans | `bookclerk library set-scan <account> --scan false [--source <id>]` |
-| Disconnect an account | `bookclerk library revoke-account <account> [--source <id>]` |
+| Disconnect an account (its books stop counting as held; files stay) | `bookclerk library revoke-account <account> [--source <id>]` |
 | Scan one store | `bookclerk library scan --source <id> [--instance <plugin-instance-id>]` |
 | Acquire one title | `bookclerk library acquire <title-id> [--instance <plugin-instance-id>]` |
 
@@ -70,6 +70,9 @@ after every page, so a large library never has to arrive in one piece.
   accepts, so the same scan fits Cloudflare D1's smaller limits. Books the
   library already has, as the store still describes them, are checked
   together for the whole page instead of one at a time.
+- A book that leaves an account (a returned loan, a refund) stops counting
+  as held by that account: Audible reports it in the next scan, and the
+  other stores' full scans no longer list it. Its downloaded files stay.
 
 ### Matching to Audible's catalog
 

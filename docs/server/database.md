@@ -684,7 +684,10 @@ library holds as works, expressions and editions:
   `edition_identifiers` (a strong identifier is unique through
   `strong_key`);
 - `store_listings` (one per plugin, marketplace and product) and
-  `holdings` (who holds each listing: an account or a branch library);
+  `holdings` (who holds each listing: an account or a branch library, in
+  typed columns whose foreign keys drop the holding with its account or
+  node; a holding a scan no longer lists, or of a revoked account, is
+  removed with a `holding_removed` event);
 - `contributors` and `credits`, `series` and `series_entries`;
 - `resolution_overrides` (an Administrator's pins and splits) and
   `resolution_conflicts` (identifier clashes the resolver recorded instead

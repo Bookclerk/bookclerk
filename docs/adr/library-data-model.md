@@ -104,7 +104,7 @@ Each enum is a Rust enum matched exhaustively, a capnp enum on the wire, and a
 | `credits` | A contributor's `role` on a work, expression or edition, with a position | `(target_kind, target_id, contributor_id, role)` |
 | `series`, `series_entries` | A series and a work's place in it (position text plus a sortable decimal) | `(series_id, work_id)` |
 | `store_listings` | What a store sells: `plugin_key`, `marketplace`, `product_id`, the edition, store ratings and price, a `metadata_json` snapshot, `observed_at` | `(plugin_key, marketplace, product_id)` |
-| `holdings` | Ownership of a listing by an account, or by a branch (`node:<node_id>` provenance), with entitlement (`purchase`, `plus`, `loan`, `free`) and `purchased_at` | `(listing_id, holder)` |
+| `holdings` | Ownership of a listing by an account (`plugin_key`, `account_id`), or by a branch (`node_id`, `node:<node_id>` provenance), as typed holder columns with cascading foreign keys, with entitlement (`purchase`, `plus`, `loan`, `free`) and `purchased_at` | Surrogate id; unique `(listing_id, holder)` |
 | `edition_files` | A file of an edition at a destination, with `role` (`audio`, `part`, `chapter`, `pdf`, `cover`, `sidecar`, `transcript`, `epub`), digest, quality and writer | `(destination, storage_key)` |
 | `user_title_state` | One user's finished flag, ratings and tags for a work (listening progress stays per provider in `listening_progress`, keyed by work) | `(user_id, work_id)` |
 | `resolution_overrides` | An Administrator's manual merge or split, which the resolver obeys | `(subject_kind, subject_id)` |
@@ -312,9 +312,9 @@ The dotted names in decision 6 name the events; the published event types
 are spelled in snake case, like `book_acquired`. Step 3 publishes
 `edition_linked`, `edition_updated` and `holding_added`, so subscribe to
 those spellings. It derives a listing from every stored `books` row, so the
-new tables fill as titles are scanned or imported. `holding_removed` and
-`edition_files_written` come with the steps that remove holdings and write
-files. The old tables are dropped by
+new tables fill as titles are scanned or imported. Step 5 publishes
+`holding_removed` when a scan, a revoke or a remap removes a holding;
+`edition_files_written` comes with the step that writes files. The old tables are dropped by
 the step that moves their last reader off them: `title_files` with step 4,
 `branch_titles` with step 5 and `books` with step 6.
 

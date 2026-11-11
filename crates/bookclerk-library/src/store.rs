@@ -442,10 +442,14 @@ impl LibraryStore {
         Ok(map_account(model))
     }
 
-    /// Remap `from` → `to` account ids within one plugin (books + account row).
+    /// Remap `from` → `to` account ids within one plugin (books, holdings
+    /// and the account row).
     ///
     /// Used when classic Libation stored an email `AccountId` and a later
-    /// login/scan discovers Audible `customer_id`.
+    /// login/scan discovers Audible `customer_id`. Holdings move to `to`
+    /// with `holding_removed` / `holding_added` events
+    /// ([`Self::move_account_holdings`]) before the old account row, whose
+    /// foreign key would otherwise drop them, is deleted.
     ///
     /// # Errors
     ///
@@ -526,6 +530,8 @@ impl LibraryStore {
             am.updated_at = Set(now.clone());
             self.update_book_bumped(am).await?;
         }
+
+        self.move_account_holdings(plugin_key, from, to).await?;
 
         // Drop duplicate product rows left on the old id, then the account.
         let probe = books::Entity::find()
@@ -789,7 +795,13 @@ impl LibraryStore {
         crate::secrets::delete_secrets_for_account(&self.db, plugin_key, account_id).await
     }
 
-    /// Mark bookstore credentials revoked without deleting the account or books.
+    /// Mark bookstore credentials revoked, remove the account's holdings
+    /// (with `holding_removed` for each) and forget its sync token, without
+    /// deleting the account, its flat library rows or acquired files.
+    ///
+    /// The account no longer reaches the store, so the library no longer
+    /// holds its titles through it. A later reconnect starts a full scan
+    /// pass (no sync token), which adds the holdings back.
     ///
     /// # Errors
     ///
@@ -807,6 +819,9 @@ impl LibraryStore {
         am.connection_status = Set(String::from("revoked"));
         am.updated_at = Set(now_str());
         am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        self.remove_account_holdings(plugin_key, account_id, HoldingSelection::All)
+            .await?;
+        self.reset_scan_state(plugin_key, account_id).await?;
         Ok(())
     }
 
@@ -7585,6 +7600,7 @@ impl LibraryStore {
 pub(crate) mod discover;
 pub(crate) mod edition_files;
 pub(crate) mod event_outbox;
+pub(crate) mod holdings;
 pub(crate) mod library_model;
 pub(crate) mod listening;
 pub(crate) mod listing_reads;
@@ -7600,6 +7616,7 @@ pub(crate) mod write_batches;
 pub use discover::{DiscoverSubject, SeedScope, StoredCandidate, StoredFeed};
 pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
+pub use holdings::{HoldingSelection, HOLDING_REMOVED};
 pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};
 pub(crate) mod job_queue;
 
