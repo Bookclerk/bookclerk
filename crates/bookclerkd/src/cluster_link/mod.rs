@@ -453,6 +453,11 @@ async fn supervise_cluster_links(state: Arc<AppState>) {
         let mut running = BTreeSet::new();
         let mut clients = Vec::new();
         let mut retry = LINK_RETRY_MIN;
+        // Once per store: state of libraries left or revoked while this
+        // daemon was not running (or whose purge failed last time).
+        if let Ok(links) = list_cluster_links(&library).await {
+            purge_departed_link_state(&state, &links).await;
+        }
         let swapped = loop {
             joins.borrow_and_update();
             let complete = start_clients(
@@ -473,6 +478,11 @@ async fn supervise_cluster_links(state: Arc<AppState>) {
                 changed = swaps.changed() => break changed.is_ok(),
                 Some(cluster_id) = relinks.recv() => {
                     running.remove(&cluster_id);
+                    tokio::spawn(purge_after_grace(
+                        Arc::clone(&state),
+                        library.clone(),
+                        cluster_id,
+                    ));
                 }
                 Ok(()) = joins.changed() => {}
                 () = tokio::time::sleep(wait) => {
@@ -493,21 +503,38 @@ async fn supervise_cluster_links(state: Arc<AppState>) {
     }
 }
 
-/// Deletes the plugin state kept for each library this install left or was
-/// revoked from, once that link's client is no longer running, so a
-/// library's plugin caches and logins do not outlive the membership.
+/// How long after a link's client stops its plugin state is purged: the
+/// client aborts its jobs without waiting, so their guests get this long to
+/// finish tearing down before their directories go.
+const PURGE_GRACE: Duration = Duration::from_secs(30);
+
+/// After [`PURGE_GRACE`], deletes the plugin state of the library with
+/// `cluster_id` if its link is still not active (left or revoked, and not
+/// joined again meanwhile).
+async fn purge_after_grace(state: Arc<AppState>, library: LibraryStore, cluster_id: String) {
+    tokio::time::sleep(PURGE_GRACE).await;
+    match load_cluster_link(&library, &cluster_id).await {
+        Ok(Some(link)) => purge_departed_link_state(&state, &[link]).await,
+        Ok(None) => {}
+        Err(err) => {
+            tracing::warn!(%cluster_id, error = %err, "could not read the link to purge its plugin state; it is retried at the next start");
+        }
+    }
+}
+
+/// Deletes the plugin state kept for each library in `links` this install
+/// left or was revoked from, so a library's plugin caches and logins do
+/// not outlive the membership.
 ///
-/// Only links the live store records as not active are purged: a subtree
-/// this store does not know (another database's links) is left alone. A
-/// purge that fails is logged and tried again on the next pass.
-async fn purge_departed_link_state(
-    state: &Arc<AppState>,
-    links: &[ClusterLink],
-    running: &BTreeSet<String>,
-) {
+/// Runs once per store when the supervisor starts (no client is running
+/// yet) and [`PURGE_GRACE`] after a link's client stops. Only links the
+/// live store records as not active are purged: a subtree this store does
+/// not know (another database's links) is left alone. A purge that fails
+/// is logged and tried again at the next start.
+async fn purge_departed_link_state(state: &Arc<AppState>, links: &[ClusterLink]) {
     let departed: Vec<_> = links
         .iter()
-        .filter(|link| !link.is_active() && !running.contains(&link.owner_cluster_id))
+        .filter(|link| !link.is_active())
         .map(|link| {
             (
                 link.owner_cluster_id.clone(),
@@ -522,7 +549,7 @@ async fn purge_departed_link_state(
     let purged = tokio::task::spawn_blocking(move || {
         for (cluster_id, dir) in departed {
             if let Err(err) = bookclerk_plugin_host::purge_link_plugin_state(&files_dir, &dir) {
-                tracing::warn!(%cluster_id, error = %err, "could not delete a departed library's plugin state; retrying later");
+                tracing::warn!(%cluster_id, error = %err, "could not delete a departed library's plugin state; retrying at the next start");
             }
         }
     })
@@ -562,7 +589,6 @@ async fn start_clients(
         }
     };
     let mut complete = true;
-    purge_departed_link_state(state, &links, running).await;
     let pending: Vec<_> = {
         let failed = failed();
         links

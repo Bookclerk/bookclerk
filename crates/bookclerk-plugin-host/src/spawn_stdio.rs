@@ -1861,7 +1861,8 @@ fn for_each_subdir(dir: &std::path::Path, mut visit: impl FnMut(&std::path::Path
 ///
 /// # Errors
 ///
-/// Returns a message when a plugin's journal refused the purge, or the
+/// Returns a message naming every plugin whose journal refused the purge,
+/// or saying the
 /// subtree could not be deleted; whatever was not deleted stays in place,
 /// and a later call retries it.
 pub fn purge_link_plugin_state(
@@ -1874,14 +1875,14 @@ pub fn purge_link_plugin_state(
     if !dir.is_dir() {
         return Ok(());
     }
-    let mut refused = None;
+    let mut refused = Vec::new();
     for_each_subdir(&dir, |state_root| {
         if let Err(err) = revoke_plugin_state_before_purge(state_root, false) {
-            refused.get_or_insert(err);
+            refused.push(err);
         }
     });
-    if let Some(err) = refused {
-        return Err(err);
+    if !refused.is_empty() {
+        return Err(refused.join("; "));
     }
     std::fs::remove_dir_all(&dir)
         .map_err(|err| format!("could not delete {}: {err}", dir.display()))

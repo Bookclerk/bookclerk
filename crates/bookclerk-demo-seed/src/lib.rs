@@ -1015,7 +1015,8 @@ const SQLITE_SIDE_FILES: [&str; 3] = ["library.db-journal", "library.db-wal", "l
 /// Removes `master.key` (the first daemon of each container mints and wraps
 /// its own), the covers cache's URL-signing key (`covers/token.key` under
 /// the cache dir), `logs/`, each plugin's `session-*` dirs under
-/// `plugin-state/`, and empty SQLite side files. Anything already absent
+/// `plugin-state/`, any joined library's plugin state
+/// (`plugin-state/link-*`), and empty SQLite side files. Anything already absent
 /// counts as removed.
 ///
 /// # Arguments
@@ -1035,7 +1036,17 @@ pub fn clear_install_files(files_dir: &Path, cache_dir: &Path) -> anyhow::Result
     let state = files_dir.join("plugin-state");
     if state.is_dir() {
         for plugin in std::fs::read_dir(&state).context("list plugin-state")? {
-            for entry in std::fs::read_dir(plugin?.path()).context("list a plugin's state")? {
+            let plugin = plugin?;
+            if plugin
+                .file_name()
+                .to_str()
+                .is_some_and(bookclerk_plugin_host::LinkStateDir::is_leaf)
+            {
+                // A joined library's plugin state never belongs in a bake.
+                remove_dir_if_present(&plugin.path())?;
+                continue;
+            }
+            for entry in std::fs::read_dir(plugin.path()).context("list a plugin's state")? {
                 let entry = entry?;
                 if entry.file_name().to_string_lossy().starts_with("session-") {
                     remove_dir_if_present(&entry.path())?;

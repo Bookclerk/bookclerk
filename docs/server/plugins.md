@@ -567,7 +567,7 @@ $FILES_DIR/
   plugin-state/<PluginKey fs-id>/data
   plugin-state/<PluginKey fs-id>/tmp
   plugin-state/<PluginKey fs-id>/session-<nonce>/  # host-owned; native-behind only
-  plugin-state/link-<32 hex>/<PluginKey fs-id>/      # on a branch: one subtree per library it joined
+  plugin-state/link-<16 hex>/<PluginKey fs-id>/      # on a branch: one subtree per library it joined
   plugin-grants.json             # consent for host-local trees (installed versions carry their own)
   install-ledger.json            # trust anchor for host-local installs only
   .plugin-mutation.lock          # OS advisory lock for cache and tree mutation

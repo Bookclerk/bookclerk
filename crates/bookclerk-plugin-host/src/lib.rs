@@ -139,7 +139,7 @@ pub use discover::{
     is_first_party_s3_output, occupancy_matches_alias, occupancy_names_alias, occupancy_spec,
     plugin_matches_occupancy, plugin_search_dirs, resolve_plugin_ref, resolve_plugin_slot,
     settings_table, settings_table_for, stamp_occupancy_plugin_key, upgrade_unique_alias_occupancy,
-    DiscoveredPlugin, LinkStateDir, StateScope, LINK_STATE_DIR_PREFIX,
+    DiscoveredPlugin, LinkStateDir, StateScope,
 };
 pub use enrollment::{
     enroll_local_plugins, enroll_one, has_covering_grant, is_bootstrap_only, EnrolledPlugin,

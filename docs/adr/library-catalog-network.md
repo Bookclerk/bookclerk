@@ -61,8 +61,8 @@ explicitly for a copy.
 - A library's plugins on a branch belong to that link. They run under the
   branch operator's consent for that link.
 - Their host-managed state lives in a subtree per library,
-  `plugin-state/link-<32 hex>/<PluginKey fs-id>/`, where the leaf is the
-  first 128 bits of the SHA-256 of the library's cluster id. The branch's
+  `plugin-state/link-<16 hex>/<PluginKey fs-id>/`, where the leaf is the
+  first 64 bits of the SHA-256 of the library's cluster id. The branch's
   own guests keep `plugin-state/<PluginKey fs-id>/`. So no guest shares a
   `HOME` or `TMPDIR` with another library's copy of the same plugin.
 - The read-only plugin code cache stays shared, because it is

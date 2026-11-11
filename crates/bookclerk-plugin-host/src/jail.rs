@@ -1903,16 +1903,14 @@ entrypoints = ["{entrypoint}"]
     fn link_state_dirs_are_fixed_length_and_never_a_plugin_fs_id() {
         let dir = crate::LinkStateDir::for_cluster("../../etc/passwd");
         assert!(crate::LinkStateDir::is_leaf(dir.as_str()));
-        assert_eq!(dir.as_str().len(), "link-".len() + 32);
+        assert_eq!(dir.as_str().len(), "link-".len() + 16);
         assert_eq!(dir, crate::LinkStateDir::for_cluster("../../etc/passwd"));
         assert_ne!(dir, crate::LinkStateDir::for_cluster("cluster-x"));
         assert!(!crate::LinkStateDir::is_leaf(
             "pk-0123456789abcdef0123456789abcdef"
         ));
         assert!(!crate::LinkStateDir::is_leaf("link-0123"));
-        assert!(!crate::LinkStateDir::is_leaf(
-            "link-0123456789ABCDEF0123456789ABCDEF"
-        ));
+        assert!(!crate::LinkStateDir::is_leaf("link-0123456789ABCDEF"));
     }
 
     #[test]
