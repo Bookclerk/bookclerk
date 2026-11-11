@@ -106,8 +106,8 @@ DEMO_PREFIX = "tools/demo/"
 WORKER_STARTUP_FILES = frozenset({"scripts/worker_startup.py", "scripts/worker_startup.toml"})
 # Files outside tools/demo/ that its tests read: the route table must give
 # every operation in the daemon's OpenAPI document a verdict, and the demo's
-# pages must carry the website's footer note, fonts and the app's mark
-# unchanged.
+# pages must carry the website's footer note, fonts, and the app's mark and
+# icons unchanged.
 DEMO_TEST_INPUTS = frozenset(
     {
         "crates/bookclerkd/openapi.json",
@@ -119,6 +119,9 @@ DEMO_TEST_INPUTS = frozenset(
         "tools/site/src/fonts/OFL-literata.txt",
         "tools/site/src/fonts/OFL-sourcesans3.txt",
         "ui/public/bookclerk-mark.svg",
+        "ui/public/favicon.ico",
+        "ui/public/favicon-32x32.png",
+        "ui/public/apple-touch-icon.png",
     }
 )
 # Files outside tools/site/ that its tests read: the privacy page must name

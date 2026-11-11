@@ -299,7 +299,9 @@ Some rows need more detail:
 - **`docs/**`** runs the site tests because their link check covers the
   docs the site publishes.
 - **The demo copies** are `crates/bookclerkd/openapi.json`, the website's
-  footer and fonts, and `ui/public/bookclerk-mark.svg`. The demo's route
+  footer and fonts, and the app's mark and icons in `ui/public/`
+  (`bookclerk-mark.svg`, `favicon.ico`, `favicon-32x32.png`,
+  `apple-touch-icon.png`). The demo's route
   table must cover every operation, and the copies must match.
 - **Fuzz corpora and oracles** are declared `test_input`. An undeclared
   corpus or oracle is unclassified.
