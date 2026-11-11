@@ -1105,7 +1105,7 @@ fn book_edition(book: &books::Model) -> Option<LookupEdition> {
 /// library.
 ///
 /// Each question is mapped to a work here by identifier
-/// ([`work_for_question`]); the answer lists the books of that work this
+/// (`work_for_question`); the answer lists the books of that work this
 /// library holds whose holder may be listed (the owner's always; members'
 /// only with `list_members_books` on and when they did not opt out), at
 /// most [`MAX_LOOKUP_EDITIONS`]. A question with no such book is answered
