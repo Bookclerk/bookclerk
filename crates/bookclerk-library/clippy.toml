@@ -15,6 +15,18 @@ allow-expect-in-tests = true
 # The native-connection tools (backend migration, backup restore) and the
 # in-process engine executor are allowed one site each, with the reason
 # beside the allow.
+#
+# The store connection is SeaORM's proxy, whose rows are maps sorted by
+# column name, so a positional read sees the columns in alphabetical order
+# instead of SELECT order (#854). Read columns by name: a FromQueryResult
+# struct for several columns, `SelectColumnExt::into_column` for one column
+# of an entity query, `column_read::only_column` for a raw one-column row.
 disallowed-methods = [
     { path = "sea_orm::TransactionTrait::begin", reason = "host writes go to the database plugin as one atomic batch; see docs/plugins/database-limits.md#interactive-transactions" },
+    { path = "sea_orm::Select::into_tuple", reason = "proxy rows are sorted by column name, not SELECT order; use a FromQueryResult struct or SelectColumnExt::into_column (see crate::column_read)" },
+    { path = "sea_orm::QueryResult::try_get_by_index", reason = "proxy rows are sorted by column name, not SELECT order; read by name or with column_read::only_column" },
+    { path = "sea_orm::QueryResult::try_get_by_index_nullable", reason = "proxy rows are sorted by column name, not SELECT order; read by name or with column_read::only_column" },
+    { path = "sea_orm::QueryResult::try_get_many_by_index", reason = "proxy rows are sorted by column name, not SELECT order; read by name (see crate::column_read)" },
+    { path = "sea_orm::TryGetable::try_get_by_index", reason = "proxy rows are sorted by column name, not SELECT order; read by name (see crate::column_read)" },
+    { path = "sea_orm::TryGetableMany::try_get_many_by_index", reason = "proxy rows are sorted by column name, not SELECT order; read by name (see crate::column_read)" },
 ]

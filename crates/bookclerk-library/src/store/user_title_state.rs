@@ -11,9 +11,10 @@
 use std::collections::BTreeSet;
 
 use bookclerk_plugin_abi::{DbType, DbValue, TypedDbStatement};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 
 use super::{now_str, parse_dt, LibraryStore};
+use crate::column_read::SelectColumnExt;
 use crate::control_plane::batch;
 use crate::entities::{account_links, portal_identities, user_title_state};
 use crate::error::{LibraryError, Result};
@@ -108,11 +109,9 @@ impl LibraryStore {
         account_id: &str,
     ) -> Result<Vec<i64>> {
         let identities: Vec<i64> = account_links::Entity::find()
-            .select_only()
-            .column(account_links::Column::IdentityId)
             .filter(account_links::Column::PluginKey.eq(plugin_key))
             .filter(account_links::Column::AccountId.eq(account_id))
-            .into_tuple::<i64>()
+            .into_column::<i64, _>(account_links::Column::IdentityId)
             .all(&self.db)
             .await
             .map_err(LibraryError::Orm)?;

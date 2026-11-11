@@ -22,6 +22,7 @@ mod atomic_txn;
 mod backend_migrate;
 mod backup;
 mod binding_schema;
+pub mod column_read;
 pub mod control_plane;
 mod db_atomic;
 pub mod email;

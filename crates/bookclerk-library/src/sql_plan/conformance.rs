@@ -661,7 +661,7 @@ async fn serialization_slot_bump_is_monotonic() {
     .await
     .unwrap();
     assert_eq!(rows.len(), 1);
-    let bump = rows[0].try_get_by_index::<i64>(0).unwrap();
+    let bump = crate::column_read::only_column::<i64>(&rows[0]).unwrap();
     assert!(bump >= 2, "two locks must bump twice, got {bump}");
 }
 
@@ -812,15 +812,13 @@ async fn postgres_claim_malformed_json_is_quarantined() {
     .await
     .unwrap();
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].try_get_by_index::<String>(0).unwrap(), "bad-json");
-    assert_eq!(rows[0].try_get_by_index::<String>(1).unwrap(), "failed");
-    assert_eq!(rows[0].try_get_by_index::<String>(2).unwrap(), "invalid");
-    assert_eq!(
-        rows[0].try_get_by_index::<String>(3).unwrap(),
-        "invalid_job"
-    );
-    assert_eq!(rows[1].try_get_by_index::<String>(0).unwrap(), "good");
-    assert_eq!(rows[1].try_get_by_index::<String>(1).unwrap(), "running");
+    let cell = |row: usize, column: &str| rows[row].try_get::<String>("", column).unwrap();
+    assert_eq!(cell(0, "id"), "bad-json");
+    assert_eq!(cell(0, "state"), "failed");
+    assert_eq!(cell(0, "kind"), "invalid");
+    assert_eq!(cell(0, "error_kind"), "invalid_job");
+    assert_eq!(cell(1, "id"), "good");
+    assert_eq!(cell(1, "state"), "running");
 }
 
 #[test]
