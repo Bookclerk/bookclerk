@@ -273,6 +273,11 @@ blocked.
 2. Once `maintainer-review.yml` is on `main`, add `Maintainer review` to
    the required status checks of the default branch's ruleset, expected
    from the automation App, like `Bookclerk CLA`.
+3. Open pull requests whose head commit was pushed before the check
+   existed have no `Maintainer review` check, so they wait for it forever
+   and there is nothing to **Re-run**. Push to them, or submit any review
+   (a comment review is enough): the review starts the trigger workflow
+   without re-running CI.
 
 ## Signed commits
 
