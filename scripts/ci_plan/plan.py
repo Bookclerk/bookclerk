@@ -707,7 +707,8 @@ def example_runners(guest_map: Mapping[str, Guest]) -> list[str]:
         guest_map: Every discovered guest.
 
     Returns:
-        Each distinct :attr:`Guest.plugin_tests` runner (``"npm"``, ``"pytest"``).
+        Each distinct :attr:`Guest.plugin_tests` runner (``"cargo"``,
+        ``"npm"``, ``"pytest"``).
     """
     return sorted({g.plugin_tests for g in guest_map.values() if g.plugin_tests})
 
@@ -1144,8 +1145,9 @@ def _select_checks(
         _select(plan, "workerd_guests", guests_why)
     # Database examples run their suites against their SDK's test kit: the
     # TypeScript SDK for `npm` suites, the Python SDK for `pytest` ones. A
-    # `cargo` example is a workspace package, so it is selected whenever it
-    # compiles: its own files, the Rust SDK or the kit changed.
+    # `cargo` example is a workspace package, so it is selected whenever its
+    # tests are affected: its own sources or tests, the Rust SDK, or the kit
+    # it opens the binding with (a dev-dependency).
     runners = example_runners(guest_map)
     examples_why = [f"path {p}" for p in surf.plugin_examples]
     if "npm" in runners:
@@ -1153,7 +1155,7 @@ def _select_checks(
     if "pytest" in runners:
         examples_why += [f"path {p}" for p in surf.python_sdk]
     cargo_examples = {g.package for g in guest_map.values() if g.plugin_tests == "cargo" and g.package}
-    examples_why += _why(sel, compiled & cargo_examples, "database example compiled")
+    examples_why += _why(sel, (compiled | tests) & cargo_examples, "database example affected")
     if examples_why:
         _select(plan, "plugin_examples", examples_why)
     for check, paths in surf.fixture_checks.items():
@@ -1294,7 +1296,8 @@ def _record_example_runners(plan: Plan, guest_map: Mapping[str, Guest]) -> None:
 
     However the check was selected (an example's files, an SDK, the kit, or
     the full suite), the job installs Node for ``npm`` suites and uv for
-    ``pytest`` ones from this list.
+    ``pytest`` ones from this list; ``cargo`` suites need neither, and the
+    job runs only the examples whose runner is listed.
 
     Args:
         plan: The plan being built.

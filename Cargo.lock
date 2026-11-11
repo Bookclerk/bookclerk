@@ -2101,7 +2101,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bookclerk-db-testkit",
- "bookclerk-plugin-abi",
  "bookclerk-plugin-sdk",
  "tokio",
 ]

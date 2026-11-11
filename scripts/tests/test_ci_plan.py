@@ -587,15 +587,16 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(outputs["check_needs_uv"], "true")
         self.assertEqual(outputs["check_needs_node"], "true")
 
-    def test_rust_database_example_selects_plugin_examples_when_it_compiles(self) -> None:
+    def test_rust_database_example_selects_plugin_examples_when_its_tests_are_affected(self) -> None:
         self.assertEqual(GUESTS["echo_native_rust"].plugin_tests, "cargo")
         for path in (
             "examples/plugins-echo-native-rust/src/notes.rs",
+            "examples/plugins-echo-native-rust/tests/support/mod.rs",
             "crates/bookclerk-plugin-sdk/src/db_binding.rs",
         ):
             p = plan(path)
             self.assertIn(
-                "database example compiled bookclerk-plugin-echo-native-rust",
+                "database example affected bookclerk-plugin-echo-native-rust",
                 p.checks["plugin_examples"]["why"],
                 path,
             )
@@ -657,7 +658,9 @@ class ScenarioTests(unittest.TestCase):
             (d / "pyproject.toml").unlink()
             (d / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
             self.assertEqual(plugin_test_runner(d, db), "cargo")
+            # A `test` script still wins over a Cargo suite.
             (d / "package.json").write_text('{"scripts": {"test": "node --test"}}', encoding="utf-8")
+            self.assertEqual(plugin_test_runner(d, db), "npm")
             self.assertIsNone(plugin_test_runner(d, {}))
             (d / "package.json").write_text("{", encoding="utf-8")
             with self.assertRaises(PlanError):

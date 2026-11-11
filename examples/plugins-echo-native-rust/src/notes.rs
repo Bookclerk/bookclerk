@@ -184,7 +184,7 @@ pub async fn count_notes(db: &DatabaseBinding) -> Result<i64, PluginError> {
 /// notes are read in pages keyed on `id` (never `OFFSET`), each sized from
 /// `maxResultRows`, halved whenever a page's bytes pass `maxResultBytes`, and
 /// doubled again (up to `maxResultRows`) after each full page, so one run of
-/// wide notes does not slow the rest of the walk. With a limit, no page asks
+/// wide notes does not slow the rest of the walk. With a limit, no read asks
 /// for more rows than are still wanted.
 ///
 /// Dropping the reader ends the read.
@@ -288,11 +288,18 @@ impl NotesReader {
                 ReaderState::Unopened => {
                     let caps = self.db.limits().await?;
                     self.state = if caps.streams_results() {
-                        ReaderState::Streaming(
-                            self.db
-                                .prepare("SELECT id, body FROM notes ORDER BY id")
-                                .iterate(None),
-                        )
+                        // With a limit the read asks for no more rows
+                        // than are wanted.
+                        let read = match self.left {
+                            Some(left) => self
+                                .db
+                                .prepare("SELECT id, body FROM notes ORDER BY id LIMIT ?")
+                                .bind(vec![DbValue::Int64(
+                                    i64::try_from(left).unwrap_or(i64::MAX),
+                                )]),
+                            None => self.db.prepare("SELECT id, body FROM notes ORDER BY id"),
+                        };
+                        ReaderState::Streaming(read.iterate(None))
                     } else {
                         let max_page = usize::try_from(caps.max_result_rows)
                             .unwrap_or(usize::MAX)

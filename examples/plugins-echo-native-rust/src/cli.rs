@@ -6,7 +6,7 @@ use bookclerk_plugin_sdk::{
     DatabaseBinding, PluginCli, PluginError,
 };
 
-use crate::notes::{add_notes, count_notes, NotesReader};
+use crate::notes::{add_notes, count_notes, note_too_large, NotesReader};
 
 /// Largest `--count` `notes-add` accepts, so one command stays a modest write.
 pub const MAX_NOTES_PER_ADD: usize = 10_000;
@@ -163,7 +163,18 @@ impl NotesCli {
             ));
         };
         let db = self.db()?;
-        let bodies = vec![arg_value(params, "body", "").to_owned(); count];
+        let body = arg_value(params, "body", "");
+        // `add_notes` checks every body too; checking the one body here
+        // refuses an oversized note before it is copied `count` times.
+        let cell_cap = match db.limits().await {
+            Ok(caps) => u64::from(caps.max_cell_bytes),
+            Err(err) => return database_failure(err, 0),
+        };
+        let used = u64::try_from(body.len()).unwrap_or(u64::MAX);
+        if used > cell_cap {
+            return database_failure(note_too_large(used, cell_cap), 0);
+        }
+        let bodies = vec![body.to_owned(); count];
         let mut committed = 0;
         let stored = match add_notes(db, &bodies, |n| committed = n).await {
             Ok(stored) => stored,
