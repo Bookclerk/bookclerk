@@ -126,6 +126,7 @@ impl ExternalIntegration {
                 max_retries: c.max_retries,
                 dead_letter_queue: c.dead_letter_queue.clone(),
                 retry_delay_secs: c.retry_delay,
+                message_retention_secs: c.message_retention_period,
             })
             .collect();
         // Only schedules the operator granted tick; the session refuses the

@@ -72,6 +72,9 @@ function emitConsumer(lines: string[], consumer: EventConsumerToml): void {
   if (consumer.max_retries != null) {
     lines.push(`max_retries = ${consumer.max_retries}`);
   }
+  if (consumer.message_retention_period != null) {
+    lines.push(`message_retention_period = ${consumer.message_retention_period}`);
+  }
   if (consumer.filter && Object.keys(consumer.filter).length > 0) {
     lines.push("");
     lines.push("[events.consumers.filter]");
@@ -99,6 +102,8 @@ function emitQueues(lines: string[], queues: QueuesToml | undefined): void {
     if (consumer.retry_delay != null) lines.push(`retry_delay = ${consumer.retry_delay}`);
     if (consumer.max_concurrency != null)
       lines.push(`max_concurrency = ${consumer.max_concurrency}`);
+    if (consumer.message_retention_period != null)
+      lines.push(`message_retention_period = ${consumer.message_retention_period}`);
   }
 }
 

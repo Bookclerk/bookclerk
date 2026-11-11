@@ -67,8 +67,15 @@ timestamp-only); an empty requested filter keeps the subscription filter and
 cannot broaden it. Late-join skip cache is invalidated on dispatch error and
 reconciles at least every 60s as a backstop.
 `GET /api/status` includes event queue counts plus durable retry/suspend totals
-and average dispatch/handler latency. Retention is independent of jobs
-(`[events].retention_days` for acked/rejected + empty parent events after that
+and average dispatch/handler latency. A `pending` delivery that was never
+leased expires (state `expired`) once it has been due for longer than its
+consumer's `message_retention_period` (default one day, capped at
+`[events].retention_days`; host and node consumers never expire), so a
+deployed instance that is not running does not accumulate an unbounded
+backlog (see
+[Retention of undelivered events](../plugins/abi.md#retention-of-undelivered-events)).
+Retention is independent of jobs
+(`[events].retention_days` for acked/rejected/expired + empty parent events after that
 cutoff, `dead_letter_retention_days` for dead letters). Prune is a
 cluster singleton, not a dispatcher tick: see *Cluster maintenance* below.
 Operator APIs: `GET /api/events`,
@@ -597,7 +604,7 @@ refused before it deletes anything.
 | Lease | Duty |
 | --- | --- |
 | `maintenance.jobs` | Terminal jobs older than `jobs.retention_days` |
-| `maintenance.events` | Terminal deliveries, empty parent events, stale subscriber catalog rows (`[events]` retention) |
+| `maintenance.events` | Expires never-leased deliveries past their retention period, then deletes terminal deliveries, empty parent events, stale subscriber catalog rows (`[events]` retention) |
 | `maintenance.kv` | Expired plugin KV rows (already read as missing) |
 | `maintenance.sessions` | Expired operator sessions, OIDC RP states, WebAuthn challenges |
 | `maintenance.records` | Expired credentials and spent tokens, finished uploads, abandoned scan inventories, and old audit rows (windows below) |

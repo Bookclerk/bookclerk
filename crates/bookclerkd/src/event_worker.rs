@@ -469,6 +469,7 @@ fn catalog_from_manifest(
             max_retries: s.max_retries,
             dead_letter_queue: None,
             retry_delay_secs: 0,
+            message_retention_secs: s.message_retention_period,
         })
         .collect()
 }
@@ -487,6 +488,7 @@ fn queue_catalog_from_manifest(
                 c.max_retries,
                 c.dead_letter_queue.clone(),
                 c.retry_delay,
+                c.message_retention_period,
             )
         })
         .collect()
@@ -498,11 +500,13 @@ fn queue_catalog_row(
     max_retries: u32,
     dead_letter_queue: Option<String>,
     retry_delay_secs: u32,
+    message_retention_secs: Option<u32>,
 ) -> EventCatalogSubscription {
     EventCatalogSubscription {
         max_retries: Some(max_retries),
         dead_letter_queue,
         retry_delay_secs,
+        message_retention_secs,
         ..EventCatalogSubscription::queue(queue)
     }
 }
@@ -562,6 +566,7 @@ fn catalog_from_queue_subscriptions(subs: &[QueueSubscription]) -> Vec<EventCata
                 s.max_retries,
                 s.dead_letter_queue.clone(),
                 s.retry_delay_secs,
+                s.message_retention_secs,
             )
         })
         .collect()
@@ -616,6 +621,7 @@ fn catalog_from_runtime(subs: &[EventSubscription]) -> Vec<EventCatalogSubscript
             max_retries: None,
             dead_letter_queue: None,
             retry_delay_secs: 0,
+            message_retention_secs: None,
         })
         .collect()
 }
@@ -1622,6 +1628,7 @@ mod tests {
                 max_retries: None,
                 dead_letter_queue: None,
                 retry_delay_secs: 0,
+                message_retention_secs: None,
             },
             EventCatalogSubscription {
                 event_type: "book_deleted".into(),
@@ -1633,6 +1640,7 @@ mod tests {
                 max_retries: None,
                 dead_letter_queue: None,
                 retry_delay_secs: 0,
+                message_retention_secs: None,
             },
         ];
         let mut admitted = std::collections::BTreeSet::new();
@@ -1662,6 +1670,7 @@ mod tests {
             max_retries: None,
             dead_letter_queue: None,
             retry_delay_secs: 0,
+            message_retention_secs: None,
         }];
         let mut admitted = std::collections::BTreeSet::new();
         admitted.insert(bookclerk_plugin_host::GrantedEventConsumer {
@@ -1688,6 +1697,7 @@ mod tests {
                 max_retries: None,
                 dead_letter_queue: None,
                 retry_delay_secs: 0,
+                message_retention_secs: None,
             },
             EventCatalogSubscription {
                 event_type: "book_acquired".into(),
@@ -1699,6 +1709,7 @@ mod tests {
                 max_retries: None,
                 dead_letter_queue: None,
                 retry_delay_secs: 0,
+                message_retention_secs: None,
             },
         ];
         let mut admitted = std::collections::BTreeSet::new();
@@ -2330,17 +2341,55 @@ queue = "other"
     }
 
     #[test]
+    fn manifest_retention_reaches_the_catalog_rows() {
+        let manifest = bookclerk_plugin_host::PluginManifest::parse(
+            r#"
+api_version = 3
+id = "retain"
+version = "0.1.0"
+runtime = "native"
+command = "./guest"
+
+[capabilities.network]
+mode = "deny"
+
+[[events.consumers]]
+type = "book_acquired"
+message_retention_period = 3600
+
+[[queues.consumers]]
+queue = "jobs"
+message_retention_period = 120
+"#,
+        )
+        .unwrap();
+        let events = catalog_from_manifest(&manifest);
+        assert_eq!(events[0].message_retention_secs, Some(3600));
+        let queues = queue_catalog_from_manifest(&manifest);
+        assert_eq!(queues[0].message_retention_secs, Some(120));
+    }
+
+    #[test]
+    fn host_consumers_never_expire_because_they_carry_the_host_prefix() {
+        let prefix = bookclerk_library::HOST_CONSUMER_PREFIX;
+        assert!(crate::discover_events::DISCOVER_CONSUMER_ID.starts_with(prefix));
+        assert!(crate::search_index::consumer_id("n1").starts_with(prefix));
+    }
+
+    #[test]
     fn runtime_queue_subscriptions_map_onto_catalog_rows() {
         let rows = catalog_from_queue_subscriptions(&[QueueSubscription {
             queue: "echo".into(),
             max_retries: 4,
             dead_letter_queue: None,
             retry_delay_secs: 0,
+            message_retention_secs: Some(600),
         }]);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].is_queue());
         assert_eq!(rows[0].queue_name(), "echo");
         assert_eq!(rows[0].max_retries, Some(4));
+        assert_eq!(rows[0].message_retention_secs, Some(600));
         let event = {
             let mut e = sample_event();
             e.queue_name = "echo".into();

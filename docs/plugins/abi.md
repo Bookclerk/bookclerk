@@ -378,6 +378,7 @@ max_batch_size = 10             # messages per queue(batch) call (≤ 100)
 max_retries = 3                 # redeliveries before dead-letter
 dead_letter_queue = "thumbnails-dlq"
 retry_delay = 30                # seconds when retry() names no delay
+message_retention_period = 3600 # seconds a due message may wait unleased (default 1 day)
 ```
 
 ```ts
@@ -414,6 +415,9 @@ The rules mirror `event(batch)`:
   redeliveries is parked as `dead_letter`. When the consumer names a
   `dead_letter_queue`, the host first copies the message there, so a
   second consumer (or an operator) can pick it up.
+- **Retention.** A message that is never handed to the consumer expires
+  after `message_retention_period` (see
+  [Retention](#retention-of-undelivered-events)).
 - **Bodies.** `contentType` is `json` (the default; the body is JSON
   text), `text` (UTF-8) or `bytes` (raw). Bodies are capped at 64 KiB
   (`MAX_EVENT_PAYLOAD_BYTES`), and a batch sends at most `MAX_LIST_PAGE`
@@ -613,6 +617,7 @@ supports_suspend = false
 # resource_class = "network"   # default; the only accepted value today
 # filter = { accountId = "acct" }
 # max_retries = 5
+# message_retention_period = 86400   # seconds; 60..=1209600, default 1 day
 ```
 
 - Any `[[events.consumers]]` row needs an `event(batch)` handler on the
@@ -624,6 +629,9 @@ supports_suspend = false
 - The optional `filter` is a host-owned JSON object. The dispatcher
   matches **payload object key equality** only (no plugin-provided code
   or CEL).
+- The optional `message_retention_period` is how long, in seconds, a
+  delivery may wait without being handed to the plugin before the host
+  expires it (see [Retention](#retention-of-undelivered-events)).
 - Echo and Audiobookshelf may leave both out (defaults).
 
 ### How events are delivered
@@ -646,6 +654,27 @@ supports_suspend = false
   plugin with no cluster install.
 - The catalog key is the node id from `node-identity.json`. Nodes don't
   delete catalog rows they lack.
+
+#### Retention of undelivered events
+
+A delivery does not wait forever. Like a Cloudflare Queues message, it has
+a retention period, so an instance that is deployed but not running stops
+piling up work.
+
+- The period is the consumer's `message_retention_period` (60 seconds to
+  14 days), or one day when the consumer names none. It never exceeds
+  `[events].retention_days`.
+- A delivery expires when it has been due for longer than that period and
+  was never handed to the plugin. Its state becomes `expired`, not
+  `dead_letter`. A delivery that was leased, retried, suspended or is
+  resuming does not expire; `max_retries` and dead letters govern it.
+- The hourly `maintenance.events` duty expires deliveries, so one can
+  outlive its period by up to an hour.
+- Expired rows stay until `[events].retention_days` passes, as the record
+  of which events an instance missed. A later change lets a plugin read
+  past events from the outbox to catch up after a gap.
+- Deliveries for the host's own consumers (`host:` and node queues) never
+  expire.
 - A plugin is live when any heartbeating node (60 s TTL) has it enabled.
   Matching subscriptions are the union of those enabled rows.
 

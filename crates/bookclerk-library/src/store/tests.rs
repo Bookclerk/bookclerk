@@ -7583,3 +7583,111 @@ async fn works_page_by_id_and_embedding_hashes_read_in_bulk_under_every_profile(
         assert_eq!(kit.refused_begins(), 0, "{name}");
     }
 }
+
+/// A pending delivery that is never leased expires once it has waited past
+/// its subscriber's retention period: the declared one, else the default,
+/// capped at the events retention window. Leased deliveries and host or node
+/// consumers never expire, and expired rows are pruned with acked ones.
+#[tokio::test]
+async fn unleased_deliveries_expire_after_their_retention_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let mut short = EventCatalogSubscription::new("book_acquired", vec![1]);
+        short.message_retention_secs = Some(600);
+        store
+            .upsert_event_subscriber("node-a", "short", &[short], true)
+            .await
+            .unwrap();
+        let mut long = EventCatalogSubscription::new("book_acquired", vec![1]);
+        long.message_retention_secs = Some(3 * 86_400);
+        store
+            .upsert_event_subscriber("node-a", "long", &[long], true)
+            .await
+            .unwrap();
+        let event_id = expect_created(
+            persist_outbox_event(
+                store,
+                outbox_spec("book_acquired", "book_acquired:ttl", r#"{"titleId":"ttl"}"#),
+            )
+            .await
+            .unwrap(),
+        );
+        let subscribers: Vec<EventSubscriber> =
+            ["short", "long", "echo", "busy", "host:discover", "node:abc"]
+                .into_iter()
+                .map(EventSubscriber::plugin)
+                .collect();
+        store
+            .dispatch_event_deliveries(&event_id, &subscribers, "op-ttl")
+            .await
+            .unwrap();
+        let leased = claim_delivery_for(store, "owner-ttl", &["busy".into()]).await;
+        assert_eq!(leased.plugin_id, "busy", "{name}");
+        let state = |plugin: &'static str| {
+            let store = store.clone();
+            let id = format!("{event_id}:{plugin}");
+            async move {
+                store
+                    .get_event_delivery(&id)
+                    .await
+                    .unwrap()
+                    .map(|row| row.state)
+            }
+        };
+        let now = chrono::Utc::now();
+
+        let expired = store
+            .expire_unleased_event_deliveries(7, now + chrono::Duration::minutes(15))
+            .await
+            .unwrap();
+        assert_eq!(expired, 1, "{name}");
+        assert_eq!(state("short").await.as_deref(), Some("expired"), "{name}");
+        assert_eq!(state("echo").await.as_deref(), Some("pending"), "{name}");
+        assert_eq!(
+            store
+                .prune_event_step(crate::EventPruneStep::TerminalDeliveries, 0, 30)
+                .await
+                .unwrap(),
+            1,
+            "an expired row is pruned with acked ones ({name})"
+        );
+        assert_eq!(state("short").await, None, "{name}");
+
+        let expired = store
+            .expire_unleased_event_deliveries(7, now + chrono::Duration::days(2))
+            .await
+            .unwrap();
+        assert_eq!(expired, 1, "{name}");
+        assert_eq!(state("echo").await.as_deref(), Some("expired"), "{name}");
+        assert_eq!(state("long").await.as_deref(), Some("pending"), "{name}");
+        assert_eq!(state("busy").await.as_deref(), Some("running"), "{name}");
+        assert_eq!(
+            state("host:discover").await.as_deref(),
+            Some("pending"),
+            "{name}"
+        );
+        assert_eq!(
+            state("node:abc").await.as_deref(),
+            Some("pending"),
+            "{name}"
+        );
+
+        let expired = store
+            .expire_unleased_event_deliveries(1, now + chrono::Duration::days(2))
+            .await
+            .unwrap();
+        assert_eq!(
+            expired, 1,
+            "the events window caps a longer retention ({name})"
+        );
+        assert_eq!(state("long").await.as_deref(), Some("expired"), "{name}");
+        let row = store
+            .get_event_delivery(&format!("{event_id}:echo"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.outcome.as_deref(), Some("expired"), "{name}");
+    }
+}

@@ -273,7 +273,8 @@
         "supports_suspend": { "type": "boolean", "default": false },
         "resource_class": { "type": "string", "enum": ["network"], "default": "network" },
         "filter": { "type": "object" },
-        "max_retries": { "type": "integer", "minimum": 0 }
+        "max_retries": { "type": "integer", "minimum": 0 },
+        "message_retention_period": { "type": "integer", "minimum": 60, "maximum": 1209600 }
       }
     },
     "EventProducer": {
@@ -333,7 +334,8 @@
           "pattern": "^[a-z0-9][a-z0-9._-]*$"
         },
         "retry_delay": { "type": "integer", "minimum": 0, "maximum": 43200, "default": 0 },
-        "max_concurrency": { "type": "integer", "minimum": 1 }
+        "max_concurrency": { "type": "integer", "minimum": 1 },
+        "message_retention_period": { "type": "integer", "minimum": 60, "maximum": 1209600 }
       }
     },
     "SettingSpec": {

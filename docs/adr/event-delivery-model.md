@@ -1,6 +1,6 @@
 # ADR: Event delivery follows the Workers model
 
-- **Status:** Accepted (phase 1); phases 2 to 4 proposed
+- **Status:** Accepted (decisions 1 to 3); later phases proposed
 - **Date:** 2026-11-11
 
 ## Context
@@ -52,10 +52,25 @@ callers await a promise, and long work is a durable job.
    `claimEventDelivery` / `claimNextEventDelivery`, which database
    plugins implement, keep their names, since renaming them is a contract
    change with no behavior gain.
+3. **Deliveries have a retention period.** As with a Queues message, a
+   delivery that was never handed to its subscriber expires (state
+   `expired`) once it has been due for longer than the consumer's
+   `message_retention_period`: 60 seconds to 14 days, one day by default,
+   and never more than `[events].retention_days`. Leased, retried and
+   suspended deliveries keep following `max_retries` and dead letters.
+   Host and node consumers never expire. Expired rows are kept for the
+   events retention window as the record of what a subscriber missed.
 
 The following phases are proposed and get their own pull requests and
 updates to this record:
 
+- **Reading the event stream.** A plugin catches up after a gap by paging
+  past events from the outbox, `env.EVENTS.read({ after | since, types,
+  limit })`, with an opaque `(created_at, id)` cursor it keeps itself.
+  Reads return only what the instance's consented subscriptions, filters
+  and account scope allow, back to `[events].retention_days`, and report
+  when deliveries expired since the cursor. This changes `plugin.capnp`
+  and the TS SDK, and adds a fuzzed guest boundary.
 - **On-demand activation.** A due delivery, queue message, job or cron
   fire, or an RPC call, starts an asleep instance; an idle timeout per
   family stops it with `PluginWorker.shutdown`. Cold-start time is
@@ -68,11 +83,15 @@ updates to this record:
 
 ## Consequences
 
-- An instance that is deployed but failing to start accumulates
-  `pending` deliveries for the events it subscribes to. They drain once
-  it runs; an operator who gives up on it undeploys it (its row expires
-  within the 60 s catalog TTL) and cancels the waiting deliveries with
-  `bookclerk events cancel`.
+- An instance that is deployed but failing to start holds `pending`
+  deliveries for the events it subscribes to only for its retention
+  period. Deliveries that are still due when it runs drain then; older
+  ones expire, and the plugin resyncs from its source of truth (later,
+  from the event stream). An operator who gives up on it undeploys it (its
+  row expires within the 60 s catalog TTL).
+- A consumer that is running but falls behind by more than its retention
+  period also loses the oldest never-leased deliveries. Consumers that
+  expect long backlogs declare a longer `message_retention_period`.
 - Late-join reconcile remains for instances deployed after an event was
   published, but is no longer how a non-running instance catches up.
 - No `plugin.capnp` change: `EventConsumer.event` already takes a batch

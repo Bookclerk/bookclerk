@@ -130,6 +130,8 @@ export type EventConsumerToml = {
   filter?: Record<string, unknown>;
   /** Redelivery attempts before dead-lettering. */
   max_retries?: number;
+  /** Seconds a due delivery may wait before the host expires it (60..=1209600). */
+  message_retention_period?: number;
 };
 
 /** `[queues]` producers and consumers. */
@@ -164,7 +166,34 @@ export type QueueConsumerToml = {
   retry_delay?: number;
   /** Most concurrent `queue(batch)` invocations; omitted lets the host choose. */
   max_concurrency?: number;
+  /** Seconds a due message may wait before the host expires it (60..=1209600). */
+  message_retention_period?: number;
 };
+
+/** Shortest `message_retention_period` in seconds, as in Cloudflare Queues. */
+export const MIN_MESSAGE_RETENTION_SECS = 60;
+/** Longest `message_retention_period` in seconds (14 days), as in Cloudflare Queues. */
+export const MAX_MESSAGE_RETENTION_SECS = 1_209_600;
+
+/**
+ * Checks a consumer's optional `message_retention_period`.
+ *
+ * @param field - The consumer row, such as `events.consumers[0]`, for the error.
+ * @param secs - The declared retention in seconds; omitted passes.
+ * @throws {Error} When `secs` is not an integer inside the allowed range.
+ */
+function validateMessageRetention(field: string, secs: number | undefined): void {
+  if (secs == null) return;
+  if (
+    !Number.isInteger(secs) ||
+    secs < MIN_MESSAGE_RETENTION_SECS ||
+    secs > MAX_MESSAGE_RETENTION_SECS
+  ) {
+    throw new Error(
+      `plugin.toml: ${field}.message_retention_period must be ${MIN_MESSAGE_RETENTION_SECS}..=${MAX_MESSAGE_RETENTION_SECS} seconds`,
+    );
+  }
+}
 
 /** Longest queue name. */
 export const MAX_QUEUE_NAME_LEN = 63;
@@ -287,6 +316,7 @@ function validateQueues(m: Manifest): void {
     ) {
       throw new Error(`plugin.toml: queues.consumers[${i}].max_concurrency must be at least 1`);
     }
+    validateMessageRetention(`queues.consumers[${i}]`, consumer.message_retention_period);
     if (consumer.dead_letter_queue != null) {
       validateQueueName(`queues.consumers[${i}].dead_letter_queue`, consumer.dead_letter_queue);
       if (consumer.dead_letter_queue === consumer.queue) {
@@ -746,6 +776,7 @@ function validateSurface(m: Manifest): void {
         `plugin.toml: events.consumers[${i}].type \`${type}\` must be snake_case \`[a-z][a-z0-9_]*\``,
       );
     }
+    validateMessageRetention(`events.consumers[${i}]`, consumer.message_retention_period);
   }
   const produced = new Set<string>();
   for (const [i, producer] of (m.events?.producers ?? []).entries()) {
