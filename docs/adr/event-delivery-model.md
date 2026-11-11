@@ -67,8 +67,8 @@ updates to this record:
 - **Reading the event stream.** A plugin catches up after a gap by paging
   past events from the outbox, `env.EVENTS.read({ after | since, types,
   limit })`, with an opaque `(created_at, id)` cursor it keeps itself.
-  Reads return only what the instance's consented subscriptions, filters
-  and account scope allow, back to `[events].retention_days`, and report
+  Reads return only events of the caller's own library, and only what the
+  instance's consented subscriptions, filters and account scope allow, back to `[events].retention_days`, and report
   when deliveries expired since the cursor. This changes `plugin.capnp`
   and the TS SDK, and adds a fuzzed guest boundary.
 - **On-demand activation.** A due delivery, queue message, job or cron
@@ -92,6 +92,11 @@ updates to this record:
 - A consumer that is running but falls behind by more than its retention
   period also loses the oldest never-leased deliveries. Consumers that
   expect long backlogs declare a longer `message_retention_period`.
+- Events are scoped to one library, the cluster that shares its database.
+  Every subscriber and every delivery belongs to that library, and an
+  event never crosses to another one. Data from another library arrives
+  through a typed import that publishes ordinary local events on the
+  receiving side, as catalog sync does.
 - Late-join reconcile remains for instances deployed after an event was
   published, but is no longer how a non-running instance catches up.
 - No `plugin.capnp` change: `EventConsumer.event` already takes a batch
