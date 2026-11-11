@@ -493,6 +493,45 @@ async fn supervise_cluster_links(state: Arc<AppState>) {
     }
 }
 
+/// Deletes the plugin state kept for each library this install left or was
+/// revoked from, once that link's client is no longer running, so a
+/// library's plugin caches and logins do not outlive the membership.
+///
+/// Only links the live store records as not active are purged: a subtree
+/// this store does not know (another database's links) is left alone. A
+/// purge that fails is logged and tried again on the next pass.
+async fn purge_departed_link_state(
+    state: &Arc<AppState>,
+    links: &[ClusterLink],
+    running: &BTreeSet<String>,
+) {
+    let departed: Vec<_> = links
+        .iter()
+        .filter(|link| !link.is_active() && !running.contains(&link.owner_cluster_id))
+        .map(|link| {
+            (
+                link.owner_cluster_id.clone(),
+                bookclerk_plugin_host::LinkStateDir::for_cluster(&link.owner_cluster_id),
+            )
+        })
+        .collect();
+    if departed.is_empty() {
+        return;
+    }
+    let files_dir = state.config.read().await.paths().files_dir.clone();
+    let purged = tokio::task::spawn_blocking(move || {
+        for (cluster_id, dir) in departed {
+            if let Err(err) = bookclerk_plugin_host::purge_link_plugin_state(&files_dir, &dir) {
+                tracing::warn!(%cluster_id, error = %err, "could not delete a departed library's plugin state; retrying later");
+            }
+        }
+    })
+    .await;
+    if let Err(err) = purged {
+        tracing::warn!(error = %err, "plugin state purge task failed");
+    }
+}
+
 /// Starts one host client per active link in `library` that is not yet in
 /// `running`, each stopping when `shutdown` turns true, and adds it to
 /// `running` and `clients`. A client stopped because its link was
@@ -523,6 +562,7 @@ async fn start_clients(
         }
     };
     let mut complete = true;
+    purge_departed_link_state(state, &links, running).await;
     let pending: Vec<_> = {
         let failed = failed();
         links
@@ -582,6 +622,7 @@ async fn start_clients(
             host_jobs::HostJobTransport::new(host_jobs::GuestHost::new(
                 Arc::clone(state),
                 files_dir.clone(),
+                &cluster_id,
             )),
             Arc::clone(&catalog),
         );

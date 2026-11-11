@@ -1807,16 +1807,84 @@ fn remove_orphan_owner_locks(journals: &std::path::Path) {
 /// Host startup calls this so a crash does not wait for the next spawn of the
 /// same plugin. A live session's owner lock is left alone.
 pub fn retry_abandoned_acl_journals(files_dir: &std::path::Path) {
-    let root = files_dir.join("plugin-state");
+    let root = files_dir.join(crate::jail::PLUGIN_STATE_DIR);
     let Ok(read) = std::fs::read_dir(&root) else {
         return;
     };
     for entry in read.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if !path.is_dir() {
+            continue;
+        }
+        let is_link = entry
+            .file_name()
+            .to_str()
+            .is_some_and(crate::LinkStateDir::is_leaf);
+        if is_link {
+            // A joined library's subtree holds one state root per plugin.
+            for_each_subdir(&path, retry_abandoned_session_journals);
+        } else {
             retry_abandoned_session_journals(&path);
         }
     }
+}
+
+/// Calls `visit` on every directory directly under `dir` (none when `dir`
+/// cannot be read).
+fn for_each_subdir(dir: &std::path::Path, mut visit: impl FnMut(&std::path::Path)) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            visit(&path);
+        }
+    }
+}
+
+/// Deletes the plugin state this install kept for a library it no longer
+/// belongs to: `plugin-state/<link dir>/`, every plugin's `data`, `tmp`
+/// and session directories in it.
+///
+/// Each plugin's state root goes through [`revoke_plugin_state_before_purge`]
+/// first, so a Windows package-SID grant still journalled there is revoked
+/// (or the purge refused) rather than left behind. Rejected journals are not
+/// discarded. A missing subtree is not an error.
+///
+/// Call it only once no guest of that library is running.
+///
+/// # Arguments
+///
+/// * `files_dir` - This install's files directory.
+/// * `link` - The joined library's state directory leaf.
+///
+/// # Errors
+///
+/// Returns a message when a plugin's journal refused the purge, or the
+/// subtree could not be deleted; whatever was not deleted stays in place,
+/// and a later call retries it.
+pub fn purge_link_plugin_state(
+    files_dir: &std::path::Path,
+    link: &crate::LinkStateDir,
+) -> std::result::Result<(), String> {
+    let dir = files_dir
+        .join(crate::jail::PLUGIN_STATE_DIR)
+        .join(link.as_str());
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let mut refused = None;
+    for_each_subdir(&dir, |state_root| {
+        if let Err(err) = revoke_plugin_state_before_purge(state_root, false) {
+            refused.get_or_insert(err);
+        }
+    });
+    if let Some(err) = refused {
+        return Err(err);
+    }
+    std::fs::remove_dir_all(&dir)
+        .map_err(|err| format!("could not delete {}: {err}", dir.display()))
 }
 
 /// Revoke this plugin's journal before `--purge-state` deletes the directory.

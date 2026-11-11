@@ -139,7 +139,7 @@ pub use discover::{
     is_first_party_s3_output, occupancy_matches_alias, occupancy_names_alias, occupancy_spec,
     plugin_matches_occupancy, plugin_search_dirs, resolve_plugin_ref, resolve_plugin_slot,
     settings_table, settings_table_for, stamp_occupancy_plugin_key, upgrade_unique_alias_occupancy,
-    DiscoveredPlugin,
+    DiscoveredPlugin, LinkStateDir, StateScope, LINK_STATE_DIR_PREFIX,
 };
 pub use enrollment::{
     enroll_local_plugins, enroll_one, has_covering_grant, is_bootstrap_only, EnrolledPlugin,
@@ -201,7 +201,7 @@ pub use spawn_plan::{
     WORKERD_LAUNCHER_ENV,
 };
 pub use spawn_stdio::{
-    note_spawn_stage, recent_spawn_diagnostics, retry_abandoned_acl_journals,
-    revoke_plugin_state_before_purge, TEST_CHANNEL_IDENT_ENV, TEST_CHANNEL_TAG_FILE,
-    TEST_INJECT_EXTRA_ENDPOINT_ENV, TEST_OBSERVE_EXTRA_ENDPOINT_ENV,
+    note_spawn_stage, purge_link_plugin_state, recent_spawn_diagnostics,
+    retry_abandoned_acl_journals, revoke_plugin_state_before_purge, TEST_CHANNEL_IDENT_ENV,
+    TEST_CHANNEL_TAG_FILE, TEST_INJECT_EXTRA_ENDPOINT_ENV, TEST_OBSERVE_EXTRA_ENDPOINT_ENV,
 };

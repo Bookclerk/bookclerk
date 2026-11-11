@@ -147,6 +147,11 @@ A native guest gets three paths and nothing else:
 | `…/plugin-state/<PluginKey fs-id>/data` | read/write | `HOME`, and `plugin_data_dir` on the wire |
 | `…/plugin-state/<PluginKey fs-id>/tmp` | read/write | `TMPDIR` / `TEMP` / `TMP`; fetch scratch is `tmp/fetch` |
 
+On a branch, a guest that runs for a library the branch joined gets that
+library's own subtree instead, `…/plugin-state/link-<32 hex>/<PluginKey fs-id>/`,
+so two libraries' copies of one plugin never share a `HOME` (see
+[Libraries and branches](../server/cluster-hosts.md#plugin-state-on-a-branch)).
+
 The host-owned `session-<nonce>/` directory is **not** on that list. It is
 the gateway's `TMPDIR` / `BOOKCLERK_WORKERD_STATE_DIR` (granted sockets live
 there). The guest jail has no read of it. The vat removes the directory when

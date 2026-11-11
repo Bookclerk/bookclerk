@@ -426,6 +426,21 @@ the approved grant through `bookclerk-workerd`, exactly as it runs its own
 plugins (see [The guest jail](../internals/guest-jail.md#the-guest-jail)).
 There is no in-process fallback.
 
+### Plugin state on a branch
+
+A branch keeps each joined library's plugin state apart from every other
+library's and from its own. A guest that runs for a library gets
+`plugin-state/link-<32 hex>/<PluginKey fs-id>/data` and `…/tmp`. The leaf
+is the first 128 bits of the SHA-256 of that library's cluster id. The
+branch's own guests keep `plugin-state/<PluginKey fs-id>/`. So when two
+libraries deploy the same plugin, their guests never see each other's
+caches, cookies or logins. The plugin code cache under
+`plugins/.versions/` stays shared, because it is read-only and addressed
+by digest.
+
+The design record is
+[ADR: Library catalog network](../adr/library-catalog-network.md).
+
 ## What a branch runs
 
 ### Scans
@@ -619,6 +634,12 @@ Open **Settings → Library → Leave library**, or run
 2. The link is marked `left` and its node keys are deleted, so this
    install can never sign as that node again.
 3. The link's client stops.
+4. Once it has stopped, the branch deletes that library's plugin state
+   (`plugin-state/link-<32 hex>/`). A Windows ACL journal still recorded
+   there is revoked first; if that is refused, the state stays and the
+   delete is tried again every few seconds.
+
+A revoked branch deletes the library's plugin state the same way.
 
 > [!NOTE]
 > If the library can't be reached within 10 seconds, the branch leaves

@@ -32,6 +32,70 @@ pub struct DiscoveredPlugin {
     /// materialized from; `None` for host-local trees, whose grant lives in
     /// `plugin-grants.json`.
     pub version_grant: Option<crate::PluginGrant>,
+    /// Whose library the guest works for, which decides where its
+    /// host-managed `data` and `tmp` directories live.
+    pub state_scope: StateScope,
+}
+
+/// Whose library a guest works for, which keeps one library's plugin state
+/// apart from another's on the same install.
+///
+/// A branch runs the plugins of every library it joined beside its own. Two
+/// libraries can deploy the same plugin key, so the key alone cannot name
+/// the guest's state: each joined library gets its own subtree under
+/// `plugin-state/`, and this install's own guests keep the top level.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum StateScope {
+    /// This install's own library: `plugin-state/<PluginKey fs-id>/`.
+    #[default]
+    Local,
+    /// A library this install is a branch of:
+    /// `plugin-state/<link dir>/<PluginKey fs-id>/`.
+    Link(LinkStateDir),
+}
+
+/// The directory leaf that holds one joined library's plugin state:
+/// `link-` and 32 lowercase hex digits (128 bits of the SHA-256 of the
+/// library's cluster id).
+///
+/// Derived from the cluster id rather than copying it, so the leaf is
+/// always filesystem-safe and fixed-length whatever the owner sent.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LinkStateDir(String);
+
+/// Prefix of every [`LinkStateDir`] leaf; never a `PluginKey` fs-id (`pk-`).
+pub const LINK_STATE_DIR_PREFIX: &str = "link-";
+
+/// Hex digits of the cluster-id digest a [`LinkStateDir`] keeps.
+const LINK_STATE_DIR_HEX_CHARS: usize = 32;
+
+impl LinkStateDir {
+    /// The state directory leaf of the library with `cluster_id`.
+    #[must_use]
+    pub fn for_cluster(cluster_id: &str) -> Self {
+        use sha2::Digest as _;
+        let digest = hex::encode(sha2::Sha256::digest(cluster_id.as_bytes()));
+        Self(format!(
+            "{LINK_STATE_DIR_PREFIX}{}",
+            &digest[..LINK_STATE_DIR_HEX_CHARS]
+        ))
+    }
+
+    /// The directory leaf (`link-` + 32 hex digits).
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// True when `leaf` has the shape of a link state directory, so a
+    /// sweep never mistakes a plugin's own state directory for one.
+    #[must_use]
+    pub fn is_leaf(leaf: &str) -> bool {
+        leaf.strip_prefix(LINK_STATE_DIR_PREFIX).is_some_and(|hex| {
+            hex.len() == LINK_STATE_DIR_HEX_CHARS
+                && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
+    }
 }
 
 impl DiscoveredPlugin {
@@ -68,6 +132,7 @@ impl DiscoveredPlugin {
             command,
             identity,
             version_grant: None,
+            state_scope: StateScope::Local,
         })
     }
 
@@ -83,6 +148,7 @@ impl DiscoveredPlugin {
             command,
             identity,
             version_grant: None,
+            state_scope: StateScope::Local,
         }
     }
 
@@ -128,6 +194,7 @@ impl DiscoveredPlugin {
             command,
             identity,
             version_grant: Some(grant),
+            state_scope: StateScope::Local,
         })
     }
 
