@@ -103,7 +103,8 @@ Each enum is a Rust enum matched exhaustively, a capnp enum on the wire, and a
 | `contributors` | A person or organisation, with a sort name | Surrogate id |
 | `credits` | A contributor's `role` on a work, expression or edition, with a position | `(target_kind, target_id, contributor_id, role)` |
 | `series`, `series_entries` | A series and a work's place in it (position text plus a sortable decimal) | `(series_id, work_id)` |
-| `store_listings` | What a store sells: `plugin_key`, `marketplace`, `product_id`, the edition, store ratings and price, a `metadata_json` snapshot, `observed_at` | `(plugin_key, marketplace, product_id)` |
+| `store_listings` | What a store sells: `plugin_key`, `marketplace`, `product_id`, the edition, the store's ratings and its own text for the listing as parsed columns (synopsis, cover, credits as printed, URL), `observed_at` | `(plugin_key, marketplace, product_id)` |
+| `listing_offers` | What a listing costs one audience (`non_member` or `member`): price, label, currency, `observed_at` | `(listing_id, audience)` |
 | `holdings` | Ownership of a listing by an account (`plugin_key`, `account_id`), or by a branch (`node_id`, `node:<node_id>` provenance), as typed holder columns with cascading foreign keys, with entitlement (`purchase`, `plus`, `loan`, `free`) and `purchased_at` | Surrogate id; unique `(listing_id, holder)` |
 | `edition_files` | A file of an edition at a destination, with `role` (`audio`, `part`, `chapter`, `pdf`, `cover`, `sidecar`, `transcript`, `epub`), digest, quality and writer | `(destination, storage_key)` |
 | `user_title_state` | One user's finished flag, ratings and tags for a work (listening progress stays per provider in `listening_progress`, keyed by work) | `(user_id, work_id)` |

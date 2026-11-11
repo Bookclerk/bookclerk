@@ -163,6 +163,78 @@ pub fn scan_book_draft(book: &abi::ScanBook) -> resolve::ListingDraft {
     }
 }
 
+/// The listing draft a storefront's catalog hit describes, for the shared
+/// catalog pool.
+///
+/// Like [`scan_book_draft`], the plugin key is left blank for the host to
+/// set from the plugin it asked. The marketplace is the one the host asked
+/// the store about (catalog hits carry none of their own). Abridgement is
+/// unknown unless the store flagged it. Human-readable text is HTML-entity
+/// decoded, as for scans, so match keys agree with a later scan of the same
+/// title.
+///
+/// # Arguments
+///
+/// * `hit` - The catalog hit as the guest returned it.
+/// * `marketplace` - Marketplace the store was asked about (`us`).
+///
+/// # Returns
+///
+/// The unchecked draft; [`bookclerk_resolve::Listing::from_draft`] validates it.
+#[must_use]
+pub fn catalog_hit_draft(hit: &crate::CatalogHit, marketplace: &str) -> resolve::ListingDraft {
+    let mut credits: Vec<(String, resolve::CreditRole, Option<resolve::Level>)> = hit
+        .credits
+        .iter()
+        .map(|c| (decode(&c.name), credit_role(c.role), credit_level(c.level)))
+        .collect();
+    let has_publisher = credits
+        .iter()
+        .any(|(name, role, _)| *role == resolve::CreditRole::Publisher && !name.trim().is_empty());
+    if let Some(publisher) = hit.publisher.as_ref().filter(|p| !p.trim().is_empty()) {
+        if !has_publisher {
+            credits.push((decode(publisher), resolve::CreditRole::Publisher, None));
+        }
+    }
+    resolve::ListingDraft {
+        plugin_key: String::new(),
+        marketplace: Some(marketplace.to_string()),
+        product_id: hit.product_id.clone(),
+        work_kind: Some(work_kind(hit.work_kind)),
+        expression_kind: Some(expression_kind(hit.expression_kind)),
+        media_kind: Some(media_kind(hit.media_kind)),
+        language: hit.language.clone(),
+        abridgement: Some(match hit.is_abridged {
+            Some(true) => resolve::Abridgement::Abridged,
+            Some(false) => resolve::Abridgement::Unabridged,
+            None => resolve::Abridgement::Unknown,
+        }),
+        title: decode(&hit.title),
+        subtitle: hit.subtitle.as_deref().map(decode),
+        published_at: hit.published_at.clone(),
+        duration_minutes: hit.length_minutes,
+        categories: hit.categories.as_deref().map(decode),
+        identifiers: hit
+            .identifiers
+            .iter()
+            .map(|id| {
+                (
+                    identifier_scheme(id.scheme),
+                    id.value.clone(),
+                    id.marketplace.clone(),
+                )
+            })
+            .collect(),
+        credits,
+        series: hit
+            .series_entries
+            .iter()
+            .map(|s| (decode(&s.name), s.position.clone()))
+            .collect(),
+        parent_product_id: hit.parent_product_id.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,6 +264,41 @@ mod tests {
             credit_level(abi::CreditLevel::Edition),
             Some(resolve::Level::Edition)
         );
+    }
+
+    #[test]
+    fn catalog_hits_become_drafts_in_the_asked_marketplace() {
+        let hit = crate::CatalogHit {
+            product_id: "9780441172719".into(),
+            title: "Dune &amp; More".into(),
+            publisher: Some("Ace".into()),
+            is_abridged: Some(false),
+            credits: vec![abi::Credit {
+                name: "Frank Herbert".into(),
+                role: abi::CreditRole::Author,
+                level: abi::CreditLevel::RoleDefault,
+            }],
+            identifiers: vec![abi::Identifier {
+                scheme: abi::IdentifierScheme::Isbn,
+                value: "9780441172719".into(),
+                marketplace: None,
+            }],
+            ..crate::CatalogHit::default()
+        };
+        let draft = catalog_hit_draft(&hit, "us");
+        assert_eq!(draft.marketplace.as_deref(), Some("us"));
+        assert_eq!(draft.title, "Dune & More");
+        assert_eq!(draft.abridgement, Some(resolve::Abridgement::Unabridged));
+        assert_eq!(draft.identifiers.len(), 1);
+        assert!(draft
+            .credits
+            .iter()
+            .any(|(n, r, _)| n == "Ace" && *r == resolve::CreditRole::Publisher));
+        assert!(resolve::Listing::from_draft(&resolve::ListingDraft {
+            plugin_key: "libro".into(),
+            ..draft
+        })
+        .is_ok());
     }
 
     #[test]

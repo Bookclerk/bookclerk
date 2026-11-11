@@ -8,6 +8,11 @@
 //! a `discover_feed` job ranks them into shelves, and the page only reads the
 //! stored feed. All three tables hold derived data that the jobs can rebuild,
 //! so a backend copy (`migrate_library_backend`) leaves them behind.
+//!
+//! The titles themselves live once, in the shared catalog pool
+//! ([`super::catalog_listings`]): a candidate row and a cached store answer
+//! refer to `store_listings` rows and keep only what is personal to the
+//! subject or to the call.
 
 use chrono::{DateTime, Utc};
 use sea_orm::sea_query::OnConflict;
@@ -18,13 +23,14 @@ use sea_orm::{
 
 use bookclerk_plugin_abi::TypedDbStatement;
 
+use super::catalog_listings::CatalogListingRecord;
 use super::write_batches::WriteBatches;
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
 use crate::column_read::SelectColumnExt;
 use crate::control_plane::{batch, sea_probe, Bump, LiveTopic};
 use crate::entities::{
-    discover_candidates, discover_feeds, discover_fetches, discover_store_calls, portal_identities,
-    users,
+    discover_candidates, discover_feeds, discover_fetches, discover_store_call_hits,
+    discover_store_calls, portal_identities, users,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{portal_prefs_key, user_prefs_key, OPERATOR_PREFS_KEY};
@@ -33,10 +39,13 @@ use crate::models::{portal_prefs_key, user_prefs_key, OPERATOR_PREFS_KEY};
 /// statement returns an unbounded result set.
 ///
 /// Large enough that a typical subject's candidates arrive in one or two
-/// reads. A page of real candidates (about 1.3 KB each) can still exceed the
-/// sqlite plugin's 256 KiB `maxResultBytes`, so the candidate listing halves
-/// its page when a result is refused for size.
+/// reads. Candidate rows are references (a few hundred bytes); the listing
+/// text is read from the pool in its own size-bounded chunks.
 pub(super) const DISCOVER_READ_PAGE: u64 = 200;
+
+/// Most hits read back for one cached storefront call; stores answer a few
+/// dozen titles per call.
+const STORE_CALL_MAX_HITS: u64 = 500;
 
 /// The two statements that upsert one candidate row.
 ///
@@ -47,39 +56,152 @@ pub(super) const DISCOVER_READ_PAGE: u64 = 200;
 fn candidate_upsert(
     subject_key: &str,
     source: &str,
-    candidate_key: &str,
     scope: SeedScope,
-    candidate_json: &str,
+    row: &CandidateRef,
     fetched_at: &str,
 ) -> [TypedDbStatement; 2] {
+    let context = [
+        batch::text(source),
+        batch::text(scope.as_str()),
+        batch::text(&row.origin),
+        batch::text_opt(row.seed_title.as_deref()),
+        batch::text_opt(row.seed_categories.as_deref()),
+        batch::text_opt(row.starter_genre.as_deref()),
+        batch::text(fetched_at),
+    ];
+    let mut update = context.to_vec();
+    update.extend([batch::text(subject_key), batch::text(&row.listing_id)]);
+    let mut insert = vec![batch::text(subject_key), batch::text(&row.listing_id)];
+    insert.extend(context);
     [
         batch::exec(
             "UPDATE discover_candidates \
-             SET seed_scope = ?, candidate_json = ?, fetched_at = ? \
-             WHERE subject_key = ? AND source = ? AND candidate_key = ?",
-            vec![
-                batch::text(scope.as_str()),
-                batch::text(candidate_json),
-                batch::text(fetched_at),
-                batch::text(subject_key),
-                batch::text(source),
-                batch::text(candidate_key),
-            ],
+             SET source = ?, seed_scope = ?, origin = ?, seed_title = ?, seed_categories = ?, \
+             starter_genre = ?, fetched_at = ? \
+             WHERE subject_key = ? AND listing_id = ?",
+            update,
         ),
         batch::exec(
             "INSERT OR IGNORE INTO discover_candidates \
-             (subject_key, source, candidate_key, seed_scope, candidate_json, fetched_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
-            vec![
-                batch::text(subject_key),
-                batch::text(source),
-                batch::text(candidate_key),
-                batch::text(scope.as_str()),
-                batch::text(candidate_json),
-                batch::text(fetched_at),
-            ],
+             (subject_key, listing_id, source, seed_scope, origin, seed_title, seed_categories, \
+              starter_genre, fetched_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            insert,
         ),
     ]
+}
+
+/// The statements that replace one cached storefront answer, in the order
+/// they must run.
+struct StoreCallStatements {
+    /// Claims the call row for this write (its token, an expired fetch
+    /// time) and deletes the previous answer's hits; one atomic group.
+    head: Vec<TypedDbStatement>,
+    /// One insert per hit, each applied only while the row carries this
+    /// write's token.
+    hits: Vec<TypedDbStatement>,
+    /// Writes the fetch time, only while the row carries this write's token.
+    stamp: TypedDbStatement,
+}
+
+/// Builds the statements that replace the answer cached under `call_key`.
+///
+/// # Arguments
+///
+/// * `call_key` - The call's key.
+/// * `source` - Storefront plugin id that answered.
+/// * `writer` - This write's random token, which fences its hits and stamp
+///   against a later write of the same call.
+/// * `hits` - The listings, in the store's order.
+fn store_call_statements(
+    call_key: &str,
+    source: &str,
+    writer: &str,
+    hits: &[StoreCallHit],
+) -> StoreCallStatements {
+    let expired = DateTime::<Utc>::UNIX_EPOCH.to_rfc3339();
+    let head = vec![
+        batch::exec(
+            "UPDATE discover_store_calls SET source = ?, fetched_at = ?, writer = ? \
+             WHERE call_key = ?",
+            vec![
+                batch::text(source),
+                batch::text(&expired),
+                batch::text(writer),
+                batch::text(call_key),
+            ],
+        ),
+        batch::exec(
+            "INSERT OR IGNORE INTO discover_store_calls (call_key, source, fetched_at, writer) \
+             VALUES (?, ?, ?, ?)",
+            vec![
+                batch::text(call_key),
+                batch::text(source),
+                batch::text(&expired),
+                batch::text(writer),
+            ],
+        ),
+        batch::exec(
+            "DELETE FROM discover_store_call_hits WHERE call_key = ?",
+            vec![batch::text(call_key)],
+        ),
+    ];
+    let hits = (0_i64..)
+        .zip(hits)
+        .map(|(position, hit)| {
+            batch::exec(
+                "INSERT OR IGNORE INTO discover_store_call_hits \
+                 (call_key, position, listing_id, origin, rank_hint) \
+                 SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM discover_store_calls \
+                 WHERE call_key = ? AND writer = ?)",
+                vec![
+                    batch::text(call_key),
+                    batch::int(position),
+                    batch::text(&hit.listing_id),
+                    batch::text(&hit.origin),
+                    batch::int_opt(hit.rank_hint.map(i64::from)),
+                    batch::text(call_key),
+                    batch::text(writer),
+                ],
+            )
+        })
+        .collect();
+    let stamp = batch::exec(
+        "UPDATE discover_store_calls SET fetched_at = ? WHERE call_key = ? AND writer = ?",
+        vec![
+            batch::text(&now_str()),
+            batch::text(call_key),
+            batch::text(writer),
+        ],
+    );
+    StoreCallStatements { head, hits, stamp }
+}
+
+/// One title a store returned for a subject, as written: the shared
+/// listing it is, plus why the subject got it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateRef {
+    /// The `store_listings` row.
+    pub listing_id: String,
+    /// How the store found it (`related to …`, `deals`).
+    pub origin: String,
+    /// The subject's title that seeded it, when a seed did.
+    pub seed_title: Option<String>,
+    /// That seed's categories.
+    pub seed_categories: Option<String>,
+    /// Starter genre it was browsed from, for a thin taste.
+    pub starter_genre: Option<String>,
+}
+
+/// One listing a cached storefront call answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreCallHit {
+    /// The `store_listings` row the hit resolved to.
+    pub listing_id: String,
+    /// How the store found it for this call.
+    pub origin: String,
+    /// The store's own 1-based rank for the hit, when it gave one.
+    pub rank_hint: Option<u32>,
 }
 
 /// Whose Discover shelves a stored row belongs to.
@@ -159,17 +281,24 @@ impl SeedScope {
     }
 }
 
-/// One stored storefront candidate of a subject.
+/// One stored storefront candidate of a subject: the shared listing joined
+/// with what is personal to the subject.
 #[derive(Debug, Clone)]
 pub struct StoredCandidate {
-    /// Storefront plugin id that returned the title.
+    /// Storefront plugin id that returned the title (`audible`).
     pub source: String,
-    /// Identity key of the candidate within its subject and store.
-    pub candidate_key: String,
+    /// The listing, read from the shared pool.
+    pub listing: CatalogListingRecord,
     /// Seeds that produced the row.
     pub seed_scope: SeedScope,
-    /// The candidate as JSON, written by `bookclerk-discover`.
-    pub candidate_json: String,
+    /// How the store found it.
+    pub origin: String,
+    /// The subject's title that seeded it, when a seed did.
+    pub seed_title: Option<String>,
+    /// That seed's categories.
+    pub seed_categories: Option<String>,
+    /// Starter genre it was browsed from, for a thin taste.
+    pub starter_genre: Option<String>,
     /// When the store fetch that produced the row ran.
     pub fetched_at: DateTime<Utc>,
 }
@@ -209,7 +338,8 @@ impl LibraryStore {
     /// * `subject` - Whose candidates these are.
     /// * `source` - Storefront plugin id that returned them.
     /// * `scope` - Seeds that produced them.
-    /// * `rows` - `(candidate_key, candidate_json)` pairs; duplicate keys keep the last.
+    /// * `rows` - The candidates, as listing references; a listing named
+    ///   twice keeps the last.
     ///
     /// # Errors
     ///
@@ -221,23 +351,25 @@ impl LibraryStore {
         subject: &DiscoverSubject,
         source: &str,
         scope: SeedScope,
-        rows: &[(String, String)],
+        rows: &[CandidateRef],
     ) -> Result<()> {
         let subject_key = subject.key();
         let now = now_str();
-        let mut unique: Vec<&(String, String)> = Vec::with_capacity(rows.len());
+        let mut unique: Vec<&CandidateRef> = Vec::with_capacity(rows.len());
         for row in rows {
-            if let Some(pos) = unique.iter().position(|seen| seen.0 == row.0) {
+            if let Some(pos) = unique
+                .iter()
+                .position(|seen| seen.listing_id == row.listing_id)
+            {
                 unique.remove(pos);
             }
             unique.push(row);
         }
         let mut batches = WriteBatches::new(self.db_capabilities(), "discover candidate");
-        for (key, json) in unique {
-            for stmt in candidate_upsert(&subject_key, source, key, scope, json, &now) {
-                if let Some(full) = batches.push(stmt)? {
-                    self.run_candidate_batch(full).await?;
-                }
+        for row in unique {
+            let pair = candidate_upsert(&subject_key, source, scope, row, &now);
+            if let Some(full) = batches.push_group(pair.to_vec())? {
+                self.run_candidate_batch(full).await?;
             }
         }
         let stale = batch::exec(
@@ -270,14 +402,14 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Lists every stored candidate of one subject, oldest store fetch first.
+    /// Lists every stored candidate of one subject, oldest store fetch first,
+    /// each joined with its listing from the shared pool.
     ///
-    /// Rows are read in id pages, then ordered by fetch time (ties keep id
-    /// order). A refreshed candidate keeps its id, so id order alone would
-    /// not be fetch order. A page whose result would exceed the database
-    /// plugin's `maxResultBytes` is halved and read again; the smaller width
-    /// is kept for the rest of the walk. Rows whose scope text is unknown
-    /// (written by a newer release) are skipped.
+    /// Candidate rows are read in id pages, then their listings in chunks
+    /// that stay under the database plugin's result limit
+    /// ([`LibraryStore::catalog_listings`]), then the rows are ordered by
+    /// fetch time (ties keep id order). Rows whose scope text is unknown
+    /// (written by a newer release), or whose listing is gone, are skipped.
     ///
     /// # Errors
     ///
@@ -287,43 +419,51 @@ impl LibraryStore {
         subject: &DiscoverSubject,
     ) -> Result<Vec<StoredCandidate>> {
         let key = subject.key();
-        let mut out = Vec::new();
+        let mut rows = Vec::new();
         let mut after: i64 = 0;
-        let mut width = DISCOVER_READ_PAGE;
         loop {
-            let rows = loop {
-                let read = discover_candidates::Entity::find()
-                    .filter(discover_candidates::Column::SubjectKey.eq(key.as_str()))
-                    .filter(discover_candidates::Column::Id.gt(after))
-                    .order_by_asc(discover_candidates::Column::Id)
-                    .limit(width)
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm);
-                match read {
-                    Ok(rows) => break rows,
-                    Err(err) if super::books_page::is_result_too_large(&err) && width > 1 => {
-                        width /= 2;
-                    }
-                    Err(err) => return Err(err),
-                }
-            };
-            let Some(last) = rows.last() else { break };
+            let page = discover_candidates::Entity::find()
+                .filter(discover_candidates::Column::SubjectKey.eq(key.as_str()))
+                .filter(discover_candidates::Column::Id.gt(after))
+                .order_by_asc(discover_candidates::Column::Id)
+                .limit(DISCOVER_READ_PAGE)
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            let Some(last) = page.last() else { break };
             after = last.id;
-            let full = u64::try_from(rows.len()).is_ok_and(|n| n >= width);
-            out.extend(rows.into_iter().filter_map(|m| {
-                Some(StoredCandidate {
-                    seed_scope: SeedScope::parse(&m.seed_scope)?,
-                    fetched_at: parse_dt(&m.fetched_at),
-                    source: m.source,
-                    candidate_key: m.candidate_key,
-                    candidate_json: m.candidate_json,
-                })
-            }));
+            let full = u64::try_from(page.len()).is_ok_and(|n| n >= DISCOVER_READ_PAGE);
+            rows.extend(page);
             if !full {
                 break;
             }
         }
+        let ids: Vec<String> = rows.iter().map(|m| m.listing_id.clone()).collect();
+        let mut listings: std::collections::HashMap<String, CatalogListingRecord> = self
+            .catalog_listings(&ids)
+            .await?
+            .into_iter()
+            .map(|l| (l.id.clone(), l))
+            .collect();
+        let mut out: Vec<StoredCandidate> = rows
+            .into_iter()
+            .filter_map(|m| {
+                let seed_scope = SeedScope::parse(&m.seed_scope)?;
+                // Two rows never share a listing within one subject, so the
+                // listing moves into its row.
+                let listing = listings.remove(&m.listing_id)?;
+                Some(StoredCandidate {
+                    source: m.source,
+                    listing,
+                    seed_scope,
+                    origin: m.origin,
+                    seed_title: m.seed_title,
+                    seed_categories: m.seed_categories,
+                    starter_genre: m.starter_genre,
+                    fetched_at: parse_dt(&m.fetched_at),
+                })
+            })
+            .collect();
         out.sort_by_key(|c| c.fetched_at);
         Ok(out)
     }
@@ -454,7 +594,8 @@ impl LibraryStore {
     ///
     /// # Returns
     ///
-    /// The cached JSON, or `None` when absent or too old.
+    /// The listings the call answered, in the store's order, or `None`
+    /// when absent or too old.
     ///
     /// # Errors
     ///
@@ -463,21 +604,52 @@ impl LibraryStore {
         &self,
         call_key: &str,
         max_age: chrono::Duration,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<Vec<StoreCallHit>>> {
         let row = discover_store_calls::Entity::find()
             .filter(discover_store_calls::Column::CallKey.eq(call_key))
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
-        Ok(row
-            .filter(|m| parse_dt(&m.fetched_at) + max_age > Utc::now())
-            .map(|m| m.response_json))
+        if !row.is_some_and(|m| parse_dt(&m.fetched_at) + max_age > Utc::now()) {
+            return Ok(None);
+        }
+        let hits = discover_store_call_hits::Entity::find()
+            .filter(discover_store_call_hits::Column::CallKey.eq(call_key))
+            .order_by_asc(discover_store_call_hits::Column::Position)
+            .limit(STORE_CALL_MAX_HITS)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(Some(
+            hits.into_iter()
+                .map(|m| StoreCallHit {
+                    listing_id: m.listing_id,
+                    origin: m.origin,
+                    rank_hint: m.rank_hint.and_then(|r| u32::try_from(r).ok()),
+                })
+                .collect(),
+        ))
     }
 
-    /// Stores (or refreshes) one cached storefront answer.
+    /// Stores (or refreshes) one cached storefront answer: the call row and
+    /// the listings it answered, replacing the previous answer's hits.
     ///
-    /// One upsert statement keyed on `call_key`, so a refresh costs one
-    /// database round trip instead of a read and a write.
+    /// The writes go as atomic host batches sized from the database
+    /// plugin's limits. The first batch marks the call as fetched long ago
+    /// and deletes the old hits; the new fetch time is written last, in the
+    /// final batch. A reader between batches, or after a batch fails, sees
+    /// an expired answer and asks the store again, never a fresh answer
+    /// with only part of its hits. Each write claims the call row with its
+    /// own random token, and its hits and fetch time apply only while the
+    /// row still carries that token, so two concurrent answers to one call
+    /// are never mixed: the later claim wins, and the earlier write adds
+    /// nothing after it.
+    ///
+    /// # Arguments
+    ///
+    /// * `call_key` - The call's key.
+    /// * `source` - Storefront plugin id that answered.
+    /// * `hits` - The listings, in the store's order.
     ///
     /// # Errors
     ///
@@ -486,28 +658,25 @@ impl LibraryStore {
         &self,
         call_key: &str,
         source: &str,
-        response_json: &str,
+        hits: &[StoreCallHit],
     ) -> Result<()> {
-        let row = discover_store_calls::ActiveModel {
-            id: NotSet,
-            call_key: Set(call_key.to_string()),
-            source: Set(source.to_string()),
-            response_json: Set(response_json.to_string()),
-            fetched_at: Set(now_str()),
-        };
-        discover_store_calls::Entity::insert(row)
-            .on_conflict(
-                OnConflict::column(discover_store_calls::Column::CallKey)
-                    .update_columns([
-                        discover_store_calls::Column::Source,
-                        discover_store_calls::Column::ResponseJson,
-                        discover_store_calls::Column::FetchedAt,
-                    ])
-                    .to_owned(),
-            )
-            .exec_without_returning(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let writer = uuid::Uuid::new_v4().simple().to_string();
+        let parts = store_call_statements(call_key, source, &writer, hits);
+        let mut batches = WriteBatches::new(self.db_capabilities(), "discover store call");
+        if let Some(full) = batches.push_group(parts.head)? {
+            self.run_candidate_batch(full).await?;
+        }
+        for stmt in parts.hits {
+            if let Some(full) = batches.push(stmt)? {
+                self.run_candidate_batch(full).await?;
+            }
+        }
+        if let Some(full) = batches.push(parts.stamp)? {
+            self.run_candidate_batch(full).await?;
+        }
+        if let Some(last) = batches.finish() {
+            self.run_candidate_batch(last).await?;
+        }
         Ok(())
     }
 
@@ -521,6 +690,19 @@ impl LibraryStore {
     ///
     /// Returns the database error.
     pub async fn prune_discover_store_calls(&self, cutoff: DateTime<Utc>) -> Result<u64> {
+        // The hits first, so a backend that does not enforce the cascade
+        // keeps no orphans either.
+        let cutoff_text = cutoff.to_rfc3339();
+        let operation_id = format!("discover-store-call-prune-{}", uuid::Uuid::new_v4());
+        self.execute_host_batch(batch::request(
+            &operation_id,
+            vec![batch::exec(
+                "DELETE FROM discover_store_call_hits WHERE call_key IN \
+                 (SELECT call_key FROM discover_store_calls WHERE fetched_at < ?)",
+                vec![batch::text(&cutoff_text)],
+            )],
+        ))
+        .await?;
         let res = discover_store_calls::Entity::delete_many()
             .filter(discover_store_calls::Column::FetchedAt.lt(cutoff.to_rfc3339()))
             .exec(&self.db)
@@ -688,10 +870,53 @@ mod tests {
         )
     }
 
-    /// `(key, json)` rows for [`LibraryStore::replace_discover_candidates`].
-    fn rows(keys: &[&str]) -> Vec<(String, String)> {
-        keys.iter()
-            .map(|k| ((*k).to_string(), format!("{{\"k\":\"{k}\"}}")))
+    /// Catalog listings for `products` (one store, `us`), recorded into the
+    /// pool, as candidate references whose origin is the product id.
+    async fn refs(store: &LibraryStore, products: &[&str]) -> Vec<CandidateRef> {
+        let listings: Vec<crate::CatalogListing> = products
+            .iter()
+            .map(|p| crate::CatalogListing {
+                draft: bookclerk_resolve::ListingDraft {
+                    plugin_key: String::from("libro"),
+                    marketplace: Some(String::from("us")),
+                    product_id: (*p).to_string(),
+                    title: format!("Title {p}"),
+                    credits: vec![(
+                        format!("Author {p}"),
+                        bookclerk_resolve::CreditRole::Author,
+                        None,
+                    )],
+                    ..bookclerk_resolve::ListingDraft::default()
+                },
+                detail: crate::ListingDetail::default(),
+                offers: Vec::new(),
+            })
+            .collect();
+        store
+            .record_catalog_listings(&listings)
+            .await
+            .unwrap()
+            .ids
+            .into_iter()
+            .zip(products)
+            .map(|(id, p)| CandidateRef {
+                listing_id: id.unwrap(),
+                origin: (*p).to_string(),
+                seed_title: None,
+                seed_categories: None,
+                starter_genre: None,
+            })
+            .collect()
+    }
+
+    /// Store call hits for listing references, in order.
+    fn hits(refs: &[CandidateRef]) -> Vec<StoreCallHit> {
+        refs.iter()
+            .map(|r| StoreCallHit {
+                listing_id: r.listing_id.clone(),
+                origin: r.origin.clone(),
+                rank_hint: None,
+            })
             .collect()
     }
 
@@ -744,17 +969,6 @@ mod tests {
         (store.with_typed_exec(std::sync::Arc::new(exec)), sizes)
     }
 
-    /// `count` real-sized `(key, json)` rows: about 1.3 KB of JSON each.
-    fn big_rows(prefix: &str, count: usize) -> Vec<(String, String)> {
-        (0..count)
-            .map(|i| {
-                let key = format!("{prefix}{i:04}");
-                let json = format!("{{\"k\":\"{key}\",\"pad\":\"{}\"}}", "x".repeat(1300));
-                (key, json)
-            })
-            .collect()
-    }
-
     #[tokio::test]
     async fn candidates_replace_per_store_and_subject() {
         let store = store().await;
@@ -766,20 +980,40 @@ mod tests {
             .unwrap()
             .is_none());
         store
-            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["a", "b"]))
+            .replace_discover_candidates(
+                &alice,
+                "libro",
+                SeedScope::Own,
+                &refs(&store, &["a", "b"]).await,
+            )
             .await
             .unwrap();
         store
-            .replace_discover_candidates(&alice, "chirp", SeedScope::Own, &rows(&["c"]))
+            .replace_discover_candidates(
+                &alice,
+                "chirp",
+                SeedScope::Own,
+                &refs(&store, &["c"]).await,
+            )
             .await
             .unwrap();
         store
-            .replace_discover_candidates(&bob, "libro", SeedScope::Household, &rows(&["z"]))
+            .replace_discover_candidates(
+                &bob,
+                "libro",
+                SeedScope::Household,
+                &refs(&store, &["z"]).await,
+            )
             .await
             .unwrap();
         // A new answer from one store replaces only that store's rows.
         store
-            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["d"]))
+            .replace_discover_candidates(
+                &alice,
+                "libro",
+                SeedScope::Own,
+                &refs(&store, &["d"]).await,
+            )
             .await
             .unwrap();
 
@@ -788,7 +1022,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|c| (c.source, c.candidate_key))
+            .map(|c| (c.source, c.listing.product_id))
             .collect();
         keys.sort();
         assert_eq!(
@@ -801,7 +1035,8 @@ mod tests {
         let bob_rows = store.list_discover_candidates(&bob).await.unwrap();
         assert_eq!(bob_rows.len(), 1);
         assert_eq!(bob_rows[0].seed_scope, SeedScope::Household);
-        assert_eq!(bob_rows[0].candidate_json, "{\"k\":\"z\"}");
+        assert_eq!(bob_rows[0].origin, "z");
+        assert_eq!(bob_rows[0].listing.title, "Title z");
         // Candidate rows alone do not mark a fetch; finishing one does, even
         // when it stored nothing, and a later finish moves the mark.
         assert!(store
@@ -835,49 +1070,37 @@ mod tests {
     async fn candidates_replace_without_an_interactive_transaction() {
         let (store, sizes) = batch_store(DbCapabilities::advertised_d1()).await;
         let alice = DiscoverSubject::User(1);
+        let pool = refs(&store, &["a", "b", "c"]).await;
         store
-            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["a", "b"]))
+            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &pool[..2])
             .await
             .unwrap();
+        let mut again = vec![pool[1].clone(), pool[2].clone(), pool[2].clone()];
+        again[0].origin = String::from("b2");
+        again[2].origin = String::from("c2");
+        sizes.lock().unwrap().clear();
         crate::inject_begin_failures(1);
         let replaced = store
-            .replace_discover_candidates(
-                &alice,
-                "libro",
-                SeedScope::Household,
-                &[
-                    ("b".to_string(), "{\"k\":\"b2\"}".to_string()),
-                    ("c".to_string(), "{\"k\":\"c\"}".to_string()),
-                    ("c".to_string(), "{\"k\":\"c2\"}".to_string()),
-                ],
-            )
+            .replace_discover_candidates(&alice, "libro", SeedScope::Household, &again)
             .await;
         let unused_injection = crate::consume_begin_injection();
         replaced.unwrap();
         assert!(unused_injection, "the write opened a transaction");
-        // Two small replaces fit one batch each: two upsert pairs plus the delete.
-        assert_eq!(*sizes.lock().unwrap(), vec![5, 5]);
+        // Two upsert pairs plus the delete, in one batch.
+        assert_eq!(*sizes.lock().unwrap(), vec![5]);
         let mut got: Vec<(String, String, SeedScope)> = store
             .list_discover_candidates(&alice)
             .await
             .unwrap()
             .into_iter()
-            .map(|c| (c.candidate_key, c.candidate_json, c.seed_scope))
+            .map(|c| (c.listing.product_id, c.origin, c.seed_scope))
             .collect();
         got.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(
             got,
             vec![
-                (
-                    String::from("b"),
-                    String::from("{\"k\":\"b2\"}"),
-                    SeedScope::Household
-                ),
-                (
-                    String::from("c"),
-                    String::from("{\"k\":\"c2\"}"),
-                    SeedScope::Household
-                ),
+                (String::from("b"), String::from("b2"), SeedScope::Household),
+                (String::from("c"), String::from("c2"), SeedScope::Household),
             ]
         );
     }
@@ -891,17 +1114,28 @@ mod tests {
         let (store, sizes) = batch_store(caps).await;
         let alice = DiscoverSubject::User(1);
         store
-            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["old", "kept"]))
+            .replace_discover_candidates(
+                &alice,
+                "libro",
+                SeedScope::Own,
+                &refs(&store, &["old", "kept"]).await,
+            )
             .await
             .unwrap();
         store
-            .replace_discover_candidates(&alice, "chirp", SeedScope::Own, &rows(&["other"]))
+            .replace_discover_candidates(
+                &alice,
+                "chirp",
+                SeedScope::Own,
+                &refs(&store, &["other"]).await,
+            )
             .await
             .unwrap();
+        let names: Vec<String> = (0..60).map(|i| format!("n{i:02}")).collect();
+        let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut fresh = refs(&store, &["kept"]).await;
+        fresh.extend(refs(&store, &name_refs).await);
         sizes.lock().unwrap().clear();
-
-        let mut fresh = rows(&["kept"]);
-        fresh.extend((0..60).map(|i| (format!("n{i:02}"), format!("{{\"n\":{i}}}"))));
         store
             .replace_discover_candidates(&alice, "libro", SeedScope::Household, &fresh)
             .await
@@ -916,7 +1150,7 @@ mod tests {
         let mut libro: Vec<&str> = listed
             .iter()
             .filter(|c| c.source == "libro")
-            .map(|c| c.candidate_key.as_str())
+            .map(|c| c.listing.product_id.as_str())
             .collect();
         libro.sort_unstable();
         assert_eq!(libro.len(), 61);
@@ -931,139 +1165,6 @@ mod tests {
             1,
             "another store's rows are untouched"
         );
-    }
-
-    /// Real-sized candidates are split by the plugin's request-size cap
-    /// before its statement cap, and every row still arrives.
-    #[tokio::test]
-    async fn candidates_replace_in_batches_past_the_request_bytes_cap() {
-        let mut caps = DbCapabilities::advertised_d1();
-        caps.max_request_bytes = 64 * 1024;
-        let (store, sizes) = batch_store(caps).await;
-        let alice = DiscoverSubject::User(1);
-        store
-            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &big_rows("a", 120))
-            .await
-            .unwrap();
-
-        let sent = sizes.lock().unwrap().clone();
-        assert_eq!(sent.iter().sum::<usize>(), 241);
-        // About 2.7 KB per pair against a 56 KiB budget: well under 40 statements a batch.
-        assert!(sent.len() >= 6, "{sent:?}");
-        assert!(sent.iter().all(|n| *n < 48), "{sent:?}");
-        assert_eq!(
-            store.list_discover_candidates(&alice).await.unwrap().len(),
-            120
-        );
-    }
-
-    /// A single candidate larger than one request may carry fails instead
-    /// of being sent.
-    #[tokio::test]
-    async fn an_oversized_candidate_is_refused() {
-        let mut caps = DbCapabilities::advertised_d1();
-        caps.max_request_bytes = 1024;
-        let (store, sizes) = batch_store(caps).await;
-        let alice = DiscoverSubject::User(1);
-        let result = store
-            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &big_rows("a", 3))
-            .await;
-        assert!(result.is_err());
-        assert!(sizes.lock().unwrap().is_empty(), "nothing was sent");
-    }
-
-    /// A replace that fails after a batch has committed keeps the store's
-    /// old rows: the stale-row delete only rides in the last batch.
-    #[tokio::test]
-    async fn a_failed_replace_keeps_the_old_rows() {
-        let mut caps = DbCapabilities::advertised_sqlite();
-        caps.max_statements = bookclerk_plugin_abi::HOST_MIN_STATEMENTS;
-        caps.max_request_bytes = 64 * 1024;
-        let (store, sizes) = batch_store(caps).await;
-        let alice = DiscoverSubject::User(1);
-        store
-            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["old"]))
-            .await
-            .unwrap();
-        sizes.lock().unwrap().clear();
-
-        let mut fresh: Vec<(String, String)> = (0..30)
-            .map(|i| (format!("n{i:02}"), format!("{{\"n\":{i}}}")))
-            .collect();
-        fresh.push((
-            String::from("huge"),
-            format!("{{\"pad\":\"{}\"}}", "x".repeat(80 * 1024)),
-        ));
-        let result = store
-            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &fresh)
-            .await;
-        assert!(result.is_err());
-
-        assert_eq!(*sizes.lock().unwrap(), vec![40], "one batch committed");
-        let keys: Vec<String> = store
-            .list_discover_candidates(&alice)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|c| c.candidate_key)
-            .collect();
-        assert!(keys.iter().any(|k| k == "old"), "{keys:?}");
-        assert!(keys.iter().any(|k| k == "n00"), "{keys:?}");
-        assert!(!keys.iter().any(|k| k == "huge"), "{keys:?}");
-    }
-
-    /// A candidate too large to share a batch, but within the plugin's
-    /// request limit, is sent in a request of its own.
-    #[tokio::test]
-    async fn a_large_candidate_goes_alone() {
-        let mut caps = DbCapabilities::advertised_sqlite();
-        caps.max_request_bytes = 64 * 1024;
-        let (store, sizes) = batch_store(caps).await;
-        let alice = DiscoverSubject::User(1);
-        let mut fresh = rows(&["a", "b"]);
-        fresh.insert(
-            1,
-            (
-                String::from("large"),
-                format!("{{\"pad\":\"{}\"}}", "x".repeat(60 * 1024)),
-            ),
-        );
-        store
-            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &fresh)
-            .await
-            .unwrap();
-
-        let sent = sizes.lock().unwrap().clone();
-        assert_eq!(sent.iter().sum::<usize>(), 7, "{sent:?}");
-        assert!(sent.contains(&1), "the large row went alone: {sent:?}");
-        assert_eq!(
-            store.list_discover_candidates(&alice).await.unwrap().len(),
-            3
-        );
-    }
-
-    /// A full read page of real-sized candidates is larger than the sqlite
-    /// guest's `maxResultBytes`, so the listing has to shrink its pages.
-    #[tokio::test]
-    async fn large_candidates_list_under_the_result_cap() {
-        let store = store().await;
-        let alice = DiscoverSubject::User(1);
-        let body = "x".repeat(1_400);
-        let count = usize::try_from(DISCOVER_READ_PAGE).unwrap() + 37;
-        let rows: Vec<(String, String)> = (0..count)
-            .map(|i| {
-                (
-                    format!("k{i:04}"),
-                    format!("{{\"k\":\"{i}\",\"d\":\"{body}\"}}"),
-                )
-            })
-            .collect();
-        store
-            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows)
-            .await
-            .unwrap();
-        let listed = store.list_discover_candidates(&alice).await.unwrap();
-        assert_eq!(listed.len(), count);
     }
 
     /// A stored feed larger than one inline result reads back whole and is
@@ -1092,15 +1193,30 @@ mod tests {
         let store = store().await;
         let alice = DiscoverSubject::User(1);
         store
-            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["a"]))
+            .replace_discover_candidates(
+                &alice,
+                "libro",
+                SeedScope::Own,
+                &refs(&store, &["a"]).await,
+            )
             .await
             .unwrap();
         store
-            .replace_discover_candidates(&alice, "chirp", SeedScope::Own, &rows(&["b"]))
+            .replace_discover_candidates(
+                &alice,
+                "chirp",
+                SeedScope::Own,
+                &refs(&store, &["b"]).await,
+            )
             .await
             .unwrap();
         store
-            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["a"]))
+            .replace_discover_candidates(
+                &alice,
+                "libro",
+                SeedScope::Own,
+                &refs(&store, &["a"]).await,
+            )
             .await
             .unwrap();
         let order: Vec<String> = store
@@ -1114,30 +1230,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_answers_to_one_call_are_never_mixed() {
+        let store = store().await;
+        let day = chrono::Duration::hours(24);
+        let pool = refs(&store, &["a", "b", "c", "d"]).await;
+        let run = |statements: Vec<TypedDbStatement>| {
+            let store = &store;
+            async move { store.run_candidate_batch(statements).await.unwrap() }
+        };
+        let first = super::store_call_statements("k1", "libro", "w1", &hits(&pool[..2]));
+        let second = super::store_call_statements("k1", "libro", "w2", &hits(&pool[2..]));
+        // The second write claims the call while the first is between
+        // batches: the first write's hits and stamp no longer apply.
+        run(first.head).await;
+        run(second.head).await;
+        run(first.hits).await;
+        run(vec![first.stamp]).await;
+        assert!(
+            store
+                .get_discover_store_call("k1", day)
+                .await
+                .unwrap()
+                .is_none(),
+            "a taken-over write never marks the answer fresh"
+        );
+        run(second.hits).await;
+        run(vec![second.stamp]).await;
+        assert_eq!(
+            store.get_discover_store_call("k1", day).await.unwrap(),
+            Some(hits(&pool[2..]))
+        );
+        // A write taken over after its hits landed loses them to the new
+        // claim, and its late stamp changes nothing.
+        let third = super::store_call_statements("k1", "libro", "w3", &hits(&pool[..1]));
+        let fourth = super::store_call_statements("k1", "libro", "w4", &hits(&pool[1..2]));
+        run(third.head).await;
+        run(third.hits).await;
+        run(fourth.head).await;
+        run(vec![third.stamp]).await;
+        assert!(store
+            .get_discover_store_call("k1", day)
+            .await
+            .unwrap()
+            .is_none());
+        run(fourth.hits).await;
+        run(vec![fourth.stamp]).await;
+        assert_eq!(
+            store.get_discover_store_call("k1", day).await.unwrap(),
+            Some(hits(&pool[1..2]))
+        );
+    }
+
+    #[tokio::test]
     async fn store_calls_are_cached_refreshed_and_pruned() {
         let store = store().await;
         let day = chrono::Duration::hours(24);
+        let pool = refs(&store, &["a", "b", "c"]).await;
         assert!(store
             .get_discover_store_call("k1", day)
             .await
             .unwrap()
             .is_none());
         store
-            .put_discover_store_call("k1", "libro", "[1]")
+            .put_discover_store_call("k1", "libro", &hits(&pool[..2]))
             .await
             .unwrap();
         assert_eq!(
             store.get_discover_store_call("k1", day).await.unwrap(),
-            Some(String::from("[1]"))
+            Some(hits(&pool[..2]))
         );
-        // A newer answer for the same call replaces the old one.
+        // A newer answer for the same call replaces the old one, in its order.
+        let newer = vec![pool[2].clone(), pool[0].clone()];
         store
-            .put_discover_store_call("k1", "libro", "[2]")
+            .put_discover_store_call("k1", "libro", &hits(&newer))
             .await
             .unwrap();
         assert_eq!(
             store.get_discover_store_call("k1", day).await.unwrap(),
-            Some(String::from("[2]"))
+            Some(hits(&newer))
         );
         // Too old to reuse.
         assert!(store
@@ -1164,6 +1334,15 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+        use sea_orm::PaginatorTrait as _;
+        assert_eq!(
+            discover_store_call_hits::Entity::find()
+                .count(store.db())
+                .await
+                .unwrap(),
+            0,
+            "the pruned call's hits went with it"
+        );
     }
 
     #[tokio::test]
@@ -1202,7 +1381,12 @@ mod tests {
         let kept = DiscoverSubject::User(user.id);
         for subject in [&gone, &kept] {
             store
-                .replace_discover_candidates(subject, "libro", SeedScope::Own, &rows(&["k"]))
+                .replace_discover_candidates(
+                    subject,
+                    "libro",
+                    SeedScope::Own,
+                    &refs(&store, &["k"]).await,
+                )
                 .await
                 .unwrap();
             store
@@ -1241,13 +1425,21 @@ mod tests {
         let keys: Vec<String> = (0..count).map(|i| format!("k{i}")).collect();
         let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
         store
-            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&key_refs))
+            .replace_discover_candidates(
+                &alice,
+                "libro",
+                SeedScope::Own,
+                &refs(&store, &key_refs).await,
+            )
             .await
             .unwrap();
         let listed = store.list_discover_candidates(&alice).await.unwrap();
         assert_eq!(listed.len(), count);
-        assert_eq!(listed[0].candidate_key, "k0");
-        assert_eq!(listed[count - 1].candidate_key, format!("k{}", count - 1));
+        assert_eq!(listed[0].listing.product_id, "k0");
+        assert_eq!(
+            listed[count - 1].listing.product_id,
+            format!("k{}", count - 1)
+        );
 
         for id in 0..count {
             store

@@ -292,6 +292,38 @@ pub fn resolve(
     snapshot: &Snapshot,
     ids: &mut dyn IdSource,
 ) -> Plan {
+    resolve_with(listing, Some(holding), snapshot, ids)
+}
+
+/// Resolves a catalog listing (a title a store sells that nobody in the
+/// library holds) against a snapshot of the stored rows.
+///
+/// The listing reaches a work, an expression and an edition exactly as
+/// [`resolve`] would place it, so a later scan of the same product finds
+/// the same rows; the plan carries no holding, so the library does not
+/// hold the edition.
+///
+/// # Arguments
+///
+/// * `listing` - The validated listing.
+/// * `snapshot` - The stored rows that bear on it.
+/// * `ids` - Mints ids for the rows the plan creates.
+///
+/// # Returns
+///
+/// The plan of writes, with [`Plan::holding`] set to `None`.
+pub fn resolve_catalog(listing: &Listing, snapshot: &Snapshot, ids: &mut dyn IdSource) -> Plan {
+    resolve_with(listing, None, snapshot, ids)
+}
+
+/// [`resolve`] and [`resolve_catalog`]: the plan for `listing`, with a
+/// holding when `holding` is set.
+fn resolve_with(
+    listing: &Listing,
+    holding: Option<&HoldingDraft>,
+    snapshot: &Snapshot,
+    ids: &mut dyn IdSource,
+) -> Plan {
     let mut conflicts = Vec::new();
 
     let pinned = snapshot.overrides.iter().find_map(|o| match o {
@@ -599,11 +631,13 @@ pub fn resolve(
         ),
     };
 
-    let stored_holding = snapshot
-        .holding
-        .as_ref()
-        .filter(|h| h.listing_id == listing_row.id && h.holder == holding.holder);
-    let holding_row = HoldingRow {
+    let stored_holding = holding.and_then(|holding| {
+        snapshot
+            .holding
+            .as_ref()
+            .filter(|h| h.listing_id == listing_row.id && h.holder == holding.holder)
+    });
+    let holding_row = holding.map(|holding| HoldingRow {
         listing_id: listing_row.id.clone(),
         holder: holding.holder.clone(),
         entitlement: holding.entitlement,
@@ -611,9 +645,11 @@ pub fn resolve(
             .purchased_at
             .clone()
             .or_else(|| stored_holding.and_then(|h| h.purchased_at.clone())),
-    };
-    let holding_is_new = stored_holding.is_none();
-    let holding_changed = stored_holding.is_some_and(|stored| *stored != holding_row);
+    });
+    let holding_is_new = holding_row.is_some() && stored_holding.is_none();
+    let holding_changed = stored_holding
+        .zip(holding_row.as_ref())
+        .is_some_and(|(stored, row)| stored != row);
 
     // An episode first seen before its show is stored without one; link it
     // once the show's listing has been resolved.
@@ -672,8 +708,12 @@ pub fn resolve(
         None
     };
 
+    // A new catalog listing holds nothing, so its link is not announced; the
+    // scan that later holds it announces it with `holding_added`. A relink or
+    // a fill of a stored edition changes rows the library may hold, so those
+    // are announced whichever plan makes them.
     let mut events = Vec::new();
-    if listing_is_new || relinked {
+    if (relinked && !listing_is_new) || (holding_row.is_some() && listing_is_new) {
         events.push(Event::EditionLinked {
             edition_id: edition_id.clone(),
             listing_id: listing_row.id.clone(),
@@ -684,10 +724,10 @@ pub fn resolve(
             edition_id: edition_id.clone(),
         });
     }
-    if holding_is_new {
+    if let Some(row) = holding_row.as_ref().filter(|_| holding_is_new) {
         events.push(Event::HoldingAdded {
             listing_id: listing_row.id.clone(),
-            holder: holding.holder.clone(),
+            holder: row.holder.clone(),
         });
     }
 

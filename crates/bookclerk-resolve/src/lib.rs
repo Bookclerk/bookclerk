@@ -39,4 +39,4 @@ pub use model::{
     LinkReason, ListingRow, Override, Plan, SeriesWrite, Snapshot, WorkIdentifierRow, WorkMatchKey,
     WorkParent, WorkReason, WorkRow,
 };
-pub use resolve::{resolve, EntityKind, IdSource};
+pub use resolve::{resolve, resolve_catalog, EntityKind, IdSource};
