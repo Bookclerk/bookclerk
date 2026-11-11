@@ -7691,3 +7691,130 @@ async fn unleased_deliveries_expire_after_their_retention_under_every_profile() 
         assert_eq!(row.outcome.as_deref(), Some("expired"), "{name}");
     }
 }
+
+/// Retention comes from the subscription that matches the event in full: a
+/// second subscription to the same type with another filter keeps its own
+/// period.
+#[tokio::test]
+async fn expiry_uses_the_subscription_that_matches_the_event() {
+    let store = test_store().await;
+    let mut quick = EventCatalogSubscription::new("book_acquired", vec![1]);
+    quick.filter = Some(serde_json::json!({"titleId": "quick"}));
+    quick.message_retention_secs = Some(60);
+    let mut slow = EventCatalogSubscription::new("book_acquired", vec![1]);
+    slow.filter = Some(serde_json::json!({"titleId": "slow"}));
+    slow.message_retention_secs = Some(14 * 86_400);
+    store
+        .upsert_event_subscriber("node-a", "split", &[quick, slow], true)
+        .await
+        .unwrap();
+    let mut ids = Vec::new();
+    for title in ["quick", "slow"] {
+        let id = expect_created(
+            persist_outbox_event(
+                &store,
+                outbox_spec(
+                    "book_acquired",
+                    &format!("book_acquired:{title}"),
+                    &format!(r#"{{"titleId":"{title}"}}"#),
+                ),
+            )
+            .await
+            .unwrap(),
+        );
+        store
+            .dispatch_event_deliveries(
+                &id,
+                &[EventSubscriber::plugin("split")],
+                &format!("op-{title}"),
+            )
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+    let expired = store
+        .expire_unleased_event_deliveries(30, chrono::Utc::now() + chrono::Duration::days(2))
+        .await
+        .unwrap();
+    assert_eq!(expired, 1);
+    let state = |id: &str| {
+        let store = store.clone();
+        let id = format!("{id}:split");
+        async move { store.get_event_delivery(&id).await.unwrap().unwrap().state }
+    };
+    assert_eq!(state(&ids[0]).await, "expired");
+    assert_eq!(state(&ids[1]).await, "pending");
+}
+
+/// A bounded expiry scan resumes where the last one stopped, so deliveries
+/// that cannot expire yet do not starve a later one, and host or node
+/// consumers do not use the scan budget at all.
+#[tokio::test]
+async fn bounded_expiry_scans_resume_and_skip_exempt_consumers() {
+    let store = test_store().await;
+    let mut long = EventCatalogSubscription::new("book_acquired", vec![1]);
+    long.message_retention_secs = Some(14 * 86_400);
+    store
+        .upsert_event_subscriber("node-a", "long", &[long], true)
+        .await
+        .unwrap();
+    let mut ids = Vec::new();
+    for (title, subscribers) in [
+        ("first", vec!["node:abc", "host:discover"]),
+        ("second", vec!["long"]),
+        ("third", vec!["echo"]),
+    ] {
+        let id = expect_created(
+            persist_outbox_event(
+                &store,
+                outbox_spec(
+                    "book_acquired",
+                    &format!("book_acquired:{title}"),
+                    &format!(r#"{{"titleId":"{title}"}}"#),
+                ),
+            )
+            .await
+            .unwrap(),
+        );
+        let subs: Vec<EventSubscriber> = subscribers
+            .into_iter()
+            .map(EventSubscriber::plugin)
+            .collect();
+        store
+            .dispatch_event_deliveries(&id, &subs, &format!("op-scan-{title}"))
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+    let later = chrono::Utc::now() + chrono::Duration::days(2);
+    assert_eq!(
+        store
+            .expire_unleased_event_deliveries_bounded(30, later, 1)
+            .await
+            .unwrap(),
+        0,
+        "the first candidate is the long-retention delivery, not a host one"
+    );
+    assert_eq!(
+        store
+            .expire_unleased_event_deliveries_bounded(30, later, 1)
+            .await
+            .unwrap(),
+        1,
+        "the second scan resumes after it"
+    );
+    let echo = store
+        .get_event_delivery(&format!("{}:echo", ids[2]))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(echo.state, "expired");
+    assert_eq!(
+        store
+            .expire_unleased_event_deliveries_bounded(30, later, 1)
+            .await
+            .unwrap(),
+        0,
+        "the scan wrapped around and finds nothing new"
+    );
+}

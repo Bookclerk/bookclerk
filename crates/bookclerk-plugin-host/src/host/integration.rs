@@ -114,6 +114,7 @@ impl ExternalIntegration {
                     s.resource_class.clone()
                 },
                 filter: s.filter.clone().filter(|v| !v.is_null()),
+                message_retention_secs: s.message_retention_period,
             })
             .collect();
         let queue_subscriptions = plugin

@@ -621,7 +621,7 @@ fn catalog_from_runtime(subs: &[EventSubscription]) -> Vec<EventCatalogSubscript
             max_retries: None,
             dead_letter_queue: None,
             retry_delay_secs: 0,
-            message_retention_secs: None,
+            message_retention_secs: s.message_retention_secs,
         })
         .collect()
 }
@@ -1750,6 +1750,7 @@ mod tests {
                 supports_suspend: false,
                 resource_class: "network".into(),
                 filter: None,
+                message_retention_secs: None,
             },
             EventSubscription {
                 event_type: "book_acquired".into(),
@@ -1757,6 +1758,7 @@ mod tests {
                 supports_suspend: true,
                 resource_class: "network".into(),
                 filter: None,
+                message_retention_secs: None,
             },
         ];
         assert!(!suspend_allowed(&subs, "book_acquired", 1));
@@ -1772,6 +1774,7 @@ mod tests {
             supports_suspend: true,
             resource_class: "network".into(),
             filter: None,
+            message_retention_secs: None,
         }]);
         assert!(wake_grants_from_subscriptions(&subs, "", "")
             .unwrap()
@@ -1794,7 +1797,9 @@ mod tests {
             supports_suspend: true,
             resource_class: "network".into(),
             filter: Some(serde_json::json!({"source": "audible"})),
+            message_retention_secs: Some(900),
         }]);
+        assert_eq!(subs[0].message_retention_secs, Some(900));
         let grants = wake_grants_from_subscriptions(&subs, "book_acquired", "").unwrap();
         assert_eq!(grants.len(), 1);
         assert_eq!(grants[0].schema_versions, vec![1]);
@@ -2262,6 +2267,73 @@ queue = "other"
                 .collect::<Vec<_>>(),
             ["book_acquired"]
         );
+    }
+
+    /// Runs `sql` on the store's connection to break a table the way a
+    /// database that stops answering would.
+    async fn break_table(store: &LibraryStore, sql: &str) {
+        use sea_orm::ConnectionTrait;
+        store.db().execute_unprepared(sql).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unparseable_or_unreadable_install_subscribes_to_nothing() {
+        let files = tempfile::tempdir().unwrap();
+        let (_state, store) = crate::node_api::tests::test_state(&files).await;
+        let actor = bookclerk_library::control_plane::ConfigActor::Bootstrap;
+        bookclerk_library::control_plane::add_plugin_version(
+            &store,
+            &actor,
+            installed_echo(installed_echo_grant()),
+        )
+        .await
+        .unwrap();
+        bookclerk_library::control_plane::activate_version(
+            &store,
+            &actor,
+            INSTALLED_ECHO_KEY,
+            "0.1.0",
+            &event_node_id(files.path()),
+        )
+        .await
+        .unwrap();
+        break_table(
+            &store,
+            "UPDATE plugin_versions SET manifest_toml = 'not a manifest'",
+        )
+        .await;
+        assert_eq!(
+            active_version_subscriptions(&store, INSTALLED_ECHO_KEY).await,
+            Some(Vec::new()),
+            "an install that would not spawn subscribes to nothing"
+        );
+        break_table(&store, "DROP TABLE plugin_versions").await;
+        assert_eq!(
+            active_version_subscriptions(&store, INSTALLED_ECHO_KEY).await,
+            None,
+            "a read failure falls back to the local tree"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_control_plane_leaves_only_loaded_instances() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, store) = crate::node_api::tests::test_state(&files).await;
+        let node_id = event_node_id(files.path());
+        deploy_and_heartbeat(&state, &store, files.path(), INSTALLED_ECHO_KEY).await;
+        assert_eq!(deployed_subscribers(&store, &node_id).await.len(), 1);
+
+        break_table(&store, "DROP TABLE event_subscriber_nodes").await;
+        upsert_event_subscriber_catalog(&state).await;
+
+        break_table(
+            &store,
+            "ALTER TABLE plugin_instances RENAME TO gone_instances",
+        )
+        .await;
+        assert!(deployed_subscribers(&store, &node_id).await.is_empty());
+        break_table(&store, "DROP TABLE plugin_deployments").await;
+        assert!(deployed_subscribers(&store, &node_id).await.is_empty());
     }
 
     #[tokio::test]

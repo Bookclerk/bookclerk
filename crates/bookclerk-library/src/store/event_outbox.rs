@@ -2264,10 +2264,14 @@ impl LibraryStore {
     /// the retention of the matching subscription in the live catalog
     /// (`message_retention_secs`, else
     /// [`EVENT_DELIVERY_DEFAULT_RETENTION_SECS`]), capped at
-    /// `retention_days`. Host consumers (`host:` and node consumers) never
-    /// expire. Expired rows stay until [`EventPruneStep::TerminalDeliveries`]
-    /// removes them, so they record which events a subscriber missed. At
-    /// most [`EXPIRE_MAX_ROWS`] candidates are examined per call.
+    /// `retention_days`. The matching subscription is the first one of the
+    /// subscriber that matches the parent event in full (queue, type, schema
+    /// version and filter), as at dispatch. Host consumers (`host:` and node
+    /// consumers) never expire and are left out of the scan. Expired rows stay
+    /// until [`EventPruneStep::TerminalDeliveries`] removes them, so they
+    /// record which events a subscriber missed. At most 10 000
+    /// candidates are examined per call; the next call resumes where this one
+    /// stopped and wraps around once it reaches the newest candidate.
     ///
     /// # Arguments
     ///
@@ -2287,6 +2291,23 @@ impl LibraryStore {
         retention_days: u64,
         now: chrono::DateTime<Utc>,
     ) -> Result<u64> {
+        self.expire_unleased_event_deliveries_bounded(retention_days, now, EXPIRE_MAX_ROWS)
+            .await
+    }
+
+    /// [`Self::expire_unleased_event_deliveries`] examining at most
+    /// `max_rows` candidates (at least one), in pages no larger than that.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read or the update fails.
+    pub(crate) async fn expire_unleased_event_deliveries_bounded(
+        &self,
+        retention_days: u64,
+        now: chrono::DateTime<Utc>,
+        max_rows: usize,
+    ) -> Result<u64> {
+        let max_rows = max_rows.max(1);
         let cap_secs = i64::try_from(retention_days.saturating_mul(86_400)).unwrap_or(i64::MAX);
         let catalog = self.list_live_event_subscribers().await?;
         let retention = DeliveryRetention::new(&catalog, cap_secs);
@@ -2295,9 +2316,13 @@ impl LibraryStore {
             self.max_binds
                 .saturating_sub(EXPIRE_FIXED_BINDS)
                 .clamp(1, 64),
-        );
+        )
+        .min(u64::try_from(max_rows).unwrap_or(u64::MAX));
         let now_s = now_str();
-        let mut after: Option<(String, String)> = None;
+        let mut after = self
+            .expire_cursor
+            .lock()
+            .map_or(None, |cursor| cursor.clone());
         let mut examined = 0usize;
         let mut expired = 0u64;
         loop {
@@ -2307,7 +2332,14 @@ impl LibraryStore {
                 .filter(event_deliveries::Column::ResumePending.eq(0i64))
                 .filter(event_deliveries::Column::CheckpointJson.is_null())
                 .filter(event_deliveries::Column::CreatedAt.lte(shortest.clone()))
-                .filter(event_deliveries::Column::RunAfter.lte(shortest.clone()));
+                .filter(event_deliveries::Column::RunAfter.lte(shortest.clone()))
+                .filter(
+                    event_deliveries::Column::PluginId.not_like(format!("{HOST_CONSUMER_PREFIX}%")),
+                )
+                .filter(
+                    event_deliveries::Column::PluginId
+                        .not_like(format!("{}%", crate::control_plane::NODE_CONSUMER_PREFIX)),
+                );
             if let Some((created_at, id)) = &after {
                 query = query.filter(claim_keyset_after(created_at, id));
             }
@@ -2319,29 +2351,26 @@ impl LibraryStore {
                 .await
                 .map_err(LibraryError::from_db_err)?;
             let Some(last) = rows.last() else {
+                after = None;
                 break;
             };
             after = Some((last.created_at.clone(), last.id.clone()));
             examined += rows.len();
             let event_ids: Vec<String> = rows.iter().map(|r| r.event_id.clone()).collect();
-            let types: std::collections::HashMap<String, String> = domain_events::Entity::find()
-                .filter(domain_events::Column::Id.is_in(event_ids))
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::from_db_err)?
-                .into_iter()
-                .map(|e| (e.id, e.event_type))
-                .collect();
+            let events: std::collections::HashMap<String, DomainEventRecord> =
+                domain_events::Entity::find()
+                    .filter(domain_events::Column::Id.is_in(event_ids))
+                    .all(&self.db)
+                    .await
+                    .map_err(LibraryError::from_db_err)?
+                    .into_iter()
+                    .map(|m| map_event(m).map(|e| (e.id.clone(), e)))
+                    .collect::<Result<_>>()?;
             let due: Vec<String> = rows
                 .iter()
                 .filter(|row| {
-                    let event_type = types.get(&row.event_id).map_or("", String::as_str);
                     retention
-                        .secs_for(
-                            &row.plugin_id,
-                            queue_name_or_bus(&row.queue_name),
-                            event_type,
-                        )
+                        .secs_for(&row.plugin_id, events.get(&row.event_id))
                         .is_some_and(|secs| {
                             let waited_since =
                                 parse_dt(&row.created_at).max(parse_dt(&row.run_after));
@@ -2381,9 +2410,16 @@ impl LibraryStore {
                     )
                     .await?;
             }
-            if u64::try_from(rows.len()).unwrap_or(u64::MAX) < page || examined >= EXPIRE_MAX_ROWS {
+            if u64::try_from(rows.len()).unwrap_or(u64::MAX) < page {
+                after = None;
                 break;
             }
+            if examined >= max_rows {
+                break;
+            }
+        }
+        if let Ok(mut cursor) = self.expire_cursor.lock() {
+            *cursor = after;
         }
         Ok(expired)
     }
@@ -2579,15 +2615,16 @@ impl<'a> DeliveryRetention<'a> {
     /// # Arguments
     ///
     /// * `plugin_id` - The delivery's subscriber.
-    /// * `queue` - The delivery's queue (`core.events` for the event bus).
-    /// * `event_type` - The parent event's type; empty when unknown.
+    /// * `event` - The parent event; `None` when it could not be read.
     ///
     /// # Returns
     ///
-    /// `None` for host and node consumers. Otherwise the matching live
-    /// subscription's period, or the default when the subscriber has no live
-    /// row or declares none, capped at the events retention window.
-    fn secs_for(&self, plugin_id: &str, queue: &str, event_type: &str) -> Option<i64> {
+    /// `None` for host and node consumers. Otherwise the period of the
+    /// subscriber's first live subscription that matches `event` in full
+    /// ([`subscription_matches_event`], as dispatch picks it), or the default
+    /// when the subscriber has no live row, no subscription matches, or the
+    /// match declares none; capped at the events retention window.
+    fn secs_for(&self, plugin_id: &str, event: Option<&DomainEventRecord>) -> Option<i64> {
         if plugin_id.starts_with(HOST_CONSUMER_PREFIX)
             || crate::control_plane::is_node_consumer_id(plugin_id)
         {
@@ -2596,10 +2633,10 @@ impl<'a> DeliveryRetention<'a> {
         let declared = self
             .by_plugin
             .get(plugin_id)
-            .and_then(|subs| {
-                subs.iter().find(|sub| {
-                    sub.queue_name() == queue && (sub.is_queue() || sub.event_type == event_type)
-                })
+            .zip(event)
+            .and_then(|(subs, event)| {
+                subs.iter()
+                    .find(|sub| subscription_matches_event(sub, event))
             })
             .and_then(|sub| sub.message_retention_secs);
         Some(
