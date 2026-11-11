@@ -12,7 +12,7 @@ use bookclerk_integrations::{
     QueueResult, QueueSubscription,
 };
 use bookclerk_library::control_plane::{
-    list_all_plugin_instances, list_present_deployments_for_node, load_active_version, route_ranks,
+    list_present_deployments_for_node, load_active_version, load_plugin_instance, route_ranks,
     RouteRank,
 };
 use bookclerk_library::{
@@ -344,13 +344,19 @@ async fn deployed_subscribers(library: &LibraryStore, node_id: &str) -> Vec<Depl
     if deployments.is_empty() {
         return Vec::new();
     }
-    let instances = match list_all_plugin_instances(library).await {
-        Ok(rows) => rows,
-        Err(err) => {
-            warn!(error = %err, "plugin instance read for event catalog failed");
-            return Vec::new();
+    // One point read per deployed instance, not a cluster-wide instance
+    // list, so the read stays within an adapter's result-row limit.
+    let mut instances = Vec::with_capacity(deployments.len());
+    for row in deployments.iter().filter(|row| row.desired.runs()) {
+        match load_plugin_instance(library, &row.plugin_instance_id).await {
+            Ok(Some(instance)) => instances.push(instance),
+            Ok(None) => {}
+            Err(err) => {
+                warn!(error = %err, "plugin instance read for event catalog failed");
+                return Vec::new();
+            }
         }
-    };
+    }
     let keys: std::collections::HashMap<&str, &str> = instances
         .iter()
         .map(|instance| (instance.id.as_str(), instance.plugin_key.as_str()))
