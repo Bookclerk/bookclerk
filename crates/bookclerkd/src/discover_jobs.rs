@@ -235,7 +235,7 @@ pub async fn run_discover_feed(
     }
     let has_books = library.count_books(None).await? > 0;
     let use_onnx = has_books && cfg.discovery.embeddings_enabled;
-    // One embedder at a time, as the request-queue route does.
+    // One embedder at a time, as the request-queue ranking job does.
     let _gate = state
         .discover_gate
         .clone()
@@ -282,6 +282,8 @@ pub async fn run_discover_feed(
         subject = %subject.key(),
         scope = report.scope.as_str(),
         shelves = report.shelves,
+        cards = report.cards,
+        bytes = report.stored_bytes,
         "stored discover feed"
     );
     // Open Discover pages on this node re-read at once; other nodes see the

@@ -1385,6 +1385,10 @@ pub enum JobKind {
     /// Rank one Discover subject's stored candidates into shelves
     /// (`discover_feed`); no network.
     DiscoverFeed,
+    /// Rank the shared request queue against household taste and store the
+    /// ranking (`discover_request_queue`); no network. One job serves
+    /// everyone, since the queue is not personalized.
+    DiscoverRequestQueue,
     /// Sweep one node's image caches and its orphaned job scratch
     /// (`cache_sweep`); only the node named by [`JobPayload::node_id`]
     /// claims it.
@@ -1400,7 +1404,7 @@ pub enum JobKind {
 impl JobKind {
     /// Every kind, in declaration order; the SQL plans derive their kind
     /// lists from it so a new kind cannot be left unclaimable.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Scan,
         Self::Acquire,
         Self::ListenSync,
@@ -1409,6 +1413,7 @@ impl JobKind {
         Self::PluginScheduled,
         Self::DiscoverCandidates,
         Self::DiscoverFeed,
+        Self::DiscoverRequestQueue,
         Self::CacheSweep,
         Self::SearchIndexRebuild,
         Self::Invalid,
@@ -1426,6 +1431,7 @@ impl JobKind {
             Self::PluginScheduled => "plugin_scheduled",
             Self::DiscoverCandidates => "discover_candidates",
             Self::DiscoverFeed => "discover_feed",
+            Self::DiscoverRequestQueue => "discover_request_queue",
             Self::CacheSweep => "cache_sweep",
             Self::SearchIndexRebuild => "search_index_rebuild",
             Self::Invalid => "invalid",
@@ -1444,6 +1450,7 @@ impl JobKind {
             "plugin_scheduled" => Some(Self::PluginScheduled),
             "discover_candidates" => Some(Self::DiscoverCandidates),
             "discover_feed" => Some(Self::DiscoverFeed),
+            "discover_request_queue" => Some(Self::DiscoverRequestQueue),
             "cache_sweep" => Some(Self::CacheSweep),
             "search_index_rebuild" => Some(Self::SearchIndexRebuild),
             "invalid" => Some(Self::Invalid),
@@ -1521,6 +1528,9 @@ impl JobKind {
                 "discover_feed:subject={}",
                 payload.subject.as_deref().unwrap_or("-")
             ),
+            // One active ranking of the shared queue: a burst of taste
+            // events folds into the job already queued.
+            Self::DiscoverRequestQueue => "discover_request_queue".into(),
             // One queued or running sweep per node: a heartbeat that finds
             // another sweep due folds into it.
             Self::CacheSweep => format!(
