@@ -394,6 +394,14 @@ Candidates are **unowned** storefront hits (plus open wishlist items), scored by
 5. Wishlist boost (`wish_count × 40` on the shared queue / Discover merge)
 6. Purchase hints resolved at view time (see below)
 
+Before scoring, a candidate in a language the reader does not listen in is
+dropped (`retain_reader_languages` in `bookclerk-discover`). The reader's
+languages are the normalized languages of the taste books (the subject's own,
+with the household's blended in while those are few), or the default
+preferred language (`en`) when no taste book has one. A candidate whose store
+gave no language, or one `normalize_language` does not recognize, stays, as
+in catalog search.
+
 Whether a wished title is already owned is decided by the library's
 resolver (`LibraryStore::owned_work_for`), the same way a scanned listing
 finds its work: shared identifiers, then the work's identifiers, then the
