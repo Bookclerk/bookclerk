@@ -269,9 +269,11 @@ Reserved classes (no worker in this release): `media`, `transcription`,
   the index in one commit.
 
 One writer runs at a time per index. A delivery that finds a rebuild (or
-the CLI) writing is retried after 10 s, for up to an hour. Searches read the
-last commit, so they keep answering from the old index while a rebuild
-runs.
+the CLI) writing is retried after 10 s, for up to an hour. A CLI rebuild
+(`library search --rebuild-index`, or the one after `library scan`) that
+finds a daemon writing waits for it, pausing up to 2 s between tries, and
+gives up after five minutes. Searches read the last commit, so they keep
+answering from the old index while a rebuild runs.
 
 The search matches, sorts by title, pages and counts in the index, and
 only the page's titles are read from the database, so there is no hit cap.

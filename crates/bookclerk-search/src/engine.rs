@@ -58,6 +58,13 @@ static REPLACE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// refresh writes a handful of documents.
 const REFRESH_WRITER_HEAP: usize = 15_000_000;
 
+/// First pause [`SearchEngine::rebuild_waiting`] takes after finding the
+/// index busy; each later pause doubles up to [`BUSY_PAUSE_MAX`].
+const BUSY_PAUSE_FIRST: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Longest pause between [`SearchEngine::rebuild_waiting`] attempts.
+const BUSY_PAUSE_MAX: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Maps a Tantivy error to [`SearchError::Busy`] when another writer holds
 /// the index lock, else to [`SearchError::Index`].
 fn writer_error(err: TantivyError) -> SearchError {
@@ -306,6 +313,54 @@ impl SearchEngine {
         std::fs::write(self.dir.join(complete_marker()), b"")
             .map_err(|err| SearchError::Index(err.to_string()))?;
         Ok(count)
+    }
+
+    /// Rebuilds the index like [`Self::rebuild`], waiting while another
+    /// writer holds it.
+    ///
+    /// A running daemon refreshes its index from library events, and each
+    /// refresh holds the writer for a moment (a daemon rebuild holds it for
+    /// longer). A rebuild that finds the index busy has written nothing, so
+    /// it pauses (100 ms, doubling to 2 s) and tries again until `max_wait`
+    /// has passed.
+    ///
+    /// # Arguments
+    ///
+    /// * `library` - The library the titles are read from.
+    /// * `max_wait` - How long to keep trying while the index is busy.
+    ///
+    /// # Returns
+    ///
+    /// How many titles the index now holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Busy`] when the index is still busy after
+    /// `max_wait`, and any other error of [`Self::rebuild`] at once.
+    pub async fn rebuild_waiting(
+        &self,
+        library: &LibraryStore,
+        max_wait: std::time::Duration,
+    ) -> Result<usize> {
+        let deadline = tokio::time::Instant::now() + max_wait;
+        let mut pause = BUSY_PAUSE_FIRST;
+        let mut announced = false;
+        loop {
+            match self.rebuild(library).await {
+                Err(SearchError::Busy) if tokio::time::Instant::now() + pause <= deadline => {
+                    if !announced {
+                        tracing::info!(
+                            dir = %self.dir.display(),
+                            "search index is busy with another writer; waiting to rebuild"
+                        );
+                        announced = true;
+                    }
+                    tokio::time::sleep(pause).await;
+                    pause = (pause * 2).min(BUSY_PAUSE_MAX);
+                }
+                outcome => return outcome,
+            }
+        }
     }
 
     /// Replaces the documents of `listings` with the library titles that
@@ -1045,6 +1100,41 @@ mod tests {
             engine.rebuild(&library).await,
             Err(SearchError::Busy)
         ));
+    }
+
+    #[tokio::test]
+    async fn rebuild_waiting_runs_once_the_writer_is_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = store_with(&[("B1", "Alpha"), ("B2", "Beta")]).await;
+        let engine = SearchEngine::open(dir.path()).unwrap();
+        let held = engine.refresh_writer().unwrap();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            drop(held);
+        });
+        let indexed = engine
+            .rebuild_waiting(&library, std::time::Duration::from_secs(30))
+            .await
+            .unwrap();
+        release.await.unwrap();
+        assert_eq!(indexed, 2);
+        assert_eq!(engine.search("alpha", 10).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rebuild_waiting_gives_up_after_max_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = store_with(&[("B1", "Alpha")]).await;
+        let engine = SearchEngine::open(dir.path()).unwrap();
+        let _held = engine.refresh_writer().unwrap();
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            engine
+                .rebuild_waiting(&library, std::time::Duration::from_millis(500))
+                .await,
+            Err(SearchError::Busy)
+        ));
+        assert!(started.elapsed() <= std::time::Duration::from_secs(5));
     }
 
     #[test]
