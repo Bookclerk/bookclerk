@@ -6176,6 +6176,14 @@ pub(crate) async fn list_request_queue(
 /// Marketplace a wish's store editions are looked up in.
 const WISH_REGION: &str = "us";
 
+/// Total time a new wish spends asking the stores, hints and edition lookups
+/// together.
+///
+/// It stays well under the route's budget (`api_timeout_for_path`, 8 s for
+/// `/api/wishlist`) so the wish is always saved: when the stores are slow the
+/// wish keeps what arrived in time and the browser's own rows.
+const WISH_ENRICH_BUDGET: Duration = Duration::from_secs(5);
+
 /// Inserts a title request after requiring a non-empty title.
 ///
 /// The server asks each store about the editions the wish names and places
@@ -6208,12 +6216,20 @@ async fn create_request_inner(
         preferred_sources: Vec::new(),
     };
     let mut sources = wishlist_sources_from_body(&body);
+    // One deadline covers every store call, leaving the rest of the route's
+    // budget to save the wish.
+    let deadline = tokio::time::Instant::now() + WISH_ENRICH_BUDGET;
     let pooled = {
         let registry = state.sources.read().await;
-        let hints = match bookclerk_discover::resolve_purchase_hints(&registry, &hint_query).await {
-            Ok(resolved) => resolved.hints,
-            Err(err) => {
+        let resolve = bookclerk_discover::resolve_purchase_hints(&registry, &hint_query);
+        let hints = match tokio::time::timeout_at(deadline, resolve).await {
+            Ok(Ok(resolved)) => resolved.hints,
+            Ok(Err(err)) => {
                 tracing::debug!(error = %err, "wishlist purchase-hint resolve soft-failed");
+                Vec::new()
+            }
+            Err(_) => {
+                tracing::debug!("wishlist purchase-hint resolve ran out of time");
                 Vec::new()
             }
         };
@@ -6227,8 +6243,23 @@ async fn create_request_inner(
             .iter()
             .map(|s| (s.source.clone(), s.product_id.clone()))
             .collect();
-        bookclerk_discover::pool_wish_editions(&library, &registry, &editions, &hints, WISH_REGION)
-            .await
+        let pool = bookclerk_discover::pool_wish_editions(
+            &library,
+            &registry,
+            &editions,
+            &hints,
+            WISH_REGION,
+        );
+        match tokio::time::timeout_at(deadline, pool).await {
+            Ok(pooled) => pooled,
+            Err(_) => {
+                // Each pool write is its own atomic batch, so a lookup cut
+                // off here leaves only whole store answers; the wish then
+                // names no listing and resolves by its own text.
+                tracing::debug!("wishlist edition lookup ran out of time");
+                Vec::new()
+            }
+        }
     };
     for source in &mut sources {
         let source_id = source.source.trim().to_ascii_lowercase();
@@ -6668,6 +6699,14 @@ fn internal_err(err: impl std::fmt::Display) -> (StatusCode, String) {
 
 #[cfg(test)]
 mod tests {
+    /// Asking the stores about a new wish leaves at least two seconds of the
+    /// route's budget to save it.
+    #[test]
+    fn a_wish_asks_the_stores_within_its_route_budget() {
+        let route = super::api_timeout_for_path("/api/wishlist");
+        assert!(super::WISH_ENRICH_BUDGET + std::time::Duration::from_secs(2) <= route);
+    }
+
     #[test]
     fn books_query_error_returns_the_branded_internal_error_body() {
         let (status, axum::Json(body)) = super::books_query_error("boom");

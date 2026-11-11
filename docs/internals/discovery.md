@@ -453,16 +453,18 @@ title is **not** in the household library.
   Audible public search)
 - **Per-source snapshots:** `POST /api/wishlist` first resolves live prices
   and further stores (server-side purchase hints), then asks each store about
-  every edition the wish names (`catalog_detail`, at most eight editions, 8 s
-  each) and records the store's answer in the
+  every edition the wish names (`catalog_detail`, at most eight editions at
+  once) and records the store's answer in the
   [shared listing pool](#shared-listing-pool), with any member price a
   purchase hint quoted. It then persists the editions, HTML description and
   purchase hints into `title_request_sources` (one row per `source` +
   `product_id`), each naming its pooled listing in `listing_id` when the store
   answered. The pool holds only what stores reported: the text and prices the
   browser sends stay on the wish's own rows, so one person's wish never
-  changes what anyone else's Discover shows. An edition whose store is not
-  deployed, fails or times out is saved without a listing. `GET /api/wishlist` / request-queue merge those rows for the richest
+  changes what anyone else's Discover shows. The hints and the edition
+  lookups share one 5 s deadline, well inside the route's 8 s budget, so the
+  wish is always saved; an edition whose store is not deployed, fails or does
+  not answer in time is saved without a listing. `GET /api/wishlist` / request-queue merge those rows for the richest
   blurb and multi-store Where-to-buy links (legacy thin rows still fall back to
   provider title-meta). Title detail loads Audible reviews via paginated
   `POST /api/discover/title-reviews` (`sort_by=MostHelpful|MostRecent`,
