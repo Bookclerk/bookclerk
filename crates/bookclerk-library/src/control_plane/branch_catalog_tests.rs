@@ -1500,3 +1500,97 @@ async fn record_for_book(
         .await
         .map(|recorded| assert!(recorded, "{key} is another edition's"))
 }
+
+/// Writes one `branch_titles` row straight to the table.
+async fn insert_branch_title(store: &LibraryStore, uuid: &str, state: &str, delivered: bool) {
+    let now = chrono::Utc::now().to_rfc3339();
+    crate::entities::branch_titles::ActiveModel {
+        uuid: Set(uuid.into()),
+        provenance: Set(branch_provenance(BRANCH)),
+        node_id: Set(BRANCH.into()),
+        owner_user_id: Set(None),
+        store: Set("audible".into()),
+        product_id: Set(format!("p-{uuid}")),
+        title: Set(format!("Title {uuid}")),
+        authors: Set(None),
+        metadata_json: Set("{}".into()),
+        primary_key: Set(format!("a/{uuid}.m4b")),
+        pdf_key: Set(None),
+        manifest_json: Set("[]".into()),
+        manifest_sha256: Set(format!("m-{uuid}")),
+        delivered_sha256: Set(delivered.then(|| format!("m-{uuid}"))),
+        state: Set(state.into()),
+        detached_reason: Set(None),
+        created_at: Set(now.clone()),
+        updated_at: Set(now.clone()),
+        seen_at: Set(now),
+        delivered_at: Set(None),
+        detached_at: Set(None),
+        ..Default::default()
+    }
+    .insert(store.db())
+    .await
+    .unwrap();
+}
+
+/// The keyset walk names every shared title once, columns bound by name,
+/// marks which may be passed on, and leaves detached titles out; the
+/// single-title read returns only a forwardable one. Checked under every
+/// database profile.
+#[tokio::test]
+async fn forwardable_keys_page_by_id_and_bind_columns_by_name() {
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let store = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        insert_branch_title(&store, "t1", BRANCH_TITLE_SHARED, true).await;
+        insert_branch_title(&store, "t2", BRANCH_TITLE_SHARED, false).await;
+        insert_branch_title(&store, "t3", BRANCH_TITLE_DETACHED, true).await;
+        insert_branch_title(&store, "t4", BRANCH_TITLE_SHARED, true).await;
+
+        let mut walked = Vec::new();
+        let mut after = None;
+        loop {
+            let page = forwardable_branch_title_keys_page(&store, after, 1)
+                .await
+                .unwrap();
+            let Some(last) = page.last() else { break };
+            after = Some(last.id);
+            walked.extend(page);
+        }
+        let seen: Vec<(&str, &str, &str, bool)> = walked
+            .iter()
+            .map(|k| {
+                (
+                    k.uuid.as_str(),
+                    k.store.as_str(),
+                    k.product_id.as_str(),
+                    k.delivered,
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("t1", "audible", "p-t1", true),
+                ("t2", "audible", "p-t2", false),
+                ("t4", "audible", "p-t4", true),
+            ],
+            "{name}"
+        );
+        assert!(walked.iter().all(|k| !k.updated_at.is_empty()), "{name}");
+
+        let one = forwardable_branch_title(&store, "t1").await.unwrap();
+        assert_eq!(one.map(|row| row.product_id), Some("p-t1".into()), "{name}");
+        for gone in ["t2", "t3", "missing"] {
+            assert!(
+                forwardable_branch_title(&store, gone)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{name}: {gone}"
+            );
+        }
+    }
+}
