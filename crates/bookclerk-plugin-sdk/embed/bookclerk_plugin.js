@@ -10989,6 +10989,47 @@ var GrantedEvents = class extends RpcTarget {
     }
     return { eventId: String(value.eventId ?? ""), duplicate: Boolean(value.duplicate) };
   }
+  /**
+   * Read one page of past events the granted subscriptions match.
+   *
+   * @param options - Start position, types, and page size.
+   * @returns One page of events and the cursor after it.
+   */
+  async read(options = {}) {
+    const since = options.since instanceof Date ? options.since.getTime() : options.since;
+    if (since !== void 0 && (!Number.isSafeInteger(since) || since < 0)) {
+      throw PluginError.fromWire("invalid_params", "since must be a non-negative instant");
+    }
+    const limit = options.limit ?? 0;
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw PluginError.fromWire("invalid_params", "limit must be a non-negative integer");
+    }
+    const resp = await this.#granted.fetch("http://granted/events/read", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/json" },
+      body: JSON.stringify({
+        after: String(options.after ?? ""),
+        sinceUnixMs: since ?? 0,
+        types: (options.types ?? []).map(String),
+        limit
+      })
+    });
+    const value = await resp.json().catch(() => ({}));
+    if (value && value.error) {
+      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+    }
+    if (!resp.ok) {
+      throw PluginError.fromWire("internal", `events read HTTP ${resp.status}`);
+    }
+    const events = Array.isArray(value.events) ? value.events : [];
+    return {
+      events: events.map((event) => fromBridgeJson(event)),
+      cursor: String(value.cursor ?? ""),
+      more: Boolean(value.more),
+      expiredEventIds: Array.isArray(value.expiredEventIds) ? value.expiredEventIds.map(String) : [],
+      truncated: Boolean(value.truncated)
+    };
+  }
 };
 function queueBodyBytes(body, contentType) {
   const kind = contentType || "json";

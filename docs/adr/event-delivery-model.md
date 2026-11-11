@@ -1,6 +1,6 @@
 # ADR: Event delivery follows the Workers model
 
-- **Status:** Accepted (decisions 1 to 3); later phases proposed
+- **Status:** Accepted (decisions 1 to 4); later phases proposed
 - **Date:** 2026-11-11
 
 ## Context
@@ -64,17 +64,24 @@ callers await a promise, and long work is a durable job.
    rows are kept for the events retention window as the record of what a
    subscriber missed.
 
+4. **Plugins read the event stream to catch up.** A plugin pages past
+   events from the outbox with `env.EVENTS.read({ after | since, types,
+   limit })` (`EventPublisher.read`), keeping an opaque `(created_at, id)`
+   cursor itself. A read returns only events of the caller's own library
+   that the instance's consented subscriptions match by type, schema
+   version and filter, within the invocation's account scope, and never
+   older than `[events].retention_days` (`truncated` says the start was
+   older). Each page names the events whose delivery to this plugin
+   expired (`expiredEventIds`). A read is not a delivery: it changes no
+   delivery state, `deliveryAttempt` is zero and the deduplication key is
+   the event id. The `EVENTS` binding therefore exists for a consented
+   consumer as well as a producer. Each read scans a bounded number of
+   outbox rows and may return a short page with `more` set. The guest
+   request is a fuzzed boundary (`event_read`).
+
 The following phases are proposed and get their own pull requests and
 updates to this record:
 
-- **Reading the event stream.** A plugin catches up after a gap by paging
-  past events from the outbox, `env.EVENTS.read({ after | since, types,
-  limit })`, with an opaque `(created_at, id)` cursor it keeps itself.
-  Reads return only events of the caller's own library, and only what the
-  instance's consented subscriptions, filters and account scope allow,
-  back to `[events].retention_days`, and report when deliveries expired
-  since the cursor. This changes `plugin.capnp`
-  and the TS SDK, and adds a fuzzed guest boundary.
 - **On-demand activation.** A due delivery, queue message, job or cron
   fire, or an RPC call, starts an asleep instance; an idle timeout per
   family stops it with `PluginWorker.shutdown`. Cold-start time is
@@ -90,8 +97,9 @@ updates to this record:
 - An instance that is deployed but failing to start holds `pending`
   deliveries for the events it subscribes to only for its retention
   period. Deliveries that are still due when it runs drain then; older
-  ones expire, and the plugin resyncs from its source of truth (later,
-  from the event stream). An operator who gives up on it undeploys it (its
+  ones expire, and the plugin catches up from the event stream with
+  `env.EVENTS.read`, or resyncs from its source of truth when the gap is
+  older than the events window. An operator who gives up on it undeploys it (its
   row expires within the 60 s catalog TTL).
 - A consumer that is running but falls behind by more than its retention
   period also loses the oldest never-leased deliveries. Consumers that
@@ -103,7 +111,10 @@ updates to this record:
   receiving side, as catalog sync does.
 - Late-join reconcile remains for instances deployed after an event was
   published, but is no longer how a non-running instance catches up.
-- No `plugin.capnp` change: `EventConsumer.event` already takes a batch
-  and `PluginWorker.shutdown` already exists.
-- See [Entrypoints, events and the ABI](../plugins/abi.md#how-events-are-delivered)
+- Decisions 1 to 3 needed no `plugin.capnp` change: `EventConsumer.event`
+  already takes a batch and `PluginWorker.shutdown` already exists.
+  Decision 4 appends `EventPublisher.read`, its request, page and reply
+  structs, and `maxEventCursorBytes`.
+- See [Entrypoints, events and the ABI](../plugins/abi.md#how-events-are-delivered),
+  [Reading past events](../plugins/abi.md#reading-past-events-enveventsread)
   and [Durable job queue](../internals/jobs.md).

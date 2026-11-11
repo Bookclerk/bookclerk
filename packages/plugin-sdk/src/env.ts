@@ -8,7 +8,7 @@
  */
 
 import type { DatabaseBinding } from "./db-execute.js";
-import type { PluginEvent, PublishOk, QueueSendOk } from "./generated.js";
+import type { EventReadPage, PluginEvent, PublishOk, QueueSendOk } from "./generated.js";
 
 /** Plain JSON object (string keys, JSON values). */
 export type JsonObject = Record<string, unknown>;
@@ -21,8 +21,28 @@ export type PublishEvent = Pick<PluginEvent, "eventType"> &
   };
 
 /**
- * `EVENTS` binding: outbox publisher, present when `[[events.producers]]` is
- * declared and granted.
+ * Where an {@link EventPublisherBinding.read} starts and which events it
+ * returns. Set at most one of `after` and `since`; with neither, the read
+ * starts at the oldest event the host still keeps (`[events].retention_days`).
+ */
+export interface EventReadOptions {
+  /** Opaque cursor from an earlier page's `cursor`: resume right after it. */
+  after?: string;
+  /** Start at this instant (a `Date`, or UTC unix milliseconds). */
+  since?: Date | number;
+  /**
+   * Event types to return; each must be a granted `[[events.consumers]]`
+   * type. Empty or omitted means every granted type.
+   */
+  types?: string[];
+  /** Most events in the page; `0` or omitted means the host maximum. */
+  limit?: number;
+}
+
+/**
+ * `EVENTS` binding, present when a `[[events.producers]]` or
+ * `[[events.consumers]]` entry is declared and granted. Publishing needs a
+ * granted producer; reading needs a granted consumer.
  */
 export interface EventPublisherBinding {
   /**
@@ -32,6 +52,23 @@ export interface EventPublisherBinding {
    * @returns Outbox row identity (`duplicate` when the dedup key matched).
    */
   publish(event: PublishEvent): Promise<PublishOk>;
+
+  /**
+   * Read one page of past events the plugin's granted subscriptions match,
+   * oldest first, to catch up after its deliveries expired.
+   *
+   * Pass the page's `cursor` back as `after` while `more` is true.
+   * `expiredEventIds` names events in the page whose delivery to this
+   * plugin expired unhandled, and `truncated` says the start was older
+   * than the host keeps. Read events are not deliveries: `deliveryAttempt`
+   * is `0` and `deduplicationKey` is the event id.
+   *
+   * @param options - Start position, types, and page size.
+   * @returns One page of events and the cursor after it.
+   * @throws PluginError `forbidden` for a type that is not a granted
+   *   consumer, `invalid_cursor` for a cursor the host did not issue.
+   */
+  read(options?: EventReadOptions): Promise<EventReadPage>;
 }
 
 /** Per-send options for a {@link QueueBinding}. */

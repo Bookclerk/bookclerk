@@ -367,6 +367,24 @@ export interface EventPublisherPublishResults {
 }
 
 /**
+ * Params envelope of `EventPublisher.read`.
+ *
+ * @internal
+ */
+export interface EventPublisherReadParams {
+  request: T.EventReadRequest;
+}
+
+/**
+ * Results envelope of `EventPublisher.read`.
+ *
+ * @internal
+ */
+export interface EventPublisherReadResults {
+  result: T.EventReadReply;
+}
+
+/**
  * Params envelope of `ScheduledHandler.scheduled`.
  *
  * @internal
@@ -2607,6 +2625,103 @@ export const EventBatchReplyCodec: StructCodec<T.EventBatchReply> = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("EventBatchReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `EventReadRequest` (2 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const EventReadRequestCodec: StructCodec<T.EventReadRequest> = {
+  dataWords: 2,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.after ?? "");
+    s.setUint64(0, BigInt(v.sinceUnixMs ?? 0));
+    s.setTextList(1, v.types ?? []);
+    s.setUint32(2, v.limit ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      after: s.getText(0),
+      sinceUnixMs: Number(s.getUint64(0)),
+      types: s.getTextList(1),
+      limit: s.getUint32(2),
+    };
+  },
+};
+
+/**
+ * Wire codec for `EventReadPage` (1 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const EventReadPageCodec: StructCodec<T.EventReadPage> = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    {
+      const list = v.events ?? [];
+      const items = s.initStructList(0, list.length, 4, 9);
+      for (let i = 0; i < items.length; i++) {
+        DomainEventCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    s.setText(1, v.cursor ?? "");
+    s.setBool(0, v.more ?? false);
+    s.setTextList(2, v.expiredEventIds ?? []);
+    s.setBool(1, v.truncated ?? false);
+  },
+  read(s, caps) {
+    return {
+      events: s.getStructList(0, 4, 9).map((item) => DomainEventCodec.read(item, caps)),
+      cursor: s.getText(1),
+      more: s.getBool(0),
+      expiredEventIds: s.getTextList(2),
+      truncated: s.getBool(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for `EventReadReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const EventReadReplyCodec: StructCodec<T.EventReadReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          EventReadPageCodec.write(s.initStruct(0, 1, 3), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("EventReadReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: EventReadPageCodec.read(s.getStruct(0, 1, 3), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("EventReadReply", disc);
     }
   },
 };
@@ -9303,6 +9418,46 @@ export const EventPublisherPublishResultsCodec: StructCodec<EventPublisherPublis
   read(s, caps) {
     return {
       result: PublishReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `EventPublisher.read` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const EventPublisherReadParamsCodec: StructCodec<EventPublisherReadParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      EventReadRequestCodec.write(s.initStruct(0, 2, 2), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: EventReadRequestCodec.read(s.getStruct(0, 2, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `EventPublisher.read` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const EventPublisherReadResultsCodec: StructCodec<EventPublisherReadResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EventReadReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EventReadReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

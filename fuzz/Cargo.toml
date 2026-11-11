@@ -16,6 +16,8 @@ httparse = "1"
 serde_json = "1"
 # Determinism checks in the libro_catalog oracle serialize the records.
 serde = "1"
+# The event_read oracle restates the cursor time rule.
+chrono = "0.4"
 bookclerk-plugin-abi = { path = "../crates/bookclerk-plugin-abi", features = ["host"] }
 bookclerk-plugin-manifest = { path = "../crates/bookclerk-plugin-manifest" }
 bookclerk-db-exec = { path = "../crates/bookclerk-db-exec" }
@@ -118,6 +120,13 @@ bench = false
 [[bin]]
 name = "scan_page"
 path = "fuzz_targets/scan_page.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "event_read"
+path = "fuzz_targets/event_read.rs"
 test = false
 doc = false
 bench = false

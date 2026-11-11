@@ -37,12 +37,12 @@ use bookclerk_plugin_abi::{
     CliInvokeParams, ContentSource, CopyResult, Database, DbCapabilities, DbColumn,
     DbPlanStatementKind, DbResultSelection, DbRow, DbTiming, DbType, DbValue, Destination,
     DestinationClient, DomainEvent, Entrypoint, EventConsumer, EventConsumerClient, EventPublisher,
-    EventResult, ExecuteReply, ExecuteRequest, GuestDatabase, GuestReceiptPersist, HostBindings,
-    Invocation, JobInvocation, JobOutcome, ListOptions, ListPage, LoginParams, ObjectMetadata,
-    PluginCli, PluginClient, PluginError, PluginErrorCode, PluginEvent, ProgressSink, PublishOk,
-    PurchaseHintParams, PutResult, ReadResult, ResolvedStatement, RevokeAccountParams,
-    SearchCatalogParams, Source, StatementResult, TypedDbStatement, WriteOptions,
-    MAX_EVENT_PAYLOAD_BYTES, PRODUCT_API_VERSION,
+    EventReadPage, EventReadRequest, EventResult, ExecuteReply, ExecuteRequest, GuestDatabase,
+    GuestReceiptPersist, HostBindings, Invocation, JobInvocation, JobOutcome, ListOptions,
+    ListPage, LoginParams, ObjectMetadata, PluginCli, PluginClient, PluginError, PluginErrorCode,
+    PluginEvent, ProgressSink, PublishOk, PurchaseHintParams, PutResult, ReadResult,
+    ResolvedStatement, RevokeAccountParams, SearchCatalogParams, Source, StatementResult,
+    TypedDbStatement, WriteOptions, MAX_EVENT_PAYLOAD_BYTES, PRODUCT_API_VERSION,
 };
 use bookclerk_workerd::pin::binary_name;
 use tokio::io::AsyncReadExt;
@@ -444,7 +444,10 @@ async fn event_result_vectors(client: &PluginClient) {
 /// published and fails closed on anything but the one granted producer.
 #[derive(Default)]
 struct RecordingPublisher {
+    /// Events the guest published, in order.
     published: Mutex<Vec<PluginEvent>>,
+    /// Read requests the guest sent, in order.
+    reads: Mutex<Vec<EventReadRequest>>,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -462,6 +465,27 @@ impl EventPublisher for RecordingPublisher {
         Ok(PublishOk {
             event_id: format!("evt-{n}"),
             duplicate: n > 0,
+        })
+    }
+
+    async fn read(&self, request: EventReadRequest) -> bookclerk_plugin_abi::Result<EventReadPage> {
+        if request.types.iter().any(|t| t != "fixture_pinged") {
+            return Err(PluginError::forbidden("not a granted consumer"));
+        }
+        self.reads.lock().expect("recorder lock").push(request);
+        Ok(EventReadPage {
+            events: vec![DomainEvent {
+                event_id: "evt-past".into(),
+                event_type: "fixture_pinged".into(),
+                schema_version: 1,
+                deduplication_key: "evt-past".into(),
+                payload: br#"{"n":1}"#.to_vec(),
+                ..DomainEvent::default()
+            }],
+            cursor: "v1.next".into(),
+            more: true,
+            expired_event_ids: vec!["evt-past".into()],
+            truncated: false,
         })
     }
 }
@@ -533,6 +557,64 @@ async fn events_binding_vectors(client: &PluginClient) {
         "ungranted producer fails closed with the host's wire code"
     );
     assert_eq!(recorder.published.lock().expect("recorder lock").len(), 2);
+
+    let read = deliver(&consumer, sample_event("test_read"))
+        .await
+        .expect("deliver");
+    let EventResult::Reject { reason } = read else {
+        panic!("unexpected {read:?}");
+    };
+    let page: serde_json::Value = serde_json::from_str(&reason)
+        .unwrap_or_else(|err| panic!("read outcome must be JSON, got `{reason}`: {err}"));
+    assert_eq!(
+        page,
+        serde_json::json!({
+            "events": [{ "id": "evt-past", "attempt": 0, "payload": r#"{"n":1}"# }],
+            "cursor": "v1.next",
+            "more": true,
+            "expiredEventIds": ["evt-past"],
+            "truncated": false,
+        }),
+        "the host page reaches the author with bytes decoded"
+    );
+    let since = deliver(&consumer, sample_event("test_read_since"))
+        .await
+        .expect("deliver");
+    assert_eq!(
+        since,
+        EventResult::Reject {
+            reason: "read ok: 1".into(),
+        }
+    );
+    {
+        let reads = recorder.reads.lock().expect("recorder lock");
+        assert_eq!(
+            *reads,
+            vec![
+                EventReadRequest {
+                    after: "v1.start".into(),
+                    since_unix_ms: 0,
+                    types: vec!["fixture_pinged".into()],
+                    limit: 2,
+                },
+                EventReadRequest {
+                    since_unix_ms: 5000,
+                    ..EventReadRequest::default()
+                },
+            ],
+            "the author's read options reach the host unchanged"
+        );
+    }
+    let forbidden = deliver(&consumer, sample_event("test_read_forbidden"))
+        .await
+        .expect("deliver");
+    assert_eq!(
+        forbidden,
+        EventResult::Reject {
+            reason: "read failed: forbidden".into(),
+        },
+        "an ungranted consumer type fails closed with the host's wire code"
+    );
 
     let plain = open_event_consumer(client).await;
     assert_eq!(

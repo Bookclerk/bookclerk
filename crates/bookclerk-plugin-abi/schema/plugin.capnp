@@ -48,6 +48,8 @@ const maxCheckpointBytes :UInt32 = 65536;
 const maxScanPageBooks :UInt32 = 500;
 # Maximum bytes of a scan cursor or sync token.
 const maxScanCursorBytes :UInt32 = 4096;
+# Maximum bytes of an `EventReadRequest.after` / `EventReadPage.cursor`.
+const maxEventCursorBytes :UInt32 = 512;
 # Maximum plugin / account identifier length (bytes).
 const maxIdentifierBytes :UInt32 = 64;
 # Maximum `[triggers] crons` source length (bytes), as in `ScheduledController.cron`.
@@ -568,6 +570,56 @@ struct EventBatchReply {
   }
 }
 
+# Request of `EventPublisher.read`: one page of past outbox events, oldest
+# first. Only types the instance's consented `[[events.consumers]]` rows
+# subscribe to are returned, through the same schema-version and filter match
+# as delivery, and only back to `[events].retention_days`.
+struct EventReadRequest {
+  # Opaque cursor from an earlier `EventReadPage.cursor`; empty starts at
+  # `sinceUnixMs`. At most `maxEventCursorBytes`. Set at most one of `after`
+  # and `sinceUnixMs`.
+  after @0 :Text;
+  # UTC Unix milliseconds to start from when `after` is empty; zero starts at
+  # the oldest retained event.
+  sinceUnixMs @1 :UInt64;
+  # Event types to return; empty means every consented subscription. Each
+  # entry must be a consented subscription type; at most `maxListPage`.
+  types @2 :List(Text);
+  # Most events to return; zero means `maxListPage`. At most `maxListPage`.
+  limit @3 :UInt32;
+}
+
+# Success payload of `EventPublisher.read`.
+struct EventReadPage {
+  # Matching events in outbox order. `deliveryAttempt` is zero and
+  # `deduplicationKey` is the event id: a read is not a delivery, so dedupe
+  # on `eventId`.
+  events @0 :List(DomainEvent);
+  # Opaque position after the last event scanned; pass it as `after` to
+  # continue. Empty only when nothing was scanned and the request had no
+  # cursor. At most `maxEventCursorBytes`.
+  cursor @1 :Text;
+  # True when more events may follow: the page filled or the host's scan
+  # budget ran out before the newest event.
+  more @2 :Bool;
+  # Ids of the events on this page whose delivery to this plugin expired
+  # unleased: the events the instance missed.
+  expiredEventIds @3 :List(Text);
+  # True when the start position is older than `[events].retention_days`, so
+  # events before the retained window may be gone.
+  truncated @4 :Bool;
+}
+
+# Result union of `EventPublisher.read`.
+struct EventReadReply {
+  union {
+    # Success: one page.
+    ok @0 :EventReadPage;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
 # Everything one `JobRunner.job` invocation may touch. Capabilities are
 # host-served; the guest never sees OS paths or sockets.
 struct JobController {
@@ -857,6 +909,11 @@ interface EventPublisher {
   publish @0 (
       event :PluginEvent  # Event to publish.
   ) -> (result :PublishReply);
+  # Read one page of past outbox events this instance subscribes to, oldest
+  # first, to catch up after a gap (`env.EVENTS.read`).
+  read @1 (
+      request :EventReadRequest  # Where to start, which types, how many.
+  ) -> (result :EventReadReply);
 }
 
 # One named plugin-owned database binding delivered on `Bindings.databases`.

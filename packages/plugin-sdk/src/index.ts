@@ -184,6 +184,7 @@ export { MAX_CHECKPOINT_BYTES } from "./abi.js";
 export type {
   BookclerkEnv,
   EventPublisherBinding,
+  EventReadOptions,
   JsonObject,
   KvListKeyBinding,
   KvListOptionsBinding,

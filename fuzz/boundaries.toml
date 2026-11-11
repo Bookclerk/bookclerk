@@ -119,6 +119,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.event_read]
+crate = "bookclerk-plugin-abi"
+boundary = "A guest's EVENTS.read request: the /events/read JSON body, its opaque cursor, and the consent, page and time bounds"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.db_stream]
 crate = "bookclerk-plugin-abi"
 boundary = "executeStreamed frames an adapter sends, reassembled under the streamed result budget"

@@ -1,8 +1,8 @@
 use super::*;
 use crate::models::{
-    EnqueueJobSpec, EnqueueOutcome, EventCatalogSubscription, EventSubscriber, EventWakeGrant,
-    JobFence, JobKind, JobPayload, JobRecord, JobResourceClass, JobState, JobTrigger,
-    PublishDomainEventOutcome, PublishDomainEventSpec,
+    EnqueueJobSpec, EnqueueOutcome, EventCatalogSubscription, EventStreamRead, EventStreamStart,
+    EventSubscriber, EventWakeGrant, JobFence, JobKind, JobPayload, JobRecord, JobResourceClass,
+    JobState, JobTrigger, PublishDomainEventOutcome, PublishDomainEventSpec,
 };
 use crate::{AtomicTxnBackend, InProcessSqliteAtomic};
 use sea_orm::{ActiveModelTrait, ConnectionTrait, EntityTrait};
@@ -7887,4 +7887,252 @@ async fn live_catalog_reads_every_row_one_result_at_a_time() {
         .map(|row| (row.plugin_id.as_str(), row.node_id.as_str()))
         .collect();
     assert_eq!(keys, [("alpha", "n1"), ("alpha", "n2"), ("beta", "n1")]);
+}
+
+/// Reads every page of `read`, following `last_scanned`, and returns the
+/// event ids in order plus the pages taken.
+async fn read_all_event_pages(
+    store: &LibraryStore,
+    mut read: EventStreamRead,
+) -> (Vec<String>, usize) {
+    let mut ids = Vec::new();
+    let mut pages = 0;
+    loop {
+        let page = store.read_event_stream(&read).await.unwrap();
+        pages += 1;
+        ids.extend(page.events.iter().map(|event| event.id.clone()));
+        let Some((created_at, id)) = page.last_scanned.clone() else {
+            break;
+        };
+        if !page.more {
+            break;
+        }
+        read.start = EventStreamStart::After { created_at, id };
+        assert!(pages < 100, "the read must make progress");
+    }
+    (ids, pages)
+}
+
+#[tokio::test]
+async fn the_event_stream_returns_matching_events_in_order_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let mut published = Vec::new();
+        for (i, (event_type, payload, account)) in [
+            ("book_acquired", r#"{"kind":"audio"}"#, "acct"),
+            ("title_added", r#"{"kind":"audio"}"#, "acct"),
+            ("book_acquired", r#"{"kind":"ebook"}"#, "acct"),
+            ("book_acquired", r#"{"kind":"audio"}"#, "other"),
+            ("ignored", r#"{}"#, "acct"),
+            ("book_acquired", r#"{"kind":"audio"}"#, "acct"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = expect_created(
+                persist_outbox_event(
+                    store,
+                    outbox_spec_account(event_type, &format!("read:{i}"), payload, "", account),
+                )
+                .await
+                .unwrap(),
+            );
+            published.push(id);
+        }
+        let mut queued = outbox_spec("", "read:queue", r#"{"kind":"audio"}"#);
+        queued.queue_name = "jobs.audio".into();
+        persist_outbox_event(store, queued).await.unwrap();
+
+        let mut audio = EventCatalogSubscription::new("book_acquired", vec![1]);
+        audio.filter = Some(serde_json::json!({ "kind": "audio" }));
+        let read = EventStreamRead {
+            start: EventStreamStart::Oldest,
+            subscriptions: vec![audio, EventCatalogSubscription::new("title_added", vec![1])],
+            account_id: None,
+            subscriber_ids: vec!["echo".into()],
+            retention_days: 7,
+            limit: 2,
+            now: chrono::Utc::now(),
+        };
+        let (ids, pages) = read_all_event_pages(store, read.clone()).await;
+        let expected: Vec<String> = [0, 1, 3, 5].iter().map(|i| published[*i].clone()).collect();
+        assert_eq!(ids, expected, "{name}");
+        assert!(
+            pages >= 2,
+            "a limit of two takes more than one page ({name})"
+        );
+
+        let one_account = EventStreamRead {
+            account_id: Some("acct".into()),
+            limit: 10,
+            ..read.clone()
+        };
+        let page = store.read_event_stream(&one_account).await.unwrap();
+        let ids: Vec<&str> = page.events.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [0usize, 1, 5]
+                .iter()
+                .map(|i| published[*i].as_str())
+                .collect::<Vec<_>>(),
+            "{name}"
+        );
+        assert!(!page.more, "{name}");
+        assert!(!page.truncated, "{name}");
+
+        let wrong_version = EventStreamRead {
+            subscriptions: vec![EventCatalogSubscription::new("title_added", vec![2])],
+            limit: 10,
+            ..read.clone()
+        };
+        let page = store.read_event_stream(&wrong_version).await.unwrap();
+        assert!(page.events.is_empty(), "{name}");
+        assert!(page.last_scanned.is_some(), "rows were scanned ({name})");
+
+        let nothing = EventStreamRead {
+            subscriptions: Vec::new(),
+            ..read.clone()
+        };
+        let page = store.read_event_stream(&nothing).await.unwrap();
+        assert!(
+            page.events.is_empty() && page.last_scanned.is_none(),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_event_stream_reports_missed_events_and_the_retention_window() {
+    let kit = crate::test_support::sqlite::memory(crate::test_support::Profile::ALL[0]).await;
+    let store = kit.store();
+    let first = expect_created(
+        persist_outbox_event(store, outbox_spec("book_acquired", "gap:1", "{}"))
+            .await
+            .unwrap(),
+    );
+    let second = expect_created(
+        persist_outbox_event(store, outbox_spec("book_acquired", "gap:2", "{}"))
+            .await
+            .unwrap(),
+    );
+    store
+        .dispatch_event_deliveries(&first, &[EventSubscriber::plugin("echo")], "op-gap")
+        .await
+        .unwrap();
+    store
+        .dispatch_event_deliveries(&second, &[EventSubscriber::plugin("echo")], "op-gap-2")
+        .await
+        .unwrap();
+    // No live catalog row, so expiry uses the whole window.
+    let expired = store
+        .expire_unleased_event_deliveries(1, chrono::Utc::now() + chrono::Duration::days(2))
+        .await
+        .unwrap();
+    assert_eq!(expired, 2);
+    let now = chrono::Utc::now();
+    let read = EventStreamRead {
+        start: EventStreamStart::Oldest,
+        subscriptions: vec![EventCatalogSubscription::new("book_acquired", vec![1])],
+        account_id: None,
+        subscriber_ids: vec!["echo".into(), "other".into()],
+        retention_days: 7,
+        limit: 10,
+        now,
+    };
+    let page = store.read_event_stream(&read).await.unwrap();
+    assert_eq!(page.expired_event_ids, vec![first.clone(), second.clone()]);
+    let stranger = EventStreamRead {
+        subscriber_ids: vec!["stranger".into()],
+        ..read.clone()
+    };
+    assert!(store
+        .read_event_stream(&stranger)
+        .await
+        .unwrap()
+        .expired_event_ids
+        .is_empty());
+
+    let old = EventStreamRead {
+        start: EventStreamStart::Since(now - chrono::Duration::days(30)),
+        ..read.clone()
+    };
+    let page = store.read_event_stream(&old).await.unwrap();
+    assert!(page.truncated);
+    assert_eq!(page.events.len(), 2);
+    let stale_cursor = EventStreamRead {
+        start: EventStreamStart::After {
+            created_at: (now - chrono::Duration::days(30)).to_rfc3339(),
+            id: "x".into(),
+        },
+        ..read.clone()
+    };
+    assert!(
+        store
+            .read_event_stream(&stale_cursor)
+            .await
+            .unwrap()
+            .truncated
+    );
+    let later = EventStreamRead {
+        now: now + chrono::Duration::days(8),
+        ..read.clone()
+    };
+    assert!(
+        store
+            .read_event_stream(&later)
+            .await
+            .unwrap()
+            .events
+            .is_empty(),
+        "events older than the window are not returned"
+    );
+}
+
+#[tokio::test]
+async fn the_event_stream_scan_budget_stops_and_resumes() {
+    let kit = crate::test_support::sqlite::memory(crate::test_support::Profile::ALL[0]).await;
+    let store = kit.store();
+    // Same type as the subscription, so SQL returns them; the payload filter
+    // drops them, so each one spends scan budget without filling the page.
+    let total = crate::EVENT_STREAM_SCAN_FACTOR + 3;
+    for i in 0..total {
+        persist_outbox_event(
+            store,
+            outbox_spec(
+                "book_acquired",
+                &format!("noise:{i}"),
+                r#"{"kind":"ebook"}"#,
+            ),
+        )
+        .await
+        .unwrap();
+    }
+    let wanted = expect_created(
+        persist_outbox_event(
+            store,
+            outbox_spec("book_acquired", "wanted", r#"{"kind":"audio"}"#),
+        )
+        .await
+        .unwrap(),
+    );
+    let mut audio = EventCatalogSubscription::new("book_acquired", vec![1]);
+    audio.filter = Some(serde_json::json!({ "kind": "audio" }));
+    let read = EventStreamRead {
+        start: EventStreamStart::Oldest,
+        subscriptions: vec![audio],
+        account_id: None,
+        subscriber_ids: Vec::new(),
+        retention_days: 7,
+        limit: 1,
+        now: chrono::Utc::now(),
+    };
+    let first = store.read_event_stream(&read).await.unwrap();
+    assert!(first.events.is_empty(), "the budget runs out on noise");
+    assert!(first.more);
+    assert!(first.last_scanned.is_some());
+    let (ids, pages) = read_all_event_pages(store, read).await;
+    assert_eq!(ids, vec![wanted]);
+    assert!(pages >= 2);
 }

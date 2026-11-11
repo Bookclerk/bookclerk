@@ -26,6 +26,9 @@ export const MAX_SCAN_PAGE_BOOKS = 500 as const;
 /** Maximum bytes of a scan cursor or sync token. */
 export const MAX_SCAN_CURSOR_BYTES = 4096 as const;
 
+/** Maximum bytes of an `EventReadRequest.after` / `EventReadPage.cursor`. */
+export const MAX_EVENT_CURSOR_BYTES = 512 as const;
+
 /** Maximum plugin / account identifier length (bytes). */
 export const MAX_IDENTIFIER_BYTES = 64 as const;
 

@@ -484,6 +484,7 @@ dependencies = [
  "bookclerk-resolve",
  "bookclerk-storefront",
  "bookclerk-workerd",
+ "chrono",
  "hmac",
  "httparse",
  "libfuzzer-sys",

@@ -1,8 +1,8 @@
 //! Host-granted HTTP reverse channel for workerd isolates: `JobRunner.job`
 //! streams (`Source` / `Destination` / `ProgressSink`), the job's
 //! `Cancellation` long poll (`/cancel`), named database sessions
-//! (`/db/execute`, `/db/execute-streamed`), and the `EVENTS` outbox publisher
-//! (`/events/publish`).
+//! (`/db/execute`, `/db/execute-streamed`), and the `EVENTS` outbox binding
+//! (`/events/publish`, `/events/read`).
 //!
 //! HTTP accept/read/write runs on the multi-thread runtime (`tokio::spawn`) so
 //! it is not starved by the Cap'n Proto vat `LocalSet`. Stub calls stay on the
@@ -25,11 +25,11 @@ use bookclerk_plugin_abi::{
 };
 use bookclerk_plugin_abi::{
     encode_execute_stream_error, encoded_db_capabilities_reply_bytes,
-    encoded_execute_result_reply_bytes, Cancellation, Destination, EventPublisher,
-    ExecuteStreamLimits, GuestDatabase, KvDeleteOk, KvGetOk, KvListOk, KvListOptions, KvNamespace,
-    KvPutOk, KvPutOptions, ObjectMetadata, PluginEvent, ProgressSink, PublishOk, QueueProducer,
-    QueueSendMessage, QueueSendOk, Source, WriteOptions, MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE,
-    MAX_SCALAR_BYTES,
+    encoded_execute_result_reply_bytes, Cancellation, Destination, EventPublisher, EventReadPage,
+    EventReadRequest, ExecuteStreamLimits, GuestDatabase, KvDeleteOk, KvGetOk, KvListOk,
+    KvListOptions, KvNamespace, KvPutOk, KvPutOptions, ObjectMetadata, PluginEvent, ProgressSink,
+    PublishOk, QueueProducer, QueueSendMessage, QueueSendOk, Source, WriteOptions,
+    MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE, MAX_SCALAR_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -43,6 +43,10 @@ use crate::granted_http::{
 /// Largest `/events/publish` request body: a base64 payload at
 /// [`MAX_EVENT_PAYLOAD_BYTES`] plus the envelope fields.
 pub const MAX_EVENT_PUBLISH_BODY_BYTES: u32 = MAX_EVENT_PAYLOAD_BYTES * 2 + 8 * 1024;
+
+/// Largest `/events/read` request body: a cursor plus up to `maxListPage`
+/// event types.
+pub const MAX_EVENT_READ_BODY_BYTES: u32 = 64 * 1024;
 
 /// Largest `/kv/*` request body: one base64 value at `maxKvValueBytes` plus
 /// key, metadata, and framing.
@@ -292,6 +296,15 @@ enum GrantedCmd {
         event: PluginEvent,
         resp: oneshot::Sender<Result<PublishOk, PluginError>>,
     },
+    /// `env.EVENTS.read` through the grant.
+    ReadEvents {
+        /// Grant the isolate presented.
+        invocation: String,
+        /// The guest's read request, parsed but not yet validated.
+        request: EventReadRequest,
+        /// Where the page or the typed error goes.
+        resp: oneshot::Sender<Result<EventReadPage, PluginError>>,
+    },
 }
 
 /// One KV call carried on `POST /kv/<op>`.
@@ -432,6 +445,13 @@ async fn dispatch_granted(mut rx: mpsc::Receiver<GrantedCmd>, table: GrantedTabl
                 } => {
                     let _ = resp.send(dispatch_publish(&table, invocation, event).await);
                 }
+                GrantedCmd::ReadEvents {
+                    invocation,
+                    request,
+                    resp,
+                } => {
+                    let _ = resp.send(dispatch_read_events(&table, invocation, request).await);
+                }
                 GrantedCmd::QueueSend {
                     invocation,
                     messages,
@@ -560,6 +580,41 @@ async fn dispatch_publish(
         )));
     }
     events.publish(event).await
+}
+
+/// `EVENTS.read` through the grant: the slot must carry an `EVENTS`
+/// binding; the host publisher validates the request and scopes the read.
+async fn dispatch_read_events(
+    table: &GrantedTable,
+    invocation: String,
+    request: EventReadRequest,
+) -> Result<EventReadPage, PluginError> {
+    let events = {
+        let mut table = table.borrow_mut();
+        let slot = table
+            .get_mut(&invocation)
+            .ok_or_else(|| PluginError::forbidden("unknown or revoked grant"))?;
+        if slot.expires <= std::time::Instant::now() {
+            table.remove(&invocation);
+            return Err(PluginError::forbidden("grant expired"));
+        }
+        slot.events
+            .clone()
+            .ok_or_else(|| PluginError::forbidden("events not granted"))?
+    };
+    events.read(request).await
+}
+
+/// Parses a `/events/read` body: the JSON form of [`EventReadRequest`]
+/// ([`bookclerk_plugin_abi::parse_event_read_json`]). Bounds and consent are
+/// checked later by the host publisher
+/// ([`bookclerk_plugin_abi::validate_event_read_request`]).
+///
+/// # Errors
+///
+/// Returns `invalid_params` when the body is not that JSON object.
+pub fn parse_event_read_body(body: &[u8]) -> Result<EventReadRequest, PluginError> {
+    bookclerk_plugin_abi::parse_event_read_json(body)
 }
 
 fn take_slot_source(table: &GrantedTable, invocation: &str) -> Result<Box<dyn Source>, String> {
@@ -1348,6 +1403,53 @@ where
         match resp_rx.await.context("granted publish dropped")? {
             Ok(ok) => {
                 let payload = serde_json::to_vec(&ok)?;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    payload.len()
+                );
+                writer.write_all(resp.as_bytes()).await?;
+                writer.write_all(&payload).await?;
+                writer.flush().await?;
+            }
+            Err(err) => write_plugin_error(&mut writer, &err).await?,
+        }
+        return Ok(());
+    }
+
+    if method == "POST" && path_only == "/events/read" {
+        if declared_content_length_over_cap(&headers, MAX_EVENT_READ_BODY_BYTES) {
+            write_status(&mut writer, 413, "payload too large").await?;
+            return Ok(());
+        }
+        let rest =
+            match read_content(&mut reader, &headers, prefix, MAX_EVENT_READ_BODY_BYTES).await {
+                Ok(body) => body,
+                Err(err) => {
+                    let Some((status, reason)) = body_error_response(&err) else {
+                        return Err(err);
+                    };
+                    write_status(&mut writer, status, &reason).await?;
+                    return Ok(());
+                }
+            };
+        let request = match parse_event_read_body(&rest) {
+            Ok(request) => request,
+            Err(err) => {
+                write_plugin_error(&mut writer, &err).await?;
+                return Ok(());
+            }
+        };
+        let (resp_tx, resp_rx) = oneshot::channel();
+        cmds.send(GrantedCmd::ReadEvents {
+            invocation,
+            request,
+            resp: resp_tx,
+        })
+        .await
+        .context("granted dispatch closed")?;
+        match resp_rx.await.context("granted event read dropped")? {
+            Ok(page) => {
+                let payload = serde_json::to_vec(&page)?;
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                     payload.len()
@@ -2313,6 +2415,81 @@ mod tests {
                 duplicate: false,
             })
         }
+
+        async fn read(
+            &self,
+            request: EventReadRequest,
+        ) -> bookclerk_plugin_abi::Result<EventReadPage> {
+            self.published.set(self.published.get() + 1);
+            Ok(EventReadPage {
+                cursor: format!("{}:{}", request.after, request.limit),
+                ..EventReadPage::default()
+            })
+        }
+    }
+
+    #[test]
+    fn event_read_bodies_parse_strictly() {
+        use bookclerk_plugin_abi::PluginErrorCode;
+        assert_eq!(
+            parse_event_read_body(b"{}").expect("defaults"),
+            EventReadRequest::default()
+        );
+        let full =
+            parse_event_read_body(br#"{"after":"v1.a","sinceUnixMs":5,"types":["t"],"limit":3}"#)
+                .expect("every field");
+        assert_eq!(full.after, "v1.a");
+        assert_eq!(full.since_unix_ms, 5);
+        assert_eq!(full.types, vec!["t".to_string()]);
+        assert_eq!(full.limit, 3);
+        for body in [
+            &b""[..],
+            b"[]",
+            b"null",
+            br#"{"limit":-1}"#,
+            br#"{"types":"t"}"#,
+            br#"{"cursor":"x"}"#,
+            br#"{"after":1}"#,
+        ] {
+            let err = parse_event_read_body(body).expect_err("rejected");
+            assert_eq!(err.code, PluginErrorCode::InvalidParams, "{body:?}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn read_requires_a_live_events_grant() {
+        use bookclerk_plugin_abi::PluginErrorCode;
+        let publisher = Rc::new(CountingPublisher {
+            published: std::cell::Cell::new(0),
+        });
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        table.borrow_mut().insert(
+            "g-events".into(),
+            GrantedSlot::events_only(publisher.clone(), Instant::now() + Duration::from_secs(60)),
+        );
+        table.borrow_mut().insert(
+            "g-expired".into(),
+            GrantedSlot::events_only(publisher.clone(), Instant::now()),
+        );
+        let request = EventReadRequest {
+            after: "v1.a".into(),
+            limit: 4,
+            ..EventReadRequest::default()
+        };
+        let page = dispatch_read_events(&table, "g-events".into(), request.clone())
+            .await
+            .expect("granted read");
+        assert_eq!(page.cursor, "v1.a:4", "the request reaches the host");
+        let unknown = dispatch_read_events(&table, "nope".into(), request.clone())
+            .await
+            .expect_err("unknown grant");
+        assert_eq!(unknown.code, PluginErrorCode::Forbidden);
+        let expired = dispatch_read_events(&table, "g-expired".into(), request)
+            .await
+            .expect_err("expired grant");
+        assert_eq!(expired.code, PluginErrorCode::Forbidden);
+        assert!(!table.borrow().contains_key("g-expired"));
+        assert_eq!(publisher.published.get(), 1, "only the granted read ran");
     }
 
     fn pinged(payload_len: usize) -> PluginEvent {

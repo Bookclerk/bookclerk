@@ -158,6 +158,22 @@ pub trait EventPublisher {
     /// plugin id) and the invocation account; `event_type` must be listed in
     /// `[[events.producers]]`.
     async fn publish(&self, event: PluginEvent) -> Result<PublishOk>;
+
+    /// Reads one page of past outbox events the instance subscribes to,
+    /// oldest first, so a plugin can catch up after a gap.
+    ///
+    /// Only types the instance's consented `[[events.consumers]]` rows
+    /// subscribe to come back, through the same schema-version and filter
+    /// match as delivery, and only back to `[events].retention_days`.
+    ///
+    /// # Errors
+    ///
+    /// The default refuses with `unsupported`; the host publisher validates
+    /// the request with [`crate::validate_event_read_request`].
+    async fn read(&self, request: crate::EventReadRequest) -> Result<crate::EventReadPage> {
+        let _ = request;
+        Err(PluginError::unsupported("this EVENTS binding cannot read"))
+    }
 }
 
 /// `[[queues.consumers]]` handler ([`Entrypoints::queue_consumer`]).

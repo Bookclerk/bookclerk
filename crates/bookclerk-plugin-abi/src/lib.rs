@@ -71,6 +71,7 @@ mod db_rpc;
 pub mod db_stream;
 pub mod db_value;
 pub mod error;
+pub mod event_read;
 mod features;
 pub mod generated;
 pub mod guest_sql;
@@ -161,6 +162,10 @@ pub use db_execute::{
 };
 pub use db_value::{db_type_from_declared, normalize_db_value_for_column, DbType, DbValue};
 pub use error::{LimitExceeded, PluginError, PluginErrorCode, Result};
+pub use event_read::{
+    parse_event_read_json, validate_event_read_request, EventCursor, EventReadPage, EventReadQuery,
+    EventReadRequest, EventReadStart, MAX_CURSOR_CREATED_AT_BYTES, MAX_CURSOR_EVENT_ID_BYTES,
+};
 pub use generated::*;
 pub use guest_sql::{
     authorize_guest_sql_policy, guest_statement_kind, is_reserved_binding_name,
@@ -241,8 +246,8 @@ pub use features::{
 pub use jobs::{read_all, stream_copy_keys, StreamCopyHandler, StreamCopySpec};
 pub use limits::{
     cover_sink_slot, ScalarLimits, MAX_COVER_BYTES, MAX_COVER_HEADER_BYTES, MAX_COVER_URLS,
-    MAX_CRON_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES,
-    MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
+    MAX_CRON_BYTES, MAX_EVENT_CURSOR_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES,
+    MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
     MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES,
     MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
