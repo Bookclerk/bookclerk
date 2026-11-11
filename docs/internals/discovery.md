@@ -347,8 +347,12 @@ resolver (`LibraryStore::owned_work_for`), the same way a scanned listing
 finds its work: shared identifiers, then the work's identifiers, then the
 work-level title-and-author match. A wish whose work no library title
 resolves to stays on the queue, so *Dune Messiah* is not hidden by an owned
-*Dune*. Storefront candidates are still dropped by owned ASIN, ISBN and
-product id.
+*Dune*. Storefront candidates are dropped by owned ASIN, ISBN and product
+id, and then by work: each remaining candidate is resolved the same way
+(`LibraryStore::work_for`), and one whose work has a library title is
+dropped when the feed is ranked. Another store's edition of an owned book
+(a different ASIN, ISBN or narrator) therefore never reaches a shelf, such
+as **Because you wishlisted**, while a sequel stays.
 
 Shelves then partition the ranked list so that **every title lands on one
 shelf**. Shelves claim titles in page order: the wishlist first,
