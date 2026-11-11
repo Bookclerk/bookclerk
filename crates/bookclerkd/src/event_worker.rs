@@ -256,11 +256,14 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
         // discovery. A plugin with neither cannot run here; its row is left
         // to expire with the heartbeat TTL.
         let subs = match active_version_subscriptions(&library, &deployed.key).await {
-            Some(subs) => subs,
-            None => match granted_by_key.get(&deployed.key) {
+            ActiveVersion::Subscriptions(subs) => subs,
+            ActiveVersion::NotInstalled => match granted_by_key.get(&deployed.key) {
                 Some(subs) => subs.clone(),
                 None => continue,
             },
+            // Reconcile stops on the same read error, so the local tree is
+            // not what runs; skip this tick and let the row ride its TTL.
+            ActiveVersion::Unreadable => continue,
         };
         if let Err(err) = library
             .upsert_event_subscriber(&node_id, &deployed.instance_id, &subs, true)
@@ -355,23 +358,33 @@ async fn deployed_subscribers(library: &LibraryStore, node_id: &str) -> Vec<Depl
     deployed_from_rows(&deployments, &keys)
 }
 
+/// What the active installed version of a plugin key subscribes to.
+#[derive(Debug, PartialEq)]
+enum ActiveVersion {
+    /// The key has a cluster install; these are its granted subscriptions
+    /// (empty when the install would not spawn).
+    Subscriptions(Vec<EventCatalogSubscription>),
+    /// The key has no cluster install, so a host-local tree is what runs.
+    NotInstalled,
+    /// The install could not be read; deployment reconcile stops on the
+    /// same error, so nothing is known to run.
+    Unreadable,
+}
+
 /// Granted subscriptions of the active installed version of `plugin_key`.
 ///
-/// Returns `None` when the key has no cluster install, so the caller falls
-/// back to a host-local tree. An install whose manifest, key or grant does
-/// not parse would not be spawned either, so it subscribes to nothing.
-async fn active_version_subscriptions(
-    library: &LibraryStore,
-    plugin_key: &str,
-) -> Option<Vec<EventCatalogSubscription>> {
+/// An install whose manifest, key or grant does not parse would not be
+/// spawned either, so it subscribes to nothing.
+async fn active_version_subscriptions(library: &LibraryStore, plugin_key: &str) -> ActiveVersion {
     let version = match load_active_version(library, plugin_key).await {
-        Ok(version) => version?,
+        Ok(Some(version)) => version,
+        Ok(None) => return ActiveVersion::NotInstalled,
         Err(err) => {
             warn!(plugin_key, error = %err, "active version read for event catalog failed");
-            return None;
+            return ActiveVersion::Unreadable;
         }
     };
-    Some(
+    ActiveVersion::Subscriptions(
         installed_version_subscriptions(&version).unwrap_or_else(|err| {
             warn!(plugin_key, error = %err, "active version cannot subscribe");
             Vec::new()
@@ -2304,14 +2317,18 @@ queue = "other"
         .await;
         assert_eq!(
             active_version_subscriptions(&store, INSTALLED_ECHO_KEY).await,
-            Some(Vec::new()),
+            ActiveVersion::Subscriptions(Vec::new()),
             "an install that would not spawn subscribes to nothing"
+        );
+        assert_eq!(
+            active_version_subscriptions(&store, "cargo:https://index.crates.io/#nothing").await,
+            ActiveVersion::NotInstalled
         );
         break_table(&store, "DROP TABLE plugin_versions").await;
         assert_eq!(
             active_version_subscriptions(&store, INSTALLED_ECHO_KEY).await,
-            None,
-            "a read failure falls back to the local tree"
+            ActiveVersion::Unreadable,
+            "a read failure does not fall back to the local tree"
         );
     }
 

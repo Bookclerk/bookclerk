@@ -668,8 +668,14 @@ piling up work.
   was never handed to the plugin. Its state becomes `expired`, not
   `dead_letter`. A delivery that was leased, retried, suspended or is
   resuming does not expire; `max_retries` and dead letters govern it.
-- The hourly `maintenance.events` duty expires deliveries, so one can
-  outlive its period by up to an hour.
+- Expiry is best effort. The hourly `maintenance.events` duty expires
+  deliveries, scanning at most 10 000 rows a run and resuming where it
+  stopped, so a delivery can outlive its period by an hour or more and can
+  still be leased until the sweep reaches it. Retention bounds a backlog;
+  it is not a delivery deadline, and the lease path does not check it.
+- A subscriber with no live catalog row (for example, while every node
+  that runs it is down) waits the full `[events].retention_days`, since
+  its declared period cannot be read.
 - Expired rows stay until `[events].retention_days` passes, as the record
   of which events an instance missed. A later change lets a plugin read
   past events from the outbox to catch up after a gap.

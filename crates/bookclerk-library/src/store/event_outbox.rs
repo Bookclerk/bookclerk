@@ -2293,7 +2293,8 @@ impl LibraryStore {
     /// the retention of the matching subscription in the live catalog
     /// (`message_retention_secs`, else
     /// [`EVENT_DELIVERY_DEFAULT_RETENTION_SECS`]), capped at
-    /// `retention_days`. The matching subscription is the first one of the
+    /// `retention_days`; a subscriber with no live catalog row waits the
+    /// full `retention_days`. The matching subscription is the first one of the
     /// subscriber that matches the parent event in full (queue, type, schema
     /// version and filter), as at dispatch. Host consumers (`host:` and node
     /// consumers) never expire and are left out of the scan. Expired rows stay
@@ -2667,20 +2668,24 @@ impl<'a> DeliveryRetention<'a> {
     ///
     /// # Returns
     ///
-    /// `None` for host and node consumers. Otherwise the period of the
-    /// subscriber's first live subscription that matches `event` in full
+    /// `None` for host and node consumers. A subscriber with no live
+    /// catalog row (every node running it stopped heartbeating) gets the
+    /// events retention window, so a declared period is never cut short by a
+    /// node outage. Otherwise the period of the subscriber's first live
+    /// subscription that matches `event` in full
     /// ([`subscription_matches_event`], as dispatch picks it), or the default
-    /// when the subscriber has no live row, no subscription matches, or the
-    /// match declares none; capped at the events retention window.
+    /// when no subscription matches or the match declares none; capped at the
+    /// events retention window.
     fn secs_for(&self, plugin_id: &str, event: Option<&DomainEventRecord>) -> Option<i64> {
         if plugin_id.starts_with(HOST_CONSUMER_PREFIX)
             || crate::control_plane::is_node_consumer_id(plugin_id)
         {
             return None;
         }
-        let declared = self
-            .by_plugin
-            .get(plugin_id)
+        let Some(subs) = self.by_plugin.get(plugin_id) else {
+            return Some(self.cap_secs);
+        };
+        let declared = Some(subs)
             .zip(event)
             .and_then(|(subs, event)| {
                 subs.iter()

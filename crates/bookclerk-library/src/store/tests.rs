@@ -7606,6 +7606,15 @@ async fn unleased_deliveries_expire_after_their_retention_under_every_profile() 
             .upsert_event_subscriber("node-a", "long", &[long], true)
             .await
             .unwrap();
+        store
+            .upsert_event_subscriber(
+                "node-a",
+                "echo",
+                &[EventCatalogSubscription::new("book_acquired", vec![1])],
+                true,
+            )
+            .await
+            .unwrap();
         let event_id = expect_created(
             persist_outbox_event(
                 store,
@@ -7614,11 +7623,18 @@ async fn unleased_deliveries_expire_after_their_retention_under_every_profile() 
             .await
             .unwrap(),
         );
-        let subscribers: Vec<EventSubscriber> =
-            ["short", "long", "echo", "busy", "host:discover", "node:abc"]
-                .into_iter()
-                .map(EventSubscriber::plugin)
-                .collect();
+        let subscribers: Vec<EventSubscriber> = [
+            "short",
+            "long",
+            "echo",
+            "gone",
+            "busy",
+            "host:discover",
+            "node:abc",
+        ]
+        .into_iter()
+        .map(EventSubscriber::plugin)
+        .collect();
         store
             .dispatch_event_deliveries(&event_id, &subscribers, "op-ttl")
             .await
@@ -7662,6 +7678,11 @@ async fn unleased_deliveries_expire_after_their_retention_under_every_profile() 
         assert_eq!(expired, 1, "{name}");
         assert_eq!(state("echo").await.as_deref(), Some("expired"), "{name}");
         assert_eq!(state("long").await.as_deref(), Some("pending"), "{name}");
+        assert_eq!(
+            state("gone").await.as_deref(),
+            Some("pending"),
+            "a subscriber with no live row waits the events window ({name})"
+        );
         assert_eq!(state("busy").await.as_deref(), Some("running"), "{name}");
         assert_eq!(
             state("host:discover").await.as_deref(),
@@ -7679,10 +7700,11 @@ async fn unleased_deliveries_expire_after_their_retention_under_every_profile() 
             .await
             .unwrap();
         assert_eq!(
-            expired, 1,
+            expired, 2,
             "the events window caps a longer retention ({name})"
         );
         assert_eq!(state("long").await.as_deref(), Some("expired"), "{name}");
+        assert_eq!(state("gone").await.as_deref(), Some("expired"), "{name}");
         let row = store
             .get_event_delivery(&format!("{event_id}:echo"))
             .await
@@ -7756,6 +7778,15 @@ async fn bounded_expiry_scans_resume_and_skip_exempt_consumers() {
     long.message_retention_secs = Some(14 * 86_400);
     store
         .upsert_event_subscriber("node-a", "long", &[long], true)
+        .await
+        .unwrap();
+    store
+        .upsert_event_subscriber(
+            "node-a",
+            "echo",
+            &[EventCatalogSubscription::new("book_acquired", vec![1])],
+            true,
+        )
         .await
         .unwrap();
     let mut ids = Vec::new();

@@ -58,8 +58,11 @@ callers await a promise, and long work is a durable job.
    `message_retention_period`: 60 seconds to 14 days, one day by default,
    and never more than `[events].retention_days`. Leased, retried and
    suspended deliveries keep following `max_retries` and dead letters.
-   Host and node consumers never expire. Expired rows are kept for the
-   events retention window as the record of what a subscriber missed.
+   Host and node consumers never expire, and a subscriber with no live
+   catalog row waits the whole events window. Expiry is a best-effort
+   hourly sweep that bounds the backlog, not a delivery deadline. Expired
+   rows are kept for the events retention window as the record of what a
+   subscriber missed.
 
 The following phases are proposed and get their own pull requests and
 updates to this record:
@@ -68,8 +71,9 @@ updates to this record:
   past events from the outbox, `env.EVENTS.read({ after | since, types,
   limit })`, with an opaque `(created_at, id)` cursor it keeps itself.
   Reads return only events of the caller's own library, and only what the
-  instance's consented subscriptions, filters and account scope allow, back to `[events].retention_days`, and report
-  when deliveries expired since the cursor. This changes `plugin.capnp`
+  instance's consented subscriptions, filters and account scope allow,
+  back to `[events].retention_days`, and report when deliveries expired
+  since the cursor. This changes `plugin.capnp`
   and the TS SDK, and adds a fuzzed guest boundary.
 - **On-demand activation.** A due delivery, queue message, job or cron
   fire, or an RPC call, starts an asleep instance; an idle timeout per
