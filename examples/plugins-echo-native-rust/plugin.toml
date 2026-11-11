@@ -42,3 +42,29 @@ name = "message"
 long = "message"
 kind = "string"
 default = "hi"
+
+[[cli.commands]]
+name = "notes-add"
+about = "Store a note COUNT times in the plugin's own database"
+
+[[cli.commands.args]]
+name = "body"
+long = "body"
+kind = "string"
+required = true
+
+[[cli.commands.args]]
+name = "count"
+long = "count"
+kind = "int"
+default = "1"
+
+[[cli.commands]]
+name = "notes-list"
+about = "List the oldest LIMIT stored notes"
+
+[[cli.commands.args]]
+name = "limit"
+long = "limit"
+kind = "int"
+default = "100"

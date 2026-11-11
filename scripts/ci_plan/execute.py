@@ -702,8 +702,8 @@ def plugin_example_dirs(workspace: Path) -> list[tuple[Path, str]]:
         workspace: The repository root.
 
     Returns:
-        Each example directory with its runner (``npm`` or ``pytest``),
-        sorted by directory.
+        Each example directory with its runner (``npm``, ``pytest`` or
+        ``cargo``), sorted by directory.
 
     Raises:
         ExecError: When a manifest cannot be parsed.
@@ -728,7 +728,9 @@ def _plugin_example_commands(ctx: "Context", runners: list[str]) -> list[Command
     its build, and a committed tree that differs is drift, as for the
     first-party guests. Python (``pytest``) examples ship ``modules/`` as
     written; they are linted with the Python SDK's ruff and run in its
-    locked environment with the SDK imported from its source tree.
+    locked environment with the SDK imported from its source tree. Rust
+    (``cargo``) examples are workspace packages that ``fmt`` and ``clippy``
+    already cover, so they only run.
     ``bookclerk-plugin test`` then runs each example's own suite once per
     database profile with the kit executable named.
 
@@ -799,6 +801,9 @@ def _plugin_example_commands(ctx: "Context", runners: list[str]) -> list[Command
                 Command(f"ruff format ({rel})", [py, "-m", "ruff", "format", "--check", rel]),
                 Command(f"bookclerk-plugin test ({rel})", [tool, "test", rel], env=pytest_env),
             ]
+            continue
+        if runner == "cargo":
+            cmds.append(Command(f"bookclerk-plugin test ({rel})", [tool, "test", rel], env=kit_env))
             continue
         cmds += [
             Command(f"npm ci ({rel})", ["npm", "ci"], cwd=str(example)),

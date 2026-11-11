@@ -277,7 +277,7 @@ paths):
 | A declared `test_guests` executable | The launching package's tests re-run, with no propagation |
 | `ui/`, `packages/plugin-sdk*/`, ABI scripts | The UI, SDK ABI and API-doc checks |
 | A first-party workerd guest without a Cargo package (`crates/bookclerk-plugins/<tier>/<name>/`) | Its type-check, build and tests (`workerd_guests`) and its staged E2E. `packages/plugin-sdk/` also selects `workerd_guests`, because the guests type-check against it |
-| A reference example that declares `[[databases]]` and has a `test` script in `package.json` or a `pyproject.toml` (`examples/plugins-<name>/`) | Its checks and suite under every database profile (`plugin_examples`) and its staged E2E. `crates/bookclerk-db-testkit/` and `crates/bookclerk-plugin-tools/` also select `plugin_examples`, as do `packages/plugin-sdk/` (with a TypeScript example) and `packages/plugin-sdk-python/` (with a Python one) |
+| A reference example that declares `[[databases]]` and has a `test` script in `package.json`, a `pyproject.toml` or a `Cargo.toml` (`examples/plugins-<name>/`) | Its checks and suite under every database profile (`plugin_examples`) and its staged E2E. `crates/bookclerk-db-testkit/` and `crates/bookclerk-plugin-tools/` also select `plugin_examples`, as do `packages/plugin-sdk/` (with a TypeScript example), `packages/plugin-sdk-python/` (with a Python one) and anything that affects a Rust example's tests, such as the Rust SDK |
 | `docs/**` | The website tests (`site_test`) |
 | `tools/site/**`, `assets/brand/**` | The website tests and audit (`site_test`, `site_audit`) |
 | `tools/diagnostics-collector/**` | The collector's tests (`collector_test`) |
@@ -303,7 +303,9 @@ Some rows need more detail:
 - **`docs/**`** runs the site tests because their link check covers the
   docs the site publishes.
 - **The demo copies** are `crates/bookclerkd/openapi.json`, the website's
-  footer and fonts, and `ui/public/bookclerk-mark.svg`. The demo's route
+  footer and fonts, and the app's mark and icons in `ui/public/`
+  (`bookclerk-mark.svg`, `favicon.ico`, `favicon-32x32.png`,
+  `apple-touch-icon.png`). The demo's route
   table must cover every operation, and the copies must match.
 - **Fuzz corpora and oracles** are declared `test_input`. An undeclared
   corpus or oracle is unclassified.
@@ -500,7 +502,8 @@ TypeScript SDK and its `modules/` rebuilt (a committed tree that differs is
 drift, as in `workerd_guests`). A Python example is checked with `ruff
 check` and `ruff format --check`, then tested with pytest in the Python
 SDK's locked environment (the one `python_sdk` uses) with the SDK imported
-from its sources.
+from its sources. A Rust example is a workspace package that `fmt` and
+`clippy` already cover, so it only runs its `cargo test` suite.
 
 To fix formatting locally:
 
@@ -1289,9 +1292,21 @@ the Workers' lockfiles do not change. Settings live in
 [`scripts/stryker.config.json`](../../scripts/stryker.config.json):
 
 - `inPlace`, because some tests read repository files by relative path.
+  Stryker then rewrites the sources it mutates on disk while it runs, so
+  the step sets `MUTATION_TESTING=1` and each Worker's `vitest.config.ts`
+  leaves out the tests that read its own source text
+  (`tools/site/worker-source.test.ts`,
+  `tools/diagnostics-collector/cache-control-source.test.ts`). Those tests
+  would fail on the instrumented code. A mutant never shows in the source
+  text, because Stryker switches mutants on at run time, and the one
+  function they call, the collector's `assetUrlsModule`, has its own test
+  in `cache-control.test.ts`. Every other run keeps them.
 - A `tsconfigFile` that does not exist, because TypeScript 7 has no
   JavaScript API for Stryker's tsconfig rewriting. Type checking stays
   with each Worker's `npm run typecheck`.
+- `disableTypeChecks` off, so Stryker does not add `// @ts-nocheck` to
+  every file. That would change the collector's hashed dashboard assets,
+  and Vitest does not check types anyway.
 - `vitest.related` off, because the Workers runtime loads modules outside
   Vitest's module graph, so Vitest cannot tell which tests import a file.
 - `incremental`, writing to `reports/mutation/mutation.json`, because only
@@ -1304,7 +1319,7 @@ To reproduce a Worker's run locally, from its directory:
 
 ```sh
 npm install --no-save @stryker-mutator/core@10.1.1 @stryker-mutator/vitest-runner@10.1.1
-npx stryker run ../../scripts/stryker.config.json --mutate "src/page.ts:10-20"
+MUTATION_TESTING=1 npx stryker run ../../scripts/stryker.config.json --mutate "src/page.ts:10-20"
 ```
 
 The report lands in `reports/mutation/mutation.json`. Delete that folder

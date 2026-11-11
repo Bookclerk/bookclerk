@@ -507,6 +507,13 @@ class WiringTest(unittest.TestCase):
         self.assertIn("--stopped", steps["Report"]["run"])
         self.assertEqual(steps["Report"]["env"]["STOPPED"], "${{ steps.mutants.outputs.stopped }}")
         self.assertEqual(steps["Test the mutants"]["id"], "mutants")
+        # Each vitest.config.ts leaves out the tests that read the Worker's
+        # source text, which Stryker rewrites in place.
+        self.assertEqual(steps["Test the mutants"]["env"]["MUTATION_TESTING"], "1")
+        for root, name in (("site", "worker-source.test.ts"), ("diagnostics-collector", "cache-control-source.test.ts")):
+            vitest = (ROOT / "tools" / root / "vitest.config.ts").read_text(encoding="utf-8")
+            self.assertIn(f'process.env.MUTATION_TESTING === "1" ? ["{name}"] : []', vitest)
+            self.assertTrue((ROOT / "tools" / root / name).is_file())
 
     def test_settings(self) -> None:
         config = json.loads((ROOT / "scripts" / "stryker.config.json").read_text(encoding="utf-8"))
@@ -522,6 +529,9 @@ class WiringTest(unittest.TestCase):
         self.assertTrue(config["incremental"])
         self.assertEqual(config["incrementalFile"], "reports/mutation/mutation.json")
         self.assertNotIn("json", config["reporters"])
+        # No `// @ts-nocheck` added to every file: it would change the
+        # collector's hashed dashboard assets, and no type checker runs.
+        self.assertIs(config["disableTypeChecks"], False)
 
 
 if __name__ == "__main__":

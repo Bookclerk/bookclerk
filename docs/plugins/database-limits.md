@@ -190,6 +190,34 @@ interactive transaction fails Clippy; the native-connection tools (backend
 migration, backup restore) and the in-process fallbacks a store without an
 atomic backend takes carry a narrow allow with the reason beside it.
 
+## Reading columns by name in host code
+
+The host reaches the database plugin through SeaORM's proxy connection,
+and SeaORM keeps a proxy row as a map sorted by column name. A positional
+read therefore sees the columns in alphabetical order, not in `SELECT`
+order: `select_only().column(uuid).column(product_id).into_tuple()` puts
+`product_id` in the tuple's first slot. The adapters return their columns
+in order; the order is lost on the host side.
+
+Host code reads columns by name instead:
+
+- Several columns: a `#[derive(FromQueryResult)]` struct read with
+  `into_model::<T>()`.
+- One column of an entity query: `SelectColumnExt::into_column(column)`
+  from `bookclerk_library::column_read`, which selects only that column.
+- The only column of a raw statement's row, such as `SELECT COUNT(*)`:
+  `column_read::only_column(&row)`, which refuses a row with more than one
+  column.
+
+The store code lives in `bookclerk-library`, whose `clippy.toml` disallows
+`Select::into_tuple`, `QueryResult::try_get_by_index` and
+`QueryResult::try_get_many_by_index` (and their trait forms), so a
+positional read there fails Clippy. The workspace `clippy.toml` disallows
+the tuple readers (`into_tuple`, `try_get_many_by_index`) in every crate,
+since a `FromQueryResult` struct works on any connection. Adapters and the
+engine executor read their own engine rows, which keep `SELECT` order, so
+they may still read a single cell by index.
+
 ## Testing against the limits
 
 A plain in-memory SQLite connection accepts `begin()` and never hits a cap,
@@ -319,14 +347,15 @@ opens a fixed profile passes all three runs while testing only that one:
 cargo build -p bookclerk-db-testkit
 cargo plugin -- test examples/plugins-echo-workerd-ts
 cargo plugin -- test examples/plugins-echo-workerd-python   # pytest, with the Python SDK importable
+cargo plugin -- test examples/plugins-echo-native-rust      # cargo test
 cargo plugin -- test . --profile minimum -- --grep notes   # one profile, runner arguments after --
 ```
 
 Every profile runs even after one fails, and the report names the ones
 that did. CI runs `bookclerk-plugin test` on every example that declares
 `[[databases]]` and has a suite the command can run, a `test` script in
-`package.json` or a `pyproject.toml` (the `plugin_examples` check; see
-[CI](../contributing/ci.md)).
+`package.json`, a `pyproject.toml` or a `Cargo.toml` (the
+`plugin_examples` check; see [CI](../contributing/ci.md)).
 
 `cargo test-staged` covers the migrations of every staged plugin
 the same way: the registration each `[[databases]]` binding answers is
@@ -358,6 +387,13 @@ handles a refusal by `PluginError.limit`, and reads with `iterate()` or
 the same key-paged walk. Its `tests/` open the binding with
 `create_test_database()` and run under pytest, which `bookclerk-plugin
 test` picks from its `pyproject.toml`.
+
+`examples/plugins-echo-native-rust/` is the native Rust version:
+`src/notes.rs` answers `database_migrations` for the `DB` binding, reads
+`PluginError::limit()`, and its `NotesReader` reads with
+`PreparedStatement::iterate()` or the same key-paged walk. Its `tests/`
+open the binding with `bookclerk_db_testkit::BindingDatabase` under
+`selected_profile()` and run under `cargo test`.
 
 ### A database adapter's own suite
 
@@ -429,5 +465,6 @@ mocked HTTP API.
   and D1's are smaller than sqlite's.
 - Test under every `bookclerk-db-testkit` profile, and keep
   `refused_begins()` at zero.
+- In host code, read columns by name, never by position.
 - Writing an adapter: pass `bookclerk_db_testkit::assert_adapter_conforms`
   on an empty unit.

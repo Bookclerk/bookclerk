@@ -7474,8 +7474,8 @@ async fn query_plan(store: &LibraryStore, sql: &str) -> String {
         .expect("explain");
     let mut lines = Vec::new();
     for row in rows {
-        for index in 0..8 {
-            if let Ok(text) = row.try_get_by_index::<String>(index) {
+        for column in row.column_names() {
+            if let Ok(text) = row.try_get::<String>("", &column) {
                 lines.push(text);
             }
         }

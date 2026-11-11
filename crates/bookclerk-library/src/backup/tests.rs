@@ -133,7 +133,7 @@ async fn count(db: &DatabaseConnection, sql: &str) -> i64 {
         .and_then(|row| {
             row.try_get::<i64>("", "count")
                 .ok()
-                .or_else(|| row.try_get_by_index::<i64>(0).ok())
+                .or_else(|| crate::column_read::only_column::<i64>(row).ok())
         })
         .unwrap_or(0)
 }
@@ -1952,7 +1952,7 @@ async fn restore_sqlite_keeps_foreign_keys_enforced() {
         .unwrap();
     let fk_on = fk
         .first()
-        .and_then(|row| row.try_get_by_index::<i64>(0).ok())
+        .and_then(|row| crate::column_read::only_column::<i64>(row).ok())
         .unwrap_or(0);
     assert_eq!(fk_on, 1, "restore must not leave PRAGMA foreign_keys off");
     let err = dest
@@ -2515,7 +2515,7 @@ async fn postgres_library_backup_round_trip() {
         .await
         .unwrap()
         .first()
-        .and_then(|row| row.try_get_by_index::<i64>(0).ok())
+        .and_then(|row| crate::column_read::only_column::<i64>(row).ok())
         .unwrap();
     assert_eq!(n, 1);
 }
@@ -2691,7 +2691,7 @@ async fn postgres_sqlite_library_restores_to_postgres() {
         .await
         .unwrap()
         .first()
-        .and_then(|row| row.try_get_by_index::<i64>(0).ok())
+        .and_then(|row| crate::column_read::only_column::<i64>(row).ok())
         .unwrap();
     assert_eq!(n, 1);
 }
@@ -2768,7 +2768,7 @@ async fn postgres_sqlite_plugin_restores_to_postgres() {
         .await
         .unwrap()
         .first()
-        .and_then(|row| row.try_get_by_index::<i64>(0).ok())
+        .and_then(|row| crate::column_read::only_column::<i64>(row).ok())
         .unwrap();
     assert_eq!(version, 7);
 }

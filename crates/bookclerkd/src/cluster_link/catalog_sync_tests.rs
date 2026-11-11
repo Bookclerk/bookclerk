@@ -306,7 +306,8 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
     // What crosses the link: store, product id, metadata, files only.
     for entry in b_sync.entries(true).await.unwrap() {
         let shelf = b_sync.shelf.primary().await.unwrap();
-        let title = b_sync.title(shelf.as_ref(), &entry).await.unwrap();
+        let loaded = b_sync.load(&entry).await.unwrap().unwrap();
+        let title = b_sync.title(shelf.as_ref(), &entry, &loaded).await.unwrap();
         let json = serde_json::to_value(&title).unwrap();
         for key in json.as_object().unwrap().keys() {
             assert!(
@@ -434,7 +435,11 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
     assert_eq!(cut.cursor, "", "the new settings restart the pass");
     let first = b_sync.entries(false).await.unwrap().remove(0);
     let shelf = b_sync.shelf.primary().await.unwrap();
-    let first_title = b_sync.title(shelf.as_ref(), &first).await.unwrap();
+    let first_loaded = b_sync.load(&first).await.unwrap().unwrap();
+    let first_title = b_sync
+        .title(shelf.as_ref(), &first, &first_loaded)
+        .await
+        .unwrap();
     assert!(matches!(
         accept_catalog_batch(&a, b_node, cut.fence, &first.order, false, &[first_title])
             .await
@@ -484,6 +489,7 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
     assert!(list_branch_titles(&a, None, 10).await.unwrap().is_empty());
     assert!(a_out.path().join("Author/b1/b1.m4b").exists());
 
+    let listed = b_sync.entries(true).await.unwrap();
     // C leaves B: its title on B is marked as from a branch that left.
     assert!(record_node_left(&b, &c_link.remote_node_id).await.unwrap());
     assert_eq!(
@@ -491,12 +497,29 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
         (BRANCH_TITLE_DETACHED.into(), Some(DETACHED_LEFT.into()))
     );
     assert!(
-        bookclerk_library::control_plane::forwardable_branch_titles(&b)
+        bookclerk_library::control_plane::forwardable_branch_title_keys_page(&b, None, 256)
             .await
             .unwrap()
-            .is_empty(),
+            .iter()
+            .all(|key| !key.delivered),
         "B no longer passes C's title on"
     );
+
+    // A title listed before it stopped being shareable loads as gone, so
+    // a pass skips it instead of sending stale rows.
+    b.set_acquire_status("b1", "b-store-acct", AcquireStatus::NotAcquired, None, None)
+        .await
+        .unwrap();
+    for product in ["c1", "b1"] {
+        let entry = listed
+            .iter()
+            .find(|entry| entry.reference.product_id == product)
+            .unwrap_or_else(|| panic!("{product} was listed"));
+        assert!(
+            b_sync.load(entry).await.unwrap().is_none(),
+            "{product} is no longer shareable"
+        );
+    }
 }
 
 /// A local destination whose listing of one folder fails while `fail`
@@ -616,6 +639,8 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
     let b_out = tempfile::tempdir().unwrap();
     own_book(&b, b_out.path(), "libro", "b-store-acct", "b1").await;
     own_book(&b, b_out.path(), "libro", "b-store-acct", "b2").await;
+    // The same store title on a second account is shared once.
+    own_book(&b, b_out.path(), "libro", "b-other-acct", "b1").await;
     let b_link = join(&a, &b, riley, &a_origin, None).await.unwrap();
     let (b_handle, _b_stop) = start(&b, &b_link).await;
     let fail = Arc::new(std::sync::Mutex::new(None));
@@ -628,6 +653,14 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
             fail: Arc::clone(&fail),
         },
     };
+    let listed: Vec<String> = b_sync
+        .entries(false)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.reference.product_id)
+        .collect();
+    assert_eq!(listed.len(), 2, "one entry per store title: {listed:?}");
     let report = b_sync.sync_once().await.unwrap();
     assert_eq!((report.sent, report.upserted), (2, 2));
 

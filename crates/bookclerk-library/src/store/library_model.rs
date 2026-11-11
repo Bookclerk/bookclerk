@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use super::{now_str, parse_dt, LibraryStore, NewBook};
 use crate::atomic_ops::{atomic_status, DbAtomicParams};
+use crate::column_read::SelectColumnExt;
 use crate::entities::{
     credits, edition_identifiers, editions, embeddings, expressions, holdings,
     resolution_overrides, series_entries, store_listings, work_identifiers, works,
@@ -1436,9 +1437,7 @@ impl LibraryStore {
             let matched = works::Entity::find()
                 .filter(works::Column::MatchKey.eq(match_key.as_str()))
                 .filter(works::Column::Kind.eq(listing.work_kind.as_str()))
-                .select_only()
-                .column(works::Column::Id)
-                .into_tuple::<String>()
+                .into_column::<String, _>(works::Column::Id)
                 .all(db)
                 .await
                 .map_err(LibraryError::Orm)?;

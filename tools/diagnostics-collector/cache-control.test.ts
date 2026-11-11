@@ -2,6 +2,7 @@
 // and every rule in public/_headers is one of the table's classes, and the
 // dashboard's hashed styles and script are named after their contents
 // (asset-names.ts), so browsers may keep them for a year.
+// cache-control-source.test.ts checks the Worker's source text.
 
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
@@ -22,17 +23,10 @@ import worker, { withCacheClass } from "./worker.ts";
 // Read by Vite when it transforms this test: it runs inside the Workers
 // runtime, which has no view of the repository.
 import HEADERS_FILE from "./public/_headers?raw";
-import ASSET_URLS_SOURCE from "./dashboard/asset-urls.ts?raw";
 
 /** The hashed files in public/static/assets/, by path. */
 const ASSET_FILES: Readonly<Record<string, string>> = import.meta.glob<string>(
   ["./public/static/assets/*"],
-  { query: "?raw", import: "default", eager: true },
-);
-
-/** The Worker's own sources besides the table, by path. */
-const SOURCES: Readonly<Record<string, string>> = import.meta.glob<string>(
-  ["./*.ts", "./dashboard/*.ts", "!./*.test.ts", "!./cache-control.ts", "!./vitest.config.ts"],
   { query: "?raw", import: "default", eager: true },
 );
 
@@ -143,24 +137,6 @@ describe("cache classes", () => {
       [ASSETS_PATH + "*", "immutable"],
     ]);
   });
-
-  it("the Worker sets Cache-Control only from the table", () => {
-    assert.ok(Object.keys(SOURCES).length > 10);
-    let assignments = 0;
-    for (const [path, source] of Object.entries(SOURCES)) {
-      // Every assignment, in any casing, takes a table value.
-      for (const [line, value] of source.matchAll(/["']cache-control["']\s*[:,]\s*([^\n]+)/gi)) {
-        assignments += 1;
-        assert.match(value ?? "", /^CACHE_CONTROL\.\w+/, `${path}: ${line}`);
-      }
-      assert.doesNotMatch(
-        source,
-        /["'][^"'\n]*\b(?:no-store|no-cache|must-revalidate|s-maxage|immutable)\b/i,
-        path,
-      );
-    }
-    assert.ok(assignments >= 4);
-  });
 });
 
 describe("hashed dashboard files", () => {
@@ -179,8 +155,27 @@ describe("hashed dashboard files", () => {
     for (const file of HASHED_ASSETS) {
       assert.equal(ASSET_URLS[file], `${ASSETS_PATH}${names[file]}`);
     }
-    // The module is exactly what `npm run hash-assets` writes.
-    assert.equal(ASSET_URLS_SOURCE, assetUrlsModule(names as Record<HashedAsset, string>));
+  });
+
+  it("assetUrlsModule writes one URL per hashed file, in table order", () => {
+    const names = { "dashboard.css": "a.css", "dashboard.js": "b.js" } as Record<
+      HashedAsset,
+      string
+    >;
+    assert.deepEqual([...HASHED_ASSETS], ["dashboard.css", "dashboard.js"]);
+    assert.equal(
+      assetUrlsModule(names),
+      [
+        "// Written by `npm run hash-assets` (scripts/hash-assets.ts); do not edit.",
+        "",
+        "/** URL of each hashed dashboard file (see asset-names.ts). */",
+        "export const ASSET_URLS = {",
+        `  "dashboard.css": "${ASSETS_PATH}a.css",`,
+        `  "dashboard.js": "${ASSETS_PATH}b.js",`,
+        "} as const;",
+        "",
+      ].join("\n"),
+    );
   });
 
   it("assetOf reads only hashed names of known files", () => {

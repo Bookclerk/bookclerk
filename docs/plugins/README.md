@@ -275,8 +275,9 @@ cd ../../examples/plugins-echo-workerd-ts && npm ci && npm run typecheck
    pong: hello
    ```
 
-3. The workerd Echo examples (`echo_workerd_ts` and
-   `echo_workerd_python`) also keep a `notes` table on their own
+3. The TypeScript, Python and native Rust Echo examples
+   (`echo_workerd_ts`, `echo_workerd_python` and `echo_native_rust`) also
+   keep a `notes` table on their own
    `[[databases]]` binding, a worked example of the
    [database helpers](database-limits.md#a-worked-example):
 
@@ -290,8 +291,9 @@ cd ../../examples/plugins-echo-workerd-ts && npm ci && npm run typecheck
    ```
 
    Run their tests under every database profile with
-   `cargo plugin -- test examples/plugins-echo-workerd-ts` or
-   `cargo plugin -- test examples/plugins-echo-workerd-python`.
+   `cargo plugin -- test examples/plugins-echo-workerd-ts`,
+   `cargo plugin -- test examples/plugins-echo-workerd-python` or
+   `cargo plugin -- test examples/plugins-echo-native-rust`.
 
 ## Distribution
 
