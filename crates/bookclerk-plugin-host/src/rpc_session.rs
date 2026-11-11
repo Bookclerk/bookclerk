@@ -790,6 +790,7 @@ impl PluginSession {
                 &grant.consumers,
             ),
             retention_days: config.events.retention_days,
+            settle_secs: bookclerk_library::EVENT_STREAM_SETTLE_SECS,
         };
         let events = services.event_outbox.clone().and_then(|store| {
             EventOutbox::new(

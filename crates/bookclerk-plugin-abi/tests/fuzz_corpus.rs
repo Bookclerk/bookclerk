@@ -866,9 +866,54 @@ fn fuzz_corpus_event_read_holds_invariants() {
     assert!(checked > 0, "no event_read seed");
 }
 
-/// Seeds for `event_read`: accepted request bodies and cursors, and one
-/// input breaking each rule. Byte 0 is `0` for a JSON body and `1` for a
-/// bare cursor. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+/// A `2`-prefixed Cap'n Proto `EventReadRequest` seed with `types` entries.
+// Test helper: an encoding failure is the test failing.
+#[allow(clippy::expect_used)]
+fn capnp_request(after: &str, types: u32) -> Vec<u8> {
+    use bookclerk_plugin_abi::plugin_capnp::event_read_request;
+    let mut message = capnp::message::Builder::new_default();
+    let mut root = message.init_root::<event_read_request::Builder<'_>>();
+    root.set_after(after);
+    root.set_limit(10);
+    let mut list = root.init_types(types);
+    for i in 0..types {
+        list.set(i, "book_acquired");
+    }
+    let mut seed = vec![2u8];
+    seed.extend(capnp::serialize::write_message_to_words(&message));
+    seed
+}
+
+/// A `3`-prefixed Cap'n Proto `EventReadPage` seed with `events` entries.
+// Test helper: an encoding failure is the test failing.
+#[allow(clippy::expect_used)]
+fn capnp_page(cursor: &str, events: u32) -> Vec<u8> {
+    use bookclerk_plugin_abi::plugin_capnp::event_read_page;
+    let mut message = capnp::message::Builder::new_default();
+    let mut root = message.init_root::<event_read_page::Builder<'_>>();
+    root.set_cursor(cursor);
+    root.set_more(true);
+    {
+        let mut list = root.reborrow().init_events(events);
+        for i in 0..events {
+            let mut event = list.reborrow().get(i);
+            event.set_event_id(format!("evt-{i}").as_str());
+            event.set_event_type("book_acquired");
+            event.set_schema_version(1);
+            event.set_payload(b"{}");
+        }
+    }
+    let mut ids = root.init_expired_event_ids(1);
+    ids.set(0, "evt-0");
+    let mut seed = vec![3u8];
+    seed.extend(capnp::serialize::write_message_to_words(&message));
+    seed
+}
+
+/// Seeds for `event_read`: accepted request bodies, cursors and Cap'n Proto
+/// messages, and one input breaking each rule. Byte 0 is `0` for a JSON
+/// body, `1` for a bare cursor, `2` for a Cap'n Proto request and `3` for a
+/// Cap'n Proto page. Refresh with `UPDATE_FUZZ_SEEDS=1`.
 // Test code: failed I/O or encoding is the test failing.
 #[allow(clippy::expect_used)]
 #[test]
@@ -911,6 +956,19 @@ fn event_read_seeds_are_current() {
         ("cursor.bin", bare(&cursor)),
         ("cursor_uppercase.bin", bare(&cursor.to_uppercase())),
         ("cursor_not_time.bin", bare("v1.6e6f77.6576742d31")),
+        ("capnp_request.bin", capnp_request(&cursor, 1)),
+        (
+            "capnp_request_many_types.bin",
+            capnp_request("", bookclerk_plugin_abi::MAX_LIST_PAGE + 1),
+        ),
+        ("capnp_page.bin", capnp_page(&cursor, 2)),
+        (
+            "capnp_page_long_cursor.bin",
+            capnp_page(
+                &"0".repeat(bookclerk_plugin_abi::MAX_EVENT_CURSOR_BYTES as usize + 1),
+                0,
+            ),
+        ),
     ];
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/event_read");
     if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {

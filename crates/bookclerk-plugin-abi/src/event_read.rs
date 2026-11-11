@@ -184,6 +184,15 @@ impl EventCursor {
     }
 }
 
+/// True when an outbox event id can be named by an [`EventCursor`]:
+/// non-empty, at most [`MAX_CURSOR_EVENT_ID_BYTES`], with no whitespace or
+/// control characters. The outbox refuses any other caller-chosen id, so
+/// every stored row stays reachable by a read.
+#[must_use]
+pub fn is_cursor_event_id(id: &str) -> bool {
+    is_cursor_part(id, MAX_CURSOR_EVENT_ID_BYTES)
+}
+
 /// True when `part` is non-empty, at most `max` bytes, and holds no
 /// whitespace or control characters.
 fn is_cursor_part(part: &str, max: usize) -> bool {

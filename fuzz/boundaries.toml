@@ -121,7 +121,7 @@ artifacts = ["bookclerk"]
 
 [targets.event_read]
 crate = "bookclerk-plugin-abi"
-boundary = "A guest's EVENTS.read request: the /events/read JSON body, its opaque cursor, and the consent, page and time bounds"
+boundary = "A guest's EVENTS.read request: the /events/read JSON body, its opaque cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds"
 input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]

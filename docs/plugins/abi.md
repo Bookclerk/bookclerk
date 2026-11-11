@@ -334,7 +334,8 @@ needs a producer.
   account's events. An invocation with no account reads every account, as
   its deliveries do.
 - **Where it starts.** Pass at most one of `after` (a cursor from an
-  earlier page) and `since` (a `Date` or Unix milliseconds). With neither,
+  earlier page) and `since` (a `Date` or Unix milliseconds; `sinceUnixMs`
+  is accepted as the same field). With neither,
   the read starts at the oldest event the host keeps. Reads never go back
   further than `[events].retention_days`; `truncated` is true when the
   start was older than that, so the plugin knows it may have lost events
@@ -345,6 +346,12 @@ needs a producer.
   cursor the host did not issue is `invalid_cursor`. A page can hold fewer
   events than `limit` with `more` set: each read scans a bounded number of
   outbox rows, and the cursor then marks how far it got.
+- **The last 30 seconds wait.** A read returns only events stored at least
+  30 seconds ago (`EVENT_STREAM_SETTLE_SECS`). The host stamps an event's
+  time before its insert commits, so a slow publication can land behind a
+  newer one; holding the newest events back keeps a cursor from moving
+  past an event that has not appeared yet. Newer events still arrive
+  through delivery, and the next read picks them up.
 - **Gap notice.** `expiredEventIds` lists the events in the page whose
   delivery to this plugin expired unhandled.
 - **Not a delivery.** A read changes no delivery state and is not

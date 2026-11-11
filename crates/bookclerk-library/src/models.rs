@@ -2048,6 +2048,10 @@ pub struct EventStreamRead {
     pub plugin_key: String,
     /// `[events].retention_days`: nothing older is returned.
     pub retention_days: u64,
+    /// Events stored less than this many seconds before `now` are left for a
+    /// later read ([`crate::EVENT_STREAM_SETTLE_SECS`] in production), so a
+    /// publication that commits behind a newer one is never skipped.
+    pub settle_secs: u64,
     /// Most events to return (at least one).
     pub limit: usize,
     /// Current time, which fixes the retention cutoff.

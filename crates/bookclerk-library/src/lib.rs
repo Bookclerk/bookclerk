@@ -160,7 +160,7 @@ pub use sql_plan::{
     validate_plan, validate_streamed_execute_reply, wake_page_for_max_binds, AtomicSession,
     CompiledAtomic,
 };
-pub use store::event_outbox::EVENT_STREAM_SCAN_FACTOR;
+pub use store::event_outbox::{EVENT_STREAM_SCAN_FACTOR, EVENT_STREAM_SETTLE_SECS};
 pub use store::{
     event_outbox::{deliver_after_for, prepare_publish_domain_event, EventPruneStep},
     fallback_work_key, inject_dispatch_page_failures,

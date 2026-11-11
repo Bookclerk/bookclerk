@@ -100,6 +100,8 @@ use crate::{
     SearchCatalogParams, SourceAccount, MAX_PLUGIN_MIGRATION_ID_BYTES,
 };
 
+use crate::generated::RoundTripFailure;
+
 pub(super) fn from_capnp(err: impl std::fmt::Display) -> PluginError {
     PluginError::unavailable(err.to_string())
 }
@@ -2191,6 +2193,97 @@ fn read_event_read_reply(r: event_read_reply::Reader<'_>) -> Result<EventReadPag
     match r.which().map_err(from_capnp)? {
         event_read_reply::Ok(page) => read_event_read_page(page.map_err(from_capnp)?),
         event_read_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
+    }
+}
+
+/// Which `EVENTS.read` Cap'n Proto struct [`roundtrip_event_read_message`]
+/// decodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventReadCodec {
+    /// `EventReadRequest`, which the host decodes from a guest.
+    Request,
+    /// `EventReadPage`, which a guest decodes from the host.
+    Page,
+}
+
+/// A value [`roundtrip_event_read_message`] decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventReadMessage {
+    /// A decoded `EventReadRequest`.
+    Request(EventReadRequest),
+    /// A decoded `EventReadPage`.
+    Page(EventReadPage),
+}
+
+/// Decodes one unpacked single-segment `EventReadRequest` or
+/// `EventReadPage` message with the codec the RPC server and client use,
+/// then checks `read(write(v)) == v`. The fuzz target and its replay test
+/// drive this, so they reach the same bounds checks a peer's bytes do.
+///
+/// # Arguments
+///
+/// * `codec` - Which struct the message holds.
+/// * `bytes` - The message, as `capnp::serialize` writes it.
+///
+/// # Returns
+///
+/// The decoded value, for the caller to check against its own bounds.
+///
+/// # Errors
+///
+/// [`RoundTripFailure::Rejected`] when the bytes do not decode or break a
+/// bound; [`RoundTripFailure::Codec`] when a decoded value does not survive
+/// `write` then `read` intact.
+pub fn roundtrip_event_read_message(
+    codec: EventReadCodec,
+    bytes: &[u8],
+) -> std::result::Result<EventReadMessage, RoundTripFailure> {
+    let words = (bytes.len() / 8).saturating_add(16);
+    let mut opts = capnp::message::ReaderOptions::new();
+    opts.traversal_limit_in_words(Some(words));
+    opts.nesting_limit(32);
+    let reader = capnp::serialize::read_message(&mut std::io::Cursor::new(bytes), opts)?;
+    let rejected =
+        |err: PluginError| RoundTripFailure::Rejected(capnp::Error::failed(err.to_string()));
+    let codec_failure = |what: &str, err: &dyn std::fmt::Display| {
+        RoundTripFailure::Codec(format!("{what} failed: {err}"))
+    };
+    let mut message = capnp::message::Builder::new_default();
+    match codec {
+        EventReadCodec::Request => {
+            let first = read_event_read_request(reader.get_root()?).map_err(rejected)?;
+            write_event_read_request(message.init_root(), &first)
+                .map_err(|err| codec_failure("re-encode", &err))?;
+            let again = read_event_read_request(
+                message
+                    .get_root_as_reader()
+                    .map_err(|err| codec_failure("re-read", &err))?,
+            )
+            .map_err(|err| codec_failure("re-decode", &err))?;
+            if first != again {
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded EventReadRequest".to_string(),
+                ));
+            }
+            Ok(EventReadMessage::Request(first))
+        }
+        EventReadCodec::Page => {
+            let first = read_event_read_page(reader.get_root()?).map_err(rejected)?;
+            write_event_read_page(message.init_root(), &first)
+                .map_err(|err| codec_failure("re-encode", &err))?;
+            let again = read_event_read_page(
+                message
+                    .get_root_as_reader()
+                    .map_err(|err| codec_failure("re-read", &err))?,
+            )
+            .map_err(|err| codec_failure("re-decode", &err))?;
+            if first != again {
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded EventReadPage".to_string(),
+                ));
+            }
+            Ok(EventReadMessage::Page(first))
+        }
     }
 }
 

@@ -89,8 +89,15 @@ fn claim_keyset_after(created_at: &str, id: &str) -> Condition {
 /// it may return.
 pub const EVENT_STREAM_SCAN_FACTOR: usize = 8;
 /// Binds an event stream page query uses besides its type list: the queue,
-/// the lower time bound, the account, the three keyset values and the limit.
-const EVENT_STREAM_FIXED_BINDS: u32 = 8;
+/// the lower and upper time bounds, the account, the three keyset values and
+/// the limit.
+const EVENT_STREAM_FIXED_BINDS: u32 = 9;
+/// Seconds an outbox row must age before [`LibraryStore::read_event_stream`]
+/// returns it. `created_at` is stamped before the insert commits, so a
+/// publication can commit after a newer one; a read that stops short of the
+/// last few seconds never moves its cursor past a row that has yet to
+/// appear. Newer events still reach subscribers through delivery.
+pub const EVENT_STREAM_SETTLE_SECS: u64 = 30;
 /// SET `run_after` / `updated_at` plus EXISTS `event_id` / `wake_lease_owner`.
 const WAKE_UPDATE_FIXED_BINDS: usize = 4;
 const EVENT_OUTBOX_STATS_ID: i64 = 1;
@@ -2483,6 +2490,12 @@ impl LibraryStore {
             .checked_sub_signed(Duration::seconds(window))
             .unwrap_or(chrono::DateTime::<Utc>::MIN_UTC);
         let cutoff_s = cutoff.to_rfc3339();
+        let settle = i64::try_from(read.settle_secs).unwrap_or(i64::MAX);
+        let watermark = read
+            .now
+            .checked_sub_signed(Duration::seconds(settle))
+            .unwrap_or(chrono::DateTime::<Utc>::MIN_UTC)
+            .to_rfc3339();
         let (lower, mut after, truncated) = match &read.start {
             EventStreamStart::Oldest => (cutoff_s, None, false),
             EventStreamStart::Since(since) => {
@@ -2527,7 +2540,8 @@ impl LibraryStore {
         loop {
             let mut query = domain_events::Entity::find()
                 .filter(domain_events::Column::QueueName.eq(CORE_EVENTS_QUEUE))
-                .filter(domain_events::Column::CreatedAt.gte(lower.clone()));
+                .filter(domain_events::Column::CreatedAt.gte(lower.clone()))
+                .filter(domain_events::Column::CreatedAt.lte(watermark.clone()));
             if types_in_sql.is_some() {
                 query = query.filter(domain_events::Column::EventType.is_in(types.clone()));
             }
@@ -2980,6 +2994,14 @@ pub fn prepare_publish_domain_event(
         spec.id = Uuid::new_v4().to_string();
     } else {
         spec.id = spec.id.trim().to_string();
+        // `EVENTS.read` cursors name rows by id; an id a cursor cannot
+        // carry would stop every read at that row.
+        if !bookclerk_plugin_abi::is_cursor_event_id(&spec.id) {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "event id must be at most {} bytes with no whitespace or control characters",
+                bookclerk_plugin_abi::MAX_CURSOR_EVENT_ID_BYTES
+            )));
+        }
     }
     Ok(spec)
 }

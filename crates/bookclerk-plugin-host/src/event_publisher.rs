@@ -92,6 +92,10 @@ pub struct EventReaders {
     pub subscriptions: Vec<EventCatalogSubscription>,
     /// `[events].retention_days`: reads never go further back.
     pub retention_days: u64,
+    /// Seconds an event must age before a read returns it
+    /// ([`bookclerk_library::EVENT_STREAM_SETTLE_SECS`] in a session), so a
+    /// late-committing publication is never behind a returned cursor.
+    pub settle_secs: u64,
 }
 
 /// Host-owned facts a session needs before it can hand a guest an `EVENTS`
@@ -294,6 +298,7 @@ impl EventPublisher for OutboxEventPublisher {
             account_id: (!self.account_id.is_empty()).then(|| self.account_id.clone()),
             plugin_key: self.plugin_id.clone(),
             retention_days: self.readers.retention_days,
+            settle_secs: self.readers.settle_secs,
             limit: usize::try_from(query.limit).unwrap_or(usize::MAX),
             now: chrono::Utc::now(),
         };
@@ -562,6 +567,9 @@ mod tests {
                     EventCatalogSubscription::queue("jobs"),
                 ],
                 retention_days: 7,
+                // Reads right after publishing; production waits
+                // `EVENT_STREAM_SETTLE_SECS`.
+                settle_secs: 0,
             },
         )
         .expect("a consented consumer alone yields a binding")

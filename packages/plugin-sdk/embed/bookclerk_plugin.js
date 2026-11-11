@@ -10996,7 +10996,7 @@ var GrantedEvents = class extends RpcTarget {
    * @returns One page of events and the cursor after it.
    */
   async read(options = {}) {
-    const since = options.since instanceof Date ? options.since.getTime() : options.since;
+    const since = options.since instanceof Date ? options.since.getTime() : options.since ?? options.sinceUnixMs;
     if (since !== void 0 && (!Number.isSafeInteger(since) || since < 0)) {
       throw PluginError.fromWire("invalid_params", "since must be a non-negative instant");
     }
@@ -11014,7 +11014,12 @@ var GrantedEvents = class extends RpcTarget {
         limit
       })
     });
-    const value = await resp.json().catch(() => ({}));
+    const value = await resp.json().catch((error) => {
+      if (resp.ok) {
+        throw PluginError.fromWire("internal", `events read reply is not JSON: ${String(error)}`);
+      }
+      return {};
+    });
     if (value && value.error) {
       throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
     }

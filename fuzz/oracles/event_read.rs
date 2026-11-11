@@ -2,9 +2,10 @@
 //! `bookclerk-plugin-abi` corpus replay test
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 //!
-//! The input is one guest `EVENTS.read` request. Byte 0 selects the form:
-//! even is the JSON body of the workerd `/events/read` route, odd is a bare
-//! cursor (lossy UTF-8). The invariants:
+//! The input is one `EVENTS.read` message. Byte 0 modulo 4 selects the
+//! form: 0 is the JSON body of the workerd `/events/read` route, 1 is a bare
+//! cursor (lossy UTF-8), 2 is a Cap'n Proto `EventReadRequest` and 3 a Cap'n
+//! Proto `EventReadPage` (unpacked, single segment). The invariants:
 //!
 //! - parsing, decoding and validation never panic;
 //! - [`parse_event_read_json`] accepts exactly the JSON objects whose keys
@@ -14,13 +15,18 @@
 //!   the same error code and the same resolved start, types and limit;
 //! - [`EventCursor::decode`] accepts exactly the cursors the independent
 //!   decoder below accepts, and an accepted cursor re-encodes to the same
-//!   text.
+//!   text;
+//! - a Cap'n Proto request or page the RPC codec accepts survives
+//!   `write` then `read` unchanged and stays inside the wire bounds: a
+//!   cursor of at most `maxEventCursorBytes` and lists of at most
+//!   `maxListPage` entries.
 
 use std::collections::BTreeSet;
 
 use bookclerk_plugin_abi::{
-    parse_event_read_json, validate_event_read_request, EventCursor, EventReadRequest,
-    EventReadStart, PluginErrorCode, MAX_CURSOR_CREATED_AT_BYTES, MAX_CURSOR_EVENT_ID_BYTES,
+    parse_event_read_json, roundtrip_event_read_message, validate_event_read_request, EventCursor,
+    EventReadCodec, EventReadMessage, EventReadRequest, EventReadStart, PluginErrorCode,
+    RoundTripFailure, MAX_CURSOR_CREATED_AT_BYTES, MAX_CURSOR_EVENT_ID_BYTES,
     MAX_EVENT_CURSOR_BYTES, MAX_LIST_PAGE,
 };
 use chrono::{DateTime, Utc};
@@ -201,9 +207,35 @@ pub fn check(data: &[u8]) {
     let Some((&selector, rest)) = data.split_first() else {
         return;
     };
-    if selector.is_multiple_of(2) {
-        check_json(rest);
-    } else {
-        check_cursor(&String::from_utf8_lossy(rest));
+    match selector % 4 {
+        0 => check_json(rest),
+        1 => check_cursor(&String::from_utf8_lossy(rest)),
+        2 => check_capnp(EventReadCodec::Request, rest),
+        _ => check_capnp(EventReadCodec::Page, rest),
+    }
+}
+
+/// Cap'n Proto codec invariant: identity on accepted values, inside the
+/// wire bounds.
+fn check_capnp(codec: EventReadCodec, bytes: &[u8]) {
+    let cursor_cap = MAX_EVENT_CURSOR_BYTES as usize;
+    let list_cap = MAX_LIST_PAGE as usize;
+    match roundtrip_event_read_message(codec, bytes) {
+        Err(RoundTripFailure::Rejected(_)) => {}
+        Err(RoundTripFailure::Codec(why)) => panic!("event read codec: {why}"),
+        Ok(EventReadMessage::Request(request)) => {
+            assert_eq!(codec, EventReadCodec::Request);
+            assert!(request.after.len() <= cursor_cap, "request cursor bound");
+            assert!(request.types.len() <= list_cap, "request type list bound");
+        }
+        Ok(EventReadMessage::Page(page)) => {
+            assert_eq!(codec, EventReadCodec::Page);
+            assert!(page.cursor.len() <= cursor_cap, "page cursor bound");
+            assert!(page.events.len() <= list_cap, "page event list bound");
+            assert!(
+                page.expired_event_ids.len() <= list_cap,
+                "page expired id list bound"
+            );
+        }
     }
 }

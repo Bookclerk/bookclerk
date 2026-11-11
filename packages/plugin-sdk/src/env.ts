@@ -31,6 +31,11 @@ export interface EventReadOptions {
   /** Start at this instant (a `Date`, or UTC unix milliseconds). */
   since?: Date | number;
   /**
+   * The ABI spelling of `since` (UTC unix milliseconds), as the generated
+   * `EventReadRequest` names it; used when `since` is absent.
+   */
+  sinceUnixMs?: number;
+  /**
    * Event types to return; each must be a granted `[[events.consumers]]`
    * type. Empty or omitted means every granted type.
    */

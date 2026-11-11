@@ -76,8 +76,12 @@ callers await a promise, and long work is a durable job.
    delivery state, `deliveryAttempt` is zero and the deduplication key is
    the event id. The `EVENTS` binding therefore exists for a consented
    consumer as well as a producer. Each read scans a bounded number of
-   outbox rows and may return a short page with `more` set. The guest
-   request is a fuzzed boundary (`event_read`).
+   outbox rows and may return a short page with `more` set. A read stops
+   30 seconds short of now, because `created_at` is stamped before the
+   insert commits and a cursor must never pass a row that has yet to
+   appear; the outbox refuses caller-chosen event ids that a cursor cannot
+   name. The guest request and its Cap'n Proto codecs are a fuzzed
+   boundary (`event_read`).
 
 The following phases are proposed and get their own pull requests and
 updates to this record:

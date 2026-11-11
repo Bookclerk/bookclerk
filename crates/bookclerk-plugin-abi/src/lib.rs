@@ -163,8 +163,9 @@ pub use db_execute::{
 pub use db_value::{db_type_from_declared, normalize_db_value_for_column, DbType, DbValue};
 pub use error::{LimitExceeded, PluginError, PluginErrorCode, Result};
 pub use event_read::{
-    parse_event_read_json, validate_event_read_request, EventCursor, EventReadPage, EventReadQuery,
-    EventReadRequest, EventReadStart, MAX_CURSOR_CREATED_AT_BYTES, MAX_CURSOR_EVENT_ID_BYTES,
+    is_cursor_event_id, parse_event_read_json, validate_event_read_request, EventCursor,
+    EventReadPage, EventReadQuery, EventReadRequest, EventReadStart, MAX_CURSOR_CREATED_AT_BYTES,
+    MAX_CURSOR_EVENT_ID_BYTES,
 };
 pub use generated::*;
 pub use guest_sql::{
@@ -261,9 +262,10 @@ pub use roles::{
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
 pub use rpc::{
-    byte_source_from_async_read, connect_plugin, pull_byte_source_to_writer, serve_plugin,
-    serve_plugin_stdio, ContentSourceClient, CoverFetcherClient, DatabaseClient, DestinationClient,
-    DestinationServer, EventConsumerClient, EventPublisherClient, HostBindings, JobRunnerClient,
+    byte_source_from_async_read, connect_plugin, pull_byte_source_to_writer,
+    roundtrip_event_read_message, serve_plugin, serve_plugin_stdio, ContentSourceClient,
+    CoverFetcherClient, DatabaseClient, DestinationClient, DestinationServer, EventConsumerClient,
+    EventPublisherClient, EventReadCodec, EventReadMessage, HostBindings, JobRunnerClient,
     KvNamespaceClient, MetadataProviderClient, OidcClient, OpenedEntrypoints, PluginCliClient,
     PluginClient, PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient,
     ScheduledHandlerClient, SourceClient, SourceServer,

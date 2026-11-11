@@ -2792,7 +2792,10 @@ class GrantedEvents extends RpcTarget implements EventPublisherBinding {
    * @returns One page of events and the cursor after it.
    */
   async read(options: EventReadOptions = {}): Promise<EventReadPage> {
-    const since = options.since instanceof Date ? options.since.getTime() : options.since;
+    const since =
+      options.since instanceof Date
+        ? options.since.getTime()
+        : (options.since ?? options.sinceUnixMs);
     if (since !== undefined && (!Number.isSafeInteger(since) || since < 0)) {
       throw PluginError.fromWire("invalid_params", "since must be a non-negative instant");
     }
@@ -2810,7 +2813,14 @@ class GrantedEvents extends RpcTarget implements EventPublisherBinding {
         limit,
       }),
     });
-    const value = (await resp.json().catch(() => ({}))) as {
+    // A successful reply that does not decode is an error, never an empty
+    // page: a catch-up loop would stop early and miss retained events.
+    const value = (await resp.json().catch((error: unknown) => {
+      if (resp.ok) {
+        throw PluginError.fromWire("internal", `events read reply is not JSON: ${String(error)}`);
+      }
+      return {};
+    })) as {
       error?: { code?: string; message?: string };
     } & Partial<EventReadPage>;
     if (value && value.error) {

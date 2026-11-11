@@ -7953,6 +7953,7 @@ async fn the_event_stream_returns_matching_events_in_order_under_every_profile()
             account_id: None,
             plugin_key: "echo".into(),
             retention_days: 7,
+            settle_secs: 0,
             limit: 2,
             now: chrono::Utc::now(),
         };
@@ -8073,6 +8074,7 @@ async fn the_event_stream_reports_missed_events_and_the_retention_window() {
             account_id: None,
             plugin_key: KEY.into(),
             retention_days: 7,
+            settle_secs: 0,
             limit: 10,
             now,
         };
@@ -8135,6 +8137,63 @@ async fn the_event_stream_reports_missed_events_and_the_retention_window() {
     }
 }
 
+#[test]
+fn custom_event_ids_must_fit_a_read_cursor() {
+    let mut spec = outbox_spec("book_acquired", "custom-id", "{}");
+    spec.id = " evt-1 ".into();
+    assert_eq!(
+        crate::prepare_publish_domain_event(spec.clone())
+            .unwrap()
+            .id,
+        "evt-1"
+    );
+    for bad in [
+        "custom event".to_string(),
+        "x".repeat(bookclerk_plugin_abi::MAX_CURSOR_EVENT_ID_BYTES + 1),
+        "tab\tid".to_string(),
+    ] {
+        spec.id = bad.clone();
+        assert!(
+            crate::prepare_publish_domain_event(spec.clone()).is_err(),
+            "{bad:?} cannot be named by a cursor"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_event_stream_leaves_unsettled_events_for_a_later_read() {
+    let kit = crate::test_support::sqlite::memory(crate::test_support::Profile::ALL[0]).await;
+    let store = kit.store();
+    let id = expect_created(
+        persist_outbox_event(store, outbox_spec("book_acquired", "settle:1", "{}"))
+            .await
+            .unwrap(),
+    );
+    let read = EventStreamRead {
+        start: EventStreamStart::Oldest,
+        subscriptions: vec![EventCatalogSubscription::new("book_acquired", vec![1])],
+        account_id: None,
+        plugin_key: String::new(),
+        retention_days: 7,
+        settle_secs: crate::EVENT_STREAM_SETTLE_SECS,
+        limit: 10,
+        now: chrono::Utc::now(),
+    };
+    let page = store.read_event_stream(&read).await.unwrap();
+    assert!(page.events.is_empty(), "a fresh event is not read yet");
+    assert!(page.last_scanned.is_none() && !page.more);
+    let later = EventStreamRead {
+        now: chrono::Utc::now()
+            + chrono::Duration::seconds(
+                i64::try_from(crate::EVENT_STREAM_SETTLE_SECS).unwrap() + 1,
+            ),
+        ..read
+    };
+    let page = store.read_event_stream(&later).await.unwrap();
+    assert_eq!(page.events.len(), 1);
+    assert_eq!(page.events[0].id, id);
+}
+
 #[tokio::test]
 async fn the_event_stream_scan_budget_stops_and_resumes() {
     let kit = crate::test_support::sqlite::memory(crate::test_support::Profile::ALL[0]).await;
@@ -8170,6 +8229,7 @@ async fn the_event_stream_scan_budget_stops_and_resumes() {
         account_id: None,
         plugin_key: String::new(),
         retention_days: 7,
+        settle_secs: 0,
         limit: 1,
         now: chrono::Utc::now(),
     };
