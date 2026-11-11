@@ -14,6 +14,7 @@ use sea_orm::{
 };
 use uuid::Uuid;
 
+use super::books_page::is_result_too_large;
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
 use crate::column_read::SelectColumnExt;
 use crate::control_plane::{bump_if_stamped, bump_on, exec_bumped_via, sea_probe, Bump, LiveTopic};
@@ -2517,7 +2518,9 @@ impl LibraryStore {
             .max_binds
             .saturating_sub(fixed)
             .saturating_sub(types_in_sql.unwrap_or(0));
-        let chunk = u64::from(bind_room.min(self.max_result_rows).min(64))
+        // Shrinks for good when a batch overruns the adapter's result-byte
+        // budget, so large payloads cost smaller batches, not a failed read.
+        let mut chunk = u64::from(bind_room.min(self.max_result_rows).min(64))
             .min(u64::try_from(limit).unwrap_or(u64::MAX))
             .max(1);
         let mut scanned = 0usize;
@@ -2542,13 +2545,15 @@ impl LibraryStore {
                         ),
                 );
             }
-            let rows = query
+            let query = query
                 .order_by_asc(domain_events::Column::CreatedAt)
-                .order_by_asc(domain_events::Column::Id)
-                .limit(chunk)
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::from_db_err)?;
+                .order_by_asc(domain_events::Column::Id);
+            let (rows, take) = shrink_on_large_result(chunk, |take| {
+                let query = query.clone().limit(take);
+                async move { query.all(&self.db).await.map_err(LibraryError::from_db_err) }
+            })
+            .await?;
+            chunk = take;
             let fetched = rows.len();
             for row in rows {
                 let position = (row.created_at.clone(), row.id.clone());
@@ -3709,6 +3714,37 @@ pub fn deliver_after_for(spec: &PublishDomainEventSpec, now: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Runs `query` with `take` rows, halving `take` while the adapter reports
+/// the result too large ([`is_result_too_large`]), down to one row.
+///
+/// # Arguments
+///
+/// * `take` - Rows to ask for first (at least one).
+/// * `query` - Runs the read for a row count.
+///
+/// # Returns
+///
+/// The rows and the row count that fit, which later batches should reuse.
+///
+/// # Errors
+///
+/// Returns the read's error when it is not a result-size refusal, or when
+/// even one row does not fit.
+async fn shrink_on_large_result<T, F, Fut>(mut take: u64, mut query: F) -> Result<(Vec<T>, u64)>
+where
+    F: FnMut(u64) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<T>>>,
+{
+    take = take.max(1);
+    loop {
+        match query(take).await {
+            Ok(rows) => return Ok((rows, take)),
+            Err(err) if is_result_too_large(&err) && take > 1 => take /= 2,
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 fn map_delivery(m: event_deliveries::Model) -> Result<EventDeliveryRecord> {
     Ok(EventDeliveryRecord {
         id: m.id,
@@ -3927,6 +3963,48 @@ async fn sanitize_unknown_event_resource_class_on<C: ConnectionTrait>(
 #[cfg(test)]
 mod placeholder_tests {
     use super::*;
+
+    /// A batch the adapter refuses as too large is retried at half the rows
+    /// until it fits; any other error, or a refusal at one row, is returned.
+    #[tokio::test]
+    async fn event_scan_batches_shrink_until_the_result_fits() {
+        let too_large = || {
+            LibraryError::LimitExceeded(bookclerk_plugin_abi::LimitExceeded::new(
+                "maxResultBytes",
+                262_144,
+                300_000,
+            ))
+        };
+        let mut asked = Vec::new();
+        let (rows, take) = shrink_on_large_result(64, |take| {
+            asked.push(take);
+            let outcome = if take > 10 {
+                Err(too_large())
+            } else {
+                Ok(vec![take; 1])
+            };
+            async move { outcome }
+        })
+        .await
+        .expect("a batch that fits");
+        assert_eq!(asked, vec![64, 32, 16, 8]);
+        assert_eq!((rows, take), (vec![8], 8));
+
+        let err = shrink_on_large_result::<u64, _, _>(4, |_| async { Err(too_large()) })
+            .await
+            .expect_err("one row still too large");
+        assert!(is_result_too_large(&err));
+
+        let mut calls = 0;
+        let err = shrink_on_large_result::<u64, _, _>(4, |_| {
+            calls += 1;
+            async { Err(LibraryError::NotFound("gone".into())) }
+        })
+        .await
+        .expect_err("other errors pass through");
+        assert!(matches!(err, LibraryError::NotFound(_)));
+        assert_eq!(calls, 1);
+    }
 
     #[test]
     fn host_wake_sql_stays_canonical_question_marks() {
