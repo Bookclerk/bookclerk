@@ -8104,6 +8104,27 @@ var SELECT_FROM = DB_RESULT_SELECTIONS;
 var SELECT_ORD = Object.fromEntries(DB_RESULT_SELECTIONS.map((sel, ord2) => [sel, ord2]));
 var COL_TYPE_FROM = DB_TYPES;
 var COL_TYPE_ORD = Object.fromEntries(DB_TYPES.map((ty, ord2) => [ty, ord2]));
+var MAX_WRITE_KEY_BYTES = 256;
+var WriteChunksError = class extends PluginError {
+  /** Statements committed before the failure; resume with `from: next`. */
+  next;
+  constructor(next, cause) {
+    super(cause.wireCode, cause.message, cause.details);
+    this.name = "WriteChunksError";
+    this.next = next;
+  }
+};
+async function writeChunksOperationId(key, offset) {
+  const bytes = new TextEncoder().encode(`bookclerk-write-chunks\0${key}\0${String(offset)}`);
+  let hex;
+  if (globalThis.crypto?.subtle) {
+    hex = hexBytes(new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", bytes)));
+  } else {
+    const { createHash } = await import("node:crypto");
+    hex = createHash("sha256").update(bytes).digest("hex");
+  }
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
 function encodeExecuteRequest(request) {
   if (request.statements.length === 0) {
     throw new Error("execute statements must be non-empty");
@@ -8462,6 +8483,41 @@ function createDatabaseBinding(transport, options = {}) {
       for (const indexes of chunkIndexes(typed, maxStatements, maxRequestBytes)) {
         yield indexes.map((i) => statements[i]);
       }
+    },
+    async writeChunks(statements, opts) {
+      const from = opts.from ?? 0;
+      const fail = (next2, err) => new WriteChunksError(next2, err instanceof PluginError ? err : PluginError.fromWire("internal", String(err)));
+      const keyBytes = new TextEncoder().encode(opts.key).byteLength;
+      if (keyBytes === 0 || keyBytes > MAX_WRITE_KEY_BYTES) {
+        throw fail(from, PluginError.fromWire("invalid_params", `writeChunks key must be 1 to ${String(MAX_WRITE_KEY_BYTES)} bytes`));
+      }
+      if (!Number.isInteger(from) || from < 0 || from > statements.length) {
+        throw fail(from, PluginError.fromWire("invalid_params", `writeChunks from ${String(from)} is not within the ${String(statements.length)} statements`));
+      }
+      const caps = opts.maxStatements !== void 0 || opts.maxRequestBytes !== void 0 ? { maxStatements: opts.maxStatements ?? 0, maxRequestBytes: opts.maxRequestBytes ?? 0 } : void 0;
+      const batches = [];
+      try {
+        for await (const b of binding.chunk(statements.slice(from), caps)) {
+          batches.push(b);
+        }
+      } catch (err) {
+        throw fail(from, err);
+      }
+      let next = from;
+      for (const b of batches) {
+        if (opts.stop?.(next) === true) {
+          return { next, done: false };
+        }
+        try {
+          await binding.batch(b, {
+            retry: { operationId: await writeChunksOperationId(opts.key, next), requestHash: "" }
+          });
+        } catch (err) {
+          throw fail(next, err);
+        }
+        next += b.length;
+      }
+      return { next, done: true };
     }
   };
   binding._iterateRows = iterateRows;

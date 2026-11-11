@@ -21,6 +21,7 @@ from bookclerk_plugin_sdk._wire import (
     _execute_stream_frame_codec,
 )
 from bookclerk_plugin_sdk.db_value import (
+    MAX_WRITE_KEY_BYTES,
     ExecuteStreamDecoder,
     ExecuteStreamLimits,
     _split_to_fit,
@@ -31,8 +32,9 @@ from bookclerk_plugin_sdk.db_value import (
     execute_stream_limits,
     raw_stream_ceiling,
     streams_results,
+    write_chunks_operation_id,
 )
-from bookclerk_plugin_sdk.workerd import PluginError
+from bookclerk_plugin_sdk.workerd import PluginError, WriteChunksError
 
 # The repository root: the nearest folder above holding the ABI crate. A
 # fixed depth would break when mutation testing runs these tests from a copy
@@ -1162,6 +1164,84 @@ class BindingStreamTests(unittest.IsolatedAsyncioTestCase):
 
 async def _inline_reply_async(request: dict[str, Any]) -> Any:
     return _inline_reply(request)
+
+
+class WriteChunksTests(unittest.IsolatedAsyncioTestCase):
+    """``write_chunks`` resumes at batch boundaries under offset ids."""
+
+    def setUp(self) -> None:
+        self.committed: list[tuple[str, int]] = []
+        self.calls = 0
+        self.fail_at = 0
+        self.lose_reply_at = 0
+
+    async def _execute(self, request: dict[str, Any]) -> Any:
+        self.calls += 1
+        if self.calls == self.fail_at:
+            raise PluginError.from_wire("unavailable", "adapter down")
+        # A resent operation id replays its receipt instead of writing again.
+        if not any(op == request["operationId"] for op, _ in self.committed):
+            self.committed.append((request["operationId"], len(request["statements"])))
+        if self.calls == self.lose_reply_at:
+            raise PluginError.from_wire("unavailable", "reply lost")
+        return _inline_reply(request)
+
+    def _statements(self, db: Any) -> list[Any]:
+        return [
+            db.prepare("INSERT INTO t VALUES (?)").bind({"kind": "int64", "value": i})
+            for i in range(5)
+        ]
+
+    def test_operation_id_matches_the_other_sdks(self) -> None:
+        self.assertEqual(
+            write_chunks_operation_id("job-1:titles", 2), "cb3e8a68-d67e-3739-ee20-30bcaca70026"
+        )
+
+    async def test_pauses_and_resumes_without_writing_twice(self) -> None:
+        db = create_database_binding(self._execute)
+        stmts = self._statements(db)
+        paused = await db.write_chunks(
+            stmts, key="k", stop=lambda n: n >= 2, max_statements=2, max_request_bytes=0
+        )
+        self.assertEqual(paused, {"next": 2, "done": False})
+        done = await db.write_chunks(
+            stmts, key="k", start=paused["next"], max_statements=2, max_request_bytes=0
+        )
+        self.assertEqual(done, {"next": 5, "done": True})
+        self.assertEqual([n for _, n in self.committed], [2, 2, 1])
+        self.assertEqual(self.committed[1][0], write_chunks_operation_id("k", 2))
+
+    async def test_lost_reply_is_replayed_on_resume(self) -> None:
+        self.lose_reply_at = 2
+        db = create_database_binding(self._execute)
+        stmts = self._statements(db)
+        with self.assertRaises(WriteChunksError) as ctx:
+            await db.write_chunks(stmts, key="k", max_statements=2)
+        self.assertEqual((ctx.exception.next, ctx.exception.code), (2, "unavailable"))
+        self.lose_reply_at = 0
+        done = await db.write_chunks(stmts, key="k", start=2, max_statements=2)
+        self.assertTrue(done["done"])
+        self.assertEqual(len(self.committed), 3)
+
+    async def test_failure_reports_progress_and_bad_input_is_refused(self) -> None:
+        self.fail_at = 3
+        db = create_database_binding(self._execute)
+        stmts = self._statements(db)
+        with self.assertRaises(WriteChunksError) as ctx:
+            await db.write_chunks(stmts, key="k", max_statements=2)
+        self.assertEqual(ctx.exception.next, 4)
+        self.fail_at = 0
+        for kwargs in (
+            {"key": ""},
+            {"key": "k" * (MAX_WRITE_KEY_BYTES + 1)},
+            {"key": "k", "start": 6},
+        ):
+            with self.assertRaises(WriteChunksError) as bad:
+                await db.write_chunks(stmts, max_statements=2, **kwargs)
+            self.assertEqual(bad.exception.code, "invalid_params")
+        self.assertEqual(
+            await db.write_chunks([], key="k", max_statements=2), {"next": 0, "done": True}
+        )
 
 
 async def _reply_async(reply: Any) -> Any:

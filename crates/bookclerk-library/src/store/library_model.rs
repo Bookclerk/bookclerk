@@ -12,16 +12,18 @@ use std::collections::BTreeSet;
 
 use bookclerk_resolve as resolve;
 use chrono::Utc;
-use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::listing_reads::{
+    edition_identifier_key, work_identifier_key, ListingPool, SnapshotReader,
+};
 use super::{now_str, parse_dt, LibraryStore, NewBook};
 use crate::atomic_ops::{atomic_status, DbAtomicParams};
-use crate::column_read::SelectColumnExt;
 use crate::entities::{
-    credits, edition_identifiers, editions, embeddings, expressions, holdings,
-    resolution_overrides, series_entries, store_listings, work_identifiers, works,
+    credits, edition_identifiers, editions, embeddings, expressions, series_entries,
+    store_listings, work_identifiers, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::library_link::{
@@ -54,7 +56,7 @@ fn lookup_chunk(max_binds: u32) -> usize {
 /// # Errors
 ///
 /// Returns [`LibraryError::Orm`] when a read fails.
-async fn find_chunked<E, F>(
+pub(super) async fn find_chunked<E, F>(
     db: &sea_orm::DatabaseConnection,
     chunk: usize,
     ids: &[String],
@@ -1170,6 +1172,105 @@ impl LibraryStore {
         )))
     }
 
+    /// Resolves a page of listings, each with its holding and the fields
+    /// its library title offers its work, logging a listing that fails
+    /// rather than returning it (see [`LibraryStore::record_listing`]).
+    ///
+    /// The rows every listing's snapshot reads are read once for the page
+    /// ([`ListingPool::load`]). A listing the library already holds as the
+    /// store describes it resolves to a plan with nothing to write, and is
+    /// settled from those rows without another read; every other listing
+    /// goes through [`Self::record_listing`], which reads its own snapshot
+    /// and writes under the usual guards. Settling the unchanged listings
+    /// first is the same as scanning them first, which a scan is free to do.
+    pub(crate) async fn record_listing_page(
+        &self,
+        items: &[(resolve::Listing, resolve::HoldingDraft, WorkEnrichment)],
+    ) {
+        let Some((_, first, _)) = items.first() else {
+            return;
+        };
+        let listings: Vec<&resolve::Listing> = items.iter().map(|(l, _, _)| l).collect();
+        let pool = match ListingPool::load(self, &listings, &first.holder).await {
+            Ok(pool) => Some(pool),
+            Err(err) => {
+                tracing::warn!(error = %err, "page of listings not read ahead; resolving each on its own");
+                None
+            }
+        };
+        for (listing, holding, fill) in items {
+            let settled = match &pool {
+                Some(pool) => self.settled_listing(pool, listing, holding).await,
+                None => Ok(None),
+            };
+            let result = match settled {
+                Ok(Some(plan)) => {
+                    let edition_id = &plan.listing.edition_id;
+                    let known = pool.as_ref().and_then(|p| p.work_of_edition(edition_id));
+                    if known.is_some_and(|work| !fill.fills(work)) {
+                        Ok(())
+                    } else {
+                        self.fill_work_from_book(edition_id, fill).await
+                    }
+                }
+                Ok(None) | Err(_) => match self.record_listing(listing, holding).await {
+                    Ok(plan) => {
+                        self.fill_work_from_book(&plan.listing.edition_id, fill)
+                            .await
+                    }
+                    Err(err) => Err(err),
+                },
+            };
+            if let Err(err) = result {
+                tracing::warn!(
+                    product_id = %listing.key.product_id,
+                    plugin_key = %listing.key.plugin_key,
+                    error = %err,
+                    "library title stored but not resolved into the library model; the next scan retries"
+                );
+            }
+        }
+    }
+
+    /// The plan `listing` resolves to against `pool`, when that plan writes
+    /// nothing: no new or changed rows, no conflicts, no credits or series,
+    /// and no stale store metadata to refresh.
+    ///
+    /// # Returns
+    ///
+    /// `None` when the listing has something to write, or its snapshot
+    /// from the pool is not closed; the caller resolves it on its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when a read the pool does not cover fails.
+    async fn settled_listing(
+        &self,
+        pool: &ListingPool,
+        listing: &resolve::Listing,
+        holding: &resolve::HoldingDraft,
+    ) -> Result<Option<resolve::Plan>> {
+        let reads = SnapshotReader {
+            store: self,
+            pool: Some(pool),
+        };
+        let (snapshot, stored_row) = self
+            .listing_snapshot_from(reads, listing, &holding.holder)
+            .await?;
+        if snapshot.is_closed().is_some() {
+            return Ok(None);
+        }
+        let plan = resolve::resolve(listing, holding, &snapshot, &mut UuidIds::default());
+        let refresh = stored_row
+            .as_ref()
+            .is_some_and(|row| listing_needs_refresh(row, listing, Utc::now()));
+        let settled = plan.is_noop()
+            && plan.conflicts.is_empty()
+            && !refresh
+            && credit_batches(&plan).is_empty();
+        Ok(settled.then_some(plan))
+    }
+
     /// Runs one link batch and returns its status (`ok` or `retry`).
     async fn run_link_listing(&self, params: ListingLinkParams) -> Result<String> {
         if let Some(atomic) = &self.atomic {
@@ -1219,37 +1320,35 @@ impl LibraryStore {
         listing: &resolve::Listing,
         holder: &resolve::Holder,
     ) -> Result<(resolve::Snapshot, Option<store_listings::Model>)> {
-        let db = &self.db;
-        let chunk = self.lookup_chunk();
-        let find_listing = |key: &resolve::ListingKey| {
-            store_listings::Entity::find()
-                .filter(store_listings::Column::PluginKey.eq(key.plugin_key.as_str()))
-                .filter(store_listings::Column::Marketplace.eq(key.marketplace.as_str()))
-                .filter(store_listings::Column::ProductId.eq(key.product_id.as_str()))
-        };
-        let stored_row = find_listing(&listing.key)
-            .one(db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        self.listing_snapshot_from(
+            SnapshotReader {
+                store: self,
+                pool: None,
+            },
+            listing,
+            holder,
+        )
+        .await
+    }
+
+    /// [`Self::listing_snapshot_and_row`] through `reads`, which answers
+    /// from a page's [`ListingPool`] where it covers the ask.
+    pub(super) async fn listing_snapshot_from(
+        &self,
+        reads: SnapshotReader<'_>,
+        listing: &resolve::Listing,
+        holder: &resolve::Holder,
+    ) -> Result<(resolve::Snapshot, Option<store_listings::Model>)> {
+        let stored_row = reads.listing(&listing.key).await?;
         let stored = stored_row.clone().map(listing_row);
         let parent = match listing.parent_key() {
-            Some(key) => find_listing(&key)
-                .one(db)
-                .await
-                .map_err(LibraryError::Orm)?
-                .map(listing_row),
+            Some(key) => reads.listing(&key).await?.map(listing_row),
             None => None,
         };
 
         let mut overrides = Vec::new();
         if let Some(row) = &stored {
-            let pins = resolution_overrides::Entity::find()
-                .filter(resolution_overrides::Column::SubjectKind.eq("listing"))
-                .filter(resolution_overrides::Column::SubjectId.eq(row.id.as_str()))
-                .filter(resolution_overrides::Column::Action.eq("pin_edition"))
-                .all(db)
-                .await
-                .map_err(LibraryError::Orm)?;
+            let pins = reads.pins(std::slice::from_ref(&row.id)).await?;
             overrides.extend(pins.into_iter().filter_map(|m| {
                 m.target_id.map(|edition_id| resolve::Override::PinListing {
                     listing: listing.key.clone(),
@@ -1259,27 +1358,13 @@ impl LibraryStore {
         }
 
         // Identifier rows sharing one of the listing's edition identifiers.
-        let keys: Vec<&resolve::IdentifierKey> = listing.edition_identifiers().collect();
+        let keys: Vec<_> = listing
+            .edition_identifiers()
+            .map(edition_identifier_key)
+            .collect();
         let mut identifier_rows = BTreeSet::new();
-        // Each key binds a scheme, a value and a marketplace.
-        for part in keys.chunks((chunk / 3).max(1)) {
-            let mut any = Condition::any();
-            for key in part {
-                any = any.add(
-                    Condition::all()
-                        .add(edition_identifiers::Column::Scheme.eq(key.scheme.as_str()))
-                        .add(edition_identifiers::Column::Value.eq(key.value.as_str()))
-                        .add(edition_identifiers::Column::Marketplace.eq(key.marketplace.as_str())),
-                );
-            }
-            for m in edition_identifiers::Entity::find()
-                .filter(any)
-                .all(db)
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                identifier_rows.insert(edition_identifier_row(m)?);
-            }
+        for m in reads.edition_identifiers_matching(&keys).await? {
+            identifier_rows.insert(edition_identifier_row(m)?);
         }
 
         let mut edition_ids: BTreeSet<String> = BTreeSet::new();
@@ -1293,53 +1378,31 @@ impl LibraryStore {
 
         let edition_list: Vec<String> = edition_ids.iter().cloned().collect();
         let mut editions_found = Vec::new();
-        for m in find_chunked(db, chunk, &edition_list, |part| {
-            editions::Entity::find().filter(editions::Column::Id.is_in(part.iter().cloned()))
-        })
-        .await?
-        {
+        for m in reads.editions(&edition_list).await? {
             editions_found.push(edition_row(m)?);
         }
-        for m in find_chunked(db, chunk, &edition_list, |part| {
-            edition_identifiers::Entity::find()
-                .filter(edition_identifiers::Column::EditionId.is_in(part.iter().cloned()))
-        })
-        .await?
-        {
+        for m in reads.edition_identifiers_of(&edition_list).await? {
             identifier_rows.insert(edition_identifier_row(m)?);
         }
 
         let mut work_identifier_rows = Vec::new();
-        let work_keys: Vec<&resolve::IdentifierKey> = listing.work_identifiers().collect();
-        // Each key binds a scheme and a value.
-        for part in work_keys.chunks((chunk / 2).max(1)) {
-            let mut any = Condition::any();
-            for key in part {
-                any = any.add(
-                    Condition::all()
-                        .add(work_identifiers::Column::Scheme.eq(key.scheme.as_str()))
-                        .add(work_identifiers::Column::Value.eq(key.value.as_str())),
-                );
-            }
-            for m in work_identifiers::Entity::find()
-                .filter(any)
-                .all(db)
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                work_identifier_rows.push(resolve::WorkIdentifierRow {
-                    key: resolve::IdentifierKey {
-                        scheme: parse_stored(
-                            "identifier scheme",
-                            &m.scheme,
-                            resolve::IdentifierScheme::parse,
-                        )?,
-                        value: m.value,
-                        marketplace: String::new(),
-                    },
-                    work_id: m.work_id,
-                });
-            }
+        let work_keys: Vec<_> = listing
+            .work_identifiers()
+            .map(work_identifier_key)
+            .collect();
+        for m in reads.work_identifiers_matching(&work_keys).await? {
+            work_identifier_rows.push(resolve::WorkIdentifierRow {
+                key: resolve::IdentifierKey {
+                    scheme: parse_stored(
+                        "identifier scheme",
+                        &m.scheme,
+                        resolve::IdentifierScheme::parse,
+                    )?,
+                    value: m.value,
+                    marketplace: String::new(),
+                },
+                work_id: m.work_id,
+            });
         }
 
         let expression_ids: Vec<String> = editions_found
@@ -1349,11 +1412,7 @@ impl LibraryStore {
             .into_iter()
             .collect();
         let mut expressions_found = Vec::new();
-        for m in find_chunked(db, chunk, &expression_ids, |part| {
-            expressions::Entity::find().filter(expressions::Column::Id.is_in(part.iter().cloned()))
-        })
-        .await?
-        {
+        for m in reads.expressions(&expression_ids).await? {
             expressions_found.push(expression_row(m)?);
         }
 
@@ -1364,57 +1423,35 @@ impl LibraryStore {
         work_ids.extend(work_identifier_rows.iter().map(|r| r.work_id.clone()));
         let match_key = listing.work_match_key();
         if !match_key.is_empty() {
-            let matched = works::Entity::find()
-                .filter(works::Column::MatchKey.eq(match_key.as_str()))
-                .filter(works::Column::Kind.eq(listing.work_kind.as_str()))
-                .into_column::<String, _>(works::Column::Id)
-                .all(db)
-                .await
-                .map_err(LibraryError::Orm)?;
-            work_ids.extend(matched);
+            work_ids.extend(
+                reads
+                    .works_matching(&match_key, listing.work_kind.as_str())
+                    .await?,
+            );
         }
 
         let work_list: Vec<String> = work_ids.iter().cloned().collect();
         let mut works_found = Vec::new();
-        for m in find_chunked(db, chunk, &work_list, |part| {
-            works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
-        })
-        .await?
-        {
+        for m in reads.works(&work_list).await? {
             works_found.push(work_row(&m)?);
         }
-        for m in find_chunked(db, chunk, &work_list, |part| {
-            expressions::Entity::find()
-                .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
-        })
-        .await?
-        {
+        for m in reads.expressions_of_works(&work_list).await? {
             if !expressions_found.iter().any(|x| x.id == m.id) {
                 expressions_found.push(expression_row(m)?);
             }
         }
-        {
-            let isolated = find_chunked(db, chunk, &work_list, |part| {
-                resolution_overrides::Entity::find()
-                    .filter(resolution_overrides::Column::SubjectKind.eq("work"))
-                    .filter(resolution_overrides::Column::Action.eq("isolate"))
-                    .filter(resolution_overrides::Column::SubjectId.is_in(part.iter().cloned()))
-            })
-            .await?;
-            overrides.extend(
-                isolated
-                    .into_iter()
-                    .map(|m| resolve::Override::IsolateWork {
-                        work_id: m.subject_id,
-                    }),
-            );
-        }
+        overrides.extend(reads.isolations(&work_list).await?.into_iter().map(|m| {
+            resolve::Override::IsolateWork {
+                work_id: m.subject_id,
+            }
+        }));
 
         let holding = match &stored {
-            Some(row) => holdings::Entity::find_by_id((row.id.clone(), holder.stored()))
-                .one(db)
-                .await
-                .map_err(LibraryError::Orm)?
+            Some(row) => reads
+                .holdings(std::slice::from_ref(&row.id), &holder.stored())
+                .await?
+                .into_iter()
+                .next()
                 .map(|m| -> Result<resolve::HoldingRow> {
                     Ok(resolve::HoldingRow {
                         holder: resolve::Holder::parse(&m.holder)
@@ -1448,25 +1485,30 @@ impl LibraryStore {
             // stored: `credit_batches` writes it last, so a credit write
             // that stopped part-way leaves the target uncredited and the
             // next scan finishes it.
-            let firsts = find_chunked(db, chunk, ids, |part| {
-                credits::Entity::find()
-                    .filter(credits::Column::TargetKind.eq(level.as_str()))
-                    .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
-                    .filter(credits::Column::Position.eq(0))
-            })
-            .await?;
-            credited.extend(firsts.into_iter().map(|c| (level, c.target_id)));
+            credited.extend(
+                reads
+                    .first_credits(level, ids)
+                    .await?
+                    .into_iter()
+                    .map(|id| (level, id)),
+            );
         }
-        let works_with_series: Vec<String> = find_chunked(db, chunk, &work_list, |part| {
-            series_entries::Entity::find()
-                .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
-        })
-        .await?
-        .into_iter()
-        .map(|e| e.work_id)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
+        let works_with_series: Vec<String> = reads
+            .works_with_series(&work_list)
+            .await?
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+
+        // Both readers can return rows in any order; sort the lists so a
+        // snapshot does not depend on which one answered.
+        editions_found.sort_by(|a, b| a.id.cmp(&b.id));
+        expressions_found.sort_by(|a, b| a.id.cmp(&b.id));
+        works_found.sort_by(|a, b| a.id.cmp(&b.id));
+        work_identifier_rows.sort_by(|a, b| {
+            (a.key.scheme.as_str(), &a.key.value).cmp(&(b.key.scheme.as_str(), &b.key.value))
+        });
 
         let snapshot = resolve::Snapshot {
             listing: stored,
@@ -2066,14 +2108,7 @@ impl LibraryStore {
         else {
             return Ok(());
         };
-        let missing = |stored: &Option<String>, offered: &Option<String>| {
-            stored.is_none() && offered.is_some()
-        };
-        if !(missing(&work.description, &fill.description)
-            || missing(&work.subjects, &fill.subjects)
-            || missing(&work.categories, &fill.categories)
-            || missing(&work.cover_url, &fill.cover_url))
-        {
+        if !fill.fills(&work) {
             return Ok(());
         }
         let mut am: works::ActiveModel = work.clone().into();
@@ -2172,6 +2207,19 @@ impl WorkEnrichment {
         }
     }
 
+    /// True when writing these fields would change `work`: one of them is
+    /// set here and missing there.
+    #[must_use]
+    pub(crate) fn fills(&self, work: &works::Model) -> bool {
+        let missing = |stored: &Option<String>, offered: &Option<String>| {
+            stored.is_none() && offered.is_some()
+        };
+        missing(&work.description, &self.description)
+            || missing(&work.subjects, &self.subjects)
+            || missing(&work.categories, &self.categories)
+            || missing(&work.cover_url, &self.cover_url)
+    }
+
     /// True when no field is set.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -2259,7 +2307,9 @@ mod tests {
 #[cfg(test)]
 mod store_tests {
     use super::*;
-    use crate::entities::{credits, holdings, resolution_conflicts, series_entries};
+    use crate::entities::{
+        credits, holdings, resolution_conflicts, resolution_overrides, series_entries,
+    };
     use crate::{InProcessSqliteAtomic, LibraryStore};
     use sea_orm::PaginatorTrait;
     use std::sync::Arc;
@@ -3705,5 +3755,221 @@ mod store_tests {
         assert_eq!(listing.identifiers.len(), 2);
         assert_eq!(listing.credits.len(), 2);
         assert_eq!(holding_from_book(&book).holder.stored(), "account:a1");
+    }
+
+    /// A small library with shared editions, a pin, an isolated work, a
+    /// work identifier and a podcast episode under its show.
+    async fn seeded(store: &LibraryStore) -> Vec<resolve::Listing> {
+        use sea_orm::{ActiveModelTrait, ActiveValue::Set};
+        let mut drafts = vec![dune("audible", "B001"), dune("libro", "L001")];
+        let mut children = dune("audible", "B002");
+        children.title = "Children of Dune".into();
+        children.identifiers = vec![
+            (
+                resolve::IdentifierScheme::Isbn,
+                "9780593098240".into(),
+                None,
+            ),
+            (
+                resolve::IdentifierScheme::OpenLibraryWork,
+                "OL2W".into(),
+                None,
+            ),
+        ];
+        drafts.push(children);
+        let mut show = dune("audible", "SHOW1");
+        show.title = "Spice Talk".into();
+        show.work_kind = Some(resolve::WorkKind::PodcastShow);
+        show.identifiers.clear();
+        show.series.clear();
+        let mut episode = show.clone();
+        episode.product_id = "EP1".into();
+        episode.title = "Spice Talk 1".into();
+        episode.work_kind = Some(resolve::WorkKind::PodcastEpisode);
+        episode.parent_product_id = Some("SHOW1".into());
+        drafts.push(show);
+        drafts.push(episode);
+        let listings: Vec<resolve::Listing> = drafts
+            .iter()
+            .map(|d| resolve::Listing::from_draft(d).unwrap())
+            .collect();
+        let mut plans = Vec::new();
+        for listing in &listings {
+            plans.push(store.record_listing(listing, &account("a1")).await.unwrap());
+        }
+        resolution_overrides::ActiveModel {
+            subject_kind: Set("listing".into()),
+            subject_id: Set(plans[1].listing.id.clone()),
+            action: Set("pin_edition".into()),
+            target_id: Set(Some(plans[1].listing.edition_id.clone())),
+            created_by_user_id: Set(None),
+            created_at: Set(now_str()),
+        }
+        .insert(&store.db)
+        .await
+        .unwrap();
+        let children_work = store
+            .works_of_editions(BTreeSet::from([plans[2].listing.edition_id.clone()]))
+            .await
+            .unwrap()
+            .remove(&plans[2].listing.edition_id)
+            .unwrap();
+        resolution_overrides::ActiveModel {
+            subject_kind: Set("work".into()),
+            subject_id: Set(children_work),
+            action: Set("isolate".into()),
+            target_id: Set(None),
+            created_by_user_id: Set(None),
+            created_at: Set(now_str()),
+        }
+        .insert(&store.db)
+        .await
+        .unwrap();
+        listings
+    }
+
+    #[tokio::test]
+    async fn pooled_snapshots_match_per_listing_snapshots_under_every_profile() {
+        use crate::test_support::Profile;
+        for profile in Profile::ALL {
+            let store = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let mut listings = seeded(&store).await;
+            // A listing the library has never seen, sharing Dune's ISBN.
+            listings.push(resolve::Listing::from_draft(&dune("chirp", "C001")).unwrap());
+            let mut stranger = dune("audible", "B999");
+            stranger.title = "Something Else".into();
+            stranger.identifiers.clear();
+            listings.push(resolve::Listing::from_draft(&stranger).unwrap());
+
+            let refs: Vec<&resolve::Listing> = listings.iter().collect();
+            let holder = resolve::Holder::Account("a1".into());
+            let pool = ListingPool::load(&store, &refs, &holder).await.unwrap();
+            for holder in [holder.clone(), resolve::Holder::Account("a2".into())] {
+                for listing in &listings {
+                    let direct = store
+                        .listing_snapshot_and_row(listing, &holder)
+                        .await
+                        .unwrap();
+                    let pooled = store
+                        .listing_snapshot_from(
+                            SnapshotReader {
+                                store: &store,
+                                pool: Some(&pool),
+                            },
+                            listing,
+                            &holder,
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        pooled, direct,
+                        "{profile:?}: {} for {holder:?}",
+                        listing.key.product_id
+                    );
+                }
+            }
+        }
+    }
+
+    /// Row counts of the library model's tables, for comparing two stores.
+    async fn model_counts(store: &LibraryStore) -> Vec<u64> {
+        use crate::entities::store_listings;
+        vec![
+            works::Entity::find().count(&store.db).await.unwrap(),
+            expressions::Entity::find().count(&store.db).await.unwrap(),
+            editions::Entity::find().count(&store.db).await.unwrap(),
+            store_listings::Entity::find()
+                .count(&store.db)
+                .await
+                .unwrap(),
+            holdings::Entity::find().count(&store.db).await.unwrap(),
+            credits::Entity::find().count(&store.db).await.unwrap(),
+            series_entries::Entity::find()
+                .count(&store.db)
+                .await
+                .unwrap(),
+            edition_identifiers::Entity::find()
+                .count(&store.db)
+                .await
+                .unwrap(),
+            work_identifiers::Entity::find()
+                .count(&store.db)
+                .await
+                .unwrap(),
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_page_writes_what_listing_by_listing_writes_under_every_profile() {
+        use crate::test_support::Profile;
+        for profile in Profile::ALL {
+            let by_listing = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let by_page = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let mut listings = seeded(&by_listing).await;
+            seeded(&by_page).await;
+            listings.push(resolve::Listing::from_draft(&dune("chirp", "C001")).unwrap());
+            let mut renamed = dune("audible", "B001");
+            renamed.title = "Dune (Movie Tie-In)".into();
+            listings.push(resolve::Listing::from_draft(&renamed).unwrap());
+            let dated = resolve::HoldingDraft {
+                purchased_at: Some("2024-01-01T00:00:00+00:00".into()),
+                ..account("a1")
+            };
+            let fill = WorkEnrichment {
+                description: Some("Spice.".into()),
+                ..WorkEnrichment::default()
+            };
+
+            let items: Vec<(resolve::Listing, resolve::HoldingDraft, WorkEnrichment)> = listings
+                .iter()
+                .enumerate()
+                .map(|(i, l)| {
+                    let holding = if i == 1 { dated.clone() } else { account("a1") };
+                    (l.clone(), holding, fill.clone())
+                })
+                .collect();
+            for (listing, holding, fill) in &items {
+                let plan = by_listing.record_listing(listing, holding).await.unwrap();
+                by_listing
+                    .fill_work_from_book(&plan.listing.edition_id, fill)
+                    .await
+                    .unwrap();
+            }
+            by_page.record_listing_page(&items).await;
+
+            assert_eq!(
+                model_counts(&by_page).await,
+                model_counts(&by_listing).await,
+                "{profile:?}"
+            );
+            let described = |store: &LibraryStore| {
+                let db = store.db.clone();
+                async move {
+                    works::Entity::find()
+                        .filter(works::Column::Description.is_not_null())
+                        .count(&db)
+                        .await
+                        .unwrap()
+                }
+            };
+            assert_eq!(described(&by_page).await, described(&by_listing).await);
+            let purchased = holdings::Entity::find()
+                .filter(holdings::Column::PurchasedAt.is_not_null())
+                .count(&by_page.db)
+                .await
+                .unwrap();
+            assert_eq!(purchased, 1, "{profile:?}: the changed holding is written");
+
+            // A second pass over the same page changes nothing.
+            let before = model_counts(&by_page).await;
+            by_page.record_listing_page(&items).await;
+            assert_eq!(model_counts(&by_page).await, before, "{profile:?}");
+        }
     }
 }

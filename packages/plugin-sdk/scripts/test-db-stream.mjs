@@ -1106,6 +1106,91 @@ for (const setup of [
   );
 }
 
+// --- `writeChunks()` resumes at batch boundaries under offset ids --------
+{
+  const sdk = {
+    ...(await import(join(dist, "db-execute.js"))),
+    ...(await import(join(dist, "errors.js"))),
+  };
+  // Pinned in the Rust and Python SDK tests too.
+  assert.equal(
+    await sdk.writeChunksOperationId("job-1:titles", 2),
+    "cb3e8a68-d67e-3739-ee20-30bcaca70026",
+  );
+  const committed = [];
+  let calls = 0;
+  let loseReplyAt = 0;
+  let failAt = 0;
+  const db = createDatabaseBinding({
+    async execute(req) {
+      calls += 1;
+      if (calls === failAt) {
+        throw new sdk.PluginError("unavailable", "adapter down");
+      }
+      // A resent operation id replays its receipt instead of writing again.
+      if (!committed.some(([id]) => id === req.operationId)) {
+        committed.push([req.operationId, req.statements.length]);
+      }
+      if (calls === loseReplyAt) {
+        throw new sdk.PluginError("unavailable", "reply lost");
+      }
+      return inlineReply(req);
+    },
+  });
+  const stmts = Array.from({ length: 5 }, (_, i) =>
+    db.prepare("INSERT INTO t VALUES (?)").bind({ kind: "int64", value: BigInt(i) }),
+  );
+  const caps = { maxStatements: 2, maxRequestBytes: 0 };
+
+  const paused = await db.writeChunks(stmts, { key: "k", ...caps, stop: (next) => next >= 2 });
+  assert.deepEqual(paused, { next: 2, done: false });
+  const done = await db.writeChunks(stmts, { key: "k", from: paused.next, ...caps });
+  assert.deepEqual(done, { next: 5, done: true });
+  assert.deepEqual(
+    committed.map(([, n]) => n),
+    [2, 2, 1],
+    "no statement written twice",
+  );
+  assert.equal(committed[1][0], await sdk.writeChunksOperationId("k", 2));
+
+  // A lost reply is replayed on resume, not written twice.
+  committed.length = 0;
+  calls = 0;
+  loseReplyAt = 2;
+  const lost = await db.writeChunks(stmts, { key: "lost", ...caps }).then(
+    () => assert.fail("the second reply is lost"),
+    (err) => err,
+  );
+  assert.ok(lost instanceof sdk.WriteChunksError);
+  assert.equal(lost.next, 2);
+  assert.equal(lost.code, "unavailable");
+  loseReplyAt = 0;
+  assert.deepEqual(await db.writeChunks(stmts, { key: "lost", from: lost.next, ...caps }), {
+    next: 5,
+    done: true,
+  });
+  assert.equal(committed.length, 3);
+
+  // A failure reports the progress before it; bad input is refused.
+  calls = 0;
+  failAt = 3;
+  await assert.rejects(db.writeChunks(stmts, { key: "fail", ...caps }), (err) => err.next === 4);
+  failAt = 0;
+  await assert.rejects(
+    db.writeChunks(stmts, { key: "", ...caps }),
+    (err) => err.code === "invalid_params",
+  );
+  await assert.rejects(
+    db.writeChunks(stmts, { key: "k".repeat(sdk.MAX_WRITE_KEY_BYTES + 1), ...caps }),
+    (err) => err.code === "invalid_params",
+  );
+  await assert.rejects(
+    db.writeChunks(stmts, { key: "k", from: 6, ...caps }),
+    (err) => err.code === "invalid_params" && err.next === 6,
+  );
+  assert.deepEqual(await db.writeChunks([], { key: "k", ...caps }), { next: 0, done: true });
+}
+
 // `chunkIndexes`: every run encodes within the byte cap, covers each
 // statement once and in order, and a lone oversized statement is on its own.
 {

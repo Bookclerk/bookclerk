@@ -351,6 +351,96 @@ export interface DatabaseBinding {
    * `GuestDatabase.limits`.
    */
   limits(): Promise<DbCapabilities>;
+  /**
+   * Writes `statements` in batches that fit one request, resumably.
+   *
+   * The batches are the ones {@link DatabaseBinding.chunk} yields for
+   * `statements.slice(from)`, each committed with `batch()` under an
+   * operation id derived from `key` and the batch's offset
+   * ({@link writeChunksOperationId}). Store the returned `next` (for example
+   * in a job checkpoint) and call again with the same list, the same `key`
+   * and `from: next` to carry on: a batch whose reply was lost is resent
+   * under the same id and the host replays its receipt.
+   *
+   * `stop(next)` is asked before each batch; returning `true` pauses the
+   * run there. The list and the caps must not change between calls with
+   * one `key`, or a resent batch no longer matches its receipt and the host
+   * answers `conflict`.
+   *
+   * @param statements The whole list, the same on every call.
+   * @param options `key` names the write (stable across resumes, at most
+   *   {@link MAX_WRITE_KEY_BYTES} UTF-8 bytes); `from` is the statements
+   *   already committed (default `0`); `stop` is asked before each batch;
+   *   `maxStatements` / `maxRequestBytes` are as for `chunk()`.
+   * @returns `{ next, done }`: statements committed, and whether all are.
+   * @throws {@link WriteChunksError} carrying `next` when a batch fails or
+   *   the input is invalid.
+   */
+  writeChunks(statements: PreparedStatement[], options: WriteChunksOptions): Promise<WriteProgress>;
+}
+
+/** Longest `key` {@link DatabaseBinding.writeChunks} accepts, in UTF-8 bytes. */
+export const MAX_WRITE_KEY_BYTES = 256;
+
+/** Options for {@link DatabaseBinding.writeChunks}. */
+export interface WriteChunksOptions {
+  /** Names this write, stable across resumes (a job id plus a step name). */
+  key: string;
+  /** Statements already committed; `0` on the first call. */
+  from?: number;
+  /** Asked before each batch with the statements committed so far; `true` pauses. */
+  stop?: (next: number) => boolean;
+  /** Statements per batch instead of the session's cap (`0` = no cap). */
+  maxStatements?: number;
+  /** Request bytes per batch instead of the session's cap (`0` = no cap). */
+  maxRequestBytes?: number;
+}
+
+/** Where a {@link DatabaseBinding.writeChunks} run stands. */
+export interface WriteProgress {
+  /** Statements committed from the start of the list; always a batch boundary. */
+  next: number;
+  /** True when every statement is committed; false when `stop` paused the run. */
+  done: boolean;
+}
+
+/**
+ * A {@link DatabaseBinding.writeChunks} run that failed part way. `code`,
+ * `message` and `details` are the failed batch's; `next` is the statements
+ * committed before it, to resume from.
+ */
+export class WriteChunksError extends PluginError {
+  /** Statements committed before the failure; resume with `from: next`. */
+  readonly next: number;
+
+  constructor(next: number, cause: PluginError) {
+    super(cause.wireCode, cause.message, cause.details);
+    this.name = "WriteChunksError";
+    this.next = next;
+  }
+}
+
+/**
+ * The operation id {@link DatabaseBinding.writeChunks} sends for the batch
+ * that starts at `offset` of the write named `key`: the first 16 bytes of
+ * SHA-256 over `"bookclerk-write-chunks\0" + key + "\0" + offset`
+ * (decimal), as lowercase hex grouped 8-4-4-4-12. The Rust and Python SDKs
+ * derive the same id.
+ *
+ * @param key Name of the write.
+ * @param offset Index of the batch's first statement.
+ * @returns A UUID-shaped operation id.
+ */
+export async function writeChunksOperationId(key: string, offset: number): Promise<string> {
+  const bytes = new TextEncoder().encode(`bookclerk-write-chunks\0${key}\0${String(offset)}`);
+  let hex: string;
+  if (globalThis.crypto?.subtle) {
+    hex = hexBytes(new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", bytes)));
+  } else {
+    const { createHash } = await import("node:crypto");
+    hex = createHash("sha256").update(bytes).digest("hex");
+  }
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 /**
@@ -868,6 +958,60 @@ export function createDatabaseBinding(
       for (const indexes of chunkIndexes(typed, maxStatements, maxRequestBytes)) {
         yield indexes.map((i) => statements[i]!);
       }
+    },
+    async writeChunks(statements, opts) {
+      const from = opts.from ?? 0;
+      const fail = (next: number, err: unknown): WriteChunksError =>
+        new WriteChunksError(
+          next,
+          err instanceof PluginError ? err : PluginError.fromWire("internal", String(err)),
+        );
+      const keyBytes = new TextEncoder().encode(opts.key).byteLength;
+      if (keyBytes === 0 || keyBytes > MAX_WRITE_KEY_BYTES) {
+        throw fail(
+          from,
+          PluginError.fromWire(
+            "invalid_params",
+            `writeChunks key must be 1 to ${String(MAX_WRITE_KEY_BYTES)} bytes`,
+          ),
+        );
+      }
+      if (!Number.isInteger(from) || from < 0 || from > statements.length) {
+        throw fail(
+          from,
+          PluginError.fromWire(
+            "invalid_params",
+            `writeChunks from ${String(from)} is not within the ${String(statements.length)} statements`,
+          ),
+        );
+      }
+      const caps =
+        opts.maxStatements !== undefined || opts.maxRequestBytes !== undefined
+          ? { maxStatements: opts.maxStatements ?? 0, maxRequestBytes: opts.maxRequestBytes ?? 0 }
+          : undefined;
+      const batches: PreparedStatement[][] = [];
+      try {
+        for await (const b of binding.chunk(statements.slice(from), caps)) {
+          batches.push(b);
+        }
+      } catch (err) {
+        throw fail(from, err);
+      }
+      let next = from;
+      for (const b of batches) {
+        if (opts.stop?.(next) === true) {
+          return { next, done: false };
+        }
+        try {
+          await binding.batch(b, {
+            retry: { operationId: await writeChunksOperationId(opts.key, next), requestHash: "" },
+          });
+        } catch (err) {
+          throw fail(next, err);
+        }
+        next += b.length;
+      }
+      return { next, done: true };
     },
   };
   // `iterate()` needs the binding's streamed path; `makePrepared` reaches it

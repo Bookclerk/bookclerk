@@ -95,6 +95,44 @@ pub struct ChunkCaps {
     pub max_request_bytes: u32,
 }
 
+/// Where a [`DatabaseBinding::write_chunks`] run stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteProgress {
+    /// Statements committed from the start of the list; pass it back as
+    /// `from` to resume. Always a batch boundary.
+    pub next: usize,
+    /// True when every statement is committed; false when `stop` paused the
+    /// run between batches.
+    pub done: bool,
+}
+
+/// A [`DatabaseBinding::write_chunks`] run that failed part way.
+#[derive(Debug)]
+pub struct WriteChunksError {
+    /// Statements committed before the failure; resume with `from = next`.
+    /// The failed batch may have committed with its reply lost: resuming
+    /// resends it under the same operation id, so the host replays its
+    /// receipt instead of writing it twice.
+    pub next: usize,
+    /// Why the batch at `next` failed.
+    pub error: PluginError,
+}
+
+impl std::fmt::Display for WriteChunksError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "write stopped after {} statements: {}",
+            self.next, self.error
+        )
+    }
+}
+
+impl std::error::Error for WriteChunksError {}
+
+/// Longest `key` [`DatabaseBinding::write_chunks`] accepts, in bytes.
+pub const MAX_WRITE_KEY_BYTES: usize = 256;
+
 /// Host-mediated typed SQL surface for plugin guests.
 ///
 /// Row-returning reads go through `GuestDatabase.executeStreamed` whenever
@@ -255,6 +293,83 @@ impl DatabaseBinding {
                     .collect()
             })
             .collect())
+    }
+
+    /// Writes `statements` in batches that fit one request, resumably.
+    ///
+    /// The batches are the ones [`Self::chunk`] would yield for
+    /// `statements[from..]`, each committed with [`Self::batch`] under an
+    /// operation id derived from `key` and the batch's offset (see
+    /// [`write_chunks_operation_id`]). Store the returned `next` (for
+    /// example in a job checkpoint) and call again with the same list, the
+    /// same `key` and `from = next` to carry on: a batch whose reply was
+    /// lost is resent under the same id and the host replays its receipt.
+    ///
+    /// `stop` is asked before each batch with the number of statements
+    /// committed so far; returning `true` pauses the run there (a time
+    /// budget, a cancellation flag). The list and the caps must not change
+    /// between calls with one `key`, or a resent batch no longer matches its
+    /// receipt and the host answers `conflict`.
+    ///
+    /// # Arguments
+    ///
+    /// * `statements` - The whole list, the same on every call.
+    /// * `from` - Statements already committed; `0` on the first call.
+    /// * `key` - Names this write, stable across resumes (a job id plus a
+    ///   step name); at most [`MAX_WRITE_KEY_BYTES`] bytes.
+    /// * `caps` - As for [`Self::chunk`]; `None` uses the session's limits.
+    /// * `stop` - Asked before each batch whether to pause.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WriteChunksError`] whose `next` is the statements
+    /// committed so far: `invalid_params` when `key` is empty or too long or
+    /// `from` is past the list, the error [`Self::chunk`] returns, or the
+    /// error of the batch that failed.
+    pub async fn write_chunks(
+        &self,
+        mut statements: Vec<PreparedStatement>,
+        from: usize,
+        key: &str,
+        caps: Option<ChunkCaps>,
+        mut stop: impl FnMut(usize) -> bool,
+    ) -> std::result::Result<WriteProgress, WriteChunksError> {
+        let fail = |next: usize, error: PluginError| WriteChunksError { next, error };
+        if key.is_empty() || key.len() > MAX_WRITE_KEY_BYTES {
+            return Err(fail(
+                from,
+                PluginError::invalid_params(format!(
+                    "write_chunks key must be 1 to {MAX_WRITE_KEY_BYTES} bytes"
+                )),
+            ));
+        }
+        if from > statements.len() {
+            return Err(fail(
+                from,
+                PluginError::invalid_params(format!(
+                    "write_chunks from {from} is past the {} statements",
+                    statements.len()
+                )),
+            ));
+        }
+        let rest = statements.split_off(from);
+        let batches = self.chunk(rest, caps).await.map_err(|e| fail(from, e))?;
+        let mut next = from;
+        for batch in batches {
+            if stop(next) {
+                return Ok(WriteProgress { next, done: false });
+            }
+            let len = batch.len();
+            let retry = RetryToken {
+                operation_id: write_chunks_operation_id(key, next),
+                request_hash: String::new(),
+            };
+            self.batch(batch, Some(retry))
+                .await
+                .map_err(|e| fail(next, e))?;
+            next += len;
+        }
+        Ok(WriteProgress { next, done: true })
     }
 
     /// Prepare one canonical-SQL statement (`?` placeholders).
@@ -951,6 +1066,35 @@ fn probe_statement() -> TypedDbStatement {
         max_rows: 0,
         result_selection: DbResultSelection::Rows,
     }
+}
+
+/// The operation id [`DatabaseBinding::write_chunks`] sends for the batch
+/// that starts at `offset` of the write named `key`.
+///
+/// It is UUID-shaped, so [`DatabaseBinding::chunk`] sizes the batches for
+/// it: the first 16 bytes of SHA-256 over
+/// `"bookclerk-write-chunks\0" + key + "\0" + offset` (decimal), as
+/// lowercase hex grouped 8-4-4-4-12. The TypeScript and Python SDKs derive
+/// the same id, so a write resumed from another SDK replays the same
+/// receipts.
+#[must_use]
+pub fn write_chunks_operation_id(key: &str, offset: usize) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"bookclerk-write-chunks\0");
+    hasher.update(key.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(offset.to_string().as_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().take(16).map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
 }
 
 /// A UUID-shaped `operationId`, the widest the binding mints.
@@ -1749,6 +1893,218 @@ mod tests {
         };
         assert_eq!(err.code, PluginErrorCode::Unsupported);
     }
+
+    /// A session that records each batch's operation id and size, and fails
+    /// (or commits and then loses its reply) on chosen calls.
+    struct ResumeSession {
+        /// `(operation_id, statements)` per committed batch, receipts included.
+        committed: Mutex<Vec<(String, usize)>>,
+        /// Calls answered so far.
+        calls: Mutex<usize>,
+        /// Call index that fails before committing.
+        fail_at: Option<usize>,
+        /// Call index that commits and then loses its reply.
+        lose_reply_at: Option<usize>,
+    }
+
+    impl ResumeSession {
+        fn new(fail_at: Option<usize>, lose_reply_at: Option<usize>) -> Arc<Self> {
+            Arc::new(Self {
+                committed: Mutex::new(Vec::new()),
+                calls: Mutex::new(0),
+                fail_at,
+                lose_reply_at,
+            })
+        }
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl GuestDatabase for ResumeSession {
+        async fn execute(&self, request: ExecuteRequest) -> Result<ExecuteReply> {
+            let call = {
+                let mut calls = self.calls.lock().expect("lock");
+                *calls += 1;
+                *calls
+            };
+            if self.fail_at == Some(call) {
+                return Err(PluginError::unavailable("adapter down"));
+            }
+            let n = request.statements.len();
+            {
+                let mut committed = self.committed.lock().expect("lock");
+                // A resent operation id replays its receipt instead of writing again.
+                if !committed.iter().any(|(id, _)| *id == request.operation_id) {
+                    committed.push((request.operation_id.clone(), n));
+                }
+            }
+            if self.lose_reply_at == Some(call) {
+                return Err(PluginError::unavailable("reply lost"));
+            }
+            Ok(ExecuteReply {
+                operation_id: request.operation_id,
+                statements: (0..n)
+                    .map(|_| bookclerk_plugin_abi::StatementResult {
+                        rows: Vec::new(),
+                        columns: Vec::new(),
+                        rows_affected: 1,
+                    })
+                    .collect(),
+                timing: bookclerk_plugin_abi::DbTiming {
+                    attempt_elapsed_us: 0,
+                    db_execution_us: 0,
+                    db_timing_source: "test".into(),
+                },
+            })
+        }
+    }
+
+    fn inserts(binding: &DatabaseBinding, n: i64) -> Vec<PreparedStatement> {
+        (0..n)
+            .map(|i| {
+                binding
+                    .prepare("INSERT INTO t VALUES (?)")
+                    .bind(vec![DbValue::Int64(i)])
+                    .as_run()
+            })
+            .collect()
+    }
+
+    const TWO: Option<ChunkCaps> = Some(ChunkCaps {
+        max_statements: 2,
+        max_request_bytes: 0,
+    });
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn write_chunks_commits_every_batch_under_offset_ids() {
+        let session = ResumeSession::new(None, None);
+        let binding = DatabaseBinding::from_session(session.clone());
+        let done = binding
+            .write_chunks(inserts(&binding, 5), 0, "job-1:titles", TWO, |_| false)
+            .await
+            .expect("writes");
+        assert_eq!(
+            done,
+            WriteProgress {
+                next: 5,
+                done: true
+            }
+        );
+        let committed = session.committed.lock().expect("lock").clone();
+        assert_eq!(
+            committed,
+            vec![
+                (write_chunks_operation_id("job-1:titles", 0), 2),
+                (write_chunks_operation_id("job-1:titles", 2), 2),
+                (write_chunks_operation_id("job-1:titles", 4), 1),
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn write_chunks_pauses_and_resumes_at_a_batch_boundary() {
+        let session = ResumeSession::new(None, None);
+        let binding = DatabaseBinding::from_session(session.clone());
+        let paused = binding
+            .write_chunks(inserts(&binding, 5), 0, "k", TWO, |next| next >= 2)
+            .await
+            .expect("pauses");
+        assert_eq!(
+            paused,
+            WriteProgress {
+                next: 2,
+                done: false
+            }
+        );
+        let done = binding
+            .write_chunks(inserts(&binding, 5), paused.next, "k", TWO, |_| false)
+            .await
+            .expect("resumes");
+        assert_eq!(
+            done,
+            WriteProgress {
+                next: 5,
+                done: true
+            }
+        );
+        let sizes: Vec<usize> = session
+            .committed
+            .lock()
+            .expect("lock")
+            .iter()
+            .map(|(_, n)| *n)
+            .collect();
+        assert_eq!(sizes, vec![2, 2, 1], "no statement written twice");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_lost_reply_is_replayed_on_resume_not_written_twice() {
+        let session = ResumeSession::new(None, Some(2));
+        let binding = DatabaseBinding::from_session(session.clone());
+        let err = binding
+            .write_chunks(inserts(&binding, 5), 0, "k", TWO, |_| false)
+            .await
+            .expect_err("the second reply is lost");
+        assert_eq!(err.next, 2);
+        assert_eq!(err.error.code, PluginErrorCode::Unavailable);
+        let done = binding
+            .write_chunks(inserts(&binding, 5), err.next, "k", TWO, |_| false)
+            .await
+            .expect("resumes");
+        assert!(done.done);
+        assert_eq!(session.committed.lock().expect("lock").len(), 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn write_chunks_reports_progress_on_failure_and_refuses_bad_input() {
+        let session = ResumeSession::new(Some(3), None);
+        let binding = DatabaseBinding::from_session(session);
+        let err = binding
+            .write_chunks(inserts(&binding, 5), 0, "k", TWO, |_| false)
+            .await
+            .expect_err("the third batch fails");
+        assert_eq!(err.next, 4);
+        let past = binding
+            .write_chunks(inserts(&binding, 2), 3, "k", TWO, |_| false)
+            .await
+            .expect_err("from past the list");
+        assert_eq!(past.error.code, PluginErrorCode::InvalidParams);
+        for key in [String::new(), "k".repeat(MAX_WRITE_KEY_BYTES + 1)] {
+            let bad = binding
+                .write_chunks(inserts(&binding, 1), 0, &key, TWO, |_| false)
+                .await
+                .expect_err("bad key");
+            assert_eq!(bad.error.code, PluginErrorCode::InvalidParams);
+        }
+        let empty = binding
+            .write_chunks(Vec::new(), 0, "k", TWO, |_| false)
+            .await
+            .expect("nothing to write");
+        assert_eq!(
+            empty,
+            WriteProgress {
+                next: 0,
+                done: true
+            }
+        );
+    }
+
+    #[test]
+    fn write_chunks_operation_ids_are_uuid_shaped_and_shared_across_sdks() {
+        let id = write_chunks_operation_id("job-1:titles", 2);
+        assert_eq!(id.len(), RETRY_ID_PLACEHOLDER.len());
+        assert_eq!(
+            id.chars().filter(|c| *c == '-').count(),
+            4,
+            "grouped 8-4-4-4-12"
+        );
+        assert_ne!(id, write_chunks_operation_id("job-1:titles", 0));
+        assert_ne!(id, write_chunks_operation_id("job-2:titles", 2));
+        // The TypeScript and Python SDK tests pin the same vector.
+        assert_eq!(id, WRITE_CHUNKS_ID_VECTOR);
+    }
+
+    /// `write_chunks_operation_id("job-1:titles", 2)`, pinned in every SDK.
+    const WRITE_CHUNKS_ID_VECTOR: &str = "cb3e8a68-d67e-3739-ee20-30bcaca70026";
 
     #[test]
     fn chunk_indexes_fit_the_byte_cap_and_cover_every_statement_once() {

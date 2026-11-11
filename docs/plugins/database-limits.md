@@ -140,7 +140,8 @@ for batch in db.chunk(inserts, None).await? {
 
 Each batch is atomic; the loop is not. If a later batch fails, the earlier
 ones stay committed, and the plugin decides whether to retry or to record
-how far it got (a job checkpoint is the usual place). `chunk()` uses the
+how far it got (a job checkpoint is the usual place, and
+[`writeChunks()`](#resumable-writes) does the bookkeeping). `chunk()` uses the
 session's `maxStatements` and `maxRequestBytes` (the binding's own request
 cap, when it has one, tightens the latter); pass explicit caps to split
 smaller, or when the host predates `limits()`, and explicit zeros to get one
@@ -155,6 +156,63 @@ less room.
 > statements to commit together puts them in one `batch()`; a plugin that
 > needs more statements than one request holds restructures the work, for
 > example by inserting from a staging table in one statement.
+
+## Resumable writes
+
+`writeChunks()` (`write_chunks()` in Python and Rust) runs the `chunk()`
+loop for you and tells you how far it got, so a long write can stop and
+carry on later without writing anything twice:
+
+```ts
+const progress = await env.DB.writeChunks(inserts, {
+  key: `${job.id}:seen`,
+  from: checkpoint.next ?? 0,
+  stop: () => Date.now() > deadline,
+});
+if (!progress.done) {
+  job.suspend({ checkpoint: { next: progress.next } });
+  return;
+}
+```
+
+```python
+progress = await self.env.DB.write_chunks(
+    inserts, key=f"{job.id}:seen", start=checkpoint.get("next", 0),
+    stop=lambda _next: time.monotonic() > deadline,
+)
+```
+
+```rust
+let progress = db
+    .write_chunks(inserts, checkpoint.next, &format!("{job_id}:seen"), None, |_| {
+        Instant::now() > deadline
+    })
+    .await?;
+```
+
+1. Build the same list of statements on every call. `from` (`start` in
+   Python) is how many of them are already committed; pass `0` the first
+   time.
+2. The helper commits the batches `chunk()` makes from that point on.
+   Before each batch it asks `stop`; returning true pauses there.
+3. It returns `next`, the statements committed so far, and `done`. Store
+   `next` in your checkpoint and pass it back as `from` to resume.
+4. When a batch fails, the error carries `next` too (`WriteChunksError`).
+
+Each batch is sent with an operation id made from `key` and the batch's
+offset, so a resent batch has the same id as the first try. If a batch
+committed but its reply was lost, resuming from the last `next` sends it
+again and the host replays the stored result instead of writing the rows a
+second time. For that to hold, `key` must name one write (a job id plus a
+step is a good key, at most 256 bytes), and the list and the caps must stay
+the same between calls with that key. Otherwise a resent batch no longer
+matches what was stored and the host answers `conflict`.
+
+The id is the first 16 bytes of SHA-256 over
+`bookclerk-write-chunks`, a zero byte, the key, a zero byte and the offset
+in decimal, written as a UUID. Every SDK derives the same id, and it is
+the same length as the ids the binding mints, so batches are sized the same
+way as `chunk()` sizes them.
 
 ## Sizing before sending
 

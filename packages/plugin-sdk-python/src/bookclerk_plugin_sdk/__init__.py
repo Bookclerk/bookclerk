@@ -35,6 +35,7 @@ from .abi import (
     ScanParams,
 )
 from .db_value import (
+    MAX_WRITE_KEY_BYTES,
     D1ExecResult,
     D1Meta,
     D1Result,
@@ -42,6 +43,7 @@ from .db_value import (
     ExecuteStreamDecoder,
     ExecuteStreamLimits,
     RetryToken,
+    WriteProgress,
     canonical_execute_request_hash,
     chunk_indexes,
     create_database_binding,
@@ -60,6 +62,7 @@ from .db_value import (
     raw_stream_ceiling,
     statement_result_to_d1_result,
     streams_results,
+    write_chunks_operation_id,
 )
 from .limits import LimitExceeded, limit_exceeded_message, parse_limit_exceeded
 
@@ -84,7 +87,10 @@ __all__ = [
     "LoginParams",
     "PluginDescribe",
     "PluginErrorCode",
+    "MAX_WRITE_KEY_BYTES",
     "RetryToken",
+    "WriteProgress",
+    "write_chunks_operation_id",
     "ScanParams",
     "canonical_execute_request_hash",
     "chunk_indexes",

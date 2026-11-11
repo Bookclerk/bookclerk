@@ -7583,3 +7583,117 @@ async fn works_page_by_id_and_embedding_hashes_read_in_bulk_under_every_profile(
         assert_eq!(kit.refused_begins(), 0, "{name}");
     }
 }
+
+/// The fields of a stored row a scan writes, without its ids and times.
+fn scanned_fields(r: &BookRecord) -> String {
+    format!(
+        "{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        r.plugin_key,
+        r.account_id,
+        r.product_id,
+        r.title,
+        r.asin,
+        r.isbn,
+        r.authors,
+        r.series,
+        r.length_minutes,
+        r.acquire_status,
+    )
+}
+
+#[tokio::test]
+async fn a_page_of_rows_stores_what_row_by_row_upserts_store_under_every_profile() {
+    use crate::test_support::Profile;
+    for profile in Profile::ALL {
+        let one = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        // The profile's own limits with a small request cap, which splits
+        // the page across several batches.
+        let paged = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        let mut caps = paged.db_capabilities().clone();
+        caps.max_request_bytes = 4096;
+        let paged = paged.with_db_capabilities(caps);
+
+        let mut audible = NewBook::minimal("B1", "a1", "us", "Dune");
+        audible.authors = Some("Frank Herbert".into());
+        audible.length_minutes = Some(1260);
+        let mut seeded = Vec::new();
+        for store in [&one, &paged] {
+            for account in ["a1", "a2"] {
+                store
+                    .upsert_account("audible", account, "us", None, true, "audible")
+                    .await
+                    .unwrap();
+            }
+            seeded.push(store.upsert_book(&audible).await.unwrap());
+        }
+
+        // A rescan without the ASIN keeps the stored title and authors.
+        let mut no_asin = NewBook::minimal("B1", "a1", "us", "DUNE (abridged)");
+        no_asin.asin = None;
+        no_asin.isbn = Some("9780441013593".into());
+        let mut page = vec![no_asin];
+        for i in 0..10 {
+            let mut book = NewBook::minimal(format!("N{i}"), "a1", "us", format!("New &amp; {i}"));
+            book.series = Some("Saga".into());
+            page.push(book);
+        }
+        // The same title twice: the second listing wins, as row by row.
+        page.push(NewBook::minimal("N3", "a1", "us", "N3 again"));
+        page.push(NewBook::minimal("B1", "a2", "us", "Dune"));
+
+        let mut row_by_row = Vec::new();
+        for book in &page {
+            row_by_row.push(one.upsert_book_row(book).await.unwrap());
+        }
+        let refs: Vec<&NewBook> = page.iter().collect();
+        let library = |revisions: &crate::control_plane::LiveRevisions| {
+            revisions
+                .iter()
+                .find(|(topic, _)| *topic == crate::control_plane::LiveTopic::Library)
+                .map(|(_, revision)| revision.0)
+                .unwrap()
+        };
+        let before = library(&crate::control_plane::live_revisions(&paged).await.unwrap());
+        let by_page = paged.upsert_book_rows(&refs).await.unwrap();
+        // Every batch bumps the library topic with the rows it writes, so
+        // the web app hears about a scanned page.
+        let after = library(&crate::control_plane::live_revisions(&paged).await.unwrap());
+        assert!(after > before + 1, "{profile:?}: {before} -> {after}");
+
+        assert_eq!(by_page.len(), page.len(), "{profile:?}");
+        for (a, b) in row_by_row.iter().zip(&by_page) {
+            // Both entries of a title listed twice return its final row.
+            let a = one.get_book_by_uuid(&a.uuid).await.unwrap().unwrap();
+            assert_eq!(scanned_fields(&a), scanned_fields(b), "{profile:?}");
+            let stored = paged.get_book_by_uuid(&b.uuid).await.unwrap().unwrap();
+            assert_eq!(stored.id, b.id, "{profile:?}");
+            assert_eq!(scanned_fields(&stored), scanned_fields(b), "{profile:?}");
+        }
+        assert_eq!(by_page[0].uuid, seeded[1].uuid, "{profile:?}");
+        assert_eq!(by_page[0].title, "Dune", "{profile:?}");
+        assert_eq!(by_page[1].title, "New & 0", "{profile:?}");
+        assert_eq!(by_page[4].uuid, by_page[11].uuid, "{profile:?}");
+        assert_eq!(by_page[11].title, "N3 again", "{profile:?}");
+        let count = |store: &LibraryStore| {
+            let db = store.connection().clone();
+            async move { books::Entity::find().count(&db).await.unwrap() }
+        };
+        assert_eq!(count(&one).await, count(&paged).await, "{profile:?}");
+        assert_eq!(count(&paged).await, 12, "{profile:?}");
+
+        // A uuid the plugin sends that another row holds is refused, as row
+        // by row, rather than silently dropped.
+        let mut clash = NewBook::minimal("X1", "a1", "us", "Clash");
+        clash.uuid = Some(seeded[0].uuid.clone());
+        assert!(one.upsert_book_row(&clash).await.is_err(), "{profile:?}");
+        clash.uuid = Some(seeded[1].uuid.clone());
+        assert!(
+            paged.upsert_book_rows(&[&clash]).await.is_err(),
+            "{profile:?}"
+        );
+    }
+}
