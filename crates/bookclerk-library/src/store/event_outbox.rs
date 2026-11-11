@@ -1927,6 +1927,10 @@ impl LibraryStore {
 
     /// Live per-node rows whose heartbeat is within `ttl_secs`.
     ///
+    /// Read in pages of the adapter's `maxResultRows`, keyed by
+    /// `(plugin_id, node_id)`, so a catalog larger than one result still
+    /// reads on an adapter that does not paginate for the host.
+    ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when the read fails.
@@ -1935,16 +1939,41 @@ impl LibraryStore {
         ttl_secs: i64,
     ) -> Result<Vec<EventSubscriberNodeRecord>> {
         let cutoff = (Utc::now() - Duration::seconds(ttl_secs.max(1))).to_rfc3339();
-        event_subscriber_nodes::Entity::find()
-            .filter(event_subscriber_nodes::Column::HeartbeatAt.gte(cutoff))
-            .order_by_asc(event_subscriber_nodes::Column::PluginId)
-            .order_by_asc(event_subscriber_nodes::Column::NodeId)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(map_node_row)
-            .collect()
+        let page = u64::from(self.max_result_rows.max(1));
+        let mut out = Vec::new();
+        let mut after: Option<(String, String)> = None;
+        loop {
+            let mut query = event_subscriber_nodes::Entity::find()
+                .filter(event_subscriber_nodes::Column::HeartbeatAt.gte(cutoff.clone()));
+            if let Some((plugin_id, node_id)) = &after {
+                query = query.filter(
+                    Condition::any()
+                        .add(event_subscriber_nodes::Column::PluginId.gt(plugin_id.clone()))
+                        .add(
+                            Condition::all()
+                                .add(event_subscriber_nodes::Column::PluginId.eq(plugin_id.clone()))
+                                .add(event_subscriber_nodes::Column::NodeId.gt(node_id.clone())),
+                        ),
+                );
+            }
+            let rows = query
+                .order_by_asc(event_subscriber_nodes::Column::PluginId)
+                .order_by_asc(event_subscriber_nodes::Column::NodeId)
+                .limit(page)
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            let full = u64::try_from(rows.len()).unwrap_or(u64::MAX) >= page;
+            after = rows
+                .last()
+                .map(|row| (row.plugin_id.clone(), row.node_id.clone()));
+            for row in rows {
+                out.push(map_node_row(row)?);
+            }
+            if !full || after.is_none() {
+                return Ok(out);
+            }
+        }
     }
 
     /// Create deliveries from the live catalog for one event.

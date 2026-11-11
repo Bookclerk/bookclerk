@@ -7830,3 +7830,30 @@ fn expire_pages_fit_the_adapter_limits() {
     assert_eq!(expire_page_size(100, 256, 3), 3);
     assert_eq!(expire_page_size(8, 0, 0), 1);
 }
+
+/// The live catalog reads in pages of the adapter's result limit, so every
+/// row comes back on an adapter that returns one row per result.
+#[tokio::test]
+async fn live_catalog_reads_every_row_one_result_at_a_time() {
+    let store = test_store().await.with_plan_limits(64, 1, 256 * 1024);
+    for (node, plugin) in [("n1", "alpha"), ("n2", "alpha"), ("n1", "beta")] {
+        store
+            .upsert_event_subscriber(
+                node,
+                plugin,
+                &[EventCatalogSubscription::new("book_acquired", vec![1])],
+                true,
+            )
+            .await
+            .unwrap();
+    }
+    let rows = store
+        .list_live_event_subscriber_nodes(crate::EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS)
+        .await
+        .unwrap();
+    let keys: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|row| (row.plugin_id.as_str(), row.node_id.as_str()))
+        .collect();
+    assert_eq!(keys, [("alpha", "n1"), ("alpha", "n2"), ("beta", "n1")]);
+}
