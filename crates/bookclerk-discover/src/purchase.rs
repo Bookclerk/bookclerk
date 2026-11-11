@@ -1816,4 +1816,41 @@ mod tests {
             &hint
         ));
     }
+
+    #[test]
+    fn catalog_hint_keeps_the_same_title() {
+        let hint = |title: Option<&str>| {
+            PurchaseHint::link("libro", "9780593135204", title.map(String::from), None)
+        };
+        assert!(catalog_hint_matches_query(
+            "Project Hail Mary",
+            Some("Andy Weir"),
+            &hint(Some("Project Hail Mary"))
+        ));
+        assert!(!catalog_hint_matches_query(
+            "Project Hail Mary",
+            None,
+            &hint(Some("  "))
+        ));
+        assert!(!catalog_hint_matches_query(
+            "  ",
+            None,
+            &hint(Some("Project Hail Mary"))
+        ));
+    }
+
+    #[test]
+    fn push_dedupe_keeps_one_row_per_source() {
+        let hint = |source: &str, id: &str| PurchaseHint::link(source, id, None, None);
+        let mut hints = Vec::new();
+        push_dedupe(&mut hints, hint("audible", "B00X"));
+        push_dedupe(&mut hints, hint("AUDIBLE", "b00x"));
+        push_dedupe(&mut hints, hint("AUDIBLE", "B00Y"));
+        push_dedupe(&mut hints, hint("libro", "B00X"));
+        let rows: Vec<(&str, &str)> = hints
+            .iter()
+            .map(|h| (h.source.as_str(), h.product_id.as_str()))
+            .collect();
+        assert_eq!(rows, [("audible", "B00X"), ("libro", "B00X")]);
+    }
 }

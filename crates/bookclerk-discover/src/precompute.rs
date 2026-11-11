@@ -26,9 +26,10 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+use crate::listening::ListeningSignal;
 use bookclerk_library::{
-    BookRecord, CandidateRef, DiscoverSubject, LibraryStore, ListeningProgressRecord, ListingOffer,
-    OfferAudience, RequestStatus, SeedScope, StoreCallHit,
+    BookRecord, CandidateRef, DiscoverSubject, LibraryStore, ListingOffer, OfferAudience,
+    RequestStatus, SeedScope, StoreCallHit,
 };
 use bookclerk_source::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, ContentSource,
@@ -129,7 +130,7 @@ pub struct SubjectTaste {
     /// The subject's listening rows (all rows for the household). While
     /// household books blend in, the household's rows for those books are
     /// added too, and count at their book's weight.
-    pub listening: Vec<ListeningProgressRecord>,
+    pub listening: Vec<ListeningSignal>,
     /// The subject's open wishlist titles, newest first, used as extra seeds.
     pub wishlist: Vec<SeedTitle>,
     /// Display titles of `wishlist`, newest first.
@@ -142,7 +143,7 @@ impl SubjectTaste {
     /// The whole household's taste, for a subject with no signal of their own.
     fn household(
         books: Vec<BookRecord>,
-        listening: Vec<ListeningProgressRecord>,
+        listening: Vec<ListeningSignal>,
         linked_sources: HashSet<String>,
     ) -> Self {
         Self {
@@ -210,7 +211,7 @@ pub async fn load_subject_taste(
                     .any(|p| p.eq_ignore_ascii_case(&r.provider))
             });
         }
-        rows
+        ListeningSignal::load(library, rows).await?
     } else {
         Vec::new()
     };
@@ -250,7 +251,7 @@ pub async fn load_subject_taste(
             held.insert((link.plugin_key, link.account_id));
         }
     }
-    let listening: Vec<ListeningProgressRecord> = all_listening
+    let listening: Vec<ListeningSignal> = all_listening
         .iter()
         .filter(|r| match r.identity_id {
             Some(id) => identity_ids.contains(&id),
@@ -1321,8 +1322,6 @@ mod tests {
                 isbn: None,
                 notes: None,
                 status: RequestStatus::Open,
-                work_key: String::new(),
-                work_id: None,
                 resolved_book_uuid: None,
                 cover_url: None,
             })
@@ -1338,7 +1337,13 @@ mod tests {
             .unwrap()
             .uuid;
         library
-            .upsert_listening_progress(&listen(None, "oidc", "alice", "i1", &alice_book))
+            .upsert_listening_progress(&listen(
+                None,
+                "oidc",
+                "alice",
+                "i1",
+                &work_of(&library, &alice_book).await,
+            ))
             .await
             .unwrap();
         let taste = load_subject_taste(
@@ -1363,25 +1368,26 @@ mod tests {
         assert_eq!(taste.wishlist.len(), 1);
     }
 
-    /// A listening row on `book_uuid` for `(provider, external)`.
+    /// The work library title `book_uuid` resolves to.
+    async fn work_of(library: &LibraryStore, book_uuid: &str) -> String {
+        library.work_id_for_book(book_uuid).await.unwrap().unwrap()
+    }
+
+    /// A listening row on `work_id` for `(provider, external)`.
     fn listen(
         identity_id: Option<i64>,
         provider: &str,
         external: &str,
         item: &str,
-        book_uuid: &str,
+        work_id: &str,
     ) -> bookclerk_library::NewListeningProgress {
         bookclerk_library::NewListeningProgress {
             identity_id,
             provider: provider.to_string(),
             external_user_id: external.to_string(),
-            book_uuid: Some(book_uuid.to_string()),
-            work_id: None,
+            work_id: work_id.to_string(),
+            edition_id: None,
             external_item_id: item.to_string(),
-            title: None,
-            authors: None,
-            asin: None,
-            isbn: None,
             progress: Some(0.5),
             current_time_seconds: Some(3_600.0),
             duration_seconds: Some(7_200.0),
@@ -1402,6 +1408,7 @@ mod tests {
             .find(|b| b.title == "Bob Book")
             .unwrap()
             .uuid;
+        let bob_work = work_of(&library, &bob_book).await;
         let carol = library
             .upsert_portal_identity("oidc", "carol", Some("Carol"))
             .await
@@ -1409,8 +1416,8 @@ mod tests {
         // Rows that are not Carol's: the same external id on another provider,
         // and a row attributed to Alice that reuses Carol's external id.
         for row in [
-            listen(None, "abs", "carol", "i1", &bob_book),
-            listen(Some(alice.id), "oidc", "carol", "i2", &bob_book),
+            listen(None, "abs", "carol", "i1", &bob_work),
+            listen(Some(alice.id), "oidc", "carol", "i2", &bob_work),
         ] {
             library.upsert_listening_progress(&row).await.unwrap();
         }
@@ -1424,7 +1431,7 @@ mod tests {
         // A legacy row on Carol's own provider and external id is hers, and
         // the book she listened to seeds her fetch without her owning it.
         library
-            .upsert_listening_progress(&listen(None, "oidc", "carol", "i3", &bob_book))
+            .upsert_listening_progress(&listen(None, "oidc", "carol", "i3", &bob_work))
             .await
             .unwrap();
         let taste = load_subject_taste(&library, &DiscoverSubject::Portal(carol.id), &opts)

@@ -37,7 +37,6 @@ from .plan import (
     Plan,
     discover_guests,
     full_plan,
-    has_plugin_tests,
     load_metadata,
     load_relations,
     package_index_from_metadata,
@@ -45,6 +44,7 @@ from .plan import (
     plan_from_event,
     plan_to_dict,
     plan_to_summary,
+    plugin_test_runner,
 )
 
 SCHEMA_VERSION = 5
@@ -385,6 +385,16 @@ def resolve(
     }
 
 
+def _example_runners(plan: Plan) -> list[str]:
+    """The test runners the selected ``plugin_examples`` check needs.
+
+    An artifact written before the planner recorded runners only had
+    ``npm`` examples.
+    """
+    runners = plan.params("plugin_examples").get("runners")
+    return [str(r) for r in runners] if isinstance(runners, list) else ["npm"]
+
+
 def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
     """``GITHUB_OUTPUT`` keys for ``if:`` gates, all from ``execution``."""
     plan = plan_from_dict(artifact["execution"])
@@ -402,12 +412,13 @@ def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
         or plan.selected("ui")
         or plan.selected("plugin_sdk_abi")
         or plan.selected("workerd_guests")
-        or plan.selected("plugin_examples")
+        or (plan.selected("plugin_examples") and "npm" in _example_runners(plan))
         or (plan.selected("api_docs") and (docs.get("all") or docs.get("typescript") or docs.get("ui")))
     )
     # uv installs the Python SDK and its pdoc extra from uv.lock.
     out["check_needs_uv"] = _b(
         plan.selected("python_sdk")
+        or (plan.selected("plugin_examples") and "pytest" in _example_runners(plan))
         or (plan.selected("api_docs") and (docs.get("all") or docs.get("python")))
     )
     # The `os` legs of the confinement, native-gateway and tray matrices,
@@ -680,63 +691,115 @@ def _workerd_guest_commands(ctx: "Context") -> list[Command]:
     return cmds
 
 
-def plugin_example_dirs(workspace: Path) -> list[Path]:
-    """Reference examples whose suites open a database through the test kit.
+def plugin_example_dirs(workspace: Path) -> list[tuple[Path, str]]:
+    """Reference examples whose suites open a database through a test kit.
 
     An example qualifies when ``examples/plugins-*/plugin.toml`` declares a
-    ``[[databases]]`` binding and its ``package.json`` has a ``test`` script
-    (``has_plugin_tests``), the same rule the planner selects by.
+    ``[[databases]]`` binding and ``bookclerk-plugin test`` finds a runner
+    for it (``plugin_test_runner``), the same rule the planner selects by.
 
     Args:
         workspace: The repository root.
 
     Returns:
-        The example directories, sorted.
+        Each example directory with its runner (``npm`` or ``pytest``),
+        sorted by directory.
 
     Raises:
         ExecError: When a manifest cannot be parsed.
     """
-    out: list[Path] = []
+    out: list[tuple[Path, str]] = []
     for manifest in sorted((workspace / "examples").glob("plugins-*/plugin.toml")):
         try:
             data = tomllib.loads(manifest.read_text(encoding="utf-8"))
-            qualifies = has_plugin_tests(manifest.parent, data)
+            runner = plugin_test_runner(manifest.parent, data)
         except (OSError, tomllib.TOMLDecodeError, PlanError) as exc:
             raise ExecError(f"cannot parse {manifest}: {exc}") from exc
-        if qualifies:
-            out.append(manifest.parent)
+        if runner is not None:
+            out.append((manifest.parent, runner))
     return out
 
 
-def _plugin_example_commands(ctx: "Context") -> list[Command]:
-    """Type-check, rebuild and run every database example under each profile.
+def _plugin_example_commands(ctx: "Context", runners: list[str]) -> list[Command]:
+    """Check, rebuild and run every database example under each profile.
 
-    The examples build against the TypeScript SDK, so it is built first.
-    Each example's shipped ``modules/`` is emitted from ``src/`` by its
-    build, and a committed tree that differs is drift, as for the
-    first-party guests. ``bookclerk-plugin test`` then runs the example's
-    own suite once per database profile with the kit executable named.
+    TypeScript (``npm``) examples build against the TypeScript SDK, so it is
+    built first. Each one's shipped ``modules/`` is emitted from ``src/`` by
+    its build, and a committed tree that differs is drift, as for the
+    first-party guests. Python (``pytest``) examples ship ``modules/`` as
+    written; they are linted with the Python SDK's ruff and run in its
+    locked environment with the SDK imported from its source tree.
+    ``bookclerk-plugin test`` then runs each example's own suite once per
+    database profile with the kit executable named.
+
+    Only examples whose runner the plan recorded run, so the commands never
+    need a tool (Node, uv) the job did not install for them.
 
     Args:
         ctx: Paths and platform facts.
+        runners: The runners the plan recorded (:func:`_example_runners`).
 
     Returns:
         The commands, in order.
     """
+    examples = [(d, r) for d, r in plugin_example_dirs(ctx.workspace) if r in runners]
+    used = {runner for _, runner in examples}
     sdk = str(ctx.workspace / "packages" / "plugin-sdk")
     kit_build, kit_env = _db_testkit(ctx)
     tool = str(ctx.bin_dir / ("bookclerk-plugin" + (".exe" if ctx.os_name == "Windows" else "")))
-    cmds = [
-        Command("npm ci (plugin-sdk)", ["npm", "ci"], cwd=sdk),
-        Command("npm run build (plugin-sdk)", ["npm", "run", "build"], cwd=sdk),
+    venv = ctx.tmp / "venv-plugin-sdk"
+    venv_bin = venv / ("Scripts" if ctx.os_name == "Windows" else "bin")
+    py = str(venv_bin / "python")
+    cmds: list[Command] = []
+    if "npm" in used:
+        cmds += [
+            Command("npm ci (plugin-sdk)", ["npm", "ci"], cwd=sdk),
+            Command("npm run build (plugin-sdk)", ["npm", "run", "build"], cwd=sdk),
+        ]
+    if "pytest" in used:
+        # The same locked environment as the `python_sdk` check: pytest and
+        # ruff at the versions in uv.lock, the SDK itself from its sources.
+        cmds.append(
+            Command(
+                "uv sync plugin-sdk-python",
+                [
+                    "uv",
+                    "sync",
+                    "--quiet",
+                    "--project",
+                    "packages/plugin-sdk-python",
+                    "--locked",
+                    "--all-extras",
+                    "--no-install-project",
+                    "--python",
+                    sys.executable,
+                ],
+                env={"UV_PROJECT_ENVIRONMENT": str(venv)},
+            )
+        )
+    cmds += [
         kit_build,
         Command(
             "cargo build -p bookclerk-plugin-tools",
             ["cargo", "build", "-p", "bookclerk-plugin-tools", "--bin", "bookclerk-plugin"],
         ),
     ]
-    for example in plugin_example_dirs(ctx.workspace):
+    # `bookclerk-plugin test` runs `python3 -m pytest`, so the environment's
+    # interpreter comes first on PATH.
+    pytest_env = {
+        **kit_env,
+        "PATH": os.pathsep.join([str(venv_bin), os.environ.get("PATH", "")]),
+        "PYTHONPATH": str(ctx.workspace / "packages" / "plugin-sdk-python" / "src"),
+    }
+    for example, runner in examples:
         rel = example.relative_to(ctx.workspace).as_posix()
+        if runner == "pytest":
+            cmds += [
+                Command(f"ruff ({rel})", [py, "-m", "ruff", "check", rel]),
+                Command(f"ruff format ({rel})", [py, "-m", "ruff", "format", "--check", rel]),
+                Command(f"bookclerk-plugin test ({rel})", [tool, "test", rel], env=pytest_env),
+            ]
+            continue
         cmds += [
             Command(f"npm ci ({rel})", ["npm", "ci"], cwd=str(example)),
             Command(f"tsc ({rel})", ["npm", "run", "typecheck"], cwd=str(example)),
@@ -951,7 +1014,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
     if check == "workerd_guests":
         return _workerd_guest_commands(ctx)
     if check == "plugin_examples":
-        return _plugin_example_commands(ctx)
+        return _plugin_example_commands(ctx, _example_runners(plan))
     if check == "site_test":
         site = str(ctx.workspace / "tools" / "site")
         return [

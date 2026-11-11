@@ -101,6 +101,29 @@ jobs:
           uv pip install --quiet --python "$UV_PROJECT_ENVIRONMENT/bin/python" "mutmut==$MUTMUT_VERSION"
           echo "$UV_PROJECT_ENVIRONMENT/bin" >> "$GITHUB_PATH"
 
+      # tests/test_testkit.py drives the bookclerk-db-testkit binary. Build it
+      # once here, as CI's python_sdk check does, so mutmut's baseline run
+      # does not try to build it (that needs capnp for bookclerk-plugin-abi's
+      # build script) and each mutant reuses the same binary.
+      - name: Install Rust toolchain
+        if: steps.select.outputs.mutate == 'true'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      - name: Install capnproto
+        if: steps.select.outputs.mutate == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto
+
+      - name: Build bookclerk-db-testkit
+        if: steps.select.outputs.mutate == 'true'
+        run: |
+          set -euo pipefail
+          cargo build --locked -p bookclerk-db-testkit --bin bookclerk-db-testkit
+          echo "BOOKCLERK_DB_TESTKIT=$GITHUB_WORKSPACE/target/debug/bookclerk-db-testkit" >> "$GITHUB_ENV"
+
       # mutmut works in a mutants/ copy of the SDK and records each result
       # as it lands, so stopping it at the time limit keeps what it tested
       # (the report also reads a results file the stop cut short). SIGINT

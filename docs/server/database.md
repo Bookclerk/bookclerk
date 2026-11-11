@@ -702,6 +702,17 @@ library holds as works, expressions and editions:
   `chapter`, `pdf`, `cover`, `sidecar`, `transcript`, `epub`) and, for an
   upload, the file's SHA-256. The quality columns (`lossless`,
   `bitrate_kbps`) stay empty until uploads carry a file's quality.
+- `user_title_state`: one user's finished flag, ratings and tags for a
+  work, keyed `(user_id, work_id)`. Fields imported for an account reach
+  every user linked to that account.
+
+Per-person rows point at works instead of copying a title:
+`listening_progress` (one row per listener and work, with the edition when
+the item's identifier named one) and `title_requests` (every wish names its
+work and, when known, its edition) keep no title, authors, ASIN or ISBN of
+their own; readers take those from the work and the wish's store sources.
+A wish for a book the library does not hold creates a catalog work and
+edition with no listing or holding.
 
 A book is acquired once per edition: the account rows of one edition share
 its files, and an acquire of one is marked acquired at another's key when

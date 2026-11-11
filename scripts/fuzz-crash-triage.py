@@ -1287,6 +1287,53 @@ def crash_files(artifacts: Path) -> list[Path]:
     )
 
 
+# Exceptions the engine raises when one target's corpus merge runs past its
+# share of the prune budget (``TimeoutError``) or libFuzzer's merge fails
+# (the engine's ``MergeError``, matched by name: its module differs between
+# image versions).
+_PRUNE_TOLERATED = (TimeoutError,)
+_PRUNE_TOLERATED_NAMES = frozenset({"MergeError"})
+
+
+def tolerate_slow_prunes(runner_cls: Any, fuzz_result: Any, log: Callable[[str], None]) -> None:
+    """Lets a prune run go on past a target whose merge did not finish.
+
+    In prune mode each target gets ``fuzz-seconds`` divided by the targets
+    left as a hard merge deadline, and the image lets one late merge abort
+    the whole run, so no later target is pruned and the coverage job that
+    follows never starts. The wrapper keeps that target's corpus as it was
+    (nothing is uploaded for it) and moves on; any other error still fails
+    the run.
+
+    Args:
+        runner_cls: The image's ``run_fuzzers.PruneTargetRunner``.
+        fuzz_result: The image's ``fuzz_target.FuzzResult`` named tuple.
+        log: Sink for the private log.
+
+    Raises:
+        RuntimeError: ``run_fuzz_target`` is missing, so the image changed
+            and the wrapper would be silently skipped.
+    """
+    original = getattr(runner_cls, "run_fuzz_target", None)
+    if not callable(original):
+        raise RuntimeError("PruneTargetRunner.run_fuzz_target not found; refusing to prune")
+
+    def run_fuzz_target(self: Any, fuzz_target_obj: Any) -> Any:
+        """Prunes one target, keeping its corpus when the merge runs late."""
+        try:
+            return original(self, fuzz_target_obj)
+        except Exception as err:
+            if not isinstance(err, _PRUNE_TOLERATED) and type(err).__name__ not in _PRUNE_TOLERATED_NAMES:
+                raise
+            log(
+                f"prune of {fuzz_target_obj.target_name} did not finish "
+                f"({type(err).__name__}); keeping its corpus"
+            )
+            return fuzz_result(None, None, fuzz_target_obj.latest_corpus_path)
+
+    runner_cls.run_fuzz_target = run_fuzz_target
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """Runs ClusterFuzzLite (mode from ``MODE``) with private output.
 
@@ -1332,6 +1379,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         import cflite_artifacts  # type: ignore[import-not-found]  # noqa: PLC0415
 
         cflite_artifacts.install_in_image()
+        if os.environ.get("MODE") == "prune":
+            import fuzz_target  # type: ignore[import-not-found]  # noqa: PLC0415
+            import run_fuzzers  # type: ignore[import-not-found]  # noqa: PLC0415
+
+            tolerate_slow_prunes(
+                run_fuzzers.PruneTargetRunner,
+                fuzz_target.FuzzResult,
+                lambda line: print(line, flush=True),
+            )
         code = run_fuzzers_entrypoint.main()
     except Exception as err:  # noqa: BLE001 - reported below without details
         print(f"private run wrapper error: {err!r}", flush=True)

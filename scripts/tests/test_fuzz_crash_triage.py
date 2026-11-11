@@ -636,3 +636,61 @@ class CrashFilesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TolerateSlowPrunesTest(unittest.TestCase):
+    """The prune wrapper keeps a late target's corpus and re-raises the rest."""
+
+    class MergeError(Exception):
+        """Stands in for the engine's merge failure, matched by name."""
+
+    @staticmethod
+    def _runner(error: BaseException | None) -> type:
+        """Returns a PruneTargetRunner stand-in whose prune raises `error`."""
+
+        class Runner:
+            uploaded: ClassVar[list[str]] = []
+
+            def run_fuzz_target(self, target: Any) -> Any:
+                if error is not None:
+                    raise error
+                Runner.uploaded.append(target.target_name)
+                return ("pruned", target.target_name)
+
+        return Runner
+
+    @staticmethod
+    def _target(name: str) -> Any:
+        """Returns a fuzz target stand-in."""
+        return type("Target", (), {"target_name": name, "latest_corpus_path": f"/corpus/{name}"})()
+
+    def _wrap(self, error: BaseException | None) -> tuple[Any, list[str]]:
+        """Wraps a runner and returns an instance and the log lines."""
+        runner = self._runner(error)
+        lines: list[str] = []
+        triage.tolerate_slow_prunes(runner, lambda *parts: parts, lines.append)
+        return runner(), lines
+
+    def test_a_finished_prune_is_unchanged(self) -> None:
+        runner, lines = self._wrap(None)
+        self.assertEqual(runner.run_fuzz_target(self._target("abi_decode")), ("pruned", "abi_decode"))
+        self.assertEqual(lines, [])
+
+    def test_a_late_merge_keeps_the_corpus(self) -> None:
+        for error in (TimeoutError("Merging new testcases timed out."), self.MergeError("merge failed")):
+            with self.subTest(error=type(error).__name__):
+                runner, lines = self._wrap(error)
+                result = runner.run_fuzz_target(self._target("egress_policy"))
+                self.assertEqual(result, (None, None, "/corpus/egress_policy"))
+                self.assertEqual(len(lines), 1)
+                self.assertIn("egress_policy", lines[0])
+                self.assertIn(type(error).__name__, lines[0])
+
+    def test_other_errors_still_fail(self) -> None:
+        runner, _ = self._wrap(ValueError("boom"))
+        with self.assertRaises(ValueError):
+            runner.run_fuzz_target(self._target("plan_authz"))
+
+    def test_refuses_an_image_without_the_method(self) -> None:
+        with self.assertRaises(RuntimeError):
+            triage.tolerate_slow_prunes(type("Runner", (), {}), tuple, print)

@@ -16,15 +16,19 @@ use crate::types::ListeningProgressSnapshot;
 /// The whole sync costs a few bulk statements, not a round trip chain per
 /// item: portal identities and stored rows are read in chunks, each item's
 /// ASIN and ISBN resolve to a work through the indexed `edition_identifiers`
-/// table (and to an owned book through the indexed `books` identifier
-/// columns; titles are never compared), and the rows are written as atomic
+/// table (titles are never compared), and the rows are written as atomic
 /// batches sized to the database plugin's limits
 /// ([`LibraryStore::upsert_listening_progress_batch`]).
 ///
+/// A row is keyed by the work its identifiers resolved to. An item whose
+/// identifiers name no work in the library is not stored: there is no work
+/// to hold its progress, and the next sync stores it once the library has
+/// one.
+///
 /// When the sync changes what Discover reads from any stored row (see
-/// `TasteState`: who the row belongs to, which owned book and work it matched,
-/// its authors, and how far they got), publishes one `listening_synced`; a sync that changes
-/// nothing Discover reads queues no refresh.
+/// `TasteState`: who the row belongs to, which work it is about, and how far
+/// they got), publishes one `listening_synced`; a sync that changes nothing
+/// Discover reads queues no refresh.
 ///
 /// # Arguments
 ///
@@ -34,7 +38,8 @@ use crate::types::ListeningProgressSnapshot;
 ///
 /// # Returns
 ///
-/// How many snapshots were stored (every item; reports of one row merge).
+/// How many snapshots were stored: the items whose identifiers resolved
+/// to a work (reports of one row merge).
 ///
 /// # Errors
 ///
@@ -66,26 +71,27 @@ pub async fn upsert_listening_snapshots(
     let rows: Vec<NewListeningProgress> = items
         .iter()
         .zip(matches)
-        .map(|(item, matched)| NewListeningProgress {
-            identity_id: item
-                .identity_id
-                .or_else(|| identities.get(&item.external_user_id).copied()),
-            provider: provider.into(),
-            external_user_id: item.external_user_id.clone(),
-            book_uuid: matched.book_uuid,
-            work_id: matched.work_id,
-            external_item_id: item.external_item_id.clone(),
-            title: item.title.clone(),
-            authors: item.authors.clone(),
-            asin: item.asin.clone(),
-            isbn: item.isbn.clone(),
-            progress: item.progress,
-            current_time_seconds: item.current_time_seconds,
-            duration_seconds: item.duration_seconds,
-            is_finished: item.is_finished,
-            last_listened_at: item.last_listened_at,
+        .filter_map(|(item, matched)| {
+            Some(NewListeningProgress {
+                identity_id: item
+                    .identity_id
+                    .or_else(|| identities.get(&item.external_user_id).copied()),
+                provider: provider.into(),
+                external_user_id: item.external_user_id.clone(),
+                work_id: matched.work_id?,
+                edition_id: matched.edition_id,
+                external_item_id: item.external_item_id.clone(),
+                progress: item.progress,
+                current_time_seconds: item.current_time_seconds,
+                duration_seconds: item.duration_seconds,
+                is_finished: item.is_finished,
+                last_listened_at: item.last_listened_at,
+            })
         })
         .collect();
+    if rows.is_empty() {
+        return Ok(0);
+    }
     let writes = match library.upsert_listening_progress_batch(&rows).await {
         Ok(writes) => writes,
         Err(err) => {
@@ -111,22 +117,19 @@ pub async fn upsert_listening_snapshots(
     if changed {
         publish_listening_synced(library, provider, &identities).await;
     }
-    Ok(items.len())
+    Ok(rows.len())
 }
 
 /// What Discover reads from one stored listening row: whose it is, which
-/// owned book and work it matched (seeds), its authors, and how far they got
-/// ([`listening_stage`]; Discover weighs progress, not the exact second).
+/// work it is about (a seed, whose credits weigh liked authors), and how far
+/// they got ([`listening_stage`]; Discover weighs progress, not the exact
+/// second).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TasteState {
     /// Portal identity the row is stored under, when any.
     identity_id: Option<i64>,
-    /// Owned book the row matched, when any.
-    book_uuid: Option<String>,
-    /// Work the row resolved to (an embedding seed), when any.
-    work_id: Option<String>,
-    /// Authors the sync reported (they weigh liked authors), when any.
-    authors: Option<String>,
+    /// Work the row is about.
+    work_id: String,
     /// [`listening_stage`] of the stored progress.
     stage: u8,
 }
@@ -136,9 +139,7 @@ impl TasteState {
     fn of_written(row: &NewListeningProgress) -> Self {
         Self {
             identity_id: row.identity_id,
-            book_uuid: row.book_uuid.clone(),
             work_id: row.work_id.clone(),
-            authors: row.authors.clone(),
             stage: listening_stage(
                 row.progress,
                 row.current_time_seconds,
@@ -152,9 +153,7 @@ impl TasteState {
     fn of(row: &ListeningProgressRecord) -> Self {
         Self {
             identity_id: row.identity_id,
-            book_uuid: row.book_uuid.clone(),
             work_id: row.work_id.clone(),
-            authors: row.authors.clone(),
             stage: listening_stage(
                 row.progress,
                 row.current_time_seconds,
@@ -254,15 +253,47 @@ async fn publish_listening_synced(
 mod tests {
     use super::*;
 
-    /// One synced row for `user` on `item` at `progress`.
+    /// The ASIN of the library title `item` names in these tests.
+    fn asin_of(item: &str) -> String {
+        format!("B00ITEM{:0>3}", item.to_ascii_uppercase())
+    }
+
+    /// One synced row for `user` on `item` at `progress`, naming the
+    /// library title [`library`] holds for `item` by its ASIN.
     fn snapshot(user: &str, item: &str, progress: f64) -> ListeningProgressSnapshot {
         ListeningProgressSnapshot {
             external_user_id: user.into(),
             external_item_id: item.into(),
             title: Some(format!("Title {item}")),
+            asin: Some(asin_of(item)),
             progress: Some(progress),
             ..ListeningProgressSnapshot::default()
         }
+    }
+
+    /// A memory library holding one title per item in `items`.
+    async fn library(items: &[&str]) -> LibraryStore {
+        let library = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("memory store"),
+        );
+        library
+            .upsert_account("audible", "a1", "us", None, true, "audible")
+            .await
+            .expect("account");
+        for item in items {
+            library
+                .upsert_book(&bookclerk_library::NewBook::minimal(
+                    asin_of(item),
+                    "a1",
+                    "US",
+                    format!("Title {item}"),
+                ))
+                .await
+                .expect("book");
+        }
+        library
     }
 
     /// `listening_synced` rows in the outbox.
@@ -278,11 +309,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_sync_publishes_only_when_what_people_read_changed() {
-        let library = LibraryStore::from_connection(
-            bookclerk_plugin_database_sqlite::open_memory()
-                .await
-                .expect("memory store"),
-        );
+        let library = library(&["a", "b", "c"]).await;
         assert_eq!(
             upsert_listening_snapshots(&library, "audiobookshelf", &[])
                 .await
@@ -376,26 +403,19 @@ mod tests {
             .collect();
         assert_eq!(named, vec![serde_json::json!([dana.id])]);
 
-        // Authors filled in later feed liked authors, so they are a change.
-        let mut credited = same[0].clone();
-        credited.authors = Some("Ursula K. Le Guin".into());
-        upsert_listening_snapshots(&library, "audiobookshelf", &[credited])
+        // The same item now naming another work is a change: Discover
+        // seeds from the work.
+        let mut moved = same[0].clone();
+        moved.asin = Some(asin_of("c"));
+        upsert_listening_snapshots(&library, "audiobookshelf", &[moved])
             .await
             .expect("sync");
         assert_eq!(synced_events(&library).await.len(), 8);
     }
 
     #[tokio::test]
-    async fn items_match_owned_books_by_identifier_not_title() {
-        let library = LibraryStore::from_connection(
-            bookclerk_plugin_database_sqlite::open_memory()
-                .await
-                .expect("memory store"),
-        );
-        library
-            .upsert_account("audible", "a1", "us", None, true, "audible")
-            .await
-            .expect("account");
+    async fn items_are_stored_by_identifier_and_never_by_title() {
+        let library = library(&["a"]).await;
         let dune = library
             .upsert_book(&bookclerk_library::NewBook::minimal(
                 "B00DUNE001",
@@ -405,8 +425,11 @@ mod tests {
             ))
             .await
             .expect("book");
-        let work = library.work_id_for_book(&dune.uuid).await.expect("work");
-        assert!(work.is_some());
+        let work = library
+            .work_id_for_book(&dune.uuid)
+            .await
+            .expect("work")
+            .expect("a work");
         let dana = library
             .upsert_portal_identity("audiobookshelf", "u1", Some("Dana"))
             .await
@@ -414,40 +437,50 @@ mod tests {
 
         let mut by_asin = snapshot("u1", "a", 0.3);
         by_asin.asin = Some("b00dune001".into());
-        // Same title, no identifiers: titles are never compared.
+        // Same title, no identifiers: titles are never compared, and an
+        // item that names no work is not stored.
         let mut by_title = snapshot("u2", "b", 0.3);
         by_title.title = Some("Dune".into());
+        by_title.asin = None;
         let stored = upsert_listening_snapshots(&library, "audiobookshelf", &[by_asin, by_title])
             .await
             .expect("sync");
-        assert_eq!(stored, 2);
+        assert_eq!(stored, 1);
 
         let a = library
             .get_listening_progress("audiobookshelf", "u1", "a")
             .await
             .expect("read")
             .expect("row");
-        assert_eq!(a.book_uuid.as_deref(), Some(dune.uuid.as_str()));
         assert_eq!(a.work_id, work);
+        assert!(a.edition_id.is_some(), "one edition carries the ASIN");
         assert_eq!(a.identity_id, Some(dana.id));
-        let b = library
+        assert!(library
             .get_listening_progress("audiobookshelf", "u2", "b")
             .await
             .expect("read")
-            .expect("row");
-        assert_eq!((b.book_uuid, b.work_id, b.identity_id), (None, None, None));
+            .is_none());
+
+        // A sync where nothing resolves stores and publishes nothing.
+        let before = synced_events(&library).await.len();
+        let mut unknown = snapshot("u2", "b", 0.5);
+        unknown.asin = Some("B0UNKNOWN1".into());
+        assert_eq!(
+            upsert_listening_snapshots(&library, "audiobookshelf", &[unknown])
+                .await
+                .expect("sync"),
+            0
+        );
+        assert_eq!(synced_events(&library).await.len(), before);
     }
 
     #[tokio::test]
     async fn a_failed_write_still_tells_discover() {
-        let library = LibraryStore::from_connection(
-            bookclerk_plugin_database_sqlite::open_memory()
-                .await
-                .expect("memory store"),
-        );
-        let mut huge = snapshot("u1", "a", 0.3);
+        let library = library(&["a"]).await;
         let cap = usize::try_from(library.db_capabilities().max_request_bytes).expect("cap");
-        huge.title = Some("x".repeat(cap + 1));
+        let mut huge = snapshot("u1", "a", 0.3);
+        huge.external_item_id = "x".repeat(cap + 1);
+        huge.asin = Some(asin_of("a"));
         assert!(
             upsert_listening_snapshots(&library, "audiobookshelf", &[huge])
                 .await

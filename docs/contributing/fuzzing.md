@@ -1008,6 +1008,11 @@ Instead:
    - Timeout inputs are kept (`REPORT_TIMEOUTS`), so triage sees them.
    - Every scheduled build sets `bad-build-check: false`, because that
      check runs each target briefly and prints its output to the log.
+   - `prune` gives each target `fuzz-seconds` (3600) divided by the
+     targets left as a hard deadline for merging its corpus. A target
+     whose merge runs past it, or fails, keeps its corpus as it was, and
+     the log says so; the other targets are still pruned and the job
+     passes. Any other error fails it.
 2. **Seal the crashes.** When `batch` kept crashes, it seals them with its
    log (`FUZZ_CRASH_BUNDLE_KEY`, `scripts/osv-remediation-bundle.sh`) as
    the `fuzz-crashes-<sanitizer>` artifact, kept 7 days.

@@ -44,6 +44,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -57,6 +58,16 @@ API = "https://api.github.com"
 OSV_API = "https://api.osv.dev/v1/vulns"
 TOOL_NAME = "osv-scanner"
 HTTP_TIMEOUT_S = 30
+# Attempts per request, and the wait before each retry in seconds: a slow or
+# briefly failing API (api.osv.dev once took over HTTP_TIMEOUT_S on main)
+# must not fail the whole run.
+HTTP_ATTEMPTS = 4
+HTTP_RETRY_DELAYS_S = (2, 4, 8)
+# HTTP statuses worth retrying: request timeout, rate limit, server errors.
+_RETRY_STATUSES = frozenset({408, 429, *range(500, 600)})
+# Longest `Retry-After` pause honored, in seconds; a server asking for a
+# longer one ends the retries rather than being retried early.
+HTTP_MAX_RETRY_AFTER_S = 60
 # Upper bound on alert pages read (100 alerts each), so a runaway listing
 # cannot keep the job paging forever.
 MAX_ALERT_PAGES = 20
@@ -173,8 +184,71 @@ class Target:
     vulns: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
+# Waits between retries; tests replace it.
+_sleep = time.sleep
+
+
 def _http_json(url: str, token: str | None = None) -> tuple[object, str]:
     """Fetches a JSON document.
+
+    Retries a timeout, a dropped connection or a retryable status
+    (`_RETRY_STATUSES`) up to `HTTP_ATTEMPTS` times in all, waiting
+    `HTTP_RETRY_DELAYS_S` between attempts, or longer when the answer's
+    `Retry-After` asks for up to `HTTP_MAX_RETRY_AFTER_S`. Any other HTTP
+    error, such as a 404, or a longer `Retry-After`, is raised at once.
+
+    Args:
+        url: The URL to GET.
+        token: Bearer token for the GitHub API, or None for public APIs.
+
+    Returns:
+        The decoded body and the response's `Link` header (empty when absent).
+
+    Raises:
+        urllib.error.URLError: The request failed, or kept failing; a final
+            timeout or dropped connection is wrapped in one, so callers
+            handle a single error type.
+    """
+    for attempt in range(HTTP_ATTEMPTS):
+        delay = HTTP_RETRY_DELAYS_S[min(attempt, len(HTTP_RETRY_DELAYS_S) - 1)]
+        try:
+            return _http_json_once(url, token)
+        except urllib.error.HTTPError as err:
+            if err.code not in _RETRY_STATUSES or attempt == HTTP_ATTEMPTS - 1:
+                raise
+            asked = _retry_after_s(err)
+            if asked is not None:
+                if asked > HTTP_MAX_RETRY_AFTER_S:
+                    raise
+                delay = max(delay, asked)
+        except urllib.error.URLError:
+            if attempt == HTTP_ATTEMPTS - 1:
+                raise
+        except (TimeoutError, ConnectionError) as err:
+            if attempt == HTTP_ATTEMPTS - 1:
+                raise urllib.error.URLError(err) from err
+        _sleep(delay)
+    raise AssertionError("unreachable: the last attempt returns or raises")
+
+
+def _retry_after_s(err: urllib.error.HTTPError) -> int | None:
+    """Reads the pause an HTTP error answer asks for.
+
+    Args:
+        err: The error answer.
+
+    Returns:
+        The `Retry-After` header's whole seconds, or None when it is absent
+        or not a number (the HTTP-date form falls back to the fixed delays).
+    """
+    value = err.headers.get("Retry-After") if err.headers is not None else None
+    if value is None or not value.strip().isdigit():
+        return None
+    return int(value.strip())
+
+
+def _http_json_once(url: str, token: str | None) -> tuple[object, str]:
+    """Makes one attempt at `_http_json`'s request.
 
     Args:
         url: The URL to GET.
@@ -185,6 +259,7 @@ def _http_json(url: str, token: str | None = None) -> tuple[object, str]:
 
     Raises:
         urllib.error.URLError: The request failed.
+        TimeoutError: The response did not arrive in `HTTP_TIMEOUT_S`.
     """
     headers = {"Accept": "application/json", "User-Agent": "bookclerk-osv-remediate"}
     if token:

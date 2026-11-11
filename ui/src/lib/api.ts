@@ -3194,8 +3194,8 @@ export type DiscoverFeedState = "ready" | "refreshing" | "preparing";
 /**
  * Wishlist / title-request row from `/api/wishlist`.
  *
- * Represents a user ask for a title (and optional acquire queue linkage via
- * `resolved_book_uuid` / `work_key`).
+ * Represents a user ask for a work (and optional acquire queue linkage via
+ * `resolved_book_uuid`).
  */
 export interface TitleRequest {
   id: number;
@@ -3207,8 +3207,12 @@ export interface TitleRequest {
   isbn: string | null;
   notes: string | null;
   status: string;
+  /** Bibliographic key derived from the wish's identifiers, for display matching. */
   work_key: string;
-  work_id: string | null;
+  /** Library work the wish is for; every wish names one. */
+  work_id: string;
+  /** Edition the wish named, when its identifiers reached exactly one. */
+  edition_id?: string | null;
   resolved_book_uuid: string | null;
   cover_url?: string | null;
   /** Same-origin path of this cover's processed images; see {@link coverSrc}. */
@@ -3261,11 +3265,10 @@ export interface QueueWisher {
 export interface GlobalQueueEntry {
   work_key: string;
   /**
-   * Library work the entry's wishes resolve to, when known. Wishes for one
-   * work share an entry even when their `work_key`s differ, so match on this
-   * first.
+   * Library work the entry's wishes are for. Wishes for one work share an
+   * entry even when their `work_key`s differ, so match on this first.
    */
-  work_id?: string | null;
+  work_id: string;
   title: string;
   authors: string | null;
   asin: string | null;
@@ -3948,7 +3951,6 @@ export async function createWishlistItem(body: {
   asin?: string;
   isbn?: string;
   notes?: string;
-  work_key?: string;
   store_editions?: StoreEdition[];
   purchase_hints?: PurchaseHint[];
   cover_url?: string | null;

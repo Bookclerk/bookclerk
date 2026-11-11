@@ -455,19 +455,34 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         PRIMARY KEY (listing_id, kind, subject_ids)
     )",
     ),
+    // One user's own state for a work (docs/adr/library-data-model.md):
+    // finished flag, ratings and tags. Members who share a storefront
+    // account each keep their own.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS user_title_state (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        is_finished INTEGER NOT NULL DEFAULT 0,
+        rating_overall REAL,
+        rating_performance REAL,
+        rating_story REAL,
+        tags TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, work_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_user_title_state_work ON user_title_state(work_id)",
+    ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS listening_progress (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         identity_id INTEGER,
         provider TEXT NOT NULL,
         external_user_id TEXT NOT NULL,
-        book_uuid TEXT,
-        work_id TEXT,
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        edition_id TEXT REFERENCES editions(id) ON DELETE SET NULL,
         external_item_id TEXT NOT NULL,
-        title TEXT,
-        authors TEXT,
-        asin TEXT,
-        isbn TEXT,
         progress REAL,
         current_time_seconds REAL,
         duration_seconds REAL,
@@ -479,28 +494,28 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_listening_book ON listening_progress(book_uuid)",
+        r"CREATE INDEX IF NOT EXISTS idx_listening_work ON listening_progress(work_id)",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_listening_work ON listening_progress(work_id)",
+        r"CREATE INDEX IF NOT EXISTS idx_listening_identity ON listening_progress(identity_id)",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_listening_user ON listening_progress(provider, external_user_id)",
     ),
+    // A wish names the work it is for; the title, authors and identifiers
+    // live on the work and on the wish's storefront sources, never copied
+    // here. `edition_id` is set when the wish named an edition the library
+    // knows.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS title_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         uuid TEXT NOT NULL UNIQUE,
         identity_id INTEGER,
-        title TEXT NOT NULL,
-        authors TEXT,
-        asin TEXT,
-        isbn TEXT,
+        work_id TEXT NOT NULL REFERENCES works(id),
+        edition_id TEXT REFERENCES editions(id) ON DELETE SET NULL,
         notes TEXT,
         status TEXT NOT NULL DEFAULT 'open',
         preferred_source TEXT,
-        work_id TEXT,
-        work_key TEXT NOT NULL DEFAULT '',
         resolved_book_uuid TEXT,
         cover_url TEXT,
         created_at TEXT NOT NULL,
@@ -509,13 +524,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_title_requests_status ON title_requests(status)",
+        r"CREATE INDEX IF NOT EXISTS idx_title_requests_status_created ON title_requests(status, created_at)",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_title_requests_identity ON title_requests(identity_id)",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_title_requests_work_key ON title_requests(work_key)",
+        r"CREATE INDEX IF NOT EXISTS idx_title_requests_work ON title_requests(work_id, status)",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_title_requests_identity_status ON title_requests(identity_id, status)",

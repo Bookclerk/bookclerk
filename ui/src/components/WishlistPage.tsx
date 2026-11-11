@@ -148,7 +148,6 @@ export function WishlistPage({
         authors: title.authors ?? undefined,
         asin: title.asin ?? undefined,
         isbn: title.isbn ?? undefined,
-        work_key: title.work_key || undefined,
         store_editions: title.store_editions ?? undefined,
         purchase_hints: title.purchase_hints ?? undefined,
         cover_url: title.cover_url ?? undefined,

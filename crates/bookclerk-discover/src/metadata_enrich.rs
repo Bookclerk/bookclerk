@@ -658,6 +658,85 @@ mod tests {
         assert_eq!(normalized_title("  Dune:  Messiah! "), "dune messiah");
     }
 
+    #[test]
+    fn gaps_report_each_field_on_its_own() {
+        let none = Gaps {
+            subjects: false,
+            description: false,
+            cover: false,
+            language: false,
+        };
+        assert!(!none.any());
+        let one = |field: usize| Gaps {
+            subjects: field == 0,
+            description: field == 1,
+            cover: field == 2,
+            language: field == 3,
+        };
+        let filled = |field: usize, value: &str| {
+            let value = Some(value.to_string());
+            match field {
+                0 => MetadataRecord {
+                    categories: value,
+                    ..MetadataRecord::default()
+                },
+                1 => MetadataRecord {
+                    description: value,
+                    ..MetadataRecord::default()
+                },
+                2 => MetadataRecord {
+                    cover_url: value,
+                    ..MetadataRecord::default()
+                },
+                _ => MetadataRecord {
+                    language: value,
+                    ..MetadataRecord::default()
+                },
+            }
+        };
+        for field in 0..4 {
+            assert!(one(field).any(), "gap {field} alone counts");
+            assert!(
+                one(field).filled_by(&filled(field, "x")),
+                "gap {field} filled"
+            );
+            assert!(
+                !one(field).filled_by(&filled(field, "  ")),
+                "gap {field} blank"
+            );
+            assert!(
+                !one(field).filled_by(&filled((field + 1) % 4, "x")),
+                "gap {field} is not filled by another field"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_record_that_fills_one_gap_marks_the_title() {
+        let (store, uuids) = store_with(&[("p1", "Dune", Some("9780441172719"))]).await;
+        let providers = Fixed {
+            by_isbn: vec![(
+                "9780441172719".into(),
+                MetadataRecord {
+                    title: "Dune".into(),
+                    language: Some("en".into()),
+                    ..MetadataRecord::default()
+                },
+            )],
+            ..Fixed::default()
+        };
+        assert_eq!(
+            enrich_books_from_metadata(&store, &providers, &opts(5))
+                .await
+                .unwrap(),
+            1
+        );
+        let book = store.get_book_by_uuid(&uuids[0]).await.unwrap().unwrap();
+        assert_eq!(book.language.as_deref(), Some("en"));
+        assert_eq!(book.description, None);
+        assert!(book.enrich_source.is_some(), "the title is marked");
+    }
+
     #[tokio::test]
     async fn the_first_record_that_fills_a_gap_is_used() {
         let (store, uuids) = store_with(&[("p1", "Dune", Some("9780441172719"))]).await;

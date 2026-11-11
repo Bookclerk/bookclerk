@@ -28,8 +28,6 @@ async fn title_request_select_survives_typed_roundtrip() {
             isbn: None,
             notes: None,
             status: bookclerk_library::RequestStatus::Open,
-            work_id: None,
-            work_key: "asin:B00X".into(),
             resolved_book_uuid: None,
             cover_url: Some("https://example.com/c.jpg".into()),
         })
@@ -84,7 +82,7 @@ async fn title_request_select_survives_typed_roundtrip() {
             .await
             .unwrap();
     let decoded = title_requests::Entity::find()
-        .filter(title_requests::Column::Asin.eq("B00X"))
+        .filter(title_requests::Column::WorkId.eq(created.work_id.as_str()))
         .all(&proxied)
         .await
         .expect("decode after typed roundtrip");
