@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import email.message
 import importlib.util
 import json
 import os
@@ -734,10 +735,6 @@ class BundleTest(unittest.TestCase):
             self.assertIn("BUNDLE_KEY is empty", result.stderr)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class HttpRetryTest(unittest.TestCase):
     """`_http_json` retries transient failures and nothing else."""
 
@@ -765,8 +762,11 @@ class HttpRetryTest(unittest.TestCase):
         osv._http_json_once = once
 
     @staticmethod
-    def _status(code: int) -> urllib.error.HTTPError:
-        return urllib.error.HTTPError("https://api.osv.dev/v1/vulns/X", code, "status", {}, None)
+    def _status(code: int, retry_after: str | None = None) -> urllib.error.HTTPError:
+        headers = email.message.Message()
+        if retry_after is not None:
+            headers["Retry-After"] = retry_after
+        return urllib.error.HTTPError("https://api.osv.dev/v1/vulns/X", code, "status", headers, None)
 
     def test_a_timeout_then_success_returns_the_body(self) -> None:
         self._answer(TimeoutError("The read operation timed out"), {"id": "X"})
@@ -778,13 +778,41 @@ class HttpRetryTest(unittest.TestCase):
         self.assertEqual(osv._http_json("https://api.github.com/x", "t"), ([], ""))
         self.assertEqual(self.waits, [2, 4, 8])
 
-    def test_gives_up_after_the_last_attempt(self) -> None:
+    def test_a_last_timeout_is_raised_as_a_url_error(self) -> None:
         self._answer(*[TimeoutError("slow")] * osv.HTTP_ATTEMPTS)
-        with self.assertRaises(TimeoutError):
+        with self.assertRaises(urllib.error.URLError) as raised:
             osv._http_json("https://api.osv.dev/v1/vulns/X")
+        self.assertIsInstance(raised.exception.reason, TimeoutError)
         self.assertEqual(self.calls, osv.HTTP_ATTEMPTS)
+
+    def test_a_last_server_error_is_raised(self) -> None:
+        self._answer(*[self._status(503)] * osv.HTTP_ATTEMPTS)
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            osv._http_json("https://api.osv.dev/v1/vulns/X")
+        self.assertEqual(raised.exception.code, 503)
+        self.assertEqual((self.calls, self.waits), (osv.HTTP_ATTEMPTS, [2, 4, 8]))
+
+    def test_any_5xx_is_retried(self) -> None:
+        self._answer(self._status(529), {})
+        self.assertEqual(osv._http_json("https://api.osv.dev/v1/vulns/X"), ({}, ""))
+        self.assertEqual(self.waits, [2])
+
+    def test_retry_after_lengthens_the_wait(self) -> None:
+        self._answer(self._status(429, "30"), self._status(429, "1"), {})
+        self.assertEqual(osv._http_json("https://api.github.com/x", "t"), ({}, ""))
+        self.assertEqual(self.waits, [30, 4])
+
+    def test_a_retry_after_beyond_the_cap_is_raised_at_once(self) -> None:
+        self._answer(self._status(429, str(osv.HTTP_MAX_RETRY_AFTER_S + 1)))
+        with self.assertRaises(urllib.error.HTTPError):
+            osv._http_json("https://api.github.com/x", "t")
+        self.assertEqual((self.calls, self.waits), (1, []))
 
     def test_a_not_found_is_raised_at_once(self) -> None:
         self._answer(self._status(404))
         self.assertIsNone(osv.fetch_vuln("X"))
         self.assertEqual((self.calls, self.waits), (1, []))
+
+
+if __name__ == "__main__":
+    unittest.main()
