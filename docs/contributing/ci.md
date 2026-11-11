@@ -80,37 +80,67 @@ request, so reviewers and Codecov see their results before it is queued.
 `CI Gate` in the merge group requires every platform, so a Windows or macOS
 failure ejects the pull request from the queue and keeps it out of `main`.
 
-### Pull request slots
+### Pull request lanes
 
 GitHub gives a `merge_group` run no priority over pull request runs. Every
-job waits in one queue for the organization's runners, so a burst of ready
-pull requests can hold most of them and leave the merge queue waiting long
-enough to hit its status check timeout. To leave room for the queue, pull
-request jobs take turns in a fixed set of **slots**:
+job waits in one queue for the organization's 20 runners, so a burst of
+ready pull requests can hold most of them and leave the merge queue waiting
+long enough to hit its status check timeout. To leave room for the queue
+without leaving runners idle, heavy pull request jobs wait in shared
+**lanes**:
 
-- Each heavy job has a job-level `concurrency` group of the form
-  `ci-pr-slot-<job>` on a `pull_request` event: `check`, `test`, `e2e`,
-  `release`, `confinement`, `native-gateway`, `tray`, `postgres` (all
-  three versions share one slot) and `site`. CodeQL's `analyze` job has two
-  slots (`codeql-pr-slot-rust` and `codeql-pr-slot-other`), and
-  ClusterFuzzLite's pull request job has one (`cflite-pr-slot`).
-- One job runs per slot at a time, so pull requests hold at most 12
-  runners. `scripts/tests/test_ci_contract.py` fails if a new job runs on
-  pull requests without a slot, or if the slots grow past that budget.
-- The groups set `queue: max`, so up to 100 jobs wait in each slot, in the
-  order they started waiting. The default would keep only one waiting job
-  and cancel the others. A job pushed out of a full slot is cancelled,
+- A lane is a job-level `concurrency` group named `ci-pr-lane-<n>` with
+  `queue: max`: one job runs in it at a time, and up to 100 wait behind it
+  in the order they arrived. The default would keep only one waiting job
+  and cancel the others. A job pushed out of a full lane is cancelled,
   which fails `CI Gate` visibly rather than skipping a check.
+- The lane jobs are `check`, `test`, `e2e`, `release`, `confinement`,
+  `native-gateway`, `tray`, every `postgres` version and `site`. At the end
+  of the `plan` job, `scripts/ci_lanes.py` picks a lane for each leg the
+  run will start and hands the choice to the jobs as the `lanes` output.
+  Each job's name ends in its lane (`unit + integration tests · lane 3`).
+- Each leg goes to the open lane with the fewest jobs running or waiting
+  in it. The script counts them from the names of the jobs of every
+  active pull request CI run, through the jobs API (the plan job reads it
+  with `actions: read`). A base lane wins a tie, so lent lanes fill only
+  when every base lane is busy.
+- **Base lanes** 0 to 8 are always open to pull requests. With CodeQL's
+  two slots (`codeql-pr-slot-rust` and `codeql-pr-slot-other`) and
+  ClusterFuzzLite's one (`cflite-pr-slot`), which work the same way,
+  pull requests may always hold 12 runners, so the merge queue keeps at
+  least 8.
+- **Lent lanes** 9 to 16 are open only while no `merge_group` CI run is
+  active, and only when nothing runs or waits in them, so each holds at
+  most one job. When the queue is idle, pull requests can use all 20
+  runners. When a group arrives, no new job enters a lent lane, and those
+  lanes are back to the queue within one pull request job. The queue
+  itself never waits in a lane, so it uses every runner pull requests
+  don't hold.
+- When the API can't be read, or a job's lane is missing, the jobs use the
+  base lanes only (lane 0 for a missing one), which is the most pull
+  requests could ever hold before lanes were lent.
 - A waiting job holds no runner. When a newer push supersedes a run, the
   workflow-level group cancels the old run, and its waiting jobs leave
-  their slots with it.
+  their lanes with it.
 - Any other event (`merge_group`, a `main` push, a schedule) gets a group
   of its own from the run id and matrix leg, so it never waits.
 
+`scripts/tests/test_ci_contract.py` fails if a new job runs on pull
+requests without a lane or slot, if the base lanes and slots grow past 12,
+or if every lane and slot together pass 20. `scripts/tests/test_ci_lanes.py`
+tests the lane choice and fuzzes the API readers (see
+[Fuzzing](fuzzing.md)).
+
 Nothing is skipped: a pull request still runs every job it ran before,
-only later when its slots are busy. A pull request on its own loses little,
-because most of its jobs have a slot each. The `postgres` versions and the
-CodeQL languages other than Rust run one after another.
+only later when the lanes are busy.
+
+Lanes replaced one fixed slot per job (`ci-pr-slot-<job>`) in
+November 2026. Measured from 13:00 to 23:40 UTC on 11 November, only
+5.7 of the 20 runners were busy on average: every pull request's
+`unit + integration tests` waited behind one `test` slot, up to 3 hours,
+while the other slots sat empty and runners idled for 1,686 runner-minutes
+with pull request jobs waiting. In a replay of that day's jobs, the mean wait
+for a pull request job drops from about 29 minutes to about 4.
 
 ### Build-only `main` pushes
 
