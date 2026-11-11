@@ -180,8 +180,33 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - name: Create or update pull request
+      # GitHub refuses to update the branch of a queued pull request (#881).
+      # The queued floors land with it, and the next merge raises them again
+      # from newer coverage, so this run leaves the branch alone and says so.
+      - name: Check for a queued pull request
         if: steps.ratchet.outputs.raise == 'true'
+        id: queued
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head ci/coverage-floors --state open --json number --jq '.[0].number // empty')"
+          queued=false
+          if [[ -n "$pr" ]]; then
+            queued="$(gh api graphql \
+              -f query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { isInMergeQueue } } }' \
+              -f owner="${GITHUB_REPOSITORY%%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F number="$pr" \
+              --jq '.data.repository.pullRequest.isInMergeQueue')"
+          fi
+          echo "queued=$queued" >> "$GITHUB_OUTPUT"
+          if [[ "$queued" == "true" ]]; then
+            message="Coverage floors pull request #$pr is in the merge queue, so its branch cannot be updated. The next merge raises the floors again."
+            echo "::notice title=Coverage floors::$message"
+            echo "$message" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Create or update pull request
+        if: steps.ratchet.outputs.raise == 'true' && steps.queued.outputs.queued != 'true'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app.outputs.token }}
@@ -206,7 +231,7 @@ jobs:
       # sometimes answers a 5xx; a single failed call left the pull request
       # without auto-merge, so the call gets four attempts (2, 4, 8 s apart).
       - name: Enable auto-merge
-        if: steps.ratchet.outputs.raise == 'true'
+        if: steps.ratchet.outputs.raise == 'true' && steps.queued.outputs.queued != 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
