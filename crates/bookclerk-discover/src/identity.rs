@@ -1008,6 +1008,7 @@ mod tests {
             rating_count: count,
             is_abridged: None,
             store_rank: None,
+            work_id: None,
             starter_genre: None,
         }
     }

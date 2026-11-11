@@ -1136,10 +1136,12 @@ async fn library_owns_work(library: &LibraryStore, entry: &GlobalQueueEntry) -> 
 ///
 /// The ASIN / ISBN / product sets catch the exact editions the library
 /// holds; another edition of an owned book (a different narrator, store or
-/// ASIN) has none of those ids. The library's resolver places each
-/// candidate as it would a scanned listing (shared identifiers, then the
-/// work's identifiers, then the work-level title-and-author match), and a
-/// candidate whose work has a held title is dropped. A sequel that shares
+/// ASIN) has none of those ids. A candidate read from the shared listing
+/// pool carries the work its listing resolved into; any other candidate is
+/// placed by the library's resolver as it would a scanned listing (shared
+/// identifiers, then the work's identifiers, then the work-level
+/// title-and-author match). A candidate whose work has a held title is
+/// dropped. A sequel that shares
 /// its series' name is its own work and stays. Whether a work is held is
 /// read once per work.
 ///
@@ -1169,15 +1171,23 @@ pub(crate) async fn retain_unowned_works(
             kept.push(c);
             continue;
         }
-        let query = bookclerk_library::TitleQuery {
-            title: &c.title,
-            authors: c.authors.as_deref(),
-            asin: c.asin.as_deref(),
-            isbn: c.isbn.as_deref(),
-            series: c.series.as_deref(),
-            series_index: c.series_index.as_deref(),
+        // A candidate read from the listing pool already knows its work;
+        // only a live store hit is resolved here.
+        let work_id = match c.work_id.clone() {
+            Some(work_id) => Some(work_id),
+            None => {
+                let query = bookclerk_library::TitleQuery {
+                    title: &c.title,
+                    authors: c.authors.as_deref(),
+                    asin: c.asin.as_deref(),
+                    isbn: c.isbn.as_deref(),
+                    series: c.series.as_deref(),
+                    series_index: c.series_index.as_deref(),
+                };
+                library.work_for(&query).await?
+            }
         };
-        let Some(work_id) = library.work_for(&query).await? else {
+        let Some(work_id) = work_id else {
             kept.push(c);
             continue;
         };
@@ -1667,6 +1677,7 @@ mod tests {
                 rating_count: None,
                 is_abridged: None,
                 store_rank: None,
+                work_id: None,
             };
         let opts = RecommendOptions {
             include_purchase_hints: false,
@@ -1793,6 +1804,28 @@ mod tests {
 
         let kept = retain_unowned_works(&store, pool()).await.unwrap();
         assert_eq!(titles(&kept), ["messiah", "unknown"]);
+
+        // A pooled candidate's own work decides, whatever its text says.
+        let held_work = store
+            .work_for(&bookclerk_library::TitleQuery {
+                title: "Dune",
+                authors: Some("Frank Herbert"),
+                asin: Some("B002V1OF70"),
+                isbn: None,
+                series: None,
+                series_index: None,
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let mut renamed = candidate("libro", "renamed", "A Desert Planet Saga");
+        renamed.work_id = Some(held_work);
+        let mut other = candidate("libro", "other-work", "Dune");
+        other.work_id = Some(String::from("work-not-held"));
+        let kept = retain_unowned_works(&store, vec![renamed, other])
+            .await
+            .unwrap();
+        assert_eq!(titles(&kept), ["other-work"]);
 
         // No candidates, or one with no title to place, pass through.
         assert!(retain_unowned_works(&store, Vec::new())

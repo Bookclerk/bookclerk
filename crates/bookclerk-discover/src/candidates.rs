@@ -101,6 +101,11 @@ pub struct StorefrontCandidate {
         skip_serializing_if = "Option::is_none"
     )]
     pub store_rank: Option<u32>,
+    /// The work the pool resolved this listing into, when the candidate was
+    /// read from the shared listing pool. Lets the ranking drop titles the
+    /// library holds by work identity without resolving the title again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_id: Option<String>,
 }
 
 /// Options for storefront candidate expansion.
@@ -321,6 +326,7 @@ pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCa
         rating_count: hit.rating_count,
         is_abridged: hit.is_abridged,
         store_rank: None,
+        work_id: None,
     }
 }
 
@@ -695,6 +701,7 @@ mod tests {
                 rating_count: None,
                 is_abridged: None,
                 store_rank: None,
+                work_id: None,
             },
             &owned_asins,
             &owned_isbns,
@@ -732,6 +739,7 @@ mod tests {
                 rating_count: None,
                 is_abridged: None,
                 store_rank: None,
+                work_id: None,
             },
             &owned_asins,
             &owned_isbns,
@@ -769,6 +777,7 @@ mod tests {
                 rating_count: None,
                 is_abridged: None,
                 store_rank: None,
+                work_id: None,
             },
             &owned_asins,
             &owned_isbns,

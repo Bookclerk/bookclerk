@@ -134,6 +134,7 @@ pub(crate) fn candidate_from_listing(
         rating_count: detail.rating_count,
         is_abridged: detail.is_abridged,
         store_rank: None,
+        work_id: listing.work_id.clone(),
     }
 }
 
