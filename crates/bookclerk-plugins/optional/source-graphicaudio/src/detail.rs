@@ -284,28 +284,25 @@ fn release_date(text: &str) -> Option<String> {
 
 /// The names in a "Director & Cast" attribute with this label.
 fn attribute_values(doc: &Html, label: &str) -> Vec<String> {
-    let Ok(rows) = Selector::parse(".additional-attributes-wrapper .attribute") else {
-        return Vec::new();
-    };
-    let (Ok(label_sel), Ok(value_sel)) = (
-        Selector::parse(".attribute-label"),
-        Selector::parse(".attribute-value a"),
-    ) else {
-        return Vec::new();
-    };
-    doc.select(&rows)
-        .find(|row| {
-            row.select(&label_sel)
-                .next()
-                .is_some_and(|l| clean(&text_of(l)).eq_ignore_ascii_case(label))
-        })
-        .map(|row| {
-            row.select(&value_sel)
-                .map(|a| clean(&text_of(a)))
-                .filter(|n| !n.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
+    attribute_rows(doc, label).unwrap_or_default()
+}
+
+/// [`attribute_values`], or `None` when a selector does not parse.
+fn attribute_rows(doc: &Html, label: &str) -> Option<Vec<String>> {
+    let rows = Selector::parse(".additional-attributes-wrapper .attribute").ok()?;
+    let label_sel = Selector::parse(".attribute-label").ok()?;
+    let value_sel = Selector::parse(".attribute-value a").ok()?;
+    let row = doc.select(&rows).find(|row| {
+        row.select(&label_sel)
+            .next()
+            .is_some_and(|l| clean(&text_of(l)).eq_ignore_ascii_case(label))
+    })?;
+    Some(
+        row.select(&value_sel)
+            .map(|a| clean(&text_of(a)))
+            .filter(|n| !n.is_empty())
+            .collect(),
+    )
 }
 
 /// The text of the first element matching `selector`, after `prefix`.
@@ -322,13 +319,14 @@ fn first_text(doc: &Html, selector: &str) -> Option<String> {
 
 /// The cleaned, non-blank texts of every element matching `selector`.
 fn texts(doc: &Html, selector: &str) -> Vec<String> {
-    let Ok(sel) = Selector::parse(selector) else {
-        return Vec::new();
-    };
-    doc.select(&sel)
-        .map(|el| clean(&text_of(el)))
-        .filter(|t| !t.is_empty())
-        .collect()
+    Selector::parse(selector)
+        .map(|sel| {
+            doc.select(&sel)
+                .map(|el| clean(&text_of(el)))
+                .filter(|t| !t.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The `content` of the first meta matching `selector`, cleaned.
@@ -441,6 +439,9 @@ mod tests {
         assert_eq!(running_minutes("100000 Hours"), None);
         assert_eq!(running_minutes("-3 Hours"), None);
         assert_eq!(running_minutes("NaN Hours"), None);
+        // A unit it does not know is skipped, not misread as minutes.
+        assert_eq!(running_minutes("3 days"), None);
+        assert_eq!(running_minutes("2 Hours 3 days"), Some(120));
     }
 
     #[test]
