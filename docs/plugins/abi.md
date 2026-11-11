@@ -871,6 +871,42 @@ A store with no change feed returns full passes with an empty `syncToken`;
 a page number makes a fine cursor. A plugin that needs more state than one
 token can keep it in its own [KV namespace](#kv-namespaces).
 
+Each SDK has a helper that does the paging for you: `scanPage` in
+TypeScript, `scan_page` in Python and in the Rust SDK. You give it a
+function that fetches one page of the store's own listing, by the store's
+own cursor, and it returns the reply for the call:
+
+```ts
+import { scanPage, type ScanPage, type ScanParams } from "@bookclerk/plugin-sdk/workerd";
+
+scan(params: ScanParams): Promise<ScanPage> {
+  return scanPage(params, async (storeCursor) => {
+    const page = Number(storeCursor || "1");
+    const listing = await this.library(params.accountId, page);
+    return {
+      books: listing.items.map(toScanBook),
+      next: listing.hasMore ? String(page + 1) : "",
+      complete: true,
+    };
+  });
+}
+```
+
+1. The function gets an empty store cursor for the first store page, then
+   each `next` it returned. An empty `next` marks the last store page.
+2. A store page may hold any number of titles and removed ids. The helper
+   returns them 500 at a time, fetching that store page again for each
+   slice, so the plugin keeps no state between calls.
+3. Set `syncToken` and `complete` on the last store page. The helper sends
+   them only with the pass's last reply.
+4. The helper rejects a cursor it did not write, or a slice past the end
+   of a store page that shrank mid-pass, with `invalid_cursor`, so the host
+   restarts the pass. A store cursor longer than about 4 KB fails with
+   `internal`.
+
+The three SDKs write the same cursors, so a plugin can move between them
+without breaking a pass in progress.
+
 > [!NOTE]
 > The host counts `removed` ids but does not yet take those titles off the
 > account. Holdings removal comes with the library data model's holdings

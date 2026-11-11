@@ -17,6 +17,8 @@ var MAX_SCALAR_BYTES = 262144;
 var MAX_STREAM_WINDOW_BYTES = 1048576;
 var MAX_LIST_PAGE = 256;
 var MAX_CHECKPOINT_BYTES = 65536;
+var MAX_SCAN_PAGE_BOOKS = 500;
+var MAX_SCAN_CURSOR_BYTES = 4096;
 var MAX_EVENT_PAYLOAD_BYTES = 65536;
 var MAX_KV_VALUE_BYTES = 1048576;
 var MAX_KV_KEY_BYTES = 512;
@@ -12132,6 +12134,59 @@ function uint(n) {
   }
   return String(n);
 }
+
+// dist/scan-page.js
+var CURSOR_PREFIX = "sp1.";
+var UTF82 = new TextEncoder();
+function writeCursor(position) {
+  const cursor = `${CURSOR_PREFIX}${position.offset}.${position.storeCursor}`;
+  if (UTF82.encode(cursor).length > MAX_SCAN_CURSOR_BYTES) {
+    throw new PluginError("internal", `store cursor too long: a scan cursor is at most ${MAX_SCAN_CURSOR_BYTES} bytes`);
+  }
+  return cursor;
+}
+function readCursor(cursor) {
+  if (cursor === "")
+    return { storeCursor: "", offset: 0 };
+  const stale = () => new PluginError("invalid_cursor", "scan cursor was not written by scanPage");
+  if (!cursor.startsWith(CURSOR_PREFIX))
+    throw stale();
+  const rest = cursor.slice(CURSOR_PREFIX.length);
+  const dot = rest.indexOf(".");
+  const digits = dot < 0 ? "" : rest.slice(0, dot);
+  if (!/^(0|[1-9][0-9]{0,15})$/.test(digits))
+    throw stale();
+  const offset = Number(digits);
+  if (!Number.isSafeInteger(offset) || offset % MAX_SCAN_PAGE_BOOKS !== 0)
+    throw stale();
+  return { storeCursor: rest.slice(dot + 1), offset };
+}
+async function scanPage(params, fetchStorePage) {
+  const { storeCursor, offset } = readCursor(params.cursor);
+  const page = await fetchStorePage(storeCursor, params);
+  const removed = page.removed ?? [];
+  if (offset > 0 && offset >= page.books.length && offset >= removed.length) {
+    throw new PluginError("invalid_cursor", "the store page shrank during the pass");
+  }
+  const end = offset + MAX_SCAN_PAGE_BOOKS;
+  const reply = {
+    books: page.books.slice(offset, end),
+    removed: removed.slice(offset, end),
+    nextCursor: "",
+    syncToken: "",
+    complete: false,
+    storePages: page.storePages ?? 1
+  };
+  if (page.books.length > end || removed.length > end) {
+    reply.nextCursor = writeCursor({ storeCursor, offset: end });
+  } else if (page.next) {
+    reply.nextCursor = writeCursor({ storeCursor: page.next, offset: 0 });
+  } else {
+    reply.syncToken = page.syncToken ?? "";
+    reply.complete = page.complete ?? false;
+  }
+  return reply;
+}
 export {
   AdapterDatabaseSession,
   BookclerkEntrypoint,
@@ -12213,6 +12268,7 @@ export {
   rawStreamCeiling,
   requirePluginMigrationRegistration,
   runAdapterBatch,
+  scanPage,
   schemaMigrationOp,
   shouldSkipRemainingGuestWork,
   statementResultToD1Result,
