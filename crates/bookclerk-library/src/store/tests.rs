@@ -7698,6 +7698,54 @@ async fn a_page_of_rows_stores_what_row_by_row_upserts_store_under_every_profile
     }
 }
 
+/// A title another writer inserts between the page's read and its write,
+/// with the same plugin-supplied uuid, is merged onto that writer's row as a
+/// row-by-row upsert would, not taken for the page's own insert.
+#[tokio::test]
+async fn a_same_uuid_insert_won_by_another_writer_is_merged_under_every_profile() {
+    use crate::test_support::Profile;
+    for profile in Profile::ALL {
+        let store = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        store
+            .upsert_account("audible", "a1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let uuid = Uuid::new_v4().to_string();
+        let mut theirs = NewBook::minimal("B1", "a1", "us", "Dune");
+        theirs.uuid = Some(uuid.clone());
+        theirs.authors = Some("Frank Herbert".into());
+        let mut ours = NewBook::minimal("B1", "a1", "us", "Dune (Unabridged)");
+        ours.uuid = Some(uuid.clone());
+        ours.isbn = Some("9780593288368".into());
+        // The page read found nothing; the other writer then stored the title.
+        store.upsert_book_row(&theirs).await.unwrap();
+        let page = [std::borrow::Cow::Borrowed(&ours)];
+        let records = store
+            .write_book_rows(&page, std::collections::HashMap::new())
+            .await
+            .unwrap();
+
+        let one = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        one.upsert_account("audible", "a1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        one.upsert_book_row(&theirs).await.unwrap();
+        let expected = one.upsert_book_row(&ours).await.unwrap();
+        assert_eq!(records.len(), 1, "{profile:?}");
+        assert_eq!(records[0].uuid, uuid, "{profile:?}");
+        assert_eq!(records[0].title, "Dune (Unabridged)", "{profile:?}");
+        assert_eq!(
+            scanned_fields(&records[0]),
+            scanned_fields(&expected),
+            "{profile:?}"
+        );
+    }
+}
+
 /// A page of long product ids fits every profile's payload cap, not only its
 /// bind cap: on D1 a 90-id lookup of UUIDs is past the statement payload limit.
 #[tokio::test]

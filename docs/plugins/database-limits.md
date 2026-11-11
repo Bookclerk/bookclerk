@@ -165,7 +165,7 @@ carry on later without writing anything twice:
 
 ```ts
 const progress = await env.DB.writeChunks(inserts, {
-  key: `${job.id}:seen`,
+  key: `${job.idempotencyKey}:seen`,
   from: checkpoint.next ?? 0,
   stop: () => Date.now() > deadline,
 });
@@ -177,16 +177,15 @@ if (!progress.done) {
 
 ```python
 progress = await self.env.DB.write_chunks(
-    inserts, key=f"{job.id}:seen", start=checkpoint.get("next", 0),
+    inserts, key=f"{job.idempotency_key}:seen", start=checkpoint.get("next", 0),
     stop=lambda _next: time.monotonic() > deadline,
 )
 ```
 
 ```rust
+let key = format!("{}:seen", invocation.idempotency_key);
 let progress = db
-    .write_chunks(inserts, checkpoint.next, &format!("{job_id}:seen"), None, |_| {
-        Instant::now() > deadline
-    })
+    .write_chunks(inserts, checkpoint.next, &key, None, |_| Instant::now() > deadline)
     .await?;
 ```
 
@@ -203,12 +202,13 @@ Each batch is sent with an operation id made from `key` and the batch's
 offset, so a resent batch has the same id as the first try. If a batch
 committed but its reply was lost, resuming from the last `next` sends it
 again and the host replays the stored result instead of writing the rows a
-second time. For that to hold, `key` must name one write (a job id plus a
-step is a good key, at most 256 bytes), and the list and the caps must stay
-the same between calls with that key. Otherwise a resent batch no longer
-matches what was stored and the host answers `conflict`. A job keeps its
-id when it suspends and when it is retried, so `job.id` plus a step names
-the same write on every run.
+second time. For that to hold, `key` must name one write on every run
+(at most 256 bytes), and the list and the caps must stay the same between
+calls with that key. Otherwise a resent batch no longer matches what was
+stored and the host answers `conflict`. Build the key from the job's
+idempotency key plus a step, as above: it stays the same when the job
+suspends or is retried. The job's `id` names one attempt and changes, so
+it is not a key.
 
 > [!NOTE]
 > The host keeps a batch's receipt for 24 hours. A batch resent after that

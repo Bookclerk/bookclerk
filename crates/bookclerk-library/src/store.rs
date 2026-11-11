@@ -4253,22 +4253,42 @@ impl LibraryStore {
         for book in &books {
             require_plugin_key(book)?;
         }
+        let stored = self.stored_book_rows(&books).await?;
+        self.write_book_rows(&books, stored).await
+    }
+
+    /// The write half of [`Self::upsert_book_rows`]: merges `books` over
+    /// `stored` (the rows read for them), writes each title once, and reads
+    /// the page back.
+    ///
+    /// An insert the database ignored (its key or uuid was taken after
+    /// `stored` was read) is told apart by the batch reply's affected-row
+    /// count, not by comparing rows, and that title is merged again on its
+    /// own against the row that won.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a batch or the re-read fails, or a title's
+    /// own upsert does.
+    async fn write_book_rows(
+        &self,
+        books: &[Cow<'_, NewBook>],
+        mut rows: HashMap<BookKey, books::Model>,
+    ) -> Result<Vec<BookRecord>> {
         let now = now_str();
-        let mut rows = self.stored_book_rows(&books).await?;
-        let mut inserted: HashMap<BookKey, String> = HashMap::new();
+        let mut inserts: HashSet<BookKey> = HashSet::new();
         // Fold every listing of a title into its final row first, so each
         // title is written once: an update never builds on an insert that
         // another writer's row may have turned away.
         let mut order: Vec<BookKey> = Vec::new();
         let mut seen: HashSet<BookKey> = HashSet::new();
-        for book in &books {
+        for book in books {
             let key = BookKey::of(book);
             let row = match rows.get(&key) {
                 Some(existing) => merged_book_row(existing, book, &now),
                 None => {
-                    let row = new_book_row(book, &now);
-                    inserted.insert(key.clone(), row.uuid.clone());
-                    row
+                    inserts.insert(key.clone());
+                    new_book_row(book, &now)
                 }
             };
             if seen.insert(key.clone()) {
@@ -4279,27 +4299,31 @@ impl LibraryStore {
         // Each batch bumps the library topic with the rows it writes.
         let mut batches = WriteBatches::new(self.db_capabilities(), "library title")
             .with_trailer(crate::control_plane::bump(LiveTopic::Library))?;
-        for key in &order {
-            let Some(row) = rows.get(key) else { continue };
-            let statement = if inserted.contains_key(key) {
+        // The titles of the statements queued in the open batch, in order.
+        let mut queued: Vec<BookKey> = Vec::new();
+        let mut ignored: HashSet<BookKey> = HashSet::new();
+        for key in order {
+            let Some(row) = rows.get(&key) else { continue };
+            let statement = if inserts.contains(&key) {
                 insert_book_statement(row)
             } else {
                 update_book_statement(row)
             };
             if let Some(full) = batches.push(statement)? {
-                self.run_book_batch(full).await?;
+                let sent = std::mem::take(&mut queued);
+                ignored.extend(self.run_book_batch(full, sent, &inserts).await?);
             }
+            queued.push(key);
         }
         if let Some(last) = batches.finish() {
-            self.run_book_batch(last).await?;
+            ignored.extend(self.run_book_batch(last, queued, &inserts).await?);
         }
-        let written = self.stored_book_rows(&books).await?;
+        let written = self.stored_book_rows(books).await?;
         let mut records = Vec::with_capacity(books.len());
-        for book in &books {
+        for book in books {
             let key = BookKey::of(book);
-            let ours = |row: &books::Model| inserted.get(&key).is_none_or(|uuid| *uuid == row.uuid);
             match written.get(&key) {
-                Some(row) if ours(row) => records.push(map_book(row.clone())?),
+                Some(row) if !ignored.contains(&key) => records.push(map_book(row.clone())?),
                 // Another writer's insert won, or the insert was refused
                 // (a uuid the plugin sent is another row's): merge alone.
                 _ => records.push(self.upsert_book_row(book).await?),
@@ -4351,17 +4375,32 @@ impl LibraryStore {
 
     /// Sends one chunk of flat book-row writes as one atomic host batch.
     ///
+    /// `keys` names the title of each statement before the batch's trailer,
+    /// in order; `inserts` holds the titles written as inserts.
+    ///
+    /// # Returns
+    ///
+    /// The titles whose insert the database ignored (no row affected).
+    ///
     /// # Errors
     ///
     /// Returns the database error; nothing in the chunk is kept then.
     async fn run_book_batch(
         &self,
         statements: Vec<bookclerk_plugin_abi::TypedDbStatement>,
-    ) -> Result<()> {
+        keys: Vec<BookKey>,
+        inserts: &HashSet<BookKey>,
+    ) -> Result<Vec<BookKey>> {
         let operation_id = format!("scanned-books-{}", Uuid::new_v4());
-        self.execute_host_batch(batch::request(&operation_id, statements))
+        let reply = self
+            .execute_host_batch(batch::request(&operation_id, statements))
             .await?;
-        Ok(())
+        Ok(keys
+            .into_iter()
+            .zip(&reply.statements)
+            .filter(|(key, result)| inserts.contains(key) && result.rows_affected == 0)
+            .map(|(key, _)| key)
+            .collect())
     }
 
     /// Look up a book by its public `uuid`.

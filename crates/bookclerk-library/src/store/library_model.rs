@@ -51,10 +51,12 @@ fn lookup_chunk(max_binds: u32) -> usize {
 }
 
 /// Rows of `E` that `query` selects for `ids`, read in chunks no wider than
-/// [`LibraryStore::lookup_chunk`] and narrowed further until each statement
-/// (SQL plus binds) fits the backend's `maxBinds` and `maxPayloadBytes`, so
-/// a lookup of long ids (UUIDs on D1) never fails where reading them one by
-/// one would fit.
+/// [`LibraryStore::lookup_chunk`] or the backend's `maxResultRows`, and
+/// narrowed further until each statement (SQL plus binds) fits the
+/// backend's `maxBinds`, `maxPayloadBytes` and `maxRequestBytes`, so a
+/// lookup of long ids (UUIDs on D1) never fails where reading them one by
+/// one would fit. A chunk whose reply is refused for its size is read again
+/// in halves.
 ///
 /// # Errors
 ///
@@ -90,27 +92,62 @@ where
 {
     let fits = |part: &[K]| {
         crate::control_plane::sea_exec(&query(part))
-            .map(|stmt| store.admits_statement(&stmt))
+            .map(|stmt| store.admits_read(&stmt))
             .unwrap_or(true)
     };
-    let mut out = Vec::new();
+    let caps = store.db_capabilities();
     let mut width = (store.lookup_chunk() / binds_per_key.max(1)).max(1);
+    if caps.max_result_rows > 0 {
+        // Lookups by a unique key return at most one row per key, so a
+        // chunk no wider than the row cap fits it; other lookups narrow on
+        // a refused reply below.
+        width = width.min(usize::try_from(caps.max_result_rows).unwrap_or(usize::MAX));
+    }
+    read_in_chunks(keys, width, fits, |part| query(part).all(&store.db)).await
+}
+
+/// Reads `keys` in chunks of at most `width`, halving a chunk until `fits`
+/// accepts it and again when its read is refused as over a negotiated limit
+/// (a reply too large for `maxResultRows` / `maxResultBytes`). Later chunks
+/// start no wider than the last that was read.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Orm`] when a read fails for another reason, or a
+/// single key's read is still over a limit.
+async fn read_in_chunks<K, T, Fut>(
+    keys: &[K],
+    width: usize,
+    fits: impl Fn(&[K]) -> bool,
+    read: impl Fn(&[K]) -> Fut,
+) -> Result<Vec<T>>
+where
+    Fut: std::future::Future<Output = std::result::Result<Vec<T>, sea_orm::DbErr>>,
+{
+    let mut out = Vec::new();
+    let mut width = width.max(1);
     let mut rest = keys;
     while !rest.is_empty() {
         let mut n = width.min(rest.len());
         while n > 1 && !fits(&rest[..n]) {
             n /= 2;
         }
-        // Later chunks start no wider: the keys of one lookup are alike.
-        width = n;
         let (part, tail) = rest.split_at(n);
-        out.extend(
-            query(part)
-                .all(&store.db)
-                .await
-                .map_err(LibraryError::Orm)?,
-        );
-        rest = tail;
+        match read(part).await {
+            Ok(rows) => {
+                out.extend(rows);
+                width = n;
+                rest = tail;
+            }
+            Err(err)
+                if n > 1
+                    && bookclerk_plugin_abi::LimitExceeded::from_message(&err.to_string())
+                        .is_some() =>
+            {
+                width = n / 2;
+            }
+            Err(err) => return Err(LibraryError::Orm(err)),
+        }
     }
     Ok(out)
 }
@@ -4127,6 +4164,86 @@ mod store_tests {
             assert_eq!(row.title, items[1].0.title, "{profile:?}");
         }
     }
+    /// Lookups are sized on the request the store's reads send (the proxy's
+    /// longer operation id and the stamped hash), so a lookup that fits only
+    /// a shorter request is narrowed rather than refused at the proxy.
+    #[tokio::test]
+    async fn lookups_are_sized_on_the_request_a_read_sends() {
+        use crate::entities::store_listings;
+        let store = store().await;
+        let ids: Vec<String> = (0..4).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+        let stmt = crate::control_plane::sea_exec(
+            &store_listings::Entity::find()
+                .filter(store_listings::Column::ProductId.is_in(ids.iter().cloned())),
+        )
+        .unwrap();
+        let short = crate::control_plane::batch::request("live.admit", vec![stmt.clone()]);
+        let short_bytes = bookclerk_plugin_abi::encoded_execute_request_bytes(&short)
+            .unwrap()
+            .len();
+        let mut caps = store.db_capabilities().clone();
+        caps.max_request_bytes = u32::try_from(short_bytes).unwrap();
+        let store = store.with_db_capabilities(caps);
+        // Fits the short request exactly, but not the one a read sends.
+        assert!(store.admits_statement(&stmt));
+        assert!(!store.admits_read(&stmt));
+        let rows = find_chunked::<store_listings::Entity, _>(&store, &ids, |part| {
+            store_listings::Entity::find()
+                .filter(store_listings::Column::ProductId.is_in(part.iter().cloned()))
+        })
+        .await
+        .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    /// A chunk whose reply is refused as over a result limit is read again
+    /// in halves until each read fits, and every key is still read once.
+    #[tokio::test]
+    async fn a_chunk_refused_for_its_reply_size_is_read_in_halves() {
+        use std::sync::Mutex;
+        let keys: Vec<u32> = (0..10).collect();
+        let sizes = Mutex::new(Vec::new());
+        let rows = read_in_chunks(
+            &keys,
+            8,
+            |_| true,
+            |part: &[u32]| {
+                sizes.lock().unwrap().push(part.len());
+                let part = part.to_vec();
+                async move {
+                    if part.len() > 3 {
+                        let limit = bookclerk_plugin_abi::LimitExceeded::new(
+                            "maxResultRows",
+                            3,
+                            u64::try_from(part.len()).unwrap(),
+                        );
+                        Err(sea_orm::DbErr::Custom(limit.to_message()))
+                    } else {
+                        Ok(part)
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows, keys);
+        assert_eq!(sizes.into_inner().unwrap(), vec![8, 4, 2, 2, 2, 2, 2]);
+
+        // A single key still over the limit, or any other failure, is returned.
+        let err = read_in_chunks(
+            &keys[..1],
+            8,
+            |_| true,
+            |_: &[u32]| async {
+                Err::<Vec<u32>, _>(sea_orm::DbErr::Custom(
+                    bookclerk_plugin_abi::LimitExceeded::new("maxResultBytes", 1, 2).to_message(),
+                ))
+            },
+        )
+        .await;
+        assert!(err.is_err());
+    }
+
     /// A chunked lookup of long ids sends only statements the backend
     /// admits: on D1 a full-width lookup of UUIDs is past `maxPayloadBytes`,
     /// so the chunks narrow, and every id is still read.
@@ -4145,7 +4262,7 @@ mod store_tests {
                     .filter(store_listings::Column::ProductId.is_in(part.iter().cloned()))
             };
             let admits = |part: &[String]| {
-                store.admits_statement(&crate::control_plane::sea_exec(&query(part)).unwrap())
+                store.admits_read(&crate::control_plane::sea_exec(&query(part)).unwrap())
             };
             let full = store.lookup_chunk();
             if profile == Profile::D1 {
