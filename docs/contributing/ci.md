@@ -1289,9 +1289,20 @@ the Workers' lockfiles do not change. Settings live in
 [`scripts/stryker.config.json`](../../scripts/stryker.config.json):
 
 - `inPlace`, because some tests read repository files by relative path.
+  Stryker then rewrites the sources it mutates on disk while it runs, so
+  the step sets `MUTATION_TESTING=1` and each Worker's `vitest.config.ts`
+  leaves out the tests that read its own source text
+  (`tools/site/worker-source.test.ts`,
+  `tools/diagnostics-collector/cache-control-source.test.ts`). Those tests
+  would fail on the instrumented code, and they cannot catch a mutant
+  anyway, because Stryker switches mutants on at run time. Every other run
+  keeps them.
 - A `tsconfigFile` that does not exist, because TypeScript 7 has no
   JavaScript API for Stryker's tsconfig rewriting. Type checking stays
   with each Worker's `npm run typecheck`.
+- `disableTypeChecks` off, so Stryker does not add `// @ts-nocheck` to
+  every file. That would change the collector's hashed dashboard assets,
+  and Vitest does not check types anyway.
 - `vitest.related` off, because the Workers runtime loads modules outside
   Vitest's module graph, so Vitest cannot tell which tests import a file.
 - `incremental`, writing to `reports/mutation/mutation.json`, because only
@@ -1304,7 +1315,7 @@ To reproduce a Worker's run locally, from its directory:
 
 ```sh
 npm install --no-save @stryker-mutator/core@10.1.1 @stryker-mutator/vitest-runner@10.1.1
-npx stryker run ../../scripts/stryker.config.json --mutate "src/page.ts:10-20"
+MUTATION_TESTING=1 npx stryker run ../../scripts/stryker.config.json --mutate "src/page.ts:10-20"
 ```
 
 The report lands in `reports/mutation/mutation.json`. Delete that folder

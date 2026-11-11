@@ -31,6 +31,15 @@ const NODE_TESTS = [
 ];
 
 /**
+ * Tests that read the Worker's source text. The nightly mutation run sets
+ * MUTATION_TESTING=1 to leave them out: Stryker rewrites the sources in
+ * place while it runs, so they would fail on its instrumented code, and they
+ * cannot catch a mutant, which Stryker switches on at run time rather than
+ * in the text. Every other run, CI's included, keeps them.
+ */
+const SOURCE_TESTS = process.env.MUTATION_TESTING === "1" ? ["worker-source.test.ts"] : [];
+
+/**
  * FUZZ_SEED and FUZZ_ITERATIONS from the shell, passed on to fuzz.test.ts,
  * which reads them from process.env inside the Workers runtime.
  */
@@ -68,7 +77,7 @@ export default defineConfig({
         test: {
           name: "workers",
           include: ["*.test.ts"],
-          exclude: NODE_TESTS,
+          exclude: [...NODE_TESTS, ...SOURCE_TESTS],
           globalSetup: ["test-support/site-build.ts"],
           setupFiles: ["test-support/workers-setup.ts"],
         },
