@@ -13705,14 +13705,14 @@
             }
           },
           "400": {
-            "description": "The cap is above 64 jobs (`invalid`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "`max_jobs` is missing or above 16 jobs (`invalid`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorDetail"
                 },
                 "example": {
-                  "detail": "a library's job cap is 0 to 64 jobs",
+                  "detail": "a library's job cap is 0 to 16 jobs",
                   "error": "invalid"
                 }
               },
@@ -27205,7 +27205,8 @@
         "type": "object",
         "description": "`POST /api/config/join/capacity` body.",
         "required": [
-          "cluster_id"
+          "cluster_id",
+          "max_jobs"
         ],
         "properties": {
           "cluster_id": {
@@ -27219,9 +27220,9 @@
               "null"
             ],
             "format": "int32",
-            "description": "The most jobs to run for the library at once (0 runs none); `null`\ngives it an equal share of the machine.",
+            "description": "The most jobs to run for the library at once (0 runs none); `null`\ngives it an equal share of the machine. Required: a body without it\nis refused rather than read as `null`.",
             "example": 1,
-            "maximum": 64,
+            "maximum": 16,
             "minimum": 0
           }
         },
@@ -27732,7 +27733,7 @@
             ],
             "description": "The most jobs this install runs for the library at once, as its operator set it; `null` gives the library an equal share of the machine.",
             "example": 2,
-            "maximum": 64,
+            "maximum": 16,
             "minimum": 0
           },
           "job_share": {

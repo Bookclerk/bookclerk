@@ -443,7 +443,7 @@ export function setBranchSharing(
   });
 }
 
-/** Highest job cap Settings → Library offers (the daemon accepts up to 64). */
+/** Highest job cap Settings → Library offers (the daemon accepts up to 16). */
 export const MAX_OFFERED_JOB_CAP = 8;
 
 /**

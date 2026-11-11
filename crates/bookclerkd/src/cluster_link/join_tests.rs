@@ -318,11 +318,20 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
         &host,
         "POST",
         "/api/config/join/capacity",
-        Some(json!({ "cluster_id": cluster_id, "max_jobs": 65 })),
+        Some(json!({ "cluster_id": cluster_id, "max_jobs": 17 })),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
     assert_eq!(refused["error"], "invalid");
+    // Leaving `max_jobs` out is refused, not read as an equal share.
+    let (status, _, _) = call(
+        &host,
+        "POST",
+        "/api/config/join/capacity",
+        Some(json!({ "cluster_id": cluster_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = call(
         &host,
         "POST",

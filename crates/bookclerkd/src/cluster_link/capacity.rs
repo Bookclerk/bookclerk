@@ -105,6 +105,10 @@ struct State {
     own_busy: usize,
     /// Each running link's entry, by owner cluster id.
     links: BTreeMap<String, LinkShare>,
+    /// Caps saved while their link had no entry (a client starting
+    /// between reading its link and registering); newer than what that
+    /// client read, so registration takes them.
+    pending_caps: BTreeMap<String, Option<usize>>,
 }
 
 impl State {
@@ -185,6 +189,7 @@ impl CapacityShares {
                 machine: SLOTS_BEFORE_FIRST_HEARTBEAT,
                 own_busy: 0,
                 links: BTreeMap::new(),
+                pending_caps: BTreeMap::new(),
             }),
         }
     }
@@ -211,14 +216,14 @@ impl CapacityShares {
     ) -> watch::Receiver<usize> {
         let (share, receiver) = watch::channel(0);
         let mut state = self.lock();
-        state.links.insert(
-            cluster_id.to_owned(),
-            LinkShare {
-                serial,
-                cap: cap.map(LinkJobCap::jobs),
-                share,
-            },
-        );
+        // A cap saved since the caller read the link is the newer one.
+        let cap = state
+            .pending_caps
+            .remove(cluster_id)
+            .unwrap_or_else(|| cap.map(LinkJobCap::jobs));
+        state
+            .links
+            .insert(cluster_id.to_owned(), LinkShare { serial, cap, share });
         state.publish();
         receiver
     }
@@ -237,12 +242,18 @@ impl CapacityShares {
         }
     }
 
-    /// Sets the cap of the running link to `cluster_id`, when it runs.
+    /// Sets the cap of the link to `cluster_id`: at once when it runs, else
+    /// when its client next registers.
     pub fn set_cap(&self, cluster_id: &str, cap: Option<LinkJobCap>) {
+        let cap = cap.map(LinkJobCap::jobs);
         let mut state = self.lock();
         if let Some(link) = state.links.get_mut(cluster_id) {
-            link.cap = cap.map(LinkJobCap::jobs);
+            link.cap = cap;
             state.publish();
+        } else {
+            // A client may be starting with the cap it read before this
+            // write; it takes this one when it registers.
+            state.pending_caps.insert(cluster_id.to_owned(), cap);
         }
     }
 
@@ -300,8 +311,8 @@ fn scaled(value: i64, share: usize, machine: usize) -> i64 {
 }
 
 /// A link's heartbeat source: this node's measurements, with CPU and memory
-/// scaled to the link's share of the machine, so the library sees only the
-/// part it may use. Free disk is the machine's (the libraries share the
+/// cut to the link's share of the machine ([`scale_heartbeat`]), so the
+/// library sees only the part it may use. Free disk is the machine's (the libraries share the
 /// files directory's filesystem, not slices of it).
 pub struct ShareSampler {
     /// The node's own measurements.
@@ -328,20 +339,34 @@ impl ShareSampler {
     }
 }
 
-/// `sample` scaled to `share` of `machine` slots (see [`ShareSampler`]).
+/// `sample` as the library with `share` of `machine` slots sees it: its
+/// share of the CPU and memory, and of those only what the machine has
+/// free now (a library is never told about headroom the rest of the
+/// machine's work already took).
 #[must_use]
 pub fn scale_heartbeat(sample: NodeHeartbeat, share: usize, machine: usize) -> NodeHeartbeat {
+    let cpu = scaled(sample.cpu_millicores, share, machine);
+    let memory = sample
+        .memory_bytes
+        .map(|value| scaled(value, share, machine));
+    // Free CPU on the machine, capped at the share; the rest of the share
+    // reads as used.
+    let cpu_used = sample.cpu_used_millicores.map(|used| {
+        let free = sample.cpu_millicores.saturating_sub(used).max(0);
+        cpu.saturating_sub(free.min(cpu))
+    });
+    let memory_available = sample.memory_available_bytes.map(|available| {
+        let available = available.max(0);
+        match memory {
+            Some(memory) => available.min(memory),
+            None => scaled(available, share, machine),
+        }
+    });
     NodeHeartbeat {
-        cpu_millicores: scaled(sample.cpu_millicores, share, machine),
-        memory_bytes: sample
-            .memory_bytes
-            .map(|value| scaled(value, share, machine)),
-        cpu_used_millicores: sample
-            .cpu_used_millicores
-            .map(|value| scaled(value, share, machine)),
-        memory_available_bytes: sample
-            .memory_available_bytes
-            .map(|value| scaled(value, share, machine)),
+        cpu_millicores: cpu,
+        memory_bytes: memory,
+        cpu_used_millicores: cpu_used,
+        memory_available_bytes: memory_available,
         ..sample
     }
 }
@@ -358,6 +383,11 @@ impl HeartbeatSource for ShareSampler {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn the_highest_cap_is_the_most_a_link_can_hold() {
+        assert_eq!(usize::from(LinkJobCap::MAX), MAX_MACHINE_SLOTS);
+    }
 
     #[test]
     fn links_get_equal_shares_after_own_work() {
@@ -480,8 +510,12 @@ mod tests {
         assert_eq!((*a.borrow(), *b.borrow()), (1, 3));
         assert_eq!(table.share_of("a"), Some(1));
         assert_eq!(table.share_of("nope"), None);
-        // A cap for a link that is not running is ignored.
-        table.set_cap("nope", None);
+        // A cap saved while a link is not registered yet is taken when it
+        // registers, over the one its client read before.
+        table.set_cap("c", Some(LinkJobCap::new(0).unwrap()));
+        let c = table.register("c", 9, None);
+        assert_eq!(*c.borrow(), 0);
+        table.unregister("c", 9);
         // A stale run's removal leaves the current entry.
         let b2 = table.register("b", 3, None);
         table.unregister("b", 2);
@@ -489,6 +523,7 @@ mod tests {
         table.unregister("b", 3);
         assert_eq!(*a.borrow(), 1);
         table.set_cap("a", None);
+        // Its slots went back once it left.
         assert_eq!(*a.borrow(), 4);
         table.set_machine(0);
         assert_eq!(*a.borrow(), 0);
@@ -507,15 +542,37 @@ mod tests {
             files_dir_free_bytes: Some(5),
             cache: None,
         };
+        // Half the machine; the machine is mostly idle, so the library's
+        // half is all free.
         let half = scale_heartbeat(sample.clone(), 2, 4);
         assert_eq!(half.cpu_millicores, 4_000);
         assert_eq!(half.memory_bytes, Some(8_000));
-        assert_eq!(half.cpu_used_millicores, Some(500));
-        assert_eq!(half.memory_available_bytes, Some(6_000));
+        assert_eq!(half.cpu_used_millicores, Some(0));
+        assert_eq!(half.memory_available_bytes, Some(8_000));
         assert_eq!(half.files_dir_free_bytes, Some(5));
+        // A busy machine leaves less than the share free.
+        let busy = NodeHeartbeat {
+            cpu_used_millicores: Some(6_000),
+            memory_available_bytes: Some(3_000),
+            ..sample.clone()
+        };
+        let quarter = scale_heartbeat(busy, 1, 4);
+        assert_eq!(quarter.cpu_millicores, 2_000);
+        assert_eq!(quarter.cpu_used_millicores, Some(0));
+        assert_eq!(quarter.memory_available_bytes, Some(3_000));
+        let busier = NodeHeartbeat {
+            cpu_used_millicores: Some(7_500),
+            memory_available_bytes: Some(1_000),
+            ..sample.clone()
+        };
+        let quarter = scale_heartbeat(busier, 1, 4);
+        assert_eq!(quarter.cpu_used_millicores, Some(1_500));
+        assert_eq!(quarter.memory_available_bytes, Some(1_000));
         let none = scale_heartbeat(sample.clone(), 0, 4);
         assert_eq!(none.cpu_millicores, 0);
         assert_eq!(none.memory_bytes, Some(0));
+        assert_eq!(none.cpu_used_millicores, Some(0));
+        assert_eq!(none.memory_available_bytes, Some(0));
         assert_eq!(scale_heartbeat(sample.clone(), 3, 0).cpu_millicores, 0);
         assert_eq!(scale_heartbeat(sample, 9, 4).cpu_millicores, 8_000);
     }

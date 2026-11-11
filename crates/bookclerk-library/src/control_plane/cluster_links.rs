@@ -157,8 +157,9 @@ pub struct ClusterLink {
 pub struct LinkJobCap(u8);
 
 impl LinkJobCap {
-    /// The highest cap an operator may set.
-    pub const MAX: u8 = 64;
+    /// The highest cap an operator may set: the most job slots a branch
+    /// ever counts its machine as having.
+    pub const MAX: u8 = 16;
 
     /// A cap of `jobs`.
     ///

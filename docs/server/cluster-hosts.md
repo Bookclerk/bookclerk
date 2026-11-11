@@ -479,8 +479,9 @@ Each library sees only its share:
   that shrinks cancels nothing: jobs already running finish, and claims
   wait until enough of them have.
 - The branch's heartbeat to that library reports its share of the
-  machine's CPU and memory (measured use too), so the library's scheduler
-  never counts on the whole machine. Free disk is reported whole.
+  machine's CPU and memory, and of that share only what the machine has
+  free now, so the library's scheduler never counts on the whole machine
+  or on headroom other work already took. Free disk is reported whole.
 
 For example, a branch of two libraries with four slots runs up to two
 jobs for each. While it runs one job of its own, the first library (by
@@ -490,7 +491,7 @@ cluster id) keeps two slots and the second gets one.
 library: **Equal share** (the default), **None** (no work for that
 library), or **Up to N jobs**. B's operator or an Owner of B may change
 it. The route is `POST /api/config/join/capacity`
-`{cluster_id, max_jobs}` (`null` for an equal share, 0 to 64), and the
+`{cluster_id, max_jobs}` (required; `null` for an equal share, 0 to 16), and the
 listing routes report each running library's `job_share` now.
 
 ## Asking the owner for a scan

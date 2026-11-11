@@ -66,7 +66,7 @@ use serde::Deserialize;
 use serde_json::json;
 use zeroize::Zeroizing;
 
-use super::api::link_json;
+use super::api::{link_json, shared_link_json};
 use crate::api::AppState;
 use crate::auth::UserCaller;
 use crate::node_api::branch::no_store;
@@ -1239,16 +1239,6 @@ pub async fn post_join_leave(
     }
 }
 
-/// [`link_json`] with the link's current share of this machine.
-fn shared_link_json(
-    state: &AppState,
-    link: &bookclerk_library::control_plane::ClusterLink,
-) -> super::api::ClusterLinkView {
-    let mut view = link_json(link);
-    view.job_share = state.capacity.share_of(&link.owner_cluster_id);
-    view
-}
-
 /// `POST /api/config/join/capacity` body.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -1257,9 +1247,39 @@ pub struct CapacityBody {
     #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
     cluster_id: String,
     /// The most jobs to run for the library at once (0 runs none); `null`
-    /// gives it an equal share of the machine.
-    #[schema(example = 1, minimum = 0, maximum = 64)]
-    max_jobs: Option<u32>,
+    /// gives it an equal share of the machine. Required: a body without it
+    /// is refused rather than read as `null`.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<u32>, required = true, example = 1, minimum = 0, maximum = 16)]
+    max_jobs: Option<Option<u32>>,
+}
+
+/// Reads a field that is present, `null` included, as `Some`; an absent
+/// field stays `None` (its `#[serde(default)]`).
+///
+/// # Errors
+///
+/// Returns the deserializer's error for a value that is not a number or
+/// `null`.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// The audit identity of a caller [`require_branch_admin`] let through.
+fn branch_actor(actor: &bookclerk_library::control_plane::ConfigActor) -> String {
+    use bookclerk_library::control_plane::ConfigActor;
+    match actor {
+        ConfigActor::ClusterOwner(owner) => format!("user:{}", owner.user_id()),
+        ConfigActor::NodeOwner(owner) => format!("user:{}", owner.user_id()),
+        ConfigActor::Administrator { id } | ConfigActor::Member { id } => format!("user:{id}"),
+        ConfigActor::Operator { .. } => "operator".to_string(),
+        ConfigActor::Bootstrap => "bootstrap".to_string(),
+        ConfigActor::Scheduler => "scheduler".to_string(),
+    }
 }
 
 /// `POST /api/config/join/capacity`: Settings → Library's job cap for one
@@ -1274,7 +1294,7 @@ pub struct CapacityBody {
     request_body = CapacityBody,
     responses(
         (status = 200, description = "The link after the change, with its share of the machine now.", body = SharingChanged),
-        (status = 400, description = "The cap is above 64 jobs (`invalid`).", body = crate::http_error::ErrorDetail, example = json!({"error": "invalid", "detail": "a library's job cap is 0 to 64 jobs"})),
+        (status = 400, description = "`max_jobs` is missing or above 16 jobs (`invalid`).", body = crate::http_error::ErrorDetail, example = json!({"error": "invalid", "detail": "a library's job cap is 0 to 16 jobs"})),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
             ("forbidden" = (summary = "The user is not an active Owner.", value = json!({"error": "forbidden"}))),
@@ -1294,14 +1314,15 @@ pub async fn post_join_capacity(
         Ok(actor) => actor,
         Err(refused) => return refused,
     };
-    let actor = match &actor {
-        bookclerk_library::control_plane::ConfigActor::ClusterOwner(owner) => {
-            format!("user:{}", owner.user_id())
-        }
-        _ => "operator".to_string(),
+    let actor = branch_actor(&actor);
+    let Some(max_jobs) = body.max_jobs else {
+        return join_error(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "max_jobs is required (null for an equal share)",
+        );
     };
-    let cap = match body
-        .max_jobs
+    let cap = match max_jobs
         .map(bookclerk_library::control_plane::LinkJobCap::new)
         .transpose()
     {
@@ -1323,8 +1344,8 @@ pub async fn post_join_capacity(
         Err(err) => return crate::config_authority::events_error(err),
     }
     state.capacity.set_cap(cluster_id, cap);
-    tracing::info!(%cluster_id, %actor, max_jobs = ?body.max_jobs, "branch job cap changed");
-    let detail = json!({ "cluster_id": cluster_id, "max_jobs": body.max_jobs }).to_string();
+    tracing::info!(%cluster_id, %actor, max_jobs = ?max_jobs, "branch job cap changed");
+    let detail = json!({ "cluster_id": cluster_id, "max_jobs": max_jobs }).to_string();
     if let Err(err) = store
         .insert_security_audit_event(&actor, "branch_job_cap_changed", Some(&detail))
         .await

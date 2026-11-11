@@ -95,6 +95,13 @@ pub(crate) fn link_json(link: &ClusterLink) -> ClusterLinkView {
     }
 }
 
+/// [`link_json`] with the link's current share of this machine.
+pub(crate) fn shared_link_json(state: &AppState, link: &ClusterLink) -> ClusterLinkView {
+    let mut view = link_json(link);
+    view.job_share = state.capacity.share_of(&link.owner_cluster_id);
+    view
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 /// A library this install is a branch of: ids, origin and state, never key material.
 pub struct ClusterLinkView {
@@ -123,7 +130,7 @@ pub struct ClusterLinkView {
     #[schema(example = true)]
     pub include_branches: bool,
     /// The most jobs this install runs for the library at once, as its operator set it; `null` gives the library an equal share of the machine.
-    #[schema(example = 2, minimum = 0, maximum = 64)]
+    #[schema(example = 2, minimum = 0, maximum = 16)]
     pub max_jobs: Option<usize>,
     /// How many jobs the library may have running here now: its share of the machine after this install's own work, within `max_jobs`. Only the listing and sharing routes report it, and only while the link's client runs.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -294,11 +301,7 @@ pub async fn get_cluster_consents(
     Ok(Json(ClusterConsentsResponse {
         clusters: links
             .iter()
-            .map(|link| {
-                let mut view = link_json(link);
-                view.job_share = state.capacity.share_of(&link.owner_cluster_id);
-                view
-            })
+            .map(|link| shared_link_json(&state, link))
             .collect(),
         consents: rows.iter().map(consent_json).collect(),
     }))
