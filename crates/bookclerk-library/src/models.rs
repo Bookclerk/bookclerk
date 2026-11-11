@@ -2142,6 +2142,16 @@ pub fn queue_name_or_bus(name: &str) -> &str {
 /// Live catalog rows quieter than this many seconds are ignored at dispatch.
 pub const EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS: i64 = 60;
 
+/// Prefix of subscriber ids the daemon itself consumes under (`host:discover`,
+/// `host:search-index:<node>`). Their deliveries never expire.
+pub const HOST_CONSUMER_PREFIX: &str = "host:";
+
+/// How long a delivery may wait, due but never leased, before the host
+/// expires it when its consumer declares no `message_retention_period`: one
+/// day. A consumer that is deployed but not running stops accumulating work
+/// after this, and catches up through the event stream instead.
+pub const EVENT_DELIVERY_DEFAULT_RETENTION_SECS: u32 = 86_400;
+
 /// Serde default for [`EventSubscriber::resource_class`].
 fn default_event_resource_class() -> String {
     EVENT_RESOURCE_CLASS_NETWORK.into()
@@ -2220,6 +2230,11 @@ pub struct EventCatalogSubscription {
     /// Seconds a retried message waits before redelivery.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub retry_delay_secs: u32,
+    /// Seconds a delivery may wait, due but never leased, before the host
+    /// expires it (the consumer's `message_retention_period`). `None` uses
+    /// [`EVENT_DELIVERY_DEFAULT_RETENTION_SECS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_retention_secs: Option<u32>,
 }
 
 /// Serde skip predicate for zero delays.
@@ -2246,6 +2261,7 @@ impl EventCatalogSubscription {
             max_retries: None,
             dead_letter_queue: None,
             retry_delay_secs: 0,
+            message_retention_secs: None,
         }
     }
 
@@ -2262,6 +2278,7 @@ impl EventCatalogSubscription {
             max_retries: None,
             dead_letter_queue: None,
             retry_delay_secs: 0,
+            message_retention_secs: None,
         }
     }
 

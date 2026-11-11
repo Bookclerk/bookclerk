@@ -3084,7 +3084,7 @@ async fn claim_delivery_for(
     plugin_ids: &[String],
 ) -> crate::EventDeliveryRecord {
     store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             owner,
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -3343,7 +3343,7 @@ async fn claim_delivery_for_opt(
     plugin_ids: &[String],
 ) -> Option<crate::EventDeliveryRecord> {
     store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             owner,
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -3474,7 +3474,7 @@ async fn concurrent_host_cas_claims_do_not_skip_keyset_pages() {
             barrier.wait().await;
             let mut n = 0u32;
             while store
-                .claim_next_event_delivery(
+                .lease_next_event_delivery(
                     &format!("keyset-w{i}"),
                     60,
                     &uuid::Uuid::new_v4().to_string(),
@@ -4082,7 +4082,7 @@ async fn fifo_skips_later_delivery_with_same_ordering_key() {
     let first = claim_delivery(&store, "w1").await;
     assert_eq!(first.event_id, id_a);
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "w2",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -4248,7 +4248,7 @@ async fn retry_at_max_attempts_dead_letters() {
         row.error_message
     );
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "retry-w",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -4485,7 +4485,7 @@ async fn postgres_event_retention_cutoff_and_in_flight_cap() {
         .await
         .unwrap();
     let first = store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "pg-cap",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -4497,7 +4497,7 @@ async fn postgres_event_retention_cutoff_and_in_flight_cap() {
         .unwrap()
         .expect("first");
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "pg-cap-2",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -4688,7 +4688,7 @@ async fn postgres_concurrent_event_claims_respect_in_flight_cap() {
         handles.push(tokio::spawn(async move {
             barrier.wait().await;
             store
-                .claim_next_event_delivery(
+                .lease_next_event_delivery(
                     &format!("pg-race-{i}"),
                     60,
                     &uuid::Uuid::new_v4().to_string(),
@@ -4786,7 +4786,7 @@ async fn fifo_uses_persisted_ordering_key_without_title_id() {
     assert_eq!(first.event_id, id_a);
     assert_eq!(first.ordering_key, "shared-key");
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "w2",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -4824,7 +4824,7 @@ async fn claim_filters_to_loaded_plugin_ids() {
         .await
         .unwrap();
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "w-empty",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -4838,7 +4838,7 @@ async fn claim_filters_to_loaded_plugin_ids() {
     let echo = claim_delivery_for(&store, "w-echo", &["echo".into()]).await;
     assert_eq!(echo.plugin_id, "echo");
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "w-echo-again",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -4906,7 +4906,7 @@ async fn catalog_dispatch_creates_rows_claim_filters_loaded_plugins() {
     let echo = claim_delivery_for(&store, "node-a", &["echo".into()]).await;
     assert_eq!(echo.plugin_id, "echo");
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "node-a-again",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -5410,7 +5410,7 @@ async fn wake_on_matching_event_makes_delivery_claimable() {
     assert!(parked.run_after > chrono::Utc::now() + chrono::Duration::days(1));
     assert_eq!(parked.wake_event_type, "book_acquired");
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "wake-early",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -5711,7 +5711,7 @@ async fn per_plugin_in_flight_cap_blocks_second_claim() {
             .unwrap();
     }
     let first = store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "cap-w1",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -5723,7 +5723,7 @@ async fn per_plugin_in_flight_cap_blocks_second_claim() {
         .unwrap()
         .expect("first claim");
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "cap-w2",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -5736,7 +5736,7 @@ async fn per_plugin_in_flight_cap_blocks_second_claim() {
         .is_none());
     assert!(store.ack_event_delivery(&first.fence()).await.unwrap());
     let second = store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "cap-w2",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -6293,7 +6293,7 @@ async fn claim_requires_this_nodes_schema_version() {
         .unwrap();
     let delivery_id = format!("{id}:echo");
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "w-v1",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -6313,7 +6313,7 @@ async fn claim_requires_this_nodes_schema_version() {
     assert_eq!(pending.attempt_count, 0);
 
     let claimed = store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "w-v2",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -6349,7 +6349,7 @@ async fn incompatible_d1_style_claim_is_released_without_attempt_burn() {
         .await
         .unwrap();
     let claimed = store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "d1-worker",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -6410,7 +6410,7 @@ async fn atomic_claim_skips_incompatible_oldest_and_claims_later_compatible() {
     let db = store.db().clone();
     let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db)));
     let claimed = store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "atomic-skip-worker",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -7118,7 +7118,7 @@ async fn a_claim_with_a_past_cutoff_leaves_freshly_due_deliveries_to_better_node
     // A host ranked second waits ten seconds behind the best one: a delivery
     // due just now is not yet its to take.
     let behind = store
-        .claim_next_event_delivery_due_by(
+        .lease_next_event_delivery_due_by(
             "second",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -7440,7 +7440,7 @@ mod every_profile {
                 .await
                 .unwrap();
             let delivery = store
-                .claim_next_event_delivery("worker", 60, "claim", &["echo".into()], 4, "")
+                .lease_next_event_delivery("worker", 60, "claim", &["echo".into()], 4, "")
                 .await
                 .unwrap();
             assert_eq!(delivery.map(|d| d.event_id), Some(id), "{profile:?}");
@@ -7804,4 +7804,309 @@ fn a_scan_merge_sets_only_the_columns_a_scan_owns() {
     assert!(matches!(am.tags, ActiveValue::Unchanged(_)));
     assert!(matches!(am.description, ActiveValue::Unchanged(_)));
     assert!(matches!(am.id, ActiveValue::Unchanged(7)));
+}
+
+/// A pending delivery that is never leased expires once it has waited past
+/// its subscriber's retention period: the declared one, else the default,
+/// capped at the events retention window. Leased deliveries and host or node
+/// consumers never expire, and expired rows are pruned with acked ones.
+#[tokio::test]
+async fn unleased_deliveries_expire_after_their_retention_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let mut short = EventCatalogSubscription::new("book_acquired", vec![1]);
+        short.message_retention_secs = Some(600);
+        store
+            .upsert_event_subscriber("node-a", "short", &[short], true)
+            .await
+            .unwrap();
+        let mut long = EventCatalogSubscription::new("book_acquired", vec![1]);
+        long.message_retention_secs = Some(3 * 86_400);
+        store
+            .upsert_event_subscriber("node-a", "long", &[long], true)
+            .await
+            .unwrap();
+        store
+            .upsert_event_subscriber(
+                "node-a",
+                "echo",
+                &[EventCatalogSubscription::new("book_acquired", vec![1])],
+                true,
+            )
+            .await
+            .unwrap();
+        let event_id = expect_created(
+            persist_outbox_event(
+                store,
+                outbox_spec("book_acquired", "book_acquired:ttl", r#"{"titleId":"ttl"}"#),
+            )
+            .await
+            .unwrap(),
+        );
+        let subscribers: Vec<EventSubscriber> = [
+            "short",
+            "long",
+            "echo",
+            "gone",
+            "busy",
+            "host:discover",
+            "node:abc",
+        ]
+        .into_iter()
+        .map(EventSubscriber::plugin)
+        .collect();
+        store
+            .dispatch_event_deliveries(&event_id, &subscribers, "op-ttl")
+            .await
+            .unwrap();
+        let leased = claim_delivery_for(store, "owner-ttl", &["busy".into()]).await;
+        assert_eq!(leased.plugin_id, "busy", "{name}");
+        let state = |plugin: &'static str| {
+            let store = store.clone();
+            let id = format!("{event_id}:{plugin}");
+            async move {
+                store
+                    .get_event_delivery(&id)
+                    .await
+                    .unwrap()
+                    .map(|row| row.state)
+            }
+        };
+        let now = chrono::Utc::now();
+
+        let expired = store
+            .expire_unleased_event_deliveries(7, now + chrono::Duration::minutes(15))
+            .await
+            .unwrap();
+        assert_eq!(expired, 1, "{name}");
+        assert_eq!(state("short").await.as_deref(), Some("expired"), "{name}");
+        assert_eq!(state("echo").await.as_deref(), Some("pending"), "{name}");
+        assert_eq!(
+            store
+                .prune_event_step(crate::EventPruneStep::TerminalDeliveries, 0, 30)
+                .await
+                .unwrap(),
+            1,
+            "an expired row is pruned with acked ones ({name})"
+        );
+        assert_eq!(state("short").await, None, "{name}");
+
+        let expired = store
+            .expire_unleased_event_deliveries(7, now + chrono::Duration::days(2))
+            .await
+            .unwrap();
+        assert_eq!(expired, 1, "{name}");
+        assert_eq!(state("echo").await.as_deref(), Some("expired"), "{name}");
+        assert_eq!(state("long").await.as_deref(), Some("pending"), "{name}");
+        assert_eq!(
+            state("gone").await.as_deref(),
+            Some("pending"),
+            "a subscriber with no live row waits the events window ({name})"
+        );
+        assert_eq!(state("busy").await.as_deref(), Some("running"), "{name}");
+        assert_eq!(
+            state("host:discover").await.as_deref(),
+            Some("pending"),
+            "{name}"
+        );
+        assert_eq!(
+            state("node:abc").await.as_deref(),
+            Some("pending"),
+            "{name}"
+        );
+
+        let expired = store
+            .expire_unleased_event_deliveries(1, now + chrono::Duration::days(2))
+            .await
+            .unwrap();
+        assert_eq!(
+            expired, 2,
+            "the events window caps a longer retention ({name})"
+        );
+        assert_eq!(state("long").await.as_deref(), Some("expired"), "{name}");
+        assert_eq!(state("gone").await.as_deref(), Some("expired"), "{name}");
+        let row = store
+            .get_event_delivery(&format!("{event_id}:echo"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.outcome.as_deref(), Some("expired"), "{name}");
+    }
+}
+
+/// Retention comes from the subscription that matches the event in full: a
+/// second subscription to the same type with another filter keeps its own
+/// period.
+#[tokio::test]
+async fn expiry_uses_the_subscription_that_matches_the_event() {
+    let store = test_store().await;
+    let mut quick = EventCatalogSubscription::new("book_acquired", vec![1]);
+    quick.filter = Some(serde_json::json!({"titleId": "quick"}));
+    quick.message_retention_secs = Some(60);
+    let mut slow = EventCatalogSubscription::new("book_acquired", vec![1]);
+    slow.filter = Some(serde_json::json!({"titleId": "slow"}));
+    slow.message_retention_secs = Some(14 * 86_400);
+    store
+        .upsert_event_subscriber("node-a", "split", &[quick, slow], true)
+        .await
+        .unwrap();
+    let mut ids = Vec::new();
+    for title in ["quick", "slow"] {
+        let id = expect_created(
+            persist_outbox_event(
+                &store,
+                outbox_spec(
+                    "book_acquired",
+                    &format!("book_acquired:{title}"),
+                    &format!(r#"{{"titleId":"{title}"}}"#),
+                ),
+            )
+            .await
+            .unwrap(),
+        );
+        store
+            .dispatch_event_deliveries(
+                &id,
+                &[EventSubscriber::plugin("split")],
+                &format!("op-{title}"),
+            )
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+    let expired = store
+        .expire_unleased_event_deliveries(30, chrono::Utc::now() + chrono::Duration::days(2))
+        .await
+        .unwrap();
+    assert_eq!(expired, 1);
+    let state = |id: &str| {
+        let store = store.clone();
+        let id = format!("{id}:split");
+        async move { store.get_event_delivery(&id).await.unwrap().unwrap().state }
+    };
+    assert_eq!(state(&ids[0]).await, "expired");
+    assert_eq!(state(&ids[1]).await, "pending");
+}
+
+/// A bounded expiry scan resumes where the last one stopped, so deliveries
+/// that cannot expire yet do not starve a later one, and host or node
+/// consumers do not use the scan budget at all.
+#[tokio::test]
+async fn bounded_expiry_scans_resume_and_skip_exempt_consumers() {
+    let store = test_store().await;
+    let mut long = EventCatalogSubscription::new("book_acquired", vec![1]);
+    long.message_retention_secs = Some(14 * 86_400);
+    store
+        .upsert_event_subscriber("node-a", "long", &[long], true)
+        .await
+        .unwrap();
+    store
+        .upsert_event_subscriber(
+            "node-a",
+            "echo",
+            &[EventCatalogSubscription::new("book_acquired", vec![1])],
+            true,
+        )
+        .await
+        .unwrap();
+    let mut ids = Vec::new();
+    for (title, subscribers) in [
+        ("first", vec!["node:abc", "host:discover"]),
+        ("second", vec!["long"]),
+        ("third", vec!["echo"]),
+    ] {
+        let id = expect_created(
+            persist_outbox_event(
+                &store,
+                outbox_spec(
+                    "book_acquired",
+                    &format!("book_acquired:{title}"),
+                    &format!(r#"{{"titleId":"{title}"}}"#),
+                ),
+            )
+            .await
+            .unwrap(),
+        );
+        let subs: Vec<EventSubscriber> = subscribers
+            .into_iter()
+            .map(EventSubscriber::plugin)
+            .collect();
+        store
+            .dispatch_event_deliveries(&id, &subs, &format!("op-scan-{title}"))
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+    let later = chrono::Utc::now() + chrono::Duration::days(2);
+    assert_eq!(
+        store
+            .expire_unleased_event_deliveries_bounded(30, later, 1)
+            .await
+            .unwrap(),
+        0,
+        "the first candidate is the long-retention delivery, not a host one"
+    );
+    assert_eq!(
+        store
+            .expire_unleased_event_deliveries_bounded(30, later, 1)
+            .await
+            .unwrap(),
+        1,
+        "the second scan resumes after it"
+    );
+    let echo = store
+        .get_event_delivery(&format!("{}:echo", ids[2]))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(echo.state, "expired");
+    assert_eq!(
+        store
+            .expire_unleased_event_deliveries_bounded(30, later, 1)
+            .await
+            .unwrap(),
+        0,
+        "the scan wrapped around and finds nothing new"
+    );
+}
+
+/// An expiry page never reads more rows than the adapter returns in one
+/// result, binds in one statement, or the scan budget allows.
+#[test]
+fn expire_pages_fit_the_adapter_limits() {
+    use super::event_outbox::expire_page_size;
+    assert_eq!(expire_page_size(100, 256, 10_000), 64);
+    assert_eq!(expire_page_size(32, 1, 10_000), 1, "minimum adapter");
+    assert_eq!(expire_page_size(32, 256, 10_000), 16);
+    assert_eq!(expire_page_size(100, 256, 3), 3);
+    assert_eq!(expire_page_size(8, 0, 0), 1);
+}
+
+/// The live catalog reads in pages of the adapter's result limit, so every
+/// row comes back on an adapter that returns one row per result.
+#[tokio::test]
+async fn live_catalog_reads_every_row_one_result_at_a_time() {
+    let store = test_store().await.with_plan_limits(64, 1, 256 * 1024);
+    for (node, plugin) in [("n1", "alpha"), ("n2", "alpha"), ("n1", "beta")] {
+        store
+            .upsert_event_subscriber(
+                node,
+                plugin,
+                &[EventCatalogSubscription::new("book_acquired", vec![1])],
+                true,
+            )
+            .await
+            .unwrap();
+    }
+    let rows = store
+        .list_live_event_subscriber_nodes(crate::EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS)
+        .await
+        .unwrap();
+    let keys: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|row| (row.plugin_id.as_str(), row.node_id.as_str()))
+        .collect();
+    assert_eq!(keys, [("alpha", "n1"), ("alpha", "n2"), ("beta", "n1")]);
 }

@@ -293,6 +293,7 @@ impl Integration for AbsIntegration {
             supports_suspend: false,
             resource_class: "network".into(),
             filter: None,
+            message_retention_secs: None,
         }]
     }
 

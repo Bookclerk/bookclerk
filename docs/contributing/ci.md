@@ -80,6 +80,38 @@ request, so reviewers and Codecov see their results before it is queued.
 `CI Gate` in the merge group requires every platform, so a Windows or macOS
 failure ejects the pull request from the queue and keeps it out of `main`.
 
+### Pull request slots
+
+GitHub gives a `merge_group` run no priority over pull request runs. Every
+job waits in one queue for the organization's runners, so a burst of ready
+pull requests can hold most of them and leave the merge queue waiting long
+enough to hit its status check timeout. To leave room for the queue, pull
+request jobs take turns in a fixed set of **slots**:
+
+- Each heavy job has a job-level `concurrency` group of the form
+  `ci-pr-slot-<job>` on a `pull_request` event: `check`, `test`, `e2e`,
+  `release`, `confinement`, `native-gateway`, `tray`, `postgres` (all
+  three versions share one slot) and `site`. CodeQL's `analyze` job has two
+  slots (`codeql-pr-slot-rust` and `codeql-pr-slot-other`), and
+  ClusterFuzzLite's pull request job has one (`cflite-pr-slot`).
+- One job runs per slot at a time, so pull requests hold at most 12
+  runners. `scripts/tests/test_ci_contract.py` fails if a new job runs on
+  pull requests without a slot, or if the slots grow past that budget.
+- The groups set `queue: max`, so up to 100 jobs wait in each slot, in the
+  order they started waiting. The default would keep only one waiting job
+  and cancel the others. A job pushed out of a full slot is cancelled,
+  which fails `CI Gate` visibly rather than skipping a check.
+- A waiting job holds no runner. When a newer push supersedes a run, the
+  workflow-level group cancels the old run, and its waiting jobs leave
+  their slots with it.
+- Any other event (`merge_group`, a `main` push, a schedule) gets a group
+  of its own from the run id and matrix leg, so it never waits.
+
+Nothing is skipped: a pull request still runs every job it ran before,
+only later when its slots are busy. A pull request on its own loses little,
+because most of its jobs have a slot each. The `postgres` versions and the
+CodeQL languages other than Rust run one after another.
+
 ### Build-only `main` pushes
 
 `main` only advances through the merge queue, and the queue's run already
@@ -924,7 +956,10 @@ with the automation App and turns on auto-merge, so the merge queue lands
 it once its checks pass. Turning on auto-merge gets four attempts, because
 GitHub's API sometimes fails a single call. If all four fail, the run fails,
 and the next merge to `main` tries again. While that pull request is open,
-later rises update it rather than opening another. Floors move in whole points, so most
+later rises update it rather than opening another. Once it is in the merge
+queue, GitHub refuses updates to its branch, so a later rise leaves it alone
+and says so in the run's summary; a later merge raises the floors further
+only if its own coverage allows. Floors move in whole points, so most
 merges change nothing and the run ends after a few seconds. To run it by
 hand, use **Run workflow** on the Actions tab; it then reads the latest
 successful merge group run, whose coverage artifacts are kept for seven

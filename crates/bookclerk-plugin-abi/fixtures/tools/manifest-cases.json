@@ -158,6 +158,36 @@
       "error": "plugin.toml: queues.consumers[0].retry_delay must be at most 43200 seconds"
     },
     {
+      "name": "consumer retention 60",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmessage_retention_period = 60\n",
+      "error": null
+    },
+    {
+      "name": "consumer retention 59",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmessage_retention_period = 59\n",
+      "error": "plugin.toml: queues.consumers[0].message_retention_period must be 60..=1209600 seconds"
+    },
+    {
+      "name": "consumer retention 1209600",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmessage_retention_period = 1209600\n",
+      "error": null
+    },
+    {
+      "name": "consumer retention 1209601",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmessage_retention_period = 1209601\n",
+      "error": "plugin.toml: queues.consumers[0].message_retention_period must be 60..=1209600 seconds"
+    },
+    {
+      "name": "event consumer retention 3600",
+      "tables": "[[events.consumers]]\ntype = \"book_acquired\"\nmessage_retention_period = 3600\n",
+      "error": null
+    },
+    {
+      "name": "event consumer retention 59",
+      "tables": "[[events.consumers]]\ntype = \"book_acquired\"\nmessage_retention_period = 59\n",
+      "error": "plugin.toml: events.consumers[0].message_retention_period must be 60..=1209600 seconds"
+    },
+    {
       "name": "consumer concurrency 0",
       "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmax_concurrency = 0\n",
       "error": "plugin.toml: queues.consumers[0].max_concurrency must be at least 1"

@@ -509,7 +509,7 @@ mod tests {
                 continue;
             }
             let delivery = library
-                .claim_next_event_delivery(
+                .lease_next_event_delivery(
                     "test-owner",
                     60,
                     &uuid::Uuid::new_v4().to_string(),
@@ -596,7 +596,7 @@ mod tests {
             .await
             .expect("dispatch");
         let delivery = library
-            .claim_next_event_delivery("o", 60, "op2", std::slice::from_ref(&consumer), 4, node)
+            .lease_next_event_delivery("o", 60, "op2", std::slice::from_ref(&consumer), 4, node)
             .await
             .expect("claim")
             .expect("delivery");
@@ -670,7 +670,7 @@ mod tests {
             .await
             .expect("dispatch");
         library
-            .claim_next_event_delivery("o", 60, "op4", &[consumer.to_string()], 4, node)
+            .lease_next_event_delivery("o", 60, "op4", &[consumer.to_string()], 4, node)
             .await
             .expect("claim")
             .expect("delivery")

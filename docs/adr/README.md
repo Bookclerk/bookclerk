@@ -33,6 +33,9 @@ a later change supersedes one, its **Status** says so.
   checked against examples in tests and against real responses in CI.
 - [Project licensing](licensing.md): AGPL for the project, MIT OR
   Apache-2.0 for the plugin SDKs, a CLA and a trademark policy.
+- [Event delivery model](event-delivery-model.md): events fan out to
+  every subscriber, jobs have one handler, and subscriptions follow
+  deployments.
 
 ## Adding a record
 

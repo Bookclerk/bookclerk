@@ -247,6 +247,35 @@ def _validate_int(field: str, value: Any, low: int, high: int, message: str) -> 
         raise ValueError(f"plugin.toml: {field} {message}")
 
 
+MIN_MESSAGE_RETENTION_SECS = 60
+"""Shortest ``message_retention_period`` in seconds, as in Cloudflare Queues."""
+
+MAX_MESSAGE_RETENTION_SECS = 1_209_600
+"""Longest ``message_retention_period`` in seconds (14 days), as in Cloudflare Queues."""
+
+
+def _validate_message_retention(field: str, consumer: dict[str, Any]) -> None:
+    """Check a consumer's optional ``message_retention_period``.
+
+    Args:
+        field: The consumer row, such as ``events.consumers[0]``, for the error.
+        consumer: The consumer table; a missing retention passes.
+
+    Raises:
+        ValueError: When the retention is not an integer inside the allowed range.
+    """
+    value = consumer.get("message_retention_period")
+    if value is None:
+        return
+    _validate_int(
+        f"{field}.message_retention_period",
+        value,
+        MIN_MESSAGE_RETENTION_SECS,
+        MAX_MESSAGE_RETENTION_SECS,
+        f"must be {MIN_MESSAGE_RETENTION_SECS}..={MAX_MESSAGE_RETENTION_SECS} seconds",
+    )
+
+
 HOST_EVENT_TYPES = frozenset(
     {
         "book_acquired",
@@ -343,6 +372,7 @@ def _validate_queues(m: dict[str, Any]) -> None:
                 2**31,
                 "must be at least 1",
             )
+        _validate_message_retention(field, consumer)
         dlq = consumer.get("dead_letter_queue")
         if dlq is not None:
             _validate_queue_name(f"{field}.dead_letter_queue", dlq)
@@ -840,6 +870,7 @@ def _validate_surface(m: dict[str, Any]) -> None:
                 f"plugin.toml: events.consumers[{index}].type `{event_type}` must be "
                 "snake_case `[a-z][a-z0-9_]*`"
             )
+        _validate_message_retention(f"events.consumers[{index}]", consumer)
     produced: set[str] = set()
     for index, producer in enumerate(events.get("producers") or []):
         event_type = str(producer.get("type") or "")
@@ -1242,7 +1273,7 @@ def _emit_queues(lines: list[str], queues: Any) -> None:
                 lines.append(f"{key} = {consumer[key]}")
         if consumer.get("dead_letter_queue") is not None:
             lines.append(f"dead_letter_queue = {_esc(str(consumer['dead_letter_queue']))}")
-        for key in ("retry_delay", "max_concurrency"):
+        for key in ("retry_delay", "max_concurrency", "message_retention_period"):
             if consumer.get(key) is not None:
                 lines.append(f"{key} = {consumer[key]}")
 
@@ -1337,6 +1368,8 @@ def format_manifest(m: dict[str, Any]) -> str:
         lines.append(f"resource_class = {_esc(str(consumer.get('resource_class') or 'network'))}")
         if consumer.get("max_retries") is not None:
             lines.append(f"max_retries = {consumer['max_retries']}")
+        if consumer.get("message_retention_period") is not None:
+            lines.append(f"message_retention_period = {consumer['message_retention_period']}")
         filt = consumer.get("filter")
         if isinstance(filt, dict) and filt:
             lines.append("")

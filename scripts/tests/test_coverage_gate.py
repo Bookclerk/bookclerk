@@ -720,6 +720,28 @@ class RatchetTest(unittest.TestCase):
         self.assertEqual(steps["Find the merge group run"]["if"], "steps.landed.outputs.on-main != 'false'")
         self.assertEqual(steps["Create or update pull request"]["with"]["base"], "main")
 
+    def test_floors_workflow_leaves_a_queued_pull_request_alone(self) -> None:
+        import yaml
+
+        workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "coverage-floors.yml").read_text(encoding="utf-8"))
+        steps = workflow["jobs"]["ratchet"]["steps"]
+        names = [s.get("name") for s in steps]
+        # A queued pull request's branch cannot be updated (#881): the check
+        # runs before both writes, and both skip when it says queued.
+        check = steps[names.index("Check for a queued pull request")]
+        self.assertLess(names.index("Mint automation App token"), names.index("Check for a queued pull request"))
+        self.assertLess(names.index("Check for a queued pull request"), names.index("Create or update pull request"))
+        self.assertEqual(check["id"], "queued")
+        self.assertIn("isInMergeQueue", check["run"])
+        self.assertIn('echo "queued=$queued" >> "$GITHUB_OUTPUT"', check["run"])
+        for name in ("Create or update pull request", "Enable auto-merge"):
+            self.assertIn("steps.queued.outputs.queued != 'true'", steps[names.index(name)]["if"])
+        # Both lookups match only this repository's branch into main: a
+        # fork's pull request can use the same branch name.
+        for name in ("Check for a queued pull request", "Enable auto-merge"):
+            self.assertIn("--base main", steps[names.index(name)]["run"])
+            self.assertIn("map(select(.isCrossRepository | not))", steps[names.index(name)]["run"])
+
 
 class MainTest(unittest.TestCase):
     """The script reads the reports directory and diff file end to end."""

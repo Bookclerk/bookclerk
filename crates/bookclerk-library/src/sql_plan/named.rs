@@ -558,7 +558,7 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
             plugin_ids_json,
             max_in_flight,
         } => {
-            plan_claim_next_event_delivery(owner, *lease_secs, plugin_ids_json, *max_in_flight, now)
+            plan_lease_next_event_delivery(owner, *lease_secs, plugin_ids_json, *max_in_flight, now)
         }
     }
 }
@@ -2724,7 +2724,7 @@ fn plan_claim_event_delivery_cas(
 }
 
 /// Conditional claim of the next pending event delivery.
-fn plan_claim_next_event_delivery(
+fn plan_lease_next_event_delivery(
     owner: &str,
     lease_secs: i64,
     plugin_ids_json: &str,

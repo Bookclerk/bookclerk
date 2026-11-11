@@ -813,10 +813,10 @@ running a plugin. Nodes still only share the database.
 - **Routing deliveries without node-to-node calls.** Every node that runs
   an instance ranks the live nodes whose guest of it is up by the same
   score, so all nodes compute the same order from the same rows. Rank `r`
-  claims a delivery only once its `run_after` is `r × 10 s` old
-  (`claim_next_event_delivery_due_by`). The best node takes work at once;
+  leases a delivery only once its `run_after` is `r × 10 s` old
+  (`lease_next_event_delivery_due_by`). The best node takes work at once;
   if it is saturated, stalled, or gone, the next takes over after a short
-  delay, and the claim's compare-and-swap still admits one runner.
+  delay, and the lease's compare-and-swap still admits one runner.
   Rejected: stamping a target node on each delivery at dispatch (the
   dispatcher would have to choose, and a dead target needs reassignment
   logic) and forwarding between nodes (they cannot connect).

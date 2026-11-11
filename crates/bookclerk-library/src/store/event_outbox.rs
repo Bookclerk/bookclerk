@@ -27,9 +27,9 @@ use crate::models::{
     AcquireStatus, DomainEventRecord, EventCatalogSubscription, EventDeliveryFence,
     EventDeliveryMetrics, EventDeliveryRecord, EventSubscriber, EventSubscriberCatalogRecord,
     EventSubscriberNodeRecord, PendingWakeProgress, PublishDomainEventOutcome,
-    PublishDomainEventSpec, CORE_EVENTS_QUEUE, EVENT_RESOURCE_CLASS_NETWORK,
-    EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, QUEUE_CONTENT_TYPE_BYTES, QUEUE_CONTENT_TYPE_JSON,
-    QUEUE_CONTENT_TYPE_TEXT,
+    PublishDomainEventSpec, CORE_EVENTS_QUEUE, EVENT_DELIVERY_DEFAULT_RETENTION_SECS,
+    EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, HOST_CONSUMER_PREFIX,
+    QUEUE_CONTENT_TYPE_BYTES, QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT,
 };
 
 const STATE_PENDING: &str = "pending";
@@ -38,6 +38,14 @@ const STATE_RUNNING: &str = "running";
 const STATE_ACKED: &str = "acked";
 const STATE_REJECTED: &str = "rejected";
 const STATE_DEAD_LETTER: &str = "dead_letter";
+/// A delivery that waited, due but never leased, past its consumer's
+/// retention period. Terminal; pruned with acked and rejected rows.
+const STATE_EXPIRED: &str = "expired";
+/// Most deliveries one expiry pass examines, so a large backlog is worked
+/// down over several maintenance runs instead of one long scan.
+const EXPIRE_MAX_ROWS: usize = 10_000;
+/// Binds an expiry `UPDATE` uses besides its id list.
+const EXPIRE_FIXED_BINDS: u32 = 16;
 const RECONCILE_PAGE: u64 = 200;
 /// Pending-delivery claim page. Tests may override via [`set_claim_page_for_test`].
 const EVENT_CLAIM_PAGE: u64 = 64;
@@ -741,7 +749,11 @@ impl LibraryStore {
         }
     }
 
-    /// Claim the next ready delivery with a fenced `pending` → `running` mutation.
+    /// Lease the next ready delivery with a fenced `pending` → `running` mutation.
+    ///
+    /// A delivery is one subscriber's own copy of an event, so a lease never
+    /// takes work from another subscriber: it only picks which node runs this
+    /// copy. Jobs, by contrast, are claimed (see `docs/internals/jobs.md`).
     ///
     /// When `node_id` is non-empty, this node’s own catalog must match the parent
     /// event’s type, schema version, and filter. The host loads the catalog and
@@ -753,7 +765,7 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when the claim write fails.
     #[allow(clippy::too_many_arguments)]
-    pub async fn claim_next_event_delivery(
+    pub async fn lease_next_event_delivery(
         &self,
         owner: &str,
         lease_secs: u64,
@@ -762,7 +774,7 @@ impl LibraryStore {
         max_in_flight: u32,
         node_id: &str,
     ) -> Result<Option<EventDeliveryRecord>> {
-        self.claim_next_event_delivery_due_by(
+        self.lease_next_event_delivery_due_by(
             owner,
             lease_secs,
             operation_id,
@@ -774,7 +786,7 @@ impl LibraryStore {
         .await
     }
 
-    /// [`Self::claim_next_event_delivery`] restricted to deliveries due at
+    /// [`Self::lease_next_event_delivery`] restricted to deliveries due at
     /// or before `due_by` (`run_after <= due_by`).
     ///
     /// A host that is not the best placed to run a plugin passes a cutoff in
@@ -785,7 +797,7 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when the claim write fails.
     #[allow(clippy::too_many_arguments)]
-    pub async fn claim_next_event_delivery_due_by(
+    pub async fn lease_next_event_delivery_due_by(
         &self,
         owner: &str,
         lease_secs: u64,
@@ -800,7 +812,7 @@ impl LibraryStore {
         }
         if self.atomic.is_some() {
             return self
-                .claim_next_event_delivery_host_cas(
+                .lease_next_event_delivery_host_cas(
                     owner,
                     lease_secs,
                     operation_id,
@@ -816,7 +828,7 @@ impl LibraryStore {
         // atomic operation above; an external adapter refuses this `begin()`.
         #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        match claim_next_event_delivery_on(
+        match lease_next_event_delivery_on(
             &txn,
             self.leftover_in_process(),
             owner,
@@ -841,7 +853,7 @@ impl LibraryStore {
 
     /// Host eligibility + per-row CAS through the guest atomic backend.
     #[allow(clippy::too_many_arguments)]
-    async fn claim_next_event_delivery_host_cas(
+    async fn lease_next_event_delivery_host_cas(
         &self,
         owner: &str,
         lease_secs: u64,
@@ -1916,6 +1928,10 @@ impl LibraryStore {
 
     /// Live per-node rows whose heartbeat is within `ttl_secs`.
     ///
+    /// Read in pages of the adapter's `maxResultRows`, keyed by
+    /// `(plugin_id, node_id)`, so a catalog larger than one result still
+    /// reads on an adapter that does not paginate for the host.
+    ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when the read fails.
@@ -1924,16 +1940,41 @@ impl LibraryStore {
         ttl_secs: i64,
     ) -> Result<Vec<EventSubscriberNodeRecord>> {
         let cutoff = (Utc::now() - Duration::seconds(ttl_secs.max(1))).to_rfc3339();
-        event_subscriber_nodes::Entity::find()
-            .filter(event_subscriber_nodes::Column::HeartbeatAt.gte(cutoff))
-            .order_by_asc(event_subscriber_nodes::Column::PluginId)
-            .order_by_asc(event_subscriber_nodes::Column::NodeId)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(map_node_row)
-            .collect()
+        let page = u64::from(self.max_result_rows.max(1));
+        let mut out = Vec::new();
+        let mut after: Option<(String, String)> = None;
+        loop {
+            let mut query = event_subscriber_nodes::Entity::find()
+                .filter(event_subscriber_nodes::Column::HeartbeatAt.gte(cutoff.clone()));
+            if let Some((plugin_id, node_id)) = &after {
+                query = query.filter(
+                    Condition::any()
+                        .add(event_subscriber_nodes::Column::PluginId.gt(plugin_id.clone()))
+                        .add(
+                            Condition::all()
+                                .add(event_subscriber_nodes::Column::PluginId.eq(plugin_id.clone()))
+                                .add(event_subscriber_nodes::Column::NodeId.gt(node_id.clone())),
+                        ),
+                );
+            }
+            let rows = query
+                .order_by_asc(event_subscriber_nodes::Column::PluginId)
+                .order_by_asc(event_subscriber_nodes::Column::NodeId)
+                .limit(page)
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            let full = u64::try_from(rows.len()).unwrap_or(u64::MAX) >= page;
+            after = rows
+                .last()
+                .map(|row| (row.plugin_id.clone(), row.node_id.clone()));
+            for row in rows {
+                out.push(map_node_row(row)?);
+            }
+            if !full || after.is_none() {
+                return Ok(out);
+            }
+        }
     }
 
     /// Create deliveries from the live catalog for one event.
@@ -2241,9 +2282,178 @@ impl LibraryStore {
         Ok(res == 1)
     }
 
+    /// Expire deliveries that waited, due but never leased, past their
+    /// consumer's retention period.
+    ///
+    /// This is the Cloudflare Queues message retention period applied per
+    /// subscriber: a plugin instance that is deployed but not running stops
+    /// accumulating work, and catches up from the event stream once it runs.
+    /// A delivery is a candidate while it is `pending`, has never been
+    /// leased (`attempt_count = 0`), and is not suspended or resuming. It
+    /// expires once both its insert time and its `run_after` are older than
+    /// the retention of the matching subscription in the live catalog
+    /// (`message_retention_secs`, else
+    /// [`EVENT_DELIVERY_DEFAULT_RETENTION_SECS`]), capped at
+    /// `retention_days`; a subscriber with no live catalog row waits the
+    /// full `retention_days`. The matching subscription is the first one of the
+    /// subscriber that matches the parent event in full (queue, type, schema
+    /// version and filter), as at dispatch. Host consumers (`host:` and node
+    /// consumers) never expire and are left out of the scan. Expired rows stay
+    /// until [`EventPruneStep::TerminalDeliveries`] removes them, so they
+    /// record which events a subscriber missed. About 10 000
+    /// candidates are examined per call (the budget is checked after each
+    /// page, so the last page can go past it); the next call resumes where this one
+    /// stopped and wraps around once it reaches the newest candidate.
+    ///
+    /// # Arguments
+    ///
+    /// * `retention_days` - The events retention window, which caps every
+    ///   delivery retention.
+    /// * `now` - The time the retention periods are measured back from.
+    ///
+    /// # Returns
+    ///
+    /// The number of deliveries moved to `expired`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read or the update fails.
+    pub async fn expire_unleased_event_deliveries(
+        &self,
+        retention_days: u64,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<u64> {
+        self.expire_unleased_event_deliveries_bounded(retention_days, now, EXPIRE_MAX_ROWS)
+            .await
+    }
+
+    /// [`Self::expire_unleased_event_deliveries`] examining at most
+    /// `max_rows` candidates (at least one), in pages no larger than that.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read or the update fails.
+    pub(crate) async fn expire_unleased_event_deliveries_bounded(
+        &self,
+        retention_days: u64,
+        now: chrono::DateTime<Utc>,
+        max_rows: usize,
+    ) -> Result<u64> {
+        let max_rows = max_rows.max(1);
+        let cap_secs = i64::try_from(retention_days.saturating_mul(86_400)).unwrap_or(i64::MAX);
+        let catalog = self.list_live_event_subscribers().await?;
+        let retention = DeliveryRetention::new(&catalog, cap_secs);
+        let shortest = (now - Duration::seconds(retention.shortest_secs())).to_rfc3339();
+        let page = expire_page_size(self.max_binds, self.max_result_rows, max_rows);
+        let now_s = now_str();
+        let mut after = self
+            .expire_cursor
+            .lock()
+            .map_or(None, |cursor| cursor.clone());
+        let mut examined = 0usize;
+        let mut expired = 0u64;
+        loop {
+            let mut query = event_deliveries::Entity::find()
+                .filter(event_deliveries::Column::State.eq(STATE_PENDING))
+                .filter(event_deliveries::Column::AttemptCount.eq(0i64))
+                .filter(event_deliveries::Column::ResumePending.eq(0i64))
+                .filter(event_deliveries::Column::CheckpointJson.is_null())
+                .filter(event_deliveries::Column::CreatedAt.lte(shortest.clone()))
+                .filter(event_deliveries::Column::RunAfter.lte(shortest.clone()))
+                .filter(
+                    event_deliveries::Column::PluginId.not_like(format!("{HOST_CONSUMER_PREFIX}%")),
+                )
+                .filter(
+                    event_deliveries::Column::PluginId
+                        .not_like(format!("{}%", crate::control_plane::NODE_CONSUMER_PREFIX)),
+                );
+            if let Some((created_at, id)) = &after {
+                query = query.filter(claim_keyset_after(created_at, id));
+            }
+            let rows = query
+                .order_by_asc(event_deliveries::Column::CreatedAt)
+                .order_by_asc(event_deliveries::Column::Id)
+                .limit(page)
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::from_db_err)?;
+            let Some(last) = rows.last() else {
+                after = None;
+                break;
+            };
+            after = Some((last.created_at.clone(), last.id.clone()));
+            examined += rows.len();
+            let event_ids: Vec<String> = rows.iter().map(|r| r.event_id.clone()).collect();
+            let events: std::collections::HashMap<String, DomainEventRecord> =
+                domain_events::Entity::find()
+                    .filter(domain_events::Column::Id.is_in(event_ids))
+                    .all(&self.db)
+                    .await
+                    .map_err(LibraryError::from_db_err)?
+                    .into_iter()
+                    .map(|m| map_event(m).map(|e| (e.id.clone(), e)))
+                    .collect::<Result<_>>()?;
+            let due: Vec<String> = rows
+                .iter()
+                .filter(|row| {
+                    retention
+                        .secs_for(&row.plugin_id, events.get(&row.event_id))
+                        .is_some_and(|secs| {
+                            let waited_since =
+                                parse_dt(&row.created_at).max(parse_dt(&row.run_after));
+                            now - waited_since >= Duration::seconds(secs)
+                        })
+                })
+                .map(|row| row.id.clone())
+                .collect();
+            if !due.is_empty() {
+                expired += self
+                    .exec_bumped(
+                        event_deliveries::Entity::update_many()
+                            .col_expr(
+                                event_deliveries::Column::State,
+                                sea_orm::sea_query::Expr::value(STATE_EXPIRED),
+                            )
+                            .col_expr(
+                                event_deliveries::Column::Outcome,
+                                sea_orm::sea_query::Expr::value(Some(STATE_EXPIRED.to_string())),
+                            )
+                            .col_expr(
+                                event_deliveries::Column::ErrorMessage,
+                                sea_orm::sea_query::Expr::value(Some(
+                                    "not leased within its retention period".to_string(),
+                                )),
+                            )
+                            .col_expr(
+                                event_deliveries::Column::UpdatedAt,
+                                sea_orm::sea_query::Expr::value(now_s.clone()),
+                            )
+                            .filter(event_deliveries::Column::Id.is_in(due))
+                            .filter(event_deliveries::Column::State.eq(STATE_PENDING))
+                            .filter(event_deliveries::Column::AttemptCount.eq(0i64))
+                            .filter(event_deliveries::Column::ResumePending.eq(0i64)),
+                        LiveTopic::Deliveries,
+                        Bump::Always,
+                    )
+                    .await?;
+            }
+            if u64::try_from(rows.len()).unwrap_or(u64::MAX) < page {
+                after = None;
+                break;
+            }
+            if examined >= max_rows {
+                break;
+            }
+        }
+        if let Ok(mut cursor) = self.expire_cursor.lock() {
+            *cursor = after;
+        }
+        Ok(expired)
+    }
+
     /// Delete terminal deliveries past their retention windows, then empty events.
     ///
-    /// Acked/rejected rows use `retention_days`. Dead letters use
+    /// Acked, rejected and expired rows use `retention_days`. Dead letters use
     /// `dead_letter_retention_days`. Dispatched parent events with no remaining
     /// deliveries are removed only after the same `retention_days` cutoff.
     /// Expired per-node catalog heartbeats are swept here too. Runs every
@@ -2271,14 +2481,15 @@ impl LibraryStore {
     ///
     /// # Arguments
     ///
-    /// * `step` - Which rows to delete.
-    /// * `retention_days` - Window for acked/rejected deliveries and empty
-    ///   dispatched events.
+    /// * `step` - Which rows to expire or delete.
+    /// * `retention_days` - Window for acked, rejected and expired
+    ///   deliveries and empty dispatched events, and the cap on every
+    ///   delivery retention period.
     /// * `dead_letter_retention_days` - Window for dead letters.
     ///
     /// # Returns
     ///
-    /// The number of rows removed.
+    /// The number of rows expired or removed.
     ///
     /// # Errors
     ///
@@ -2294,11 +2505,19 @@ impl LibraryStore {
                 .to_rfc3339()
         };
         match step {
+            EventPruneStep::ExpireUnleased => {
+                self.expire_unleased_event_deliveries(retention_days, Utc::now())
+                    .await
+            }
             EventPruneStep::TerminalDeliveries => {
                 let cutoff = terminal_cutoff();
                 let terminal = || {
                     Condition::all()
-                        .add(event_deliveries::Column::State.is_in([STATE_ACKED, STATE_REJECTED]))
+                        .add(event_deliveries::Column::State.is_in([
+                            STATE_ACKED,
+                            STATE_REJECTED,
+                            STATE_EXPIRED,
+                        ]))
                         .add(event_deliveries::Column::UpdatedAt.lte(cutoff.clone()))
                 };
                 let probe = event_deliveries::Entity::find().filter(terminal());
@@ -2358,7 +2577,10 @@ impl LibraryStore {
 /// One delete of [`LibraryStore::prune_event_deliveries`], in run order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventPruneStep {
-    /// Acked and rejected deliveries past `retention_days`.
+    /// Pending deliveries never leased within their retention period become
+    /// `expired` (see [`LibraryStore::expire_unleased_event_deliveries`]).
+    ExpireUnleased,
+    /// Acked, rejected and expired deliveries past `retention_days`.
     TerminalDeliveries,
     /// Dead letters past `dead_letter_retention_days`.
     DeadLetters,
@@ -2371,12 +2593,113 @@ pub enum EventPruneStep {
 impl EventPruneStep {
     /// Every step, in the order the deletes must run (deliveries before the
     /// events they belong to).
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
+        Self::ExpireUnleased,
         Self::TerminalDeliveries,
         Self::DeadLetters,
         Self::StaleSubscriberNodes,
         Self::EmptyEvents,
     ];
+}
+
+/// Deliveries one expiry page reads.
+///
+/// # Arguments
+///
+/// * `max_binds` - The adapter's bind limit; the expiry `UPDATE` binds one
+///   id per delivery plus [`EXPIRE_FIXED_BINDS`].
+/// * `max_result_rows` - The adapter's result-row limit, which bounds both
+///   the candidate read and the parent-event read (one event per delivery).
+/// * `max_rows` - The caller's scan budget.
+///
+/// # Returns
+///
+/// The smallest of those bounds and 64, and at least one.
+pub(super) fn expire_page_size(max_binds: u32, max_result_rows: u32, max_rows: usize) -> u64 {
+    u64::from(
+        max_binds
+            .saturating_sub(EXPIRE_FIXED_BINDS)
+            .min(max_result_rows)
+            .min(64),
+    )
+    .min(u64::try_from(max_rows).unwrap_or(u64::MAX))
+    .max(1)
+}
+
+/// Retention periods of the live subscriber catalog, by subscriber.
+struct DeliveryRetention<'a> {
+    /// Live subscriptions keyed by subscriber `plugin_id`.
+    by_plugin: std::collections::HashMap<&'a str, &'a [EventCatalogSubscription]>,
+    /// The events retention window in seconds; no delivery retention exceeds it.
+    cap_secs: i64,
+}
+
+impl<'a> DeliveryRetention<'a> {
+    /// Index `catalog` by subscriber, capping every period at `cap_secs`.
+    fn new(catalog: &'a [EventSubscriberCatalogRecord], cap_secs: i64) -> Self {
+        Self {
+            by_plugin: catalog
+                .iter()
+                .map(|row| (row.plugin_id.as_str(), row.subscriptions.as_slice()))
+                .collect(),
+            cap_secs: cap_secs.max(1),
+        }
+    }
+
+    /// The shortest retention any delivery can have, in seconds: the
+    /// smallest declared period, the default, and the cap.
+    fn shortest_secs(&self) -> i64 {
+        self.by_plugin
+            .values()
+            .flat_map(|subs| subs.iter())
+            .filter_map(|sub| sub.message_retention_secs)
+            .chain(std::iter::once(EVENT_DELIVERY_DEFAULT_RETENTION_SECS))
+            .map(i64::from)
+            .min()
+            .unwrap_or(i64::from(EVENT_DELIVERY_DEFAULT_RETENTION_SECS))
+            .min(self.cap_secs)
+            .max(1)
+    }
+
+    /// Retention in seconds for one delivery, or `None` when it never expires.
+    ///
+    /// # Arguments
+    ///
+    /// * `plugin_id` - The delivery's subscriber.
+    /// * `event` - The parent event; `None` when it could not be read.
+    ///
+    /// # Returns
+    ///
+    /// `None` for host and node consumers. A subscriber with no live
+    /// catalog row (every node running it stopped heartbeating) gets the
+    /// events retention window, so a declared period is never cut short by a
+    /// node outage. Otherwise the period of the subscriber's first live
+    /// subscription that matches `event` in full
+    /// ([`subscription_matches_event`], as dispatch picks it), or the default
+    /// when no subscription matches or the match declares none; capped at the
+    /// events retention window.
+    fn secs_for(&self, plugin_id: &str, event: Option<&DomainEventRecord>) -> Option<i64> {
+        if plugin_id.starts_with(HOST_CONSUMER_PREFIX)
+            || crate::control_plane::is_node_consumer_id(plugin_id)
+        {
+            return None;
+        }
+        let Some(subs) = self.by_plugin.get(plugin_id) else {
+            return Some(self.cap_secs);
+        };
+        let declared = Some(subs)
+            .zip(event)
+            .and_then(|(subs, event)| {
+                subs.iter()
+                    .find(|sub| subscription_matches_event(sub, event))
+            })
+            .and_then(|sub| sub.message_retention_secs);
+        Some(
+            i64::from(declared.unwrap_or(EVENT_DELIVERY_DEFAULT_RETENTION_SECS))
+                .min(self.cap_secs)
+                .max(1),
+        )
+    }
 }
 
 /// Mint an event id when empty and reject oversized or blank publish fields.
@@ -2865,7 +3188,7 @@ where
 
 /// Claim the next ready delivery, skipping blocked FIFO keys.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn claim_next_event_delivery_on<C>(
+pub(crate) async fn lease_next_event_delivery_on<C>(
     db: &C,
     in_process: bool,
     owner: &str,

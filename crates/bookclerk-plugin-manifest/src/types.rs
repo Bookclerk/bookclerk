@@ -506,6 +506,12 @@ pub struct EventConsumer {
     /// Redelivery attempts before dead-lettering; `None` uses the host default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retries: Option<u32>,
+    /// Seconds a delivery may wait, due but never handed to the plugin, before
+    /// the host expires it (Cloudflare Queues' message retention period).
+    /// `None` uses the host default; the value is
+    /// [`MIN_MESSAGE_RETENTION_SECS`]`..=`[`MAX_MESSAGE_RETENTION_SECS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_retention_period: Option<u32>,
 }
 
 impl Eq for EventConsumer {}
@@ -608,6 +614,13 @@ pub const DEFAULT_QUEUE_MAX_RETRIES: u32 = 3;
 pub const MAX_QUEUE_RETRIES: u32 = 100;
 /// Largest `retry_delay` (seconds) a consumer may declare: 12 hours.
 pub const MAX_QUEUE_RETRY_DELAY_SECS: u32 = 43_200;
+/// Smallest `message_retention_period` (seconds) an event or queue consumer
+/// may declare: one minute, as in Cloudflare Queues.
+pub const MIN_MESSAGE_RETENTION_SECS: u32 = 60;
+/// Largest `message_retention_period` (seconds) an event or queue consumer
+/// may declare: 14 days, as in Cloudflare Queues. The host also caps it at
+/// `events.retention_days`.
+pub const MAX_MESSAGE_RETENTION_SECS: u32 = 1_209_600;
 
 /// True when `name` is a valid queue name: `[a-z0-9][a-z0-9._-]*`, at most
 /// [`MAX_QUEUE_NAME_LEN`] characters.
@@ -619,6 +632,31 @@ pub fn is_valid_queue_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+}
+
+/// Checks a consumer's optional `message_retention_period`.
+///
+/// # Arguments
+///
+/// * `field` - The consumer row, such as `events.consumers[0]`, for the error.
+/// * `secs` - The declared retention in seconds; `None` passes.
+///
+/// # Errors
+///
+/// Returns an error naming `field` when `secs` is outside
+/// [`MIN_MESSAGE_RETENTION_SECS`]`..=`[`MAX_MESSAGE_RETENTION_SECS`].
+fn validate_message_retention(field: &str, secs: Option<u32>) -> Result<()> {
+    match secs {
+        Some(secs)
+            if !(MIN_MESSAGE_RETENTION_SECS..=MAX_MESSAGE_RETENTION_SECS).contains(&secs) =>
+        {
+            Err(Error::message(format!(
+                "plugin.toml: {field}.message_retention_period must be \
+                 {MIN_MESSAGE_RETENTION_SECS}..={MAX_MESSAGE_RETENTION_SECS} seconds"
+            )))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// True when `name` starts with a [`RESERVED_QUEUE_PREFIXES`] entry.
@@ -689,6 +727,11 @@ pub struct QueueConsumer {
     /// lets the host choose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrency: Option<u32>,
+    /// Seconds a message may wait, due but never handed to the plugin, before
+    /// the host expires it. `None` uses the host default; the value is
+    /// [`MIN_MESSAGE_RETENTION_SECS`]`..=`[`MAX_MESSAGE_RETENTION_SECS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_retention_period: Option<u32>,
 }
 
 /// Serde default for [`QueueConsumer::max_batch_size`].
@@ -1133,6 +1176,10 @@ impl PluginManifest {
                     "plugin.toml: queues.consumers[{i}].max_concurrency must be at least 1"
                 )));
             }
+            validate_message_retention(
+                &format!("queues.consumers[{i}]"),
+                consumer.message_retention_period,
+            )?;
             if let Some(dlq) = &consumer.dead_letter_queue {
                 validate_queue_name(&format!("queues.consumers[{i}].dead_letter_queue"), dlq)?;
                 if dlq == &consumer.queue {
@@ -1828,6 +1875,10 @@ impl PluginManifest {
                      `{class}` is not supported (only `network`)"
                 )));
             }
+            validate_message_retention(
+                &format!("events.consumers[{i}]"),
+                sub.message_retention_period,
+            )?;
         }
         {
             let mut seen = std::collections::HashSet::new();
@@ -3160,6 +3211,38 @@ mode = "deny"
             .replace("entrypoints = [\"cli\"]\n", "");
         let m = PluginManifest::parse(&body).expect("queue consumer is a trigger");
         assert_eq!(m.families(), vec![PluginFamily::Integration]);
+    }
+
+    #[test]
+    fn message_retention_is_optional_and_bounded() {
+        let m = PluginManifest::parse(&workerd_body(
+            "\n[[events.consumers]]\ntype = \"book_acquired\"\nmessage_retention_period = 3600\n\
+             \n[[queues.consumers]]\nqueue = \"jobs\"\nmessage_retention_period = 60\n",
+        ))
+        .expect("retention in range");
+        assert_eq!(m.events.consumers[0].message_retention_period, Some(3600));
+        assert_eq!(m.queues.consumers[0].message_retention_period, Some(60));
+        let defaults = PluginManifest::parse(&workerd_body(
+            "\n[[events.consumers]]\ntype = \"book_acquired\"\n",
+        ))
+        .expect("retention omitted");
+        assert!(defaults.events.consumers[0]
+            .message_retention_period
+            .is_none());
+        let cases = [
+            (
+                "\n[[events.consumers]]\ntype = \"book_acquired\"\nmessage_retention_period = 59\n",
+                "events.consumers[0].message_retention_period must be 60..=1209600 seconds",
+            ),
+            (
+                "\n[[queues.consumers]]\nqueue = \"jobs\"\nmessage_retention_period = 1209601\n",
+                "queues.consumers[0].message_retention_period must be 60..=1209600 seconds",
+            ),
+        ];
+        for (tables, needle) in cases {
+            let err = PluginManifest::parse(&workerd_body(tables)).expect_err(needle);
+            assert!(err.to_string().contains(needle), "{needle}: {err}");
+        }
     }
 
     #[test]
