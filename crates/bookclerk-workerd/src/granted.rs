@@ -3232,4 +3232,115 @@ Transfer-Encoding: chunked\r\n\
             "execute must not be dispatched for a chunked body"
         );
     }
+
+    /// Sends one raw request to `handle_conn` and returns the whole response.
+    /// `/events/read` commands are answered by `answer`; the returned flag
+    /// says whether any reached it.
+    async fn events_read_exchange(
+        request: String,
+        answer: fn(EventReadRequest) -> Result<EventReadPage, PluginError>,
+    ) -> (String, bool) {
+        let (cmds_tx, mut cmds_rx) = mpsc::channel(8);
+        let dispatched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&dispatched);
+        tokio::spawn(async move {
+            while let Some(cmd) = cmds_rx.recv().await {
+                if let GrantedCmd::ReadEvents {
+                    invocation,
+                    request,
+                    resp,
+                } = cmd
+                {
+                    assert_eq!(invocation, "grant-1");
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = resp.send(answer(request));
+                }
+            }
+        });
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let serve = tokio::spawn(async move { handle_conn(server, "bridge", cmds_tx).await });
+        let (mut reader, mut writer) = tokio::io::split(client);
+        writer.write_all(request.as_bytes()).await.unwrap();
+        let mut out = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), reader.read_to_end(&mut out))
+            .await
+            .expect("http response")
+            .unwrap();
+        drop(writer);
+        let _ = serve.await;
+        (
+            String::from_utf8_lossy(&out).into_owned(),
+            dispatched.load(std::sync::atomic::Ordering::SeqCst),
+        )
+    }
+
+    /// `POST /events/read` with `body` under the test grant.
+    fn events_read_request(body: &str) -> String {
+        format!(
+            "POST /events/read HTTP/1.1\r\nAuthorization: Bearer grant-1\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    #[tokio::test]
+    async fn events_read_route_answers_with_the_page_json() {
+        let (response, dispatched) = events_read_exchange(
+            events_read_request(r#"{"after":"v1.a","types":["t"],"limit":2}"#),
+            |request| {
+                assert_eq!(request.after, "v1.a");
+                assert_eq!(request.types, vec!["t".to_string()]);
+                assert_eq!(request.limit, 2);
+                Ok(EventReadPage {
+                    cursor: "v1.b".into(),
+                    more: true,
+                    ..EventReadPage::default()
+                })
+            },
+        )
+        .await;
+        assert!(dispatched);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let body = response.rsplit("\r\n\r\n").next().unwrap_or_default();
+        let page: EventReadPage = serde_json::from_str(body).expect("page json");
+        assert_eq!(page.cursor, "v1.b");
+        assert!(page.more);
+    }
+
+    #[tokio::test]
+    async fn events_read_route_carries_host_refusals() {
+        let (response, dispatched) = events_read_exchange(events_read_request("{}"), |_| {
+            Err(PluginError::forbidden("not a consented subscription"))
+        })
+        .await;
+        assert!(dispatched);
+        assert!(!response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains("forbidden"), "{response}");
+    }
+
+    #[tokio::test]
+    async fn events_read_route_checks_the_body_before_dispatch() {
+        let never = |_| Ok(EventReadPage::default());
+        let (response, dispatched) =
+            events_read_exchange(events_read_request(r#"{"bogus":1}"#), never).await;
+        assert!(!dispatched, "{response}");
+        assert!(response.contains("invalid_params"), "{response}");
+
+        let oversized = format!(
+            "POST /events/read HTTP/1.1\r\nAuthorization: Bearer grant-1\r\nContent-Length: {}\r\n\r\n",
+            MAX_EVENT_READ_BODY_BYTES + 1
+        );
+        let (response, dispatched) = events_read_exchange(oversized, never).await;
+        assert!(!dispatched);
+        assert!(response.contains("413"), "{response}");
+
+        let chunked = "POST /events/read HTTP/1.1\r\n\
+Authorization: Bearer grant-1\r\n\
+Transfer-Encoding: chunked\r\n\
+\r\n\
+2\r\n{}\r\n0\r\n\r\n"
+            .to_string();
+        let (response, dispatched) = events_read_exchange(chunked, never).await;
+        assert!(dispatched, "a chunked body is read whole: {response}");
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    }
 }

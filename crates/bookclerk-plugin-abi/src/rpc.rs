@@ -5979,6 +5979,166 @@ mod tests {
             .await;
     }
 
+    /// Host `EVENTS` binding for the read round trip: records each request
+    /// and answers with a fixed page, or `forbidden` for the type `secret`.
+    struct PagePublisher {
+        /// Requests the server decoded, in order.
+        seen: Mutex<Vec<EventReadRequest>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl EventPublisher for PagePublisher {
+        async fn publish(&self, _event: PluginEvent) -> Result<PublishOk> {
+            Ok(PublishOk::default())
+        }
+
+        async fn read(&self, request: EventReadRequest) -> Result<EventReadPage> {
+            let forbidden = request.types.iter().any(|t| t == "secret");
+            self.seen.lock().expect("lock").push(request);
+            if forbidden {
+                return Err(PluginError::forbidden("not a consented subscription"));
+            }
+            Ok(EventReadPage {
+                events: vec![DomainEvent {
+                    event_id: "e1".into(),
+                    event_type: "demo.pinged".into(),
+                    schema_version: 1,
+                    occurred_at_unix_ms: 5_000,
+                    account_id: "acct".into(),
+                    source: "demo".into(),
+                    payload: b"{}".to_vec(),
+                    deduplication_key: "e1".into(),
+                    ..DomainEvent::default()
+                }],
+                cursor: "v1.aa.bb".into(),
+                more: true,
+                expired_event_ids: vec!["e1".into()],
+                truncated: true,
+            })
+        }
+    }
+
+    /// Publisher that keeps the trait's default `read`.
+    struct PublishOnly;
+
+    #[async_trait::async_trait(?Send)]
+    impl EventPublisher for PublishOnly {
+        async fn publish(&self, _event: PluginEvent) -> Result<PublishOk> {
+            Ok(PublishOk::default())
+        }
+    }
+
+    /// `EventPublisher.read` carries the request and the page across Cap'n
+    /// Proto unchanged, carries a host refusal with its code, and the server
+    /// refuses an oversized cursor or type list before the host sees it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn event_reads_round_trip_over_capnp() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let host = Arc::new(PagePublisher {
+                    seen: Mutex::new(Vec::new()),
+                });
+                let client = EventPublisherClient {
+                    client: capnp_rpc::new_client(EventPublisherServer {
+                        inner: host.clone(),
+                    }),
+                };
+                let request = EventReadRequest {
+                    after: "v1.01.02".into(),
+                    since_unix_ms: 7,
+                    types: vec!["demo.pinged".into(), "demo.ponged".into()],
+                    limit: 3,
+                };
+                let page = client.read(request.clone()).await.expect("a page");
+                assert_eq!(page.cursor, "v1.aa.bb");
+                assert!(page.more && page.truncated);
+                assert_eq!(page.expired_event_ids, vec!["e1".to_string()]);
+                assert_eq!(page.events.len(), 1);
+                assert_eq!(page.events[0].event_type, "demo.pinged");
+                assert_eq!(page.events[0].payload, b"{}".to_vec());
+                assert_eq!(host.seen.lock().expect("lock").as_slice(), &[request]);
+
+                let err = client
+                    .read(EventReadRequest {
+                        types: vec!["secret".into()],
+                        ..EventReadRequest::default()
+                    })
+                    .await
+                    .expect_err("a refusal");
+                assert_eq!(err.code, PluginErrorCode::Forbidden, "{err}");
+
+                let long_cursor = client
+                    .read(EventReadRequest {
+                        after: "x".repeat(MAX_EVENT_CURSOR_BYTES as usize + 1),
+                        ..EventReadRequest::default()
+                    })
+                    .await
+                    .expect_err("an oversized cursor");
+                assert_eq!(long_cursor.code, PluginErrorCode::InvalidCursor);
+
+                let many_types = client
+                    .read(EventReadRequest {
+                        types: (0..=MAX_LIST_PAGE).map(|i| format!("t{i}")).collect(),
+                        ..EventReadRequest::default()
+                    })
+                    .await
+                    .expect_err("too many types");
+                assert_eq!(many_types.code, PluginErrorCode::PayloadTooLarge);
+                assert_eq!(host.seen.lock().expect("lock").len(), 2);
+
+                let publish_only = EventPublisherClient {
+                    client: capnp_rpc::new_client(EventPublisherServer {
+                        inner: Arc::new(PublishOnly),
+                    }),
+                };
+                let unsupported = publish_only
+                    .read(EventReadRequest::default())
+                    .await
+                    .expect_err("the default read");
+                assert_eq!(unsupported.code, PluginErrorCode::Unsupported);
+            })
+            .await;
+    }
+
+    /// A page that breaks its bounds is refused when the guest decodes it.
+    #[test]
+    fn event_read_pages_are_bounded_on_decode() {
+        let mut message = capnp::message::Builder::new_default();
+        write_event_read_page(
+            message.init_root::<event_read_page::Builder<'_>>(),
+            &EventReadPage {
+                cursor: "x".repeat(MAX_EVENT_CURSOR_BYTES as usize + 1),
+                ..EventReadPage::default()
+            },
+        )
+        .expect("encode page");
+        let err = read_event_read_page(
+            message
+                .get_root_as_reader::<event_read_page::Reader<'_>>()
+                .expect("page root"),
+        )
+        .expect_err("an oversized cursor");
+        assert_eq!(err.code, PluginErrorCode::InvalidCursor);
+
+        let mut message = capnp::message::Builder::new_default();
+        write_event_read_page(
+            message.init_root::<event_read_page::Builder<'_>>(),
+            &EventReadPage {
+                events: vec![DomainEvent::default(); MAX_LIST_PAGE as usize + 1],
+                ..EventReadPage::default()
+            },
+        )
+        .expect("encode page");
+        let err = read_event_read_page(
+            message
+                .get_root_as_reader::<event_read_page::Reader<'_>>()
+                .expect("page root"),
+        )
+        .expect_err("too many events");
+        assert_eq!(err.code, PluginErrorCode::PayloadTooLarge);
+    }
+
     /// A peer that answers `executeStreamed` with `unimplemented` is reported
     /// as `unsupported`, so callers fall back to inline reads; any other
     /// transport failure stays `unavailable`.
