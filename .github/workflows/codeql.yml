@@ -74,6 +74,12 @@ jobs:
 
   analyze:
     name: Analyze (${{ matrix.language }})
+    # Pull request runs take turns: Rust in one slot, every other language in
+    # another, so they leave runners for the merge queue
+    # (docs/contributing/ci.md#pull-request-slots).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && format('codeql-pr-slot-{0}', matrix.language == 'rust' && 'rust' || 'other') || format('codeql-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.language) }}
+      queue: max
     needs: languages
     runs-on: ubuntu-latest
     timeout-minutes: 120

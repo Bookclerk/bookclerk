@@ -46,6 +46,11 @@ concurrency:
 jobs:
   pr:
     name: fuzz changed code (${{ matrix.sanitizer }})
+    # Pull request runs take turns in one slot, so they leave runners for the
+    # merge queue (docs/contributing/ci.md#pull-request-slots).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'cflite-pr-slot' || format('cflite-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.sanitizer) }}
+      queue: max
     # Deferred on a draft pull request until it is ready for review.
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest

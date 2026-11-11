@@ -285,6 +285,11 @@ jobs:
 
   check:
     name: fmt / clippy / docs
+    # Pull request runs take turns in one slot per job, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-check' || format('ci-{0}-{1}-check-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      queue: max
     needs: plan
     if: needs.plan.outputs.job_check == 'true'
     runs-on: ubuntu-latest
@@ -462,6 +467,11 @@ jobs:
 
   test:
     name: unit + integration tests
+    # Pull request runs take turns in one slot per job, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-test' || format('ci-{0}-{1}-test-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      queue: max
     needs: plan
     if: needs.plan.outputs.job_test == 'true'
     runs-on: ubuntu-latest
@@ -609,6 +619,11 @@ jobs:
 
   e2e:
     name: staged plugin installation (e2e)
+    # Pull request runs take turns in one slot per job, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-e2e' || format('ci-{0}-{1}-e2e-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      queue: max
     needs: plan
     if: needs.plan.outputs.job_e2e == 'true'
     runs-on: ubuntu-latest
@@ -655,6 +670,11 @@ jobs:
 
   release:
     name: release build + small-VPS envelope (${{ matrix.lto }} LTO)
+    # Pull request runs take turns in one slot per job, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-release' || format('ci-{0}-{1}-release-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      queue: max
     needs: plan
     if: needs.plan.outputs.job_release == 'true'
     runs-on: ubuntu-latest
@@ -774,6 +794,11 @@ jobs:
 
   confinement:
     name: sandbox + jailed tiers (${{ matrix.os }})
+    # Pull request runs take turns in one slot per job, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-confinement' || format('ci-{0}-{1}-confinement-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      queue: max
     needs: plan
     if: needs.plan.outputs.job_confinement == 'true'
     runs-on: ${{ matrix.os }}
@@ -825,6 +850,11 @@ jobs:
 
   native-gateway:
     name: native-behind-workerd gateway (${{ matrix.os }})
+    # Pull request runs take turns in one slot per job, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-native-gateway' || format('ci-{0}-{1}-native-gateway-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      queue: max
     needs: plan
     timeout-minutes: 45
     if: needs.plan.outputs.job_native_gateway == 'true'
@@ -928,6 +958,11 @@ jobs:
 
   tray:
     name: tray (${{ matrix.os }})
+    # Pull request runs take turns in one slot per job, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-tray' || format('ci-{0}-{1}-tray-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      queue: max
     needs: plan
     if: needs.plan.outputs.job_tray == 'true'
     runs-on: ${{ matrix.os }}
@@ -1076,6 +1111,11 @@ jobs:
 
   postgres:
     name: postgres ${{ matrix.postgres }}
+    # Pull request runs take turns in one slot per job, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-postgres' || format('ci-{0}-{1}-postgres-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      queue: max
     needs: plan
     if: needs.plan.outputs.job_postgres == 'true'
     runs-on: ubuntu-latest
@@ -1210,6 +1250,11 @@ jobs:
 
   site:
     name: website + collector Workers
+    # Pull request runs take turns in one slot per job, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-site' || format('ci-{0}-{1}-site-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      queue: max
     needs: plan
     if: needs.plan.outputs.job_site == 'true'
     runs-on: ubuntu-latest
