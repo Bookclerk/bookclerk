@@ -23,7 +23,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use bookclerk_node_proto::{CarriedAccount, CarriedSecret, SecretValue, MAX_BUNDLE_ACCOUNTS};
+use bookclerk_node_proto::{
+    check_account_bundle, AccountBundle, CarriedAccount, CarriedSecret, SecretValue,
+    ACCOUNT_BUNDLE_VERSION, MAX_ACCOUNT_BUNDLE_BYTES, MAX_BUNDLE_ACCOUNTS,
+};
 use bookclerk_plugin_abi::{DbValue, TypedDbStatement};
 use chrono::Utc;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
@@ -222,6 +225,9 @@ pub async fn accounts_to_carry(
     shareable: &(dyn Fn(&str) -> bool + Send + Sync),
 ) -> Result<Vec<CarriedAccount>> {
     let mut carried = Vec::new();
+    // Room for the bundle's own fields around the accounts.
+    const BUNDLE_OVERHEAD: usize = 1024;
+    let mut used = BUNDLE_OVERHEAD;
     for account in member_accounts(store, user_id).await? {
         if !shareable(&account.plugin_key) {
             continue;
@@ -238,16 +244,56 @@ pub async fn accounts_to_carry(
         if secrets.is_empty() {
             continue;
         }
-        carried.push(CarriedAccount {
+        let mut candidate = CarriedAccount {
             plugin_key: account.plugin_key,
             account_id: account.account_id,
             source: account.source,
             marketplace: account.marketplace,
-            label: account.label,
+            label: account.label.map(|label| label.trim().to_owned()),
             secrets,
-        });
+        };
+        if !travels(&candidate) {
+            // A label the bundle refuses is left behind, not the account.
+            candidate.label = None;
+        }
+        if !travels(&candidate) {
+            tracing::warn!(
+                user_id,
+                plugin_key = %candidate.plugin_key,
+                "a store account does not fit an account bundle; it stays here"
+            );
+            continue;
+        }
+        let size = serde_json::to_vec(&candidate).map_or(usize::MAX, |json| json.len());
+        if used.saturating_add(size) > MAX_ACCOUNT_BUNDLE_BYTES {
+            tracing::warn!(
+                user_id,
+                plugin_key = %candidate.plugin_key,
+                "the store accounts outgrow one join; the rest stay here"
+            );
+            continue;
+        }
+        used = used.saturating_add(size).saturating_add(1);
+        carried.push(candidate);
     }
     Ok(carried)
+}
+
+/// Whether `account` passes the account bundle's checks on its own, so one
+/// odd account never stops the others from travelling.
+fn travels(account: &CarriedAccount) -> bool {
+    const PROBE: &str = "probe";
+    check_account_bundle(
+        &AccountBundle {
+            v: ACCOUNT_BUNDLE_VERSION,
+            cluster_id: PROBE.to_owned(),
+            node_id: PROBE.to_owned(),
+            accounts: vec![account.clone()],
+        },
+        PROBE,
+        PROBE,
+    )
+    .is_ok()
 }
 
 /// Every `integration` secret of one account, unsealed, sorted by kind and
@@ -379,7 +425,8 @@ fn share_statements(
 
 /// The person on this install that store accounts brought from a library
 /// belong to: `preferred` (the Owner who elevated into the operator
-/// session that ran the join) when that user is active, otherwise the only
+/// session that ran the join) while that user is still an active Owner,
+/// otherwise the only
 /// active Owner. `None` when neither settles it, for example on a new
 /// install with no Owner yet; the accounts are then not kept.
 ///
@@ -391,7 +438,7 @@ pub async fn branch_person(store: &LibraryStore, preferred: Option<i64>) -> Resu
         if store
             .get_user(user_id)
             .await?
-            .is_some_and(|user| user.status == UserStatus::Active)
+            .is_some_and(|user| user.status == UserStatus::Active && user.role == UserRole::Owner)
         {
             return Ok(Some(user_id));
         }

@@ -746,6 +746,21 @@ async fn start_source_oauth_session(
             .await;
         match result {
             Ok(account) => {
+                // The operator may have stopped this member while the
+                // browser sign-in ran.
+                let allowed = bookclerk_library::control_plane::identity_may_connect_accounts(
+                    &library,
+                    identity_id,
+                )
+                .await
+                .unwrap_or(false);
+                if !allowed {
+                    warn!(
+                        source = %source_id,
+                        "portal OAuth login finished after connecting was turned off; not linked"
+                    );
+                    return;
+                }
                 let _ = library
                     .mark_connection_active(&plugin_key, &account.account_id)
                     .await;

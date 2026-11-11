@@ -387,3 +387,49 @@ async fn an_operator_who_refuses_the_member_stores_nothing() {
         );
     }
 }
+
+#[tokio::test]
+async fn an_account_the_bundle_refuses_stays_and_the_others_travel() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let ana = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        connect(store, ana.id, SHAREABLE, "ana@example.com", b"ana-token").await;
+        // A label longer than a bundle allows travels without its label.
+        connect(store, ana.id, SHAREABLE, "long@example.com", b"long").await;
+        store
+            .upsert_account(
+                SHAREABLE,
+                "long@example.com",
+                "us",
+                Some(&"x".repeat(300)),
+                true,
+                "store",
+            )
+            .await
+            .unwrap();
+        // An empty secret can't travel at all.
+        connect(store, ana.id, SHAREABLE, "empty@example.com", b"").await;
+
+        let carried = accounts_to_carry(store, ana.id, &shareable).await.unwrap();
+        let ids: Vec<(&str, Option<&str>)> = carried
+            .iter()
+            .map(|account| (account.account_id.as_str(), account.label.as_deref()))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                ("ana@example.com", Some("Reader")),
+                ("long@example.com", None)
+            ],
+            "{name}"
+        );
+    }
+}

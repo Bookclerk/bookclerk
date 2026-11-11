@@ -416,13 +416,21 @@ pub(crate) async fn shareable_plugin_keys(
     match bookclerk_library::control_plane::list_installs(library).await {
         Ok(installs) => {
             for install in installs {
-                let Ok(Some(version)) = bookclerk_library::control_plane::load_active_version(
+                let version = match bookclerk_library::control_plane::load_active_version(
                     library,
                     &install.plugin_key,
                 )
                 .await
-                else {
-                    continue;
+                {
+                    Ok(Some(version)) => version,
+                    Ok(None) => continue,
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "an installed plugin could not be read; no connections travel"
+                        );
+                        return BTreeSet::new();
+                    }
                 };
                 let manifest = PluginManifest::parse(&version.manifest_toml).ok();
                 note(&mut seen, install.plugin_key, manifest.as_ref());
@@ -480,6 +488,16 @@ async fn sealed_connections(
     enrolled: &EnrolledNode,
     box_public_key: &[u8],
 ) -> Option<String> {
+    // Checked on every redeem, a replay included: a user disabled since
+    // the join sends nothing more.
+    match library.get_user(enrolled.owner_user_id).await {
+        Ok(Some(user)) if user.status == UserStatus::Active => {}
+        Ok(_) => return None,
+        Err(err) => {
+            tracing::warn!(error = %err, "branch enrollment could not read the joining user");
+            return None;
+        }
+    }
     let shareable = shareable_plugin_keys(state, library).await;
     let is_shareable = move |key: &str| shareable.contains(key);
     let accounts = match accounts_to_carry(library, enrolled.owner_user_id, &is_shareable).await {
