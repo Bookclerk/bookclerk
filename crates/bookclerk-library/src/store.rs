@@ -7297,6 +7297,7 @@ impl LibraryStore {
     }
 }
 
+pub(crate) mod catalog_listings;
 pub(crate) mod discover;
 pub(crate) mod edition_files;
 pub(crate) mod event_outbox;
@@ -7308,7 +7309,9 @@ pub(crate) mod retention;
 pub(crate) mod search_feed;
 pub(crate) mod storage_scan;
 pub(crate) mod write_batches;
-pub use discover::{DiscoverSubject, SeedScope, StoredCandidate, StoredFeed};
+pub use discover::{
+    CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredFeed,
+};
 pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub(crate) mod job_queue;

@@ -375,6 +375,21 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         edition_id TEXT NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
         title TEXT NOT NULL,
         categories TEXT,
+        subtitle TEXT,
+        authors TEXT,
+        narrators TEXT,
+        series TEXT,
+        series_index TEXT,
+        description TEXT,
+        publisher TEXT,
+        published_at TEXT,
+        length_minutes INTEGER,
+        language TEXT,
+        cover_url TEXT,
+        url TEXT,
+        rating_overall REAL,
+        rating_count INTEGER,
+        is_abridged INTEGER,
         observed_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -383,6 +398,23 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_store_listings_edition ON store_listings(edition_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_store_listings_observed ON store_listings(observed_at)",
+    ),
+    // What a listing costs, per audience: `non_member` is what someone
+    // without an account at the store pays, `member` what a member or
+    // subscriber pays. One row per listing and audience, refreshed in place.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS listing_offers (
+        listing_id TEXT NOT NULL REFERENCES store_listings(id) ON DELETE CASCADE,
+        audience TEXT NOT NULL CHECK (audience IN ('non_member', 'member')),
+        price_cents INTEGER,
+        price_label TEXT,
+        currency TEXT,
+        observed_at TEXT NOT NULL,
+        PRIMARY KEY (listing_id, audience)
+    )",
     ),
     // `holder` is `account:<account_id>` (an account of the listing's
     // plugin) or `node:<node_id>` (a branch library).
@@ -568,27 +600,46 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         subject_key TEXT NOT NULL,
         source TEXT NOT NULL,
-        candidate_key TEXT NOT NULL,
+        listing_id TEXT NOT NULL REFERENCES store_listings(id) ON DELETE CASCADE,
         seed_scope TEXT NOT NULL,
-        candidate_json TEXT NOT NULL,
+        origin TEXT NOT NULL DEFAULT '',
+        seed_title TEXT,
+        seed_categories TEXT,
+        starter_genre TEXT,
         fetched_at TEXT NOT NULL,
-        UNIQUE(subject_key, source, candidate_key)
+        UNIQUE(subject_key, listing_id)
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_discover_candidates_subject ON discover_candidates(subject_key)",
+        r"CREATE INDEX IF NOT EXISTS idx_discover_candidates_subject ON discover_candidates(subject_key, source)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_discover_candidates_listing ON discover_candidates(listing_id)",
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS discover_store_calls (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         call_key TEXT NOT NULL UNIQUE,
         source TEXT NOT NULL,
-        response_json TEXT NOT NULL,
         fetched_at TEXT NOT NULL
     )",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_discover_store_calls_fetched ON discover_store_calls(fetched_at)",
+    ),
+    // The listings one cached storefront call answered, in the store's order.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS discover_store_call_hits (
+        call_key TEXT NOT NULL REFERENCES discover_store_calls(call_key) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        listing_id TEXT NOT NULL REFERENCES store_listings(id) ON DELETE CASCADE,
+        origin TEXT NOT NULL DEFAULT '',
+        rank_hint INTEGER,
+        PRIMARY KEY (call_key, position)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_discover_store_call_hits_listing ON discover_store_call_hits(listing_id)",
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS discover_feeds (

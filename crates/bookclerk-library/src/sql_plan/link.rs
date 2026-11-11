@@ -456,34 +456,36 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             binds,
         ));
     }
-    let mut binds = vec![
-        j_str(&p.listing_id),
-        j_str(&p.holder),
-        j_str(&p.entitlement),
-        j_opt_str(p.purchased_at.as_deref()),
-        j_str(now),
-        j_str(now),
-    ];
-    binds.extend(linked_binds.clone());
-    out.push(sql(
-        &format!(
-            "INSERT OR IGNORE INTO holdings \
-             (listing_id, holder, entitlement, purchased_at, created_at, updated_at) \
-             SELECT ?, ?, ?, ?, ?, ? WHERE {is_linked}"
-        ),
-        binds,
-    ));
-    out.push(sql(
-        "UPDATE holdings SET entitlement = ?, purchased_at = COALESCE(?, purchased_at), \
-         updated_at = ? WHERE listing_id = ? AND holder = ?",
-        vec![
-            j_str(&p.entitlement),
-            j_opt_str(p.purchased_at.as_deref()),
-            j_str(now),
+    if let Some(h) = &p.holding {
+        let mut binds = vec![
             j_str(&p.listing_id),
-            j_str(&p.holder),
-        ],
-    ));
+            j_str(&h.holder),
+            j_str(&h.entitlement),
+            j_opt_str(h.purchased_at.as_deref()),
+            j_str(now),
+            j_str(now),
+        ];
+        binds.extend(linked_binds.clone());
+        out.push(sql(
+            &format!(
+                "INSERT OR IGNORE INTO holdings \
+                 (listing_id, holder, entitlement, purchased_at, created_at, updated_at) \
+                 SELECT ?, ?, ?, ?, ?, ? WHERE {is_linked}"
+            ),
+            binds,
+        ));
+        out.push(sql(
+            "UPDATE holdings SET entitlement = ?, purchased_at = COALESCE(?, purchased_at), \
+             updated_at = ? WHERE listing_id = ? AND holder = ?",
+            vec![
+                j_str(&h.entitlement),
+                j_opt_str(h.purchased_at.as_deref()),
+                j_str(now),
+                j_str(&p.listing_id),
+                j_str(&h.holder),
+            ],
+        ));
+    }
     for conflict in &p.conflicts {
         let mut binds = vec![
             j_str(&p.listing_id),

@@ -199,8 +199,15 @@ pub async fn run_discover_candidates(
         .prune_discover_store_calls(Utc::now() - bookclerk_discover::STORE_CALL_MAX_AGE)
         .await
         .unwrap_or(0);
+    // Catalog listings no candidate, cached call, holding or override
+    // refers to any more, and no store has reported for a while.
+    let pruned_listings = library
+        .prune_catalog_listings(Utc::now() - CATALOG_LISTING_RETENTION)
+        .await
+        .unwrap_or(0);
     Ok(format!(
-        "subject={} seeds={} stores={} candidates={} failed={} pruned_calls={pruned}",
+        "subject={} seeds={} stores={} candidates={} failed={} pruned_calls={pruned} \
+         pruned_listings={pruned_listings}",
         subject.key(),
         report.seeds,
         report.stores_saved,
@@ -208,6 +215,11 @@ pub async fn run_discover_candidates(
         report.stores_failed.join(","),
     ))
 }
+
+/// How long an unreferenced catalog listing is kept after a store last
+/// reported it, so a title that drops off one subject's shelves and comes
+/// back within the week is not resolved again.
+const CATALOG_LISTING_RETENTION: chrono::Duration = chrono::Duration::days(7);
 
 /// Most rankings one `discover_feed` job runs when candidate fetches keep
 /// finishing under it; past this the next read or event queues another.

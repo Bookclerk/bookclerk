@@ -251,6 +251,22 @@ pub struct ListingLinkParams {
     /// Work identifiers to attach.
     #[serde(default)]
     pub work_identifiers: Vec<LinkWorkIdentifierRow>,
+    /// The holding to insert or refresh; `None` for a catalog listing
+    /// nobody in the library holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holding: Option<LinkHoldingRow>,
+    /// Conflicts to record.
+    #[serde(default)]
+    pub conflicts: Vec<LinkConflictRow>,
+    /// Events to publish.
+    #[serde(default)]
+    pub events: Vec<LinkEvent>,
+}
+
+/// A `holdings` row a link batch inserts or refreshes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkHoldingRow {
     /// Stored holder (`account:<id>` or `node:<id>`).
     pub holder: String,
     /// Stored entitlement.
@@ -258,12 +274,6 @@ pub struct ListingLinkParams {
     /// When the holder bought or added it (RFC 3339).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purchased_at: Option<String>,
-    /// Conflicts to record.
-    #[serde(default)]
-    pub conflicts: Vec<LinkConflictRow>,
-    /// Events to publish.
-    #[serde(default)]
-    pub events: Vec<LinkEvent>,
 }
 
 /// A `contributors` row (id derived from the cleaned name).

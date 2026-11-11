@@ -5,7 +5,9 @@ use sea_orm::entity::prelude::*;
 /// One cached storefront answer shared by every Discover subject (`DeriveEntityModel`).
 ///
 /// Two people whose seeds ask a store the same question inside the cache
-/// window reuse one call.
+/// window reuse one call. The answer is stored parsed: its listings are
+/// `store_listings` rows, referenced in order from
+/// `discover_store_call_hits`.
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "discover_store_calls")]
 pub struct Model {
@@ -17,8 +19,6 @@ pub struct Model {
     pub call_key: String,
     /// Storefront plugin id that answered.
     pub source: String,
-    /// The store's catalog hits as a JSON array.
-    pub response_json: String,
     /// RFC 3339 timestamp of the call.
     pub fetched_at: String,
 }

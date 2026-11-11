@@ -25,8 +25,9 @@ use crate::entities::{
 use crate::error::{LibraryError, Result};
 use crate::library_link::{
     ContributorRow, CreditBatchParams, CreditRow, LinkConflictRow, LinkEditionFill, LinkEditionRow,
-    LinkEvent, LinkExpressionFill, LinkExpressionRow, LinkIdentifierRow, LinkWorkIdentifierRow,
-    LinkWorkMatchKey, LinkWorkParent, LinkWorkRow, ListingLinkParams, SeriesEntryRow, SeriesRow,
+    LinkEvent, LinkExpressionFill, LinkExpressionRow, LinkHoldingRow, LinkIdentifierRow,
+    LinkWorkIdentifierRow, LinkWorkMatchKey, LinkWorkParent, LinkWorkRow, ListingLinkParams,
+    SeriesEntryRow, SeriesRow,
 };
 use crate::models::WorkRecord;
 
@@ -477,9 +478,11 @@ fn link_params(
                 value: row.key.value.clone(),
             })
             .collect(),
-        holder: plan.holding.holder.stored(),
-        entitlement: plan.holding.entitlement.as_str().to_string(),
-        purchased_at: plan.holding.purchased_at.clone(),
+        holding: plan.holding.as_ref().map(|h| LinkHoldingRow {
+            holder: h.holder.stored(),
+            entitlement: h.entitlement.as_str().to_string(),
+            purchased_at: h.purchased_at.clone(),
+        }),
         conflicts: plan.conflicts.iter().map(conflict_row).collect(),
         events: plan.events.iter().map(|e| link_event(listing, e)).collect(),
     }
@@ -858,22 +861,59 @@ impl LibraryStore {
         listing: &resolve::Listing,
         holding: &resolve::HoldingDraft,
     ) -> Result<resolve::Plan> {
+        self.link_listing(listing, Some(holding)).await
+    }
+
+    /// Resolves a catalog `listing` (a title a store sells that nobody in
+    /// the library holds) into the library: its work, expression, edition
+    /// and `store_listings` row, with no holding.
+    ///
+    /// A later scan of the same product finds the same listing row and adds
+    /// only its holding, so a catalog listing and a held one never diverge.
+    ///
+    /// # Returns
+    ///
+    /// The plan that was written (a no-op plan when nothing changed).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::record_listing`].
+    pub async fn record_catalog_listing(
+        &self,
+        listing: &resolve::Listing,
+    ) -> Result<resolve::Plan> {
+        self.link_listing(listing, None).await
+    }
+
+    /// [`Self::record_listing`] and [`Self::record_catalog_listing`]: links
+    /// `listing`, recording `holding` when one is given.
+    async fn link_listing(
+        &self,
+        listing: &resolve::Listing,
+        holding: Option<&resolve::HoldingDraft>,
+    ) -> Result<resolve::Plan> {
+        // A catalog listing has no holder; a holder no row names finds no
+        // stored holding, which a catalog plan ignores anyway.
+        let holder = holding.map_or_else(
+            || resolve::Holder::Account(String::new()),
+            |h| h.holder.clone(),
+        );
+        let plan_for = |snapshot: &resolve::Snapshot, ids: &mut UuidIds| match holding {
+            Some(holding) => resolve::resolve(listing, holding, snapshot, ids),
+            None => resolve::resolve_catalog(listing, snapshot, ids),
+        };
         for _ in 0..LINK_ATTEMPTS {
-            let (snapshot, stored_row) = self
-                .listing_snapshot_and_row(listing, &holding.holder)
-                .await?;
+            let (snapshot, stored_row) = self.listing_snapshot_and_row(listing, &holder).await?;
             if let Some(missing) = snapshot.is_closed() {
                 return Err(LibraryError::Other(anyhow::anyhow!(
                     "library rows for listing {} reference a missing {missing}",
                     listing.key.product_id
                 )));
             }
-            let mut plan = resolve::resolve(listing, holding, &snapshot, &mut UuidIds::default());
+            let mut plan = plan_for(&snapshot, &mut UuidIds::default());
             if let Some(edition) = &plan.new_edition {
                 if self.edition_exists(&edition.id).await? {
-                    plan = resolve::resolve(
-                        listing,
-                        holding,
+                    plan = plan_for(
                         &snapshot,
                         &mut UuidIds {
                             random_editions: true,

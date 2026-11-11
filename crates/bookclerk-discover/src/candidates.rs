@@ -451,6 +451,39 @@ fn merge_category_strings(into: &mut Option<String>, extra: Option<&str>) {
     }
 }
 
+/// True when the library already holds the candidate's title, by ASIN,
+/// canonical ISBN or `source:product` key.
+///
+/// # Arguments
+///
+/// * `c` - The candidate.
+/// * `owned_asins` - Upper-cased ASINs the library holds.
+/// * `owned_isbns` - ISBNs the library holds (canonical and as stored).
+/// * `owned_product_keys` - `source:product` keys and product ids it holds.
+pub(crate) fn candidate_is_owned(
+    c: &StorefrontCandidate,
+    owned_asins: &HashSet<String>,
+    owned_isbns: &HashSet<String>,
+    owned_product_keys: &HashSet<String>,
+) -> bool {
+    if let Some(asin) = c.asin.as_deref() {
+        if owned_asins.contains(&asin.to_ascii_uppercase()) {
+            return true;
+        }
+    }
+    if let Some(isbn) = c.isbn.as_deref() {
+        let norm = bookclerk_enrich::canonicalize_isbn(isbn);
+        if owned_isbns.contains(isbn) || (!norm.is_empty() && owned_isbns.contains(&norm)) {
+            return true;
+        }
+    }
+    let source_key = format!("{}:{}", c.source, c.product_id);
+    owned_product_keys.contains(&source_key)
+        || owned_asins.contains(&c.product_id.to_ascii_uppercase())
+        || owned_isbns.contains(&c.product_id)
+        || owned_product_keys.contains(&c.product_id)
+}
+
 /// Inserts a candidate unless its ASIN, ISBN, or source:product id is already owned.
 pub(crate) fn insert_candidate(
     map: &mut HashMap<String, StorefrontCandidate>,
@@ -459,29 +492,14 @@ pub(crate) fn insert_candidate(
     owned_isbns: &HashSet<String>,
     owned_product_keys: &HashSet<String>,
 ) {
-    if let Some(asin) = c.asin.as_deref() {
-        if owned_asins.contains(&asin.to_ascii_uppercase()) {
-            return;
-        }
-    }
-    if let Some(isbn) = c.isbn.clone() {
-        let norm = bookclerk_enrich::canonicalize_isbn(&isbn);
-        if !norm.is_empty() {
-            c.isbn = Some(norm.clone());
-            if owned_isbns.contains(&norm) || owned_isbns.contains(&isbn) {
-                return;
-            }
-        } else if owned_isbns.contains(&isbn) {
-            return;
-        }
-    }
-    let source_key = format!("{}:{}", c.source, c.product_id);
-    if owned_product_keys.contains(&source_key)
-        || owned_asins.contains(&c.product_id.to_ascii_uppercase())
-        || owned_isbns.contains(&c.product_id)
-        || owned_product_keys.contains(&c.product_id)
-    {
+    if candidate_is_owned(&c, owned_asins, owned_isbns, owned_product_keys) {
         return;
+    }
+    if let Some(isbn) = c.isbn.as_deref() {
+        let norm = bookclerk_enrich::canonicalize_isbn(isbn);
+        if !norm.is_empty() {
+            c.isbn = Some(norm);
+        }
     }
 
     push_edition(

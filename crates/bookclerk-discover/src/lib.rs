@@ -22,6 +22,7 @@ mod embed;
 mod error;
 mod identity;
 mod metadata_enrich;
+mod pool;
 mod precompute;
 mod purchase;
 mod recommend;

@@ -414,8 +414,9 @@ pub struct Plan {
     pub credits: Vec<CreditWrite>,
     /// Series entries for the work, when it has none yet.
     pub series: Vec<SeriesWrite>,
-    /// The holding to insert or refresh.
-    pub holding: HoldingRow,
+    /// The holding to insert or refresh; `None` for a catalog listing
+    /// nobody holds ([`crate::resolve_catalog`]).
+    pub holding: Option<HoldingRow>,
     /// True when the holding is new.
     pub holding_is_new: bool,
     /// True when a stored holding's entitlement or purchase date changes.

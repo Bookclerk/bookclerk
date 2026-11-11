@@ -587,18 +587,38 @@ async fn discover_candidates_are_read_whole_under_every_profile() {
     for profile in Profile::ALL {
         let store = kit(profile).await;
         let subject = DiscoverSubject::User(7);
-        // Rows as wide as one statement of the profile carries, so forty of
-        // them exceed the smallest result cap many times over and the
-        // internal id walk has to keep going.
+        // Listings whose synopses are as wide as one statement of the
+        // profile carries, so forty of them exceed the smallest result cap
+        // many times over and the pool read has to split its chunks.
         let caps = store.db_capabilities();
         let width = usize::try_from(caps.max_payload_bytes / 3)
             .unwrap()
             .min(usize::try_from(caps.max_cell_bytes).unwrap() / 2);
-        let rows: Vec<(String, String)> = (0..40)
-            .map(|i| {
-                let key = format!("cand-{i:03}");
-                let json = format!("{{\"key\":\"{key}\",\"pad\":\"{}\"}}", "x".repeat(width));
-                (key, json)
+        let titles: Vec<crate::CatalogListing> = (0..40)
+            .map(|i| crate::CatalogListing {
+                draft: bookclerk_resolve::ListingDraft {
+                    plugin_key: String::from("audible"),
+                    marketplace: Some(String::from("us")),
+                    product_id: format!("cand-{i:03}"),
+                    title: format!("Candidate {i}"),
+                    ..bookclerk_resolve::ListingDraft::default()
+                },
+                detail: crate::ListingDetail {
+                    description: Some(format!("{i:03}{}", "x".repeat(width))),
+                    ..crate::ListingDetail::default()
+                },
+                offers: Vec::new(),
+            })
+            .collect();
+        let ids = store.record_catalog_listings(&titles).await.unwrap();
+        let rows: Vec<crate::CandidateRef> = ids
+            .into_iter()
+            .map(|id| crate::CandidateRef {
+                listing_id: id.unwrap(),
+                origin: String::from("deals"),
+                seed_title: None,
+                seed_categories: None,
+                starter_genre: None,
             })
             .collect();
         store
@@ -606,16 +626,21 @@ async fn discover_candidates_are_read_whole_under_every_profile() {
             .await
             .unwrap();
         let listed = store.list_discover_candidates(&subject).await.unwrap();
-        let mut keys: Vec<String> = listed.iter().map(|c| c.candidate_key.clone()).collect();
+        let mut keys: Vec<String> = listed
+            .iter()
+            .map(|c| c.listing.product_id.clone())
+            .collect();
         keys.sort();
-        let expected: Vec<String> = rows.iter().map(|(k, _)| k.clone()).collect();
+        let expected: Vec<String> = (0..40).map(|i| format!("cand-{i:03}")).collect();
         assert_eq!(keys, expected, "{}", profile.name());
         for candidate in &listed {
-            let (_, json) = rows
-                .iter()
-                .find(|(k, _)| *k == candidate.candidate_key)
-                .unwrap();
-            assert_eq!(&candidate.candidate_json, json, "{}", profile.name());
+            let i: usize = candidate.listing.product_id[5..].parse().unwrap();
+            assert_eq!(
+                candidate.listing.detail.description.as_deref(),
+                titles[i].detail.description.as_deref(),
+                "{}",
+                profile.name()
+            );
         }
     }
 }

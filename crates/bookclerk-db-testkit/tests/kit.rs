@@ -43,35 +43,33 @@ fn request(operation_id: &str, statements: Vec<TypedDbStatement>) -> ExecuteRequ
     }
 }
 
-/// Inserts one discover candidate row keyed `key` carrying `json`.
+/// Inserts one stored Discover feed row keyed `key` carrying `json` (a
+/// host table with a unique text key, a wide text cell and no foreign key).
 fn insert_candidate(key: &str, json: &str) -> TypedDbStatement {
     exec(
-        "INSERT INTO discover_candidates \
-         (subject_key, source, candidate_key, seed_scope, candidate_json, fetched_at) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO discover_feeds (subject_key, feed_json, seed_scope, computed_at) \
+         VALUES (?, ?, ?, ?)",
         vec![
-            DbValue::Text("user:1".into()),
-            DbValue::Text("libro".into()),
             DbValue::Text(key.into()),
-            DbValue::Text("own".into()),
             DbValue::Text(json.into()),
+            DbValue::Text("own".into()),
             DbValue::Text("2026-01-01T00:00:00Z".into()),
         ],
     )
 }
 
-/// Candidate keys present for the test subject, through the connection.
+/// Feed keys present, through the connection.
 async fn candidate_keys(db: &TestDatabase) -> Vec<String> {
     let rows = db
         .connection()
         .query_all_raw(Statement::from_string(
             sea_orm::DbBackend::Sqlite,
-            "SELECT candidate_key FROM discover_candidates ORDER BY candidate_key",
+            "SELECT subject_key FROM discover_feeds ORDER BY subject_key",
         ))
         .await
         .unwrap();
     rows.iter()
-        .map(|row| row.try_get::<String>("", "candidate_key").unwrap())
+        .map(|row| row.try_get::<String>("", "subject_key").unwrap())
         .collect()
 }
 
@@ -126,9 +124,9 @@ async fn batches_run_as_one_transaction_without_an_interactive_begin() {
                     insert_candidate("a", "{}"),
                     insert_candidate("b", "{}"),
                     query(
-                        "SELECT candidate_key FROM discover_candidates WHERE subject_key = ? \
-                         ORDER BY candidate_key",
-                        vec![DbValue::Text("user:1".into())],
+                        "SELECT subject_key FROM discover_feeds WHERE seed_scope = ? \
+                         ORDER BY subject_key",
+                        vec![DbValue::Text("own".into())],
                         1,
                     ),
                 ],
@@ -204,7 +202,7 @@ async fn the_minimum_profile_refuses_a_long_batch_and_a_wide_cell() {
         .execute_batch(request(
             "read-wide",
             vec![query(
-                "SELECT candidate_json FROM discover_candidates WHERE candidate_key = ?",
+                "SELECT feed_json FROM discover_feeds WHERE subject_key = ?",
                 vec![DbValue::Text("wide".into())],
                 1,
             )],
@@ -234,8 +232,8 @@ async fn the_minimum_profile_refuses_a_long_batch_and_a_wide_cell() {
         request(
             "read",
             vec![query(
-                "SELECT candidate_json FROM discover_candidates \
-                 WHERE candidate_key LIKE ? ORDER BY candidate_key",
+                "SELECT feed_json FROM discover_feeds \
+                 WHERE subject_key LIKE ? ORDER BY subject_key",
                 vec![DbValue::Text(format!("{prefix}%"))],
                 max_rows,
             )],
@@ -297,7 +295,7 @@ async fn a_result_over_the_byte_cap_is_a_typed_limit_error() {
         .execute_batch(request(
             "read",
             vec![query(
-                "SELECT candidate_json FROM discover_candidates ORDER BY candidate_key",
+                "SELECT feed_json FROM discover_feeds ORDER BY subject_key",
                 vec![],
                 8,
             )],
