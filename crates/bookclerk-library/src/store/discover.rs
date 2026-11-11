@@ -40,7 +40,7 @@ use crate::models::{portal_prefs_key, user_prefs_key, OPERATOR_PREFS_KEY};
 /// Large enough that a typical subject's candidates arrive in one or two
 /// reads. Candidate rows are references (a few hundred bytes); the listing
 /// text is read from the pool in its own size-bounded chunks.
-const DISCOVER_READ_PAGE: u64 = 200;
+pub(super) const DISCOVER_READ_PAGE: u64 = 200;
 
 /// Most hits read back for one cached storefront call; stores answer a few
 /// dozen titles per call.
