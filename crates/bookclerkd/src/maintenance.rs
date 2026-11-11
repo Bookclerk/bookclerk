@@ -1,6 +1,7 @@
 //! Singleton maintenance: periodic cluster-wide cleanup, one node per duty.
 //!
-//! Every daemon ticks each duty every [`MAINTENANCE_TICK`]. A duty runs
+//! Every daemon ticks each duty every [`MAINTENANCE_TICK`], starting
+//! [`MAINTENANCE_STARTUP_DELAY`] after it starts. A duty runs
 //! under its own cluster lease ([`Duty::lease`]); only the holder runs it,
 //! at once when it takes the lease and then every [`MAINTENANCE_INTERVAL`].
 //! The holder renews on every tick, so a daemon that stops ticking loses the
@@ -29,6 +30,16 @@ use crate::api::AppState;
 /// How often every daemon polls its maintenance duties. Well inside
 /// [`MAINTENANCE_LEASE_TTL`] so the holder keeps its leases.
 pub const MAINTENANCE_TICK: Duration = Duration::from_secs(60);
+
+/// How long a daemon waits after it starts before its first maintenance
+/// tick.
+///
+/// The duties are hourly cleanup, but the first pass after a start runs
+/// every one of them back to back. On a small host (the hosted demo has a
+/// quarter of a CPU) that pass competed with startup and the first sign-in
+/// for the database for about ten seconds. Each duty runs hourly anyway,
+/// so a restart only moves its next run this much later.
+pub const MAINTENANCE_STARTUP_DELAY: Duration = Duration::from_secs(300);
 
 /// How long a maintenance lease lasts without renewal.
 pub const MAINTENANCE_LEASE_TTL: Duration = Duration::from_secs(180);
@@ -211,7 +222,10 @@ async fn run_duty(
 /// Starts this daemon's maintenance loop.
 pub fn spawn_maintenance(state: Arc<AppState>) {
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(MAINTENANCE_TICK);
+        let mut tick = tokio::time::interval_at(
+            tokio::time::Instant::now() + MAINTENANCE_STARTUP_DELAY,
+            MAINTENANCE_TICK,
+        );
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut maintenance = None;
         loop {
