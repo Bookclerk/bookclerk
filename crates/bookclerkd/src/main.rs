@@ -279,6 +279,7 @@ async fn main() -> anyhow::Result<()> {
         library: library.clone(),
         database_registry: database_registry.clone(),
         job_notify: Arc::new(Notify::new()),
+        capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
         job_runtime: Arc::new(RwLock::new(())),
         work_lock: Mutex::new(()),
         discover_gate: Arc::new(Semaphore::new(1)),

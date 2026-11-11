@@ -145,6 +145,48 @@ pub struct ClusterLink {
     /// The owner library's ancestry as it last reported it: its own
     /// cluster id first, then each library above it.
     pub ancestry: Vec<String>,
+    /// The operator's cap on jobs run for this library at once; `None`
+    /// leaves the link its equal share of the machine.
+    pub max_jobs: Option<LinkJobCap>,
+}
+
+/// The most jobs a branch runs for one library at once, as its operator
+/// set it: 0 (runs nothing for that library) to [`LinkJobCap::MAX`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct LinkJobCap(u8);
+
+impl LinkJobCap {
+    /// The highest cap an operator may set.
+    pub const MAX: u8 = 64;
+
+    /// A cap of `jobs`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] above [`Self::MAX`].
+    pub fn new(jobs: u32) -> Result<Self> {
+        u8::try_from(jobs)
+            .ok()
+            .filter(|jobs| *jobs <= Self::MAX)
+            .map(Self)
+            .ok_or_else(|| {
+                LibraryError::Invalid(format!("a library's job cap is 0 to {} jobs", Self::MAX))
+            })
+    }
+
+    /// The cap in jobs.
+    #[must_use]
+    pub fn jobs(self) -> usize {
+        usize::from(self.0)
+    }
+
+    /// A stored cap; a value outside the range (a hand-edited row) reads as
+    /// no cap rather than failing the link.
+    fn from_column(raw: Option<i64>) -> Option<Self> {
+        raw.and_then(|raw| u32::try_from(raw).ok())
+            .and_then(|raw| Self::new(raw).ok())
+    }
 }
 
 impl ClusterLink {
@@ -171,6 +213,7 @@ impl From<cluster_links::Model> for ClusterLink {
                 .into_iter()
                 .filter(|id| bookclerk_node_proto::is_cluster_id(id))
                 .collect(),
+            max_jobs: LinkJobCap::from_column(row.max_jobs),
         }
     }
 }
@@ -264,6 +307,7 @@ pub async fn record_cluster_link(
         share_books: Set(1),
         include_branches: Set(1),
         ancestry_json: Set("[]".into()),
+        max_jobs: Set(None),
     };
     let insert = cluster_links::Entity::insert(row).on_conflict(
         OnConflict::column(cluster_links::Column::OwnerClusterId)
@@ -464,6 +508,38 @@ pub async fn set_cluster_link_sharing(
                 .add(cluster_links::Column::ShareBooks.ne(i64::from(share_books)))
                 .add(cluster_links::Column::IncludeBranches.ne(i64::from(include_branches))),
         );
+    let updated = store
+        .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
+        .await?;
+    Ok(updated == 1)
+}
+
+/// Sets the most jobs this install runs for one library at once; `None`
+/// clears the cap, leaving the link its equal share of the machine.
+/// Answers false when no such link exists. The running client picks the
+/// new cap up on the next share update.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn set_cluster_link_job_cap(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    max_jobs: Option<LinkJobCap>,
+) -> Result<bool> {
+    let value = max_jobs.map(|cap| i64::from(cap.0));
+    let update = cluster_links::Entity::update_many()
+        .col_expr(cluster_links::Column::MaxJobs, Expr::value(value))
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id));
+    let changed = match value {
+        Some(value) => sea_orm::Condition::any()
+            .add(cluster_links::Column::MaxJobs.is_null())
+            .add(cluster_links::Column::MaxJobs.ne(value)),
+        None => sea_orm::Condition::all().add(cluster_links::Column::MaxJobs.is_not_null()),
+    };
+    let probe = cluster_links::Entity::find()
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(changed);
     let updated = store
         .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
         .await?;
@@ -717,6 +793,55 @@ mod tests {
             remote_node_id: "node-1".into(),
             spki_pin: pin.map(str::to_string),
         }
+    }
+
+    /// A job cap is stored, kept across a re-enrollment, cleared, and
+    /// refused above the maximum; an unknown cluster answers false.
+    #[tokio::test]
+    async fn a_links_job_cap_round_trips() {
+        let _lock = master_key_test_lock_async().await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in(dir.path()).await;
+        let keys = ClusterLinkKeys::from_bytes(&[3; 32], &[4; 32]);
+        record_cluster_link(&store, &new_link(None), &keys)
+            .await
+            .unwrap();
+        let read = |store: LibraryStore| async move {
+            load_cluster_link(&store, "cluster-1")
+                .await
+                .unwrap()
+                .expect("the link")
+                .max_jobs
+        };
+        assert_eq!(read(store.clone()).await, None);
+        let cap = LinkJobCap::new(3).unwrap();
+        assert!(set_cluster_link_job_cap(&store, "cluster-1", Some(cap))
+            .await
+            .unwrap());
+        assert_eq!(read(store.clone()).await, Some(cap));
+        assert_eq!(cap.jobs(), 3);
+        record_cluster_link(&store, &new_link(None), &keys)
+            .await
+            .unwrap();
+        assert_eq!(
+            read(store.clone()).await,
+            Some(cap),
+            "re-enrollment dropped the cap"
+        );
+        let none = LinkJobCap::new(0).unwrap();
+        assert!(set_cluster_link_job_cap(&store, "cluster-1", Some(none))
+            .await
+            .unwrap());
+        assert_eq!(read(store.clone()).await, Some(none));
+        assert!(set_cluster_link_job_cap(&store, "cluster-1", None)
+            .await
+            .unwrap());
+        assert_eq!(read(store.clone()).await, None);
+        assert!(!set_cluster_link_job_cap(&store, "nope", Some(cap))
+            .await
+            .unwrap());
+        assert!(LinkJobCap::new(u32::from(LinkJobCap::MAX) + 1).is_err());
+        assert!(LinkJobCap::new(u32::from(LinkJobCap::MAX)).is_ok());
     }
 
     /// Leaving marks the link left and deletes its keys; an unknown

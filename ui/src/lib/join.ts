@@ -65,6 +65,10 @@ export interface BranchLinkView {
   share_books?: boolean;
   /** "Include books from my own branches" (on by default). */
   include_branches?: boolean;
+  /** The most jobs this server runs for the library at once; `null` is an equal share of the machine. */
+  max_jobs?: number | null;
+  /** Jobs the library may have running here now (its share of the machine); absent while its link is not running. */
+  job_share?: number;
 }
 
 /** `GET /api/config/join`. */
@@ -437,6 +441,44 @@ export function setBranchSharing(
     method: "POST",
     body: { cluster_id: clusterId, share_books: shareBooks, include_branches: includeBranches },
   });
+}
+
+/** Highest job cap Settings → Library offers (the daemon accepts up to 64). */
+export const MAX_OFFERED_JOB_CAP = 8;
+
+/**
+ * Settings → Library: the most jobs this server runs for one library at
+ * once (the operator or an Owner). `null` gives the library an equal share
+ * of the machine after this server's own work; 0 runs nothing for it.
+ * Jobs already running finish.
+ *
+ * @param clusterId - The library.
+ * @param maxJobs - The cap in jobs, or `null` for an equal share.
+ * @returns The link with the stored cap and its share now.
+ */
+export function setBranchJobCap(
+  clusterId: string,
+  maxJobs: number | null,
+): Promise<{ cluster: BranchLinkView }> {
+  return request("/api/config/join/capacity", {
+    method: "POST",
+    body: { cluster_id: clusterId, max_jobs: maxJobs },
+  });
+}
+
+/**
+ * One line on how much of this machine a library may use.
+ *
+ * @param maxJobs - The operator's cap, or `null`/absent for an equal share.
+ * @param jobShare - Jobs the library may run here now, when its link runs.
+ * @returns For example "Equal share of this computer: 2 jobs at once now".
+ */
+export function jobShareSummary(maxJobs: number | null | undefined, jobShare?: number): string {
+  const jobs = (n: number) => (n === 1 ? "1 job" : `${n} jobs`);
+  const now = jobShare === undefined ? "" : `: ${jobs(jobShare)} at once now`;
+  if (maxJobs === 0) return "Runs no work for this library";
+  if (maxJobs === null || maxJobs === undefined) return `Equal share of this computer${now}`;
+  return `Up to ${jobs(maxJobs)} at once${now}`;
 }
 
 /**
