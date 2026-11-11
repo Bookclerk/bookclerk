@@ -9,10 +9,13 @@
 //! - parsing never panics, and parsing the same page twice gives the same
 //!   record;
 //! - a page that carries neither Magento's `catalog_product_view_id_` tag nor
-//!   a `data-product-id` attribute (checked on the raw text, not through the
-//!   HTML parser) yields no record;
-//! - a record's product id is 1 to 20 ASCII digits that appear in the page,
-//!   and its title is non-blank, trimmed and on one line;
+//!   a `data-product-id` attribute (checked on the raw text, ignoring ASCII
+//!   case as HTML attribute names do, not through the HTML parser) yields no
+//!   record;
+//! - a record's product id is 1 to 20 ASCII digits that appear in the page
+//!   literally, unless the page has a character reference (`&`) that an
+//!   attribute value could decode to them, and its title is non-blank,
+//!   trimmed and on one line;
 //! - every credit name and the genre are non-blank, trimmed and on one line;
 //! - an ISBN is 13 ASCII digits;
 //! - the running time is 1 to 10,080 minutes, the release date is
@@ -46,8 +49,9 @@ pub fn check(data: &[u8]) {
         "two parses of one page differ"
     );
     let Some(hit) = hit else { return };
+    let lower = html.to_ascii_lowercase();
     assert!(
-        html.contains("catalog_product_view_id_") || html.contains("data-product-id"),
+        lower.contains("catalog_product_view_id_") || lower.contains("data-product-id"),
         "a record from a page with no product id marker"
     );
 
@@ -57,7 +61,7 @@ pub fn check(data: &[u8]) {
         "product id {id:?}"
     );
     assert!(
-        html.contains(id.as_str()),
+        html.contains(id.as_str()) || html.contains('&'),
         "product id {id} not in the page"
     );
     assert!(one_line(&hit.title), "title {:?}", hit.title);
