@@ -10,6 +10,43 @@ use chrono::{DateTime, NaiveDate, Utc};
 use crate::client::{Audiobook, ChirpClient};
 use crate::error::Result;
 
+/// Fetch one Chirp library page as scan rows (no DB writes).
+///
+/// # Arguments
+///
+/// * `client` - Authenticated Chirp client.
+/// * `account_id` - Account the rows belong to.
+/// * `marketplace` - Marketplace stamped on every row.
+/// * `page` - 1-based library page.
+/// * `page_size` - Items per page (at least 1).
+///
+/// # Returns
+///
+/// The page's playable titles and the next page number, `None` on the last
+/// page (a short or empty page).
+///
+/// # Errors
+///
+/// Returns an error when the request fails.
+pub async fn fetch_account_page(
+    client: &ChirpClient,
+    account_id: &str,
+    marketplace: &str,
+    page: u32,
+    page_size: u32,
+) -> Result<(Vec<ScanBook>, Option<u32>)> {
+    let page_size = page_size.max(1);
+    let items = client.library_page(page, page_size).await?;
+    let books = items
+        .iter()
+        .filter(|item| !item.archived.unwrap_or(false))
+        .filter_map(|item| item.audiobook.as_ref())
+        .map(|book| audiobook_to_scan_book(book, account_id, marketplace))
+        .collect();
+    let full = u32::try_from(items.len()).is_ok_and(|n| n >= page_size);
+    Ok((books, full.then(|| page.saturating_add(1))))
+}
+
 /// Fetch all library pages for one client and collect books (no DB writes).
 ///
 /// # Errors
@@ -23,30 +60,14 @@ pub async fn collect_account_books(
 ) -> Result<(Vec<ScanBook>, u32)> {
     let mut books = Vec::new();
     let mut pages = 0u32;
-    let mut page = 1u32;
-    let page_size = page_size.max(1);
-
-    loop {
-        let items = client.library_page(page, page_size).await?;
+    let mut page = Some(1u32);
+    while let Some(current) = page {
+        let (batch, next) =
+            fetch_account_page(client, account_id, marketplace, current, page_size).await?;
         pages += 1;
-        if items.is_empty() {
-            break;
-        }
-        for item in &items {
-            if item.archived.unwrap_or(false) {
-                continue;
-            }
-            let Some(book) = item.audiobook.as_ref() else {
-                continue;
-            };
-            books.push(audiobook_to_scan_book(book, account_id, marketplace));
-        }
-        if items.len() < page_size as usize {
-            break;
-        }
-        page += 1;
+        books.extend(batch);
+        page = next;
     }
-
     Ok((books, pages))
 }
 

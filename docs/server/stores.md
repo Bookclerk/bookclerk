@@ -56,6 +56,17 @@ Commands for the accounts once they are connected:
 | Scan one store | `bookclerk library scan --source <id> [--instance <plugin-instance-id>]` |
 | Acquire one title | `bookclerk library acquire <title-id> [--instance <plugin-instance-id>]` |
 
+### How a scan reads a library
+
+A scan reads each account's library a page at a time and saves its place
+after every page, so a large library never has to arrive in one piece.
+
+- A scan that stops part way, from a restart or a store error, carries on
+  from the last saved page the next time, if that was within a day.
+- Audible scans after the first ask only for what changed since the last
+  one. Every seven days a scan reads the whole library again.
+- Libro.fm, Chirp and GraphicAudio read the whole library on every scan.
+
 ### Matching to Audible's catalog
 
 After a scan, books from other stores can get an Audible ASIN from

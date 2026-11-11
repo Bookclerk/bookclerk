@@ -751,7 +751,7 @@ methods on [`ContentSource`](../../packages/plugin-sdk/src/plugin.ts) and
 | --- | --- |
 | `login` | Password storefronts. Params include `pluginDataDir`, marketplace, label, email and password. Result: `{ account, credentials? }`. The host seals the credentials (`provider = plugin id`) and upserts the account row |
 | `loginStart` / `loginComplete` | OAuth storefronts (Audible). Start returns `{ sessionId, url }`; complete returns the login result |
-| `scan` | Params include `pluginDataDir`, filters, and a host-injected `credentials` list (one `{ accountId, credentials }` entry per account, with the credentials as opaque JSON bytes; **no** library database path). The result includes `books[]` records (see [Book records](#book-records)); the host stores them with `source` forced to the plugin id |
+| `scan` | Returns one page of one account's library (see [Paged scans](#paged-scans)). Params carry `pluginDataDir`, `accountId`, filters, that account's host-injected `credential` (`{ accountId, credentials }`, the credentials as opaque JSON bytes; **no** library database path), `cursor` and `syncToken`. The reply is a `ScanPage` of `books[]` records (see [Book records](#book-records)); the host stores them with `source` forced to the plugin id |
 | `searchCatalog` | `{ query, region, limit, page, sort, field }` → `CatalogHit[]` (see [Book records](#book-records)). A `limit` of `0` means the storefront's default page of 20 hits; an empty query returns `[]` |
 | `catalogDetail` | `{ productId, isbn? }` → `{ found, hit }`: the full record for one product (description, narrators, runtime, genres). A store that declares `detailByIsbn` also answers a bare ISBN, which the host sends in both fields |
 | `fetchTitle` | The host injects `credentials` from `encrypted_secrets`. The plugin writes media under the work folder and returns **plain** paths (DRM guests decrypt before returning) |
@@ -769,6 +769,60 @@ other failure of a price lookup is soft: the card simply has no price.
 > [!IMPORTANT]
 > Plugins must not open `library.db` or read `master.key`. Don't put
 > encrypted content keys on the wire: decrypt in the guest when needed.
+
+#### Paged scans
+
+The host scans one account at a time and asks for its library a page at a
+time, so a large library never has to fit in one reply and a stopped scan
+picks up where it left off.
+
+1. The first call has an empty `cursor`. Each later call passes back the
+   `nextCursor` of the page before. A page with an empty `nextCursor` is the
+   last one.
+2. An empty `syncToken` asks for a **full pass**: every title the account
+   holds. A non-empty one is a token the plugin returned at the end of an
+   earlier pass, and asks only for what changed since then (a **delta
+   pass**).
+3. On the last page, set `syncToken` to the token for the next pass (empty
+   when the store has no change feed) and `complete` to true when the pass
+   listed every title the account holds. A delta pass is not complete.
+4. List titles the store reports gone in a delta pass as product ids in
+   `removed`. `storePages` counts the store requests behind the page, for
+   progress and diagnostics.
+
+A page holds at most `MAX_SCAN_PAGE_BOOKS` (500) books and as many removed
+ids; `cursor` and `syncToken` are at most `MAX_SCAN_CURSOR_BYTES` (4096)
+bytes. Both are opaque to the host and never shown to anyone. The host
+refuses a page that breaks a limit, returns a cursor it already returned
+in the same pass, carries a book for another account or a blank product id,
+and fails the scan.
+
+The host keeps where each account stands in the `account_scan_state`
+table:
+
+- It saves `nextCursor` after writing each page. A scan that stops resumes
+  from that cursor, with the token the pass started with, if the cursor is
+  less than 24 hours old.
+- It stores the last page's `syncToken` and sends it on the next pass, but
+  asks for a full pass again when no complete pass has finished in seven
+  days.
+- A plugin that no longer accepts a cursor or token rejects the call with
+  `invalid_cursor`. The host forgets both and restarts once as a full pass.
+  If the first page of a resumed pass fails for another reason, the host
+  forgets the cursor and restarts that pass once from the beginning. If the
+  first page of a delta pass fails for another reason, the host restarts
+  once as a full pass and keeps the stored token until that pass replaces
+  it.
+- A pass stops with an error after 10,000 pages.
+
+A store with no change feed returns full passes with an empty `syncToken`;
+a page number makes a fine cursor. A plugin that needs more state than one
+token can keep it in its own [KV namespace](#kv-namespaces).
+
+> [!NOTE]
+> The host counts `removed` ids but does not yet take those titles off the
+> account. Holdings removal comes with the library data model's holdings
+> work.
 
 #### Catalog search capabilities
 

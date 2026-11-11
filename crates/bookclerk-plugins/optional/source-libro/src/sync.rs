@@ -10,6 +10,50 @@ use chrono::{DateTime, NaiveDate, Utc};
 use crate::client::{Audiobook, LibroClient};
 use crate::error::{LibroError, Result};
 
+/// Fetch one Libro.fm library page as scan rows (no DB writes).
+///
+/// # Arguments
+///
+/// * `client` - Authenticated Libro.fm client.
+/// * `account_id` - Account the rows belong to.
+/// * `marketplace` - Marketplace stamped on every row.
+/// * `page` - 1-based library page.
+///
+/// # Returns
+///
+/// The page's visible titles and the next page number, `None` on the last
+/// page.
+///
+/// # Errors
+///
+/// Returns an error when the request fails or the API reports one.
+pub async fn fetch_account_page(
+    client: &LibroClient,
+    account_id: &str,
+    marketplace: &str,
+    page: u32,
+) -> Result<(Vec<ScanBook>, Option<u32>)> {
+    let response = client.library_page(page).await?;
+    if let Some(err) = response.error.as_deref() {
+        return Err(LibroError::api(err.to_string()));
+    }
+    let books = response
+        .audiobooks
+        .iter()
+        .filter(|book| {
+            !book
+                .user_metadata
+                .as_ref()
+                .and_then(|m| m.hidden)
+                .unwrap_or(false)
+        })
+        .map(|book| audiobook_to_scan_book(book, account_id, marketplace))
+        .collect();
+    let total = response.total_pages.max(1);
+    let next = (page < total && !response.audiobooks.is_empty()).then(|| page.saturating_add(1));
+    Ok((books, next))
+}
+
 /// Fetch all library pages for one client and collect books (no DB writes).
 ///
 /// # Errors
@@ -22,34 +66,13 @@ pub async fn collect_account_books(
 ) -> Result<(Vec<ScanBook>, u32)> {
     let mut books = Vec::new();
     let mut pages = 0u32;
-    let mut page = 1u32;
-
-    loop {
-        let response = client.library_page(page).await?;
-        if let Some(err) = response.error.as_deref() {
-            return Err(LibroError::api(err.to_string()));
-        }
+    let mut page = Some(1u32);
+    while let Some(current) = page {
+        let (batch, next) = fetch_account_page(client, account_id, marketplace, current).await?;
         pages += 1;
-
-        for book in &response.audiobooks {
-            if book
-                .user_metadata
-                .as_ref()
-                .and_then(|m| m.hidden)
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            books.push(audiobook_to_scan_book(book, account_id, marketplace));
-        }
-
-        let total = response.total_pages.max(1);
-        if page >= total || response.audiobooks.is_empty() {
-            break;
-        }
-        page += 1;
+        books.extend(batch);
+        page = next;
     }
-
     Ok((books, pages))
 }
 

@@ -82,7 +82,7 @@ pub use protocol::{
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MediaKind,
     OutputLocalContextDto, OutputS3ContextDto, PlainFetch, PlainPart, PortalAuthMode, PurchaseHint,
     PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, PurchaseHintsResult,
-    RevokeAccountParams, S3CredentialsDto, ScanBook, ScanLibraryParams, ScanParams, ScanSummary,
+    RevokeAccountParams, S3CredentialsDto, ScanBook, ScanLibraryParams, ScanPage, ScanParams,
     SearchCatalogParams, SeriesEntry, SourceAccount, SourceAccounts, SyncListeningResult, WorkKind,
     MAX_RPC_LINE_BYTES, PROTOCOL_NAME,
 };
@@ -118,8 +118,8 @@ pub use bookclerk_plugin_abi::{
     TypedDbStatement, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY, FEATURE_STREAMS,
     MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE,
     MAX_PLUGIN_MIGRATION_OPS, MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
-    MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
-    SQL_CONTRACT_VERSION,
+    MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
+    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION, SQL_CONTRACT_VERSION,
 };
 
 /// Serves a [`PluginWorker`] on stdin/stdout (Cap'n Proto RPC).

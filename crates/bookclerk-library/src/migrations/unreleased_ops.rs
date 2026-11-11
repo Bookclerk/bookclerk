@@ -22,6 +22,24 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_accounts_account_id ON accounts(account_id)",
     ),
+    // Where each account's storefront scan stands (`store::scan_state`): the
+    // opaque sync token the plugin returned at the end of its last pass, the
+    // cursor and token of a pass that stopped part way (so the scan job
+    // resumes there), and when the last complete pass ended (a full pass is
+    // forced once that is older than the full-pass interval).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_scan_state (
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        sync_token TEXT NOT NULL DEFAULT '',
+        resume_cursor TEXT NOT NULL DEFAULT '',
+        resume_token TEXT NOT NULL DEFAULT '',
+        last_complete_at TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (plugin_key, account_id),
+        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
+    )",
+    ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS books (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

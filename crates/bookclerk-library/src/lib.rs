@@ -174,6 +174,7 @@ pub use store::{
         RecordPruneStep, AUDIT_RETENTION_DAYS, CONFIGURATION_CHANGE_RETENTION_DAYS,
         STORAGE_SCAN_STALE_DAYS, TOKEN_HISTORY_DAYS, UPLOAD_HISTORY_DAYS,
     },
+    scan_state::{plan_pass, PassStart, ScanState, FULL_PASS_INTERVAL, RESUME_CURSOR_TTL},
     search_feed::ListingRef,
     set_dispatch_chunk_for_test, AcquiredBookKey, BookPage, CatalogEnrichmentFields,
     DiscoverSubject, EditionFile, FileOwner, FileRole, LibraryStore, NewBook, NewListeningProgress,

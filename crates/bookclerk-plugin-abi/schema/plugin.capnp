@@ -44,6 +44,10 @@ const maxStreamWindowBytes :UInt32 = 1048576;
 const maxListPage :UInt32 = 256;
 # Maximum job / event checkpoint payload size (bytes).
 const maxCheckpointBytes :UInt32 = 65536;
+# Maximum titles, and separately removed product ids, in one `ScanPage`.
+const maxScanPageBooks :UInt32 = 500;
+# Maximum bytes of a scan cursor or sync token.
+const maxScanCursorBytes :UInt32 = 4096;
 # Maximum plugin / account identifier length (bytes).
 const maxIdentifierBytes :UInt32 = 64;
 # Maximum `[triggers] crons` source length (bytes), as in `ScheduledController.cron`.
@@ -950,9 +954,9 @@ interface ContentSource {
   login @0 (
       params :LoginParams  # Credentials, marketplace, callback wiring.
   ) -> (result :LoginReply);
-  # Sync library rows for one or more accounts.
+  # One page of one account's library scan pass (see `ScanPage`).
   scan @1 (
-      params :ScanParams  # Accounts, paging, and host-sealed credentials.
+      params :ScanParams  # Account, cursor, sync token, credential.
   ) -> (result :ScanReply);
   # Download and decrypt one title into `cacheDir`.
   fetchTitle @2 (
@@ -1507,21 +1511,31 @@ struct AccountCredential {
   credentials @1 :Data;
 }
 
-# Params of `ContentSource.scan`. The host injects sealed credentials so the
-# plugin does not need a private credential store under `pluginDataDir`.
+# Params of `ContentSource.scan`: one page of one account's scan pass. The
+# host injects that account's sealed credentials so the plugin does not need a
+# private credential store under `pluginDataDir`, and drives the pass page by
+# page: the first call of a pass sends an empty `cursor`, every later call
+# echoes the previous page's `nextCursor`.
 struct ScanParams {
   # Scoped plugin data directory.
   pluginDataDir @0 :Text;
-  # Account ids to scan; empty means all scan-enabled accounts.
-  accounts @1 :List(Text);
+  # Account this pass scans; always one of the plugin's connected accounts.
+  accountId @1 :Text;
   # Storefront page size; the host always sends an explicit value.
   pageSize @2 :UInt32;
   # When true, import podcast/episode-style rows.
   importEpisodes @3 :Bool;
   # When true, import Plus/catalog entitlement titles.
   importPlusTitles @4 :Bool;
-  # Host-loaded credential blobs for the requested accounts.
-  credentials @5 :List(AccountCredential);
+  # Host-loaded credential blob for `accountId`.
+  credential @5 :AccountCredential;
+  # Opaque position the guest returned as `ScanPage.nextCursor`; empty on the
+  # first page of a pass. At most `maxScanCursorBytes`.
+  cursor @6 :Text;
+  # Opaque token the guest returned as `ScanPage.syncToken` at the end of the
+  # account's last pass; empty asks for a full pass. At most
+  # `maxScanCursorBytes`.
+  syncToken @7 :Text;
 }
 
 # What kind of creative work a record describes (FRBR work). Ordinal 0 is
@@ -1690,26 +1704,36 @@ struct ScanBook {
   categories @18 :Text $optional;
 }
 
-# Summary result of `ContentSource.scan`.
-struct ScanSummary {
-  # Number of accounts touched during the scan.
-  accounts @0 :UInt32;
-  # Count of titles the guest expects the host to upsert; may mirror
-  # `books.length`.
-  booksUpserted @1 :UInt32;
-  # Number of storefront pages fetched.
-  pages @2 :UInt32;
-  # Accounts skipped because `scanEnabled` was false.
-  skippedDisabled @3 :UInt32;
-  # Titles for the host to upsert. Prefer this over plugin-side DB writes.
-  books @4 :List(ScanBook);
+# One page of an account's scan pass, the result of `ContentSource.scan`.
+# A pass is the run of pages from an empty `cursor` to the page whose
+# `nextCursor` is empty; `syncToken` and `complete` are read from that last
+# page only. A guest that does not page answers the first call with every
+# title, an empty `nextCursor` and `complete = true`.
+struct ScanPage {
+  # Titles for the host to upsert; at most `maxScanPageBooks`.
+  books @0 :List(ScanBook);
+  # Product ids the storefront reports as gone from the account since the
+  # pass's `syncToken` (delta passes only); at most `maxScanPageBooks`.
+  removed @1 :List(Text);
+  # Opaque position of the next page; empty ends the pass. At most
+  # `maxScanCursorBytes`; never equal to the cursor this page answered.
+  nextCursor @2 :Text;
+  # On the last page: the opaque token the host sends as
+  # `ScanParams.syncToken` on the account's next pass; empty means the next
+  # pass is a full one. At most `maxScanCursorBytes`.
+  syncToken @3 :Text;
+  # On the last page: true when the pass listed every title the account
+  # holds (a full pass), false for a delta pass that listed only changes.
+  complete @4 :Bool;
+  # Storefront requests this page took.
+  storePages @5 :UInt32;
 }
 
 # Result union of `ContentSource.scan`.
 struct ScanReply {
   union {
-    # Success: scan summary and titles to upsert.
-    ok @0 :ScanSummary;
+    # Success: one page of the pass.
+    ok @0 :ScanPage;
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }

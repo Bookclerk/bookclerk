@@ -7,7 +7,7 @@
 //! workerd socket proxy). Nested jail is `NetPolicy::Deny`. OAuth listen is
 //! host-owned (`callback_ipc`); the guest does not bind TCP.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -27,9 +27,10 @@ use bookclerk_mp4::{
     runtime_length_ms_from_chapter_info, track_duration_ms, TrimRange,
 };
 use bookclerk_plugin_sdk::{
-    FetchOptions, LoginParams, LoginResult, PlainFetch, PlainPart, ScanSummary, SourceAccount,
+    FetchOptions, LoginParams, LoginResult, PlainFetch, PlainPart, PluginError, ScanPage,
+    ScanParams, SourceAccount, MAX_SCAN_CURSOR_BYTES,
 };
-use bookclerk_storefront::abi::{credentials_to_bytes, scan_summary};
+use bookclerk_storefront::abi::{credentials_to_bytes, scan_credential};
 use serde_json::{json, Value};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -41,7 +42,7 @@ use crate::auth::{
 use crate::download::{fetch_and_download_with_client, AccountClient, DrmKind};
 use crate::error::{AudibleError, Result};
 use crate::options::DownloadOptions;
-use crate::sync::collect_account_books;
+use crate::sync::{fetch_library_page, LibraryPageRequest, LibraryPageRows};
 use crate::ID;
 
 /// In-flight LoginServer OAuth waiting for [`guest_login_complete`].
@@ -208,63 +209,191 @@ pub async fn guest_login_complete(session_id: &str) -> Result<LoginResult> {
     })
 }
 
-/// Scan libraries for host-injected credential blobs.
+/// Where an Audible scan pass stands between pages: the library listing's
+/// continuation token and the delta state token the pass's first page
+/// returned (Audible sends it only there, so the pass carries it to the last
+/// page, which hands it to the host).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AudibleScanCursor {
+    /// Continuation token of the next library page.
+    #[serde(rename = "c")]
+    pub continuation: String,
+    /// State token the pass has seen so far, if any.
+    #[serde(rename = "t", default, skip_serializing_if = "Option::is_none")]
+    pub state_token: Option<String>,
+}
+
+impl AudibleScanCursor {
+    /// Reads the cursor the host sent; the empty cursor starts a pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `invalid_cursor` [`PluginError`] for text this plugin did
+    /// not write.
+    pub fn parse(cursor: &str) -> std::result::Result<Option<Self>, PluginError> {
+        if cursor.is_empty() {
+            return Ok(None);
+        }
+        serde_json::from_str::<Self>(cursor)
+            .ok()
+            .filter(|c| !c.continuation.is_empty())
+            .map(Some)
+            .ok_or_else(|| PluginError::invalid_cursor("not a scan cursor this plugin wrote"))
+    }
+}
+
+/// RPC scan: one page of one account's pass (the host upserts books).
+///
+/// With a non-empty `syncToken` the pass is a delta: Audible lists items
+/// added or revoked since that state token, revoked ASINs come back in
+/// `removed`, and the pass ends with `complete = false`. Without one the pass
+/// lists the whole active library and ends `complete`. Either way the last
+/// page returns the state token Audible issued for the pass, so the next
+/// pass can be a delta.
+///
+/// # Arguments
+///
+/// * `params` - The pass's account, credential, options and sync token.
+/// * `cursor` - Where the pass stands ([`AudibleScanCursor::parse`]);
+///   `None` on the first page.
 ///
 /// # Errors
 ///
-/// Returns an error when the operation fails.
-pub async fn guest_scan(
-    credentials: &BTreeMap<String, Value>,
-    account_filter: &[String],
-    page_size: u32,
-    import_episodes: bool,
-    import_plus_titles: bool,
-) -> Result<ScanSummary> {
-    if credentials.is_empty() {
-        return Err(AudibleError::NoAccounts(
-            "no Audible credentials from host — run login first".into(),
-        ));
-    }
-    let explicit = !account_filter.is_empty();
-    let mut books = Vec::new();
-    let mut accounts = 0usize;
-    let mut pages = 0u32;
+/// Returns an error when the credential is missing or invalid, the page
+/// request fails, or the next cursor would exceed `maxScanCursorBytes`.
+pub async fn guest_scan_page(
+    params: &ScanParams,
+    cursor: Option<AudibleScanCursor>,
+) -> Result<ScanPage> {
+    let creds = scan_credential(params).map_err(|e| AudibleError::Auth(e.to_string()))?;
+    let auth = authenticator_from_credentials(&creds)?;
+    let marketplace = auth.locale().country_code.to_string();
+    let client = Client::new(auth).map_err(AudibleError::from)?;
+    let request_token = Some(params.sync_token.clone()).filter(|t| !t.is_empty());
+    let (continuation, seen) = match cursor {
+        Some(c) => (Some(c.continuation), c.state_token),
+        None => (None, None),
+    };
+    let request = LibraryPageRequest {
+        continuation,
+        state_token: request_token.clone(),
+        page_size: params.page_size,
+        import_episodes: params.import_episodes,
+        import_plus_titles: params.import_plus_titles,
+    };
+    let rows = fetch_library_page(&client, &params.account_id, &marketplace, &request).await?;
+    scan_page_from_rows(rows, seen, request_token)
+}
 
-    for (account_id, creds) in credentials {
-        if explicit
-            && !account_filter
-                .iter()
-                .any(|n| n.eq_ignore_ascii_case(account_id))
-        {
-            continue;
+/// Turns one library page into a scan page: a middle page carries the
+/// continuation and the state token seen so far in its cursor; the last page
+/// hands that token (or, when Audible sent none, the token the pass started
+/// from) to the host and is `complete` only for a full pass.
+///
+/// # Errors
+///
+/// Returns an error when the next cursor would exceed `maxScanCursorBytes`.
+fn scan_page_from_rows(
+    rows: LibraryPageRows,
+    seen: Option<String>,
+    request_token: Option<String>,
+) -> Result<ScanPage> {
+    let cap = usize::try_from(MAX_SCAN_CURSOR_BYTES).unwrap_or(usize::MAX);
+    let seen = seen.or(rows.state_token);
+    let mut page = ScanPage {
+        books: rows.books,
+        removed: rows.removed,
+        store_pages: 1,
+        ..ScanPage::default()
+    };
+    match rows.next_continuation {
+        Some(next) => {
+            let next = AudibleScanCursor {
+                continuation: next,
+                state_token: seen,
+            };
+            page.next_cursor =
+                serde_json::to_string(&next).map_err(|e| AudibleError::Sync(e.to_string()))?;
+            if page.next_cursor.len() > cap {
+                return Err(AudibleError::Sync(
+                    "Audible continuation token too long for a scan cursor".into(),
+                ));
+            }
         }
-        let auth = authenticator_from_credentials(creds)?;
-        let marketplace = auth.locale().country_code.to_string();
-        let resolved_id = auth
-            .customer_id()
-            .map(str::to_string)
-            .unwrap_or_else(|| account_id.clone());
-        let client = Client::new(auth).map_err(AudibleError::from)?;
-        let (batch, p) = collect_account_books(
-            &client,
-            &resolved_id,
-            &marketplace,
-            page_size,
-            import_episodes,
-            import_plus_titles,
-        )
-        .await?;
-        pages = pages.saturating_add(p);
-        accounts += 1;
-        books.extend(batch);
+        None => {
+            page.sync_token = seen.or(request_token.clone()).unwrap_or_default();
+            if page.sync_token.len() > cap {
+                page.sync_token.clear();
+            }
+            page.complete = request_token.is_none();
+        }
+    }
+    Ok(page)
+}
+
+#[cfg(test)]
+mod scan_page_tests {
+    use super::*;
+
+    fn rows(next: Option<&str>, token: Option<&str>) -> LibraryPageRows {
+        LibraryPageRows {
+            books: Vec::new(),
+            removed: vec!["B0GONE".into()],
+            next_continuation: next.map(str::to_string),
+            state_token: token.map(str::to_string),
+        }
     }
 
-    if accounts == 0 {
-        return Err(AudibleError::NoAccounts(
-            "no matching Audible accounts in host credentials".into(),
-        ));
+    #[test]
+    fn cursors_parse_back_and_refuse_foreign_text() {
+        assert_eq!(AudibleScanCursor::parse(""), Ok(None));
+        let cursor = AudibleScanCursor {
+            continuation: "c1".into(),
+            state_token: Some("s1".into()),
+        };
+        let text = serde_json::to_string(&cursor).unwrap();
+        assert_eq!(AudibleScanCursor::parse(&text), Ok(Some(cursor)));
+        for bad in ["page:2", "{}", r#"{"c":""}"#, "null"] {
+            let err = AudibleScanCursor::parse(bad).unwrap_err();
+            assert_eq!(
+                err.code,
+                bookclerk_plugin_sdk::PluginErrorCode::InvalidCursor
+            );
+        }
     }
-    Ok(scan_summary(books, accounts, pages))
+
+    #[test]
+    fn a_full_pass_carries_the_first_page_token_to_the_last_page() {
+        let first = scan_page_from_rows(rows(Some("c1"), Some("s1")), None, None).unwrap();
+        assert!(!first.complete);
+        assert!(first.sync_token.is_empty());
+        let cursor = AudibleScanCursor::parse(&first.next_cursor)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cursor.state_token.as_deref(), Some("s1"));
+        let last = scan_page_from_rows(rows(None, None), cursor.state_token, None).unwrap();
+        assert!(last.complete);
+        assert!(last.next_cursor.is_empty());
+        assert_eq!(last.sync_token, "s1");
+        assert_eq!(last.removed, ["B0GONE"]);
+    }
+
+    #[test]
+    fn a_delta_pass_is_not_complete_and_keeps_its_token_without_a_new_one() {
+        let last = scan_page_from_rows(rows(None, None), None, Some("old".into())).unwrap();
+        assert!(!last.complete);
+        assert_eq!(last.sync_token, "old");
+        let fresh = scan_page_from_rows(rows(None, Some("new")), None, Some("old".into())).unwrap();
+        assert_eq!(fresh.sync_token, "new");
+    }
+
+    #[test]
+    fn oversized_tokens_never_reach_the_host() {
+        let long = "x".repeat(usize::try_from(MAX_SCAN_CURSOR_BYTES).unwrap() + 1);
+        assert!(scan_page_from_rows(rows(Some(&long), None), None, None).is_err());
+        let last = scan_page_from_rows(rows(None, Some(&long)), None, None).unwrap();
+        assert!(last.sync_token.is_empty());
+    }
 }
 
 /// Deregister the Audible device that login registered for these credentials.

@@ -133,6 +133,13 @@ stateDiagram-v2
   object's `commit-token` metadata is that token (see
   [storage-bounds.md](storage-bounds.md)). A pre-commit heartbeat does not
   make publication exactly-once.
+- Storefront `scan` jobs keep their place outside the job row, in
+  `account_scan_state` (one row per store account): the guest's next-page
+  cursor after each written page, and the sync token and time of the last
+  finished pass. A retried or later job resumes a cursor younger than 24
+  hours and otherwise starts a new pass, full when no complete pass ended in
+  seven days (see [Paged scans](../plugins/abi.md#paged-scans)). The row
+  goes away with its account.
 - Storage scans checkpoint `storage_scan` JSON (instance id, generation,
   phase, cursor) with `checkpoint_running_job` while the row stays `running`.
   The generation is a UUID bound in `storage_scan_generations` to that storage

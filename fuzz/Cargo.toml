@@ -116,6 +116,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "scan_page"
+path = "fuzz_targets/scan_page.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "abi_decode"
 path = "fuzz_targets/abi_decode.rs"
 test = false

@@ -8,10 +8,10 @@ use bookclerk_plugin_sdk::{
     serve, Bindings, Brand, CatalogCapabilities, CatalogHit, ContentSource as ContentSourceRole,
     Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
     LoginParams, LoginResult, PlainFetch, PluginDescribe, PluginError, PluginWorker,
-    PortalAuthMode, PurchaseHint, PurchaseHintParams, ScalarLimits, ScanParams, ScanSummary,
+    PortalAuthMode, PurchaseHint, PurchaseHintParams, ScalarLimits, ScanPage, ScanParams,
     SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
-use bookclerk_storefront::abi::expand_seed_from_params;
+use bookclerk_storefront::abi::{expand_seed_from_params, page_from_cursor};
 use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
 use serde_json::Value;
 
@@ -103,17 +103,19 @@ impl ContentSourceRole for GraphicAudioContentSource {
         .map_err(internal)
     }
 
-    async fn scan(&self, params: ScanParams) -> Result<ScanSummary, PluginError> {
+    async fn scan(&self, params: ScanParams) -> Result<ScanPage, PluginError> {
+        let page = page_from_cursor(&params.cursor)?;
         let access_url =
             bookclerk_plugin_source_graphicaudio::resolve_access_base_url(&self.config);
         let store_url = bookclerk_plugin_source_graphicaudio::resolve_store_base_url(&self.config);
         let access = bookclerk_plugin_source_graphicaudio::resolve_access(&self.config);
-        bookclerk_plugin_source_graphicaudio::guest_scan_rpc(
+        bookclerk_plugin_source_graphicaudio::guest_scan_page(
             &access_url,
             &store_url,
             access,
             None,
             &params,
+            page,
         )
         .await
         .map_err(internal)

@@ -1281,17 +1281,20 @@ pub struct AccountCredential {
     pub credentials: Vec<u8>,
 }
 
-/// Params of `ContentSource.scan`. The host injects sealed credentials so the
-/// plugin does not need a private credential store under `pluginDataDir`.
+/// Params of `ContentSource.scan`: one page of one account's scan pass. The
+/// host injects that account's sealed credentials so the plugin does not need a
+/// private credential store under `pluginDataDir`, and drives the pass page by
+/// page: the first call of a pass sends an empty `cursor`, every later call
+/// echoes the previous page's `nextCursor`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanParams {
     /// Scoped plugin data directory.
     #[serde(default)]
     pub plugin_data_dir: String,
-    /// Account ids to scan; empty means all scan-enabled accounts.
+    /// Account this pass scans; always one of the plugin's connected accounts.
     #[serde(default)]
-    pub accounts: Vec<String>,
+    pub account_id: String,
     /// Storefront page size; the host always sends an explicit value.
     #[serde(default)]
     pub page_size: u32,
@@ -1301,9 +1304,18 @@ pub struct ScanParams {
     /// When true, import Plus/catalog entitlement titles.
     #[serde(default)]
     pub import_plus_titles: bool,
-    /// Host-loaded credential blobs for the requested accounts.
+    /// Host-loaded credential blob for `accountId`.
     #[serde(default)]
-    pub credentials: Vec<AccountCredential>,
+    pub credential: AccountCredential,
+    /// Opaque position the guest returned as `ScanPage.nextCursor`; empty on the
+    /// first page of a pass. At most `maxScanCursorBytes`.
+    #[serde(default)]
+    pub cursor: String,
+    /// Opaque token the guest returned as `ScanPage.syncToken` at the end of the
+    /// account's last pass; empty asks for a full pass. At most
+    /// `maxScanCursorBytes`.
+    #[serde(default)]
+    pub sync_token: String,
 }
 
 /// One external identifier a storefront or metadata provider reports.
@@ -1428,26 +1440,37 @@ pub struct ScanBook {
     pub categories: Option<String>,
 }
 
-/// Summary result of `ContentSource.scan`.
+/// One page of an account's scan pass, the result of `ContentSource.scan`.
+/// A pass is the run of pages from an empty `cursor` to the page whose
+/// `nextCursor` is empty; `syncToken` and `complete` are read from that last
+/// page only. A guest that does not page answers the first call with every
+/// title, an empty `nextCursor` and `complete = true`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScanSummary {
-    /// Number of accounts touched during the scan.
-    #[serde(default)]
-    pub accounts: u32,
-    /// Count of titles the guest expects the host to upsert; may mirror
-    /// `books.length`.
-    #[serde(default)]
-    pub books_upserted: u32,
-    /// Number of storefront pages fetched.
-    #[serde(default)]
-    pub pages: u32,
-    /// Accounts skipped because `scanEnabled` was false.
-    #[serde(default)]
-    pub skipped_disabled: u32,
-    /// Titles for the host to upsert. Prefer this over plugin-side DB writes.
+pub struct ScanPage {
+    /// Titles for the host to upsert; at most `maxScanPageBooks`.
     #[serde(default)]
     pub books: Vec<ScanBook>,
+    /// Product ids the storefront reports as gone from the account since the
+    /// pass's `syncToken` (delta passes only); at most `maxScanPageBooks`.
+    #[serde(default)]
+    pub removed: Vec<String>,
+    /// Opaque position of the next page; empty ends the pass. At most
+    /// `maxScanCursorBytes`; never equal to the cursor this page answered.
+    #[serde(default)]
+    pub next_cursor: String,
+    /// On the last page: the opaque token the host sends as
+    /// `ScanParams.syncToken` on the account's next pass; empty means the next
+    /// pass is a full one. At most `maxScanCursorBytes`.
+    #[serde(default)]
+    pub sync_token: String,
+    /// On the last page: true when the pass listed every title the account
+    /// holds (a full pass), false for a delta pass that listed only changes.
+    #[serde(default)]
+    pub complete: bool,
+    /// Storefront requests this page took.
+    #[serde(default)]
+    pub store_pages: u32,
 }
 
 /// Fetch-relevant acquire knobs the host forwards so external load matches
@@ -3554,23 +3577,13 @@ pub fn write_scan_params(
     v: &ScanParams,
 ) -> capnp::Result<()> {
     b.set_plugin_data_dir(&v.plugin_data_dir);
-    {
-        let mut items = b.reborrow().init_accounts(list_len(v.accounts.len())?);
-        for (i, item) in v.accounts.iter().enumerate() {
-            items.set(list_len(i)?, item);
-        }
-    }
+    b.set_account_id(&v.account_id);
     b.set_page_size(v.page_size);
     b.set_import_episodes(v.import_episodes);
     b.set_import_plus_titles(v.import_plus_titles);
-    {
-        let mut items = b
-            .reborrow()
-            .init_credentials(list_len(v.credentials.len())?);
-        for (i, item) in v.credentials.iter().enumerate() {
-            write_account_credential(items.reborrow().get(list_len(i)?), item)?;
-        }
-    }
+    write_account_credential(b.reborrow().init_credential(), &v.credential)?;
+    b.set_cursor(&v.cursor);
+    b.set_sync_token(&v.sync_token);
     Ok(())
 }
 
@@ -3582,15 +3595,13 @@ pub fn write_scan_params(
 pub fn read_scan_params(r: plugin_capnp::scan_params::Reader<'_>) -> capnp::Result<ScanParams> {
     Ok(ScanParams {
         plugin_data_dir: r.get_plugin_data_dir()?.to_string()?,
-        accounts: read_text_list(r.get_accounts()?)?,
+        account_id: r.get_account_id()?.to_string()?,
         page_size: r.get_page_size(),
         import_episodes: r.get_import_episodes(),
         import_plus_titles: r.get_import_plus_titles(),
-        credentials: r
-            .get_credentials()?
-            .iter()
-            .map(|item| read_account_credential(item))
-            .collect::<capnp::Result<Vec<_>>>()?,
+        credential: read_account_credential(r.get_credential()?)?,
+        cursor: r.get_cursor()?.to_string()?,
+        sync_token: r.get_sync_token()?.to_string()?,
     })
 }
 
@@ -3790,44 +3801,51 @@ pub fn read_scan_book(r: plugin_capnp::scan_book::Reader<'_>) -> capnp::Result<S
     })
 }
 
-/// Encode a [`ScanSummary`] onto a Cap'n Proto builder.
+/// Encode a [`ScanPage`] onto a Cap'n Proto builder.
 ///
 /// # Errors
 ///
 /// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
-pub fn write_scan_summary(
-    mut b: plugin_capnp::scan_summary::Builder<'_>,
-    v: &ScanSummary,
+pub fn write_scan_page(
+    mut b: plugin_capnp::scan_page::Builder<'_>,
+    v: &ScanPage,
 ) -> capnp::Result<()> {
-    b.set_accounts(v.accounts);
-    b.set_books_upserted(v.books_upserted);
-    b.set_pages(v.pages);
-    b.set_skipped_disabled(v.skipped_disabled);
     {
         let mut items = b.reborrow().init_books(list_len(v.books.len())?);
         for (i, item) in v.books.iter().enumerate() {
             write_scan_book(items.reborrow().get(list_len(i)?), item)?;
         }
     }
+    {
+        let mut items = b.reborrow().init_removed(list_len(v.removed.len())?);
+        for (i, item) in v.removed.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    b.set_next_cursor(&v.next_cursor);
+    b.set_sync_token(&v.sync_token);
+    b.set_complete(v.complete);
+    b.set_store_pages(v.store_pages);
     Ok(())
 }
 
-/// Decode a [`ScanSummary`] from a Cap'n Proto reader.
+/// Decode a [`ScanPage`] from a Cap'n Proto reader.
 ///
 /// # Errors
 ///
 /// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
-pub fn read_scan_summary(r: plugin_capnp::scan_summary::Reader<'_>) -> capnp::Result<ScanSummary> {
-    Ok(ScanSummary {
-        accounts: r.get_accounts(),
-        books_upserted: r.get_books_upserted(),
-        pages: r.get_pages(),
-        skipped_disabled: r.get_skipped_disabled(),
+pub fn read_scan_page(r: plugin_capnp::scan_page::Reader<'_>) -> capnp::Result<ScanPage> {
+    Ok(ScanPage {
         books: r
             .get_books()?
             .iter()
             .map(|item| read_scan_book(item))
             .collect::<capnp::Result<Vec<_>>>()?,
+        removed: read_text_list(r.get_removed()?)?,
+        next_cursor: r.get_next_cursor()?.to_string()?,
+        sync_token: r.get_sync_token()?.to_string()?,
+        complete: r.get_complete(),
+        store_pages: r.get_store_pages(),
     })
 }
 
@@ -3838,10 +3856,10 @@ pub fn read_scan_summary(r: plugin_capnp::scan_summary::Reader<'_>) -> capnp::Re
 /// Returns a Cap'n Proto error when a nested field cannot be encoded.
 pub fn write_scan_reply(
     b: plugin_capnp::scan_reply::Builder<'_>,
-    v: &Result<ScanSummary, crate::PluginError>,
+    v: &Result<ScanPage, crate::PluginError>,
 ) -> capnp::Result<()> {
     match v {
-        Ok(ok) => write_scan_summary(b.init_ok(), ok),
+        Ok(ok) => write_scan_page(b.init_ok(), ok),
         Err(err) => {
             crate::rpc::write_error(b.init_err(), err);
             Ok(())
@@ -3856,9 +3874,9 @@ pub fn write_scan_reply(
 /// Returns a Cap'n Proto error when the union is unset or a field is malformed.
 pub fn read_scan_reply(
     r: plugin_capnp::scan_reply::Reader<'_>,
-) -> capnp::Result<Result<ScanSummary, crate::PluginError>> {
+) -> capnp::Result<Result<ScanPage, crate::PluginError>> {
     match r.which()? {
-        plugin_capnp::scan_reply::Ok(ok) => Ok(Ok(read_scan_summary(ok?)?)),
+        plugin_capnp::scan_reply::Ok(ok) => Ok(Ok(read_scan_page(ok?)?)),
         plugin_capnp::scan_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
     }
 }
@@ -6776,8 +6794,7 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
             let _ = read_scan_book(reader.get_root::<plugin_capnp::scan_book::Reader<'_>>()?)?;
         }
         30 => {
-            let _ =
-                read_scan_summary(reader.get_root::<plugin_capnp::scan_summary::Reader<'_>>()?)?;
+            let _ = read_scan_page(reader.get_root::<plugin_capnp::scan_page::Reader<'_>>()?)?;
         }
         31 => {
             let _ = read_scan_reply(reader.get_root::<plugin_capnp::scan_reply::Reader<'_>>()?)?;
@@ -8428,11 +8445,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             }
         }
         30 => {
-            let first =
-                read_scan_summary(reader.get_root::<plugin_capnp::scan_summary::Reader<'_>>()?)?;
+            let first = read_scan_page(reader.get_root::<plugin_capnp::scan_page::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
-            write_scan_summary(
-                message.init_root::<plugin_capnp::scan_summary::Builder<'_>>(),
+            write_scan_page(
+                message.init_root::<plugin_capnp::scan_page::Builder<'_>>(),
                 &first,
             )
             .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
@@ -8442,7 +8458,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 capnp::message::ReaderOptions::new(),
             )
             .and_then(|again| {
-                read_scan_summary(again.get_root::<plugin_capnp::scan_summary::Reader<'_>>()?)
+                read_scan_page(again.get_root::<plugin_capnp::scan_page::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again {
@@ -8451,8 +8467,8 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 // byte check also covers fields whose `Debug` redacts (credential
                 // DTOs), which the rendering alone would hide.
                 let mut message = capnp::message::Builder::new_default();
-                write_scan_summary(
-                    message.init_root::<plugin_capnp::scan_summary::Builder<'_>>(),
+                write_scan_page(
+                    message.init_root::<plugin_capnp::scan_page::Builder<'_>>(),
                     &again,
                 )
                 .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
@@ -8463,7 +8479,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // credential fields, and the failing input is what a harness
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
-                        "round trip changed the decoded ScanSummary value".to_string(),
+                        "round trip changed the decoded ScanPage value".to_string(),
                     ));
                 }
             }

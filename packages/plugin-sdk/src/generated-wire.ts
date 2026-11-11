@@ -4193,35 +4193,35 @@ export const AccountCredentialCodec: StructCodec<T.AccountCredential> = {
 };
 
 /**
- * Wire codec for `ScanParams` (1 data words, 3 pointers).
+ * Wire codec for `ScanParams` (1 data words, 5 pointers).
  *
  * @internal
  */
 export const ScanParamsCodec: StructCodec<T.ScanParams> = {
   dataWords: 1,
-  pointerCount: 3,
+  pointerCount: 5,
   write(s, v, caps) {
     s.setText(0, v.pluginDataDir ?? "");
-    s.setTextList(1, v.accounts ?? []);
+    s.setText(1, v.accountId ?? "");
     s.setUint32(0, v.pageSize ?? 0);
     s.setBool(32, v.importEpisodes ?? false);
     s.setBool(33, v.importPlusTitles ?? false);
-    {
-      const list = v.credentials ?? [];
-      const items = s.initStructList(2, list.length, 0, 2);
-      for (let i = 0; i < items.length; i++) {
-        AccountCredentialCodec.write(items[i]!, list[i]!, caps);
-      }
+    if (v.credential != null) {
+      AccountCredentialCodec.write(s.initStruct(2, 0, 2), v.credential, caps);
     }
+    s.setText(3, v.cursor ?? "");
+    s.setText(4, v.syncToken ?? "");
   },
   read(s, caps) {
     return {
       pluginDataDir: s.getText(0),
-      accounts: s.getTextList(1),
+      accountId: s.getText(1),
       pageSize: s.getUint32(0),
       importEpisodes: s.getBool(32),
       importPlusTitles: s.getBool(33),
-      credentials: s.getStructList(2, 0, 2).map((item) => AccountCredentialCodec.read(item, caps)),
+      credential: AccountCredentialCodec.read(s.getStruct(2, 0, 2), caps),
+      cursor: s.getText(3),
+      syncToken: s.getText(4),
     };
   },
 };
@@ -4434,18 +4434,14 @@ export const ScanBookCodec: StructCodec<T.ScanBook> = {
 };
 
 /**
- * Wire codec for `ScanSummary` (2 data words, 1 pointers).
+ * Wire codec for `ScanPage` (1 data words, 4 pointers).
  *
  * @internal
  */
-export const ScanSummaryCodec: StructCodec<T.ScanSummary> = {
-  dataWords: 2,
-  pointerCount: 1,
+export const ScanPageCodec: StructCodec<T.ScanPage> = {
+  dataWords: 1,
+  pointerCount: 4,
   write(s, v, caps) {
-    s.setUint32(0, v.accounts ?? 0);
-    s.setUint32(1, v.booksUpserted ?? 0);
-    s.setUint32(2, v.pages ?? 0);
-    s.setUint32(3, v.skippedDisabled ?? 0);
     {
       const list = v.books ?? [];
       const items = s.initStructList(0, list.length, 2, 14);
@@ -4453,14 +4449,20 @@ export const ScanSummaryCodec: StructCodec<T.ScanSummary> = {
         ScanBookCodec.write(items[i]!, list[i]!, caps);
       }
     }
+    s.setTextList(1, v.removed ?? []);
+    s.setText(2, v.nextCursor ?? "");
+    s.setText(3, v.syncToken ?? "");
+    s.setBool(0, v.complete ?? false);
+    s.setUint32(1, v.storePages ?? 0);
   },
   read(s, caps) {
     return {
-      accounts: s.getUint32(0),
-      booksUpserted: s.getUint32(1),
-      pages: s.getUint32(2),
-      skippedDisabled: s.getUint32(3),
       books: s.getStructList(0, 2, 14).map((item) => ScanBookCodec.read(item, caps)),
+      removed: s.getTextList(1),
+      nextCursor: s.getText(2),
+      syncToken: s.getText(3),
+      complete: s.getBool(0),
+      storePages: s.getUint32(1),
     };
   },
 };
@@ -4478,7 +4480,7 @@ export const ScanReplyCodec: StructCodec<T.ScanReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          ScanSummaryCodec.write(s.initStruct(0, 2, 1), v.value, caps);
+          ScanPageCodec.write(s.initStruct(0, 1, 4), v.value, caps);
         }
         break;
       case "err":
@@ -4495,7 +4497,7 @@ export const ScanReplyCodec: StructCodec<T.ScanReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: ScanSummaryCodec.read(s.getStruct(0, 2, 1), caps) };
+        return { kind: "ok", value: ScanPageCodec.read(s.getStruct(0, 1, 4), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -9685,12 +9687,12 @@ export const ContentSourceScanParamsCodec: StructCodec<ContentSourceScanParams> 
   pointerCount: 1,
   write(s, v, caps) {
     if (v.params != null) {
-      ScanParamsCodec.write(s.initStruct(0, 1, 3), v.params, caps);
+      ScanParamsCodec.write(s.initStruct(0, 1, 5), v.params, caps);
     }
   },
   read(s, caps) {
     return {
-      params: ScanParamsCodec.read(s.getStruct(0, 1, 3), caps),
+      params: ScanParamsCodec.read(s.getStruct(0, 1, 5), caps),
     };
   },
 };

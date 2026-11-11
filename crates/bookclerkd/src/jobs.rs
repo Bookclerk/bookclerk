@@ -771,6 +771,7 @@ pub async fn run_scan(
         books_upserted = summary.books_upserted,
         pages = summary.pages,
         skipped_disabled = summary.skipped_disabled,
+        removed = summary.removed,
         ambiguous = summary.warnings.len(),
         elapsed_ms = started.elapsed().as_millis() as u64,
         "run_scan finished"
@@ -797,6 +798,12 @@ pub async fn run_scan(
         "{} account(s), {} book upsert(s), {} page(s), {} skipped (scan disabled)",
         summary.accounts, summary.books_upserted, summary.pages, summary.skipped_disabled
     );
+    if summary.removed > 0 {
+        message.push_str(&format!(
+            ", {} title(s) gone from the store",
+            summary.removed
+        ));
+    }
     if !summary.warnings.is_empty() {
         message.push_str("; skipped ambiguous keys: ");
         message.push_str(&summary.warnings.join("; "));

@@ -7,6 +7,7 @@ mod destination_local;
 mod integration;
 mod plugin_backups;
 mod plugin_migration_apply;
+mod scan_pass;
 mod source;
 
 pub use database::{

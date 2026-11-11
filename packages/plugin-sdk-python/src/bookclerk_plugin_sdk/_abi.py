@@ -21,6 +21,12 @@ MAX_LIST_PAGE: int = 256
 MAX_CHECKPOINT_BYTES: int = 65536
 """Maximum job / event checkpoint payload size (bytes)."""
 
+MAX_SCAN_PAGE_BOOKS: int = 500
+"""Maximum titles, and separately removed product ids, in one `ScanPage`."""
+
+MAX_SCAN_CURSOR_BYTES: int = 4096
+"""Maximum bytes of a scan cursor or sync token."""
+
 MAX_IDENTIFIER_BYTES: int = 64
 """Maximum plugin / account identifier length (bytes)."""
 
@@ -204,6 +210,8 @@ __all__ = [
     "MAX_STREAM_WINDOW_BYTES",
     "MAX_LIST_PAGE",
     "MAX_CHECKPOINT_BYTES",
+    "MAX_SCAN_PAGE_BOOKS",
+    "MAX_SCAN_CURSOR_BYTES",
     "MAX_IDENTIFIER_BYTES",
     "MAX_CRON_BYTES",
     "MAX_CONFIG_PAYLOAD_BYTES",

@@ -7215,6 +7215,7 @@ pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
 pub(crate) mod request_queue;
 pub(crate) mod retention;
+pub(crate) mod scan_state;
 pub(crate) mod search_feed;
 pub(crate) mod storage_scan;
 pub(crate) mod user_title_state;

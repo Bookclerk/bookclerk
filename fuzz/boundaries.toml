@@ -112,6 +112,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.scan_page]
+crate = "bookclerk-plugin-abi"
+boundary = "One ScanPage of a storefront library scan: size caps, the cursor it hands back and the account it names"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.db_stream]
 crate = "bookclerk-plugin-abi"
 boundary = "executeStreamed frames an adapter sends, reassembled under the streamed result budget"

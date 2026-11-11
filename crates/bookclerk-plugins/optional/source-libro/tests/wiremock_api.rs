@@ -5,10 +5,8 @@
 
 use std::io::{Cursor, Write};
 
-use std::collections::BTreeMap;
-
 use bookclerk_plugin_source_libro::{
-    collect_account_books, fetch_title_materials, guest_fetch_title, guest_login, guest_scan,
+    collect_account_books, fetch_title_materials, guest_fetch_title, guest_login, guest_scan_page,
     LibroAuthFile, LibroClient, LibroContainer, APP_VER, DOWNLOAD_MANIFEST_PATH, LIBRARY_PATH,
     PACKAGED_M4B_PATH, USER_AGENT_VALUE,
 };
@@ -409,14 +407,22 @@ async fn guest_scan_and_fetch_title_use_host_credentials() {
         label: None,
     };
     let credentials = serde_json::to_value(&auth).unwrap();
-    let mut by_account = BTreeMap::new();
-    by_account.insert("scan@example.com".to_string(), credentials.clone());
+    let params = bookclerk_plugin_sdk::ScanParams {
+        account_id: "scan@example.com".into(),
+        credential: bookclerk_plugin_sdk::AccountCredential {
+            account_id: "scan@example.com".into(),
+            credentials: serde_json::to_vec(&credentials).unwrap(),
+        },
+        ..bookclerk_plugin_sdk::ScanParams::default()
+    };
 
-    let (books, accounts, pages) = guest_scan(&server.uri(), &by_account, &[]).await.unwrap();
-    assert_eq!(accounts, 1);
-    assert_eq!(pages, 1);
-    assert_eq!(books.len(), 1);
-    assert_eq!(books[0].product_id, "9783333333333");
+    let page = guest_scan_page(&server.uri(), &params, 1).await.unwrap();
+    assert!(page.complete);
+    assert!(page.next_cursor.is_empty());
+    assert_eq!(page.store_pages, 1);
+    assert_eq!(page.books.len(), 1);
+    assert_eq!(page.books[0].product_id, "9783333333333");
+    assert_eq!(page.books[0].account_id, "scan@example.com");
 
     let cache = tempfile::tempdir().unwrap();
     let fetch = guest_fetch_title(
@@ -430,4 +436,52 @@ async fn guest_scan_and_fetch_title_use_host_credentials() {
     .unwrap();
 
     assert!(!fetch.parts.is_empty());
+}
+
+#[tokio::test]
+async fn scan_pages_walk_the_library_and_complete_on_the_last_page() {
+    let server = MockServer::start().await;
+    for (page, isbn) in [(1, "9780000000001"), (2, "9780000000002")] {
+        Mock::given(method("GET"))
+            .and(path(LIBRARY_PATH))
+            .and(query_param("page", page.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "page": page,
+                "total_pages": 2,
+                "audiobooks": [sample_audiobook(isbn, "Paged")],
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let auth = serde_json::json!({
+        "access_token": "tok",
+        "token_type": "Bearer",
+        "email": "paged@example.com",
+        "marketplace": "us",
+    });
+    let params = bookclerk_plugin_sdk::ScanParams {
+        account_id: "paged@example.com".into(),
+        credential: bookclerk_plugin_sdk::AccountCredential {
+            account_id: "paged@example.com".into(),
+            credentials: serde_json::to_vec(&auth).unwrap(),
+        },
+        ..bookclerk_plugin_sdk::ScanParams::default()
+    };
+
+    let first = guest_scan_page(&server.uri(), &params, 1).await.unwrap();
+    assert_eq!(first.books[0].product_id, "9780000000001");
+    assert_eq!(first.next_cursor, "page:2");
+    assert!(!first.complete);
+    let page = bookclerk_storefront::abi::page_from_cursor(&first.next_cursor).unwrap();
+    let last = guest_scan_page(&server.uri(), &params, page).await.unwrap();
+    assert_eq!(last.books[0].product_id, "9780000000002");
+    assert!(last.next_cursor.is_empty());
+    assert!(last.complete);
+
+    let foreign = bookclerk_plugin_sdk::ScanParams {
+        account_id: "someone-else".into(),
+        ..params
+    };
+    assert!(guest_scan_page(&server.uri(), &foreign, 1).await.is_err());
 }

@@ -13,6 +13,13 @@ pub const MAX_EVENT_PAYLOAD_BYTES: u32 = crate::plugin_capnp::MAX_EVENT_PAYLOAD_
 /// Maximum decoded size of an ordinary RPC scalar value (not a stream window).
 pub const MAX_SCALAR_BYTES: u32 = crate::plugin_capnp::MAX_SCALAR_BYTES;
 
+/// Most titles, and separately most removed product ids, in one
+/// `ContentSource.scan` page.
+pub const MAX_SCAN_PAGE_BOOKS: u32 = crate::plugin_capnp::MAX_SCAN_PAGE_BOOKS;
+
+/// Longest scan cursor or sync token in bytes.
+pub const MAX_SCAN_CURSOR_BYTES: u32 = crate::plugin_capnp::MAX_SCAN_CURSOR_BYTES;
+
 /// Largest `KvNamespace` value in bytes (a `[[kv_namespaces]]` row may lower
 /// its own cap but never raise it past this).
 pub const MAX_KV_VALUE_BYTES: u32 = crate::plugin_capnp::MAX_KV_VALUE_BYTES;

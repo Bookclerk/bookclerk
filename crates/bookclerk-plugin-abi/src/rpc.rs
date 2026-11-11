@@ -95,7 +95,7 @@ use crate::{
     ExpandCandidatesParams, ExternalUser, FetchTitleParams, ListDealsParams, ListeningProgress,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch, PluginError,
     PluginMigration, PluginMigrationOp, PurchaseHint, PurchaseHintParams, PurchaseHintsParams,
-    Result, RevokeAccountParams, ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams,
+    Result, RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams,
     SourceAccount, MAX_PLUGIN_MIGRATION_ID_BYTES,
 };
 
@@ -3653,7 +3653,7 @@ impl ContentSource for ContentSourceClient {
         let reply = req.send().promise.await.map_err(from_capnp)?;
         read_login_reply(reply_result!(reply)).map_err(from_capnp)?
     }
-    async fn scan(&self, params: ScanParams) -> Result<ScanSummary> {
+    async fn scan(&self, params: ScanParams) -> Result<ScanPage> {
         let mut req = self.client.scan_request();
         write_scan_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;

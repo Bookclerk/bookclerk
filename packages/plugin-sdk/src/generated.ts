@@ -1023,9 +1023,9 @@ export interface ContentSource {
    */
   login(params: LoginParams): Promise<LoginReply>;
   /**
-   * Sync library rows for one or more accounts.
+   * One page of one account's library scan pass (see `ScanPage`).
    *
-   * @param params - Accounts, paging, and host-sealed credentials.
+   * @param params - Account, cursor, sync token, credential.
    * @returns {@link ScanReply}
    */
   scan(params: ScanParams): Promise<ScanReply>;
@@ -1650,22 +1650,36 @@ export interface AccountCredential {
 }
 
 /**
- * Params of `ContentSource.scan`. The host injects sealed credentials so the
- * plugin does not need a private credential store under `pluginDataDir`.
+ * Params of `ContentSource.scan`: one page of one account's scan pass. The
+ * host injects that account's sealed credentials so the plugin does not need a
+ * private credential store under `pluginDataDir`, and drives the pass page by
+ * page: the first call of a pass sends an empty `cursor`, every later call
+ * echoes the previous page's `nextCursor`.
  */
 export interface ScanParams {
   /** Scoped plugin data directory. */
   pluginDataDir: string;
-  /** Account ids to scan; empty means all scan-enabled accounts. */
-  accounts: string[];
+  /** Account this pass scans; always one of the plugin's connected accounts. */
+  accountId: string;
   /** Storefront page size; the host always sends an explicit value. */
   pageSize: number;
   /** When true, import podcast/episode-style rows. */
   importEpisodes: boolean;
   /** When true, import Plus/catalog entitlement titles. */
   importPlusTitles: boolean;
-  /** Host-loaded credential blobs for the requested accounts. */
-  credentials: AccountCredential[];
+  /** Host-loaded credential blob for `accountId`. */
+  credential: AccountCredential;
+  /**
+   * Opaque position the guest returned as `ScanPage.nextCursor`; empty on the
+   * first page of a pass. At most `maxScanCursorBytes`.
+   */
+  cursor: string;
+  /**
+   * Opaque token the guest returned as `ScanPage.syncToken` at the end of the
+   * account's last pass; empty asks for a full pass. At most
+   * `maxScanCursorBytes`.
+   */
+  syncToken: string;
 }
 
 /** One external identifier a storefront or metadata provider reports. */
@@ -1780,26 +1794,44 @@ export interface ScanBook {
   categories?: string;
 }
 
-/** Summary result of `ContentSource.scan`. */
-export interface ScanSummary {
-  /** Number of accounts touched during the scan. */
-  accounts: number;
-  /**
-   * Count of titles the guest expects the host to upsert; may mirror
-   * `books.length`.
-   */
-  booksUpserted: number;
-  /** Number of storefront pages fetched. */
-  pages: number;
-  /** Accounts skipped because `scanEnabled` was false. */
-  skippedDisabled: number;
-  /** Titles for the host to upsert. Prefer this over plugin-side DB writes. */
+/**
+ * One page of an account's scan pass, the result of `ContentSource.scan`.
+ * A pass is the run of pages from an empty `cursor` to the page whose
+ * `nextCursor` is empty; `syncToken` and `complete` are read from that last
+ * page only. A guest that does not page answers the first call with every
+ * title, an empty `nextCursor` and `complete = true`.
+ */
+export interface ScanPage {
+  /** Titles for the host to upsert; at most `maxScanPageBooks`. */
   books: ScanBook[];
+  /**
+   * Product ids the storefront reports as gone from the account since the
+   * pass's `syncToken` (delta passes only); at most `maxScanPageBooks`.
+   */
+  removed: string[];
+  /**
+   * Opaque position of the next page; empty ends the pass. At most
+   * `maxScanCursorBytes`; never equal to the cursor this page answered.
+   */
+  nextCursor: string;
+  /**
+   * On the last page: the opaque token the host sends as
+   * `ScanParams.syncToken` on the account's next pass; empty means the next
+   * pass is a full one. At most `maxScanCursorBytes`.
+   */
+  syncToken: string;
+  /**
+   * On the last page: true when the pass listed every title the account
+   * holds (a full pass), false for a delta pass that listed only changes.
+   */
+  complete: boolean;
+  /** Storefront requests this page took. */
+  storePages: number;
 }
 
 /** Result union of `ContentSource.scan`. */
 export type ScanReply =
-  | { kind: "ok"; value: ScanSummary } // Success: scan summary and titles to upsert.
+  | { kind: "ok"; value: ScanPage } // Success: one page of the pass.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
 /**

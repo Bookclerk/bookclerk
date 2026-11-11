@@ -438,31 +438,69 @@ pub fn rfc3339(at: chrono::DateTime<chrono::Utc>) -> String {
     at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
 }
 
-/// Builds a guest scan summary from the books a scan produced.
-#[must_use]
-pub fn scan_summary(books: Vec<abi::ScanBook>, accounts: usize, pages: u32) -> abi::ScanSummary {
-    abi::ScanSummary {
-        accounts: count_u32(accounts),
-        books_upserted: count_u32(books.len()),
-        pages,
-        skipped_disabled: 0,
-        books,
+/// Prefix of the page-number scan cursor storefronts with numbered pages use.
+const PAGE_CURSOR_PREFIX: &str = "page:";
+
+/// Store page a scan page-number cursor names: page 1 for the empty cursor a
+/// pass starts with, otherwise the page [`page_cursor`] wrote.
+///
+/// # Errors
+///
+/// Returns an `invalid_cursor` [`abi::PluginError`] when the cursor is not
+/// one [`page_cursor`] wrote (a page below 2 included), so the host restarts
+/// the pass.
+pub fn page_from_cursor(cursor: &str) -> Result<u32, abi::PluginError> {
+    if cursor.is_empty() {
+        return Ok(1);
     }
+    cursor
+        .strip_prefix(PAGE_CURSOR_PREFIX)
+        .filter(|digits| !digits.starts_with('0') && digits.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|digits| digits.parse::<u32>().ok())
+        .filter(|page| *page >= 2)
+        .ok_or_else(|| abi::PluginError::invalid_cursor("not a page cursor this plugin wrote"))
 }
 
-/// Host counters from a guest scan summary.
-///
-/// `books_upserted` is always the host's own count of the rows it wrote, so
-/// records the host skipped (ebook and print editions, blank product ids)
-/// never count, even when the guest reported them.
+/// Cursor naming store page `page`, read back by [`page_from_cursor`].
 #[must_use]
-pub fn scan_summary_from_abi(summary: &abi::ScanSummary, upserted: usize) -> crate::ScanSummary {
-    crate::ScanSummary {
-        accounts: count_usize(summary.accounts),
-        books_upserted: upserted,
-        pages: summary.pages,
-        skipped_disabled: count_usize(summary.skipped_disabled),
-        warnings: Vec::new(),
+pub fn page_cursor(page: u32) -> String {
+    format!("{PAGE_CURSOR_PREFIX}{page}")
+}
+
+/// The pass's credential document, checked against the account it scans.
+///
+/// # Errors
+///
+/// Returns [`crate::SourceError::Auth`] when the host sent no credential,
+/// a credential for another account, or a blob that is not JSON.
+pub fn scan_credential(params: &abi::ScanParams) -> crate::Result<serde_json::Value> {
+    if params.account_id.is_empty() || params.credential.account_id != params.account_id {
+        return Err(crate::SourceError::Auth(format!(
+            "no credentials for account `{}` from host; run login first",
+            params.account_id
+        )));
+    }
+    credentials_from_bytes(&params.credential.credentials)
+}
+
+/// One page of a full pass: the pass is complete once no page follows.
+///
+/// Storefronts without a delta API list every title on every pass, so the
+/// last page of a pass always says `complete` and leaves `syncToken` empty.
+#[must_use]
+pub fn full_pass_page(
+    books: Vec<abi::ScanBook>,
+    next_cursor: Option<String>,
+    store_pages: u32,
+) -> abi::ScanPage {
+    let next_cursor = next_cursor.unwrap_or_default();
+    abi::ScanPage {
+        books,
+        removed: Vec::new(),
+        complete: next_cursor.is_empty(),
+        next_cursor,
+        sync_token: String::new(),
+        store_pages,
     }
 }
 
@@ -483,36 +521,6 @@ pub fn credentials_to_bytes(credentials: &serde_json::Value) -> crate::Result<Ve
 pub fn credentials_from_bytes(bytes: &[u8]) -> crate::Result<serde_json::Value> {
     serde_json::from_slice(bytes)
         .map_err(|err| crate::SourceError::Auth(format!("invalid credential blob: {err}")))
-}
-
-/// Host-issued per-account credential list for `scan`.
-#[must_use]
-pub fn account_credentials(
-    credentials: impl IntoIterator<Item = (String, Vec<u8>)>,
-) -> Vec<abi::AccountCredential> {
-    credentials
-        .into_iter()
-        .map(|(account_id, credentials)| abi::AccountCredential {
-            account_id,
-            credentials,
-        })
-        .collect()
-}
-
-/// Guest view of the per-account credential list as JSON documents.
-///
-/// # Errors
-///
-/// Returns [`crate::SourceError::Auth`] when any blob is not JSON.
-pub fn account_credentials_json(
-    credentials: &[abi::AccountCredential],
-) -> crate::Result<std::collections::BTreeMap<String, serde_json::Value>> {
-    credentials
-        .iter()
-        .map(|entry| {
-            credentials_from_bytes(&entry.credentials).map(|json| (entry.account_id.clone(), json))
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -669,19 +677,52 @@ mod tests {
     }
 
     #[test]
-    fn summary_counts_only_rows_the_host_wrote() {
-        let summary = scan_summary(
-            vec![abi::ScanBook {
-                product_id: "p".into(),
-                media_kind: abi::MediaKind::Ebook,
-                ..abi::ScanBook::default()
-            }],
-            1,
-            1,
-        );
-        assert_eq!(summary.books_upserted, 1);
-        assert_eq!(scan_summary_from_abi(&summary, 0).books_upserted, 0);
-        assert_eq!(scan_summary_from_abi(&summary, 3).books_upserted, 3);
+    fn page_cursors_round_trip_and_refuse_foreign_text() {
+        assert_eq!(page_from_cursor(""), Ok(1));
+        for page in [2, 3, 1000, u32::MAX] {
+            assert_eq!(page_from_cursor(&page_cursor(page)), Ok(page));
+        }
+        for bad in [
+            "page:1",
+            "page:0",
+            "page:02",
+            "page:",
+            "page:x",
+            "2",
+            "page:-3",
+            "page:4294967296",
+        ] {
+            let err = page_from_cursor(bad).expect_err(bad);
+            assert_eq!(err.code, abi::PluginErrorCode::InvalidCursor, "{bad}");
+        }
+    }
+
+    #[test]
+    fn scan_credential_must_name_the_pass_account() {
+        let mut params = abi::ScanParams {
+            account_id: "a".into(),
+            credential: abi::AccountCredential {
+                account_id: "a".into(),
+                credentials: br#"{"token":"t"}"#.to_vec(),
+            },
+            ..abi::ScanParams::default()
+        };
+        assert_eq!(scan_credential(&params).expect("credential")["token"], "t");
+        params.credential.account_id = "b".into();
+        assert!(scan_credential(&params).is_err());
+        params.account_id = String::new();
+        params.credential.account_id = String::new();
+        assert!(scan_credential(&params).is_err());
+    }
+
+    #[test]
+    fn full_pass_pages_complete_on_the_last_page() {
+        let middle = full_pass_page(Vec::new(), Some(page_cursor(2)), 1);
+        assert!(!middle.complete);
+        assert_eq!(middle.next_cursor, "page:2");
+        let last = full_pass_page(Vec::new(), None, 1);
+        assert!(last.complete);
+        assert!(last.next_cursor.is_empty() && last.sync_token.is_empty());
     }
 
     #[test]
@@ -733,13 +774,9 @@ mod tests {
     }
 
     #[test]
-    fn account_credentials_roundtrip_as_json() {
-        let creds = account_credentials([(
-            "a1".to_string(),
-            credentials_to_bytes(&serde_json::json!({ "token": "t" })).unwrap(),
-        )]);
-        let json = account_credentials_json(&creds).unwrap();
-        assert_eq!(json["a1"]["token"], "t");
+    fn credentials_roundtrip_as_json() {
+        let bytes = credentials_to_bytes(&serde_json::json!({ "token": "t" })).unwrap();
+        assert_eq!(credentials_from_bytes(&bytes).unwrap()["token"], "t");
         credentials_from_bytes(b"not json").expect_err("must reject non-JSON blobs");
     }
 }

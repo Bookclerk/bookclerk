@@ -1438,7 +1438,7 @@ class StorefrontEntrypoint(NamedEntrypoint):
         raise _unsupported("login")
 
     async def scan(self, _params: abi.ScanParams):
-        """Enumerate owned titles (``ScanParams`` → ``ScanSummary``)."""
+        """Return one page of one account's library (``ScanParams`` → ``ScanPage``)."""
         raise _unsupported("scan")
 
     async def fetchTitle(self, _params: abi.FetchTitleParams):

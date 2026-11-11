@@ -20,6 +20,12 @@ export const MAX_LIST_PAGE = 256 as const;
 /** Maximum job / event checkpoint payload size (bytes). */
 export const MAX_CHECKPOINT_BYTES = 65536 as const;
 
+/** Maximum titles, and separately removed product ids, in one `ScanPage`. */
+export const MAX_SCAN_PAGE_BOOKS = 500 as const;
+
+/** Maximum bytes of a scan cursor or sync token. */
+export const MAX_SCAN_CURSOR_BYTES = 4096 as const;
+
 /** Maximum plugin / account identifier length (bytes). */
 export const MAX_IDENTIFIER_BYTES = 64 as const;
 

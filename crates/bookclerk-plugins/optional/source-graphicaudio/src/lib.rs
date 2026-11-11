@@ -36,8 +36,8 @@ pub use download::{
 };
 pub use error::{GraphicAudioError, Result};
 pub use guest::{
-    guest_fetch_title, guest_fetch_title_rpc, guest_login, guest_login_rpc, guest_scan,
-    guest_scan_rpc, resolve_access, resolve_access_base_url, resolve_bitrate, resolve_container,
+    guest_fetch_title, guest_fetch_title_rpc, guest_login, guest_login_rpc, guest_scan_page,
+    resolve_access, resolve_access_base_url, resolve_bitrate, resolve_container,
     resolve_store_base_url,
 };
 pub use magento::{DownloadableProduct, LibraryItem, MagentoClient, DEFAULT_STORE_URL};

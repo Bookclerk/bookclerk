@@ -8,10 +8,12 @@ use bookclerk_plugin_sdk::{
     serve, Bindings, Brand, CatalogCapabilities, CatalogHit, ContentSource as ContentSourceRole,
     Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
     LoginParams, LoginResult, PlainFetch, PluginDescribe, PluginError, PluginWorker,
-    PortalAuthMode, PurchaseHint, PurchaseHintParams, PurchaseHintsParams, ScalarLimits,
-    ScanParams, ScanSummary, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    PortalAuthMode, PurchaseHint, PurchaseHintParams, PurchaseHintsParams, ScalarLimits, ScanPage,
+    ScanParams, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
-use bookclerk_storefront::abi::{expand_seed_from_params, DEFAULT_LIST_DEALS_LIMIT};
+use bookclerk_storefront::abi::{
+    expand_seed_from_params, page_from_cursor, DEFAULT_LIST_DEALS_LIMIT,
+};
 use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
 use serde_json::Value;
 
@@ -90,9 +92,10 @@ impl ContentSourceRole for ChirpContentSource {
             .map_err(internal)
     }
 
-    async fn scan(&self, params: ScanParams) -> Result<ScanSummary, PluginError> {
+    async fn scan(&self, params: ScanParams) -> Result<ScanPage, PluginError> {
+        let page = page_from_cursor(&params.cursor)?;
         let gql = bookclerk_plugin_source_chirp::resolve_graphql_url(&Value::Null);
-        bookclerk_plugin_source_chirp::guest_scan_rpc(&gql, &params)
+        bookclerk_plugin_source_chirp::guest_scan_page(&gql, &params, page)
             .await
             .map_err(internal)
     }

@@ -9,6 +9,7 @@
 //! `ActiveModel`) for the majority of CRUD.
 
 pub mod account_links;
+pub mod account_scan_state;
 pub mod accounts;
 pub mod bookclerk_receipts;
 pub mod books;

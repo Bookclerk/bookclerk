@@ -9,13 +9,11 @@ use bookclerk_plugin_sdk::{
     Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch, PluginDescribe,
     PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams,
-    PurchaseHintsParams, RevokeAccountParams, ScalarLimits, ScanParams, ScanSummary,
+    PurchaseHintsParams, RevokeAccountParams, ScalarLimits, ScanPage, ScanParams,
     SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_source_audible::catalog;
-use bookclerk_storefront::abi::{
-    account_credentials_json, credentials_from_bytes, expand_seed_from_params,
-};
+use bookclerk_storefront::abi::{credentials_from_bytes, expand_seed_from_params};
 use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
 use serde_json::Value;
 
@@ -104,18 +102,11 @@ impl ContentSourceRole for AudibleContentSource {
             .map_err(internal)
     }
 
-    async fn scan(&self, params: ScanParams) -> Result<ScanSummary, PluginError> {
-        let credentials = account_credentials_json(&params.credentials)
-            .map_err(|e| PluginError::invalid_params(e.to_string()))?;
-        bookclerk_plugin_source_audible::guest_scan(
-            &credentials,
-            &params.accounts,
-            params.page_size,
-            params.import_episodes,
-            params.import_plus_titles,
-        )
-        .await
-        .map_err(internal)
+    async fn scan(&self, params: ScanParams) -> Result<ScanPage, PluginError> {
+        let cursor = bookclerk_plugin_source_audible::AudibleScanCursor::parse(&params.cursor)?;
+        bookclerk_plugin_source_audible::guest_scan_page(&params, cursor)
+            .await
+            .map_err(internal)
     }
 
     async fn fetch_title(&self, params: FetchTitleParams) -> Result<PlainFetch, PluginError> {
