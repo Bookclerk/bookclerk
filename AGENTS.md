@@ -366,7 +366,7 @@ files), `search_index/`, and `plugins/` under it. Third-party plugins are discov
 the database (see `docs/server/plugins.md`). A guest is confined to its install
 directory (read-only), `plugin-state/<PluginKey fs-id>/data` (its `HOME`), `plugin-state/<PluginKey fs-id>/tmp` (its
 `TMPDIR`), and the download cache root; on a branch, a joined library's guests use
-`plugin-state/link-<16 hex>/<PluginKey fs-id>/` instead. Network consent uses
+`plugin-state/link-<32 hex>/<PluginKey fs-id>/` instead. Network consent uses
 `[capabilities.network]` domains (approve before enable); redirect hops after an
 allowed initial host do not require re-approval.
 Logging goes to stderr and, when available, the OS facility (journald /

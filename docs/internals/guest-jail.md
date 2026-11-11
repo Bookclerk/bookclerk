@@ -20,7 +20,7 @@ is narrow on top of that:
 | Host guarantees | Detail |
 | --- | --- |
 | No library DB path (sources / integrations / outputs) | `library.db` is never passed on the wire to those kinds — and not reachable if it were. **Database** sqlite guests open the file at a jail-granted path (`BOOKCLERK_SQLITE_PATH` / `sqlitePath` at session open) |
-| No files-dir root | Plugins get `plugin_data_dir` (`$FILES_DIR/plugin-state/<PluginKey fs-id>/data`; on a branch, a joined library's guests get `plugin-state/link-<16 hex>/<PluginKey fs-id>/data`) and a per-fetch work directory under their own `TMPDIR` — not `master.key` or the download cache root |
+| No files-dir root | Plugins get `plugin_data_dir` (`$FILES_DIR/plugin-state/<PluginKey fs-id>/data`; on a branch, a joined library's guests get `plugin-state/link-<32 hex>/<PluginKey fs-id>/data`) and a per-fetch work directory under their own `TMPDIR` — not `master.key` or the download cache root |
 | Env scrub | Child spawn uses `env_clear` + a small allowlist (`PATH`, locale, …). `BOOKCLERK_*`, `AWS_*`, tokens, and DB URLs are not inherited; `HOME` and `TMPDIR` are replaced with the guest's own directories |
 | Host-mediated secrets | `login` returns `{ account, credentials }`; host seals into `encrypted_secrets` with `provider = plugin id`. `scan` and `fetchTitle` receive those blobs from the host |
 | Host-mediated library writes | `scan` returns book DTOs; host upserts with `source` forced to the plugin id. Account listing for a plugin id is answered from the host accounts table |
@@ -149,7 +149,7 @@ A native guest gets three paths and nothing else:
 | `…/plugin-state/<PluginKey fs-id>/tmp` | read/write | `TMPDIR` / `TEMP` / `TMP`; fetch scratch is `tmp/fetch` |
 
 On a branch, a guest that runs for a library the branch joined gets that
-library's own subtree instead, `…/plugin-state/link-<16 hex>/<PluginKey fs-id>/`,
+library's own subtree instead, `…/plugin-state/link-<32 hex>/<PluginKey fs-id>/`,
 so two libraries' copies of one plugin never share a `HOME` (see
 [Libraries and branches](../server/cluster-hosts.md#plugin-state-on-a-branch)).
 

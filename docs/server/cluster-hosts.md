@@ -430,8 +430,8 @@ There is no in-process fallback.
 
 A branch keeps each joined library's plugin state apart from every other
 library's and from its own. A guest that runs for a library gets
-`plugin-state/link-<16 hex>/<PluginKey fs-id>/data` and `…/tmp`. The leaf
-is the first 64 bits of the SHA-256 of that library's cluster id. The
+`plugin-state/link-<32 hex>/<PluginKey fs-id>/data` and `…/tmp`. The leaf
+is the first 128 bits of the SHA-256 of that library's cluster id. The
 branch's own guests keep `plugin-state/<PluginKey fs-id>/`. So when two
 libraries deploy the same plugin, their guests never see each other's
 caches, cookies or logins. The plugin code cache under
@@ -635,7 +635,7 @@ Open **Settings → Library → Leave library**, or run
    install can never sign as that node again.
 3. The link's client stops.
 4. Once it has stopped, the branch deletes that library's plugin state
-   (`plugin-state/link-<16 hex>/`). A Windows ACL journal still recorded
+   (`plugin-state/link-<32 hex>/`). A Windows ACL journal still recorded
    there is revoked first; if that is refused, the state stays and the
    delete is tried again every few seconds.
 

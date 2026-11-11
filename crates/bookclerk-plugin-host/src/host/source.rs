@@ -6,7 +6,7 @@
 //! - never passes `library.db` or the Bookclerk files-dir root
 //! - gives only a scoped `plugin_data_dir` (`…/plugin-state/<PluginKey fs-id>/data`) and fetch
 //!   scratch under the guest `TMPDIR` (`…/plugin-state/<PluginKey fs-id>/tmp/fetch`); a guest a
-//!   branch runs for a joined library uses that library's `plugin-state/link-<16 hex>/` subtree
+//!   branch runs for a joined library uses that library's `plugin-state/link-<32 hex>/` subtree
 //! - seals login credentials via [`SourceScope`] (`provider = plugin id`)
 //! - loads those credentials for `scan` and `fetch_title` (plugin never opens the DB)
 //! - upserts scan book DTOs via [`SourceScope`] with `source` forced to the plugin alias

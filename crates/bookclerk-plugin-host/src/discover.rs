@@ -55,9 +55,10 @@ pub enum StateScope {
 }
 
 /// The directory leaf that holds one joined library's plugin state:
-/// `link-` and 16 lowercase hex digits (64 bits of the SHA-256 of the
-/// library's cluster id; a branch joins a handful of libraries, and the
-/// short leaf keeps guest paths inside platform path limits).
+/// `link-` and 32 lowercase hex digits (128 bits of the SHA-256 of the
+/// library's cluster id, as `PluginKey::fs_id` keeps). An owner picks its
+/// own cluster id, so the digest must be long enough that no library can
+/// search for an id that lands in another library's directory.
 ///
 /// Derived from the cluster id rather than copying it, so the leaf is
 /// always filesystem-safe and fixed-length whatever the owner sent.
@@ -68,7 +69,7 @@ pub struct LinkStateDir(String);
 pub const LINK_STATE_DIR_PREFIX: &str = "link-";
 
 /// Hex digits of the cluster-id digest a [`LinkStateDir`] keeps.
-const LINK_STATE_DIR_HEX_CHARS: usize = 16;
+const LINK_STATE_DIR_HEX_CHARS: usize = 32;
 
 impl LinkStateDir {
     /// The state directory leaf of the library with `cluster_id`.
@@ -82,7 +83,7 @@ impl LinkStateDir {
         ))
     }
 
-    /// The directory leaf (`link-` + 16 hex digits).
+    /// The directory leaf (`link-` + 32 hex digits).
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
