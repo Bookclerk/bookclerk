@@ -738,7 +738,11 @@ impl LibraryStore {
         }
     }
 
-    /// Claim the next ready delivery with a fenced `pending` → `running` mutation.
+    /// Lease the next ready delivery with a fenced `pending` → `running` mutation.
+    ///
+    /// A delivery is one subscriber's own copy of an event, so a lease never
+    /// takes work from another subscriber: it only picks which node runs this
+    /// copy. Jobs, by contrast, are claimed (see `docs/internals/jobs.md`).
     ///
     /// When `node_id` is non-empty, this node’s own catalog must match the parent
     /// event’s type, schema version, and filter. The host loads the catalog and
@@ -750,7 +754,7 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when the claim write fails.
     #[allow(clippy::too_many_arguments)]
-    pub async fn claim_next_event_delivery(
+    pub async fn lease_next_event_delivery(
         &self,
         owner: &str,
         lease_secs: u64,
@@ -759,7 +763,7 @@ impl LibraryStore {
         max_in_flight: u32,
         node_id: &str,
     ) -> Result<Option<EventDeliveryRecord>> {
-        self.claim_next_event_delivery_due_by(
+        self.lease_next_event_delivery_due_by(
             owner,
             lease_secs,
             operation_id,
@@ -771,7 +775,7 @@ impl LibraryStore {
         .await
     }
 
-    /// [`Self::claim_next_event_delivery`] restricted to deliveries due at
+    /// [`Self::lease_next_event_delivery`] restricted to deliveries due at
     /// or before `due_by` (`run_after <= due_by`).
     ///
     /// A host that is not the best placed to run a plugin passes a cutoff in
@@ -782,7 +786,7 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when the claim write fails.
     #[allow(clippy::too_many_arguments)]
-    pub async fn claim_next_event_delivery_due_by(
+    pub async fn lease_next_event_delivery_due_by(
         &self,
         owner: &str,
         lease_secs: u64,
@@ -797,7 +801,7 @@ impl LibraryStore {
         }
         if self.atomic.is_some() {
             return self
-                .claim_next_event_delivery_host_cas(
+                .lease_next_event_delivery_host_cas(
                     owner,
                     lease_secs,
                     operation_id,
@@ -813,7 +817,7 @@ impl LibraryStore {
         // atomic operation above; an external adapter refuses this `begin()`.
         #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        match claim_next_event_delivery_on(
+        match lease_next_event_delivery_on(
             &txn,
             self.leftover_in_process(),
             owner,
@@ -838,7 +842,7 @@ impl LibraryStore {
 
     /// Host eligibility + per-row CAS through the guest atomic backend.
     #[allow(clippy::too_many_arguments)]
-    async fn claim_next_event_delivery_host_cas(
+    async fn lease_next_event_delivery_host_cas(
         &self,
         owner: &str,
         lease_secs: u64,
@@ -2864,7 +2868,7 @@ where
 
 /// Claim the next ready delivery, skipping blocked FIFO keys.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn claim_next_event_delivery_on<C>(
+pub(crate) async fn lease_next_event_delivery_on<C>(
     db: &C,
     in_process: bool,
     owner: &str,

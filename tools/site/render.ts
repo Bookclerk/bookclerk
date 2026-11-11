@@ -218,6 +218,7 @@ export const NAV: NavSpec[] = [
       "adr/library-data-model",
       "adr/web-api-contract-checks",
       "adr/licensing",
+      "adr/event-delivery-model",
     ],
   },
 ];

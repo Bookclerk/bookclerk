@@ -3084,7 +3084,7 @@ async fn claim_delivery_for(
     plugin_ids: &[String],
 ) -> crate::EventDeliveryRecord {
     store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             owner,
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -3343,7 +3343,7 @@ async fn claim_delivery_for_opt(
     plugin_ids: &[String],
 ) -> Option<crate::EventDeliveryRecord> {
     store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             owner,
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -3474,7 +3474,7 @@ async fn concurrent_host_cas_claims_do_not_skip_keyset_pages() {
             barrier.wait().await;
             let mut n = 0u32;
             while store
-                .claim_next_event_delivery(
+                .lease_next_event_delivery(
                     &format!("keyset-w{i}"),
                     60,
                     &uuid::Uuid::new_v4().to_string(),
@@ -4082,7 +4082,7 @@ async fn fifo_skips_later_delivery_with_same_ordering_key() {
     let first = claim_delivery(&store, "w1").await;
     assert_eq!(first.event_id, id_a);
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "w2",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -4248,7 +4248,7 @@ async fn retry_at_max_attempts_dead_letters() {
         row.error_message
     );
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "retry-w",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -4485,7 +4485,7 @@ async fn postgres_event_retention_cutoff_and_in_flight_cap() {
         .await
         .unwrap();
     let first = store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "pg-cap",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -4497,7 +4497,7 @@ async fn postgres_event_retention_cutoff_and_in_flight_cap() {
         .unwrap()
         .expect("first");
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "pg-cap-2",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -4688,7 +4688,7 @@ async fn postgres_concurrent_event_claims_respect_in_flight_cap() {
         handles.push(tokio::spawn(async move {
             barrier.wait().await;
             store
-                .claim_next_event_delivery(
+                .lease_next_event_delivery(
                     &format!("pg-race-{i}"),
                     60,
                     &uuid::Uuid::new_v4().to_string(),
@@ -4786,7 +4786,7 @@ async fn fifo_uses_persisted_ordering_key_without_title_id() {
     assert_eq!(first.event_id, id_a);
     assert_eq!(first.ordering_key, "shared-key");
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "w2",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -4824,7 +4824,7 @@ async fn claim_filters_to_loaded_plugin_ids() {
         .await
         .unwrap();
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "w-empty",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -4838,7 +4838,7 @@ async fn claim_filters_to_loaded_plugin_ids() {
     let echo = claim_delivery_for(&store, "w-echo", &["echo".into()]).await;
     assert_eq!(echo.plugin_id, "echo");
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "w-echo-again",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -4906,7 +4906,7 @@ async fn catalog_dispatch_creates_rows_claim_filters_loaded_plugins() {
     let echo = claim_delivery_for(&store, "node-a", &["echo".into()]).await;
     assert_eq!(echo.plugin_id, "echo");
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "node-a-again",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -5410,7 +5410,7 @@ async fn wake_on_matching_event_makes_delivery_claimable() {
     assert!(parked.run_after > chrono::Utc::now() + chrono::Duration::days(1));
     assert_eq!(parked.wake_event_type, "book_acquired");
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "wake-early",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -5711,7 +5711,7 @@ async fn per_plugin_in_flight_cap_blocks_second_claim() {
             .unwrap();
     }
     let first = store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "cap-w1",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -5723,7 +5723,7 @@ async fn per_plugin_in_flight_cap_blocks_second_claim() {
         .unwrap()
         .expect("first claim");
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "cap-w2",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -5736,7 +5736,7 @@ async fn per_plugin_in_flight_cap_blocks_second_claim() {
         .is_none());
     assert!(store.ack_event_delivery(&first.fence()).await.unwrap());
     let second = store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "cap-w2",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -6293,7 +6293,7 @@ async fn claim_requires_this_nodes_schema_version() {
         .unwrap();
     let delivery_id = format!("{id}:echo");
     assert!(store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "w-v1",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -6313,7 +6313,7 @@ async fn claim_requires_this_nodes_schema_version() {
     assert_eq!(pending.attempt_count, 0);
 
     let claimed = store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "w-v2",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -6349,7 +6349,7 @@ async fn incompatible_d1_style_claim_is_released_without_attempt_burn() {
         .await
         .unwrap();
     let claimed = store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "d1-worker",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -6410,7 +6410,7 @@ async fn atomic_claim_skips_incompatible_oldest_and_claims_later_compatible() {
     let db = store.db().clone();
     let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db)));
     let claimed = store
-        .claim_next_event_delivery(
+        .lease_next_event_delivery(
             "atomic-skip-worker",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -7118,7 +7118,7 @@ async fn a_claim_with_a_past_cutoff_leaves_freshly_due_deliveries_to_better_node
     // A host ranked second waits ten seconds behind the best one: a delivery
     // due just now is not yet its to take.
     let behind = store
-        .claim_next_event_delivery_due_by(
+        .lease_next_event_delivery_due_by(
             "second",
             60,
             &uuid::Uuid::new_v4().to_string(),
@@ -7440,7 +7440,7 @@ mod every_profile {
                 .await
                 .unwrap();
             let delivery = store
-                .claim_next_event_delivery("worker", 60, "claim", &["echo".into()], 4, "")
+                .lease_next_event_delivery("worker", 60, "claim", &["echo".into()], 4, "")
                 .await
                 .unwrap();
             assert_eq!(delivery.map(|d| d.event_id), Some(id), "{profile:?}");

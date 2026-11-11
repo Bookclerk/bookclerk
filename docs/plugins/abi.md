@@ -630,10 +630,18 @@ supports_suspend = false
 
 **The subscriber catalog.**
 
-- Each host heartbeats into `event_subscriber_nodes` the discovered,
-  config-enabled integration manifests (even when spawn failed) and the
-  integrations currently loaded. Rows are keyed by `(node_id, PluginKey)`:
-  `plugin_id` stores the canonical PluginKey, not the display alias.
+- Each host heartbeats into `event_subscriber_nodes` the plugin instances
+  its deployments run (`present` or `placed` on that node) and the
+  integrations currently loaded. An instance's row is keyed by
+  `(node_id, plugin instance id)`, so two instances of one plugin each get
+  their own copy of an event. A plugin without an instance is keyed by its
+  canonical PluginKey, not the display alias.
+- The deployment decides whether an instance subscribes, not its process.
+  An instance that is deployed but not running (still starting, or failing
+  to spawn) keeps its enabled row, so matching events get a delivery for it
+  at publish time; the delivery waits as `pending` until the instance runs.
+  Subscriptions are the consented `[[events.consumers]]` and
+  `[[queues.consumers]]` rows of the discovered manifest.
 - The catalog key is the node id from `node-identity.json`. Nodes don't
   delete catalog rows they lack.
 - A plugin is live when any heartbeating node (60 s TTL) has it enabled.
@@ -714,18 +722,25 @@ describe, best effort (a failed publish is logged, and the write stands):
 Discover's host consumer reads them to refresh shelves (see
 [Discovery design](../internals/discovery.md#taste-events)).
 
-**Claiming.**
+**Leasing.**
+
+An event is a fact that fans out: every subscribed instance gets its own
+delivery, and subscribers never compete for one. A delivery is *leased*,
+which only picks the node that runs that subscriber's copy. A job is a
+command with one handler, and is *claimed* (see
+[Durable job queue](../internals/jobs.md)).
 
 - The producer's `ordering_key` is stored on the envelope, and copied
   verbatim onto each delivery.
-- Each VPS claims only PluginKeys loaded on that process, **and** only
-  events its node-local catalog matches (type, schema version, filter).
+- Each VPS leases only deliveries for instances loaded on that process,
+  **and** only events its node-local catalog matches (type, schema
+  version, filter).
 - The host evaluates catalog JSON filters, then compare-and-sets a
   concrete delivery id inside a generic atomic plan.
 - `[events.concurrency]` (default 1) is the number of local delivery
   workers **and** the cluster-wide maximum of `running` deliveries per
   `(plugin_id, resource_class)` (`network` today). It is enforced at
-  claim time with a portable `bookclerk_slots` row, so two VPSes can't
+  lease time with a portable `bookclerk_slots` row, so two VPSes can't
   over-admit under `READ COMMITTED`.
 - FIFO per ordering key stays. Unrelated keys are only blocked by that
   cap.

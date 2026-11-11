@@ -101,3 +101,4 @@ Build and agent conventions for this repository live in
 - [Library data model](adr/library-data-model.md): FRBR works, expressions and editions, holdings and edition files
 - [Web API contract checks](adr/web-api-contract-checks.md): the document is checked against examples in tests and against real responses in CI
 - [Project licensing](adr/licensing.md): AGPL for the project, MIT OR Apache-2.0 for the plugin SDKs, a CLA and a trademark policy
+- [Event delivery model](adr/event-delivery-model.md): events fan out to every subscriber, jobs have one handler, subscriptions follow deployments

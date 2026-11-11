@@ -11,7 +11,9 @@ use bookclerk_integrations::{
     DomainEvent, EventResult, EventSubscription, Integration, QueueBatch, QueueMessage,
     QueueResult, QueueSubscription,
 };
-use bookclerk_library::control_plane::{route_ranks, RouteRank};
+use bookclerk_library::control_plane::{
+    list_all_plugin_instances, list_present_deployments_for_node, route_ranks, RouteRank,
+};
 use bookclerk_library::{
     catalog_subscribers_for_event, subscription_matches_event, wake_grants_from_subscriptions,
     EventCatalogSubscription, LibraryStore, PublishDomainEventSpec, QUEUE_CONTENT_TYPE_BYTES,
@@ -26,11 +28,11 @@ use crate::job_worker::{
     apply_heartbeat_tick, classify_heartbeat, HeartbeatDecision, HeartbeatTick,
 };
 
-/// How long a worker may replay a lost `claim_next_event_delivery` RPC.
-const CLAIM_REPLAY_BUDGET: Duration = Duration::from_secs(2);
-/// Delay between bounded delivery-claim replay attempts.
-const CLAIM_REPLAY_DELAY: Duration = Duration::from_millis(200);
-/// Lease duration granted to a delivery worker on claim.
+/// How long a worker may replay a lost `lease_next_event_delivery` RPC.
+const LEASE_REPLAY_BUDGET: Duration = Duration::from_secs(2);
+/// Delay between bounded delivery-lease replay attempts.
+const LEASE_REPLAY_DELAY: Duration = Duration::from_millis(200);
+/// Lease duration granted to a delivery worker.
 const LEASE_SECS: u64 = 60;
 /// Force a bounded late-join reconcile at least every ~60s catalog TTL.
 const RECONCILE_BACKSTOP_TICKS: u32 = 12;
@@ -141,7 +143,7 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
                     }
                 }
                 Err(err) => {
-                    warn!(error = %err, "claim_next_event_delivery failed");
+                    warn!(error = %err, "lease_next_event_delivery failed");
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }
@@ -173,10 +175,24 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
             })
             .collect::<Vec<_>>()
     };
+    let library = state.library_snapshot().await;
+    let loaded_instances: std::collections::HashSet<&str> = loaded
+        .iter()
+        .filter_map(|row| row.instance_id.as_deref())
+        .collect();
+    // Subscriptions belong to the deployment, not to a running process: an
+    // instance deployed here but not loaded still subscribes, so its copies
+    // of matching events are written at publish time and wait for it.
+    let dormant: Vec<DeployedSubscriber> = deployed_subscribers(&library, &node_id)
+        .await
+        .into_iter()
+        .filter(|deployed| !loaded_instances.contains(deployed.instance_id.as_str()))
+        .collect();
     let instance_keys: std::collections::HashSet<String> = loaded
         .iter()
         .filter(|row| row.instance_id.is_some())
         .map(|row| row.key.clone())
+        .chain(dormant.iter().map(|deployed| deployed.key.clone()))
         .collect();
     let mut granted_by_key =
         std::collections::HashMap::<String, Vec<EventCatalogSubscription>>::new();
@@ -185,7 +201,6 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
         move || bookclerk_plugin_host::discover_plugins(&cfg)
     })
     .await;
-    let library = state.library_snapshot().await;
     let mut catalogued = std::collections::HashSet::<String>::new();
     match discovered {
         Ok(Ok(plugins)) => {
@@ -234,6 +249,24 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
             warn!(error = %err, "plugin discovery task for event catalog failed");
         }
     }
+    for deployed in &dormant {
+        // A plugin this node cannot discover cannot run here either; its
+        // row is left to expire with the heartbeat TTL.
+        let Some(subs) = granted_by_key.get(&deployed.key) else {
+            continue;
+        };
+        if let Err(err) = library
+            .upsert_event_subscriber(&node_id, &deployed.instance_id, subs, true)
+            .await
+        {
+            warn!(
+                plugin_instance_id = %deployed.instance_id,
+                plugin_key = %deployed.key,
+                error = %err,
+                "deployed instance event subscriber catalog upsert failed"
+            );
+        }
+    }
     for row in &loaded {
         if let Some(instance_id) = &row.instance_id {
             let subs = granted_by_key
@@ -272,6 +305,72 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
             );
         }
     }
+}
+
+/// A plugin instance the deployment table runs on this node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeployedSubscriber {
+    /// Plugin instance id; the catalog `plugin_id` for its rows.
+    instance_id: String,
+    /// Canonical PluginKey of the instance, used to find its granted
+    /// subscriptions among the discovered manifests.
+    key: String,
+}
+
+/// Instances this node should run (`present` or `placed`), with their keys.
+///
+/// Read from the control plane rather than from loaded processes, so the
+/// catalog says what is deployed even while a guest is not running. A read
+/// failure logs and returns nothing; the catalog then falls back to loaded
+/// instances for this tick, as before.
+async fn deployed_subscribers(library: &LibraryStore, node_id: &str) -> Vec<DeployedSubscriber> {
+    let deployments = match list_present_deployments_for_node(library, node_id).await {
+        Ok(rows) => rows,
+        Err(err) => {
+            warn!(error = %err, "deployment read for event catalog failed");
+            return Vec::new();
+        }
+    };
+    if deployments.is_empty() {
+        return Vec::new();
+    }
+    let instances = match list_all_plugin_instances(library).await {
+        Ok(rows) => rows,
+        Err(err) => {
+            warn!(error = %err, "plugin instance read for event catalog failed");
+            return Vec::new();
+        }
+    };
+    let keys: std::collections::HashMap<&str, &str> = instances
+        .iter()
+        .map(|instance| (instance.id.as_str(), instance.plugin_key.as_str()))
+        .collect();
+    deployed_from_rows(&deployments, &keys)
+}
+
+/// Pair each running deployment with its instance's PluginKey.
+///
+/// Rows whose desired state does not run here, or whose instance is gone,
+/// are skipped. The result is sorted and free of duplicates.
+fn deployed_from_rows(
+    deployments: &[bookclerk_library::control_plane::PluginDeployment],
+    keys: &std::collections::HashMap<&str, &str>,
+) -> Vec<DeployedSubscriber> {
+    let mut out: Vec<DeployedSubscriber> = deployments
+        .iter()
+        .filter(|row| row.desired.runs())
+        .filter_map(|row| {
+            let instance_id = row.plugin_instance_id.as_str();
+            let key = keys.get(instance_id)?.trim();
+            (!key.is_empty()).then(|| DeployedSubscriber {
+                instance_id: instance_id.to_string(),
+                key: key.to_string(),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+    out.dedup();
+    out
 }
 
 /// One loaded integration captured before discovery so catalog rows can use
@@ -704,7 +803,7 @@ fn claim_groups(
 }
 
 /// Claim the next ready delivery, best-ranked ids first, replaying a lost
-/// RPC within [`CLAIM_REPLAY_BUDGET`].
+/// RPC within [`LEASE_REPLAY_BUDGET`].
 async fn claim_delivery(
     library: &LibraryStore,
     owner: &str,
@@ -737,10 +836,10 @@ async fn claim_group(
     due_by: chrono::DateTime<chrono::Utc>,
 ) -> Result<Option<bookclerk_library::EventDeliveryRecord>, bookclerk_library::LibraryError> {
     let operation_id = Uuid::new_v4().to_string();
-    let deadline = Instant::now() + CLAIM_REPLAY_BUDGET;
+    let deadline = Instant::now() + LEASE_REPLAY_BUDGET;
     loop {
         match library
-            .claim_next_event_delivery_due_by(
+            .lease_next_event_delivery_due_by(
                 owner,
                 LEASE_SECS,
                 &operation_id,
@@ -758,7 +857,7 @@ async fn claim_group(
                         "claim replay budget exhausted: {msg}"
                     )));
                 }
-                tokio::time::sleep(CLAIM_REPLAY_DELAY).await;
+                tokio::time::sleep(LEASE_REPLAY_DELAY).await;
             }
             Err(err) => return Err(err),
         }
@@ -1369,6 +1468,7 @@ fn domain_event_for_delivery(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bookclerk_library::control_plane::{DesiredState, PluginDeployment, PluginInstanceId};
     use bookclerk_library::{
         DomainEventRecord, EventCatalogSubscription, EventDeliveryRecord, EventSubscriber,
         InProcessSqliteAtomic, PublishDomainEventOutcome, PublishDomainEventSpec,
@@ -1691,7 +1791,7 @@ mod tests {
             .await
             .unwrap();
         let claimed = store
-            .claim_next_event_delivery(
+            .lease_next_event_delivery(
                 "cap-park",
                 60,
                 &uuid::Uuid::new_v4().to_string(),
@@ -1864,6 +1964,111 @@ queue = "other"
         std::fs::write(&command, b"#!/bin/sh\n").unwrap();
         let manifest = bookclerk_plugin_host::PluginManifest::parse(toml).unwrap();
         bookclerk_plugin_host::DiscoveredPlugin::new(manifest, root.to_path_buf(), command)
+    }
+
+    fn deployment(instance: &str, desired: DesiredState) -> PluginDeployment {
+        PluginDeployment {
+            deployment_id: format!("dep-{instance}"),
+            plugin_instance_id: PluginInstanceId::parse(instance).unwrap(),
+            node_id: "node-a".into(),
+            desired,
+            revision: 1,
+            updated_at: "2026-11-11T00:00:00+00:00".into(),
+            updated_by: "test".into(),
+        }
+    }
+
+    #[test]
+    fn deployed_subscribers_keep_running_rows_with_a_known_instance() {
+        let running = PluginInstanceId::mint();
+        let placed = PluginInstanceId::mint();
+        let absent = PluginInstanceId::mint();
+        let orphan = PluginInstanceId::mint();
+        let rows = [
+            deployment(placed.as_str(), DesiredState::Placed),
+            deployment(running.as_str(), DesiredState::Present),
+            deployment(absent.as_str(), DesiredState::Absent),
+            deployment(orphan.as_str(), DesiredState::Present),
+            deployment(running.as_str(), DesiredState::Present),
+        ];
+        let keys: std::collections::HashMap<&str, &str> = [
+            (running.as_str(), "platform:bookclerk/echo"),
+            (placed.as_str(), "platform:bookclerk/qecho"),
+            (absent.as_str(), "platform:bookclerk/echo"),
+        ]
+        .into_iter()
+        .collect();
+        let mut expected = vec![
+            DeployedSubscriber {
+                instance_id: running.as_str().to_string(),
+                key: "platform:bookclerk/echo".into(),
+            },
+            DeployedSubscriber {
+                instance_id: placed.as_str().to_string(),
+                key: "platform:bookclerk/qecho".into(),
+            },
+        ];
+        expected.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+        assert_eq!(deployed_from_rows(&rows, &keys), expected);
+    }
+
+    #[tokio::test]
+    async fn a_deployed_instance_subscribes_while_its_guest_is_not_loaded() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, store) = crate::node_api::tests::test_state(&files).await;
+        discovered_echo(&files.path().join("plugins").join("echo"));
+        let config = state.config.read().await.clone();
+        let plugin = bookclerk_plugin_host::discover_plugins(&config)
+            .unwrap()
+            .into_iter()
+            .find(|plugin| plugin.manifest.id == "echo")
+            .expect("echo is discovered");
+        let key = plugin.plugin_key().canonical().to_string();
+        let mut grants = bookclerk_plugin_host::PluginGrantStore::default();
+        grants.upsert(bookclerk_plugin_host::consent_request(
+            &plugin.manifest,
+            plugin.plugin_key(),
+        ));
+        grants.save(files.path()).unwrap();
+        let actor = bookclerk_library::control_plane::ConfigActor::Bootstrap;
+        let instance =
+            bookclerk_library::control_plane::create_plugin_instance(&store, &actor, &key, "")
+                .await
+                .unwrap();
+        let node_id = event_node_id(files.path());
+        bookclerk_library::control_plane::ensure_plugin_deployment(
+            &store,
+            &actor,
+            &instance.id,
+            &node_id,
+            DesiredState::Present,
+        )
+        .await
+        .unwrap();
+        assert!(
+            state.integrations.read().await.all().is_empty(),
+            "nothing is loaded"
+        );
+
+        upsert_event_subscriber_catalog(&state).await;
+
+        let live = store.list_live_event_subscribers().await.unwrap();
+        let row = live
+            .iter()
+            .find(|row| row.plugin_id == instance.id.as_str())
+            .unwrap_or_else(|| panic!("no catalog row for the instance: {live:?}"));
+        assert!(row.enabled, "a deployed instance subscribes: {row:?}");
+        assert_eq!(
+            row.subscriptions
+                .iter()
+                .map(|sub| sub.event_type.as_str())
+                .collect::<Vec<_>>(),
+            ["book_acquired"]
+        );
+        assert!(
+            !live.iter().any(|row| row.plugin_id == key && row.enabled),
+            "the plugin key itself does not subscribe beside its instance: {live:?}"
+        );
     }
 
     #[test]
@@ -2148,7 +2353,7 @@ queue = "other"
             .await
             .unwrap();
         let claimed = store
-            .claim_next_event_delivery(
+            .lease_next_event_delivery(
                 "claim-key",
                 60,
                 &uuid::Uuid::new_v4().to_string(),
@@ -2179,7 +2384,7 @@ queue = "other"
             .await
             .unwrap();
         let missed = store
-            .claim_next_event_delivery(
+            .lease_next_event_delivery(
                 "claim-ambiguous",
                 60,
                 &uuid::Uuid::new_v4().to_string(),
@@ -2266,7 +2471,7 @@ queue = "other"
             .await
             .unwrap();
         let delivery = store
-            .claim_next_event_delivery(
+            .lease_next_event_delivery(
                 "worker",
                 60,
                 &uuid::Uuid::new_v4().to_string(),

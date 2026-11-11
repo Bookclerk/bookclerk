@@ -572,7 +572,7 @@ mod tests {
             .await
             .expect("dispatch");
         let delivery = library
-            .claim_next_event_delivery(
+            .lease_next_event_delivery(
                 "test-owner",
                 60,
                 &uuid::Uuid::new_v4().to_string(),
