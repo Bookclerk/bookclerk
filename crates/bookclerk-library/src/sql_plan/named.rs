@@ -1530,6 +1530,7 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
         "webauthn_credentials",
         "webauthn_challenges",
         "oidc_rp_states",
+        "user_title_state",
     ] {
         let mut p = vec![j_i64(user_id)];
         p.extend(allow_p.clone());
@@ -4194,7 +4195,7 @@ mod tests {
         use crate::models::JobKind;
         // Exhaustive on purpose: a new variant stops this from compiling
         // until it is added here, and the assertion fails until `ALL` has it.
-        fn every(kind: JobKind) -> [JobKind; 11] {
+        fn every(kind: JobKind) -> [JobKind; 12] {
             match kind {
                 JobKind::Scan
                 | JobKind::Acquire
@@ -4204,6 +4205,7 @@ mod tests {
                 | JobKind::PluginScheduled
                 | JobKind::DiscoverCandidates
                 | JobKind::DiscoverFeed
+                | JobKind::DiscoverRequestQueue
                 | JobKind::CacheSweep
                 | JobKind::SearchIndexRebuild
                 | JobKind::Invalid => [
@@ -4215,6 +4217,7 @@ mod tests {
                     JobKind::PluginScheduled,
                     JobKind::DiscoverCandidates,
                     JobKind::DiscoverFeed,
+                    JobKind::DiscoverRequestQueue,
                     JobKind::CacheSweep,
                     JobKind::SearchIndexRebuild,
                     JobKind::Invalid,

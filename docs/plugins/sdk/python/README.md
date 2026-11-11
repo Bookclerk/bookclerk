@@ -131,8 +131,12 @@ async with await create_test_database(migrations=MIGRATIONS) as db:  # profile f
     await db.binding.prepare("INSERT INTO notes (body) VALUES (?)").bind(body).run()
 ```
 
-See [Testing against the limits](../../database-limits.md#testing-against-the-limits);
-the TypeScript `echo_workerd_ts` example shows the same pattern end to end.
+The `echo_workerd_python` example (`examples/plugins-echo-workerd-python/`)
+is a worked plugin: a `notes` table it writes with `chunk()`, lists with
+`iterate()` or key-paged reads, sizes with `limits()`, and tests under
+every profile. A plugin's own `pyproject.toml` is what makes
+`bookclerk-plugin test` run pytest. See
+[Testing against the limits](../../database-limits.md#testing-against-the-limits).
 
 ## Author tools
 

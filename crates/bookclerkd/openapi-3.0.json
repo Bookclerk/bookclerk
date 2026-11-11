@@ -17419,7 +17419,8 @@
         "tags": [
           "Wishlist"
         ],
-        "summary": "Ranks the shared open-request queue without warming ONNX embeddings.",
+        "summary": "Reads the shared open-request queue from its stored ranking.",
+        "description": "The `discover_request_queue` job ranks the queue against household taste\nwhen a taste event says it may have moved; this route joins that stored\nranking with the open requests and the live wish counts, so it reads no\nbooks, listening history or embedder. When an entry has no stored ranking\nyet, or the ranking is older than a day, the route queues a pass and\nanswers with what it has.",
         "operationId": "list_request_queue",
         "responses": {
           "200": {
@@ -17471,7 +17472,7 @@
             }
           },
           "500": {
-            "description": "The queue could not be ranked.",
+            "description": "The queue could not be read.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -17482,13 +17483,27 @@
             }
           },
           "503": {
-            "description": "Discover is shutting down; try again. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
-            "content": {
-              "text/plain": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
                 "schema": {
-                  "type": "string"
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
                 },
-                "example": "discover gate closed"
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
               }
             }
           },
@@ -28358,12 +28373,6 @@
             },
             "description": "Optional priced storefront links snapshotted at wishlist time."
           },
-          "work_key": {
-            "type": "string",
-            "description": "Optional stable work key; when omitted one is derived from bib fields.",
-            "example": "work:9780441478125",
-            "nullable": true
-          },
           "cover_url": {
             "type": "string",
             "description": "Optional cover image URL snapshotted onto the request.",
@@ -30019,6 +30028,7 @@
           "plugin_scheduled",
           "discover_candidates",
           "discover_feed",
+          "discover_request_queue",
           "cache_sweep",
           "search_index_rebuild",
           "invalid"
@@ -36524,6 +36534,7 @@
         "description": "Global wishlist queue entry ranked by overall/operator recommend taste +\nheavy wish-count weight (shared order; not per-viewer personalized).",
         "required": [
           "work_key",
+          "work_id",
           "title",
           "wish_count",
           "sample_uuids",
@@ -36541,9 +36552,8 @@
           },
           "work_id": {
             "type": "string",
-            "description": "Library work the entry's wishes resolve to, when the library could\nplace them. Wishes for one work are one entry even when their\n`work_key`s differ, so a client matches its own wishes on this id\nfirst and on `work_key` otherwise.",
-            "example": "0b7e2c1d-5f3a-4e6b-9c8d-1a2b3c4d5e6f",
-            "nullable": true
+            "description": "The work every wish of this entry is for. Wishes for one work are\none entry even when their `work_key`s differ, so a client matches\nits own wishes on this id first and on `work_key` otherwise.",
+            "example": "0b7e2c1d-5f3a-4e6b-9c8d-1a2b3c4d5e6f"
           },
           "title": {
             "type": "string",
@@ -38465,6 +38475,7 @@
           "uuid",
           "title",
           "status",
+          "work_id",
           "created_at",
           "updated_at"
         ],
@@ -38489,24 +38500,24 @@
           },
           "title": {
             "type": "string",
-            "description": "Display title of the work or edition.",
+            "description": "Display title: the title of the wish's work.",
             "example": "The Left Hand of Darkness"
           },
           "authors": {
             "type": "string",
-            "description": "Comma-separated or JSON author list from the storefront.",
+            "description": "Comma-separated authors: the work's author credits in billing order.",
             "example": "Ursula K. Le Guin",
             "nullable": true
           },
           "asin": {
             "type": "string",
-            "description": "Amazon ASIN when known; otherwise null.",
+            "description": "Amazon ASIN from the wish's storefront sources, when one carries it.",
             "example": "B002V0QK4C",
             "nullable": true
           },
           "isbn": {
             "type": "string",
-            "description": "ISBN-10/13 when known; otherwise null.",
+            "description": "ISBN-10/13 from the wish's storefront sources, when one carries it.",
             "example": "9780441478125",
             "nullable": true
           },
@@ -38526,13 +38537,18 @@
           },
           "work_key": {
             "type": "string",
-            "description": "Stable bibliographic key (`isbn:…` / `asin:…` / `soft:…`) for aggregation.",
+            "description": "Bibliographic card key (`isbn:…` / `asin:…` / `soft:…`) clients use\nto match a wish to a catalog card. Derived from the work's title and\nauthors and the sources' identifiers on every read, never stored.",
             "example": "isbn:9780441478125"
           },
           "work_id": {
             "type": "string",
-            "description": "Canonical work id this edition or request resolves to.",
-            "example": "7c1e9a2b-3d4f-4e5a-9b6c-8d7e0f1a2b3c",
+            "description": "The work the wish is for; wishes for one work are one queue entry.",
+            "example": "7c1e9a2b-3d4f-4e5a-9b6c-8d7e0f1a2b3c"
+          },
+          "edition_id": {
+            "type": "string",
+            "description": "The edition the wish named, when the library knows it.",
+            "example": "0b8e3f2a-5c1d-5e7f-9a2b-4c6d8e0f1a3b",
             "nullable": true
           },
           "resolved_book_uuid": {
@@ -39523,7 +39539,7 @@
                 "properties": {
                   "title": {
                     "type": "string",
-                    "description": "Display title when the provider reported one.",
+                    "description": "Title of the work being listened to, when the library knows it.",
                     "example": "The Left Hand of Darkness",
                     "nullable": true
                   },
@@ -39586,7 +39602,7 @@
         "properties": {
           "title": {
             "type": "string",
-            "description": "Display title when the provider reported one.",
+            "description": "Title of the work being listened to, when the library knows it.",
             "example": "The Left Hand of Darkness",
             "nullable": true
           },

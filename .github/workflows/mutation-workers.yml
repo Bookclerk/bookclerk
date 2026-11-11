@@ -114,7 +114,9 @@ jobs:
       # rather than npx), so its test runners are still alive while it
       # saves. The second pass mutates the first pass's lines too, so
       # incremental mode carries their results over instead of dropping
-      # them, without testing them again.
+      # them, without testing them again. MUTATION_TESTING leaves out the
+      # tests that read the Worker's source text (see each vitest.config.ts):
+      # they would read Stryker's instrumented code.
       - name: Test the mutants
         id: mutants
         if: steps.lines.outputs.mutate != ''
@@ -122,6 +124,7 @@ jobs:
         env:
           MUTATE: ${{ steps.lines.outputs.mutate }}
           SEED: ${{ github.run_number }}
+          MUTATION_TESTING: "1"
         run: |
           set +e
           limit=2400

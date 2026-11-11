@@ -676,7 +676,6 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
         .await
         .unwrap();
 
-    let work = fallback_work_key("Hail Mary", Some("Andy Weir"), Some("B00HAIL"), None);
     store
         .create_title_request(&NewTitleRequest {
             uuid: None,
@@ -687,8 +686,6 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open, // ignored
-            work_key: work.clone(),
-            work_id: None,
             resolved_book_uuid: None,
             cover_url: None,
         })
@@ -704,8 +701,6 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            work_key: work.clone(),
-            work_id: None,
             resolved_book_uuid: None,
             cover_url: None,
         })
@@ -722,8 +717,6 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            work_key: String::new(),
-            work_id: None,
             resolved_book_uuid: None,
             cover_url: None,
         })
@@ -741,14 +734,19 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            work_key: work.clone(),
-            work_id: None,
             resolved_book_uuid: None,
             cover_url: None,
         })
         .await
         .unwrap();
-    assert_eq!(again.asin.as_deref(), Some("B00HAIL"));
+    // The wish names its work; identifiers live on the work's catalog
+    // edition and the wish's storefront sources, not on the wish.
+    assert!(!again.work_id.is_empty());
+    assert!(
+        again.edition_id.is_some(),
+        "the ASIN made a catalog edition"
+    );
+    assert_eq!(again.title, "Hail Mary");
     assert_eq!(store.list_wishlist(Some(a.id)).await.unwrap().len(), 1);
     assert_eq!(store.list_wishlist(Some(b.id)).await.unwrap().len(), 1);
 
@@ -763,8 +761,6 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            work_key: String::from("soft:the martian|andy weir"),
-            work_id: None,
             resolved_book_uuid: None,
             cover_url: None,
         })
@@ -780,8 +776,6 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            work_key: String::from("asin:B00MARTIAN"),
-            work_id: None,
             resolved_book_uuid: None,
             cover_url: None,
         })
@@ -792,10 +786,12 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
     assert_eq!(store.list_wishlist(None).await.unwrap().len(), 1);
 
     let queue = store.list_global_request_queue().await.unwrap();
-    // Hail Mary (2 wishes) ranks above Solo + Martian (1 each).
+    // Hail Mary (2 wishes, one work through the shared ASIN) ranks above
+    // Solo + Martian (1 each).
     assert_eq!(queue.len(), 3);
     assert_eq!(queue[0].wish_count, 2);
-    assert_eq!(queue[0].work_key, work);
+    assert_eq!(queue[0].title, "Hail Mary", "the work's title");
+    assert_eq!(queue[0].authors.as_deref(), Some("Andy Weir"));
     assert_eq!(queue[0].wishers.len(), 2);
     assert!(queue[0]
         .wishers
@@ -832,8 +828,6 @@ async fn wishlist_sources_merge_description_and_editions() {
             isbn: Some("9781984811234".into()),
             notes: None,
             status: RequestStatus::Open,
-            work_key: String::from("asin:B09ASHES"),
-            work_id: None,
             resolved_book_uuid: None,
             cover_url: None,
         })
@@ -958,18 +952,22 @@ async fn user_presence_extras_session_listening_and_last_used_touch() {
         .await
         .unwrap();
 
+    let (dune, _) = store
+        .work_for_wish(&crate::TitleQuery {
+            title: "Dune",
+            authors: Some("Frank Herbert"),
+            ..crate::TitleQuery::default()
+        })
+        .await
+        .unwrap();
     store
         .upsert_listening_progress(&NewListeningProgress {
             identity_id: Some(identity.id),
             provider: "audiobookshelf".into(),
             external_user_id: "pat".into(),
-            book_uuid: None,
-            work_id: None,
+            work_id: dune,
+            edition_id: None,
             external_item_id: "item-1".into(),
-            title: Some("Dune".into()),
-            authors: None,
-            asin: None,
-            isbn: None,
             progress: Some(0.2),
             current_time_seconds: Some(120.0),
             duration_seconds: Some(600.0),
@@ -7153,8 +7151,6 @@ async fn wishlist_writes_publish_wishlist_changed() {
         isbn: None,
         notes: None,
         status: RequestStatus::Open,
-        work_key: String::new(),
-        work_id: None,
         resolved_book_uuid: None,
         cover_url: None,
     };

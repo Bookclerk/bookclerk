@@ -17,6 +17,11 @@ use crate::format_out;
 use crate::progress::BatchProgress;
 use crate::registry::{open_host, resolve_source, sources};
 
+/// How long a CLI rebuild of the search index waits while a running daemon
+/// (refreshing the same index from library events, or rebuilding it) holds
+/// the writer, before it gives up with "busy with another writer".
+const INDEX_WRITER_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+
 #[derive(Debug, Subcommand)]
 /// `bookclerk library` subcommands for scan, acquire, accounts, and export.
 pub enum LibraryCommand {
@@ -310,7 +315,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 );
             }
             let engine = SearchEngine::open(&paths.search_index_dir)?;
-            let indexed = engine.rebuild(&store).await?;
+            let indexed = engine.rebuild_waiting(&store, INDEX_WRITER_WAIT).await?;
             println!("search index rebuilt: {indexed} book(s)");
             Ok(())
         }
@@ -576,7 +581,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
         } => {
             let engine = SearchEngine::open(&paths.search_index_dir)?;
             if rebuild_index {
-                let n = engine.rebuild(&store).await?;
+                let n = engine.rebuild_waiting(&store, INDEX_WRITER_WAIT).await?;
                 println!("search index rebuilt: {n} book(s)");
             }
             let query_text = if let Some(name) = filter {

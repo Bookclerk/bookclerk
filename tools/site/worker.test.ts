@@ -33,7 +33,6 @@ import { MAX_LAST_UPDATED_BYTES } from "./last-updated.ts";
 // runtime, which has no view of the repository.
 import HEADERS_FILE from "./src/_headers?raw";
 import WRANGLER_TOML from "./wrangler.toml?raw";
-import WORKER_SOURCE from "./worker.ts?raw";
 
 /**
  * The repository's docs/, served as every version of the docs repository:
@@ -1780,26 +1779,6 @@ test("src/_headers sets only cache classes from the table", () => {
   const values = [...HEADERS_FILE.matchAll(/^\s*Cache-Control:\s*(.+?)\s*$/gm)].map((m) => m[1]);
   assert.ok(values.length > 0);
   for (const value of values) assert.equal(cacheClassOf(value ?? null), "immutable", value ?? "");
-});
-
-test("the Worker sets Cache-Control only from the cache-class table", () => {
-  // Every assignment, in any casing, takes a table value, shared() or a local
-  // built from shared() alone.
-  const assigned = [...WORKER_SOURCE.matchAll(/["']cache-control["']\s*[:,]\s*([^\n]+)/gi)];
-  assert.ok(assigned.length > 10);
-  for (const [line, value] of assigned) {
-    assert.match(value ?? "", /^(?:CACHE_CONTROL\.\w+|shared\(|cacheControl,|cached,)/, line);
-  }
-  const locals = [...WORKER_SOURCE.matchAll(/const (?:cacheControl|cached) =([^;]+);/g)];
-  assert.ok(locals.length > 0);
-  for (const [line, value] of locals) {
-    assert.doesNotMatch(value ?? "", /["'`]/, line);
-    assert.match(value ?? "", /shared\(/, line);
-  }
-  assert.doesNotMatch(
-    WORKER_SOURCE,
-    /["'][^"'\n]*\b(?:no-store|no-cache|must-revalidate|s-maxage|immutable)\b/i,
-  );
 });
 
 test("cacheClassOf names each class and nothing else; shared refuses a bad lifetime", () => {

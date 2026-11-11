@@ -3,6 +3,7 @@
   "coverageAnalysis": "perTest",
   "inPlace": true,
   "tsconfigFile": "stryker-has-no-tsconfig.json",
+  "disableTypeChecks": false,
   "vitest": {
     "configFile": "vitest.config.ts",
     "related": false

@@ -277,7 +277,7 @@ paths):
 | A declared `test_guests` executable | The launching package's tests re-run, with no propagation |
 | `ui/`, `packages/plugin-sdk*/`, ABI scripts | The UI, SDK ABI and API-doc checks |
 | A first-party workerd guest without a Cargo package (`crates/bookclerk-plugins/<tier>/<name>/`) | Its type-check, build and tests (`workerd_guests`) and its staged E2E. `packages/plugin-sdk/` also selects `workerd_guests`, because the guests type-check against it |
-| A reference example that declares `[[databases]]` and has a `test` script in `package.json` (`examples/plugins-<name>/`) | Its type-check, build and suite under every database profile (`plugin_examples`) and its staged E2E. `packages/plugin-sdk/`, `crates/bookclerk-db-testkit/` and `crates/bookclerk-plugin-tools/` also select `plugin_examples` |
+| A reference example that declares `[[databases]]` and has a `test` script in `package.json`, a `pyproject.toml` or a `Cargo.toml` (`examples/plugins-<name>/`) | Its checks and suite under every database profile (`plugin_examples`) and its staged E2E. `crates/bookclerk-db-testkit/` and `crates/bookclerk-plugin-tools/` also select `plugin_examples`, as do `packages/plugin-sdk/` (with a TypeScript example), `packages/plugin-sdk-python/` (with a Python one) and anything that affects a Rust example's tests, such as the Rust SDK |
 | `docs/**` | The website tests (`site_test`) |
 | `tools/site/**`, `assets/brand/**` | The website tests and audit (`site_test`, `site_audit`) |
 | `tools/diagnostics-collector/**` | The collector's tests (`collector_test`) |
@@ -490,12 +490,18 @@ SDK tests as `BOOKCLERK_DB_TESTKIT`: the SDKs' `createTestDatabase` wrappers
 spawn it (see [Working within database limits](../plugins/database-limits.md#a-plugins-own-binding)),
 so both checks need the Rust toolchain.
 
-The `plugin_examples` check builds the TypeScript SDK, the kit and the
-`bookclerk-plugin` author CLI, then, for each database example, type-checks
-it, rebuilds its `modules/` (a committed tree that differs is drift, as in
-`workerd_guests`) and runs `bookclerk-plugin test <dir>`, which runs the
-example's own suite once per profile (`first-party`, `d1`, `minimum`; see
+The `plugin_examples` check builds the kit and the `bookclerk-plugin`
+author CLI, then runs `bookclerk-plugin test <dir>` on each database
+example, which runs the example's own suite once per profile
+(`first-party`, `d1`, `minimum`; see
 [The suite under every profile](../plugins/database-limits.md#the-suite-under-every-profile)).
+Before that, a TypeScript example is type-checked against the built
+TypeScript SDK and its `modules/` rebuilt (a committed tree that differs is
+drift, as in `workerd_guests`). A Python example is checked with `ruff
+check` and `ruff format --check`, then tested with pytest in the Python
+SDK's locked environment (the one `python_sdk` uses) with the SDK imported
+from its sources. A Rust example is a workspace package that `fmt` and
+`clippy` already cover, so it only runs its `cargo test` suite.
 
 To fix formatting locally:
 
@@ -1284,9 +1290,21 @@ the Workers' lockfiles do not change. Settings live in
 [`scripts/stryker.config.json`](../../scripts/stryker.config.json):
 
 - `inPlace`, because some tests read repository files by relative path.
+  Stryker then rewrites the sources it mutates on disk while it runs, so
+  the step sets `MUTATION_TESTING=1` and each Worker's `vitest.config.ts`
+  leaves out the tests that read its own source text
+  (`tools/site/worker-source.test.ts`,
+  `tools/diagnostics-collector/cache-control-source.test.ts`). Those tests
+  would fail on the instrumented code. A mutant never shows in the source
+  text, because Stryker switches mutants on at run time, and the one
+  function they call, the collector's `assetUrlsModule`, has its own test
+  in `cache-control.test.ts`. Every other run keeps them.
 - A `tsconfigFile` that does not exist, because TypeScript 7 has no
   JavaScript API for Stryker's tsconfig rewriting. Type checking stays
   with each Worker's `npm run typecheck`.
+- `disableTypeChecks` off, so Stryker does not add `// @ts-nocheck` to
+  every file. That would change the collector's hashed dashboard assets,
+  and Vitest does not check types anyway.
 - `vitest.related` off, because the Workers runtime loads modules outside
   Vitest's module graph, so Vitest cannot tell which tests import a file.
 - `incremental`, writing to `reports/mutation/mutation.json`, because only
@@ -1299,7 +1317,7 @@ To reproduce a Worker's run locally, from its directory:
 
 ```sh
 npm install --no-save @stryker-mutator/core@10.1.1 @stryker-mutator/vitest-runner@10.1.1
-npx stryker run ../../scripts/stryker.config.json --mutate "src/page.ts:10-20"
+MUTATION_TESTING=1 npx stryker run ../../scripts/stryker.config.json --mutate "src/page.ts:10-20"
 ```
 
 The report lands in `reports/mutation/mutation.json`. Delete that folder
@@ -1309,7 +1327,10 @@ afterwards: incremental mode reuses the results in it on the next run.
 
 The [`mutation-python.yml`](../../.github/workflows/mutation-python.yml)
 workflow does the same for the Python plugin SDK
-(`packages/plugin-sdk-python`) with [mutmut](https://mutmut.readthedocs.io/):
+(`packages/plugin-sdk-python`) with [mutmut](https://mutmut.readthedocs.io/).
+Before mutmut starts, it installs capnp and builds the
+`bookclerk-db-testkit` binary that `tests/test_testkit.py` drives, as CI's
+`python_sdk` check does, so no test run builds it:
 
 1. It finds the lines changed since the last run under the SDK's `src/`:
    the lines added, placed in the new file, and the lines deleted, placed
@@ -1359,9 +1380,13 @@ SDK's `pyproject.toml`, under `[tool.mutmut]`: the package to mutate, the
 generated modules to leave alone (the same list ruff excludes, which a
 test checks) and the test folder.
 
-To reproduce the run locally, from `packages/plugin-sdk-python`:
+To reproduce the run locally, build the testkit first (it needs Rust and
+capnp, as the workflow installs), then run mutmut from
+`packages/plugin-sdk-python`:
 
 ```sh
+cargo build -p bookclerk-db-testkit --bin bookclerk-db-testkit
+export BOOKCLERK_DB_TESTKIT="$(git rev-parse --show-toplevel)/target/debug/bookclerk-db-testkit"
 python3 -m venv /tmp/mutmut && /tmp/mutmut/bin/pip install pytest "mutmut==3.8.1"
 /tmp/mutmut/bin/mutmut run "bookclerk_plugin_sdk.tools.x_check_plugin__mutmut_*"
 /tmp/mutmut/bin/mutmut show bookclerk_plugin_sdk.tools.x_check_plugin__mutmut_3

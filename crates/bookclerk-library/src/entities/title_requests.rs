@@ -14,24 +14,17 @@ pub struct Model {
     pub uuid: String,
     /// Foreign key to `portal_identities.id`.
     pub identity_id: Option<i64>,
-    /// Display title of the work or edition.
-    pub title: String,
-    /// Comma-separated or JSON author list from the storefront.
-    pub authors: Option<String>,
-    /// Amazon ASIN when known; otherwise null.
-    pub asin: Option<String>,
-    /// ISBN-10/13 when known; otherwise null.
-    pub isbn: Option<String>,
+    /// The work the wish is for (`works.id`); its title and credits are
+    /// the wish's display title and authors.
+    pub work_id: String,
+    /// The edition the wish named, when the library knows it.
+    pub edition_id: Option<String>,
     /// Free-form operator or requester notes.
     pub notes: Option<String>,
     /// Lifecycle status for the row (user, request, …).
     pub status: String,
     /// Preferred storefront plugin id for fulfilling a wishlist item.
     pub preferred_source: Option<String>,
-    /// Canonical work id this edition or request resolves to.
-    pub work_id: Option<String>,
-    /// Stable merge key used to group editions into a work.
-    pub work_key: String,
     /// Library `books.uuid` once the wishlist item is fulfilled.
     pub resolved_book_uuid: Option<String>,
     /// HTTPS URL for cover art when known.

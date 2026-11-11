@@ -14,16 +14,17 @@
 //!    candidates against the same taste, with no network, and stores the
 //!    shelves.
 //! 3. [`stored_subject_feed`] reads them back for the page, dropping the
-//!    subject's hidden shelves.
+//!    subject's hidden shelves and joining each card's catalog metadata
+//!    (description, cover, …) from the stored candidates, which the stored
+//!    feed leaves out.
 //!
 //! See `docs/internals/discovery.md`, *Precomputed shelves*.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use bookclerk_library::{
-    BookRecord, DiscoverSubject, LibraryStore, ListeningProgressRecord, RequestStatus, SeedScope,
-};
+use crate::listening::ListeningSignal;
+use bookclerk_library::{BookRecord, DiscoverSubject, LibraryStore, RequestStatus, SeedScope};
 use bookclerk_source::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, ContentSource,
     PurchaseHintOpts, SourceError, SourceRegistry,
@@ -41,7 +42,10 @@ use crate::recommend::{
     engagement_by_book, feed_from_recommendations, owned_identity_sets, rank_candidates,
     shelf_taste, RecommendOptions, TasteWeights,
 };
-use crate::shelves::{encode_feed_within, shelf_is_disabled, DiscoverFeed};
+use crate::shelves::{shelf_is_disabled, DiscoverFeed};
+use crate::stored_feed::{
+    decode_stored_feed, encode_stored_feed, feed_needs_pool, join_feed, CandidatePool,
+};
 
 /// Longest one storefront call may take before its store moves on.
 pub const STORE_CALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -124,7 +128,9 @@ impl RememberedPrice {
 /// refuse a cell or query result over 256 KiB (`maxResultBytes`) and count
 /// a row as JSON, so the budget applies to the escaped feed. The row read
 /// back carries a few more columns, so the feed keeps 64 KiB of headroom
-/// under that.
+/// under that. Cards are stored without the metadata the candidate pool
+/// holds, so a feed normally takes a fraction of this; the budget is a
+/// backstop.
 pub const STORED_FEED_MAX_BYTES: usize = 192 * 1024;
 
 /// One subject's taste: whose seeds Discover uses and what they read.
@@ -142,7 +148,7 @@ pub struct SubjectTaste {
     /// The subject's listening rows (all rows for the household). While
     /// household books blend in, the household's rows for those books are
     /// added too, and count at their book's weight.
-    pub listening: Vec<ListeningProgressRecord>,
+    pub listening: Vec<ListeningSignal>,
     /// The subject's open wishlist titles, newest first, used as extra seeds.
     pub wishlist: Vec<SeedTitle>,
     /// Display titles of `wishlist`, newest first.
@@ -155,7 +161,7 @@ impl SubjectTaste {
     /// The whole household's taste, for a subject with no signal of their own.
     fn household(
         books: Vec<BookRecord>,
-        listening: Vec<ListeningProgressRecord>,
+        listening: Vec<ListeningSignal>,
         linked_sources: HashSet<String>,
     ) -> Self {
         Self {
@@ -223,7 +229,7 @@ pub async fn load_subject_taste(
                     .any(|p| p.eq_ignore_ascii_case(&r.provider))
             });
         }
-        rows
+        ListeningSignal::load(library, rows).await?
     } else {
         Vec::new()
     };
@@ -263,7 +269,7 @@ pub async fn load_subject_taste(
             held.insert((link.plugin_key, link.account_id));
         }
     }
-    let listening: Vec<ListeningProgressRecord> = all_listening
+    let listening: Vec<ListeningSignal> = all_listening
         .iter()
         .filter(|r| match r.identity_id {
             Some(id) => identity_ids.contains(&id),
@@ -811,6 +817,11 @@ pub struct RankReport {
     pub shelves: usize,
     /// Stored candidates read.
     pub candidates: usize,
+    /// Cards on the stored shelves, after any trimming to fit the budget.
+    pub cards: usize,
+    /// Bytes of the stored feed as the database counts it (an escaped JSON
+    /// string), at most the 192 KiB stored-feed budget.
+    pub stored_bytes: usize,
 }
 
 /// Ranks one subject's stored candidates into shelves and stores the feed.
@@ -875,16 +886,22 @@ pub async fn rank_subject_feed(
     shelf.wish_titles.clone_from(&taste.wish_titles);
     shelf.linked_sources.clone_from(&taste.linked_sources);
     let mut feed = feed_from_recommendations(&recs, &shelf, &rank_opts);
-    let json = encode_feed_within(&mut feed, STORED_FEED_MAX_BYTES).map_err(|e| {
+    // Cards keep only what is personal to the subject; catalog metadata the
+    // pool holds is joined back when the page reads the feed.
+    let pool = CandidatePool::from_rows(&stored);
+    let json = encode_stored_feed(&mut feed, &pool, STORED_FEED_MAX_BYTES).map_err(|e| {
         crate::error::DiscoverError::message(format!("encode the discover feed: {e}"))
     })?;
     library
         .put_discover_feed(subject, &json, taste.scope, newest)
         .await?;
+    let stored_bytes = serde_json::to_string(&json).map_or(json.len(), |escaped| escaped.len());
     Ok(RankReport {
         scope: taste.scope,
         shelves: feed.shelves.len(),
         candidates: stored.len(),
+        cards: feed.shelves.iter().map(|s| s.items.len()).sum(),
+        stored_bytes,
     })
 }
 
@@ -901,7 +918,13 @@ pub struct StoredSubjectFeed {
     pub candidates_fetched_at: Option<DateTime<Utc>>,
 }
 
-/// Reads one subject's stored feed and drops their hidden shelves.
+/// Reads one subject's stored feed, drops their hidden shelves and joins
+/// each card's catalog metadata from the candidate pool.
+///
+/// The stored feed keeps card references and what is personal to the
+/// subject; the description, cover and other metadata the subject's
+/// `discover_candidates` rows hold are read from them here, in pages that
+/// stay under the database plugin's result limit.
 ///
 /// # Returns
 ///
@@ -917,15 +940,46 @@ pub async fn stored_subject_feed(
     subject: &DiscoverSubject,
     disabled_shelves: &[String],
 ) -> Result<Option<StoredSubjectFeed>> {
+    let Some(mut stored) = stored_subject_feed_state(library, subject).await? else {
+        return Ok(None);
+    };
+    stored
+        .feed
+        .shelves
+        .retain(|shelf| !shelf_is_disabled(&shelf.id, disabled_shelves));
+    if feed_needs_pool(&stored.feed) {
+        let rows = library.list_discover_candidates(subject).await?;
+        join_feed(&mut stored.feed, &CandidatePool::from_rows(&rows));
+    }
+    Ok(Some(stored))
+}
+
+/// Reads one subject's stored feed without joining its catalog metadata,
+/// for callers that need only whether it exists and when it was ranked.
+///
+/// The cards come back as stored: references and the subject's own fields,
+/// without the description, cover and other metadata
+/// [`stored_subject_feed`] joins from the candidate pool. Hidden shelves
+/// are kept. No candidate row is read.
+///
+/// # Returns
+///
+/// `None` when the subject has no stored feed yet, or it does not decode.
+///
+/// # Errors
+///
+/// Returns the library read error.
+pub async fn stored_subject_feed_state(
+    library: &LibraryStore,
+    subject: &DiscoverSubject,
+) -> Result<Option<StoredSubjectFeed>> {
     let Some(stored) = library.get_discover_feed(subject).await? else {
         return Ok(None);
     };
-    let Ok(mut feed) = serde_json::from_str::<DiscoverFeed>(&stored.feed_json) else {
+    let Some(feed) = decode_stored_feed(&stored.feed_json) else {
         tracing::debug!(subject = %subject.key(), "stored discover feed does not decode");
         return Ok(None);
     };
-    feed.shelves
-        .retain(|shelf| !shelf_is_disabled(&shelf.id, disabled_shelves));
     Ok(Some(StoredSubjectFeed {
         feed,
         scope: stored.seed_scope,
@@ -1047,6 +1101,8 @@ mod tests {
                     product_id: (*id).to_string(),
                     title: format!("Deal {id}"),
                     origin: String::from("deals"),
+                    cover_url: Some(format!("https://covers.example/{id}.jpg")),
+                    description: Some(format!("The long blurb of deal {id}. ").repeat(20)),
                     ..CatalogHit::default()
                 })
                 .collect())
@@ -1206,8 +1262,6 @@ mod tests {
                 isbn: None,
                 notes: None,
                 status: RequestStatus::Open,
-                work_key: String::new(),
-                work_id: None,
                 resolved_book_uuid: None,
                 cover_url: None,
             })
@@ -1223,7 +1277,13 @@ mod tests {
             .unwrap()
             .uuid;
         library
-            .upsert_listening_progress(&listen(None, "oidc", "alice", "i1", &alice_book))
+            .upsert_listening_progress(&listen(
+                None,
+                "oidc",
+                "alice",
+                "i1",
+                &work_of(&library, &alice_book).await,
+            ))
             .await
             .unwrap();
         let taste = load_subject_taste(
@@ -1248,25 +1308,26 @@ mod tests {
         assert_eq!(taste.wishlist.len(), 1);
     }
 
-    /// A listening row on `book_uuid` for `(provider, external)`.
+    /// The work library title `book_uuid` resolves to.
+    async fn work_of(library: &LibraryStore, book_uuid: &str) -> String {
+        library.work_id_for_book(book_uuid).await.unwrap().unwrap()
+    }
+
+    /// A listening row on `work_id` for `(provider, external)`.
     fn listen(
         identity_id: Option<i64>,
         provider: &str,
         external: &str,
         item: &str,
-        book_uuid: &str,
+        work_id: &str,
     ) -> bookclerk_library::NewListeningProgress {
         bookclerk_library::NewListeningProgress {
             identity_id,
             provider: provider.to_string(),
             external_user_id: external.to_string(),
-            book_uuid: Some(book_uuid.to_string()),
-            work_id: None,
+            work_id: work_id.to_string(),
+            edition_id: None,
             external_item_id: item.to_string(),
-            title: None,
-            authors: None,
-            asin: None,
-            isbn: None,
             progress: Some(0.5),
             current_time_seconds: Some(3_600.0),
             duration_seconds: Some(7_200.0),
@@ -1287,6 +1348,7 @@ mod tests {
             .find(|b| b.title == "Bob Book")
             .unwrap()
             .uuid;
+        let bob_work = work_of(&library, &bob_book).await;
         let carol = library
             .upsert_portal_identity("oidc", "carol", Some("Carol"))
             .await
@@ -1294,8 +1356,8 @@ mod tests {
         // Rows that are not Carol's: the same external id on another provider,
         // and a row attributed to Alice that reuses Carol's external id.
         for row in [
-            listen(None, "abs", "carol", "i1", &bob_book),
-            listen(Some(alice.id), "oidc", "carol", "i2", &bob_book),
+            listen(None, "abs", "carol", "i1", &bob_work),
+            listen(Some(alice.id), "oidc", "carol", "i2", &bob_work),
         ] {
             library.upsert_listening_progress(&row).await.unwrap();
         }
@@ -1309,7 +1371,7 @@ mod tests {
         // A legacy row on Carol's own provider and external id is hers, and
         // the book she listened to seeds her fetch without her owning it.
         library
-            .upsert_listening_progress(&listen(None, "oidc", "carol", "i3", &bob_book))
+            .upsert_listening_progress(&listen(None, "oidc", "carol", "i3", &bob_work))
             .await
             .unwrap();
         let taste = load_subject_taste(&library, &DiscoverSubject::Portal(carol.id), &opts)
@@ -1373,6 +1435,8 @@ mod tests {
         assert_eq!(ranked.scope, SeedScope::Own);
         assert_eq!(ranked.candidates, 5);
         assert!(ranked.shelves > 0);
+        assert!(ranked.cards >= ranked.shelves);
+        assert!(ranked.stored_bytes > 0 && ranked.stored_bytes <= STORED_FEED_MAX_BYTES);
 
         let read = stored_subject_feed(&library, &subject, &[])
             .await
@@ -1381,6 +1445,39 @@ mod tests {
         assert_eq!(read.scope, SeedScope::Own);
         assert_eq!(read.feed.shelves.len(), ranked.shelves);
         assert!(read.candidates_fetched_at.is_some());
+        // The state read skips the join: same feed, no blurbs.
+        let state = stored_subject_feed_state(&library, &subject)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.computed_at, read.computed_at);
+        assert_eq!(state.feed.shelves.len(), read.feed.shelves.len());
+        assert!(state
+            .feed
+            .shelves
+            .iter()
+            .flat_map(|s| &s.items)
+            .all(|c| c.description.is_none()));
+        // The stored feed leaves the deals' blurbs and covers to the pool,
+        // and the read joins them back.
+        let raw = library.get_discover_feed(&subject).await.unwrap().unwrap();
+        assert!(!raw.feed_json.contains("long blurb"), "{}", raw.feed_json);
+        let deals: Vec<_> = read
+            .feed
+            .shelves
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter(|c| c.title.starts_with("Deal "))
+            .collect();
+        assert!(!deals.is_empty());
+        for card in deals {
+            let id = card.candidate_product_id.as_deref().unwrap();
+            assert!(card.description.as_deref().unwrap().contains(id));
+            assert_eq!(
+                card.cover_url.as_deref(),
+                Some(format!("https://covers.example/{id}.jpg").as_str())
+            );
+        }
         let hidden: Vec<String> = read.feed.shelves.iter().map(|s| s.id.clone()).collect();
         let filtered = stored_subject_feed(&library, &subject, &hidden)
             .await
@@ -1394,6 +1491,10 @@ mod tests {
             .await
             .unwrap();
         assert!(stored_subject_feed(&library, &subject, &[])
+            .await
+            .unwrap()
+            .is_none());
+        assert!(stored_subject_feed_state(&library, &subject)
             .await
             .unwrap()
             .is_none());
