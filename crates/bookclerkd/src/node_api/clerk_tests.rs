@@ -389,7 +389,7 @@ async fn a_spent_branch_code_never_redeems_as_a_clerk() {
     // As if a first branch redeem failed after the owner recorded its link
     // and spent the code.
     let (link_id, secret) = authorized_enrollment_link(&code, &v, NodeKind::Host);
-    record_authorized_enrollment_link(&store, &link_id, &secret, owner, "Spare NAS")
+    record_authorized_enrollment_link(&store, &link_id, &secret, owner, "Spare NAS", false)
         .await
         .unwrap();
     store

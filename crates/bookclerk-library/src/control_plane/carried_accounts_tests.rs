@@ -1,0 +1,389 @@
+//! Store accounts that follow their person: the operator's per-member
+//! rule, gathering a member's shareable accounts for a branch, and
+//! importing them on the branch, under every database profile.
+
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+use super::*;
+use crate::entities::{account_links, account_shares, accounts};
+use crate::master_key::master_key_test_lock_async;
+use crate::models::{UserRole, UserStatus};
+use crate::secrets::{
+    build_sealed_record, get_secret, secret_account_type, secret_kind, unseal_secret, upsert_secret,
+};
+use crate::store::LibraryStore;
+use crate::test_support::{sqlite, Profile};
+
+/// A storefront that declares `credentials = "shareable"`.
+const SHAREABLE: &str = "platform:bookclerk/bookclerk-plugin-source-libro#libro";
+
+/// A storefront that keeps one refresh keeper (`single_keeper`).
+const KEEPER: &str = "platform:bookclerk/bookclerk-plugin-source-audible#audible";
+
+/// Whether `plugin_key` is [`SHAREABLE`].
+fn shareable(plugin_key: &str) -> bool {
+    plugin_key == SHAREABLE
+}
+
+/// Connects `account_id` of `plugin_key` for `user_id`, with one secret
+/// holding `value`.
+async fn connect(
+    store: &LibraryStore,
+    user_id: i64,
+    plugin_key: &str,
+    account_id: &str,
+    value: &[u8],
+) {
+    store
+        .upsert_account(plugin_key, account_id, "us", Some("Reader"), true, "store")
+        .await
+        .unwrap();
+    let identity = store
+        .ensure_local_portal_identity(user_id, None)
+        .await
+        .unwrap();
+    store
+        .link_account(identity.id, plugin_key, account_id, "store")
+        .await
+        .unwrap();
+    let record = build_sealed_record(
+        value,
+        secret_kind::SOURCE_AUTH,
+        plugin_key,
+        secret_account_type::INTEGRATION,
+        account_id,
+        "auth",
+    )
+    .unwrap();
+    upsert_secret(store.db(), &record).await.unwrap();
+}
+
+/// The unsealed `auth` secret of an account, if any.
+async fn secret_of(store: &LibraryStore, plugin_key: &str, account_id: &str) -> Option<Vec<u8>> {
+    get_secret(
+        store.db(),
+        secret_kind::SOURCE_AUTH,
+        Some(plugin_key),
+        secret_account_type::INTEGRATION,
+        Some(account_id),
+        "auth",
+    )
+    .await
+    .unwrap()
+    .map(|record| unseal_secret(&record).unwrap())
+}
+
+#[tokio::test]
+async fn the_operator_decides_per_member_and_no_rule_allows() {
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let sam = store
+            .create_user(UserRole::Member, Some("Sam"), None)
+            .await
+            .unwrap();
+        assert!(
+            member_may_connect_accounts(store, sam.id).await.unwrap(),
+            "{name}"
+        );
+        assert!(
+            member_account_rules(store).await.unwrap().is_empty(),
+            "{name}"
+        );
+
+        set_member_may_connect_accounts(store, sam.id, false)
+            .await
+            .unwrap();
+        assert!(
+            !member_may_connect_accounts(store, sam.id).await.unwrap(),
+            "{name}"
+        );
+        let identity = store
+            .ensure_local_portal_identity(sam.id, None)
+            .await
+            .unwrap();
+        assert!(
+            !identity_may_connect_accounts(store, identity.id)
+                .await
+                .unwrap(),
+            "{name}"
+        );
+        assert_eq!(
+            member_account_rules(store).await.unwrap().get(&sam.id),
+            Some(&false),
+            "{name}"
+        );
+
+        set_member_may_connect_accounts(store, sam.id, true)
+            .await
+            .unwrap();
+        assert!(
+            member_may_connect_accounts(store, sam.id).await.unwrap(),
+            "{name}"
+        );
+
+        // A disabled member and an unknown user may not connect.
+        store
+            .set_user_status(sam.id, UserStatus::Disabled)
+            .await
+            .unwrap();
+        assert!(
+            !member_may_connect_accounts(store, sam.id).await.unwrap(),
+            "{name}"
+        );
+        assert!(
+            !member_may_connect_accounts(store, 9_999).await.unwrap(),
+            "{name}"
+        );
+        assert!(matches!(
+            set_member_may_connect_accounts(store, 9_999, true).await,
+            Err(LibraryError::NotFound(_))
+        ));
+        assert_eq!(kit.refused_begins(), 0, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn only_the_members_own_shareable_connected_accounts_travel() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let ana = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        let ben = store
+            .create_user(UserRole::Member, Some("Ben"), None)
+            .await
+            .unwrap();
+        connect(store, ana.id, SHAREABLE, "ana@example.com", b"ana-token").await;
+        connect(store, ana.id, KEEPER, "ana-audible", b"keeper-token").await;
+        connect(store, ana.id, SHAREABLE, "ana-old@example.com", b"old").await;
+        store
+            .revoke_credentials(SHAREABLE, "ana-old@example.com")
+            .await
+            .unwrap();
+        connect(store, ben.id, SHAREABLE, "ben@example.com", b"ben-token").await;
+
+        let carried = accounts_to_carry(store, ana.id, &shareable).await.unwrap();
+        assert_eq!(carried.len(), 1, "{name}: {carried:?}");
+        let account = &carried[0];
+        assert_eq!(account.plugin_key, SHAREABLE, "{name}");
+        assert_eq!(account.account_id, "ana@example.com", "{name}");
+        assert_eq!(account.marketplace, "us", "{name}");
+        assert_eq!(account.label.as_deref(), Some("Reader"), "{name}");
+        assert_eq!(account.secrets.len(), 1, "{name}");
+        assert_eq!(account.secrets[0].kind, secret_kind::SOURCE_AUTH, "{name}");
+        assert_eq!(account.secrets[0].name, "auth", "{name}");
+        assert_eq!(account.secrets[0].value.expose(), b"ana-token", "{name}");
+
+        record_accounts_sent(store, "node-1", &carried)
+            .await
+            .unwrap();
+        let shares = account_shares::Entity::find()
+            .all(store.db())
+            .await
+            .unwrap();
+        assert_eq!(shares.len(), 1, "{name}");
+        assert_eq!(shares[0].peer, node_peer("node-1"), "{name}");
+        assert_eq!(shares[0].direction, SHARE_SENT, "{name}");
+        // A repeat refreshes the row instead of adding one.
+        record_accounts_sent(store, "node-1", &carried)
+            .await
+            .unwrap();
+        assert_eq!(
+            account_shares::Entity::find()
+                .all(store.db())
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "{name}"
+        );
+        assert_eq!(kit.refused_begins(), 0, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn a_branch_imports_carried_accounts_for_its_person_once() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    let library = {
+        let kit = sqlite::memory(Profile::ALL[0]).await;
+        let store = kit.store();
+        let ana = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        connect(store, ana.id, SHAREABLE, "ana@example.com", b"ana-token").await;
+        connect(
+            store,
+            ana.id,
+            SHAREABLE,
+            "shared@example.com",
+            b"from-library",
+        )
+        .await;
+        accounts_to_carry(store, ana.id, &shareable).await.unwrap()
+    };
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let me = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        let flatmate = store
+            .create_user(UserRole::Member, Some("Cai"), None)
+            .await
+            .unwrap();
+        // Someone else here already connected one of the accounts.
+        connect(
+            store,
+            flatmate.id,
+            SHAREABLE,
+            "shared@example.com",
+            b"cai-token",
+        )
+        .await;
+
+        let report = import_carried_accounts(store, me.id, "cluster-x", &library)
+            .await
+            .unwrap();
+        assert_eq!(
+            report.imported,
+            vec![(SHAREABLE.to_string(), "ana@example.com".to_string())],
+            "{name}"
+        );
+        assert_eq!(
+            report.taken,
+            vec![(SHAREABLE.to_string(), "shared@example.com".to_string())],
+            "{name}"
+        );
+        assert!(!report.refused_by_rule, "{name}");
+
+        // The imported account is connected, scanning, linked to the
+        // person, and its secret re-sealed here.
+        let row = store
+            .get_account(SHAREABLE, "ana@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.connection_status, "active", "{name}");
+        assert!(row.scan_enabled, "{name}");
+        assert_eq!(
+            secret_of(store, SHAREABLE, "ana@example.com")
+                .await
+                .as_deref(),
+            Some(&b"ana-token"[..]),
+            "{name}"
+        );
+        let identity = store
+            .ensure_local_portal_identity(me.id, None)
+            .await
+            .unwrap();
+        let links = store.list_account_links(identity.id).await.unwrap();
+        assert_eq!(links.len(), 1, "{name}");
+        let shares = account_shares::Entity::find()
+            .filter(account_shares::Column::AccountId.eq("ana@example.com"))
+            .all(store.db())
+            .await
+            .unwrap();
+        assert_eq!(shares.len(), 1, "{name}");
+        assert_eq!(shares[0].peer, link_peer("cluster-x"), "{name}");
+        assert_eq!(shares[0].direction, SHARE_RECEIVED, "{name}");
+
+        // The other person's account and secret are untouched, with no
+        // share recorded for it.
+        assert_eq!(
+            secret_of(store, SHAREABLE, "shared@example.com")
+                .await
+                .as_deref(),
+            Some(&b"cai-token"[..]),
+            "{name}"
+        );
+        assert_eq!(
+            account_links::Entity::find()
+                .filter(account_links::Column::AccountId.eq("shared@example.com"))
+                .all(store.db())
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "{name}"
+        );
+        assert!(account_shares::Entity::find()
+            .filter(account_shares::Column::AccountId.eq("shared@example.com"))
+            .all(store.db())
+            .await
+            .unwrap()
+            .is_empty());
+
+        // A second join leaves the account as the person has it here.
+        let again = import_carried_accounts(store, me.id, "cluster-y", &library[..1])
+            .await
+            .unwrap();
+        assert_eq!(
+            again.already_here,
+            vec![(SHAREABLE.to_string(), "ana@example.com".to_string())],
+            "{name}"
+        );
+        assert!(again.imported.is_empty(), "{name}");
+        assert_eq!(kit.refused_begins(), 0, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn an_operator_who_refuses_the_member_stores_nothing() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    let library = {
+        let kit = sqlite::memory(Profile::ALL[0]).await;
+        let store = kit.store();
+        let ana = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        connect(store, ana.id, SHAREABLE, "ana@example.com", b"ana-token").await;
+        accounts_to_carry(store, ana.id, &shareable).await.unwrap()
+    };
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let me = store
+            .create_user(UserRole::Member, Some("Ana"), None)
+            .await
+            .unwrap();
+        set_member_may_connect_accounts(store, me.id, false)
+            .await
+            .unwrap();
+        let report = import_carried_accounts(store, me.id, "cluster-x", &library)
+            .await
+            .unwrap();
+        assert!(report.refused_by_rule, "{name}");
+        assert!(report.imported.is_empty(), "{name}");
+        assert!(
+            accounts::Entity::find()
+                .all(store.db())
+                .await
+                .unwrap()
+                .is_empty(),
+            "{name}"
+        );
+        assert!(
+            secret_of(store, SHAREABLE, "ana@example.com")
+                .await
+                .is_none(),
+            "{name}"
+        );
+    }
+}

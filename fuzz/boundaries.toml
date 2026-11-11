@@ -203,6 +203,13 @@ input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.node_account_bundle]
+crate = "bookclerk-node-proto"
+boundary = "Store accounts and their secrets a library sends a joining branch for its person"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.plan_authz]
 crate = "bookclerk-library"
 boundary = "Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them"

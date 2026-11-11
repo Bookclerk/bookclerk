@@ -50,8 +50,9 @@ mod enroll;
 mod jobs;
 
 pub use branch::{
-    announce_leaving, authorize_branch, authorize_join, inspect_library, library_origin,
-    redeem_branch_code, BranchAuthorization, BranchRedeem, InspectedLibrary,
+    announce_leaving, authorize_branch, authorize_join, inspect_library, keep_brought_connections,
+    library_origin, redeem_branch_code, BranchAuthorization, BranchRedeem, BroughtConnections,
+    InspectedLibrary, RedeemedBranch,
 };
 pub use clerk::{
     apply_clerk_bootstrap, bootstrap_database_kind, checked_d1_api_base, database_guest_installed,

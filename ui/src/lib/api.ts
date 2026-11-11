@@ -1227,6 +1227,8 @@ export interface ListedUser {
     account_id: string;
     label: string | null;
   }[];
+  /** Whether an administrator lets this user connect store accounts here (absent: allowed). */
+  may_connect_accounts?: boolean;
   /** Linked login identities (local + OIDC). */
   identities?: {
     provider: string;
@@ -1345,6 +1347,8 @@ export async function patchUser(
     display_name?: string;
     login_name?: string;
     email?: string;
+    /** Let the user connect store accounts here, or stop them. */
+    may_connect_accounts?: boolean;
   },
 ): Promise<UserMutationResponse> {
   const res = await fetch(`/api/users/${encodeURIComponent(String(id))}`, {

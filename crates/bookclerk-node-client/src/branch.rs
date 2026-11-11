@@ -21,13 +21,15 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use bookclerk_library::control_plane::{
-    record_cluster_link, ClusterLink, ClusterLinkKeys, NewClusterLink,
+    branch_person, import_carried_accounts, record_cluster_link, CarriedImport, ClusterLink,
+    ClusterLinkKeys, NewClusterLink,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{
-    canonical_origin, is_branch_name, is_branch_redirect_uri, is_library_name, pkce_challenge,
-    Body, ConnectionType, OAuthEnrollAnswer, OAuthEnrollRequest, OwnerInfo, AUTHORIZE_PATH,
-    BRANCH_CLIENT_ID, BRANCH_SCOPE, CLERK_OFFER_PARAM, ENROLL_OAUTH_PATH, INFO_PATH,
+    canonical_origin, is_branch_name, is_branch_redirect_uri, is_library_name, open_account_bundle,
+    pkce_challenge, AccountBundle, Body, ConnectionType, OAuthEnrollAnswer, OAuthEnrollRequest,
+    OwnerInfo, AUTHORIZE_PATH, BRANCH_CLIENT_ID, BRANCH_SCOPE, CLERK_OFFER_PARAM,
+    ENROLL_OAUTH_PATH, INFO_PATH,
 };
 use rand::RngCore as _;
 use tokio::sync::watch;
@@ -279,6 +281,66 @@ fn ancestry_error(err: JoinError, enrolled: Option<&str>) -> JoinError {
     }
 }
 
+/// A branch sign-in the library redeemed and this install recorded.
+#[derive(Debug)]
+pub struct RedeemedBranch {
+    /// The recorded link.
+    pub link: ClusterLink,
+    /// The store accounts the library's user chose to bring to this
+    /// branch, opened with the link's box key; `None` when the user did not
+    /// choose it, had none to bring, or the box did not open (logged).
+    pub accounts: Option<AccountBundle>,
+}
+
+/// What became of the store connections a library sent with its person
+/// ([`keep_brought_connections`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BroughtConnections {
+    /// They were imported for the person (see [`CarriedImport`]).
+    Kept(CarriedImport),
+    /// No one on this install could be named as their person (no Owner
+    /// yet, or several); nothing was stored. Holds how many came.
+    NoPerson(usize),
+}
+
+/// Keeps the store connections a library sent with its person
+/// ([`RedeemedBranch::accounts`]) for the person on this install
+/// ([`branch_person`]), recording that they came from the library.
+///
+/// # Arguments
+///
+/// * `store` - This install's library.
+/// * `preferred` - The Owner who elevated into the operator session that
+///   ran the join, when one did.
+/// * `bundle` - The opened bundle.
+///
+/// # Errors
+///
+/// Returns a read or write error ([`import_carried_accounts`]).
+pub async fn keep_brought_connections(
+    store: &LibraryStore,
+    preferred: Option<i64>,
+    bundle: &AccountBundle,
+) -> bookclerk_library::Result<BroughtConnections> {
+    let Some(person) = branch_person(store, preferred).await? else {
+        tracing::warn!(
+            accounts = bundle.accounts.len(),
+            "store connections came with the join, but no Owner here can keep them"
+        );
+        return Ok(BroughtConnections::NoPerson(bundle.accounts.len()));
+    };
+    let report =
+        import_carried_accounts(store, person, &bundle.cluster_id, &bundle.accounts).await?;
+    tracing::info!(
+        imported = report.imported.len(),
+        already_here = report.already_here.len(),
+        taken = report.taken.len(),
+        refused_by_rule = report.refused_by_rule,
+        "kept the store connections brought from the library"
+    );
+    Ok(BroughtConnections::Kept(report))
+}
+
 /// Redeems an approved sign-in: the library runs the same redeem as for a
 /// link (one node, a receipt, idempotent retries), then this install seals
 /// `keys` and records the link. The code and verifier go once in the
@@ -298,7 +360,7 @@ pub async fn redeem_branch_code(
     store: &LibraryStore,
     redeem: &BranchRedeem<'_>,
     keys: &ClusterLinkKeys,
-) -> Result<ClusterLink, JoinError> {
+) -> Result<RedeemedBranch, JoinError> {
     // Checked before the code is spent: the library's ancestry may have
     // changed since the operator started. On a retry of an exchange the
     // library already redeemed, a check that fails for good (a cycle, or a
@@ -312,6 +374,17 @@ pub async fn redeem_branch_code(
     .map_err(|err| ancestry_error(err, redeem.enrolled_node_id))?;
     let (endpoint, enrolled) = post_redeem(redeem, keys, ConnectionType::Branch).await?;
     let node_id = enrolled.node_id.clone();
+    // A box that does not open loses only the connections, never the join.
+    let accounts = enrolled.accounts.as_deref().and_then(|sealed| {
+        open_account_bundle(keys.box_secret(), &enrolled.cluster_id, &node_id, sealed)
+            .map_err(|err| {
+                tracing::warn!(
+                    error = %err,
+                    "the store connections the library sent did not open; joining without them"
+                );
+            })
+            .ok()
+    });
     let mut recorded = record_cluster_link(
         store,
         &NewClusterLink {
@@ -347,7 +420,10 @@ pub async fn redeem_branch_code(
         pinned = recorded.spki_pin.is_some(),
         "joined the library as a branch"
     );
-    Ok(recorded)
+    Ok(RedeemedBranch {
+        link: recorded,
+        accounts,
+    })
 }
 
 /// Sends the code, the verifier and the public keys to `POST

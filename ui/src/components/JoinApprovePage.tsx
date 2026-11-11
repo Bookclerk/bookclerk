@@ -41,6 +41,7 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
   const [busy, setBusy] = useState(false);
   const [connection, setConnection] = useState<ConnectionType>("branch");
   const [totpCode, setTotpCode] = useState("");
+  const [bringConnections, setBringConnections] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -90,7 +91,7 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
         }
         clerk = { step_up: stepUp };
       }
-      const { redirect } = await answerBranchConsent(search, approve, clerk);
+      const { redirect } = await answerBranchConsent(search, approve, clerk, bringConnections);
       if (!isConsentRedirect(redirect, search)) {
         setError("The answer pointed somewhere unexpected; nothing was sent.");
         setBusy(false);
@@ -120,6 +121,9 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
   const asClerk = choice != null && choice.clerk_available && connection === "clerk";
   const canTotp = asClerk && choice.step_up.includes("totp");
   const canPasskey = asClerk && choice.step_up.includes("passkey") && passkeysSupported();
+  const connections = view.connections ?? [];
+  const travelling = connections.filter((c) => c.travels);
+  const staying = connections.filter((c) => !c.travels);
 
   return (
     <JoinShell
@@ -208,6 +212,37 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
             </li>
             <li>The branch keeps its own database; this library's database and keys stay here.</li>
           </ul>
+          {travelling.length > 0 ? (
+            <div className="space-y-1 pt-1">
+              <label className="flex items-start gap-2 text-ink">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={bringConnections}
+                  disabled={busy}
+                  onChange={(e) => setBringConnections(e.target.checked)}
+                />
+                <span>Bring my store connections to this branch</span>
+              </label>
+              <ul className="list-disc space-y-0.5 pl-11 text-xs text-ink/65">
+                {travelling.map((c) => (
+                  <li key={`${c.source}:${c.account_id}`}>
+                    {c.source}: {c.label?.trim() || c.account_id}
+                  </li>
+                ))}
+              </ul>
+              {staying.length > 0 ? (
+                <p className="pl-6 text-xs text-ink/55">
+                  Stays here: {staying.map((c) => c.source).join(", ")}. That store keeps one
+                  sign-in, so connect it on the branch yourself if you want it there.
+                </p>
+              ) : null}
+              <p className="pl-6 text-xs text-ink/55">
+                The branch's administrator can turn off store connections for you; then nothing is
+                added there.
+              </p>
+            </div>
+          ) : null}
         </div>
       )}
       <div className="space-y-2 text-sm text-ink/75">

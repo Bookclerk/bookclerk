@@ -490,3 +490,38 @@ async fn oauth_start_returns_the_login_url() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body, json!({"error": "not signed in"}));
 }
+
+/// A member the operator stopped from connecting store accounts is
+/// refused on every connect route, and connects again once allowed.
+#[tokio::test]
+async fn a_member_the_operator_stopped_cannot_connect() {
+    let (app, library, cookie) = harness(stores()).await;
+    let member = library.list_users().await.unwrap()[0].id;
+    bookclerk_library::control_plane::set_member_may_connect_accounts(&library, member, false)
+        .await
+        .unwrap();
+    let refused = json!({"error": "this library's administrator hasn't allowed you to connect store accounts here"});
+    for (path, body) in [
+        ("/sources/libro/login", Some(credentials())),
+        ("/sources/audible/oauth/start", None),
+        ("/audible/start", None),
+    ] {
+        let (status, _, answer) = call(&app, "POST", path, Some(&cookie), body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {answer}");
+        assert_eq!(answer, refused, "{path}");
+    }
+    assert!(library.list_accounts().await.unwrap().is_empty());
+
+    bookclerk_library::control_plane::set_member_may_connect_accounts(&library, member, true)
+        .await
+        .unwrap();
+    let (status, _, answer) = call(
+        &app,
+        "POST",
+        "/sources/libro/login",
+        Some(&cookie),
+        Some(credentials()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+}

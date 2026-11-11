@@ -830,6 +830,10 @@ pub fn authorized_enrollment_link(
 /// a failed write leaves the code usable; the redeem itself is
 /// [`redeem_enrollment_link`], the same canonical batch a minted link takes.
 ///
+/// `bring_accounts` keeps the user's "Bring my store connections to this
+/// branch" choice with the link, so a retried redeem of the same exchange
+/// answers with the same accounts ([`enrollment_link_brings_accounts`]).
+///
 /// A second call for the same link id leaves the first row as it is.
 ///
 /// # Errors
@@ -843,6 +847,7 @@ pub async fn record_authorized_enrollment_link(
     secret: &EnrollmentSecret,
     for_user_id: i64,
     label: &str,
+    bring_accounts: bool,
 ) -> Result<()> {
     if !is_link_id(link_id) {
         return Err(LibraryError::Invalid("malformed link id".into()));
@@ -871,6 +876,7 @@ pub async fn record_authorized_enrollment_link(
         redeemed_at: Set(None),
         redeemed_node_id: Set(None),
         revoked_at: Set(None),
+        bring_accounts: Set(i64::from(bring_accounts)),
     };
     node_enrollment_links::Entity::insert(model)
         .on_conflict(
@@ -882,6 +888,23 @@ pub async fn record_authorized_enrollment_link(
         .await
         .map_err(LibraryError::Orm)?;
     Ok(())
+}
+
+/// Whether the user who approved the sign-in behind `link_id` chose to
+/// bring their store connections to the branch ([`record_authorized_enrollment_link`]).
+/// `false` for an unknown link and for every minted invite.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn enrollment_link_brings_accounts(store: &LibraryStore, link_id: &str) -> Result<bool> {
+    Ok(
+        node_enrollment_links::Entity::find_by_id(link_id.to_string())
+            .one(store.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .is_some_and(|link| link.bring_accounts != 0),
+    )
 }
 
 /// A host announced it is leaving (`node.leaving`): revokes its credential

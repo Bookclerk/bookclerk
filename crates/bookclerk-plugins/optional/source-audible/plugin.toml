@@ -6,6 +6,9 @@ logo = "https://www.google.com/s2/favicons?domain=audible.com&sz=128"
 runtime = "native"
 command = "./bookclerk-plugin-source-audible"
 entrypoints = ["storefront"]
+# Audible registers a device for each login and rotates its refresh token:
+# one instance keeps the login fresh and the others receive each new token.
+credentials = "single_keeper"
 
 [capabilities.network]
 mode = "outbound"

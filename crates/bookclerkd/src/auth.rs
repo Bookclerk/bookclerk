@@ -2926,6 +2926,9 @@ pub async fn list_users(
         .list_user_presence_extras(USER_LIST_LISTENING_WITHIN)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let account_rules = bookclerk_library::control_plane::member_account_rules(&library)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut rows = Vec::new();
     for u in users {
         let identities = library
@@ -2953,6 +2956,7 @@ pub async fn list_users(
                 .collect(),
             listening: extra.and_then(|e| e.listening.clone()),
             integrations: extra.map(|e| e.integrations.clone()).unwrap_or_default(),
+            may_connect_accounts: account_rules.get(&u.id).copied().unwrap_or(true),
             identities: identities
                 .iter()
                 .map(|p| UserIdentitySummary {
@@ -2989,6 +2993,11 @@ pub struct PatchUserRequest {
     /// Replacement email when present.
     #[schema(example = "sam@example.com")]
     pub email: Option<String>,
+    #[serde(default)]
+    /// Whether the user may connect store accounts on this library, by
+    /// hand or by bringing them from another library, when present.
+    #[schema(example = false)]
+    pub may_connect_accounts: Option<bool>,
 }
 
 /// 409 body when the patch would remove the last administrator.
@@ -3013,7 +3022,8 @@ fn last_owner_response() -> Response {
         .into_response()
 }
 
-/// Patch role/status/display/login for a first-party user (provisioner).
+/// Patch role/status/display/login, or the store-account rule, for a
+/// first-party user (provisioner).
 #[utoipa::path(
     patch,
     path = "/api/users/{id}",
@@ -3043,6 +3053,7 @@ pub async fn patch_user(
         && body.display_name.is_none()
         && body.login_name.is_none()
         && body.email.is_none()
+        && body.may_connect_accounts.is_none()
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -3120,6 +3131,27 @@ pub async fn patch_user(
             }
             Err(_) => return Err(StatusCode::CONFLICT),
         };
+    }
+
+    if let Some(allowed) = body.may_connect_accounts {
+        match bookclerk_library::control_plane::set_member_may_connect_accounts(
+            &library, user_id, allowed,
+        )
+        .await
+        {
+            Ok(()) => {}
+            Err(LibraryError::NotFound(_)) => return Err(StatusCode::NOT_FOUND),
+            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        }
+        let _ = library
+            .insert_security_audit_event(
+                &actor.audit_actor(),
+                "user_account_rule",
+                Some(&format!(
+                    r#"{{"user_id":{user_id},"may_connect_accounts":{allowed}}}"#
+                )),
+            )
+            .await;
     }
 
     let _ = library
@@ -4094,6 +4126,11 @@ pub struct UserListEntry {
     pub listening: Option<bookclerk_library::UserListeningHint>,
     /// Storefront and integration accounts linked to the user.
     pub integrations: Vec<bookclerk_library::UserIntegrationHint>,
+    /// Whether the operator lets the user connect store accounts here, by
+    /// hand or by bringing them from another library. True unless an
+    /// administrator turned it off for this user.
+    #[schema(example = true)]
+    pub may_connect_accounts: bool,
     /// External sign-in identities linked to the user.
     pub identities: Vec<UserIdentitySummary>,
 }
@@ -6973,6 +7010,68 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(body.contains("\"users\""));
+    }
+
+    #[tokio::test]
+    async fn admin_sets_whether_a_member_may_connect_store_accounts() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (_state, app, library) = phase2_harness("op-token-users").await;
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        let member = library
+            .list_users()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|user| user.role == UserRole::Member)
+            .expect("a seeded member")
+            .id;
+        let patched = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/users/{member}"))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"may_connect_accounts":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(patched.status(), StatusCode::OK);
+        assert!(
+            !bookclerk_library::control_plane::member_may_connect_accounts(&library, member)
+                .await
+                .unwrap()
+        );
+        let listed = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/users")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&listed.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        for row in body["users"].as_array().expect("users array") {
+            let expected = row["id"].as_i64() != Some(member);
+            assert_eq!(row["may_connect_accounts"], expected, "{row}");
+        }
+        let audited = library
+            .list_security_audit_events(20)
+            .await
+            .unwrap()
+            .into_iter()
+            .any(|event| event.action == "user_account_rule");
+        assert!(audited);
     }
 
     #[tokio::test]
