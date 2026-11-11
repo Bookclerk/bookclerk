@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 
 use bookclerk_resolve as resolve;
 use chrono::Utc;
-use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
