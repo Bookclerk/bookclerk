@@ -249,9 +249,33 @@ type StrongOwners = std::collections::BTreeMap<crate::identifiers::IdentifierKey
 ///
 /// Returns a description of the first broken invariant.
 fn check_last_link(catalog: &MemoryCatalog, strong: &StrongOwners) -> Result<(), String> {
-    let Some(last) = catalog.links.last() else {
-        return Ok(());
-    };
+    match catalog.links.last() {
+        Some(last) => check_link(catalog, strong, last),
+        None => Ok(()),
+    }
+}
+
+/// Checks how the listing `last` describes was placed, against the shared
+/// identifiers and the kinds of the rows it reached.
+///
+/// Only valid straight after that listing is recorded, held or as a
+/// catalog listing.
+///
+/// # Arguments
+///
+/// * `catalog` - The in-memory catalog.
+/// * `strong` - What [`check_identifiers`] returned for it.
+/// * `last` - The placement: the listing, its edition, link and work
+///   reason, and its show's work when it is an episode.
+///
+/// # Errors
+///
+/// Returns a description of the first broken invariant.
+fn check_link(
+    catalog: &MemoryCatalog,
+    strong: &StrongOwners,
+    last: &crate::memory::LinkRecord,
+) -> Result<(), String> {
     let listing = &last.listing;
     let edition = catalog
         .editions
@@ -371,10 +395,18 @@ pub fn run_case(data: &[u8]) -> Result<usize, String> {
             // identifiers. It also holds nothing, never announces a holding
             // or its own new link, keeps every invariant and changes nothing
             // when seen again.
-            let held = {
+            let (held, parent_work_id) = {
                 let snapshot = catalog.snapshot(&listing, &holding.holder);
+                let parent_work_id = snapshot
+                    .parent_listing
+                    .as_ref()
+                    .and_then(|row| snapshot.work_of_edition(&row.edition_id))
+                    .map(|w| w.id.clone());
                 let mut ids = catalog.ids.clone();
-                crate::resolve::resolve(&listing, &holding, &snapshot, &mut ids)
+                (
+                    crate::resolve::resolve(&listing, &holding, &snapshot, &mut ids),
+                    parent_work_id,
+                )
             };
             let plan = catalog
                 .record_catalog(&listing)
@@ -409,7 +441,21 @@ pub fn run_case(data: &[u8]) -> Result<usize, String> {
                     listing.key
                 ));
             }
-            check_identifiers(&catalog)?;
+            // The placement itself is checked like a held one's, against
+            // the shared identifiers and the kinds of the rows it reached.
+            let strong = check_identifiers(&catalog)?;
+            check_link(
+                &catalog,
+                &strong,
+                &crate::memory::LinkRecord {
+                    listing: listing.clone(),
+                    holding: holding.clone(),
+                    edition_id: plan.listing.edition_id.clone(),
+                    link: plan.link,
+                    work_reason: plan.work_reason,
+                    parent_work_id,
+                },
+            )?;
             let again = catalog
                 .record_catalog(&listing)
                 .map_err(|err| err.to_string())?;
