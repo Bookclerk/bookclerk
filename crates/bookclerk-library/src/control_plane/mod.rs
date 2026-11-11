@@ -50,11 +50,12 @@ use serde::{Deserialize, Serialize};
 pub use artifacts::{load_artifact_blob, put_artifact_blob, MAX_ARTIFACT_BLOB_BYTES};
 pub use branch_catalog::{
     accept_catalog_batch, begin_catalog, branch_provenance, branch_title_counts,
-    catalog_fence_live, detach_branch_titles, forwardable_branch_titles, grant_catalog_upload,
-    list_branch_titles, pending_deliveries, remove_detached_branch_titles, BranchTitle,
-    BranchTitleCounts, CatalogAccept, CatalogBegin, CatalogSessionOpened, BRANCH_TITLE_DETACHED,
+    catalog_fence_live, detach_branch_titles, forwardable_branch_title,
+    forwardable_branch_title_keys_page, grant_catalog_upload, list_branch_titles,
+    pending_deliveries, remove_detached_branch_titles, BranchTitle, BranchTitleCounts,
+    CatalogAccept, CatalogBegin, CatalogSessionOpened, ForwardableBranchKey, BRANCH_TITLE_DETACHED,
     BRANCH_TITLE_SHARED, DETACHED_LEFT, DETACHED_STOPPED_SHARING, DETACHED_WITHDRAWN,
-    FULL_CATALOG_PASS_EVERY,
+    FORWARDABLE_KEYS_MAX_PAGE, FULL_CATALOG_PASS_EVERY,
 };
 pub use cache::{
     is_cache_setting_key, load_cache_settings, update_cache_settings, CacheSettingsV1,

@@ -711,12 +711,14 @@ fn schema_migrations_select_sql(namespace: &str) -> String {
 }
 
 /// Postgres `INTEGER` is int4 (`i32`); SQLite INTEGER affinity is `i64`.
+///
+/// Ledger cells are read by name only: on the host's proxied connection the
+/// row's columns are sorted by name, so a positional fallback would read
+/// another column (see [`crate::column_read`]).
 fn schema_migration_version(row: &QueryResult) -> Option<i64> {
     row.try_get::<i64>("", "version")
         .ok()
-        .or_else(|| row.try_get_by_index::<i64>(0).ok())
         .or_else(|| row.try_get::<i32>("", "version").ok().map(i64::from))
-        .or_else(|| row.try_get_by_index::<i32>(0).ok().map(i64::from))
 }
 
 /// Interprets `bookclerk_schema_migrations` rows. `Ok(None)` means the table exists but
@@ -736,15 +738,10 @@ fn schema_state_from_migration_rows(
         let version = schema_migration_version(&row).ok_or_else(|| {
             LibraryError::Schema("bookclerk_schema_migrations row is missing version".into())
         })?;
-        let state = row
-            .try_get::<String>("", "state")
-            .ok()
-            .or_else(|| row.try_get_by_index::<String>(1).ok())
-            .unwrap_or_default();
+        let state = row.try_get::<String>("", "state").ok().unwrap_or_default();
         let checksum = row
             .try_get::<String>("", "checksum")
             .ok()
-            .or_else(|| row.try_get_by_index::<String>(2).ok())
             .unwrap_or_default();
         if checksum.is_empty() {
             return Err(LibraryError::Schema(
@@ -1158,11 +1155,7 @@ where
         })?;
     let mut found_by_version = HashMap::new();
     for row in rows {
-        let state = row
-            .try_get::<String>("", "state")
-            .ok()
-            .or_else(|| row.try_get_by_index::<String>(1).ok())
-            .unwrap_or_default();
+        let state = row.try_get::<String>("", "state").ok().unwrap_or_default();
         if state != SCHEMA_STATE_FROZEN {
             continue;
         }
@@ -1170,7 +1163,6 @@ where
         let checksum = row
             .try_get::<String>("", "checksum")
             .ok()
-            .or_else(|| row.try_get_by_index::<String>(2).ok())
             .unwrap_or_default();
         found_by_version.insert(version, checksum);
     }

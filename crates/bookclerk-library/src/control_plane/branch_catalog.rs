@@ -1189,6 +1189,17 @@ pub struct BranchTitleCounts {
     pub detached: u64,
 }
 
+/// A shared title's manifest and delivered digests, read by column name
+/// (#854).
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct DeliveredShaRow {
+    /// `branch_titles.manifest_sha256`: the digest the branch was sent.
+    manifest_sha256: String,
+    /// `branch_titles.delivered_sha256`: the digest the branch reported
+    /// delivered, when it has.
+    delivered_sha256: Option<String>,
+}
+
 /// [`BranchTitleCounts`] of `node_id`.
 ///
 /// # Errors
@@ -1207,20 +1218,23 @@ pub async fn branch_title_counts(store: &LibraryStore, node_id: &str) -> Result<
     let detached = count(BRANCH_TITLE_DETACHED)
         .await
         .map_err(LibraryError::Orm)?;
-    let delivered = branch_titles::Entity::find()
-        .select_only()
-        .column(branch_titles::Column::ManifestSha256)
-        .column(branch_titles::Column::DeliveredSha256)
-        .filter(branch_titles::Column::NodeId.eq(node_id))
-        .filter(branch_titles::Column::State.eq(BRANCH_TITLE_SHARED))
-        .filter(branch_titles::Column::DeliveredSha256.is_not_null())
-        .into_tuple::<(String, Option<String>)>()
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .into_iter()
-        .filter(|(manifest, delivered)| delivered.as_deref() == Some(manifest.as_str()))
-        .count() as u64;
+    let delivered = u64::try_from(
+        branch_titles::Entity::find()
+            .select_only()
+            .column(branch_titles::Column::ManifestSha256)
+            .column(branch_titles::Column::DeliveredSha256)
+            .filter(branch_titles::Column::NodeId.eq(node_id))
+            .filter(branch_titles::Column::State.eq(BRANCH_TITLE_SHARED))
+            .filter(branch_titles::Column::DeliveredSha256.is_not_null())
+            .into_model::<DeliveredShaRow>()
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .filter(|row| row.delivered_sha256.as_deref() == Some(row.manifest_sha256.as_str()))
+            .count(),
+    )
+    .unwrap_or(u64::MAX);
     Ok(BranchTitleCounts {
         shared,
         delivered,
@@ -1228,22 +1242,141 @@ pub async fn branch_title_counts(store: &LibraryStore, node_id: &str) -> Result<
     })
 }
 
-/// On a branch: the titles its own branches shared with it that it may
-/// pass on (still shared, files delivered), oldest first.
+/// Upper clamp for one [`forwardable_branch_title_keys_page`] read.
+///
+/// A key row is a handful of short columns, so this many stay far below the
+/// 256 KiB inline result cap of an adapter that does not stream.
+pub const FORWARDABLE_KEYS_MAX_PAGE: u64 = 256;
+
+/// The identity of one title a branch shared with this install, without
+/// its metadata or file manifest.
+///
+/// Read in keyset pages by [`forwardable_branch_title_keys_page`]; the full
+/// row is loaded only when it is needed, by [`forwardable_branch_title`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForwardableBranchKey {
+    /// Surrogate row id; the keyset cursor of the page reader.
+    pub id: i64,
+    /// Stable title id (an upload's `book_uuid`).
+    pub uuid: String,
+    /// Store id (`audible`, `libro`, ...).
+    pub store: String,
+    /// Store product id.
+    pub product_id: String,
+    /// RFC 3339 last change, as stored.
+    pub updated_at: String,
+    /// The files of the current manifest arrived here, so the title may be
+    /// passed on. Rows without it are returned so a page's length still
+    /// tells the caller whether more rows follow.
+    pub delivered: bool,
+}
+
+/// One narrow `branch_titles` row as read; columns are matched by name.
+///
+/// Positional tuples are not used: the database proxy hands rows over as
+/// maps ordered by column name, so a tuple would bind columns out of order.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct BranchKeyRow {
+    /// Surrogate row id.
+    id: i64,
+    /// Stable title id.
+    uuid: String,
+    /// Store id.
+    store: String,
+    /// Store product id.
+    product_id: String,
+    /// RFC 3339 last change.
+    updated_at: String,
+    /// Digest of the current manifest.
+    manifest_sha256: String,
+    /// Digest of the manifest whose files were delivered.
+    delivered_sha256: Option<String>,
+}
+
+/// On a branch: one keyset page of the titles its own branches shared with
+/// it (still shared), identity columns only, by surrogate id.
+///
+/// Only keys with [`ForwardableBranchKey::delivered`] set may be passed on.
+///
+/// # Arguments
+///
+/// * `store` - This install's library.
+/// * `after_id` - The last [`ForwardableBranchKey::id`] of the previous
+///   page, or `None` for the first page.
+/// * `limit` - Rows wanted, clamped to 1..=[`FORWARDABLE_KEYS_MAX_PAGE`].
+///
+/// # Returns
+///
+/// Up to `limit` keys in ascending id order; fewer than `limit` means the
+/// last page.
 ///
 /// # Errors
 ///
 /// Returns the read error.
-pub async fn forwardable_branch_titles(store: &LibraryStore) -> Result<Vec<branch_titles::Model>> {
-    Ok(branch_titles::Entity::find()
+pub async fn forwardable_branch_title_keys_page(
+    store: &LibraryStore,
+    after_id: Option<i64>,
+    limit: u64,
+) -> Result<Vec<ForwardableBranchKey>> {
+    let mut query = branch_titles::Entity::find()
+        .select_only()
+        .column(branch_titles::Column::Id)
+        .column(branch_titles::Column::Uuid)
+        .column(branch_titles::Column::Store)
+        .column(branch_titles::Column::ProductId)
+        .column(branch_titles::Column::UpdatedAt)
+        .column(branch_titles::Column::ManifestSha256)
+        .column(branch_titles::Column::DeliveredSha256)
         .filter(branch_titles::Column::State.eq(BRANCH_TITLE_SHARED))
-        .order_by_asc(branch_titles::Column::Id)
+        .order_by_asc(branch_titles::Column::Id);
+    if let Some(after_id) = after_id {
+        query = query.filter(branch_titles::Column::Id.gt(after_id));
+    }
+    let rows = query
+        .limit(limit.clamp(1, FORWARDABLE_KEYS_MAX_PAGE))
+        .into_model::<BranchKeyRow>()
         .all(store.db())
         .await
-        .map_err(LibraryError::Orm)?
+        .map_err(LibraryError::Orm)?;
+    Ok(rows
         .into_iter()
-        .filter(|row| row.delivered_sha256.as_deref() == Some(row.manifest_sha256.as_str()))
+        .map(|row| ForwardableBranchKey {
+            delivered: row.delivered_sha256.as_deref() == Some(row.manifest_sha256.as_str()),
+            id: row.id,
+            uuid: row.uuid,
+            store: row.store,
+            product_id: row.product_id,
+            updated_at: row.updated_at,
+        })
         .collect())
+}
+
+/// On a branch: the shared title `uuid` when it may still be passed on
+/// (still shared, files of its current manifest delivered).
+///
+/// # Arguments
+///
+/// * `store` - This install's library.
+/// * `uuid` - The title's stable id, from a [`ForwardableBranchKey`].
+///
+/// # Returns
+///
+/// The full row, or `None` when it is gone, detached or not delivered.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn forwardable_branch_title(
+    store: &LibraryStore,
+    uuid: &str,
+) -> Result<Option<branch_titles::Model>> {
+    Ok(branch_titles::Entity::find()
+        .filter(branch_titles::Column::Uuid.eq(uuid))
+        .filter(branch_titles::Column::State.eq(BRANCH_TITLE_SHARED))
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+        .filter(|row| row.delivered_sha256.as_deref() == Some(row.manifest_sha256.as_str())))
 }
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ mod atomic_txn;
 mod backend_migrate;
 mod backup;
 mod binding_schema;
+pub mod column_read;
 pub mod control_plane;
 mod db_atomic;
 pub mod email;
@@ -175,11 +176,11 @@ pub use store::{
     },
     scan_state::{plan_pass, PassStart, ScanState, FULL_PASS_INTERVAL, RESUME_CURSOR_TTL},
     search_feed::ListingRef,
-    set_dispatch_chunk_for_test, BookPage, CatalogEnrichmentFields, DiscoverSubject, EditionFile,
-    FileOwner, FileRole, LibraryStore, NewBook, NewListeningProgress, NewTitleRequest,
-    NewTitleRequestSource, QueueRank, SavedFilterRecord, ScannedTitle, SeedScope, StoredCandidate,
-    StoredFeed, StoredQueueRank, UserBookFields, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT,
-    BOOK_PAGE_MAX_LIMIT, MAX_QUEUE_REASONS,
+    set_dispatch_chunk_for_test, AcquiredBookKey, BookPage, CatalogEnrichmentFields,
+    DiscoverSubject, EditionFile, FileOwner, FileRole, LibraryStore, NewBook, NewListeningProgress,
+    NewTitleRequest, NewTitleRequestSource, QueueRank, SavedFilterRecord, ScannedTitle, SeedScope,
+    StoredCandidate, StoredFeed, StoredQueueRank, UserBookFields, ACQUIRED_KEYS_MAX_PAGE,
+    ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT, MAX_QUEUE_REASONS,
 };
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

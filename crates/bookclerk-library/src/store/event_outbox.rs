@@ -15,6 +15,7 @@ use sea_orm::{
 use uuid::Uuid;
 
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
+use crate::column_read::SelectColumnExt;
 use crate::control_plane::{bump_if_stamped, bump_on, exec_bumped_via, sea_probe, Bump, LiveTopic};
 use crate::entities::{
     books, domain_events, event_deliveries, event_outbox_stats, event_subscriber_nodes,
@@ -163,10 +164,12 @@ where
     .map_err(LibraryError::Orm)?;
     let mut ids = Vec::new();
     for row in rows {
-        if let Ok(id) = row.try_get_by_index::<String>(0) {
-            if !id.is_empty() {
-                ids.push(id);
-            }
+        // The statement selects one column; a wider row is a bug in the SQL,
+        // reported rather than read as an empty result.
+        let id =
+            crate::column_read::only_column::<Option<String>>(&row).map_err(LibraryError::Orm)?;
+        if let Some(id) = id.filter(|id| !id.is_empty()) {
+            ids.push(id);
         }
     }
     Ok(ids)
@@ -1494,11 +1497,9 @@ impl LibraryStore {
     /// Returns [`LibraryError::Orm`] when the read fails.
     pub async fn list_queue_names(&self) -> Result<Vec<String>> {
         let names: Vec<String> = domain_events::Entity::find()
-            .select_only()
-            .column(domain_events::Column::QueueName)
             .distinct()
             .order_by_asc(domain_events::Column::QueueName)
-            .into_tuple()
+            .into_column(domain_events::Column::QueueName)
             .all(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
