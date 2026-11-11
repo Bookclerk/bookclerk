@@ -7818,3 +7818,15 @@ async fn bounded_expiry_scans_resume_and_skip_exempt_consumers() {
         "the scan wrapped around and finds nothing new"
     );
 }
+
+/// An expiry page never reads more rows than the adapter returns in one
+/// result, binds in one statement, or the scan budget allows.
+#[test]
+fn expire_pages_fit_the_adapter_limits() {
+    use super::event_outbox::expire_page_size;
+    assert_eq!(expire_page_size(100, 256, 10_000), 64);
+    assert_eq!(expire_page_size(32, 1, 10_000), 1, "minimum adapter");
+    assert_eq!(expire_page_size(32, 256, 10_000), 16);
+    assert_eq!(expire_page_size(100, 256, 3), 3);
+    assert_eq!(expire_page_size(8, 0, 0), 1);
+}

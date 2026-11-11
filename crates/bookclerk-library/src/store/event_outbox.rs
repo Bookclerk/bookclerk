@@ -2312,12 +2312,7 @@ impl LibraryStore {
         let catalog = self.list_live_event_subscribers().await?;
         let retention = DeliveryRetention::new(&catalog, cap_secs);
         let shortest = (now - Duration::seconds(retention.shortest_secs())).to_rfc3339();
-        let page = u64::from(
-            self.max_binds
-                .saturating_sub(EXPIRE_FIXED_BINDS)
-                .clamp(1, 64),
-        )
-        .min(u64::try_from(max_rows).unwrap_or(u64::MAX));
+        let page = expire_page_size(self.max_binds, self.max_result_rows, max_rows);
         let now_s = now_str();
         let mut after = self
             .expire_cursor
@@ -2573,6 +2568,30 @@ impl EventPruneStep {
         Self::StaleSubscriberNodes,
         Self::EmptyEvents,
     ];
+}
+
+/// Deliveries one expiry page reads.
+///
+/// # Arguments
+///
+/// * `max_binds` - The adapter's bind limit; the expiry `UPDATE` binds one
+///   id per delivery plus [`EXPIRE_FIXED_BINDS`].
+/// * `max_result_rows` - The adapter's result-row limit, which bounds both
+///   the candidate read and the parent-event read (one event per delivery).
+/// * `max_rows` - The caller's scan budget.
+///
+/// # Returns
+///
+/// The smallest of those bounds and 64, and at least one.
+pub(super) fn expire_page_size(max_binds: u32, max_result_rows: u32, max_rows: usize) -> u64 {
+    u64::from(
+        max_binds
+            .saturating_sub(EXPIRE_FIXED_BINDS)
+            .min(max_result_rows)
+            .min(64),
+    )
+    .min(u64::try_from(max_rows).unwrap_or(u64::MAX))
+    .max(1)
 }
 
 /// Retention periods of the live subscriber catalog, by subscriber.
