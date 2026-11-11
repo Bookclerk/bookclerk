@@ -1174,6 +1174,133 @@ mod tests {
         assert!(works_match("Dune", herbert, "Dune", herbert));
     }
 
+    /// A bare Audible candidate with a rating and its vote count.
+    fn rated(rating: Option<f64>, count: Option<i64>) -> StorefrontCandidate {
+        StorefrontCandidate {
+            source: "audible".into(),
+            product_id: "B00TEST".into(),
+            title: "Adventure".into(),
+            authors: None,
+            narrators: None,
+            series: None,
+            series_index: None,
+            asin: Some("B00TEST".into()),
+            isbn: None,
+            cover_url: None,
+            seed_categories: None,
+            origin: "test".into(),
+            seed_title: None,
+            store_editions: vec![StoreEdition::new("audible", "B00TEST")],
+            subtitle: None,
+            description: None,
+            publisher: None,
+            length_minutes: None,
+            published_at: None,
+            categories: None,
+            language: None,
+            price_cents: None,
+            currency: None,
+            price_label: None,
+            rating_overall: rating,
+            rating_count: count,
+            is_abridged: None,
+            store_rank: None,
+            starter_genre: None,
+        }
+    }
+
+    #[test]
+    fn a_counted_rating_replaces_an_uncounted_one() {
+        let mut into = rated(Some(4.0), None);
+        merge_candidate_metadata(&mut into, &rated(Some(4.5), Some(10)));
+        assert_eq!(
+            (into.rating_overall, into.rating_count),
+            (Some(4.5), Some(10))
+        );
+        let mut into = rated(Some(4.0), Some(20));
+        merge_candidate_metadata(&mut into, &rated(Some(4.5), Some(10)));
+        assert_eq!(
+            (into.rating_overall, into.rating_count),
+            (Some(4.0), Some(20))
+        );
+    }
+
+    #[test]
+    fn a_rating_with_more_votes_wins() {
+        let mut into = rated(Some(4.0), Some(10));
+        merge_candidate_metadata(&mut into, &rated(Some(4.5), Some(20)));
+        assert_eq!(
+            (into.rating_overall, into.rating_count),
+            (Some(4.5), Some(20))
+        );
+        let mut into = rated(Some(4.0), Some(10));
+        merge_candidate_metadata(&mut into, &rated(Some(4.5), Some(10)));
+        assert_eq!(
+            (into.rating_overall, into.rating_count),
+            (Some(4.0), Some(10))
+        );
+    }
+
+    #[test]
+    fn merging_canonicalizes_an_existing_isbn() {
+        let mut into = rated(None, None);
+        into.isbn = Some("978-1-234-56789-0".into());
+        merge_candidate_metadata(&mut into, &rated(None, None));
+        let canonical = canonicalize_isbn("978-1-234-56789-0");
+        assert!(!canonical.is_empty() && canonical != "978-1-234-56789-0");
+        assert_eq!(into.isbn.as_deref(), Some(canonical.as_str()));
+    }
+
+    #[test]
+    fn merging_keeps_the_longer_title() {
+        let titled = |title: &str| StorefrontCandidate {
+            title: title.into(),
+            ..rated(None, None)
+        };
+        let mut into = titled("Dune");
+        merge_candidate_metadata(&mut into, &titled("Dune: Book One"));
+        assert_eq!(into.title, "Dune: Book One");
+        merge_candidate_metadata(&mut into, &titled("Dune"));
+        assert_eq!(into.title, "Dune: Book One");
+        merge_candidate_metadata(&mut into, &titled("Dune: Book 1ne"));
+        assert_eq!(into.title, "Dune: Book One");
+    }
+
+    #[test]
+    fn merging_appends_each_new_origin_once() {
+        let from = |origin: &str| StorefrontCandidate {
+            origin: origin.into(),
+            ..rated(None, None)
+        };
+        let mut into = from("seed");
+        merge_candidate_metadata(&mut into, &from("series"));
+        assert_eq!(into.origin, "seed; series");
+        merge_candidate_metadata(&mut into, &from("series"));
+        merge_candidate_metadata(&mut into, &from(""));
+        assert_eq!(into.origin, "seed; series");
+    }
+
+    #[test]
+    fn series_indices_conflict_only_when_both_parse_and_differ() {
+        assert!(series_indices_conflict(Some("1"), Some("2")));
+        assert!(series_indices_conflict(Some("Book 1.5"), Some("1")));
+        assert!(!series_indices_conflict(Some("1"), Some("1.0")));
+        assert!(!series_indices_conflict(Some("1"), None));
+        assert!(!series_indices_conflict(None, None));
+    }
+
+    #[test]
+    fn primary_author_cleaned_takes_the_first_person() {
+        let first = primary_author_cleaned(Some("Andy Weir - foreword, Ray Porter"));
+        assert_eq!(
+            first,
+            cleaned_author_list(Some("Andy Weir")).into_iter().next()
+        );
+        assert!(first.is_some_and(|a| !a.is_empty() && a != "ray porter"));
+        assert_eq!(primary_author_cleaned(Some("  ")), None);
+        assert_eq!(primary_author_cleaned(None), None);
+    }
+
     #[test]
     fn isbn_preferred_over_asin() {
         let key = hard_work_key(Some("B00TEST"), Some("978-1-234-56789-0")).unwrap();

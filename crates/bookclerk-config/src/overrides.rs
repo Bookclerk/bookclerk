@@ -494,6 +494,216 @@ mod tests {
         assert!(!cfg.discovery.embeddings_enabled);
     }
 
+    /// One value per dotted key that differs from the default configuration.
+    const NON_DEFAULT_OVERRIDES: &[(&str, &str)] = &[
+        ("output.format", "mp3"),
+        ("output.widevine", "true"),
+        ("output.xhe_aac", "true"),
+        ("output.widevine_cdm", "/cdm/device.wvd"),
+        ("output.widevine_cdm_provider", "libation"),
+        ("output.naming_profile", "classic"),
+        ("output.folder_template", "<author>"),
+        ("output.file_template", "<title>"),
+        ("output.path_sanitization", "windows"),
+        ("output.max_filename_length", "77"),
+        ("output.download_cover", "false"),
+        ("output.download_pdf", "false"),
+        ("output.create_cue", "true"),
+        ("output.fixup_metadata", "false"),
+        ("output.chapter_json", "true"),
+        ("output.save_metadata_json", "true"),
+        ("output.overwrite_existing", "true"),
+        ("output.multi_destination", "refetch_all"),
+        ("output.in_progress", "/in-progress"),
+        ("output.bad_book_action", "Abort"),
+        ("output.split_files_by_chapter", "true"),
+        ("output.split_mp3_max_mb", "77"),
+        ("output.chapter_file_template", "<ch#>"),
+        ("output.chapter_title_template", "<ch title>"),
+        ("output.minimum_file_duration_minutes", "77"),
+        ("output.combine_nested_chapter_titles", "true"),
+        ("output.merge_opening_and_end_credits", "true"),
+        ("output.strip_unabridged", "true"),
+        ("output.strip_audible_brand_audio", "true"),
+        ("output.download_clips_bookmarks", "true"),
+        ("output.retain_aax_file", "true"),
+        ("output.download_speed_limit_kbps", "77"),
+        ("output.lame.target", "bitrate-77"),
+        ("output.lame.vbr_quality", "7"),
+        ("output.lame.bitrate_kbps", "77"),
+        ("output.lame.mode", "mode-77"),
+        ("output.lame.downsample_mono", "true"),
+        ("output.lame.constant_bitrate", "true"),
+        ("output.max_sample_rate", "22050"),
+        ("output.creation_time", "published"),
+        ("output.last_write_time", "published"),
+        ("output.cover_size", "size-77"),
+        ("output.chapter_layout", "layout-77"),
+        ("database.plugin", "postgres"),
+        ("database.sqlite.path", "/db/library.db"),
+        ("database.d1.account_id", "account-77"),
+        ("database.d1.database_id", "database-77"),
+        ("database.d1.api_base", "https://d1.example"),
+        ("database.postgres.url", "postgres://db.example/library"),
+        ("database.postgres.url_file", "/run/postgres-url"),
+        ("daemon.listen", "127.0.0.1:7777"),
+        ("daemon.auth.enabled", "false"),
+        ("daemon.auth.require_second_factor", "true"),
+        ("daemon.auth.tray_handoff_ttl_secs", "77"),
+        ("library.auto_acquire", "true"),
+        ("library.import_episodes", "false"),
+        ("library.import_plus_titles", "true"),
+        ("library.download_episodes", "false"),
+        ("library.save_podcasts_to_parent_folder", "true"),
+        ("library.enrich_from_audible", "false"),
+        ("library.enrich_min_confidence", "77"),
+        ("library.fix_storage_layout", "true"),
+        ("library.scan_interval_minutes", "77"),
+        ("jobs.max_pending", "77"),
+        ("jobs.lease_seconds", "77"),
+        ("jobs.max_attempts", "7"),
+        ("jobs.retention_days", "77"),
+        ("jobs.temp_quota_bytes", "7777777"),
+        ("jobs.concurrency.network", "7"),
+        ("events.retention_days", "77"),
+        ("events.dead_letter_retention_days", "77"),
+        ("events.concurrency", "7"),
+        ("discovery.embeddings_enabled", "true"),
+        ("discovery.embedding_model", "model-77"),
+        ("discovery.embed_intra_threads", "7"),
+        ("discovery.listen_sync_interval_minutes", "77"),
+        ("discovery.recommend_limit", "77"),
+        ("integrations.public_origin", "https://library.example"),
+        ("integrations.claim_ticket_ttl_hours", "77"),
+        ("integrations.portal_session_ttl_hours", "77"),
+        ("plugins.isolation", "off"),
+        ("media.isolation", "off"),
+        ("plugins.jail.memory_mib", "777"),
+        ("plugins.jail.cpu_rate_percent", "7"),
+        ("plugins.jail.extra_processes", "7"),
+    ];
+
+    #[test]
+    fn every_dotted_override_changes_the_written_config() {
+        let default = Config::default().to_toml_string().expect("default");
+        let mut unchanged = Vec::new();
+        for (key, value) in NON_DEFAULT_OVERRIDES {
+            let mut cfg = Config::default();
+            apply_setting_overrides(&mut cfg, &[(key, value)]);
+            if cfg.to_toml_string().expect("serialize") == default {
+                unchanged.push(*key);
+            }
+        }
+        assert!(unchanged.is_empty(), "no effect: {unchanged:?}");
+    }
+
+    /// Applies one override to a default configuration.
+    fn with(key: &str, value: &str) -> Config {
+        let mut cfg = Config::default();
+        apply_setting_overrides(&mut cfg, &[(key, value)]);
+        cfg
+    }
+
+    #[test]
+    fn auth_password_override_sets_and_clears_the_password() {
+        let mut cfg = with("auth.password", "  test-only-wrap-value  ");
+        assert_eq!(cfg.auth.password.as_deref(), Some("test-only-wrap-value"));
+        apply_setting_overrides(&mut cfg, &[("auth.password", " ")]);
+        assert_eq!(cfg.auth.password, None);
+    }
+
+    #[test]
+    fn enum_overrides_map_each_spelling() {
+        let sanitize = |v: &str| with("output.path_sanitization", v).output.path_sanitization;
+        for v in ["windows", "win", "ntfs"] {
+            assert_eq!(sanitize(v), PathSanitizationMode::Windows, "{v}");
+        }
+        for v in ["posix", "unix", "linux", "macos", "MAC"] {
+            assert_eq!(sanitize(v), PathSanitizationMode::Posix, "{v}");
+        }
+        for v in ["s3", "object", "object_storage"] {
+            assert_eq!(sanitize(v), PathSanitizationMode::S3, "{v}");
+        }
+        for v in ["none", "off", "disabled"] {
+            assert_eq!(sanitize(v), PathSanitizationMode::None, "{v}");
+        }
+        assert_eq!(sanitize("other"), PathSanitizationMode::Auto);
+
+        let multi = |v: &str| with("output.multi_destination", v).output.multi_destination;
+        for v in ["refetch_missing", "refetch-missing"] {
+            assert_eq!(multi(v), crate::MultiDestinationMode::RefetchMissing, "{v}");
+        }
+        for v in ["refetch_all", "Refetch-All"] {
+            assert_eq!(multi(v), crate::MultiDestinationMode::RefetchAll, "{v}");
+        }
+        assert_eq!(multi("other"), crate::MultiDestinationMode::SyncMissing);
+
+        let bad = |v: &str| with("output.bad_book_action", v).output.bad_book_action;
+        assert_eq!(bad("Abort"), BadBookAction::Abort);
+        assert_eq!(bad("Retry"), BadBookAction::Retry);
+        assert_eq!(bad("Ignore"), BadBookAction::Ignore);
+        assert_eq!(bad("Bogus"), BadBookAction::Ask);
+    }
+
+    #[test]
+    fn output_format_falls_back_on_lossy_words() {
+        let format = |v: &str| with("output.format", v).output.format;
+        assert_eq!(format("yes"), OutputFormat::SingleMp3);
+        assert_eq!(format("lossy"), OutputFormat::SingleMp3);
+        assert_eq!(format("no"), OutputFormat::EnrichedM4b);
+        assert_eq!(format("anything"), OutputFormat::EnrichedM4b);
+    }
+
+    #[test]
+    fn public_origin_and_cpu_cores_overrides() {
+        assert_eq!(
+            with("integrations.public_origin", "https://library.example")
+                .integrations
+                .public_origin
+                .as_deref(),
+            Some("https://library.example")
+        );
+        let mut cfg = with("integrations.public_origin", "https://library.example");
+        apply_setting_overrides(&mut cfg, &[("integrations.public_origin", "")]);
+        assert_eq!(cfg.integrations.public_origin, None);
+
+        let cpu = |v: &str| {
+            with("plugins.jail.cpu_cores", v)
+                .plugins
+                .jail
+                .cpu_rate_percent
+        };
+        assert_eq!(cpu("0.5"), Some(50), "half a core is 50%");
+        assert_eq!(cpu("0.25"), Some(25));
+        assert_eq!(cpu(""), Some(80));
+    }
+
+    #[test]
+    fn discovery_overrides_set_threads_and_sync_interval() {
+        let mut cfg = Config::default();
+        apply_setting_overrides(
+            &mut cfg,
+            &[
+                ("discovery.embed_intra_threads", "3"),
+                ("discovery.listen_sync_interval_minutes", "17"),
+            ],
+        );
+        assert_eq!(cfg.discovery.embed_intra_threads, 3);
+        assert_eq!(cfg.discovery.listen_sync_interval_minutes, 17);
+        apply_setting_overrides(
+            &mut cfg,
+            &[
+                ("discovery.embed_intra_threads", "0"),
+                ("discovery.listen_sync_interval_minutes", "soon"),
+            ],
+        );
+        assert_eq!(cfg.discovery.embed_intra_threads, 1, "at least one thread");
+        assert_eq!(
+            cfg.discovery.listen_sync_interval_minutes, 17,
+            "unparsable keeps the value"
+        );
+    }
+
     #[test]
     fn dotted_override_sets_widevine() {
         let mut cfg = Config::default();
