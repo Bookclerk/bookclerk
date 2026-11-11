@@ -15,9 +15,11 @@ This is not a general pub/sub bus. Domain events such as `book_acquired` /
 plugin `event(batch)` stay **off** `JobKind`. They use a durable outbox
 (`domain_events` + `event_deliveries` + `event_subscriber_nodes`) with
 the same fenced-lease pattern as jobs. Acquire success publishes
-`book_acquired` with producer `source` on the envelope. Each host heartbeats discovered (config-enabled, even if spawn
-failed) and loaded integrations into a **per-node** catalog keyed by
-`(node_id, PluginKey)` (`plugin_id` stores the canonical PluginKey, not the
+`book_acquired` with producer `source` on the envelope. Each host heartbeats the instances its deployments
+run (`present` or `placed`, whether or not the guest is up) and its loaded
+integrations into a **per-node** catalog keyed by
+`(node_id, plugin instance id)`, or `(node_id, PluginKey)` for a plugin
+without an instance (`plugin_id` stores the canonical PluginKey, not the
 display alias) and does **not** delete other nodes’ rows. The catalog key is
 the node id from `node-identity.json`, the same id the node registers with
 the cluster and claims its `node.<node_id>` queue under. Dispatch uses
@@ -34,8 +36,13 @@ unchanged after a crash, and a retry that sends the same list replays their
 receipts) covers only that dispatch; a late-join adds deliveries for the
 subscribers it finds now. D1
 dispatch receipts are per pair (`dispatch-{event_id}-{plugin_id}` /
-`reconcile-{event_id}-{plugin_id}`). Each VPS claims only PluginKeys loaded on
-that process **and** only events its own node catalog matches (type, schema
+`reconcile-{event_id}-{plugin_id}`). Catalog rows
+follow deployments, not processes: an instance deployed on a node keeps
+its enabled row while its guest is not running, so its deliveries are
+written at publish time and wait as `pending`. An event fans out to every
+subscribed instance, and each copy is *leased* to one node; only jobs are
+*claimed*. Each VPS leases only deliveries for instances loaded on that
+process **and** only events its own node catalog matches (type, schema
 version, filter). `[events]` retention and concurrency are stored in the database after the
 first import (`core.events`; see [configuration](../server/configuration.md) and
 [ADR: Control plane](../adr/control-plane.md)). `[events.concurrency]` is both the
@@ -60,8 +67,15 @@ timestamp-only); an empty requested filter keeps the subscription filter and
 cannot broaden it. Late-join skip cache is invalidated on dispatch error and
 reconciles at least every 60s as a backstop.
 `GET /api/status` includes event queue counts plus durable retry/suspend totals
-and average dispatch/handler latency. Retention is independent of jobs
-(`[events].retention_days` for acked/rejected + empty parent events after that
+and average dispatch/handler latency. A `pending` delivery that was never
+leased expires (state `expired`) once it has been due for longer than its
+consumer's `message_retention_period` (default one day, capped at
+`[events].retention_days`; host and node consumers never expire), so a
+deployed instance that is not running does not accumulate an unbounded
+backlog (see
+[Retention of undelivered events](../plugins/abi.md#retention-of-undelivered-events)).
+Retention is independent of jobs
+(`[events].retention_days` for acked/rejected/expired + empty parent events after that
 cutoff, `dead_letter_retention_days` for dead letters). Prune is a
 cluster singleton, not a dispatcher tick: see *Cluster maintenance* below.
 Operator APIs: `GET /api/events`,
@@ -384,8 +398,8 @@ clusters scan` ([Clusters and host nodes](../server/cluster-hosts.md)).
   cancel without that flag is treated as fence loss and ignored.
 - Event delivery workers use the same 60s lease and `lease/3` heartbeat
   during `event(batch)`. Fence loss cancels the guest RPC and ignores the
-  result. Claims are restricted to PluginKeys loaded on this process;
-  releasing an unexecuted claim does not consume `attempt_count`.
+  result. Leases are restricted to instances loaded on this process;
+  releasing an unexecuted lease does not consume `attempt_count`.
   Expired-lease reclaim restores `resume_pending` when a checkpoint exists
   so a crash during resume does not burn an attempt.
 - Startup and each worker tick call `reclaim_expired_leases`.
@@ -597,7 +611,7 @@ refused before it deletes anything.
 | Lease | Duty |
 | --- | --- |
 | `maintenance.jobs` | Terminal jobs older than `jobs.retention_days` |
-| `maintenance.events` | Terminal deliveries, empty parent events, stale subscriber catalog rows (`[events]` retention) |
+| `maintenance.events` | Expires never-leased deliveries past their retention period, then deletes terminal deliveries, empty parent events, stale subscriber catalog rows (`[events]` retention) |
 | `maintenance.kv` | Expired plugin KV rows (already read as missing) |
 | `maintenance.sessions` | Expired operator sessions, OIDC RP states, WebAuthn challenges |
 | `maintenance.records` | Expired credentials and spent tokens, finished uploads, abandoned scan inventories, and old audit rows (windows below) |

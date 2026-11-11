@@ -114,7 +114,7 @@ impl WakeForwarder {
                 break;
             };
             let claimed = library
-                .claim_next_event_delivery(
+                .lease_next_event_delivery(
                     &self.lease_owner,
                     self.lease_secs,
                     &uuid::Uuid::new_v4().to_string(),

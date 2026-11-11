@@ -114,6 +114,7 @@ impl ExternalIntegration {
                     s.resource_class.clone()
                 },
                 filter: s.filter.clone().filter(|v| !v.is_null()),
+                message_retention_secs: s.message_retention_period,
             })
             .collect();
         let queue_subscriptions = plugin
@@ -126,6 +127,7 @@ impl ExternalIntegration {
                 max_retries: c.max_retries,
                 dead_letter_queue: c.dead_letter_queue.clone(),
                 retry_delay_secs: c.retry_delay,
+                message_retention_secs: c.message_retention_period,
             })
             .collect();
         // Only schedules the operator granted tick; the session refuses the

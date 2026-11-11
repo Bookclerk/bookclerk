@@ -67,6 +67,12 @@ pub struct LibraryStore {
     /// so the sqlite-shaped proxy never physically lowers. Native in-process
     /// tests set [`bookclerk_db_exec::SqlExecTarget::InProcess`].
     sql_exec: bookclerk_db_exec::SqlExecTarget,
+    /// Where the last bounded delivery-expiry scan stopped, as the
+    /// `(created_at, id)` of the last delivery it examined. The next scan
+    /// resumes after it, so deliveries that cannot expire yet do not keep a
+    /// later expired one from being reached. `None` starts from the oldest.
+    /// Shared by clones; a new store starts over.
+    expire_cursor: Arc<std::sync::Mutex<Option<(String, String)>>>,
 }
 
 impl std::fmt::Debug for LibraryStore {
@@ -93,6 +99,7 @@ impl LibraryStore {
             max_payload_bytes: 256 * 1024,
             caps: Arc::new(bookclerk_plugin_abi::DbCapabilities::advertised_d1()),
             sql_exec: bookclerk_db_exec::SqlExecTarget::Canonical,
+            expire_cursor: Arc::default(),
         }
     }
 

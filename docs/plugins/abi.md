@@ -378,6 +378,7 @@ max_batch_size = 10             # messages per queue(batch) call (≤ 100)
 max_retries = 3                 # redeliveries before dead-letter
 dead_letter_queue = "thumbnails-dlq"
 retry_delay = 30                # seconds when retry() names no delay
+message_retention_period = 3600 # seconds a due message may wait unleased (default 1 day)
 ```
 
 ```ts
@@ -414,6 +415,9 @@ The rules mirror `event(batch)`:
   redeliveries is parked as `dead_letter`. When the consumer names a
   `dead_letter_queue`, the host first copies the message there, so a
   second consumer (or an operator) can pick it up.
+- **Retention.** A message that is never handed to the consumer expires
+  after `message_retention_period` (see
+  [Retention](#retention-of-undelivered-events)).
 - **Bodies.** `contentType` is `json` (the default; the body is JSON
   text), `text` (UTF-8) or `bytes` (raw). Bodies are capped at 64 KiB
   (`MAX_EVENT_PAYLOAD_BYTES`), and a batch sends at most `MAX_LIST_PAGE`
@@ -613,6 +617,7 @@ supports_suspend = false
 # resource_class = "network"   # default; the only accepted value today
 # filter = { accountId = "acct" }
 # max_retries = 5
+# message_retention_period = 86400   # seconds; 60..=1209600, default 1 day
 ```
 
 - Any `[[events.consumers]]` row needs an `event(batch)` handler on the
@@ -624,18 +629,58 @@ supports_suspend = false
 - The optional `filter` is a host-owned JSON object. The dispatcher
   matches **payload object key equality** only (no plugin-provided code
   or CEL).
+- The optional `message_retention_period` is how long, in seconds, a
+  delivery may wait without being handed to the plugin before the host
+  expires it (see [Retention](#retention-of-undelivered-events)).
 - Echo and Audiobookshelf may leave both out (defaults).
 
 ### How events are delivered
 
 **The subscriber catalog.**
 
-- Each host heartbeats into `event_subscriber_nodes` the discovered,
-  config-enabled integration manifests (even when spawn failed) and the
-  integrations currently loaded. Rows are keyed by `(node_id, PluginKey)`:
-  `plugin_id` stores the canonical PluginKey, not the display alias.
+- Each host heartbeats into `event_subscriber_nodes` the plugin instances
+  its deployments run (`present` or `placed` on that node) and the
+  integrations currently loaded. An instance's row is keyed by
+  `(node_id, plugin instance id)`, so two instances of one plugin each get
+  their own copy of an event. A plugin without an instance is keyed by its
+  canonical PluginKey, not the display alias.
+- The deployment decides whether an instance subscribes, not its process.
+  An instance that is deployed but not running (still starting, or failing
+  to spawn) keeps its enabled row, so matching events get a delivery for it
+  at publish time; the delivery waits as `pending` until the instance runs.
+  Subscriptions are the consented `[[events.consumers]]` and
+  `[[queues.consumers]]` rows of what the deployment would run: the active
+  installed version and its grant, or the discovered manifest for a
+  plugin with no cluster install.
 - The catalog key is the node id from `node-identity.json`. Nodes don't
   delete catalog rows they lack.
+
+#### Retention of undelivered events
+
+A delivery does not wait forever. Like a Cloudflare Queues message, it has
+a retention period, so an instance that is deployed but not running stops
+piling up work.
+
+- The period is the consumer's `message_retention_period` (60 seconds to
+  14 days), or one day when the consumer names none. It never exceeds
+  `[events].retention_days`.
+- A delivery expires when it has been due for longer than that period and
+  was never handed to the plugin. Its state becomes `expired`, not
+  `dead_letter`. A delivery that was leased, retried, suspended or is
+  resuming does not expire; `max_retries` and dead letters govern it.
+- Expiry is best effort. The hourly `maintenance.events` duty expires
+  deliveries, scanning about 10 000 rows a run and resuming where it
+  stopped, so a delivery can outlive its period by an hour or more and can
+  still be leased until the sweep reaches it. Retention bounds a backlog;
+  it is not a delivery deadline, and the lease path does not check it.
+- A subscriber with no live catalog row (for example, while every node
+  that runs it is down) waits the full `[events].retention_days`, since
+  its declared period cannot be read.
+- Expired rows stay until `[events].retention_days` passes, as the record
+  of which events an instance missed. A later change lets a plugin read
+  past events from the outbox to catch up after a gap.
+- Deliveries for the host's own consumers (`host:` and node queues) never
+  expire.
 - A plugin is live when any heartbeating node (60 s TTL) has it enabled.
   Matching subscriptions are the union of those enabled rows.
 
@@ -714,18 +759,25 @@ describe, best effort (a failed publish is logged, and the write stands):
 Discover's host consumer reads them to refresh shelves (see
 [Discovery design](../internals/discovery.md#taste-events)).
 
-**Claiming.**
+**Leasing.**
+
+An event is a fact that fans out: every subscribed instance gets its own
+delivery, and subscribers never compete for one. A delivery is *leased*,
+which only picks the node that runs that subscriber's copy. A job is a
+command with one handler, and is *claimed* (see
+[Durable job queue](../internals/jobs.md)).
 
 - The producer's `ordering_key` is stored on the envelope, and copied
   verbatim onto each delivery.
-- Each VPS claims only PluginKeys loaded on that process, **and** only
-  events its node-local catalog matches (type, schema version, filter).
+- Each VPS leases only deliveries for instances loaded on that process,
+  **and** only events its node-local catalog matches (type, schema
+  version, filter).
 - The host evaluates catalog JSON filters, then compare-and-sets a
   concrete delivery id inside a generic atomic plan.
 - `[events.concurrency]` (default 1) is the number of local delivery
   workers **and** the cluster-wide maximum of `running` deliveries per
   `(plugin_id, resource_class)` (`network` today). It is enforced at
-  claim time with a portable `bookclerk_slots` row, so two VPSes can't
+  lease time with a portable `bookclerk_slots` row, so two VPSes can't
   over-admit under `READ COMMITTED`.
 - FIFO per ordering key stays. Unrelated keys are only blocked by that
   cap.

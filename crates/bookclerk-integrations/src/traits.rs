@@ -34,6 +34,9 @@ pub struct QueueSubscription {
     pub dead_letter_queue: Option<String>,
     /// Seconds a retried message waits when the consumer names no delay.
     pub retry_delay_secs: u32,
+    /// Seconds a due message may wait unleased before the host expires it;
+    /// `None` uses the host default.
+    pub message_retention_secs: Option<u32>,
 }
 
 /// Declared durable `onEvent` subscription (mirrors `plugin.toml`).
@@ -49,6 +52,9 @@ pub struct EventSubscription {
     pub resource_class: String,
     /// Optional host-owned payload object filter (top-level key equality).
     pub filter: Option<serde_json::Value>,
+    /// Seconds a due delivery may wait unleased before the host expires it;
+    /// `None` uses the host default.
+    pub message_retention_secs: Option<u32>,
 }
 
 impl EventSubscription {
@@ -61,6 +67,7 @@ impl EventSubscription {
             supports_suspend: false,
             resource_class: "network".into(),
             filter: None,
+            message_retention_secs: None,
         }
     }
 }
