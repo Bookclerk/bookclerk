@@ -206,7 +206,16 @@ again and the host replays the stored result instead of writing the rows a
 second time. For that to hold, `key` must name one write (a job id plus a
 step is a good key, at most 256 bytes), and the list and the caps must stay
 the same between calls with that key. Otherwise a resent batch no longer
-matches what was stored and the host answers `conflict`.
+matches what was stored and the host answers `conflict`. A job keeps its
+id when it suspends and when it is retried, so `job.id` plus a step names
+the same write on every run.
+
+> [!NOTE]
+> The host keeps a batch's receipt for 24 hours. A batch resent after that
+> finds no receipt and runs again, so a write that may pause for longer
+> should use statements that are safe to repeat (`INSERT OR IGNORE`, an
+> upsert, or an update to fixed values) or record its own progress in the
+> same batch as its rows.
 
 The id is the first 16 bytes of SHA-256 over
 `bookclerk-write-chunks`, a zero byte, the key, a zero byte and the offset

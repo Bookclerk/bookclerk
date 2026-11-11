@@ -340,7 +340,7 @@ class WriteChunksError(PluginError):
             replays its receipt instead of writing it twice.
     """
 
-    def __init__(self, next_offset: int, cause: PluginError):
+    def __init__(self, next_offset: int, cause: PluginError) -> None:
         super().__init__(cause.wire_code, str(cause), cause.details)
         self.next = next_offset
 

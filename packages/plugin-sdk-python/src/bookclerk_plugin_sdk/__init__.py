@@ -65,6 +65,7 @@ from .db_value import (
     write_chunks_operation_id,
 )
 from .limits import LimitExceeded, limit_exceeded_message, parse_limit_exceeded
+from .workerd import WriteChunksError
 
 __all__ = [
     "PLUGIN_ERROR_CODES",
@@ -89,6 +90,7 @@ __all__ = [
     "PluginErrorCode",
     "MAX_WRITE_KEY_BYTES",
     "RetryToken",
+    "WriteChunksError",
     "WriteProgress",
     "write_chunks_operation_id",
     "ScanParams",

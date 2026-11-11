@@ -50,15 +50,17 @@ fn lookup_chunk(max_binds: u32) -> usize {
         .clamp(1, LOOKUP_CHUNK)
 }
 
-/// Rows of `E` that `query` selects for each chunk of at most `chunk`
-/// of `ids`, so no lookup binds more than the backend accepts.
+/// Rows of `E` that `query` selects for `ids`, read in chunks no wider than
+/// [`LibraryStore::lookup_chunk`] and narrowed further until each statement
+/// (SQL plus binds) fits the backend's `maxBinds` and `maxPayloadBytes`, so
+/// a lookup of long ids (UUIDs on D1) never fails where reading them one by
+/// one would fit.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::Orm`] when a read fails.
 pub(super) async fn find_chunked<E, F>(
-    db: &sea_orm::DatabaseConnection,
-    chunk: usize,
+    store: &LibraryStore,
     ids: &[String],
     query: F,
 ) -> Result<Vec<E::Model>>
@@ -66,9 +68,49 @@ where
     E: EntityTrait,
     F: Fn(&[String]) -> sea_orm::Select<E>,
 {
+    find_chunked_by(store, ids, 1, query).await
+}
+
+/// [`find_chunked`] over composite keys that each bind `binds_per_key`
+/// values: chunks start [`LibraryStore::lookup_chunk`]` / binds_per_key`
+/// keys wide and narrow until the statement fits.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Orm`] when a read fails.
+pub(super) async fn find_chunked_by<K, E, F>(
+    store: &LibraryStore,
+    keys: &[K],
+    binds_per_key: usize,
+    query: F,
+) -> Result<Vec<E::Model>>
+where
+    E: EntityTrait,
+    F: Fn(&[K]) -> sea_orm::Select<E>,
+{
+    let fits = |part: &[K]| {
+        crate::control_plane::sea_exec(&query(part))
+            .map(|stmt| store.admits_statement(&stmt))
+            .unwrap_or(true)
+    };
     let mut out = Vec::new();
-    for part in ids.chunks(chunk.max(1)) {
-        out.extend(query(part).all(db).await.map_err(LibraryError::Orm)?);
+    let mut width = (store.lookup_chunk() / binds_per_key.max(1)).max(1);
+    let mut rest = keys;
+    while !rest.is_empty() {
+        let mut n = width.min(rest.len());
+        while n > 1 && !fits(&rest[..n]) {
+            n /= 2;
+        }
+        // Later chunks start no wider: the keys of one lookup are alike.
+        width = n;
+        let (part, tail) = rest.split_at(n);
+        out.extend(
+            query(part)
+                .all(&store.db)
+                .await
+                .map_err(LibraryError::Orm)?,
+        );
+        rest = tail;
     }
     Ok(out)
 }
@@ -1199,15 +1241,23 @@ impl LibraryStore {
             }
         };
         // The pool is read before the page writes anything, so a listing
-        // whose key or edition an earlier entry of this page wrote is
-        // resolved against the store, never against the stale pool.
-        let mut written_keys: std::collections::HashSet<&resolve::ListingKey> =
+        // whose key, parent or edition an earlier entry of this page wrote
+        // is resolved against the store, never against the stale pool: an
+        // episode whose show was first stored on this page gains its link.
+        let mut written_keys: std::collections::HashSet<resolve::ListingKey> =
             std::collections::HashSet::new();
         let mut written_editions: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         for (listing, holding, fill) in items {
             let settled = match &pool {
-                Some(_) if written_keys.contains(&listing.key) => Ok(None),
+                Some(_)
+                    if written_keys.contains(&listing.key)
+                        || listing
+                            .parent_key()
+                            .is_some_and(|parent| written_keys.contains(&parent)) =>
+                {
+                    Ok(None)
+                }
                 Some(pool) => self
                     .settled_listing(pool, listing, holding)
                     .await
@@ -1227,7 +1277,7 @@ impl LibraryStore {
                     }
                 }
                 Ok(None) | Err(_) => {
-                    written_keys.insert(&listing.key);
+                    written_keys.insert(listing.key.clone());
                     match self.record_listing(listing, holding).await {
                         Ok(plan) => {
                             written_editions.insert(plan.listing.edition_id.clone());
@@ -1561,7 +1611,7 @@ impl LibraryStore {
         &self,
         ids: &[String],
     ) -> Result<std::collections::BTreeMap<String, WorkRecord>> {
-        let mut found: Vec<WorkRecord> = find_chunked(&self.db, self.lookup_chunk(), ids, |part| {
+        let mut found: Vec<WorkRecord> = find_chunked(self, ids, |part| {
             works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
         })
         .await?
@@ -1987,22 +2037,20 @@ impl LibraryStore {
     ) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
         use crate::entities::books;
         use std::collections::BTreeMap;
-        let chunk = self.lookup_chunk();
-        let work_of_expression: BTreeMap<String, String> =
-            find_chunked(&self.db, chunk, work_ids, |part| {
-                expressions::Entity::find()
-                    .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
-            })
-            .await?
-            .into_iter()
-            .map(|x| (x.id, x.work_id))
-            .collect();
+        let work_of_expression: BTreeMap<String, String> = find_chunked(self, work_ids, |part| {
+            expressions::Entity::find()
+                .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
+        })
+        .await?
+        .into_iter()
+        .map(|x| (x.id, x.work_id))
+        .collect();
         if work_of_expression.is_empty() {
             return Ok(BTreeMap::new());
         }
         let expression_ids: Vec<String> = work_of_expression.keys().cloned().collect();
         let work_of_edition: BTreeMap<String, String> =
-            find_chunked(&self.db, chunk, &expression_ids, |part| {
+            find_chunked(self, &expression_ids, |part| {
                 editions::Entity::find()
                     .filter(editions::Column::ExpressionId.is_in(part.iter().cloned()))
             })
@@ -2014,7 +2062,7 @@ impl LibraryStore {
             return Ok(BTreeMap::new());
         }
         let edition_ids: Vec<String> = work_of_edition.keys().cloned().collect();
-        let listings = find_chunked(&self.db, chunk, &edition_ids, |part| {
+        let listings = find_chunked(self, &edition_ids, |part| {
             store_listings::Entity::find()
                 .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
         })
@@ -2033,12 +2081,11 @@ impl LibraryStore {
             .into_iter()
             .collect();
         let mut found: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for part in product_ids.chunks(chunk) {
-            for b in books::Entity::find()
-                .filter(books::Column::ProductId.is_in(part.iter().cloned()))
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?
+        {
+            for b in find_chunked(self, &product_ids, |part| {
+                books::Entity::find().filter(books::Column::ProductId.is_in(part.iter().cloned()))
+            })
+            .await?
             {
                 let key = (
                     b.plugin_key,
@@ -3008,6 +3055,58 @@ mod store_tests {
             .unwrap()
             .unwrap();
         assert_eq!(work.parent_work_id, Some(show_plan.new_work.unwrap().id));
+    }
+
+    /// The page form of [`an_episode_stored_before_its_show_gains_it`]: the
+    /// show first stored on a page is the episode's parent on the same page,
+    /// though the page's read-ahead saw no show.
+    #[tokio::test]
+    async fn an_episode_gains_a_show_stored_earlier_on_its_page() {
+        let store = store().await;
+        let show = resolve::ListingDraft {
+            product_id: "S1".into(),
+            title: "Show".into(),
+            work_kind: Some(resolve::WorkKind::PodcastShow),
+            expression_kind: Some(resolve::ExpressionKind::PodcastAudio),
+            media_kind: Some(resolve::MediaKind::PodcastAudio),
+            identifiers: Vec::new(),
+            series: Vec::new(),
+            ..dune("audible", "S1")
+        };
+        let episode = resolve::ListingDraft {
+            product_id: "E1".into(),
+            title: "Trailer".into(),
+            work_kind: Some(resolve::WorkKind::PodcastEpisode),
+            parent_product_id: Some("S1".into()),
+            ..show.clone()
+        };
+        let episode = resolve::Listing::from_draft(&episode).unwrap();
+        let episode_work = store
+            .record_listing(&episode, &account("a1"))
+            .await
+            .unwrap()
+            .new_work
+            .unwrap()
+            .id;
+        let show = resolve::Listing::from_draft(&show).unwrap();
+        let items = vec![
+            (show, account("a1"), WorkEnrichment::default()),
+            (episode, account("a1"), WorkEnrichment::default()),
+        ];
+        store.record_listing_page(&items).await;
+        let show_work = works::Entity::find()
+            .filter(works::Column::Title.eq("Show"))
+            .one(&store.db)
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let work = works::Entity::find_by_id(episode_work)
+            .one(&store.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(work.parent_work_id, Some(show_work));
     }
 
     #[tokio::test]
@@ -4026,6 +4125,94 @@ mod store_tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(row.title, items[1].0.title, "{profile:?}");
+        }
+    }
+    /// A chunked lookup of long ids sends only statements the backend
+    /// admits: on D1 a full-width lookup of UUIDs is past `maxPayloadBytes`,
+    /// so the chunks narrow, and every id is still read.
+    #[tokio::test]
+    async fn a_chunked_lookup_of_uuids_fits_the_payload_cap_under_every_profile() {
+        use crate::entities::store_listings;
+        use crate::test_support::Profile;
+        use std::sync::Mutex;
+        for profile in Profile::ALL {
+            let store = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let ids: Vec<String> = (0..200).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+            let query = |part: &[String]| {
+                store_listings::Entity::find()
+                    .filter(store_listings::Column::ProductId.is_in(part.iter().cloned()))
+            };
+            let admits = |part: &[String]| {
+                store.admits_statement(&crate::control_plane::sea_exec(&query(part)).unwrap())
+            };
+            let full = store.lookup_chunk();
+            if profile == Profile::D1 {
+                assert!(!admits(&ids[..full]), "a full-width UUID lookup fits D1");
+            }
+            // Every call starting at the same id is a probe until the last,
+            // which is the statement sent.
+            let calls = Mutex::new(Vec::<(String, usize)>::new());
+            let rows = find_chunked::<store_listings::Entity, _>(&store, &ids, |part| {
+                calls.lock().unwrap().push((part[0].clone(), part.len()));
+                query(part)
+            })
+            .await
+            .unwrap();
+            assert!(rows.is_empty(), "{profile:?}");
+            let mut sent = std::collections::BTreeMap::new();
+            for (first, len) in calls.into_inner().unwrap() {
+                let at = ids.iter().position(|id| *id == first).unwrap();
+                sent.insert(at, len);
+            }
+            let mut next = 0;
+            for (at, len) in sent {
+                assert_eq!(at, next, "{profile:?}: chunks cover the ids in order");
+                assert!(admits(&ids[at..at + len]), "{profile:?}: {len} ids at {at}");
+                next = at + len;
+            }
+            assert_eq!(next, ids.len(), "{profile:?}");
+        }
+    }
+
+    /// A page of long product ids (UUIDs, as some storefronts use) fits the
+    /// payload cap of every profile: a D1 statement carries about 3.6 KB, so
+    /// a lookup sized from the bind cap alone would be refused.
+    #[tokio::test]
+    async fn a_page_of_uuid_product_ids_records_under_every_profile() {
+        use crate::entities::store_listings;
+        use crate::test_support::Profile;
+        use sea_orm::PaginatorTrait;
+        for profile in Profile::ALL {
+            let store = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let items: Vec<_> = (0..120)
+                .map(|n| {
+                    let mut draft = dune("libro", &uuid::Uuid::new_v4().to_string());
+                    draft.title = format!("Title {n}");
+                    draft.identifiers.clear();
+                    (
+                        resolve::Listing::from_draft(&draft).unwrap(),
+                        account("a1"),
+                        WorkEnrichment::default(),
+                    )
+                })
+                .collect();
+            store.record_listing_page(&items).await;
+            let stored = store_listings::Entity::find()
+                .count(&store.db)
+                .await
+                .unwrap();
+            assert_eq!(stored, 120, "{profile:?}");
+            // A second pass reads every listing back through the pool.
+            store.record_listing_page(&items).await;
+            let stored = store_listings::Entity::find()
+                .count(&store.db)
+                .await
+                .unwrap();
+            assert_eq!(stored, 120, "{profile:?}");
         }
     }
 }

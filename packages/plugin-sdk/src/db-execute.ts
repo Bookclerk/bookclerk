@@ -360,7 +360,9 @@ export interface DatabaseBinding {
    * ({@link writeChunksOperationId}). Store the returned `next` (for example
    * in a job checkpoint) and call again with the same list, the same `key`
    * and `from: next` to carry on: a batch whose reply was lost is resent
-   * under the same id and the host replays its receipt.
+   * under the same id and the host replays its receipt. Receipts are kept
+   * for 24 hours; a batch resent later runs again, so a write that may pause
+   * that long uses statements safe to repeat.
    *
    * `stop(next)` is asked before each batch; returning `true` pauses the
    * run there. The list and the caps must not change between calls with
@@ -413,6 +415,11 @@ export class WriteChunksError extends PluginError {
   /** Statements committed before the failure; resume with `from: next`. */
   readonly next: number;
 
+  /**
+   * @param next - Statements committed before the failure.
+   * @param cause - The failed batch's error, whose code, message and details
+   *   this error carries.
+   */
   constructor(next: number, cause: PluginError) {
     super(cause.wireCode, cause.message, cause.details);
     this.name = "WriteChunksError";
@@ -1003,10 +1010,11 @@ export function createDatabaseBinding(
       }
       let next = from;
       for (const b of batches) {
-        if (opts.stop?.(next) === true) {
-          return { next, done: false };
-        }
         try {
+          // A `stop` that throws still reports how far the write got.
+          if (opts.stop?.(next) === true) {
+            return { next, done: false };
+          }
           await binding.batch(b, {
             retry: { operationId: await writeChunksOperationId(opts.key, next), requestHash: "" },
           });

@@ -9,7 +9,7 @@
 //! expose `chrono::DateTime<Utc>` and conversions happen at the record boundary.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -4234,8 +4234,8 @@ impl LibraryStore {
     /// writes sent as atomic batches sized from the database plugin's
     /// limits.
     ///
-    /// A title listed twice merges into the row its first listing wrote, and
-    /// both entries return the final row. A
+    /// A title listed twice merges as row-by-row upserts would and is
+    /// written once, as its final row; both entries return that row. A
     /// row another writer inserted between the read and the write (the
     /// insert is ignored) is merged again on its own, so no title is lost.
     ///
@@ -4256,25 +4256,36 @@ impl LibraryStore {
         let now = now_str();
         let mut rows = self.stored_book_rows(&books).await?;
         let mut inserted: HashMap<BookKey, String> = HashMap::new();
-        // Each batch bumps the library topic with the rows it writes.
-        let mut batches = WriteBatches::new(self.db_capabilities(), "library title")
-            .with_trailer(crate::control_plane::bump(LiveTopic::Library))?;
+        // Fold every listing of a title into its final row first, so each
+        // title is written once: an update never builds on an insert that
+        // another writer's row may have turned away.
+        let mut order: Vec<BookKey> = Vec::new();
+        let mut seen: HashSet<BookKey> = HashSet::new();
         for book in &books {
             let key = BookKey::of(book);
-            let (row, statement) = match rows.get(&key) {
-                Some(existing) => {
-                    let row = merged_book_row(existing, book, &now);
-                    let statement = update_book_statement(&row);
-                    (row, statement)
-                }
+            let row = match rows.get(&key) {
+                Some(existing) => merged_book_row(existing, book, &now),
                 None => {
                     let row = new_book_row(book, &now);
                     inserted.insert(key.clone(), row.uuid.clone());
-                    let statement = insert_book_statement(&row);
-                    (row, statement)
+                    row
                 }
             };
+            if seen.insert(key.clone()) {
+                order.push(key.clone());
+            }
             rows.insert(key, row);
+        }
+        // Each batch bumps the library topic with the rows it writes.
+        let mut batches = WriteBatches::new(self.db_capabilities(), "library title")
+            .with_trailer(crate::control_plane::bump(LiveTopic::Library))?;
+        for key in &order {
+            let Some(row) = rows.get(key) else { continue };
+            let statement = if inserted.contains_key(key) {
+                insert_book_statement(row)
+            } else {
+                update_book_statement(row)
+            };
             if let Some(full) = batches.push(statement)? {
                 self.run_book_batch(full).await?;
             }
@@ -4317,17 +4328,12 @@ impl LibraryStore {
         let mut rows = HashMap::new();
         for ((plugin_key, account_id), ids) in by_account {
             let ids: Vec<String> = ids.into_iter().collect();
-            let found = library_model::find_chunked::<books::Entity, _>(
-                &self.db,
-                self.lookup_chunk(),
-                &ids,
-                |part| {
-                    books::Entity::find()
-                        .filter(books::Column::PluginKey.eq(plugin_key))
-                        .filter(books::Column::AccountId.eq(account_id))
-                        .filter(books::Column::ProductId.is_in(part.to_vec()))
-                },
-            )
+            let found = library_model::find_chunked::<books::Entity, _>(self, &ids, |part| {
+                books::Entity::find()
+                    .filter(books::Column::PluginKey.eq(plugin_key))
+                    .filter(books::Column::AccountId.eq(account_id))
+                    .filter(books::Column::ProductId.is_in(part.to_vec()))
+            })
             .await?;
             for row in found {
                 rows.insert(

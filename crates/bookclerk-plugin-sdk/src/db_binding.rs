@@ -304,6 +304,8 @@ impl DatabaseBinding {
     /// example in a job checkpoint) and call again with the same list, the
     /// same `key` and `from = next` to carry on: a batch whose reply was
     /// lost is resent under the same id and the host replays its receipt.
+    /// Receipts are kept for 24 hours; a batch resent later runs again, so
+    /// a write that may pause that long uses statements safe to repeat.
     ///
     /// `stop` is asked before each batch with the number of statements
     /// committed so far; returning `true` pauses the run there (a time

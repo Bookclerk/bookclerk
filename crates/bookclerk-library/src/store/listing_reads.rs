@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bookclerk_resolve as resolve;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
 
-use super::library_model::find_chunked;
+use super::library_model::{find_chunked, find_chunked_by};
 use super::LibraryStore;
 use crate::column_read::SelectColumnExt;
 use crate::entities::{
@@ -367,11 +367,6 @@ pub(crate) struct SnapshotReader<'a> {
 }
 
 impl SnapshotReader<'_> {
-    /// Ids bound per `IN (...)` lookup.
-    fn chunk(&self) -> usize {
-        self.store.lookup_chunk()
-    }
-
     /// The connection uncovered reads use.
     fn db(&self) -> &sea_orm::DatabaseConnection {
         &self.store.db
@@ -395,9 +390,8 @@ impl SnapshotReader<'_> {
 
     /// Listings stored under any of `keys` (database only).
     async fn listings_by_keys(&self, keys: &[ListingKey]) -> Result<Vec<store_listings::Model>> {
-        let mut out = Vec::new();
         // Each key binds a plugin key, a marketplace and a product id.
-        for part in keys.chunks((self.chunk() / 3).max(1)) {
+        find_chunked_by(self.store, keys, 3, |part| {
             let mut any = Condition::any();
             for (plugin_key, marketplace, product_id) in part {
                 any = any.add(
@@ -407,15 +401,9 @@ impl SnapshotReader<'_> {
                         .add(store_listings::Column::ProductId.eq(product_id.as_str())),
                 );
             }
-            out.extend(
-                store_listings::Entity::find()
-                    .filter(any)
-                    .all(self.db())
-                    .await
-                    .map_err(LibraryError::Orm)?,
-            );
-        }
-        Ok(out)
+            store_listings::Entity::find().filter(any)
+        })
+        .await
     }
 
     /// `pin_edition` overrides on the listings in `listing_ids`.
@@ -436,7 +424,7 @@ impl SnapshotReader<'_> {
             );
         }
         out.extend(
-            find_chunked(self.db(), self.chunk(), &miss, |part| {
+            find_chunked(self.store, &miss, |part| {
                 resolution_overrides::Entity::find()
                     .filter(resolution_overrides::Column::SubjectKind.eq("listing"))
                     .filter(resolution_overrides::Column::Action.eq("pin_edition"))
@@ -467,24 +455,21 @@ impl SnapshotReader<'_> {
             );
         }
         // Each key binds a scheme, a value and a marketplace.
-        for part in miss.chunks((self.chunk() / 3).max(1)) {
-            let mut any = Condition::any();
-            for (scheme, value, marketplace) in part {
-                any = any.add(
-                    Condition::all()
-                        .add(edition_identifiers::Column::Scheme.eq(scheme.as_str()))
-                        .add(edition_identifiers::Column::Value.eq(value.as_str()))
-                        .add(edition_identifiers::Column::Marketplace.eq(marketplace.as_str())),
-                );
-            }
-            out.extend(
-                edition_identifiers::Entity::find()
-                    .filter(any)
-                    .all(self.db())
-                    .await
-                    .map_err(LibraryError::Orm)?,
-            );
-        }
+        out.extend(
+            find_chunked_by(self.store, &miss, 3, |part| {
+                let mut any = Condition::any();
+                for (scheme, value, marketplace) in part {
+                    any = any.add(
+                        Condition::all()
+                            .add(edition_identifiers::Column::Scheme.eq(scheme.as_str()))
+                            .add(edition_identifiers::Column::Value.eq(value.as_str()))
+                            .add(edition_identifiers::Column::Marketplace.eq(marketplace.as_str())),
+                    );
+                }
+                edition_identifiers::Entity::find().filter(any)
+            })
+            .await?,
+        );
         Ok(out)
     }
 
@@ -498,7 +483,7 @@ impl SnapshotReader<'_> {
             .filter_map(|id| self.pool?.editions.get(id)?.clone())
             .collect();
         out.extend(
-            find_chunked(self.db(), self.chunk(), &miss, |part| {
+            find_chunked(self.store, &miss, |part| {
                 editions::Entity::find().filter(editions::Column::Id.is_in(part.iter().cloned()))
             })
             .await?,
@@ -526,7 +511,7 @@ impl SnapshotReader<'_> {
             );
         }
         out.extend(
-            find_chunked(self.db(), self.chunk(), &miss, |part| {
+            find_chunked(self.store, &miss, |part| {
                 edition_identifiers::Entity::find()
                     .filter(edition_identifiers::Column::EditionId.is_in(part.iter().cloned()))
             })
@@ -549,23 +534,20 @@ impl SnapshotReader<'_> {
             .filter_map(|key| self.pool?.work_identifiers.get(key)?.clone())
             .collect();
         // Each key binds a scheme and a value.
-        for part in miss.chunks((self.chunk() / 2).max(1)) {
-            let mut any = Condition::any();
-            for (scheme, value) in part {
-                any = any.add(
-                    Condition::all()
-                        .add(work_identifiers::Column::Scheme.eq(scheme.as_str()))
-                        .add(work_identifiers::Column::Value.eq(value.as_str())),
-                );
-            }
-            out.extend(
-                work_identifiers::Entity::find()
-                    .filter(any)
-                    .all(self.db())
-                    .await
-                    .map_err(LibraryError::Orm)?,
-            );
-        }
+        out.extend(
+            find_chunked_by(self.store, &miss, 2, |part| {
+                let mut any = Condition::any();
+                for (scheme, value) in part {
+                    any = any.add(
+                        Condition::all()
+                            .add(work_identifiers::Column::Scheme.eq(scheme.as_str()))
+                            .add(work_identifiers::Column::Value.eq(value.as_str())),
+                    );
+                }
+                work_identifiers::Entity::find().filter(any)
+            })
+            .await?,
+        );
         Ok(out)
     }
 
@@ -579,7 +561,7 @@ impl SnapshotReader<'_> {
             .filter_map(|id| self.pool?.expressions.get(id)?.clone())
             .collect();
         out.extend(
-            find_chunked(self.db(), self.chunk(), &miss, |part| {
+            find_chunked(self.store, &miss, |part| {
                 expressions::Entity::find()
                     .filter(expressions::Column::Id.is_in(part.iter().cloned()))
             })
@@ -609,7 +591,7 @@ impl SnapshotReader<'_> {
     /// chunks the backend accepts, so a page costs a few reads however
     /// many keys it lists.
     pub(crate) async fn works_with_match_keys(&self, keys: &[String]) -> Result<Vec<works::Model>> {
-        find_chunked(self.db(), self.chunk(), keys, |part| {
+        find_chunked(self.store, keys, |part| {
             works::Entity::find().filter(works::Column::MatchKey.is_in(part.iter().cloned()))
         })
         .await
@@ -625,7 +607,7 @@ impl SnapshotReader<'_> {
             .filter_map(|id| self.pool?.works.get(id)?.clone())
             .collect();
         out.extend(
-            find_chunked(self.db(), self.chunk(), &miss, |part| {
+            find_chunked(self.store, &miss, |part| {
                 works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
             })
             .await?,
@@ -653,7 +635,7 @@ impl SnapshotReader<'_> {
             );
         }
         out.extend(
-            find_chunked(self.db(), self.chunk(), &miss, |part| {
+            find_chunked(self.store, &miss, |part| {
                 expressions::Entity::find()
                     .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
             })
@@ -680,7 +662,7 @@ impl SnapshotReader<'_> {
             );
         }
         out.extend(
-            find_chunked(self.db(), self.chunk(), &miss, |part| {
+            find_chunked(self.store, &miss, |part| {
                 resolution_overrides::Entity::find()
                     .filter(resolution_overrides::Column::SubjectKind.eq("work"))
                     .filter(resolution_overrides::Column::Action.eq("isolate"))
@@ -711,7 +693,7 @@ impl SnapshotReader<'_> {
             })
             .collect();
         out.extend(
-            find_chunked(self.db(), self.chunk(), &miss, |part| {
+            find_chunked(self.store, &miss, |part| {
                 holdings::Entity::find()
                     .filter(holdings::Column::Holder.eq(holder))
                     .filter(holdings::Column::ListingId.is_in(part.iter().cloned()))
@@ -742,7 +724,7 @@ impl SnapshotReader<'_> {
             .cloned()
             .collect();
         out.extend(
-            find_chunked(self.db(), self.chunk(), &miss, |part| {
+            find_chunked(self.store, &miss, |part| {
                 credits::Entity::find()
                     .filter(credits::Column::TargetKind.eq(kind.as_str()))
                     .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
@@ -766,7 +748,7 @@ impl SnapshotReader<'_> {
             .cloned()
             .collect();
         out.extend(
-            find_chunked(self.db(), self.chunk(), &miss, |part| {
+            find_chunked(self.store, &miss, |part| {
                 series_entries::Entity::find()
                     .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
             })

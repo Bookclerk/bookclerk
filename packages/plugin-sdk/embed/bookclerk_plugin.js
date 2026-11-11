@@ -8108,6 +8108,11 @@ var MAX_WRITE_KEY_BYTES = 256;
 var WriteChunksError = class extends PluginError {
   /** Statements committed before the failure; resume with `from: next`. */
   next;
+  /**
+   * @param next - Statements committed before the failure.
+   * @param cause - The failed batch's error, whose code, message and details
+   *   this error carries.
+   */
   constructor(next, cause) {
     super(cause.wireCode, cause.message, cause.details);
     this.name = "WriteChunksError";
@@ -8511,10 +8516,10 @@ function createDatabaseBinding(transport, options = {}) {
       }
       let next = from;
       for (const b of batches) {
-        if (opts.stop?.(next) === true) {
-          return { next, done: false };
-        }
         try {
+          if (opts.stop?.(next) === true) {
+            return { next, done: false };
+          }
           await binding.batch(b, {
             retry: { operationId: await writeChunksOperationId(opts.key, next), requestHash: "" }
           });
@@ -12158,6 +12163,7 @@ export {
   MAX_PLUGIN_MIGRATION_TOTAL_OPS,
   MAX_SCALAR_BYTES,
   MAX_STREAM_WINDOW_BYTES,
+  MAX_WRITE_KEY_BYTES,
   MetadataEntrypoint,
   NamedEntrypoint,
   OidcEntrypoint,
@@ -12172,6 +12178,7 @@ export {
   StorageEntrypoint,
   StorefrontEntrypoint,
   TRIGGER_FAMILIES,
+  WriteChunksError,
   allowedEntrypointFamilies,
   canonicalExecuteRequestHash,
   chunkIndexes,
@@ -12212,5 +12219,6 @@ export {
   streamsResults,
   toBridgeJson,
   wrapPluginFromBinding,
-  wrapPluginFromNative
+  wrapPluginFromNative,
+  writeChunksOperationId
 };

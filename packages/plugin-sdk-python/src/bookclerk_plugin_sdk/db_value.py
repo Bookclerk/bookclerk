@@ -727,6 +727,8 @@ class DatabaseBinding:
         example in a job checkpoint) and call again with the same list, the
         same ``key`` and ``start=next`` to carry on: a batch whose reply was
         lost is resent under the same id and the host replays its receipt.
+        Receipts are kept for 24 hours; a batch resent later runs again, so a
+        write that may pause that long uses statements safe to repeat.
         The list and the caps must not change between calls with one ``key``,
         or a resent batch no longer matches its receipt and the host answers
         ``conflict``.

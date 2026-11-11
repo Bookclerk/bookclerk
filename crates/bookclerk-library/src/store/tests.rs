@@ -7698,6 +7698,42 @@ async fn a_page_of_rows_stores_what_row_by_row_upserts_store_under_every_profile
     }
 }
 
+/// A page of long product ids fits every profile's payload cap, not only its
+/// bind cap: on D1 a 90-id lookup of UUIDs is past the statement payload limit.
+#[tokio::test]
+async fn a_page_of_uuid_product_ids_upserts_under_every_profile() {
+    use crate::test_support::Profile;
+    for profile in Profile::ALL {
+        let store = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        store
+            .upsert_account("libro", "a1", "us", None, true, "libro")
+            .await
+            .unwrap();
+        let page: Vec<NewBook> = (0..120)
+            .map(|n| {
+                let mut book = NewBook::minimal(
+                    uuid::Uuid::new_v4().to_string(),
+                    "a1",
+                    "us",
+                    format!("Title {n}"),
+                );
+                book.plugin_key = "libro".into();
+                book
+            })
+            .collect();
+        let refs: Vec<&NewBook> = page.iter().collect();
+        let first = store.upsert_book_rows(&refs).await.unwrap();
+        assert_eq!(first.len(), 120, "{profile:?}");
+        // The rescan finds every row through the chunked keyed read.
+        let again = store.upsert_book_rows(&refs).await.unwrap();
+        for (a, b) in first.iter().zip(&again) {
+            assert_eq!(a.id, b.id, "{profile:?}");
+        }
+    }
+}
+
 #[test]
 fn a_scan_merge_sets_only_the_columns_a_scan_owns() {
     use sea_orm::ActiveValue;
