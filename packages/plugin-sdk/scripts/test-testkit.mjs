@@ -17,9 +17,8 @@ const root = dirname(fileURLToPath(import.meta.url));
 const dist = join(root, "../dist");
 const workspace = join(root, "../../..");
 
-const { TEST_DATABASE_PROFILES, createTestDatabase, defaultProfile, testkitBinary } = await import(
-  join(dist, "testkit.js")
-);
+const { TEST_DATABASE_PROFILES, createTestDatabase, defaultProfile, kitMigrations, testkitBinary } =
+  await import(join(dist, "testkit.js"));
 const { PluginError } = await import(join(dist, "errors.js"));
 
 function ensureBinary() {
@@ -215,10 +214,74 @@ await assert.rejects(
       },
     ],
   }),
-  /bookclerk-db-testkit exited before announcing/,
+  // The kit's own refusal is part of the message, not only the exit.
+  /bookclerk-db-testkit exited before announcing its address: .*bookclerk_receipts/s,
+);
+assert.throws(
+  () => kitMigrations([{ id: "odd", operations: [{ kind: "rename", value: "x" }] }]),
+  /migration "odd" has an operation without schema or data/,
+);
+// A registration the SDK refuses is refused before any kit starts: the
+// binary does not exist, so the spawn error would win if it ran first.
+await assert.rejects(
+  createTestDatabase({
+    binary: join(root, "no-such-bookclerk-db-testkit"),
+    migrations: [{ id: "odd", operations: [{ kind: "rename", value: "x" }] }],
+  }),
+  /migration "odd" has an operation without schema or data/,
 );
 await assert.rejects(
   createTestDatabase({ binary: join(root, "no-such-bookclerk-db-testkit") }),
   (err) => err instanceof Error,
 );
 console.log("ok refusals");
+
+// --- Typed migration operations, as `PluginMigration` spells them ------------
+assert.deepEqual(
+  kitMigrations([
+    {
+      id: "m",
+      operations: [
+        { kind: "schema", value: "CREATE TABLE t (x INTEGER)" },
+        { kind: "data", value: "INSERT INTO t (x) VALUES (1)" },
+        { schema: "CREATE TABLE u (y INTEGER)" },
+        { data: "INSERT INTO u (y) VALUES (2)" },
+      ],
+    },
+  ]),
+  [
+    {
+      id: "m",
+      operations: [
+        { schema: "CREATE TABLE t (x INTEGER)" },
+        { data: "INSERT INTO t (x) VALUES (1)" },
+        { schema: "CREATE TABLE u (y INTEGER)" },
+        { data: "INSERT INTO u (y) VALUES (2)" },
+      ],
+    },
+  ],
+);
+{
+  const db = await createTestDatabase({
+    migrations: [
+      {
+        id: "typed-v1",
+        operations: [
+          {
+            kind: "schema",
+            value:
+              "CREATE TABLE IF NOT EXISTS typed (id INTEGER PRIMARY KEY NOT NULL, v TEXT NOT NULL)",
+          },
+          { kind: "data", value: "INSERT INTO typed (id, v) VALUES (1, 'seeded')" },
+        ],
+      },
+    ],
+  });
+  try {
+    const row = await db.binding.prepare("SELECT v FROM typed WHERE id = ?").bind(i64(1)).first();
+    assert.deepEqual(row, { v: text("seeded") });
+  } finally {
+    await db.close();
+  }
+}
+console.log("ok typed migrations");

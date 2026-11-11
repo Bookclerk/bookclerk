@@ -174,6 +174,7 @@ pub use store::{
         RecordPruneStep, AUDIT_RETENTION_DAYS, CONFIGURATION_CHANGE_RETENTION_DAYS,
         STORAGE_SCAN_STALE_DAYS, TOKEN_HISTORY_DAYS, UPLOAD_HISTORY_DAYS,
     },
+    search_feed::ListingRef,
     set_dispatch_chunk_for_test, wishlist_identities_match, BookPage, CatalogEnrichmentFields,
     DiscoverSubject, EditionFile, FileOwner, FileRole, LibraryStore, NewBook, NewListeningProgress,
     NewTitleRequest, NewTitleRequestSource, SavedFilterRecord, ScannedTitle, SeedScope,

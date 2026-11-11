@@ -290,6 +290,11 @@ pub struct CatalogHit {
     /// Product id of the parent podcast show, for a podcast episode.
     #[serde(default)]
     pub parent_product_id: Option<String>,
+    /// The storefront's own 1-based rank for a catalog search hit across all
+    /// result pages (see [`CatalogSearchOpts::rank_hint`]); `None` when the
+    /// store does not rank its results. Catalog search merges stores by it.
+    #[serde(default)]
+    pub rank_hint: Option<u32>,
 }
 
 impl CatalogHit {
@@ -632,6 +637,44 @@ impl CatalogSearchOpts {
             self.limit
         }
     }
+
+    /// 1-based rank of the hit at `index` on this search's page, counted
+    /// across every page of [`Self::effective_limit`] hits (page 2 of 20-hit
+    /// pages starts at 21).
+    ///
+    /// A storefront whose search order is meaningful for the requested sort
+    /// stores it in [`CatalogHit::rank_hint`], so catalog search can merge
+    /// stores without naming any of them. Saturates at `u32::MAX`.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - 0-based position of the hit within this page.
+    ///
+    /// # Returns
+    ///
+    /// The rank, never 0 (0 means unranked on the wire).
+    #[must_use]
+    pub fn rank_hint(&self, index: usize) -> u32 {
+        let per_page = u32::try_from(self.effective_limit()).unwrap_or(u32::MAX);
+        let index = u32::try_from(index).unwrap_or(u32::MAX);
+        self.page
+            .max(1)
+            .saturating_sub(1)
+            .saturating_mul(per_page)
+            .saturating_add(index)
+            .saturating_add(1)
+    }
+
+    /// Stamps [`Self::rank_hint`] on each hit of one search page, in order.
+    ///
+    /// # Arguments
+    ///
+    /// * `hits` - The page's hits in the storefront's own order.
+    pub fn stamp_rank_hints(&self, hits: &mut [CatalogHit]) {
+        for (index, hit) in hits.iter_mut().enumerate() {
+            hit.rank_hint = Some(self.rank_hint(index));
+        }
+    }
 }
 
 impl Default for CatalogSearchOpts {
@@ -669,7 +712,44 @@ pub struct PurchaseHintOpts {
 
 #[cfg(test)]
 mod tests {
-    use super::{CatalogSearchOpts, DEFAULT_CATALOG_SEARCH_LIMIT};
+    use super::{CatalogHit, CatalogSearchOpts, DEFAULT_CATALOG_SEARCH_LIMIT};
+
+    #[test]
+    fn rank_hints_count_across_pages_from_one() {
+        let first = CatalogSearchOpts {
+            limit: 20,
+            page: 1,
+            ..CatalogSearchOpts::default()
+        };
+        assert_eq!(first.rank_hint(0), 1);
+        let second = CatalogSearchOpts {
+            page: 2,
+            ..first.clone()
+        };
+        assert_eq!(second.rank_hint(0), 21);
+        let zero_page = CatalogSearchOpts {
+            page: 0,
+            ..first.clone()
+        };
+        assert_eq!(zero_page.rank_hint(4), 5);
+        let default_limit = CatalogSearchOpts {
+            limit: 0,
+            page: 3,
+            ..CatalogSearchOpts::default()
+        };
+        let expected = u32::try_from(DEFAULT_CATALOG_SEARCH_LIMIT * 2 + 1).unwrap();
+        assert_eq!(default_limit.rank_hint(0), expected);
+        let huge = CatalogSearchOpts {
+            page: u32::MAX,
+            ..first.clone()
+        };
+        assert_eq!(huge.rank_hint(usize::MAX), u32::MAX);
+
+        let mut hits = vec![CatalogHit::default(), CatalogHit::default()];
+        second.stamp_rank_hints(&mut hits);
+        let ranks: Vec<_> = hits.iter().map(|h| h.rank_hint).collect();
+        assert_eq!(ranks, vec![Some(21), Some(22)]);
+    }
 
     #[test]
     fn a_zero_limit_means_the_default_and_others_pass_through() {

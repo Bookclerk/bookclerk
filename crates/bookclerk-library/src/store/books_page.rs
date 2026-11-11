@@ -144,8 +144,7 @@ impl LibraryStore {
 
     /// Pages books whose uuid is in `uuids`, then applies account and status.
     ///
-    /// `uuids` is capped at [`BOOK_PAGE_MAX_LIMIT`] (the search-hit cap).
-    /// Lists longer than one `IN` list (64 uuids, fewer when the adapter's
+    /// `uuids` may hold every hit of a search; there is no cap. Lists longer than one `IN` list (64 uuids, fewer when the adapter's
     /// `maxPayloadBytes` or `maxBinds` holds fewer) are ordered from narrow
     /// `uuid, title` reads, then only the requested page is loaded. Shorter
     /// lists sort and page in SQL, in pieces that shrink when a result would
@@ -170,10 +169,6 @@ impl LibraryStore {
                 total: 0,
             });
         }
-        let capped = uuids
-            .len()
-            .min(usize::try_from(BOOK_PAGE_MAX_LIMIT).unwrap_or(500));
-        let uuids = &uuids[..capped];
         let limit = limit.clamp(1, BOOK_PAGE_MAX_LIMIT);
         let chunk = self.uuid_chunk(uuids, account_id, status);
         if uuids.len() <= chunk {

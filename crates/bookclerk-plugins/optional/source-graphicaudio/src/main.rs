@@ -5,11 +5,11 @@
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    serve, Bindings, Brand, CatalogHit, ContentSource as ContentSourceRole, Entrypoints,
-    ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams, LoginParams,
-    LoginResult, PlainFetch, PluginDescribe, PluginError, PluginWorker, PortalAuthMode,
-    PurchaseHint, PurchaseHintParams, ScalarLimits, ScanParams, ScanSummary, SearchCatalogParams,
-    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    serve, Bindings, Brand, CatalogCapabilities, CatalogHit, ContentSource as ContentSourceRole,
+    Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
+    LoginParams, LoginResult, PlainFetch, PluginDescribe, PluginError, PluginWorker,
+    PortalAuthMode, PurchaseHint, PurchaseHintParams, ScalarLimits, ScanParams, ScanSummary,
+    SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_storefront::abi::expand_seed_from_params;
 use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
@@ -46,6 +46,10 @@ impl PluginWorker for GraphicAudioRoot {
                     "https://www.google.com/s2/favicons?domain=graphicaudio.com&sz=128".into(),
                 ),
             }),
+            // GraphicAudio has no catalog detail lookup.
+            catalog: CatalogCapabilities {
+                detail_by_isbn: false,
+            },
             ..PluginDescribe::default()
         })
     }

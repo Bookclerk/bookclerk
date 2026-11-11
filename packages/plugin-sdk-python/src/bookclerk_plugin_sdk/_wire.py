@@ -271,6 +271,7 @@ def _write_plugin_describe(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     for item, elem in zip(items, v["configOptions"], strict=True):
         _config_option_codec.write(item, elem, caps)
     _cli_schema_codec.write(s.init_struct(9, 0, 1), v["cli"], caps)
+    _catalog_capabilities_codec.write(s.init_struct(10, 1, 0), v["catalog"], caps)
 
 
 def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
@@ -287,6 +288,7 @@ def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
         "brand": _brand_codec.read(s.get_struct(7, 0, 6), caps),
         "configOptions": [_config_option_codec.read(item, caps) for item in s.get_struct_list(8, 0, 3)],
         "cli": _cli_schema_codec.read(s.get_struct(9, 0, 1), caps),
+        "catalog": _catalog_capabilities_codec.read(s.get_struct(10, 1, 0), caps),
     }
     password_env_var = s.get_text(5)
     if not (password_env_var == ""):
@@ -294,8 +296,8 @@ def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
     return out
 
 
-_plugin_describe_codec = _Codec(2, 10, _write_plugin_describe, _read_plugin_describe)
-"""Wire codec for ``PluginDescribe`` (2 data words, 10 pointers)."""
+_plugin_describe_codec = _Codec(2, 11, _write_plugin_describe, _read_plugin_describe)
+"""Wire codec for ``PluginDescribe`` (2 data words, 11 pointers)."""
 
 
 def _write_oidc_client_template(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -1219,7 +1221,7 @@ def _write_describe_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _plugin_describe_codec.write(s.init_struct(0, 2, 10), v["value"], caps)
+        _plugin_describe_codec.write(s.init_struct(0, 2, 11), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -1230,7 +1232,7 @@ def _write_describe_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_describe_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _plugin_describe_codec.read(s.get_struct(0, 2, 10), caps)}
+        return {"kind": "ok", "value": _plugin_describe_codec.read(s.get_struct(0, 2, 11), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown DescribeReply union member: {disc}")
@@ -1473,6 +1475,20 @@ def _read_plugin_capabilities(s: _StructReader, caps: _CapTable) -> Any:
 
 _plugin_capabilities_codec = _Codec(0, 9, _write_plugin_capabilities, _read_plugin_capabilities)
 """Wire codec for ``PluginCapabilities`` (0 data words, 9 pointers)."""
+
+
+def _write_catalog_capabilities(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_bool(0, v["detailByIsbn"])
+
+
+def _read_catalog_capabilities(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "detailByIsbn": s.get_bool(0),
+    }
+
+
+_catalog_capabilities_codec = _Codec(1, 0, _write_catalog_capabilities, _read_catalog_capabilities)
+"""Wire codec for ``CatalogCapabilities`` (1 data words, 0 pointers)."""
 
 
 def _write_brand(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -2671,6 +2687,8 @@ def _write_catalog_hit(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _series_entry_codec.write(item, elem, caps)
     if v.get("parentProductId") is not None:
         s.set_text(16, v["parentProductId"])
+    if v.get("rankHint") is not None:
+        s.set_u32(10, v["rankHint"])
 
 
 def _read_catalog_hit(s: _StructReader, caps: _CapTable) -> Any:
@@ -2731,22 +2749,25 @@ def _read_catalog_hit(s: _StructReader, caps: _CapTable) -> Any:
     parent_product_id = s.get_text(16)
     if not (parent_product_id == ""):
         out["parentProductId"] = parent_product_id
+    rank_hint = s.get_u32(10)
+    if not (rank_hint == 0):
+        out["rankHint"] = rank_hint
     return out
 
 
-_catalog_hit_codec = _Codec(5, 17, _write_catalog_hit, _read_catalog_hit)
-"""Wire codec for ``CatalogHit`` (5 data words, 17 pointers)."""
+_catalog_hit_codec = _Codec(6, 17, _write_catalog_hit, _read_catalog_hit)
+"""Wire codec for ``CatalogHit`` (6 data words, 17 pointers)."""
 
 
 def _write_catalog_hits(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    items = s.init_struct_list(0, len(v["hits"]), 5, 17)
+    items = s.init_struct_list(0, len(v["hits"]), 6, 17)
     for item, elem in zip(items, v["hits"], strict=True):
         _catalog_hit_codec.write(item, elem, caps)
 
 
 def _read_catalog_hits(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "hits": [_catalog_hit_codec.read(item, caps) for item in s.get_struct_list(0, 5, 17)],
+        "hits": [_catalog_hit_codec.read(item, caps) for item in s.get_struct_list(0, 6, 17)],
     }
 
 
@@ -2781,13 +2802,13 @@ _catalog_hits_reply_codec = _Codec(1, 1, _write_catalog_hits_reply, _read_catalo
 
 def _write_catalog_detail(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_bool(0, v["found"])
-    _catalog_hit_codec.write(s.init_struct(0, 5, 17), v["hit"], caps)
+    _catalog_hit_codec.write(s.init_struct(0, 6, 17), v["hit"], caps)
 
 
 def _read_catalog_detail(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "found": s.get_bool(0),
-        "hit": _catalog_hit_codec.read(s.get_struct(0, 5, 17), caps),
+        "hit": _catalog_hit_codec.read(s.get_struct(0, 6, 17), caps),
     }
 
 

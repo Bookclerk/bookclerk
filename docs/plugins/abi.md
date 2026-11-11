@@ -693,6 +693,9 @@ batch as its rows:
   account for an account holder.
 
 Their `source` is the storefront plugin that reported the listing.
+Each daemon's search index consumes them, with `book_acquired`, to keep its
+node-local index current (see
+[Search index](../internals/jobs.md#search-index)).
 
 **Taste events.** The library publishes these after the write they
 describe, best effort (a failed publish is logged, and the write stands):
@@ -750,6 +753,7 @@ methods on [`ContentSource`](../../packages/plugin-sdk/src/plugin.ts) and
 | `loginStart` / `loginComplete` | OAuth storefronts (Audible). Start returns `{ sessionId, url }`; complete returns the login result |
 | `scan` | Params include `pluginDataDir`, filters, and a host-injected `credentials` list (one `{ accountId, credentials }` entry per account, with the credentials as opaque JSON bytes; **no** library database path). The result includes `books[]` records (see [Book records](#book-records)); the host stores them with `source` forced to the plugin id |
 | `searchCatalog` | `{ query, region, limit, page, sort, field }` → `CatalogHit[]` (see [Book records](#book-records)). A `limit` of `0` means the storefront's default page of 20 hits; an empty query returns `[]` |
+| `catalogDetail` | `{ productId, isbn? }` → `{ found, hit }`: the full record for one product (description, narrators, runtime, genres). A store that declares `detailByIsbn` also answers a bare ISBN, which the host sends in both fields |
 | `fetchTitle` | The host injects `credentials` from `encrypted_secrets`. The plugin writes media under the work folder and returns **plain** paths (DRM guests decrypt before returning) |
 | `purchaseHint` | Purchase link and, when `withPrice` is set, the live price of one title. `null` when the store does not sell it |
 | `purchaseHints` | The same for several titles in one call (`{ queries }`, one answer per query in order). The default in every SDK asks `purchaseHint` for each query, those with a product id first, and stops starting lookups after 4 s, answering `null` for the rest, so the host's batch gets what the store managed; a store whose catalog prices many products per request (Audible's `products?asins=` takes fifty, Chirp's GraphQL takes aliased ids) overrides it to make one request, so a page of Discover cards costs one call per store |
@@ -765,6 +769,33 @@ other failure of a price lookup is soft: the card simply has no price.
 > [!IMPORTANT]
 > Plugins must not open `library.db` or read `master.key`. Don't put
 > encrypted content keys on the wire: decrypt in the guest when needed.
+
+#### Catalog search capabilities
+
+Discover's catalog search merges every storefront's `searchCatalog` hits
+into one list. It never names a store; a storefront takes part in ranking
+and enrichment by declaring it:
+
+- **Rank hints.** Set `rankHint` on each `searchCatalog` hit to the
+  store's own 1-based rank for the requested sort, counted across pages
+  (page 2 of 20-hit pages starts at 21), or to a store-wide popularity rank
+  when the store has one. The relevance and popularity sorts order the
+  merged list by the best rank any store gave a work, then put unranked
+  works after ranked ones. Leave it `0` when the store's order means
+  nothing. The Rust storefront crate's `CatalogSearchOpts::stamp_rank_hints`
+  fills it from the page and limit.
+- **ISBN detail lookup.** Set `catalog.detailByIsbn` in `describe()` when
+  `catalogDetail` resolves any audiobook ISBN to a full record. After
+  ranking a page, the host asks those stores, in `sortKey` order, to fill
+  description, narrators, runtime and genres on lean rows from any store.
+  A row is looked up by its ISBN, or by the store's own product id when the
+  store listed the work itself. The first record found fills the gaps and
+  adds that store's edition. The lookups share a short time budget, so a
+  slow store can't hold up a search.
+
+Both default to off. The first-party storefronts declare them as follows:
+Audible ranks its hits, Libro.fm answers ISBN lookups, and Chirp and
+GraphicAudio declare neither.
 
 #### Book records
 

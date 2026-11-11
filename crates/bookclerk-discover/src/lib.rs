@@ -45,7 +45,7 @@ pub use catalog_search::{
 pub use embed::OnnxEmbedder;
 pub use embed::{
     default_embedding_model_id, embed_dirty_works, embedding_model_id, open_embedder,
-    text_for_work, CosineHit, Embedder, HashEmbedder, MODEL_ALL_MINILM_L6_V2_Q,
+    text_for_work, CosineHit, Embedder, HashEmbedder, EMBED_PAGE_WORKS, MODEL_ALL_MINILM_L6_V2_Q,
     MODEL_LOCAL_HASH_V1,
 };
 pub use identity::{

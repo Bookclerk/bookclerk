@@ -724,9 +724,11 @@ pub fn merge_candidate_metadata(into: &mut StorefrontCandidate, from: &Storefron
         }
         _ => {}
     }
-    if into.audible_rank.is_none() {
-        into.audible_rank = from.audible_rank;
-    }
+    // Best (lowest) rank any store gave the work.
+    into.store_rank = match (into.store_rank, from.store_rank) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
     if into.is_abridged.is_none() {
         into.is_abridged = from.is_abridged;
     }
@@ -909,24 +911,27 @@ pub fn merge_global_queue_entries(entries: Vec<GlobalQueueEntry>) -> Vec<GlobalQ
     let mut merged: Vec<GlobalQueueEntry> = Vec::new();
     for entry in entries {
         if let Some(existing) = merged.iter_mut().find(|e| {
-            identities_match(
-                WorkIdentity::new(
-                    e.asin.as_deref(),
-                    e.isbn.as_deref(),
-                    &e.title,
-                    e.authors.as_deref(),
+            // Two wishes the library resolved to one work are that work,
+            // whatever their identifiers say.
+            (e.work_id.is_some() && e.work_id == entry.work_id)
+                || identities_match(
+                    WorkIdentity::new(
+                        e.asin.as_deref(),
+                        e.isbn.as_deref(),
+                        &e.title,
+                        e.authors.as_deref(),
+                    )
+                    .with_series(e.series.as_deref())
+                    .with_series_index(e.series_index.as_deref()),
+                    WorkIdentity::new(
+                        entry.asin.as_deref(),
+                        entry.isbn.as_deref(),
+                        &entry.title,
+                        entry.authors.as_deref(),
+                    )
+                    .with_series(entry.series.as_deref())
+                    .with_series_index(entry.series_index.as_deref()),
                 )
-                .with_series(e.series.as_deref())
-                .with_series_index(e.series_index.as_deref()),
-                WorkIdentity::new(
-                    entry.asin.as_deref(),
-                    entry.isbn.as_deref(),
-                    &entry.title,
-                    entry.authors.as_deref(),
-                )
-                .with_series(entry.series.as_deref())
-                .with_series_index(entry.series_index.as_deref()),
-            )
         }) {
             existing.wish_count += entry.wish_count;
             for uuid in entry.sample_uuids {
@@ -1220,6 +1225,7 @@ mod tests {
         let merged = merge_global_queue_entries(vec![
             GlobalQueueEntry {
                 work_key: "asin:B00HAIL".into(),
+                work_id: None,
                 title: "Hail Mary".into(),
                 authors: Some("Andy Weir".into()),
                 asin: Some("B00HAIL".into()),
@@ -1258,6 +1264,7 @@ mod tests {
             },
             GlobalQueueEntry {
                 work_key: "isbn:9781234567890".into(),
+                work_id: None,
                 title: "Project Hail Mary".into(),
                 authors: Some("Andy Weir".into()),
                 asin: None,

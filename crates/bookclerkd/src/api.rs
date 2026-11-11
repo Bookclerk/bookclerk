@@ -1054,7 +1054,9 @@ struct BooksQuery {
     account: Option<String>,
     /// Optional `AcquireStatus` wire-string filter.
     status: Option<String>,
-    /// Full-text search query; empty skips the search index.
+    /// Full-text search over this node's search index. Hits are sorted by
+    /// title and every hit counts toward `total` (there is no hit cap); an
+    /// empty value skips the index.
     q: Option<String>,
     /// Page size, clamped to 1–500 (default 40).
     limit: Option<usize>,
@@ -5236,25 +5238,34 @@ async fn list_books(
     // browsing. Account *linking* and acquire remain capability-gated; store
     // connect is User-only.
     //
-    // Both branches filter, sort, and page in SQL. Search still uses Tantivy
-    // to choose at most 500 uuids; those rows are loaded in batches and only
-    // the requested page is returned.
+    // Without a query, filtering, sorting and paging run in SQL. With one,
+    // the node's search index matches, sorts by title, pages and counts,
+    // so no hit cap applies; only the page's uuids are hydrated from SQL.
+    // Account and status are read from SQL, not the index, so a filtered
+    // search takes every hit and lets SQL filter and page them.
 
     let page = if let Some(q) = query.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         let index_dir = state.config.read().await.paths().search_index_dir.clone();
         // Offloaded: Tantivy query work would otherwise block this request task.
-        let hits = SearchEngine::open_and_search(index_dir, q.to_string(), 500)
-            .await
-            .map_err(books_query_error)?;
-        let uuids = hits
-            .into_iter()
-            .map(|hit| hit.uuid)
-            .filter(|uuid| !uuid.is_empty())
-            .collect::<Vec<_>>();
-        library
-            .list_books_by_uuid_page(&uuids, account, status, limit as u64, offset as u64)
-            .await
-            .map_err(books_query_error)?
+        if account.is_none() && status.is_none() {
+            let hits = SearchEngine::open_and_search_page(index_dir, q.to_string(), offset, limit)
+                .await
+                .map_err(books_query_error)?;
+            let mut page = library
+                .list_books_by_uuid_page(&hits.uuids, None, None, limit as u64, 0)
+                .await
+                .map_err(books_query_error)?;
+            page.total = hits.total;
+            page
+        } else {
+            let uuids = SearchEngine::open_and_match_uuids(index_dir, q.to_string())
+                .await
+                .map_err(books_query_error)?;
+            library
+                .list_books_by_uuid_page(&uuids, account, status, limit as u64, offset as u64)
+                .await
+                .map_err(books_query_error)?
+        }
     } else {
         library
             .list_books_filtered_page(account, status, limit as u64, offset as u64)
@@ -6229,6 +6240,20 @@ async fn create_request_inner(
         .map(|identity| identity.id);
     let work_key = work_key_for_request(&body);
     let library = state.library_snapshot().await;
+    // The work this wish is for, when the library already knows it, so the
+    // queue and the shelves compare works rather than titles. A lookup
+    // failure leaves the id unset; the readers fall back to the resolver.
+    let work_id = library
+        .work_for(&bookclerk_library::TitleQuery {
+            title: &body.title,
+            authors: body.authors.as_deref(),
+            asin: body.asin.as_deref(),
+            isbn: body.isbn.as_deref(),
+            series: None,
+            series_index: None,
+        })
+        .await
+        .unwrap_or_default();
     let mut row = library
         .create_title_request(&NewTitleRequest {
             uuid: None,
@@ -6240,7 +6265,7 @@ async fn create_request_inner(
             notes: body.notes.clone(),
             status: RequestStatus::Open,
             work_key,
-            work_id: None,
+            work_id,
             resolved_book_uuid: None,
             cover_url: body.cover_url.clone(),
         })
@@ -9042,8 +9067,43 @@ tcp = {tcp}
         .await
         .unwrap();
         assert_eq!(searched.books.len(), 8);
-        assert!(searched.total >= 8);
-        assert!(searched.total <= 20);
+        assert_eq!(searched.total, 20, "every hit counts, not only one page");
+        assert_eq!(searched.books[0].title, "Title 00000");
+        // The index pages in title order, so the next page continues it.
+        let next = super::list_books(
+            State(state.clone()),
+            HeaderMap::new(),
+            Query(super::BooksQuery {
+                account: None,
+                status: None,
+                q: Some("Title".into()),
+                limit: Some(8),
+                offset: Some(16),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(next.total, 20);
+        let titles: Vec<&str> = next.books.iter().map(|b| b.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            ["Title 00016", "Title 00017", "Title 00018", "Title 00019"]
+        );
+        // A status filter is read from the database, not the index.
+        let failed = super::list_books(
+            State(state.clone()),
+            HeaderMap::new(),
+            Query(super::BooksQuery {
+                account: None,
+                status: Some("error".into()),
+                q: Some("Title".into()),
+                limit: Some(40),
+                offset: Some(0),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(failed.total, 2);
 
         let account_b = super::list_books(
             State(state),

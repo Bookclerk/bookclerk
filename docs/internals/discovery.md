@@ -266,6 +266,15 @@ never holds up Discover again.
 `discovery.embeddings_enabled = false` (the default, or CLI `--hash` / `?no`
 paths that pass `prefer_onnx = false`) skips ONNX and uses local-hash directly.
 
+### Refreshing work vectors
+
+`embed_dirty_works` keeps one vector per work and model in `embeddings`,
+stamped with a hash of the text it was computed from. It first deletes the
+vectors of works that no longer exist, then walks `works` in id order, 128
+at a time. Each page costs one read of the works, one read of their stored
+hashes, and one embedder call for the works whose text changed, so a large
+library is neither held in memory at once nor read one hash per work.
+
 ### OSV / `paste`
 
 With the `onnx-embeddings` feature, `fastembed` → `tokenizers` (and related
@@ -342,9 +351,17 @@ title is **not** in the household library.
   weight. Each row includes `wishers` (tiny profile pictures: upload /
   Gravatar / SSO / monogram) for the people who have the title open. Discover's
   `requests` shelf (the first row) carries the same `wishers` / `wish_count` fields.
-- Identity merge: canonical ISBN-10↔13 when present, else ASIN, else soft
-  title+author; ASIN-keyed and ISBN-keyed rows for the same work are merged
-  (ISBN is **not** universal across Chirp / GA / Audible public search)
+- Identity merge: a wish is resolved to a library work when it is created
+  (`LibraryStore::work_for`, the same resolution a scanned listing gets)
+  and stores the `work_id`; wishes with the same work are one queue entry,
+  and Discover treats such an entry as owned when a library title resolves
+  to that work. The entry (`GET /api/request-queue`) carries that `work_id`,
+  and the Wishlist and Discover pages match the viewer's own wish on it
+  before the bibliographic key, since the entry keeps only one wisher's key.
+  Wishes the library could not place fall back to canonical ISBN-10↔13 when
+  present, else ASIN, else soft title+author; ASIN-keyed and ISBN-keyed rows
+  for the same work are merged (ISBN is **not** universal across Chirp / GA /
+  Audible public search)
 - **Per-source snapshots:** `POST /api/wishlist` persists storefront editions,
   HTML description, and purchase hints into `title_request_sources` (one row per
   `source` + `product_id`), then soft-resolves live prices to fill additional
@@ -357,9 +374,10 @@ title is **not** in the household library.
   title-meta gap-fills via source `catalog_detail` (explore audiobook payload
   or product-page JSON-LD / `.audiobook-genres`: narrator, runtime, description,
   publisher, genres, abridged). After multi-store search ranks a page, Discover
-  may call Libro `catalog_detail` on lean ISBN-bearing rows (bounded timeout)
-  so list cards get genres/runtime without N+1 product fetches inside each
-  store’s `search_catalog`.
+  asks the stores that declare `catalog.detailByIsbn` (Libro.fm today) to fill
+  lean rows by ISBN (bounded timeout), so list cards get genres/runtime without
+  N+1 product fetches inside each store’s `search_catalog`. See
+  [Catalog search capabilities](../plugins/abi.md#catalog-search-capabilities).
 
 Multi-region storefronts are deferred (US default for now).
 
@@ -406,7 +424,7 @@ disables the hard filter
 | `q` | Query (min 2 chars) |
 | `page_size` | Default 24, clamp 1–48 (`limit` still accepted) |
 | `cursor` | Opaque hex cursor (per-source page counters + query fingerprint) |
-| `sort` | `relevance` (default) / `popularity` / `rating` / `title` / `author` / `price` / `length` — Audible page order for relevance/popularity; host re-ranks price/length/rating/title/author. Rating sort uses a Bayesian average of `rating_overall` with `rating_count` (prior mean 4.0, strength 100) so tiny sample 5.0s do not outrank high-volume 4.8s |
+| `sort` | `relevance` (default) / `popularity` / `rating` / `title` / `author` / `price` / `length` — storefront rank (`rankHint`, declared by Audible today) for relevance/popularity; host re-ranks price/length/rating/title/author. Rating sort uses a Bayesian average of `rating_overall` with `rating_count` (prior mean 4.0, strength 100) so tiny sample 5.0s do not outrank high-volume 4.8s |
 | `sort_dir` | `asc` / `desc` (defaults: desc for relevance/popularity/rating/price; asc for title/author/length). Relevance ignores direction for ranking |
 | `field` | Optional scoped search: `author` / `narrator` / `series` / `genre` |
 | `lang` | Default language (BCP-47); hard-include when `language` omitted |

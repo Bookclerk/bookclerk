@@ -195,6 +195,10 @@ impl JobTransport for InProcessJobTransport {
             JobKind::CacheSweep => {
                 crate::cache_jobs::run_cache_sweep(&self.state, &cmd.payload, Some(&ctx)).await
             }
+            JobKind::SearchIndexRebuild => {
+                crate::search_index::run_search_index_rebuild(&self.state, &cmd.payload, Some(&ctx))
+                    .await
+            }
             JobKind::Invalid => anyhow::bail!("invalid_job"),
         }
     }
