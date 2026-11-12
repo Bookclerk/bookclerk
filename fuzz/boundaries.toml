@@ -203,6 +203,13 @@ input_from = "store"
 side = "guest"
 artifacts = ["bookclerk"]
 
+[targets.graphicaudio_catalog]
+crate = "bookclerk-plugin-source-graphicaudio"
+boundary = "GraphicAudio product pages from the public Magento store"
+input_from = "store"
+side = "guest"
+artifacts = ["bookclerk"]
+
 [targets.node_frame]
 crate = "bookclerk-node-proto"
 boundary = "Node-to-node frames on the cluster socket"

@@ -160,6 +160,11 @@ package = "bookclerk-plugin-source-libro"
 paths = ["fuzz/corpus/libro_catalog/**", "fuzz/oracles/libro_catalog.rs"]
 
 [[test_input]]
+package = "bookclerk-plugin-source-graphicaudio"
+# The product page oracle is shared with the replay test through `#[path]`.
+paths = ["fuzz/corpus/graphicaudio_catalog/**", "fuzz/oracles/graphicaudio_catalog.rs"]
+
+[[test_input]]
 package = "bookclerk-node-proto"
 # The frame oracle is shared with the replay test through `#[path]`.
 paths = ["fuzz/corpus/node_frame/**", "fuzz/oracles/node_frame.rs"]

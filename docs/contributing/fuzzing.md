@@ -45,6 +45,7 @@ boundary extends it.
 | `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
+| `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 
 Some boundaries need more than a cell:

@@ -12,6 +12,7 @@
 mod auth;
 mod catalog;
 mod client;
+mod detail;
 mod download;
 mod error;
 pub mod guest;
@@ -31,6 +32,7 @@ pub use client::{
     DownloadLinks, GraphicAudioClient, Product, DEFAULT_BASE_URL, LOGIN_PATH, PRODUCTS_PATH,
     REMOVE_PATH,
 };
+pub use detail::parse_product_detail;
 pub use download::{
     fetch_title_materials, fetch_title_with_mode, TitleFetchRequest, GA_ACCESS_ENV, GA_FETCH_ENV,
 };
