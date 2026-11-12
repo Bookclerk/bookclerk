@@ -219,6 +219,25 @@ The staged suite lives in `crates/bookclerk-plugin-e2e`, so ordinary
 - Set `BOOKCLERK_REQUIRE_STAGED_PLUGINS=1` to fail, instead of skipping,
   when staging roots are missing.
 
+The same crate measures how long each staged guest takes to start, which
+sets the budget for starting asleep plugins on demand. The measurement is
+an ignored test, so run it explicitly against a staged installation:
+
+```sh
+cargo test --release -p bookclerk-plugin-e2e --test cold_start -- --ignored --nocapture
+```
+
+It spawns every guest several times through the production path and
+reports the ready time (spawn plus the first `describe`) and the first
+`health` call per plugin, family and runtime.
+
+- Set `BOOKCLERK_COLD_START_RUNS` to the spawns per guest (default 5; the
+  first is the coldest).
+- Set `BOOKCLERK_COLD_START_OUT` to a folder to write `cold-start.md` and
+  `cold-start.json` there.
+- Set `BOOKCLERK_COLD_START_CONTEXT` to one line describing the machine,
+  such as its CPU limit, for the report.
+
 ## Reference examples
 
 The Echo examples each have their own plugin id:

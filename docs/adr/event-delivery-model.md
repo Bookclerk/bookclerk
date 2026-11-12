@@ -89,7 +89,8 @@ updates to this record:
 - **On-demand activation.** A due delivery, queue message, job or cron
   fire, or an RPC call, starts an asleep instance; an idle timeout per
   family stops it with `PluginWorker.shutdown`. Cold-start time is
-  measured per family first, and the RPC budget is set from those
+  measured per family first (the ignored `cold_start` test in
+  `bookclerk-plugin-e2e`), and the RPC budget is set from those
   numbers. Placement keeps reserving budget for asleep instances.
 - **Batched delivery.** `event(batch)` and `queue(batch)` receive up to
   `max_batch_size` messages per call.
