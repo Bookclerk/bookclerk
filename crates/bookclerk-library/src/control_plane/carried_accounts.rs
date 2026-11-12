@@ -778,23 +778,36 @@ pub async fn withdraw_person_account(
     plugin_key: &str,
     account_id: &str,
 ) -> Result<Withdrawn> {
-    let mut theirs = false;
+    let mut theirs = 0_u64;
     for identity in store.list_portal_identities_for_user(user_id).await? {
-        if store
+        let held = store
             .list_account_links(identity.id)
             .await?
             .iter()
-            .any(|link| link.plugin_key == plugin_key && link.account_id == account_id)
-        {
-            theirs = true;
-            break;
-        }
+            .filter(|link| link.plugin_key == plugin_key && link.account_id == account_id)
+            .count();
+        theirs = theirs.saturating_add(u64::try_from(held).unwrap_or(u64::MAX));
     }
-    if !theirs {
+    if theirs == 0 {
         // A retry after a lost batch reply lands here: purge any plaintext
         // the first try left cached.
         crate::secrets::cache_invalidate_account(account_id);
         return Ok(Withdrawn::NotTheirs);
+    }
+    // Taken back when only the person's links hold it: finish what a
+    // revocation does (`LibraryStore::revoke_credentials`) before the links
+    // go, while a failed step can still be retried from this person's
+    // link. The holdings go with `holding_removed` events and a reconnect
+    // starts a full scan. Should another member link it meanwhile, their
+    // next scan brings the holdings back.
+    let all = store
+        .count_account_links_for_account(plugin_key, account_id)
+        .await?;
+    if all <= theirs {
+        store
+            .remove_account_holdings(plugin_key, account_id, crate::HoldingSelection::All)
+            .await?;
+        store.reset_scan_state(plugin_key, account_id).await?;
     }
     let mut statements = vec![batch::exec(
         "DELETE FROM account_links WHERE plugin_key = ? AND account_id = ? \
@@ -809,23 +822,6 @@ pub async fn withdraw_person_account(
     // Purged even when the reply was lost: the batch may have committed.
     crate::secrets::cache_invalidate_account(account_id);
     committed?;
-    // Taken back (no other member's link held it): finish the revocation
-    // as `LibraryStore::revoke_credentials` does, so its holdings go with
-    // `holding_removed` events and a reconnect starts a full scan.
-    let taken_back = store
-        .get_account(plugin_key, account_id)
-        .await?
-        .is_some_and(|account| account.connection_status == "revoked")
-        && store
-            .count_account_links_for_account(plugin_key, account_id)
-            .await?
-            == 0;
-    if taken_back {
-        store
-            .remove_account_holdings(plugin_key, account_id, crate::HoldingSelection::All)
-            .await?;
-        store.reset_scan_state(plugin_key, account_id).await?;
-    }
     Ok(Withdrawn::Unlinked)
 }
 
