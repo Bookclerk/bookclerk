@@ -55,6 +55,7 @@ pub mod consent;
 pub mod host_jobs;
 pub mod join;
 pub mod remote_bindings;
+pub mod requests;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -746,6 +747,19 @@ async fn start_clients(
                 cluster_id: cluster_id.clone(),
                 handle: handle.clone(),
             }
+            .run(link_shutdown.clone()),
+        )));
+        // The link's interlibrary requests (the library asking this branch
+        // for a book it listed) stop with its client the same way.
+        let request_taker = AbortOnDrop(Some(tokio::spawn(
+            requests::RequestTaker {
+                library: library.clone(),
+                cluster_id: cluster_id.clone(),
+                handle: handle.clone(),
+                acquirer: requests::DaemonAcquirer {
+                    state: Arc::clone(state),
+                },
+            }
             .run(link_shutdown),
         )));
         // The client stops on a swap (forwarded from `shutdown`), once its
@@ -784,10 +798,10 @@ async fn start_clients(
             let _ = link_stop.send(true);
             // Both exit before a client for a new enrollment can start, so
             // one cluster never has two consent supervisors (or two catalog
-            // syncs or answerers). They wind down side by side, so the
-            // client's exit waits for the slowest of them only.
-            let (mut supervisor, mut catalog_sync, mut catalog_answers) =
-                (supervisor, catalog_sync, catalog_answers);
+            // syncs, answerers or request takers). They wind down side by
+            // side, so the client's exit waits for the slowest of them only.
+            let (mut supervisor, mut catalog_sync, mut catalog_answers, mut request_taker) =
+                (supervisor, catalog_sync, catalog_answers, request_taker);
             tokio::join!(
                 async {
                     if let Some(supervisor) = supervisor.0.take() {
@@ -802,6 +816,11 @@ async fn start_clients(
                 async {
                     if let Some(catalog_answers) = catalog_answers.0.take() {
                         join_or_abort(catalog_answers).await;
+                    }
+                },
+                async {
+                    if let Some(request_taker) = request_taker.0.take() {
+                        join_or_abort(request_taker).await;
                     }
                 },
             );

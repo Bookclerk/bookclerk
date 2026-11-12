@@ -210,6 +210,7 @@ stateDiagram-v2
 | `discover_request_queue` | `discover_request_queue` | `network` | `run_discover_request_queue` (no network; ranks the shared request queue) |
 | `cache_sweep` | `cache_sweep:node={id}` | `network` | `run_cache_sweep` (no network; one node's image caches and job scratch) |
 | `search_index_rebuild` | `search_index_rebuild:node={id}` | `network` | `run_search_index_rebuild` (no network; rebuilds one node's search index) |
+| `branch_request` | `branch_request:node={id}:work={id}` | `network` | none: the branch it is pinned to takes it over the node socket (`requests.claim` / `requests.finish`) |
 
 `plugin_scheduled` jobs aren't enqueued through the API. Each daemon's cron
 ticker claims a due fire with a compare-and-swap on the instance's
@@ -232,6 +233,15 @@ consumes `wishlist_changed`, `listening_synced` and `book_acquired` and
 admits jobs with a 30 s `run_after`) queue them. See
 [Precomputed shelves](discovery.md#precomputed-shelves) and
 [Taste events](discovery.md#taste-events).
+
+`branch_request` is an interlibrary request: a user of this library asks
+a branch for a book it listed. The job is pinned to the branch's node
+(`payload.node_id`) and names the listed edition and the work's strong
+identifiers. No claim loop runs it: ordinary claims, local or remote,
+never hand it out, and only that branch takes it with `requests.claim`.
+Its answer completes the job (accepted), fails it without a retry
+(`not_listed`), or fails it with the normal retry (`branch_failed`). See
+[Requesting a book from a branch](../server/cluster-hosts.md#requesting-a-book-from-a-branch).
 
 `discover_request_queue` carries no subject: one ranking of the shared
 request queue serves everyone. Discover's event consumer queues it on the

@@ -51,6 +51,11 @@
 //! questions and wakes the branch, which pulls them with
 //! [`Body::CatalogQuestions`] and answers with [`Body::CatalogFound`].
 //!
+//! A member's request for a book a branch listed is a job on the library
+//! pinned to that branch ([`BranchRequest`]): the branch claims it with
+//! [`Body::RequestsClaim`] and reports with [`Body::RequestFinish`]; the
+//! book itself travels up through the catalog sync.
+//!
 //! A host that leaves sends [`Body::NodeLeaving`]; the owner revokes the
 //! node at once. Joining with a sign-in instead of a link is the OAuth
 //! code + PKCE flow of the built-in client [`BRANCH_CLIENT_ID`] ([`OwnerInfo`],
@@ -72,6 +77,7 @@ mod frames;
 mod join;
 mod keys;
 mod lookup;
+mod requests;
 mod sealed;
 mod signature;
 
@@ -115,6 +121,10 @@ pub use lookup::{
     found_problem, is_work_ref, questions_problem, Availability, LookupAnswer, LookupEdition,
     LookupFormat, LookupIdentifier, LookupScheme, LookupWork, MAX_LOOKUP_EDITIONS,
     MAX_LOOKUP_IDENTIFIERS, MAX_LOOKUP_WORKS, MAX_WORK_REF_BYTES,
+};
+pub use requests::{
+    claimed_problem, is_request_job, BranchRequest, RequestOutcome, ITEM_REQUEST,
+    MAX_CLAIMED_REQUESTS, MAX_REQUEST_JOB_BYTES,
 };
 pub use sealed::{
     instance_secrets_aad, open, open_instance_secrets, open_secret_update, open_secrets,

@@ -289,14 +289,19 @@ pub async fn books_imported_from_link(
 }
 
 /// Which of this install's acquired books the catalog sync sends the
-/// library `cluster_id`: only the branch owner's own books, those held by
-/// a store account connected here to the branch's person
-/// ([`super::branch_person`]), and never one imported from that library
-/// ([`books_imported_from_link`]). With no single person, nothing.
+/// library `cluster_id`: the branch owner's own books, those held by a
+/// store account connected here to the branch's person
+/// ([`super::branch_person`]), and the books that library asked for
+/// through an interlibrary request ([`super::books_requested_by_link`]),
+/// but never one imported from that library
+/// ([`books_imported_from_link`]). With no single person, only the
+/// requested books.
 #[derive(Debug, Clone, Default)]
 pub struct OwnerShareFilter {
     /// The person's store accounts: `(plugin_key, account_id)`.
     accounts: BTreeSet<super::AccountKey>,
+    /// Books the library asked for, by store identity.
+    requested: BTreeSet<HeldBookKey>,
     /// Books imported from the library, by store identity.
     imported: BTreeSet<HeldBookKey>,
 }
@@ -308,11 +313,13 @@ impl OwnerShareFilter {
     ///
     /// Returns an error when a read fails.
     pub async fn load(store: &LibraryStore, cluster_id: &str) -> Result<Self> {
-        let Some(person) = branch_person(store, None).await? else {
-            return Ok(Self::default());
+        let accounts = match branch_person(store, None).await? {
+            Some(person) => accounts_owned_by(store, person).await?,
+            None => BTreeSet::new(),
         };
         Ok(Self {
-            accounts: accounts_owned_by(store, person).await?,
+            accounts,
+            requested: super::books_requested_by_link(store, cluster_id).await?,
             imported: books_imported_from_link(store, cluster_id).await?,
         })
     }
@@ -320,14 +327,16 @@ impl OwnerShareFilter {
     /// True when the book `key` names is sent.
     #[must_use]
     pub fn admits(&self, key: &AcquiredBookKey) -> bool {
-        self.accounts
-            .contains(&(key.plugin_key.clone(), key.account_id.clone()))
-            && !self.imported.contains(&(
-                key.plugin_key.clone(),
-                bookclerk_resolve::stored_marketplace(&key.marketplace),
-                bookclerk_resolve::stored_product_id(&key.product_id),
-                key.account_id.clone(),
-            ))
+        let held: HeldBookKey = (
+            key.plugin_key.clone(),
+            bookclerk_resolve::stored_marketplace(&key.marketplace),
+            bookclerk_resolve::stored_product_id(&key.product_id),
+            key.account_id.clone(),
+        );
+        let owners = self
+            .accounts
+            .contains(&(key.plugin_key.clone(), key.account_id.clone()));
+        (owners || self.requested.contains(&held)) && !self.imported.contains(&held)
     }
 }
 

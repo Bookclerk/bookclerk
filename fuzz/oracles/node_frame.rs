@@ -20,13 +20,20 @@
 //!   identifier is plain ASCII with a marketplace exactly when it is an
 //!   ASIN; and every answer lists 1 to 8 distinct editions with a
 //!   non-blank title. Each is checked byte by byte here, not through the
-//!   validators, since the library writes them into its listing pool.
+//!   validators, since the library writes them into its listing pool;
+//! - a `requests.claimed` frame the branch would accept (`claimed_problem`
+//!   finds nothing) carries at most 16 requests, each for a different job
+//!   with a plain job id and a positive lease generation, a question that
+//!   meets the same identifier rules, a plain store id, a lowercase
+//!   marketplace and a product id with no control characters or outer
+//!   whitespace. Checked byte by byte here too, since the branch looks the
+//!   request up in its own library and records it.
 
 use std::collections::BTreeSet;
 
 use bookclerk_node_proto::{
-    found_problem, questions_problem, Body, Frame, LookupScheme, FRAME_VERSION, MAX_FRAME_BYTES,
-    MAX_LIBRARY_ID_BYTES,
+    claimed_problem, found_problem, questions_problem, Body, Frame, LookupScheme, LookupWork,
+    FRAME_VERSION, MAX_FRAME_BYTES, MAX_LIBRARY_ID_BYTES,
 };
 use serde_json::Value;
 
@@ -57,6 +64,7 @@ pub fn check(data: &[u8]) {
         }
     }
     check_lookup(&frame.body);
+    check_requests(&frame.body);
     let text_again = frame.to_text();
     // Serializing can lengthen an opaque JSON field (`1e9` is written out
     // in full), past the limit the parser enforces: such a frame is never
@@ -81,6 +89,97 @@ fn plain(text: &str, max: usize) -> bool {
         && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
+/// The identifier rules of one accepted question.
+fn check_question(work: &LookupWork) {
+    assert!(plain(&work.work, 64), "work ref {:?} accepted", work.work);
+    assert!(
+        (1..=16).contains(&work.identifiers.len()),
+        "a question with {} identifiers accepted",
+        work.identifiers.len()
+    );
+    for id in &work.identifiers {
+        assert!(plain(&id.value, 64), "identifier {:?} accepted", id.value);
+        let asin = id.scheme == LookupScheme::Asin;
+        assert_eq!(
+            asin,
+            !id.marketplace.is_empty(),
+            "marketplace {:?} accepted on {:?}",
+            id.marketplace,
+            id.scheme
+        );
+        assert!(
+            id.marketplace.len() <= 16
+                && id
+                    .marketplace
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()),
+            "marketplace {:?} accepted",
+            id.marketplace
+        );
+    }
+}
+
+/// The interlibrary request invariants on an accepted claimed list.
+fn check_requests(body: &Body) {
+    let Body::RequestsClaimed { requests } = body else {
+        return;
+    };
+    if claimed_problem(requests).is_some() {
+        return;
+    }
+    assert!(requests.len() <= 16, "too many requests accepted");
+    let mut jobs = BTreeSet::new();
+    for request in requests {
+        assert!(
+            !request.job.is_empty()
+                && request.job.len() <= 96
+                && request
+                    .job
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+            "job id {:?} accepted",
+            request.job
+        );
+        assert!(
+            jobs.insert(&request.job),
+            "a job claimed twice was accepted"
+        );
+        assert!(
+            request.generation >= 1,
+            "generation {} accepted",
+            request.generation
+        );
+        check_question(&request.work);
+        assert!(
+            !request.store.is_empty()
+                && request.store.len() <= 64
+                && request
+                    .store
+                    .bytes()
+                    .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.')),
+            "store {:?} accepted",
+            request.store
+        );
+        assert!(
+            request.marketplace.len() <= 16
+                && request
+                    .marketplace
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()),
+            "marketplace {:?} accepted",
+            request.marketplace
+        );
+        let product = request.product_id.as_str();
+        assert!(
+            !product.is_empty()
+                && product.len() <= 256
+                && product.trim() == product
+                && !product.chars().any(char::is_control),
+            "product id {product:?} accepted"
+        );
+    }
+}
+
 /// The catalog lookup invariants on an accepted question or answer list.
 fn check_lookup(body: &Body) {
     match body {
@@ -88,24 +187,8 @@ fn check_lookup(body: &Body) {
             assert!(works.len() <= 100, "too many questions accepted");
             let mut seen = BTreeSet::new();
             for work in works {
-                assert!(plain(&work.work, 64), "work ref {:?} accepted", work.work);
+                check_question(work);
                 assert!(seen.insert(&work.work), "a work asked twice was accepted");
-                assert!(
-                    (1..=16).contains(&work.identifiers.len()),
-                    "a question with {} identifiers accepted",
-                    work.identifiers.len()
-                );
-                for id in &work.identifiers {
-                    assert!(plain(&id.value, 64), "identifier {:?} accepted", id.value);
-                    let asin = id.scheme == LookupScheme::Asin;
-                    assert_eq!(
-                        asin,
-                        !id.marketplace.is_empty(),
-                        "marketplace {:?} accepted on {:?}",
-                        id.marketplace,
-                        id.scheme
-                    );
-                }
             }
         }
         Body::CatalogFound { answers, missing } if found_problem(answers, missing).is_none() => {

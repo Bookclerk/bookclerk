@@ -1,0 +1,1 @@
+{"v":1,"id":"9","type":"requests.claimed","requests":[{"job":"j-1","generation":0,"work":{"work":"w1","identifiers":[{"scheme":"isbn","value":"9780000000001"}]},"store":"libro","product_id":"9780000000001"},{"job":"j-1","generation":2,"work":{"work":"w2","identifiers":[{"scheme":"openlibrary_work","value":"OL1W"}]},"store":"libro","product_id":"x"}]}

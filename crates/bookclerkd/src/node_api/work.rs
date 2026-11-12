@@ -463,6 +463,15 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
         Body::CatalogFound { answers, missing } => {
             super::host_lookup::found(library, host, id.clone(), &answers, &missing).await
         }
+        Body::RequestsClaim {} => super::host_interlibrary::claim(library, host, id.clone()).await,
+        Body::RequestFinish {
+            job,
+            generation,
+            outcome,
+        } => {
+            super::host_interlibrary::finish(library, host, id.clone(), job, generation, outcome)
+                .await
+        }
         _ => {
             return error(
                 id,

@@ -10,6 +10,7 @@
 mod artifacts;
 pub(crate) mod batch;
 mod branch_catalog;
+mod branch_requests;
 mod cache;
 mod carried_accounts;
 mod catalog_lookup;
@@ -60,6 +61,11 @@ pub use branch_catalog::{
     BRANCH_TITLE_SHARED, DETACHED_LEFT, DETACHED_STOPPED_SHARING, DETACHED_WITHDRAWN,
     FORWARDABLE_KEYS_MAX_PAGE, FULL_CATALOG_PASS_EVERY,
 };
+pub use branch_requests::{
+    books_requested_by_link, claim_branch_requests, finish_branch_request, notify_requests_queued,
+    plan_branch_request, record_link_request, BranchRequestPlan, RequestFinished, REQUEST_ACCEPTED,
+    REQUEST_BRANCH_FAILED, REQUEST_LEASE_SECS, REQUEST_NOT_LISTED, REQUEST_WORK_GONE,
+};
 pub use cache::{
     is_cache_setting_key, load_cache_settings, update_cache_settings, CacheSettingsV1,
     CACHE_NAMESPACE, CACHE_SCHEMA_VERSION, CACHE_SETTING_KEYS, DEFAULT_CACHE_BUDGET_BYTES,
@@ -73,11 +79,12 @@ pub use carried_accounts::{
     MemberAccount, SHARE_RECEIVED, SHARE_SENT,
 };
 pub use catalog_lookup::{
-    answer_questions, ask_branches, branch_listing_key, branch_listings_for_works,
-    branch_offers_for_works, catalog_listing_always, catalog_listing_opted_out, pending_questions,
-    record_answers, set_catalog_listing_opt_out, trusted_branches, works_of_interest,
-    works_of_listings, AnswerReport, AnswersRecorded, AskReport, BranchListing, BranchOffer,
-    BRANCH_LISTING_PREFIX, BRANCH_LISTING_TTL, LOOKUP_ANSWER_TTL, LOOKUP_RESEND,
+    answer_questions, ask_branches, book_for_request, branch_listing_key,
+    branch_listings_for_works, branch_offers_for_works, catalog_listing_always,
+    catalog_listing_opted_out, pending_questions, record_answers, set_catalog_listing_opt_out,
+    trusted_branches, works_of_interest, works_of_listings, AnswerReport, AnswersRecorded,
+    AskReport, BranchListing, BranchOffer, BRANCH_LISTING_PREFIX, BRANCH_LISTING_TTL,
+    LOOKUP_ANSWER_TTL, LOOKUP_RESEND,
 };
 pub use clerks::{library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents};
 pub use cluster_links::{

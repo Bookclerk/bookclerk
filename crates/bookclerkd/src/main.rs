@@ -12,6 +12,7 @@
 
 mod api;
 mod auth;
+mod branch_requests;
 mod cache_jobs;
 mod cache_policy;
 mod catalog_lookup;

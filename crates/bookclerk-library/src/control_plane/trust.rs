@@ -268,9 +268,15 @@ async fn job_pin_plugin(store: &LibraryStore, job: &JobRecord) -> Result<Option<
 
 /// True when a `claimant` may run `job` at all, whatever it is trusted
 /// with: a forced or PDF-only acquire runs only on a node that holds the
-/// library database, since the host acquire path does neither.
+/// library database, since the host acquire path does neither. An
+/// interlibrary request ([`JobKind::BranchRequest`]) is never run through
+/// the routed claim: only its branch claims it, over `requests.claim`
+/// (`super::claim_branch_requests`).
 #[must_use]
 pub fn claimant_may_run(claimant: Claimant, job: &JobRecord) -> bool {
+    if job.kind == JobKind::BranchRequest {
+        return false;
+    }
     claimant == Claimant::Local
         || !(job.kind == JobKind::Acquire && (job.payload.force || job.payload.pdf_only))
 }
