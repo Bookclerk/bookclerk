@@ -32,6 +32,10 @@
 //!    includes a job that finished but whose report was still waiting
 //!    for a connection: the owner runs it again, so its side effects
 //!    (uploads, local writes) may happen twice.
+//!    With a [`HostClientConfig::share`], the loop holds no more jobs than
+//!    that share of the machine: it waits for the share to grow or a held
+//!    job to finish instead of claiming, and a share that shrinks cancels
+//!    nothing.
 //!    Each job runs on its own task through the [`HostJobRunner`],
 //!    with its secrets opened by this node's box key; a renewer extends
 //!    the lease every third of it; the result is reported with `complete`
@@ -64,18 +68,18 @@ use bookclerk_library::control_plane::{
     ClusterLink, ClusterLinkKeys, NodeHeartbeat, NodeSampler, NODE_HEARTBEAT_INTERVAL,
 };
 use bookclerk_node_proto::{
-    decode_nonce, open_instance_secrets, open_secrets, open_upload_token, seal_secret_update,
-    sign_artifact_request, sign_auth, validate_box_public_key, AcquireTarget, ArtifactRequest,
-    AuthContext, Body, CatalogRef, CatalogTitle, ClaimFilter, Frame, HeldFence, PlanDestination,
-    SealError, SecretEntry, SecretRef, SecretValue, SigningKey, UploadAnswer, UploadCommitRequest,
-    UploadFile, ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED,
-    HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES,
-    UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
+    decode_nonce, open_instance_secrets, open_secrets, open_upload_token, questions_problem,
+    seal_secret_update, sign_artifact_request, sign_auth, validate_box_public_key, AcquireTarget,
+    ArtifactRequest, AuthContext, Body, CatalogRef, CatalogTitle, ClaimFilter, ClaimScope, Frame,
+    HeldFence, LookupAnswer, LookupWork, PlanDestination, SealError, SecretEntry, SecretRef,
+    SecretValue, SigningKey, UploadAnswer, UploadCommitRequest, UploadFile, ARTIFACTS_PATH,
+    CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS,
+    ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
 use rand::{Rng as _, RngCore as _};
-use tokio::sync::{broadcast, mpsc, oneshot, watch, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{broadcast, mpsc, oneshot, watch, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
@@ -185,6 +189,13 @@ pub struct HostClientConfig {
     pub claims_after_refresh: bool,
     /// Timers.
     pub timing: ClientTiming,
+    /// This link's share of the machine, in jobs, when the host shares its
+    /// capacity between several libraries and its own work. The claim loop
+    /// holds at most the smaller of this and [`Self::max_jobs`]; a share
+    /// that shrinks below the jobs held cancels none of them, it only
+    /// stops claims until enough finish. `None` holds up to
+    /// [`Self::max_jobs`].
+    pub share: Option<watch::Receiver<usize>>,
 }
 
 /// Why [`HostClient::run`] returned.
@@ -315,6 +326,9 @@ pub(crate) struct Shared {
     claim_kinds: BTreeSet<String>,
     /// Plugin keys this host's operator consents to now.
     consented: watch::Sender<BTreeSet<String>>,
+    /// Whose work this host takes now (the link's "Download for other
+    /// members" setting).
+    claim_scope: watch::Sender<ClaimScope>,
     /// Fences held, by job id.
     held: Mutex<HashMap<String, HeldJob>>,
     /// The live connection, if any.
@@ -330,6 +344,12 @@ pub(crate) struct Shared {
     wakes: broadcast::Sender<serde_json::Value>,
     /// One permit per job slot.
     job_slots: Arc<Semaphore>,
+    /// Woken whenever a job gives its slot back, so a claim loop waiting
+    /// under its [`HostClientConfig::share`] counts again.
+    slot_freed: Arc<Notify>,
+    /// This link's share of the machine, in jobs; `None` when the host
+    /// does not share it.
+    share: Option<watch::Receiver<usize>>,
     /// Serial of the next connection.
     next_serial: AtomicU64,
     /// Set (under the `held` lock) once every job was abandoned; a job
@@ -449,6 +469,7 @@ impl Shared {
         Some(ClaimFilter {
             kinds: self.claim_kinds.iter().cloned().collect(),
             plugins: consented.iter().cloned().collect(),
+            scope: *self.claim_scope.borrow(),
         })
     }
 
@@ -872,6 +893,23 @@ impl HostClientHandle {
         self.shared.consented.borrow().clone()
     }
 
+    /// Sets whose work later claims take. Jobs already held keep running:
+    /// the setting decides what this host asks for, and the library hands
+    /// only work the node is trusted with either way.
+    pub fn set_claim_scope(&self, scope: ClaimScope) {
+        self.shared.claim_scope.send_if_modified(|current| {
+            let changed = *current != scope;
+            *current = scope;
+            changed
+        });
+    }
+
+    /// Whose work claims take now.
+    #[must_use]
+    pub fn claim_scope(&self) -> ClaimScope {
+        *self.shared.claim_scope.borrow()
+    }
+
     /// Sends `body` on the live connection (waiting up to the request
     /// timeout for one) and answers the owner's frame, or `None` when no
     /// connection answered.
@@ -1071,6 +1109,42 @@ impl HostClientHandle {
         }
     }
 
+    /// `catalog.questions`: the catalog questions the library has for this
+    /// branch, at most [`bookclerk_node_proto::MAX_LOOKUP_WORKS`] (empty
+    /// when none waits). A list that breaks the frame rules is refused as
+    /// [`OwnerCallError::Unavailable`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`]; `Refused` when the library does not
+    /// count this node as a branch.
+    pub async fn catalog_questions(&self) -> Result<Vec<LookupWork>, OwnerCallError> {
+        match self.catalog_call(Body::CatalogQuestions {}).await? {
+            Body::CatalogAsk { works } if questions_problem(&works).is_none() => Ok(works),
+            _ => Err(OwnerCallError::Unavailable),
+        }
+    }
+
+    /// `catalog.found`: this branch's answers to questions it was sent, and
+    /// the works it cannot supply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`].
+    pub async fn catalog_found(
+        &self,
+        answers: Vec<LookupAnswer>,
+        missing: Vec<String>,
+    ) -> Result<(), OwnerCallError> {
+        match self
+            .catalog_call(Body::CatalogFound { answers, missing })
+            .await?
+        {
+            Body::Accepted {} => Ok(()),
+            _ => Err(OwnerCallError::Unavailable),
+        }
+    }
+
     /// `catalog.upload`: opens an upload of one shared title's `files` and
     /// opens its sealed token (bound to this node, [`CATALOG_ITEM`], the
     /// fence and the upload).
@@ -1224,6 +1298,7 @@ impl<R: HostJobRunner> HostClient<R> {
         let (connections, _) = watch::channel(0);
         let (refreshed, _) = watch::channel(0);
         let (consented, _) = watch::channel(BTreeSet::new());
+        let (claim_scope, _) = watch::channel(config.link.claim_scope());
         let (wakes, _) = broadcast::channel(WAKE_BUFFER);
         let shared = Arc::new(Shared {
             endpoint,
@@ -1237,6 +1312,7 @@ impl<R: HostJobRunner> HostClient<R> {
             max_jobs: config.max_jobs,
             claim_kinds: config.claim_kinds.into_iter().collect(),
             consented,
+            claim_scope,
             held: Mutex::new(HashMap::new()),
             conn,
             connections,
@@ -1244,6 +1320,8 @@ impl<R: HostJobRunner> HostClient<R> {
             refreshed,
             wakes,
             job_slots: Arc::new(Semaphore::new(config.max_jobs)),
+            slot_freed: Arc::new(Notify::new()),
+            share: config.share,
             next_serial: AtomicU64::new(1),
             abandoned: AtomicBool::new(false),
         });
@@ -1732,6 +1810,76 @@ async fn heartbeat_loop(
     }
 }
 
+/// A claimed job's slot: its permit, and a wake for a claim loop waiting
+/// under its share when the slot is given back.
+struct JobSlot {
+    /// The semaphore permit the slot holds; `None` only while the slot is
+    /// being dropped.
+    permit: Option<OwnedSemaphorePermit>,
+    /// Woken on drop.
+    freed: Arc<Notify>,
+}
+
+impl Drop for JobSlot {
+    /// Gives the permit back, then wakes every claim loop waiting for a job
+    /// to finish. The permit goes first so a woken loop already counts the
+    /// slot as free; waking first could let a loop re-check, still see the
+    /// slot held, and wait for a notification that never comes.
+    fn drop(&mut self) {
+        drop(self.permit.take());
+        self.freed.notify_waiters();
+    }
+}
+
+impl Shared {
+    /// Jobs whose slot is taken now (claimed and running, or being
+    /// claimed).
+    fn jobs_held(&self) -> usize {
+        self.max_jobs
+            .saturating_sub(self.job_slots.available_permits())
+    }
+
+    /// Whether this link may claim another job while it holds `held`:
+    /// below its share of the machine, when it has one.
+    fn share_allows(&self, held: usize) -> bool {
+        self.share
+            .as_ref()
+            .is_none_or(|share| held < *share.borrow())
+    }
+}
+
+/// Waits until this link's share of the machine leaves room for one more
+/// job: until the share grows or a held job gives its slot back. Returns
+/// at once for a host that does not share its capacity.
+///
+/// # Returns
+///
+/// `false` when the share's sender is gone (the daemon is shutting the
+/// link down), so the claim loop should end.
+async fn wait_for_share(shared: &Shared) -> bool {
+    let Some(mut share) = shared.share.clone() else {
+        return true;
+    };
+    loop {
+        // Registered before the count is read, so a slot given back in
+        // between still wakes this wait.
+        let freed = shared.slot_freed.notified();
+        tokio::pin!(freed);
+        freed.as_mut().enable();
+        if shared.jobs_held() < *share.borrow_and_update() {
+            return true;
+        }
+        tokio::select! {
+            changed = share.changed() => {
+                if changed.is_err() {
+                    return false;
+                }
+            }
+            () = &mut freed => {}
+        }
+    }
+}
+
 /// Pulls jobs while job slots are free and the host would claim anything
 /// (some kind runs here and some plugin is consented). Under
 /// [`HostClientConfig::claims_after_refresh`] it first waits for the
@@ -1766,9 +1914,21 @@ async fn claim_loop<R: HostJobRunner>(
             }
             continue;
         }
-        let Ok(slot) = Arc::clone(&shared.job_slots).acquire_owned().await else {
+        if !wait_for_share(&shared).await {
+            return;
+        }
+        let Ok(permit) = Arc::clone(&shared.job_slots).acquire_owned().await else {
             return;
         };
+        let slot = JobSlot {
+            permit: Some(permit),
+            freed: Arc::clone(&shared.slot_freed),
+        };
+        // The wait for a slot can outlast a share that shrank meanwhile.
+        if !shared.share_allows(shared.jobs_held().saturating_sub(1)) {
+            drop(slot);
+            continue;
+        }
         // The wait for a slot can outlast a revoke: claim under the consent
         // that holds now.
         let Some(filter) = shared.claim_filter() else {
@@ -1875,7 +2035,7 @@ fn bounded(mut text: String) -> String {
 async fn run_job<R: HostJobRunner>(
     shared: Arc<Shared>,
     runner: Arc<R>,
-    slot: OwnedSemaphorePermit,
+    slot: JobSlot,
     host_job: HostJob,
     sealed_secrets: Option<String>,
     claimed_at: tokio::time::Instant,

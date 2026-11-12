@@ -90,6 +90,9 @@ pub fn wake_for(message: &NodeMessage) {
             debug!(%node_id, "host node credential revoked");
             crate::node_api::ws::close_node_sessions(node_id, bookclerk_node_proto::CLOSE_REVOKED);
         }
+        // Addressed to a branch's queue and forwarded over its socket; a
+        // daemon's own queue never carries it.
+        NodeMessage::CatalogAsked {} => {}
     }
 }
 

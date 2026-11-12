@@ -70,6 +70,7 @@ async fn start(host: &LibraryStore, link: &ClusterLink) -> (HostClientHandle, wa
             claim_kinds: Vec::new(),
             claims_after_refresh: false,
             timing: timing(Duration::from_millis(200)),
+            share: None,
         },
         TransportRunner::new(NoJobs, Arc::new(RemoteCatalog::default())),
         Box::new(FixedSampler),

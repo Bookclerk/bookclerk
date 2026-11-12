@@ -97,10 +97,7 @@ fn origin_ok(headers: &axum::http::HeaderMap, public_origin: Option<&str>) -> bo
     // No Origin/Referer: allow same-process tools that send Host only when
     // public_origin is unset (loopback / direct). When public_origin is set,
     // require an explicit Origin.
-    if public_origin.is_none() {
-        return true;
-    }
-    false
+    public_origin.is_none()
 }
 
 /// Compares the Origin/Referer host to `public_origin`, or to `Host` when unset.

@@ -196,6 +196,20 @@ input_from = "operator"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.job_cap_request]
+crate = "bookclerk-library"
+boundary = "A branch's job cap for one library, from POST /api/config/join/capacity"
+input_from = "operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.sharing_request]
+crate = "bookclerk-library"
+boundary = "A branch's sharing and work settings for one library, from POST /api/config/join/sharing"
+input_from = "operator"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.libro_catalog]
 crate = "bookclerk-plugin-source-libro"
 boundary = "Libro.fm catalog search pages and audiobook details from the store's app API"

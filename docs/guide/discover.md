@@ -57,6 +57,16 @@ shows up once, with where to buy it and the best current price.
 Prices take the stores you have connected into account, so a member price
 counts where you are a member.
 
+## Available through a branch
+
+When your library has [branches](branches.md), a book one of them can supply
+says so: **Available through Riley's branch**, on its Discover card, in
+search results and in its details. Bookclerk matches the book by its store
+listing, never by title, so search shows it for books your library already
+knows about, such as ones you own, wish for or see on Discover.
+
+A branch drops off a book within two days of no longer listing it.
+
 ## Wishlist
 
 Add a book to your wishlist from any card or search result. Your wishlist is

@@ -5050,6 +5050,7 @@ pub(crate) mod tests {
             library: Arc::new(RwLock::new(library.clone())),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -6246,6 +6247,7 @@ pub(crate) mod tests {
                 library: Arc::new(RwLock::new(library.clone())),
                 database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
                 job_notify: Arc::new(Notify::new()),
+                capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
                 job_runtime: Arc::new(RwLock::new(())),
                 work_lock: Mutex::new(()),
                 discover_gate: Arc::new(Semaphore::new(1)),
@@ -8221,5 +8223,73 @@ pub(crate) mod tests {
             StatusCode::UNAUTHORIZED,
             "still the authenticated API"
         );
+    }
+
+    #[tokio::test]
+    async fn every_response_is_closed_to_other_origins() {
+        use axum::body::Body;
+        use axum::http::{Method, Request};
+        use tower::ServiceExt;
+
+        let _dek = process_dek_lock().await;
+        let (state, _app, _library) = phase2_harness("op-token-cross-origin").await;
+        let dist = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dist.path().join("index.html"),
+            "<!doctype html><title>SPA</title>",
+        )
+        .unwrap();
+        std::fs::write(dist.path().join("favicon.ico"), b"\0").unwrap();
+        let app = crate::api::router(state, Some(dist.path().to_path_buf()));
+        // A page, a static file, the open health check, an API answer that
+        // needs auth, a CORS preflight, a missing path and a cookie POST
+        // from another origin that CSRF refuses. The preflight goes to a
+        // path no route matches, so the Web API contract check, which
+        // counts only matched routes, does not report an `OPTIONS` answer
+        // the document leaves undeclared.
+        for (method, uri) in [
+            (Method::GET, "/"),
+            (Method::GET, "/library"),
+            (Method::GET, "/favicon.ico"),
+            (Method::GET, "/health"),
+            (Method::GET, "/api/status"),
+            (Method::OPTIONS, "/api/no-such-route"),
+            (Method::GET, "/no-such-page"),
+            (Method::POST, "/api/library/scan"),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(uri)
+                        .header(header::ORIGIN, "https://elsewhere.example")
+                        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                        .header(header::COOKIE, format!("{SESSION_COOKIE}=x"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let what = format!("{method} {uri} {}", res.status());
+            for (name, value) in crate::cross_origin::CLOSED_HEADERS {
+                assert_eq!(
+                    res.headers().get(*name).map(|v| v.to_str().unwrap()),
+                    Some(*value),
+                    "{what}: {name}"
+                );
+            }
+            for name in [
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+            ] {
+                assert!(res.headers().get(&name).is_none(), "{what}: {name}");
+            }
+            assert!(
+                res.headers().contains_key(header::REFERRER_POLICY),
+                "{what}: Referrer-Policy"
+            );
+        }
     }
 }

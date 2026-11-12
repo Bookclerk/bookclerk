@@ -30,6 +30,7 @@ from ci_plan.execute import (  # noqa: E402
     NEXTEST_RUN,
     QUEUE_ONLY_CHECKS,
     SCHEMA_VERSION,
+    TEST_PARTS,
     Command,
     Context,
     ExecError,
@@ -1081,6 +1082,12 @@ class CoverageCommandTests(unittest.TestCase):
             self.assertFalse(any("--profile" in c for c in commands(p, "rust_test")))
 
 
+    def test_each_test_part_writes_its_own_report(self) -> None:
+        full = build_plan(["docs/x.md"], INDEX, RELATIONS, force_full=True, guests=GUESTS)
+        with self.env(CARGO_LLVM_COV="1", CI_TEST_PART="2/3"):
+            cmds = commands(full, "rust_test")
+        self.assertEqual(cmds[-1][-1], str(self.dir / "rust" / "part-2" / "lcov.info"))
+
 class BundleCommandTests(unittest.TestCase):
     """With CI_BUNDLE_DIR set, the UI and Worker checks keep `<dir>/<bundle>/`."""
 
@@ -1512,7 +1519,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(out["check_needs_uv"], "false")
         self.assertEqual(
             set(out),
-            {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs"}
+            {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs", "test_parts"}
             | {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
             | {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]},
         )
@@ -1991,6 +1998,41 @@ class RunnerLayoutTests(unittest.TestCase):
                 self.assertEqual("--no-fail-fast" in argv, not merge_group)
                 if merge_group:
                     self.assertEqual(argv[argv.index("--retries") + 1], "1")
+
+    def test_whole_workspace_tests_split_into_parts(self) -> None:
+        full = build_plan(["docs/x.md"], INDEX, RELATIONS, force_full=True, guests=GUESTS)
+        self.assertEqual(json.loads(job_outputs(artifact(full))["test_parts"]), list(range(1, TEST_PARTS + 1)))
+        # A selective run of a few packages and a build-only main push stay whole.
+        self.assertEqual(job_outputs(artifact(plan("crates/bookclerk-config/src/lib.rs")))["test_parts"], "[1]")
+        self.assertEqual(job_outputs(dict(artifact(full), build_only=True))["test_parts"], "[1]")
+
+    def test_each_part_runs_its_share_and_only_the_first_the_rest(self) -> None:
+        full = build_plan(["docs/x.md"], INDEX, RELATIONS, force_full=True, guests=GUESTS)
+        whole = check_argv(full, "rust_test")
+        for k in range(1, TEST_PARTS + 1):
+            with self.subTest(part=k), mock.patch.dict(os.environ, {"CI_TEST_PART": f"{k}/{TEST_PARTS}"}):
+                argv = check_argv(full, "rust_test")
+                main = argv[0]
+                self.assertEqual(main[main.index("--partition") + 1], f"count:{k}/{TEST_PARTS}")
+                self.assertEqual([a for a in main if a not in ("--partition", f"count:{k}/{TEST_PARTS}")], whole[0])
+                # Custom harnesses, feature runs and bench/example builds run once.
+                if k == 1:
+                    self.assertEqual(argv[1:], whole[1:])
+                else:
+                    self.assertEqual(argv, [main])
+        with mock.patch.dict(os.environ, {"CI_TEST_PART": "1/1"}):
+            self.assertEqual(check_argv(full, "rust_test"), whole)
+
+    def test_a_bad_part_fails(self) -> None:
+        full = build_plan(["docs/x.md"], INDEX, RELATIONS, force_full=True, guests=GUESTS)
+        for bad in ("0/3", "4/3", "1", "1/3/3", "a/b", "10/10", " 1/3"):
+            with self.subTest(value=bad), mock.patch.dict(os.environ, {"CI_TEST_PART": bad}):
+                with self.assertRaisesRegex(ExecError, "CI_TEST_PART"):
+                    check_argv(full, "rust_test")
+        # Splitting a selective run would compile three times for a few tests.
+        with mock.patch.dict(os.environ, {"CI_TEST_PART": "2/3"}):
+            with self.assertRaisesRegex(ExecError, "whole-workspace"):
+                check_argv(plan("crates/bookclerk-config/src/lib.rs"), "rust_test")
 
     def test_custom_harness_target_runs_with_cargo_test(self) -> None:
         p = plan("crates/bookclerk-plugin-catalog/src/extract.rs")

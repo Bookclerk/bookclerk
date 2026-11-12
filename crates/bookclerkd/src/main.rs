@@ -14,10 +14,12 @@ mod api;
 mod auth;
 mod cache_jobs;
 mod cache_policy;
+mod catalog_lookup;
 mod cluster_link;
 mod config_authority;
 mod covers;
 mod cron_worker;
+mod cross_origin;
 mod csrf;
 mod discover_events;
 mod discover_jobs;
@@ -279,6 +281,7 @@ async fn main() -> anyhow::Result<()> {
         library: library.clone(),
         database_registry: database_registry.clone(),
         job_notify: Arc::new(Notify::new()),
+        capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
         job_runtime: Arc::new(RwLock::new(())),
         work_lock: Mutex::new(()),
         discover_gate: Arc::new(Semaphore::new(1)),

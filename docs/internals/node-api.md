@@ -34,7 +34,7 @@ request is answered by a frame with the same `id`. Both sides ping every
 | Host → owner | Owner answers |
 | --- | --- |
 | `heartbeat` | `ok` (capacity and use land in `node_status`) |
-| `claim {filter: {kinds, plugins}}` | `work` (job, lease, fence, sealed secrets) or `none {retry_after_secs}` |
+| `claim {filter: {kinds, plugins, scope?}}` | `work` (job, lease, fence, sealed secrets, and `for_node_owner` on the job when all its accounts are the node owner's) or `none {retry_after_secs}` |
 | `renew` | `renewed`, or `lost` when the fence is gone |
 | `complete`, `fail`, `release` | `ok`, or `lost` |
 | `deployments.list` | `deployments` (what targets this node, with versions and the requested grant) |
@@ -47,12 +47,22 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `catalog.begin {share_books, include_branches}` | `catalog.session {fence, cursor, ancestry, destinations, wanted}` |
 | `catalog.sync {fence, batch, cursor, done, titles}` | `catalog.accepted {batch, upserted, skipped, wanted}`, or `lost` |
 | `catalog.upload {fence, store, product_id, files}` | `upload.granted` (then the upload routes above, job id `catalog`) |
+| `catalog.questions` | `catalog.ask {works}`: up to 100 questions `{work, identifiers}` waiting for this branch, or `error` `refused` |
+| `catalog.found {answers, missing}` | `ok`, or `error` `invalid` / `refused` (see [Shared catalog](../server/cluster-hosts.md#shared-catalog)) |
 | `node.leaving` | `accepted`, then close 4403 (the node is revoked) |
 | `scan.request {account, plugin_instance_id}` | `scan.planned {created, duplicates, queue_full}`, or `error` `forbidden` / `invalid` |
 | `job.status {job_ids}` (at most 64) | `job.statuses {jobs}`: only jobs this node may claim |
 
+A claim's `scope` is `own` (the default, left off the wire) or
+`all_members`. Under `own` the owner hands a branch trusted with every job
+(an Owner's or Administrator's) only the jobs whose accounts all belong to
+the user who owns the node; `all_members` takes every job the node is
+trusted with. A scope never widens trust. A branch always sends a
+filter.
+
 The owner also sends `wake` frames (deployment, install, placement,
-configuration and revocation changes), which the host acks. Secrets are
+configuration and revocation changes, and `catalog.asked` when catalog
+questions wait for a branch), which the host acks. Secrets are
 never frame text: job secrets, instance secrets and upload tokens are sealed
 to the node's box key and bound to the node and the job or instance they
 belong to; a write-back is sealed to the owner's box key.

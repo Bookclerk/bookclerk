@@ -91,6 +91,29 @@ If your proxy adds its own `Content-Security-Policy` header, it must still
 allow Bookclerk's own scripts, images and connections. A stricter header,
 such as `script-src 'none'`, stops the app from loading.
 
+### Other sites can't use Bookclerk's responses
+
+Every response from Bookclerk, the web app, the API, covers and error pages
+alike, tells browsers that it belongs to Bookclerk alone:
+
+- Other sites can't show Bookclerk's covers, scripts or files in their pages
+  (`Cross-Origin-Resource-Policy: same-origin`).
+- Scripts on other sites can't read Bookclerk's answers: no response carries
+  an `Access-Control-Allow-Origin` header, so browsers refuse the read.
+- The app runs in its own browser process, apart from any page that opens it
+  or that it opens (`Cross-Origin-Opener-Policy: same-origin` and
+  `Cross-Origin-Embedder-Policy: require-corp`).
+- No site can frame it (`X-Frame-Options: DENY`), and browsers keep to the
+  declared content type (`X-Content-Type-Options: nosniff`).
+
+These headers bind browsers only. The CLI, other hosts of your library and
+integrations that call the API from their own servers are unaffected.
+
+> [!NOTE]
+> A proxy that adds `Access-Control-Allow-Origin`, or loosens
+> `Cross-Origin-Resource-Policy`, opens your library to other sites. Leave
+> these headers as Bookclerk sends them.
+
 ## Sign-in
 
 - **Ask for a second factor** on password sign-ins: **Settings → Sign-in**,

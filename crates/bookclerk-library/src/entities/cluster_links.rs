@@ -27,6 +27,21 @@ pub struct Model {
     /// The owner library's ancestry (JSON list of cluster ids, the owner's
     /// own first), as it last reported it.
     pub ancestry_json: String,
+    /// "Download for other members of *library*" (0 = off, the default):
+    /// the branch takes work for the library's other members too, not only
+    /// its owner's.
+    pub work_for_members: i64,
+    /// "Keep copies of other members' books" (0 = off, the default): a
+    /// book acquired here for another member is also written to this
+    /// install's own destinations.
+    pub keep_member_copies: i64,
+    /// The most jobs this install runs for the library at once, set by its
+    /// operator; `NULL` leaves it to the equal share of the machine.
+    pub max_jobs: Option<i64>,
+    /// "List my members' books to *library*" (1 = on, the default): the
+    /// branch answers that library's catalog lookups with its members'
+    /// books as well as its owner's.
+    pub list_members_books: i64,
 }
 
 /// Declared SeaORM relations (none).

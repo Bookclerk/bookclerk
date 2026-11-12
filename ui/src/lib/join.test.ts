@@ -12,11 +12,14 @@ import {
   formatCountdown,
   isClerkJoined,
   isConsentRedirect,
+  jobShareSummary,
   JoinApiError,
   joinErrorMessage,
   listClerks,
   looksLikeBranchInvite,
   parseJoinCallback,
+  setMembersListing,
+  setBranchSharing,
 } from "./join";
 import { isAppPath, joinPage } from "./routes";
 
@@ -242,6 +245,36 @@ describe("answerBranchConsent", () => {
   });
 });
 
+describe("setBranchSharing", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends only the work settings it is given", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify({ cluster: {} }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await setBranchSharing("c1", true, false);
+    await setBranchSharing("c1", true, false, { workForMembers: true, keepMemberCopies: false });
+    await setBranchSharing("c1", true, false, { keepMemberCopies: true });
+    const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1].body)));
+    expect(bodies[0]).toEqual({ cluster_id: "c1", share_books: true, include_branches: false });
+    expect(bodies[1]).toEqual({
+      cluster_id: "c1",
+      share_books: true,
+      include_branches: false,
+      work_for_members: true,
+      keep_member_copies: false,
+    });
+    expect(bodies[2]).toEqual({
+      cluster_id: "c1",
+      share_books: true,
+      include_branches: false,
+      keep_member_copies: true,
+    });
+  });
+});
+
 describe("isClerkJoined", () => {
   it("tells a clerk answer from a branch's", () => {
     expect(
@@ -298,6 +331,16 @@ describe("listClerks", () => {
   });
 });
 
+describe("jobShareSummary", () => {
+  it("words an equal share, a cap and no work", () => {
+    expect(jobShareSummary(null, 2)).toBe("Equal share of this computer: 2 jobs at once now");
+    expect(jobShareSummary(undefined)).toBe("Equal share of this computer");
+    expect(jobShareSummary(3, 1)).toBe("Up to 3 jobs at once: 1 job at once now");
+    expect(jobShareSummary(1)).toBe("Up to 1 job at once");
+    expect(jobShareSummary(0, 0)).toBe("Runs no work for this library");
+  });
+});
+
 describe("broughtConnectionsSummary", () => {
   const base = { offered: 3, added: 0, already_here: 0, taken: 0, not_kept: null } as const;
 
@@ -323,5 +366,36 @@ describe("broughtConnectionsSummary", () => {
     );
     expect(broughtConnectionsSummary({ ...base, not_kept: "no_owner" })).toMatch(/no single owner/);
     expect(broughtConnectionsSummary({ ...base, not_kept: "failed" })).toMatch(/couldn't be added/);
+  });
+});
+
+describe("setMembersListing", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends the members setting with the link's current sharing settings", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify({ cluster: { cluster_id: "c1" } }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await setMembersListing(
+      { cluster_id: "c1", share_books: false, include_branches: true },
+      false,
+    );
+    await setMembersListing({ cluster_id: "c2" }, true);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/config/join/sharing");
+    const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1].body)));
+    expect(bodies[0]).toEqual({
+      cluster_id: "c1",
+      share_books: false,
+      include_branches: true,
+      list_members_books: false,
+    });
+    expect(bodies[1]).toEqual({
+      cluster_id: "c2",
+      share_books: true,
+      include_branches: true,
+      list_members_books: true,
+    });
   });
 });

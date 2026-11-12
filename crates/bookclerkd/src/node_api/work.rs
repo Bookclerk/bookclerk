@@ -459,6 +459,10 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             )
             .await
         }
+        Body::CatalogQuestions {} => super::host_lookup::questions(library, host, id.clone()).await,
+        Body::CatalogFound { answers, missing } => {
+            super::host_lookup::found(library, host, id.clone(), &answers, &missing).await
+        }
         _ => {
             return error(
                 id,
@@ -486,6 +490,7 @@ fn claim_filter(filter: ClaimFilter) -> Result<JobClaimFilter, ()> {
     Ok(JobClaimFilter {
         kinds: filter.kinds.into_iter().collect(),
         plugin_keys: filter.plugins.into_iter().collect(),
+        scope: filter.scope,
     })
 }
 
@@ -524,6 +529,7 @@ async fn claim(
         plugin_keys,
         source_plugin_key,
         resumed,
+        for_node_owner,
     }) = claim_remote_job(library, &host.node_id, class, host.settings, filter).await?
     else {
         return Ok(none());
@@ -570,6 +576,7 @@ async fn claim(
                     payload: serde_json::to_value(&job.payload).unwrap_or_default(),
                     attempt: job.attempt_count,
                     scan_import,
+                    for_node_owner,
                 },
                 fence,
                 lease_secs: host.settings.lease_secs,

@@ -91,7 +91,9 @@ pub async fn accept_scan_results(
     }
     let owned = match node_trust(store, node_id, Claimant::Remote).await? {
         NodeTrust::All => None,
-        NodeTrust::OwnedBy(user_id) => Some(accounts_owned_by(store, user_id).await?),
+        NodeTrust::OwnedBy(user_id) | NodeTrust::AllOfOwner(user_id) => {
+            Some(accounts_owned_by(store, user_id).await?)
+        }
         NodeTrust::Nothing => return Ok(ScanAccept::Lost),
     };
     // The job's selector resolved as the claim resolved it (id or label,
@@ -170,7 +172,9 @@ async fn still_authorized(
     }
     Ok(match node_trust(store, node_id, Claimant::Remote).await? {
         NodeTrust::All => Some(None),
-        NodeTrust::OwnedBy(user_id) => Some(Some(accounts_owned_by(store, user_id).await?)),
+        NodeTrust::OwnedBy(user_id) | NodeTrust::AllOfOwner(user_id) => {
+            Some(Some(accounts_owned_by(store, user_id).await?))
+        }
         NodeTrust::Nothing => None,
     })
 }

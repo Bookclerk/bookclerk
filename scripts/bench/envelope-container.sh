@@ -26,8 +26,14 @@ LABEL="${ENVELOPE_LABEL:-measured}"
   exit 1
 }
 
+# Cargo up to Rust 1.99 put test binaries in target/release/deps; from 1.100
+# they sit in target/release/build/<package>/<hash>/out. Take the newest from
+# either.
 seed="$(
-  find "${ROOT}/target/release/deps" -maxdepth 1 -type f -name 'envelope_seed-*' ! -name '*.*' -printf '%T@\t%p\n' 2>/dev/null \
+  {
+    find "${ROOT}/target/release/deps" -maxdepth 1 -type f -name 'envelope_seed-*' ! -name '*.*' -printf '%T@\t%p\n' 2>/dev/null
+    find "${ROOT}/target/release/build/bookclerk-library" -mindepth 3 -maxdepth 3 -path '*/out/envelope_seed-*' -type f ! -name '*.*' -printf '%T@\t%p\n' 2>/dev/null
+  } \
     | sort -n | tail -1 | cut -f2- || true
 )"
 [[ -n "${seed}" && -x "${seed}" ]] || {

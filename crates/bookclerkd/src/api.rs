@@ -64,6 +64,9 @@ pub struct AppState {
     pub database_registry: Arc<RwLock<DatabaseRegistry>>,
     /// Wakes the durable job worker when a new row is admitted.
     pub job_notify: Arc<Notify>,
+    /// How this node splits its machine between its own work and each
+    /// library it is a branch of ([`crate::cluster_link::capacity`]).
+    pub capacity: Arc<crate::cluster_link::capacity::CapacityShares>,
     /// Shared barrier covering admission, claim, and handler execution.
     ///
     /// Workers and admit hold a read permit. A database plugin swap takes the
@@ -1224,6 +1227,9 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
             crate::cluster_link::join::get_join_sharing,
             crate::cluster_link::join::post_join_sharing
         ))
+        // Settings → Library's job cap on a branch (operator or Owner; the
+        // handler checks).
+        .routes(routes!(crate::cluster_link::join::post_join_capacity))
         // The library lets the operator or an Owner revoke any host and
         // anyone else only the hosts they own.
         .routes(routes!(crate::node_api::delete_node_credential))
@@ -1258,6 +1264,10 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(auth::list_sessions))
         .routes(routes!(auth::revoke_session))
         .routes(routes!(crate::profile::patch_profile))
+        .routes(routes!(
+            crate::profile::get_catalog_listing,
+            crate::profile::put_catalog_listing
+        ))
         .routes(routes!(
             crate::profile::put_avatar,
             crate::profile::delete_avatar
@@ -1483,11 +1493,13 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     // Timeout wraps API handlers. Brand empty 4xx/5xx bodies (auth, missing
     // routes, handler StatusCode). Cache-Control by response class, outside
     // the branding so rewritten error pages get one too. Normalize trailing
-    // slashes before matching. Trace outermost.
+    // slashes before matching. Every response, branded errors included, is
+    // closed to other origins (`cross_origin`). Trace outermost.
     let app = app
         .layer(middleware::from_fn(api_timeout_middleware))
         .layer(middleware::from_fn(http_error::brand_error_responses))
-        .layer(middleware::from_fn(crate::cache_policy::apply));
+        .layer(middleware::from_fn(crate::cache_policy::apply))
+        .layer(middleware::from_fn(crate::cross_origin::apply));
     // Test builds compare every response with the OpenAPI document, after
     // the branding so the body compared is the one a client receives.
     #[cfg(test)]
@@ -5959,6 +5971,26 @@ async fn discover_catalog_search(
     })?
     .map_err(internal_err)?;
     let mut page = page;
+    // The PluginKey each hit's storefront pools its listings under, read
+    // before the registry lock is released.
+    let plugin_keys: std::collections::HashMap<String, String> = page
+        .items
+        .iter()
+        .flat_map(|hit| hit.store_editions.iter().map(|e| e.source.clone()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|id| {
+            let key = sources.get(&id)?.plugin_key().to_string();
+            Some((id, key))
+        })
+        .collect();
+    drop(sources);
+    let library = state.library_snapshot().await;
+    bookclerk_discover::join_search_branch_availability(&library, &mut page.items, |id| {
+        plugin_keys.get(id).cloned()
+    })
+    .await
+    .map_err(internal_err)?;
     for hit in &mut page.items {
         state
             .covers
@@ -7497,6 +7529,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -7925,6 +7958,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8027,6 +8061,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8187,6 +8222,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8929,6 +8965,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(store)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),

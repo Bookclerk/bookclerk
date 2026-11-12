@@ -65,6 +65,16 @@ export interface BranchLinkView {
   share_books?: boolean;
   /** "Include books from my own branches" (on by default). */
   include_branches?: boolean;
+  /** "List my members' books" when the library asks (on by default). */
+  list_members_books?: boolean;
+  /** "Download for other members of <library>" (off by default): take the library's work for its other members too. */
+  work_for_members?: boolean;
+  /** "Keep copies of other members' books" (off by default): also write their books to this server's own outputs. */
+  keep_member_copies?: boolean;
+  /** The most jobs this server runs for the library at once; `null` is an equal share of the machine. */
+  max_jobs?: number | null;
+  /** Jobs the library may have running here now (its share of the machine); absent while its link is not running. */
+  job_share?: number;
 }
 
 /** `GET /api/config/join`. */
@@ -443,7 +453,7 @@ export function canChangeBranchSharing(role: string | undefined, impersonating =
 
 /**
  * Settings → Library for the operator or an Owner: the libraries this
- * server is a branch of, with their two sharing settings.
+ * server is a branch of, with their sharing and work settings.
  *
  * @returns The libraries.
  */
@@ -452,22 +462,108 @@ export function fetchBranchSharing(): Promise<{ clusters: BranchLinkView[] }> {
 }
 
 /**
- * Settings → Library: the two sharing settings for one library this server
- * is a branch of (the operator or an Owner). The library hears them at once.
+ * Settings → Library's work settings for one library this server is a
+ * branch of; a setting left out keeps its stored value.
+ */
+export interface BranchWorkSettings {
+  /** "Download for other members of <library>". */
+  workForMembers?: boolean;
+  /** "Keep copies of other members' books". */
+  keepMemberCopies?: boolean;
+}
+
+/**
+ * Settings → Library: the sharing settings for one library this server is
+ * a branch of (the operator or an Owner), and optionally its work
+ * settings. The library hears the sharing settings at once; the work
+ * settings apply to the next job this server asks for.
  *
  * @param clusterId - The library.
  * @param shareBooks - "Share this branch's books with <library>".
  * @param includeBranches - "Include books from my own branches".
+ * @param work - The work settings to change; each one left out keeps its stored value.
  * @returns The link with the stored settings.
  */
 export function setBranchSharing(
   clusterId: string,
   shareBooks: boolean,
   includeBranches: boolean,
+  work?: BranchWorkSettings,
 ): Promise<{ cluster: BranchLinkView }> {
   return request("/api/config/join/sharing", {
     method: "POST",
-    body: { cluster_id: clusterId, share_books: shareBooks, include_branches: includeBranches },
+    body: {
+      cluster_id: clusterId,
+      share_books: shareBooks,
+      include_branches: includeBranches,
+      ...(work?.workForMembers === undefined ? {} : { work_for_members: work.workForMembers }),
+      ...(work?.keepMemberCopies === undefined
+        ? {}
+        : { keep_member_copies: work.keepMemberCopies }),
+    },
+  });
+}
+
+/** Highest job cap Settings → Library offers (the daemon accepts up to 16). */
+export const MAX_OFFERED_JOB_CAP = 8;
+
+/**
+ * Settings → Library: the most jobs this server runs for one library at
+ * once (the operator or an Owner). `null` gives the library an equal share
+ * of the machine after this server's own work; 0 runs nothing for it.
+ * Jobs already running finish.
+ *
+ * @param clusterId - The library.
+ * @param maxJobs - The cap in jobs, or `null` for an equal share.
+ * @returns The link with the stored cap and its share now.
+ */
+export function setBranchJobCap(
+  clusterId: string,
+  maxJobs: number | null,
+): Promise<{ cluster: BranchLinkView }> {
+  return request("/api/config/join/capacity", {
+    method: "POST",
+    body: { cluster_id: clusterId, max_jobs: maxJobs },
+  });
+}
+
+/**
+ * One line on how much of this machine a library may use.
+ *
+ * @param maxJobs - The operator's cap, or `null`/absent for an equal share.
+ * @param jobShare - Jobs the library may run here now, when its link runs.
+ * @returns For example "Equal share of this computer: 2 jobs at once now".
+ */
+export function jobShareSummary(maxJobs: number | null | undefined, jobShare?: number): string {
+  const jobs = (n: number) => (n === 1 ? "1 job" : `${n} jobs`);
+  const now = jobShare === undefined ? "" : `: ${jobs(jobShare)} at once now`;
+  if (maxJobs === 0) return "Runs no work for this library";
+  if (maxJobs === null || maxJobs === undefined) return `Equal share of this computer${now}`;
+  return `Up to ${jobs(maxJobs)} at once${now}`;
+}
+
+/**
+ * Settings → Library: "List my members' books" for one library this server
+ * is a branch of (the operator or an Owner). The two book-sharing settings
+ * are sent as they are, since the route takes them on every change.
+ *
+ * @param link - The library, with its current sharing settings.
+ * @param listMembersBooks - Whether members' books are listed when the
+ *   library asks (the owner's books always are).
+ * @returns The link with the stored settings.
+ */
+export function setMembersListing(
+  link: Pick<BranchLinkView, "cluster_id" | "share_books" | "include_branches">,
+  listMembersBooks: boolean,
+): Promise<{ cluster: BranchLinkView }> {
+  return request("/api/config/join/sharing", {
+    method: "POST",
+    body: {
+      cluster_id: link.cluster_id,
+      share_books: link.share_books ?? true,
+      include_branches: link.include_branches ?? true,
+      list_members_books: listMembersBooks,
+    },
   });
 }
 

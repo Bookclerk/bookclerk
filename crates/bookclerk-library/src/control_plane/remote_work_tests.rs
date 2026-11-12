@@ -778,6 +778,7 @@ fn filter(kinds: &[&str], plugins: &[&str]) -> JobClaimFilter {
     JobClaimFilter {
         kinds: kinds.iter().map(|k| (*k).to_string()).collect(),
         plugin_keys: plugins.iter().map(|p| (*p).to_string()).collect(),
+        scope: bookclerk_node_proto::ClaimScope::AllMembers,
     }
 }
 
@@ -4095,4 +4096,107 @@ async fn record_for_book(
         .record_edition_file(destination, key, &owner, FileRole::for_key(key, None))
         .await
         .map(|recorded| assert!(recorded, "{key} is another edition's"))
+}
+
+/// An Administrator's branch takes only its owner's work unless its claim
+/// asks for every member's: another member's job stays pending under
+/// [`ClaimScope::Own`], is claimed under
+/// [`ClaimScope::AllMembers`], and the owner's own job is claimed either
+/// way. A job is the node owner's only when every account it touches is.
+#[tokio::test]
+async fn an_administrators_branch_takes_other_members_work_only_when_asked() {
+    use crate::control_plane::job_for_node_owner;
+    use bookclerk_node_proto::ClaimScope;
+
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    let alex = store
+        .create_user(UserRole::Administrator, Some("Alex"), None)
+        .await
+        .unwrap()
+        .id;
+    let sam = store
+        .create_user(UserRole::Member, Some("Sam"), None)
+        .await
+        .unwrap()
+        .id;
+    add_account(&store, "alex-acct").await;
+    add_account(&store, "sam-acct").await;
+    link(&store, alex, "alex-acct").await;
+    link(&store, sam, "sam-acct").await;
+    add_host(&store, alex).await;
+    save_token(&store, "alex-acct", "alex-token").await;
+    save_token(&store, "sam-acct", "sam-token").await;
+    let sams = enqueue(&store, JobKind::Scan, "sam-acct").await;
+
+    let own = JobClaimFilter {
+        scope: ClaimScope::Own,
+        ..filter(&["scan"], &[PLUGIN])
+    };
+    assert!(claim_filtered(&store, &own).await.is_none());
+    let sams_job = store.get_job(&sams).await.unwrap().unwrap();
+    assert!(!job_for_node_owner(&store, HOST, &sams_job).await.unwrap());
+
+    let alexs = enqueue(&store, JobKind::Scan, "alex-acct").await;
+    let claimed = claim_filtered(&store, &own)
+        .await
+        .expect("the owner's own job is claimed");
+    assert_eq!(claimed.job.id, alexs);
+    assert!(job_for_node_owner(&store, HOST, &claimed.job)
+        .await
+        .unwrap());
+
+    let claimed = claim_filtered(&store, &filter(&["scan"], &[PLUGIN]))
+        .await
+        .expect("asked for, another member's job is claimed");
+    assert_eq!(claimed.job.id, sams);
+
+    // The owner's pinned job, or one with requirements, is still the
+    // owner's work: an Own claim keeps it, where a Member's Host could not.
+    // It is judged within the pinned plugin: Sam's account of the same
+    // name on another store does not make it Sam's, though it does for an
+    // unpinned job, and a pin this library does not know is no one's.
+    let actor = ConfigActor::Operator { id: "test".into() };
+    let instance = create_plugin_instance(&store, &actor, PLUGIN, "Pinned")
+        .await
+        .unwrap();
+    store
+        .upsert_account("other-store", "alex-acct", "us", None, true, "test")
+        .await
+        .unwrap();
+    let sams_identity = store.ensure_local_portal_identity(sam, None).await.unwrap();
+    store
+        .link_account(sams_identity.id, "other-store", "alex-acct", "test")
+        .await
+        .unwrap();
+    let mut pinned = claimed.job.clone();
+    pinned.payload.account = Some("alex-acct".into());
+    pinned.payload.requires = vec![instance.id.to_string()];
+    pinned.payload.plugin_instance_id = Some(instance.id.to_string());
+    let mut unpinned = pinned.clone();
+    unpinned.payload.requires.clear();
+    unpinned.payload.plugin_instance_id = None;
+    let mut unknown_pin = pinned.clone();
+    unknown_pin.payload.plugin_instance_id = Some("no-such-instance".into());
+    for (scope, job, expected) in [
+        (ClaimScope::Own, &pinned, true),
+        (ClaimScope::AllMembers, &pinned, true),
+        (ClaimScope::Own, &unpinned, false),
+        (ClaimScope::Own, &unknown_pin, false),
+        (ClaimScope::Own, &claimed.job, false),
+    ] {
+        let may = crate::control_plane::node_may_claim_job_in_scope(
+            &store,
+            HOST,
+            Claimant::Remote,
+            scope,
+            job,
+        )
+        .await
+        .unwrap();
+        assert_eq!(may, expected, "{scope:?} {:?}", job.payload);
+    }
+    assert!(job_for_node_owner(&store, HOST, &pinned).await.unwrap());
+    assert!(!job_for_node_owner(&store, HOST, &unpinned).await.unwrap());
 }

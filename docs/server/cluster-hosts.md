@@ -84,7 +84,10 @@ A branch's node appears among the nodes (`bookclerk nodes list`,
 
 - A Member's or Host's branch receives only jobs whose store accounts
   belong to that user.
-- An Administrator's or Owner's branch may receive any job.
+- An Administrator's or Owner's branch may receive any job, but takes
+  only that user's own work unless the branch's operator turns on
+  **Download for other members** for the library (see
+  [Work settings on the branch](#work-settings-on-the-branch)).
 
 Revoke a branch at any time from **Settings → Nodes** or with
 `bookclerk nodes revoke <node_id>`. Its socket closes with 4403 and it
@@ -509,8 +512,52 @@ A host never writes library SQL.
    come out exactly as a local acquire on the owner would name them.
 4. The host **uploads** the title, as described in [Uploads](#uploads).
 
-The host also keeps a best-effort copy of each title in its own deployed
-destinations.
+The host also keeps a copy of each of its owner's own titles in its own
+deployed destinations. A title acquired for another member is copied
+there only when **Keep copies of other members' books** is on (see
+[Work settings on the branch](#work-settings-on-the-branch)). The owner
+says which titles are whose with each job.
+
+### Sharing this computer between libraries
+
+A branch of several libraries splits its work between them, so no one
+library can take the whole machine.
+
+1. **The machine's job slots** come from the branch's own heartbeat: its
+   CPU budget over 0.8 of a core and its memory budget over 512 MiB (what
+   one guest is assumed to need), whichever is smaller, from 1 to 16. A
+   drained branch (`bookclerk nodes set --drain`) has none, so its
+   libraries stop handing it work too. Until the branch records its first
+   heartbeat after starting (within seconds) it also has none.
+2. **The branch's own work comes first.** Each job its own workers run
+   takes a slot.
+3. **The rest is split equally** between the libraries it is a branch of,
+   one slot at a time in cluster id order. A library capped below its
+   equal share leaves its unused slots to the others.
+
+Each library sees only its share:
+
+- The branch claims no more of the library's jobs than its share. A share
+  that shrinks cancels nothing: jobs already running finish, and claims
+  wait until enough of them have.
+- The branch's heartbeat to that library reports its share of the
+  machine's CPU and memory, and of that share only what the machine has
+  free now, so the library's scheduler never counts on the whole machine
+  or on headroom other work already took. The library then applies its
+  own budget for the branch (`bookclerk nodes set` there) as it does for any
+  node; the branch's budget decides how many slots there are. Free disk is
+  reported whole.
+
+For example, a branch of two libraries with four slots runs up to two
+jobs for each. While it runs one job of its own, the first library (by
+cluster id) keeps two slots and the second gets one.
+
+**Settings → Library → Work for <library> on this computer** caps one
+library: **Equal share** (the default), **None** (no work for that
+library), or **Up to N jobs**. B's operator or an Owner of B may change
+it. The route is `POST /api/config/join/capacity`
+`{cluster_id, max_jobs}` (required; `null` for an equal share, 0 to 16), and the
+listing routes report each running library's `job_share` now.
 
 ## Asking the owner for a scan
 
@@ -624,23 +671,52 @@ C is B's.
 
 ### Sharing settings on the branch
 
-**Settings → Library** on B has two settings for each library joined,
-both on by default:
+**Settings → Library** on B has these settings for each library joined,
+all on by default:
 
 - **Share this branch's books with <library>.** Off: nothing new is sent,
   and A no longer counts B as holding what it got from B. Files already
-  delivered stay in A's outputs.
+  delivered stay in A's outputs. B also lists nothing in answer to A's
+  catalog questions.
 - **Include books from my own branches.** Off: B shares only books
   acquired on B itself, and C's titles are withdrawn from A on the next
   pass.
+- **List my members' books to <library>.** Off: B answers A's catalog
+  questions with its owner's books only (see
+  [Shared catalog](#shared-catalog)).
 
 B's operator or an Owner of B may change them. An Owner sees only the
-libraries and these two settings; joining, leaving and plugin approvals
-stay the operator's. Anyone else is refused (403).
+libraries, these settings and each library's job cap (see
+[Sharing this computer between libraries](#sharing-this-computer-between-libraries));
+joining, leaving and plugin approvals stay the operator's. Anyone else is
+refused (403).
 
 The routes are `GET /api/config/join/sharing` (→ `{clusters}`) and
 `POST /api/config/join/sharing`
-`{cluster_id, share_books, include_branches}`.
+`{cluster_id, share_books, include_branches, list_members_books?}`
+(`list_members_books` is left as it is when absent), which also takes
+the [work settings](#work-settings-on-the-branch).
+
+### Work settings on the branch
+
+**Settings → Library** on B also has two work settings for each library
+joined, both off by default:
+
+- **Download for other members of <library>.** Off: B asks A only for
+  work on the store accounts of the A user who owns B, its owner's own
+  books (including jobs pinned to one plugin instance). On: B also takes
+  work for A's other members, where A trusts B with it (an
+  Administrator's or Owner's branch). A still hands B only
+  work it is trusted with, so this setting never widens trust.
+- **Keep copies of other members' books.** Off: a book B acquires for
+  another member goes only to A's outputs. On: it is also written to B's
+  own outputs, as B's owner's books always are. It only matters while the
+  first setting is on.
+
+They apply to the next job B asks for; a job already running finishes.
+The same people may change them, through the same routes:
+`POST /api/config/join/sharing` takes `work_for_members` and
+`keep_member_copies` too, and a body that leaves one out keeps it as it is.
 
 ### Branch titles on the library
 
@@ -653,6 +729,74 @@ counts it as holding those titles. Files it already delivered are kept,
 marked as from a branch that left, until the owner removes the entries
 with **Remove** (or `POST /api/config/branches/titles/remove {node_id?}`).
 The files themselves stay in A's outputs.
+
+### Shared catalog
+
+A library can ask its branches whether they can supply works its people
+are looking at, without copying their catalogs. The answers say "available
+through B", and nothing is fetched until someone asks for it.
+
+1. **The library asks.** Each Discover candidate fetch ends with an ask,
+   at most every 15 minutes per daemon: A stores one question per trusted
+   branch and work (works of open wishes and Discover candidates) and
+   wakes each branch. A question already waiting, or answered within a
+   day, isn't asked again.
+2. **The branch pulls the questions.** On the wake, when it connects, and
+   every 15 minutes, B sends `catalog.questions` and gets up to 100
+   questions. A question that goes unanswered for 10 minutes is sent
+   again.
+3. **The branch answers.** B looks each work up in its own library and
+   sends `catalog.found` with the editions it holds: store, product id,
+   the formats it has, and metadata. A work it can't supply is named as
+   missing.
+4. **The library records the answers.** Each edition becomes a listing in
+   A's shared listing pool, from source `branch:<B's node id>`. A listing
+   counts for two days after B last named it. A later answer that no
+   longer names it expires it.
+5. **Discover and search show them.** When a Discover feed or a catalog
+   search page is read, each card or hit is matched to its work (the
+   card's own work, or the work of a store listing A's pool holds for one
+   of its store editions) and gets `available_through`: one entry per
+   current listing from a trusted branch, with the branch's node id, its
+   owner's display name, and the store and product id. The field is never
+   stored with the ranked feed, so it is current on every read.
+
+Questions name works by identifier only, because work ids differ between
+libraries:
+
+- A asks with the ASINs (and marketplace), ISBNs and OpenLibrary ids of its
+  editions of the work. Titles and authors are never compared.
+- B maps them to one of its works by a strong identifier (an ASIN or an
+  OpenLibrary id), or, when none matches, by ISBNs that reach one work
+  only. A question that reaches no work, or more than one, is answered as
+  missing.
+- A keeps an answered edition only when it lands on an edition A already
+  has of the asked work. An answer can't add works or editions to A.
+  An edition B names by ISBN only is dropped for now: the resolver places a
+  weak identifier only on an expression with a known language and
+  abridgement, which most store-scanned editions lack.
+
+An answer names no store account, user, or other library. A asks only
+branches it still trusts, and records answers only for questions it sent
+that branch.
+
+**What B lists.** B always lists its owner's books. It never lists books on a store account linked to no one, such as one a member disconnected. It lists its members'
+books too while **List my members' books to <library>** is on (the
+default, set per library in the sharing settings below). A member can keep
+their own books out with **Settings → Account → List my books to joined
+libraries** (`PUT /api/auth/profile/catalog-listing` `{"listed": false}`;
+`GET` also returns `libraries`, the number of libraries B is currently a
+branch of, and the app shows the setting only when it is above zero, and
+`always_listed`, true for an Owner, whose books are always listed, so the
+app shows that instead of the toggle). With **Share this branch's books with <library>**
+off, B lists nothing to that library and answers every question as
+missing.
+
+> [!NOTE]
+> Turning a listing setting off, or a member opting out, takes effect at
+> B's next answer. A asks again a day after B last answered, and a listing
+> stops counting two days after B last named it, so A can still show B as
+> a source for up to two days.
 
 ### No loops
 
@@ -698,8 +842,10 @@ shared stay in the library, marked as from a branch that left (see
 
 ## Not built yet
 
-- The sharing settings are set in **Settings → Library** (the operator or
-  an Owner). There is no CLI command for them yet.
+- The sharing settings and job caps are set in **Settings → Library**
+  (the operator or an Owner). There is no CLI command for them yet.
+- A branch answers only from its own library, not from other libraries it
+  joined.
 - The library's name is the host of its public origin. There is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the

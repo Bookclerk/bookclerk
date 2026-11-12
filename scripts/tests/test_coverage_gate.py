@@ -841,6 +841,39 @@ class ExportTest(unittest.TestCase):
             self.assertEqual(written, ["site test results"])
             self.assertEqual(cg.parse_junit((base / "out" / "site.junit.xml").read_text(encoding="utf-8")), cg.parse_junit(junit))
 
+    def test_parts_of_a_split_job_read_as_one_report(self) -> None:
+        config = cg.parse_config(CONFIG.replace('report = "site/lcov.info"\n', 'report = "site/lcov.info"\ntest_results = "site/junit.xml"\n'))
+        junit = (CORPUS / "junit__pytest_legacy").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            site = base / "in" / "site"
+            for n, report in ((2, "SF:a.ts\nDA:1,0\nDA:2,3\nend_of_record\n"), (10, "SF:a.ts\nDA:1,2\nDA:2,0\nend_of_record\n")):
+                (site / f"part-{n}").mkdir(parents=True)
+                (site / f"part-{n}" / "lcov.info").write_text(report, encoding="utf-8")
+                (site / f"part-{n}" / "junit.xml").write_text(junit, encoding="utf-8")
+            # Not parts: a leading zero, a non-number, a file named like a part.
+            for name in ("part-01", "part-x"):
+                (site / name).mkdir()
+                (site / name / "lcov.info").write_text("SF:b.ts\nDA:1,1\nend_of_record\n", encoding="utf-8")
+            self.assertEqual(
+                [p.relative_to(site).as_posix() for p in cg.report_files(base / "in", "site/lcov.info")],
+                ["part-2/lcov.info", "part-10/lcov.info"],
+            )
+            cwd = Path.cwd()
+            os.chdir(base)
+            try:
+                results = cg.read_reports(config, base / "in", frozenset())
+                written = cg.export(config, base / "in", base / "out", frozenset())
+            finally:
+                os.chdir(cwd)
+            hits = next(r for r in results if r.area.name == "site").hits
+            # A line counts as hit when any part hit it.
+            self.assertEqual(hits, {"tools/site/a.ts": {1: 2, 2: 3}})
+            self.assertIn("site test results", written)
+            merged = cg.parse_junit((base / "out" / "site.junit.xml").read_text(encoding="utf-8"))
+            self.assertEqual(merged, cg.parse_junit(junit) * 2)
+        self.assertEqual(cg.report_files(Path(tmp), "site/lcov.info"), [])
+
     def test_bundle_limits(self) -> None:
         many = [(f"f{n:05}.js", 1) for n in range(cg.MAX_BUNDLE_FILES + 5)]
         self.assertEqual(len(cg.select_bundle_files(many)), cg.MAX_BUNDLE_FILES)

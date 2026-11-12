@@ -4,6 +4,14 @@
   implemented (Refs #192). The live socket's change detection (count and
   newest-stamp reads per poll) is superseded by per-topic counters
   (2026-11-10, see [Live socket](#live-socket-and-the-host-consent-screen)).
+  The Host's copy of every title it acquires (*Node-local instances
+  (H-2)* and *The Host's own destinations* under Phase 3, and "both nodes
+  end up with a local copy" under *Node kinds, ownership, and the Host
+  role*) is superseded (2026-11-12) by the
+  [library catalog network](library-catalog-network.md): a branch keeps
+  its owner's titles, and other members' titles only when its operator
+  turns on "Keep copies of other members' books" (see
+  [Work settings on the branch](../server/cluster-hosts.md#work-settings-on-the-branch)).
 - **Date:** 2026-09-29 (Phase 2 and the Phase 3 decision: 2026-10-13; the
   cluster-install decision, the Phase 3 implementation, and the node and
   install/deploy terminology: 2026-10-14)

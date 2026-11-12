@@ -17,8 +17,20 @@
 //! - every marketplace a `catalog.sync` title the library would accept
 //!   carries is at most 16 lowercase ASCII letters and digits, checked byte
 //!   by byte here, since the library scopes ASIN identifiers to it.
+//! - a `catalog.ask` or `catalog.found` frame the library or branch would
+//!   accept (`questions_problem` / `found_problem` find nothing) names at
+//!   most 100 works, each once, with plain correlation keys; every
+//!   identifier is plain ASCII with a marketplace exactly when it is an
+//!   ASIN; and every answer lists 1 to 8 distinct editions with a
+//!   non-blank title. Each is checked byte by byte here, not through the
+//!   validators, since the library writes them into its listing pool.
 
-use bookclerk_node_proto::{Body, Frame, FRAME_VERSION, MAX_FRAME_BYTES, MAX_LIBRARY_ID_BYTES};
+use std::collections::BTreeSet;
+
+use bookclerk_node_proto::{
+    found_problem, questions_problem, Body, Frame, LookupScheme, FRAME_VERSION, MAX_FRAME_BYTES,
+    MAX_LIBRARY_ID_BYTES,
+};
 use serde_json::Value;
 
 /// Runs every invariant on one input; panics on a violation.
@@ -60,6 +72,7 @@ pub fn check(data: &[u8]) {
             );
         }
     }
+    check_lookup(&frame.body);
     let text_again = frame.to_text();
     // Serializing can lengthen an opaque JSON field (`1e9` is written out
     // in full), past the limit the parser enforces: such a frame is never
@@ -75,6 +88,85 @@ pub fn check(data: &[u8]) {
         same(&json(&again), &json(&frame)),
         "a frame changed across a round trip: {frame:?} became {again:?}"
     );
+}
+
+/// True for a plain token: 1 to `max` ASCII letters, digits and `-`.
+fn plain(text: &str, max: usize) -> bool {
+    !text.is_empty()
+        && text.len() <= max
+        && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// The catalog lookup invariants on an accepted question or answer list.
+fn check_lookup(body: &Body) {
+    match body {
+        Body::CatalogAsk { works } if questions_problem(works).is_none() => {
+            assert!(works.len() <= 100, "too many questions accepted");
+            let mut seen = BTreeSet::new();
+            for work in works {
+                assert!(plain(&work.work, 64), "work ref {:?} accepted", work.work);
+                assert!(seen.insert(&work.work), "a work asked twice was accepted");
+                assert!(
+                    (1..=16).contains(&work.identifiers.len()),
+                    "a question with {} identifiers accepted",
+                    work.identifiers.len()
+                );
+                for id in &work.identifiers {
+                    assert!(plain(&id.value, 64), "identifier {:?} accepted", id.value);
+                    let asin = id.scheme == LookupScheme::Asin;
+                    assert_eq!(
+                        asin,
+                        !id.marketplace.is_empty(),
+                        "marketplace {:?} accepted on {:?}",
+                        id.marketplace,
+                        id.scheme
+                    );
+                }
+            }
+        }
+        Body::CatalogFound { answers, missing } if found_problem(answers, missing).is_none() => {
+            assert!(
+                answers.len() + missing.len() <= 100,
+                "too many answers accepted"
+            );
+            let mut seen = BTreeSet::new();
+            for answer in answers {
+                assert!(
+                    plain(&answer.work, 64),
+                    "work ref {:?} accepted",
+                    answer.work
+                );
+                assert!(
+                    seen.insert(&answer.work),
+                    "a work answered twice was accepted"
+                );
+                assert!(
+                    (1..=8).contains(&answer.editions.len()),
+                    "an answer with {} editions accepted",
+                    answer.editions.len()
+                );
+                let mut keys = BTreeSet::new();
+                for edition in &answer.editions {
+                    assert!(
+                        !edition.metadata.title.trim().is_empty(),
+                        "a blank title accepted"
+                    );
+                    assert!(
+                        keys.insert((&edition.store, &edition.marketplace, &edition.product_id)),
+                        "an edition listed twice was accepted"
+                    );
+                }
+            }
+            for work in missing {
+                assert!(plain(work, 64), "missing work ref {work:?} accepted");
+                assert!(
+                    seen.insert(work),
+                    "a work both answered and missing was accepted"
+                );
+            }
+        }
+        _ => {}
+    }
 }
 
 /// `frame` as a JSON tree.

@@ -14,6 +14,8 @@ pub mod account_shares;
 pub mod accounts;
 pub mod bookclerk_receipts;
 pub mod books;
+pub mod catalog_listing_optouts;
+pub mod catalog_lookups;
 pub mod claim_tickets;
 pub mod cluster_identity;
 pub mod cluster_leases;

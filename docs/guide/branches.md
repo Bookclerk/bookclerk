@@ -80,6 +80,25 @@ A branch you joined as a Member receives only work for your own store
 accounts. A branch joined by an Administrator or Owner can receive any
 work from the library.
 
+## What the library can see of your books
+
+A library can ask your branch whether it can supply a book its people are
+looking at. Its people then see **Available through** your branch on that
+book in [Discover and search](discover.md#available-through-a-branch).
+
+Your branch answers with the books in its own library: always yours, and
+your members' books unless you turn off **List my members' books** for that
+library in **Settings → Library**. Each member can also keep their own books
+out with **List my books to joined libraries** in **Settings → Account**.
+With **Share this branch's books** off, your branch lists nothing to that
+library.
+
+A change takes effect at your branch's next answer, so the library can
+show your branch as a source for up to two days afterwards.
+
+The library sees the book and that your branch can supply it. It never
+sees whose account it's on. Nothing is copied until someone asks for it.
+
 ## Leave a library
 
 On the branch, open **Settings → Library → Leave library**.
