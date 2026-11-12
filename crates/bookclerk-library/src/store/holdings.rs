@@ -51,6 +51,30 @@ fn stored_ids(product_ids: &[String]) -> Vec<String> {
     ids
 }
 
+/// Splits `ids` into chunks of at most `width`, halving a chunk until
+/// `fits` admits its statement, so long ids (UUIDs on D1) stay under the
+/// backend's `maxPayloadBytes` where a bind count alone would not.
+fn fitting_chunks<'a>(
+    ids: &'a [String],
+    width: usize,
+    fits: impl Fn(&[String]) -> bool,
+) -> Vec<&'a [String]> {
+    let mut out = Vec::new();
+    let mut width = width.max(1);
+    let mut rest = ids;
+    while !rest.is_empty() {
+        let mut n = width.min(rest.len());
+        while n > 1 && !fits(&rest[..n]) {
+            n /= 2;
+        }
+        let (part, tail) = rest.split_at(n);
+        out.push(part);
+        width = n;
+        rest = tail;
+    }
+    out
+}
+
 /// Which holdings of one account a removal takes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HoldingSelection<'a> {
@@ -102,8 +126,7 @@ impl LibraryStore {
             return Ok(());
         }
         let product_ids = stored_ids(product_ids);
-        let mut batches = WriteBatches::new(self.db_capabilities(), "holding stamp");
-        for chunk in product_ids.chunks(self.lookup_chunk()) {
+        let stamp = |chunk: &[String]| {
             let marks = vec!["?"; chunk.len()].join(", ");
             let mut params = vec![
                 batch::text(pass_id),
@@ -112,15 +135,20 @@ impl LibraryStore {
                 batch::text(plugin_key),
             ];
             params.extend(chunk.iter().map(|id| batch::text(id)));
-            let stmt = batch::exec(
+            batch::exec(
                 &format!(
                     "UPDATE holdings SET seen_pass = ? \
                      WHERE plugin_key = ? AND account_id = ? AND listing_id IN \
                      (SELECT id FROM store_listings WHERE plugin_key = ? AND product_id IN ({marks}))"
                 ),
                 params,
-            );
-            if let Some(full) = batches.push(stmt)? {
+            )
+        };
+        let mut batches = WriteBatches::new(self.db_capabilities(), "holding stamp");
+        for chunk in fitting_chunks(&product_ids, self.lookup_chunk(), |part| {
+            self.admits_statement(&stamp(part))
+        }) {
+            if let Some(full) = batches.push(stamp(chunk))? {
                 self.run_holdings_batch("holdings-seen", full).await?;
             }
         }
@@ -158,17 +186,28 @@ impl LibraryStore {
         match selection {
             HoldingSelection::Products(ids) => {
                 let ids = stored_ids(ids);
-                for chunk in ids.chunks(self.lookup_chunk()) {
+                let of_products = |chunk: &[String]| {
                     let listings = Query::select()
                         .column(store_listings::Column::Id)
                         .from(store_listings::Entity)
                         .and_where(store_listings::Column::PluginKey.eq(plugin_key))
                         .and_where(store_listings::Column::ProductId.is_in(chunk.iter().cloned()))
                         .to_owned();
-                    let cond =
-                        Condition::all().add(holdings::Column::ListingId.in_subquery(listings));
+                    Condition::all().add(holdings::Column::ListingId.in_subquery(listings))
+                };
+                let fits = |part: &[String]| {
+                    crate::control_plane::sea_exec(&self.selected_page(
+                        plugin_key,
+                        account_id,
+                        "",
+                        of_products(part),
+                    ))
+                    .map(|stmt| self.admits_read(&stmt))
+                    .unwrap_or(true)
+                };
+                for chunk in fitting_chunks(&ids, self.lookup_chunk(), fits) {
                     total += self
-                        .remove_selected(plugin_key, account_id, cond, None)
+                        .remove_selected(plugin_key, account_id, of_products(chunk), None)
                         .await?;
                 }
             }
@@ -201,13 +240,8 @@ impl LibraryStore {
         let mut after = String::new();
         let mut total = 0;
         loop {
-            let page: Vec<Doomed> = holdings::Entity::find()
-                .filter(holdings::Column::PluginKey.eq(plugin_key))
-                .filter(holdings::Column::AccountId.eq(account_id))
-                .filter(holdings::Column::Id.gt(after.clone()))
-                .filter(cond.clone())
-                .order_by_asc(holdings::Column::Id)
-                .limit(self.removal_page())
+            let page: Vec<Doomed> = self
+                .selected_page(plugin_key, account_id, &after, cond.clone())
                 .all(&self.db)
                 .await
                 .map_err(LibraryError::Orm)?
@@ -230,6 +264,24 @@ impl LibraryStore {
                 return Ok(total);
             }
         }
+    }
+
+    /// The read of one keyset page of the account's holdings matching
+    /// `cond`, after holding id `after`.
+    fn selected_page(
+        &self,
+        plugin_key: &str,
+        account_id: &str,
+        after: &str,
+        cond: Condition,
+    ) -> sea_orm::Select<holdings::Entity> {
+        holdings::Entity::find()
+            .filter(holdings::Column::PluginKey.eq(plugin_key))
+            .filter(holdings::Column::AccountId.eq(account_id))
+            .filter(holdings::Column::Id.gt(after.to_string()))
+            .filter(cond)
+            .order_by_asc(holdings::Column::Id)
+            .limit(self.removal_page())
     }
 
     /// Deletes `doomed`, each with its `holding_removed` event, in batches
@@ -732,6 +784,46 @@ mod tests {
             assert_eq!(n, 30, "{profile:?}");
             assert!(held(&store).await.is_empty(), "{profile:?}");
             assert_eq!(count(&store, HOLDING_REMOVED).await, 30, "{profile:?}");
+        }
+    }
+
+    /// Stamping and removing by long product ids (UUIDs) sends only
+    /// statements the backend admits: on D1 a bind-count-wide chunk of
+    /// UUIDs is past `maxPayloadBytes`, so the chunks narrow.
+    #[tokio::test]
+    async fn long_product_ids_fit_the_payload_cap_under_every_profile() {
+        for profile in Profile::ALL {
+            let store = library(profile, &["B1", "B2", "B3"]).await;
+            let mut listed: Vec<String> =
+                (0..300).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+            listed.push("B1".into());
+            listed.push("B3".into());
+            store
+                .mark_holdings_seen(PLUGIN, "a1", "pass-1", &listed)
+                .await
+                .unwrap();
+            store
+                .remove_account_holdings(PLUGIN, "a1", HoldingSelection::UnseenBy("pass-1"))
+                .await
+                .unwrap();
+            assert_eq!(
+                held(&store).await,
+                [
+                    ("B1".to_string(), "account:a1".to_string()),
+                    ("B3".to_string(), "account:a1".to_string())
+                ],
+                "{profile:?}: B2 went, the stamped ones stayed"
+            );
+
+            let mut gone: Vec<String> =
+                (0..300).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+            gone.push("B3".into());
+            let n = store
+                .remove_account_holdings(PLUGIN, "a1", HoldingSelection::Products(&gone))
+                .await
+                .unwrap();
+            assert_eq!(n, 1, "{profile:?}");
+            assert_eq!(held(&store).await.len(), 1, "{profile:?}");
         }
     }
 
