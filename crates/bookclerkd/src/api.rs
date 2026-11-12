@@ -64,6 +64,9 @@ pub struct AppState {
     pub database_registry: Arc<RwLock<DatabaseRegistry>>,
     /// Wakes the durable job worker when a new row is admitted.
     pub job_notify: Arc<Notify>,
+    /// How this node splits its machine between its own work and each
+    /// library it is a branch of ([`crate::cluster_link::capacity`]).
+    pub capacity: Arc<crate::cluster_link::capacity::CapacityShares>,
     /// Shared barrier covering admission, claim, and handler execution.
     ///
     /// Workers and admit hold a read permit. A database plugin swap takes the
@@ -1224,6 +1227,9 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
             crate::cluster_link::join::get_join_sharing,
             crate::cluster_link::join::post_join_sharing
         ))
+        // Settings → Library's job cap on a branch (operator or Owner; the
+        // handler checks).
+        .routes(routes!(crate::cluster_link::join::post_join_capacity))
         // The library lets the operator or an Owner revoke any host and
         // anyone else only the hosts they own.
         .routes(routes!(crate::node_api::delete_node_credential))
@@ -7523,6 +7529,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -7951,6 +7958,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8053,6 +8061,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8213,6 +8222,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8955,6 +8965,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(store)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),

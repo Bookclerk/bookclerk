@@ -198,6 +198,12 @@ class PlannedLegsTests(unittest.TestCase):
             with self.subTest(matrix=matrix):
                 self.assertEqual(cl.planned_legs({"job_tray": "true", "os_matrix": matrix}), ["tray-0"])
 
+    def test_split_test_job_has_one_leg_per_part(self) -> None:
+        self.assertEqual(
+            cl.planned_legs({"job_test": "true", "test_parts": "[1,2,3]"}), ["test-0", "test-1", "test-2"]
+        )
+        self.assertEqual(cl.planned_legs({"job_test": "true", "test_parts": "[1]"}), ["test-0"])
+
     def test_draft_plan(self) -> None:
         self.assertEqual(cl.planned_legs({"job_check": "true", "job_test": "true"}), ["test-0", "check-0"])
         self.assertEqual(cl.planned_legs({}), [])

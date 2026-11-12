@@ -13676,6 +13676,203 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
+    "/api/config/join/capacity": {
+      "post": {
+        "tags": [
+          "Cluster"
+        ],
+        "summary": "`POST /api/config/join/capacity`: Settings → Library's job cap for one\nlibrary this install is a branch of. The operator or an Owner (verified\nfrom the stored role); anyone else gets 403. The running link's share\nchanges at once: its claims stop at the new share and its next\nheartbeat reports the library the new part of the machine. Jobs it\nalready runs finish.",
+        "operationId": "post_join_capacity",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapacityBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The link after the change, with its share of the machine now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharingChanged"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`max_jobs` is missing or above 16 jobs (`invalid`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "a library's job cap is 0 to 16 jobs",
+                  "error": "invalid"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorAnswer"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The user is not an active Owner.",
+                    "value": {
+                      "error": "forbidden"
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "no_user": {
+                    "summary": "The session has no user account.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This install is not a branch of that library (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "this install is not a branch of that library",
+                  "error": "not_found"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `cluster_id` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The library database could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
     "/api/config/node-credentials/{node_id}": {
       "delete": {
         "tags": [
@@ -27374,6 +27571,33 @@
           }
         }
       },
+      "CapacityBody": {
+        "type": "object",
+        "description": "`POST /api/config/join/capacity` body: one library and the job cap to\nset for it.",
+        "required": [
+          "cluster_id",
+          "max_jobs"
+        ],
+        "properties": {
+          "cluster_id": {
+            "type": "string",
+            "description": "The library (owner cluster id).",
+            "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
+          },
+          "max_jobs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The most jobs to run for the library at once (0 runs none); `null`\ngives it an equal share of the machine. Required: a body without it\nis refused rather than read as `null`.",
+            "example": 1,
+            "maximum": 16,
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "CatalogListing": {
         "type": "object",
         "description": "Whether the caller's books are listed to the libraries this install is\na branch of (`GET` / `PUT /api/auth/profile/catalog-listing`).",
@@ -27922,6 +28146,25 @@
             "type": "boolean",
             "description": "\"Include books from my own branches\".",
             "example": true
+          },
+          "max_jobs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The most jobs this install runs for the library at once, as its operator set it; `null` gives the library an equal share of the machine.",
+            "example": 2,
+            "maximum": 16,
+            "minimum": 0
+          },
+          "job_share": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "How many jobs the library may have running here now: its share of the machine after this install's own work, within `max_jobs`. Only the listing and sharing routes report it, and only while the link's client runs.",
+            "example": 2,
+            "minimum": 0
           },
           "list_members_books": {
             "type": "boolean",

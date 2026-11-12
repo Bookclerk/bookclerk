@@ -269,6 +269,9 @@ fn spawn_network_worker(state: Arc<AppState>, index: u32) {
             };
             match claim_with_replay(&library, &claim).await {
                 Ok(Some(claimed)) => {
+                    // Own work comes first: the libraries this node is a
+                    // branch of share what is left while it runs.
+                    let _own = state.capacity.own_job();
                     run_claimed_job(
                         state.clone(),
                         claimed.job,

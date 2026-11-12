@@ -1429,6 +1429,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         share_books INTEGER NOT NULL DEFAULT 1 CHECK (share_books IN (0, 1)),
         include_branches INTEGER NOT NULL DEFAULT 1 CHECK (include_branches IN (0, 1)),
         ancestry_json TEXT NOT NULL DEFAULT '[]',
+        max_jobs INTEGER CHECK (max_jobs IS NULL OR (max_jobs >= 0 AND max_jobs <= 16)),
         list_members_books INTEGER NOT NULL DEFAULT 1 CHECK (list_members_books IN (0, 1))
     )",
     ),

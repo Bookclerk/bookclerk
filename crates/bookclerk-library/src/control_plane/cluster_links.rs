@@ -18,7 +18,7 @@ use chrono::{SecondsFormat, Utc};
 use rand::RngCore as _;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QueryTrait};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::control_plane::{sea_probe, Bump, LiveTopic};
@@ -145,10 +145,174 @@ pub struct ClusterLink {
     /// The owner library's ancestry as it last reported it: its own
     /// cluster id first, then each library above it.
     pub ancestry: Vec<String>,
+    /// The operator's cap on jobs run for this library at once; `None`
+    /// leaves the link its equal share of the machine.
+    pub max_jobs: Option<LinkJobCap>,
     /// "List my members' books to *library*" (on by default): catalog
     /// lookups from that library are answered with the members' books
     /// (except those of members who opted out) as well as the owner's.
     pub list_members_books: bool,
+}
+
+/// The most jobs a branch runs for one library at once, as its operator
+/// set it: 0 (runs nothing for that library) to [`LinkJobCap::MAX`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct LinkJobCap(u8);
+
+impl LinkJobCap {
+    /// The highest cap an operator may set: the most job slots a branch
+    /// ever counts its machine as having.
+    pub const MAX: u8 = 16;
+
+    /// A cap of `jobs`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] above [`Self::MAX`].
+    pub fn new(jobs: u32) -> Result<Self> {
+        u8::try_from(jobs)
+            .ok()
+            .filter(|jobs| *jobs <= Self::MAX)
+            .map(Self)
+            .ok_or_else(|| {
+                LibraryError::Invalid(format!("a library's job cap is 0 to {} jobs", Self::MAX))
+            })
+    }
+
+    /// The cap in jobs.
+    #[must_use]
+    pub fn jobs(self) -> usize {
+        usize::from(self.0)
+    }
+
+    /// A stored cap; a value outside the range (a hand-edited row) reads as
+    /// no cap rather than failing the link.
+    fn from_column(raw: Option<i64>) -> Option<Self> {
+        raw.and_then(|raw| u32::try_from(raw).ok())
+            .and_then(|raw| Self::new(raw).ok())
+    }
+}
+
+/// `POST /api/config/join/capacity` body: one library and the job cap to
+/// set for it.
+#[derive(Debug, utoipa::ToSchema)]
+// Read by the schema only (no unknown fields); `CapacityFields` enforces it.
+#[serde(deny_unknown_fields)]
+pub struct CapacityBody {
+    /// The library (owner cluster id).
+    #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
+    cluster_id: String,
+    /// The most jobs to run for the library at once (0 runs none); `null`
+    /// gives it an equal share of the machine. Required: a body without it
+    /// is refused rather than read as `null`.
+    #[schema(value_type = Option<u32>, required = true, example = 1, minimum = 0, maximum = 16)]
+    max_jobs: Option<Option<u32>>,
+}
+
+/// [`CapacityBody`]'s fields as JSON carries them; read only from a JSON
+/// object ([`CapacityBody`]'s `Deserialize`), never from an array.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapacityFields {
+    /// See [`CapacityBody`].
+    cluster_id: String,
+    /// See [`CapacityBody`]; `None` when absent, `Some(None)` for `null`.
+    #[serde(default, deserialize_with = "present")]
+    max_jobs: Option<Option<u32>>,
+}
+
+impl<'de> Deserialize<'de> for CapacityBody {
+    /// Reads the body from a JSON object only: a derived struct would also
+    /// take its fields positionally from an array.
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        /// Accepts a map and nothing else.
+        struct ObjectOnly;
+
+        impl<'de> serde::de::Visitor<'de> for ObjectOnly {
+            type Value = CapacityFields;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a JSON object with cluster_id and max_jobs")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> std::result::Result<CapacityFields, A::Error> {
+                CapacityFields::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+            }
+        }
+
+        let fields = deserializer.deserialize_map(ObjectOnly)?;
+        Ok(Self {
+            cluster_id: fields.cluster_id,
+            max_jobs: fields.max_jobs,
+        })
+    }
+}
+
+/// Reads a field that is present, `null` included, as `Some`; an absent
+/// field stays `None` (its `#[serde(default)]`).
+///
+/// # Errors
+///
+/// Returns the deserializer's error for a value that is not a number or
+/// `null`.
+fn present<'de, D, T>(deserializer: D) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// A validated job cap change: the library it names (trimmed) and its new
+/// cap, `None` for an equal share.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobCapRequest {
+    /// The library (owner cluster id), surrounding whitespace removed.
+    pub cluster_id: String,
+    /// The cap to store; `None` clears it (an equal share).
+    pub max_jobs: Option<LinkJobCap>,
+}
+
+impl CapacityBody {
+    /// Checks the body: `max_jobs` must be present (`null` included) and at
+    /// most [`LinkJobCap::MAX`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] when `max_jobs` is missing or above
+    /// the maximum.
+    pub fn validate(self) -> Result<JobCapRequest> {
+        let Some(max_jobs) = self.max_jobs else {
+            return Err(LibraryError::Invalid(
+                "max_jobs is required (null for an equal share)".into(),
+            ));
+        };
+        Ok(JobCapRequest {
+            cluster_id: self.cluster_id.trim().to_string(),
+            max_jobs: max_jobs.map(LinkJobCap::new).transpose()?,
+        })
+    }
+}
+
+/// Parses and validates a `POST /api/config/join/capacity` body from its
+/// raw bytes, sans IO, the way the route reads it: JSON into
+/// [`CapacityBody`], then [`CapacityBody::validate`].
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for bytes that are not the body's JSON
+/// shape (unknown or duplicate fields, wrong types, numbers outside `u32`),
+/// a missing `max_jobs`, or a cap above [`LinkJobCap::MAX`].
+pub fn parse_job_cap_request(body: &[u8]) -> Result<JobCapRequest> {
+    serde_json::from_slice::<CapacityBody>(body)
+        .map_err(|err| LibraryError::Invalid(format!("capacity body: {err}")))?
+        .validate()
 }
 
 impl ClusterLink {
@@ -175,6 +339,7 @@ impl From<cluster_links::Model> for ClusterLink {
                 .into_iter()
                 .filter(|id| bookclerk_node_proto::is_cluster_id(id))
                 .collect(),
+            max_jobs: LinkJobCap::from_column(row.max_jobs),
             list_members_books: row.list_members_books != 0,
         }
     }
@@ -269,6 +434,7 @@ pub async fn record_cluster_link(
         share_books: Set(1),
         include_branches: Set(1),
         ancestry_json: Set("[]".into()),
+        max_jobs: Set(None),
         list_members_books: Set(1),
     };
     let insert = cluster_links::Entity::insert(row).on_conflict(
@@ -470,6 +636,38 @@ pub async fn set_cluster_link_sharing(
                 .add(cluster_links::Column::ShareBooks.ne(i64::from(share_books)))
                 .add(cluster_links::Column::IncludeBranches.ne(i64::from(include_branches))),
         );
+    let updated = store
+        .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
+        .await?;
+    Ok(updated == 1)
+}
+
+/// Sets the most jobs this install runs for one library at once; `None`
+/// clears the cap, leaving the link its equal share of the machine.
+/// Answers false when no such link exists. The running client picks the
+/// new cap up on the next share update.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn set_cluster_link_job_cap(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    max_jobs: Option<LinkJobCap>,
+) -> Result<bool> {
+    let value = max_jobs.map(|cap| i64::from(cap.0));
+    let update = cluster_links::Entity::update_many()
+        .col_expr(cluster_links::Column::MaxJobs, Expr::value(value))
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id));
+    let changed = match value {
+        Some(value) => sea_orm::Condition::any()
+            .add(cluster_links::Column::MaxJobs.is_null())
+            .add(cluster_links::Column::MaxJobs.ne(value)),
+        None => sea_orm::Condition::all().add(cluster_links::Column::MaxJobs.is_not_null()),
+    };
+    let probe = cluster_links::Entity::find()
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(changed);
     let updated = store
         .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
         .await?;
@@ -756,6 +954,71 @@ mod tests {
             remote_node_id: "node-1".into(),
             spki_pin: pin.map(str::to_string),
         }
+    }
+
+    /// A job cap is stored, kept across a re-enrollment, cleared, and
+    /// refused above the maximum; an unknown cluster answers false. Runs
+    /// under every database test profile.
+    #[tokio::test]
+    async fn a_links_job_cap_round_trips() {
+        let _lock = master_key_test_lock_async().await;
+        for profile in crate::test_support::Profile::ALL {
+            let kit = crate::test_support::sqlite::memory(profile).await;
+            let store = kit.store().clone();
+            let dir = tempfile::tempdir().unwrap();
+            crate::configure_master_key(dir.path()).expect("master key");
+            job_cap_round_trip(&store).await;
+            assert_eq!(
+                kit.refused_begins(),
+                0,
+                "{profile:?} took an interactive transaction"
+            );
+        }
+        assert!(LinkJobCap::new(u32::from(LinkJobCap::MAX) + 1).is_err());
+        assert!(LinkJobCap::new(u32::from(LinkJobCap::MAX)).is_ok());
+    }
+
+    /// Writes, keeps, clears and misses a job cap on `store`.
+    async fn job_cap_round_trip(store: &LibraryStore) {
+        let store = store.clone();
+        let keys = ClusterLinkKeys::from_bytes(&[3; 32], &[4; 32]);
+        record_cluster_link(&store, &new_link(None), &keys)
+            .await
+            .unwrap();
+        let read = |store: LibraryStore| async move {
+            load_cluster_link(&store, "cluster-1")
+                .await
+                .unwrap()
+                .expect("the link")
+                .max_jobs
+        };
+        assert_eq!(read(store.clone()).await, None);
+        let cap = LinkJobCap::new(3).unwrap();
+        assert!(set_cluster_link_job_cap(&store, "cluster-1", Some(cap))
+            .await
+            .unwrap());
+        assert_eq!(read(store.clone()).await, Some(cap));
+        assert_eq!(cap.jobs(), 3);
+        record_cluster_link(&store, &new_link(None), &keys)
+            .await
+            .unwrap();
+        assert_eq!(
+            read(store.clone()).await,
+            Some(cap),
+            "re-enrollment dropped the cap"
+        );
+        let none = LinkJobCap::new(0).unwrap();
+        assert!(set_cluster_link_job_cap(&store, "cluster-1", Some(none))
+            .await
+            .unwrap());
+        assert_eq!(read(store.clone()).await, Some(none));
+        assert!(set_cluster_link_job_cap(&store, "cluster-1", None)
+            .await
+            .unwrap());
+        assert_eq!(read(store.clone()).await, None);
+        assert!(!set_cluster_link_job_cap(&store, "nope", Some(cap))
+            .await
+            .unwrap());
     }
 
     /// Leaving marks the link left and deletes its keys; an unknown
