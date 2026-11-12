@@ -81,9 +81,10 @@ pub use clerks::{library_contents, owner_nodes_visible_to, remove_owner_node, Li
 pub use cluster_links::{
     decode_spki_pin, join_cycle, join_overflows_ancestry, leave_cluster_link, library_ancestry,
     list_cluster_links, load_cluster_link, load_cluster_link_keys, mark_cluster_link_revoked,
-    record_cluster_link, set_cluster_link_ancestry, set_cluster_link_listing,
-    set_cluster_link_settings, set_cluster_link_sharing, set_cluster_link_state,
-    set_cluster_link_work, ClusterLink, ClusterLinkKeys, ClusterLinkSettings, NewClusterLink,
+    parse_job_cap_request, record_cluster_link, set_cluster_link_ancestry,
+    set_cluster_link_job_cap, set_cluster_link_listing, set_cluster_link_settings,
+    set_cluster_link_sharing, set_cluster_link_state, set_cluster_link_work, CapacityBody,
+    ClusterLink, ClusterLinkKeys, ClusterLinkSettings, JobCapRequest, LinkJobCap, NewClusterLink,
     CLUSTER_LINK_ACTIVE, CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
 };
 pub use cron_fires::{

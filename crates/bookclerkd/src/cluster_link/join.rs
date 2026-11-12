@@ -71,7 +71,7 @@ use serde::Deserialize;
 use serde_json::json;
 use zeroize::Zeroizing;
 
-use super::api::link_json;
+use super::api::{link_json, shared_link_json};
 use crate::api::AppState;
 use crate::auth::UserCaller;
 use crate::node_api::branch::no_store;
@@ -1331,6 +1331,102 @@ pub async fn post_join_leave(
     }
 }
 
+/// The audit identity of a caller [`require_branch_admin`] let through.
+fn branch_actor(actor: &bookclerk_library::control_plane::ConfigActor) -> String {
+    use bookclerk_library::control_plane::ConfigActor;
+    match actor {
+        ConfigActor::ClusterOwner(owner) => format!("user:{}", owner.user_id()),
+        ConfigActor::NodeOwner(owner) => format!("user:{}", owner.user_id()),
+        ConfigActor::Administrator { id } | ConfigActor::Member { id } => format!("user:{id}"),
+        ConfigActor::Operator { .. } => "operator".to_string(),
+        ConfigActor::Bootstrap => "bootstrap".to_string(),
+        ConfigActor::Scheduler => "scheduler".to_string(),
+    }
+}
+
+/// `POST /api/config/join/capacity`: Settings → Library's job cap for one
+/// library this install is a branch of. The operator or an Owner (verified
+/// from the stored role); anyone else gets 403. The running link's share
+/// changes at once: its claims stop at the new share and its next
+/// heartbeat reports the library the new part of the machine. Jobs it
+/// already runs finish.
+#[utoipa::path(
+    post,
+    path = "/api/config/join/capacity",
+    request_body = bookclerk_library::control_plane::CapacityBody,
+    responses(
+        (status = 200, description = "The link after the change, with its share of the machine now.", body = SharingChanged),
+        (status = 400, description = "`max_jobs` is missing or above 16 jobs (`invalid`).", body = crate::http_error::ErrorDetail, example = json!({"error": "invalid", "detail": "a library's job cap is 0 to 16 jobs"})),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
+            ("forbidden" = (summary = "The user is not an active Owner.", value = json!({"error": "forbidden"}))),
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 404, description = "This install is not a branch of that library (`not_found`).", body = crate::http_error::ErrorDetail, example = json!({"error": "not_found", "detail": "this install is not a branch of that library"})),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
+    ),
+)]
+pub async fn post_join_capacity(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+    Json(body): Json<bookclerk_library::control_plane::CapacityBody>,
+) -> Response {
+    let actor = match require_branch_admin(&state, caller).await {
+        Ok(actor) => actor,
+        Err(refused) => return refused,
+    };
+    let actor = branch_actor(&actor);
+    let bookclerk_library::control_plane::JobCapRequest {
+        cluster_id,
+        max_jobs: cap,
+    } = match body.validate() {
+        Ok(request) => request,
+        Err(err) => return join_error(StatusCode::BAD_REQUEST, "invalid", &err.to_string()),
+    };
+    let store = state.library_snapshot().await;
+    let cluster_id = cluster_id.as_str();
+    // Stored and applied under one guard, so racing changes reach the
+    // running link in the order they were stored.
+    let cap_write = state.capacity.lock_cap_writes().await;
+    match bookclerk_library::control_plane::set_cluster_link_job_cap(&store, cluster_id, cap).await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return join_error(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "this install is not a branch of that library",
+            )
+        }
+        Err(err) => return crate::config_authority::events_error(err),
+    }
+    state.capacity.set_cap(cluster_id, cap);
+    drop(cap_write);
+    let max_jobs = cap.map(bookclerk_library::control_plane::LinkJobCap::jobs);
+    tracing::info!(%cluster_id, %actor, max_jobs = ?max_jobs, "branch job cap changed");
+    let detail = json!({ "cluster_id": cluster_id, "max_jobs": max_jobs }).to_string();
+    if let Err(err) = store
+        .insert_security_audit_event(&actor, "branch_job_cap_changed", Some(&detail))
+        .await
+    {
+        tracing::warn!(
+            %cluster_id,
+            %actor,
+            error = %err,
+            "could not record the branch job cap change in the security audit log"
+        );
+    }
+    match bookclerk_library::control_plane::load_cluster_link(&store, cluster_id).await {
+        Ok(Some(link)) => Json(SharingChanged {
+            cluster: shared_link_json(&state, &link),
+        })
+        .into_response(),
+        Ok(None) => join_error(StatusCode::NOT_FOUND, "not_found", "no such library"),
+        Err(err) => crate::config_authority::events_error(err),
+    }
+}
+
 /// `POST /api/config/join/sharing` body.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -1389,7 +1485,10 @@ pub async fn get_join_sharing(
     let store = state.library_snapshot().await;
     match list_cluster_links(&store).await {
         Ok(links) => Json(SharingSettings {
-            clusters: links.iter().map(link_json).collect(),
+            clusters: links
+                .iter()
+                .map(|link| shared_link_json(&state, link))
+                .collect(),
         })
         .into_response(),
         Err(err) => crate::config_authority::events_error(err),
@@ -1494,7 +1593,7 @@ pub async fn post_join_sharing(
     super::consent::notify_consent_changed();
     match bookclerk_library::control_plane::load_cluster_link(&store, cluster_id).await {
         Ok(Some(link)) => Json(SharingChanged {
-            cluster: link_json(&link),
+            cluster: shared_link_json(&state, &link),
         })
         .into_response(),
         Ok(None) => join_error(StatusCode::NOT_FOUND, "not_found", "no such library"),

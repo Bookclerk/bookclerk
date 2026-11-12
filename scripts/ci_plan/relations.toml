@@ -92,6 +92,8 @@ paths = [
     "fuzz/oracles/guest_sql_authz.rs",
     "fuzz/corpus/plan_authz/**",
     "fuzz/oracles/plan_authz.rs",
+    "fuzz/corpus/job_cap_request/**",
+    "fuzz/oracles/job_cap_request.rs",
 ]
 
 # The mux peer oracle is shared the same way with the plugin-sdk replay test.

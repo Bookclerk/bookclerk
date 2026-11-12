@@ -93,6 +93,10 @@ DIGITS_RE = re.compile(r"[0-9]+")
 #: Executable lines of one file: line number to hit count.
 LineHits = dict[int, int]
 
+#: The directory one part of a split test job writes its reports under
+#: (``part-1`` to ``part-99``, no leading zero).
+PART_DIR_RE = re.compile(r"part-([1-9][0-9]?)")
+
 #: The largest JUnit report the test results parser reads, in characters;
 #: a larger one is skipped whole.
 MAX_JUNIT_CHARS = 64 * 1024 * 1024
@@ -650,6 +654,36 @@ def measure(config: Config, reports: Path, diff: Path, plan: Path | None) -> Ver
     return judge(config, results, added)
 
 
+def report_files(reports: Path, relative: str) -> list[Path]:
+    """Find one area's report, or the parts a split test job wrote.
+
+    A job split into parts (the Rust ``test`` job, see
+    ``docs/contributing/ci.md#test-runner-and-retries``) writes each part's
+    report under ``part-<n>/`` beside where the whole report would go, so
+    ``rust/lcov.info`` becomes ``rust/part-1/lcov.info``,
+    ``rust/part-2/lcov.info`` and so on.
+
+    Args:
+        reports: The directory the ``coverage-*`` artifacts were downloaded to.
+        relative: The report's path in it, as the areas file names it.
+
+    Returns:
+        The whole report when it exists, then each part's report, in part
+        order; empty when there is neither. Only regular files count.
+    """
+    whole = reports / relative
+    parent = whole.parent
+    parts = []
+    if parent.is_dir():
+        for child in parent.iterdir():
+            match = PART_DIR_RE.fullmatch(child.name)
+            candidate = child / whole.name
+            if match and child.is_dir() and not child.is_symlink() and candidate.is_file() and not candidate.is_symlink():
+                parts.append((int(match.group(1)), candidate))
+    found = [whole] if whole.is_file() and not whole.is_symlink() else []
+    return found + [path for _, path in sorted(parts)]
+
+
 def read_reports(config: Config, reports: Path, full: frozenset[str]) -> list[AreaResult]:
     """Read each area's report from the downloaded artifacts.
 
@@ -668,11 +702,13 @@ def read_reports(config: Config, reports: Path, full: frozenset[str]) -> list[Ar
     workspace = Path.cwd().resolve().as_posix()
     results = []
     for area in config.areas:
-        report = reports / area.report
-        if not report.is_file():
+        files = report_files(reports, area.report)
+        if not files:
             results.append(AreaResult(area, measured=False))
             continue
-        text = report.read_text(encoding="utf-8", errors="replace")
+        # parse_lcov sums the records of one file, so the parts' reports
+        # read as one: a line counts as hit when any part hit it.
+        text = "\n".join(f.read_text(encoding="utf-8", errors="replace") for f in files)
         hits = {p: h for p, h in parse_lcov(text, area.root, workspace).items() if area.owns(p) and p not in config.generated}
         partial = area.workspace_check is not None and area.workspace_check not in full
         results.append(AreaResult(area, measured=True, hits=hits, partial=partial))
@@ -904,11 +940,12 @@ def export(config: Config, reports: Path, out: Path, full: frozenset[str]) -> li
     for area in config.areas:
         if area.test_results is None:
             continue
-        report = reports / area.test_results
-        # Checked before reading: a UTF-8 character is at most four bytes.
-        if not report.is_file() or report.stat().st_size > 4 * MAX_JUNIT_CHARS:
-            continue
-        cases = parse_junit(report.read_text(encoding="utf-8", errors="replace"))
+        cases = []
+        for report in report_files(reports, area.test_results):
+            # Checked before reading: a UTF-8 character is at most four bytes.
+            if report.stat().st_size > 4 * MAX_JUNIT_CHARS:
+                continue
+            cases += parse_junit(report.read_text(encoding="utf-8", errors="replace"))
         if cases:
             (out / f"{area.name}.junit.xml").write_text(write_junit(area.name, cases), encoding="utf-8")
             written.append(f"{area.name} test results")

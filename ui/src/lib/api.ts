@@ -2438,6 +2438,10 @@ export interface ClusterLinkView {
   work_for_members?: boolean;
   /** "Keep copies of other members' books" (off by default). */
   keep_member_copies?: boolean;
+  /** The most jobs this host runs for the library at once; `null` is an equal share of the machine. */
+  max_jobs?: number | null;
+  /** Jobs the library may have running here now; absent while its link is not running. */
+  job_share?: number;
 }
 
 /**

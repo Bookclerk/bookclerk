@@ -518,6 +518,47 @@ there only when **Keep copies of other members' books** is on (see
 [Work settings on the branch](#work-settings-on-the-branch)). The owner
 says which titles are whose with each job.
 
+### Sharing this computer between libraries
+
+A branch of several libraries splits its work between them, so no one
+library can take the whole machine.
+
+1. **The machine's job slots** come from the branch's own heartbeat: its
+   CPU budget over 0.8 of a core and its memory budget over 512 MiB (what
+   one guest is assumed to need), whichever is smaller, from 1 to 16. A
+   drained branch (`bookclerk nodes set --drain`) has none, so its
+   libraries stop handing it work too. Until the branch records its first
+   heartbeat after starting (within seconds) it also has none.
+2. **The branch's own work comes first.** Each job its own workers run
+   takes a slot.
+3. **The rest is split equally** between the libraries it is a branch of,
+   one slot at a time in cluster id order. A library capped below its
+   equal share leaves its unused slots to the others.
+
+Each library sees only its share:
+
+- The branch claims no more of the library's jobs than its share. A share
+  that shrinks cancels nothing: jobs already running finish, and claims
+  wait until enough of them have.
+- The branch's heartbeat to that library reports its share of the
+  machine's CPU and memory, and of that share only what the machine has
+  free now, so the library's scheduler never counts on the whole machine
+  or on headroom other work already took. The library then applies its
+  own budget for the branch (`bookclerk nodes set` there) as it does for any
+  node; the branch's budget decides how many slots there are. Free disk is
+  reported whole.
+
+For example, a branch of two libraries with four slots runs up to two
+jobs for each. While it runs one job of its own, the first library (by
+cluster id) keeps two slots and the second gets one.
+
+**Settings → Library → Work for <library> on this computer** caps one
+library: **Equal share** (the default), **None** (no work for that
+library), or **Up to N jobs**. B's operator or an Owner of B may change
+it. The route is `POST /api/config/join/capacity`
+`{cluster_id, max_jobs}` (required; `null` for an equal share, 0 to 16), and the
+listing routes report each running library's `job_share` now.
+
 ## Asking the owner for a scan
 
 ```sh
@@ -640,8 +681,10 @@ all on by default:
   [Shared catalog](#shared-catalog)).
 
 B's operator or an Owner of B may change them. An Owner sees only the
-libraries and these settings; joining, leaving and plugin approvals
-stay the operator's. Anyone else is refused (403).
+libraries, these settings and each library's job cap (see
+[Sharing this computer between libraries](#sharing-this-computer-between-libraries));
+joining, leaving and plugin approvals stay the operator's. Anyone else is
+refused (403).
 
 The routes are `GET /api/config/join/sharing` (→ `{clusters}`) and
 `POST /api/config/join/sharing`
@@ -778,8 +821,8 @@ in the library, marked as from a branch that left (see
 
 ## Not built yet
 
-- The sharing settings are set in **Settings → Library** (the operator or
-  an Owner). There is no CLI command for them yet.
+- The sharing settings and job caps are set in **Settings → Library**
+  (the operator or an Owner). There is no CLI command for them yet.
 - **List my members' books** and a member's own opt-out have API routes
   only; the web app doesn't show them yet.
 - Search and Discover don't show branch listings yet, and a branch

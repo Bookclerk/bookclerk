@@ -12,6 +12,7 @@ import {
   formatCountdown,
   isClerkJoined,
   isConsentRedirect,
+  jobShareSummary,
   JoinApiError,
   joinErrorMessage,
   listClerks,
@@ -319,6 +320,16 @@ describe("listClerks", () => {
     vi.stubGlobal("fetch", fetchMock);
     await expect(listClerks()).resolves.toEqual({ node_id: "a", nodes: [] });
     expect(fetchMock.mock.calls[0][0]).toBe("/api/config/clerks");
+  });
+});
+
+describe("jobShareSummary", () => {
+  it("words an equal share, a cap and no work", () => {
+    expect(jobShareSummary(null, 2)).toBe("Equal share of this computer: 2 jobs at once now");
+    expect(jobShareSummary(undefined)).toBe("Equal share of this computer");
+    expect(jobShareSummary(3, 1)).toBe("Up to 3 jobs at once: 1 job at once now");
+    expect(jobShareSummary(1)).toBe("Up to 1 job at once");
+    expect(jobShareSummary(0, 0)).toBe("Runs no work for this library");
   });
 });
 
