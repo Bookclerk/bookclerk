@@ -481,7 +481,7 @@ export function setBranchSharing(
  * Settings → Library: "Use this computer to download" for one library this
  * server is a branch of (the operator or an Owner). Off makes this server a
  * window of that library: its plugins stop here and held jobs go back at
- * once. The two sharing settings are sent as they are.
+ * once. The other settings are left as they are.
  *
  * @param link - The library's link as last read.
  * @param download - The new setting.
@@ -495,8 +495,6 @@ export function setLinkDownload(
     method: "POST",
     body: {
       cluster_id: link.cluster_id,
-      share_books: link.share_books ?? true,
-      include_branches: link.include_branches ?? true,
       download,
     },
   });

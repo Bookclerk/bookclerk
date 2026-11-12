@@ -18,8 +18,8 @@
 //!    [`clear_window_books`] drops a library's rows outright (download
 //!    turned back on, or the link left).
 //! 3. [`window_view`] merges every window link's rows into one list: rows
-//!    are the same work when they reach the same local work, share an
-//!    identifier (ASIN with marketplace, ISBN, OpenLibrary edition or work
+//!    are the same work when they reach the same local work, share a
+//!    strong identifier (ASIN with marketplace, OpenLibrary edition or work
 //!    id), or are grouped together by the same library.
 //!
 //! Work ids are local to each library, so a library's work id is only a
@@ -29,8 +29,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bookclerk_node_proto::{
-    LookupEdition, LookupFormat, LookupIdentifier, LookupWork, WindowWork, MAX_FRAME_BYTES,
-    MAX_LOOKUP_EDITIONS, MAX_WINDOW_WORKS,
+    LookupEdition, LookupFormat, LookupIdentifier, LookupScheme, LookupWork, WindowWork,
+    MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS, MAX_WINDOW_WORKS,
 };
 use chrono::Utc;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
@@ -52,8 +52,8 @@ pub const WINDOW_BOOKS_READ: u64 = 200;
 /// [`MAX_FRAME_BYTES`] so the frame's envelope always fits.
 const WINDOW_PAGE_BUDGET: usize = MAX_FRAME_BYTES / 2;
 
-/// Most store accounts of one person a page reads books for.
-const MAX_PERSON_ACCOUNTS: usize = 64;
+/// Most account ids one read binds, whatever the plugin allows.
+const MAX_IN_ACCOUNTS: usize = 64;
 
 /// The store accounts linked to `user_id`, as `(plugin key, account id)`.
 async fn person_accounts(store: &LibraryStore, user_id: i64) -> Result<BTreeSet<(String, String)>> {
@@ -163,26 +163,45 @@ pub async fn window_books_page(
     if accounts.is_empty() {
         return Ok(Some((Vec::new(), None)));
     }
-    // Read by account id (within the plugin's bind limit), then keep only
-    // the rows whose plugin key matches too.
-    let width = MAX_PERSON_ACCOUNTS.min(in_chunk(store, 2));
+    // Read by account id in chunks within the plugin's bind limit, then keep
+    // only the rows whose plugin key matches too. Each chunk reads at most
+    // `limit` rows after the cursor; when a chunk fills, books of that chunk
+    // past its last row are unread, so the page ends at the lowest such row
+    // and nothing in between is skipped.
+    let width = in_chunk(store, 2).min(MAX_IN_ACCOUNTS);
     let account_ids: Vec<String> = accounts
         .iter()
         .map(|(_, account)| account.clone())
         .collect::<BTreeSet<_>>()
         .into_iter()
-        .take(width)
         .collect();
     let limit = WINDOW_BOOKS_READ.min(u64::try_from(result_page(store)).unwrap_or(1));
-    let read = books::Entity::find()
-        .filter(books::Column::AccountId.is_in(account_ids))
-        .filter(books::Column::Id.gt(after))
-        .order_by_asc(books::Column::Id)
-        .limit(limit)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    let full = u64::try_from(read.len()).unwrap_or(u64::MAX) >= limit;
+    let mut read: Vec<books::Model> = Vec::new();
+    let mut boundary: Option<i64> = None;
+    for part in account_ids.chunks(width.max(1)) {
+        let rows = books::Entity::find()
+            .filter(books::Column::AccountId.is_in(part.to_vec()))
+            .filter(books::Column::Id.gt(after))
+            .order_by_asc(books::Column::Id)
+            .limit(limit)
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        if u64::try_from(rows.len()).unwrap_or(u64::MAX) >= limit {
+            if let Some(last) = rows.last() {
+                boundary = Some(boundary.map_or(last.id, |b| b.min(last.id)));
+            }
+        }
+        read.extend(rows);
+    }
+    read.sort_by_key(|b| b.id);
+    read.dedup_by_key(|b| b.id);
+    if let Some(boundary) = boundary {
+        read.retain(|b| b.id <= boundary);
+    }
+    let cap = usize::try_from(limit).unwrap_or(usize::MAX);
+    let full = boundary.is_some() || read.len() > cap;
+    read.truncate(cap);
     let read_last = read.last().map_or(after, |b| b.id);
     let rows: Vec<books::Model> = read
         .into_iter()
@@ -207,16 +226,34 @@ pub async fn window_books_page(
             last = book.id;
             continue;
         };
-        let key = work_of_book
+        let work = work_of_book
             .get(&book.id)
             .cloned()
             .unwrap_or_else(|| format!("book-{}", book.id));
+        // A work already listing the most editions a frame allows goes on
+        // under another key of this page (`<work>-x<n>`) with the same
+        // identifiers, so the window still merges them.
+        let mut key = work.clone();
+        let mut overflow = 0;
+        while let Some(&at) = index.get(&key) {
+            let editions = &works[at].editions;
+            let listed = editions.iter().any(|e| {
+                e.store == edition.store
+                    && e.marketplace == edition.marketplace
+                    && e.product_id == edition.product_id
+            });
+            if listed || editions.len() < MAX_LOOKUP_EDITIONS {
+                break;
+            }
+            overflow += 1;
+            key = format!("{work}-x{overflow}");
+        }
         let mut size = encoded_len(&edition);
         let at = index.get(&key).copied();
         if at.is_none() {
             size += encoded_len(&key)
                 + identifiers
-                    .get(&key)
+                    .get(&work)
                     .map_or(0, |ids| ids.iter().map(encoded_len).sum::<usize>());
         }
         let new_work = at.is_none();
@@ -233,7 +270,7 @@ pub async fn window_books_page(
             None => {
                 works.push(WindowWork {
                     work: key.clone(),
-                    identifiers: identifiers.get(&key).cloned().unwrap_or_default(),
+                    identifiers: identifiers.get(&work).cloned().unwrap_or_default(),
                     editions: Vec::new(),
                 });
                 index.insert(key, works.len() - 1);
@@ -249,8 +286,7 @@ pub async fn window_books_page(
         match same {
             Some(i) if editions[i].formats.len() < edition.formats.len() => editions[i] = edition,
             Some(_) => {}
-            None if editions.len() < MAX_LOOKUP_EDITIONS => editions.push(edition),
-            None => {}
+            None => editions.push(edition),
         }
     }
     if !stopped {
@@ -355,7 +391,9 @@ pub async fn record_window_page(
 }
 
 /// Ends a complete read of library `owner_cluster_id`'s window books: drops
-/// its rows that read (stamped `seen_at`) did not name.
+/// its rows that read (stamped `seen_at`) did not name. Rows are compared
+/// by stamp equality, not order, so a clock moved back between reads still
+/// drops what the new read left out.
 ///
 /// # Returns
 ///
@@ -373,7 +411,7 @@ pub async fn finish_window_read(
         store,
         "window book",
         vec![exec(
-            "DELETE FROM window_books WHERE owner_cluster_id = ? AND seen_at < ?",
+            "DELETE FROM window_books WHERE owner_cluster_id = ? AND seen_at <> ?",
             vec![text(owner_cluster_id), text(seen_at)],
         )],
     )
@@ -501,7 +539,12 @@ fn merge_keys(row: &window_books::Model, identifiers: &[LookupIdentifier]) -> Ve
     if let Some(work) = &row.local_work_id {
         keys.push(format!("work\u{1f}{work}"));
     }
-    for id in identifiers {
+    // ISBNs are weak (one can sit on several editions, even of different
+    // works), so only strong identifiers join rows across libraries.
+    for id in identifiers
+        .iter()
+        .filter(|id| id.scheme != LookupScheme::Isbn)
+    {
         keys.push(format!(
             "id\u{1f}{}\u{1f}{}\u{1f}{}",
             id.scheme.as_str(),
@@ -517,7 +560,8 @@ fn merge_keys(row: &window_books::Model, identifiers: &[LookupIdentifier]) -> Ve
 ///
 /// Only active links with "Use this computer to download" off count. Rows
 /// are the same work when they reach the same work of this library, share
-/// an identifier, or carry the same grouping key from one library. A row
+/// a strong identifier (not an ISBN), or carry the same grouping key from
+/// one library. A row
 /// whose stored edition no longer parses is skipped.
 ///
 /// # Errors

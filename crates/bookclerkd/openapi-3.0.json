@@ -38173,9 +38173,7 @@
         "type": "object",
         "description": "`POST /api/config/join/sharing` body.",
         "required": [
-          "cluster_id",
-          "share_books",
-          "include_branches"
+          "cluster_id"
         ],
         "properties": {
           "cluster_id": {
@@ -38185,13 +38183,15 @@
           },
           "share_books": {
             "type": "boolean",
-            "description": "\"Share this branch's books with *library*\".",
-            "example": true
+            "description": "\"Share this branch's books with *library*\"; left as it is when\nabsent.",
+            "example": true,
+            "nullable": true
           },
           "include_branches": {
             "type": "boolean",
-            "description": "\"Include books from my own branches\".",
-            "example": false
+            "description": "\"Include books from my own branches\"; left as it is when absent.",
+            "example": false,
+            "nullable": true
           },
           "list_members_books": {
             "type": "boolean",

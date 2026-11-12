@@ -31,8 +31,9 @@
 //! - `POST /api/config/join/leave` `{cluster_id}`: Leave library.
 //! - `GET /api/config/join/sharing`: the libraries this install is a
 //!   branch of, with their two sharing settings.
-//! - `POST /api/config/join/sharing` `{cluster_id, share_books,
-//!   include_branches, list_members_books?, download?}`: Settings →
+//! - `POST /api/config/join/sharing` `{cluster_id, share_books?,
+//!   include_branches?, list_members_books?, download?}` (a setting left
+//!   out keeps its stored value): Settings →
 //!   Library's "Share this branch's books with *library*" and "Include
 //!   books from my own branches" (the catalog sync reports them to the
 //!   library at once), "List my members' books to *library*", which the
@@ -1342,12 +1343,15 @@ pub struct SharingBody {
     /// The library (owner cluster id).
     #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
     cluster_id: String,
-    /// "Share this branch's books with *library*".
+    /// "Share this branch's books with *library*"; left as it is when
+    /// absent.
+    #[serde(default)]
     #[schema(example = true)]
-    share_books: bool,
-    /// "Include books from my own branches".
+    share_books: Option<bool>,
+    /// "Include books from my own branches"; left as it is when absent.
+    #[serde(default)]
     #[schema(example = false)]
-    include_branches: bool,
+    include_branches: Option<bool>,
     /// "List my members' books to *library*"; left as it is when absent.
     #[serde(default)]
     #[schema(example = true)]
@@ -1430,23 +1434,40 @@ pub async fn post_join_sharing(
     };
     let store = state.library_snapshot().await;
     let cluster_id = body.cluster_id.trim();
-    match bookclerk_library::control_plane::set_cluster_link_sharing(
-        &store,
-        cluster_id,
-        body.share_books,
-        body.include_branches,
-    )
-    .await
-    {
-        Ok(true) => {}
-        Ok(false) => {
-            return join_error(
-                StatusCode::NOT_FOUND,
-                "not_found",
-                "this install is not a branch of that library",
-            )
+    // A setting left out keeps its stored value, so a change to one never
+    // writes back a stale copy of another.
+    let current =
+        match bookclerk_library::control_plane::load_cluster_link(&store, cluster_id).await {
+            Ok(Some(link)) => link,
+            Ok(None) => {
+                return join_error(
+                    StatusCode::NOT_FOUND,
+                    "not_found",
+                    "this install is not a branch of that library",
+                )
+            }
+            Err(err) => return crate::config_authority::events_error(err),
+        };
+    let sharing_changed = body.share_books.is_some() || body.include_branches.is_some();
+    if sharing_changed {
+        match bookclerk_library::control_plane::set_cluster_link_sharing(
+            &store,
+            cluster_id,
+            body.share_books.unwrap_or(current.share_books),
+            body.include_branches.unwrap_or(current.include_branches),
+        )
+        .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                return join_error(
+                    StatusCode::NOT_FOUND,
+                    "not_found",
+                    "this install is not a branch of that library",
+                )
+            }
+            Err(err) => return crate::config_authority::events_error(err),
         }
-        Err(err) => return crate::config_authority::events_error(err),
     }
     if let Some(list) = body.list_members_books {
         if let Err(err) =
@@ -1468,8 +1489,8 @@ pub async fn post_join_sharing(
     tracing::info!(
         %cluster_id,
         %actor,
-        share_books = body.share_books,
-        include_branches = body.include_branches,
+        share_books = ?body.share_books,
+        include_branches = ?body.include_branches,
         list_members_books = ?body.list_members_books,
         download = ?body.download,
         "branch sharing settings changed"
@@ -1493,7 +1514,9 @@ pub async fn post_join_sharing(
             "could not record the branch sharing change in the security audit log"
         );
     }
-    super::catalog_sync::notify_sharing_changed();
+    if sharing_changed || body.list_members_books.is_some() {
+        super::catalog_sync::notify_sharing_changed();
+    }
     if body.download.is_some() {
         super::consent::notify_consent_changed();
         super::window::notify_window_changed();

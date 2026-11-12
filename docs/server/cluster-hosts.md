@@ -642,8 +642,8 @@ stay the operator's. Anyone else is refused (403).
 
 The routes are `GET /api/config/join/sharing` (→ `{clusters}`) and
 `POST /api/config/join/sharing`
-`{cluster_id, share_books, include_branches, list_members_books?, download?}`
-(`list_members_books` and `download` are left as they are when absent).
+`{cluster_id, share_books?, include_branches?, list_members_books?, download?}`
+(each setting left out stays as it is).
 
 ### Branch titles on the library
 
@@ -739,9 +739,11 @@ With the setting off for library A, B:
 B's **Library** page then shows **Your books in other libraries** to B's
 operator and Owners: every library B is a window of, merged into one list
 by work. Two books are the same work when their identifiers reach the
-same work in B's own library, when they share an identifier (an ASIN with
-its marketplace, an ISBN, or an OpenLibrary edition or work id), or when
-one library groups them under one work. Titles are never compared,
+same work in B's own library, when they share a strong identifier (an
+ASIN with its marketplace, or an OpenLibrary edition or work id), or when
+one library groups them under one work. An ISBN alone doesn't join two
+libraries' books, since one ISBN can sit on several editions. Titles are
+never compared,
 because work ids differ between libraries. Each entry shows which
 libraries hold it, from which stores, and in which formats.
 

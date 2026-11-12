@@ -299,6 +299,13 @@ impl LinkSupervisor {
     /// consent is fetched, one that loses it is dropped. Answers the
     /// outcome of the refresh a change ran, if one did.
     async fn reevaluate(&self) -> Option<Refreshed> {
+        if self.window_mode().await != Some(false) {
+            // A window (or an unreadable link) claims nothing, and the
+            // consent rows don't matter until it downloads again; the
+            // window-mode refresh already reported every deployment.
+            self.handle.set_consented_plugins(BTreeSet::new());
+            return None;
+        }
         let rows = match list_remote_plugin_consents(&self.library, Some(self.cluster_id())).await {
             Ok(rows) => rows,
             Err(err) => {

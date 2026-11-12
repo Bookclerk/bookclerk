@@ -579,6 +579,15 @@ async fn purge_departed_link_state(state: &Arc<AppState>, links: &[ClusterLink])
     if departed.is_empty() {
         return;
     }
+    // The person's book list from a library this install left goes too.
+    let library = state.library_snapshot().await;
+    for (cluster_id, _) in &departed {
+        if let Err(err) =
+            bookclerk_library::control_plane::clear_window_books(&library, cluster_id).await
+        {
+            tracing::warn!(%cluster_id, error = %err, "could not clear a departed library's window books; retrying at the next start");
+        }
+    }
     let files_dir = state.config.read().await.paths().files_dir.clone();
     let purged = tokio::task::spawn_blocking(move || {
         for (cluster_id, dir) in departed {

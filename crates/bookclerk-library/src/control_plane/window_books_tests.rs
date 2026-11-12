@@ -5,7 +5,8 @@
 
 use bookclerk_node_proto::{
     window_page_problem, Availability, CatalogMetadata, LookupEdition, LookupFormat,
-    LookupIdentifier, LookupScheme, WindowWork, MAX_FRAME_BYTES,
+    LookupIdentifier, LookupScheme, WindowWork, MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS,
+    MAX_WINDOW_WORKS,
 };
 use sea_orm::{ActiveModelTrait, ActiveValue::Set};
 
@@ -192,7 +193,101 @@ async fn many_books_page_out_within_every_profiles_limits() {
         products.sort_unstable();
         products.dedup();
         assert_eq!(products.len(), BOOKS, "{name}");
+
+        // The same store as a window: every page stored, merged and kept by
+        // a complete read, all within the profile's limits.
+        crate::entities::cluster_links::ActiveModel {
+            owner_cluster_id: Set("lib".into()),
+            owner_origin: Set("https://lib.example".into()),
+            remote_node_id: Set("node-lib".into()),
+            spki_pin: Set(None),
+            state: Set("active".into()),
+            enrolled_at: Set(Utc::now().to_rfc3339()),
+            share_books: Set(1),
+            include_branches: Set(1),
+            ancestry_json: Set("[]".into()),
+            list_members_books: Set(1),
+            download: Set(0),
+        }
+        .insert(store.db())
+        .await
+        .unwrap();
+        let seen = window_read_stamp();
+        for page in listed.chunks(MAX_WINDOW_WORKS) {
+            record_window_page(&store, "lib", &seen, page)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            finish_window_read(&store, "lib", &seen).await.unwrap(),
+            0,
+            "{name}"
+        );
+        let view = window_view(&store).await.unwrap();
+        assert_eq!(view.len(), BOOKS, "{name}");
+        assert!(
+            view.iter().all(|e| e.work_id.is_some()),
+            "{name}: placed on local works"
+        );
+        let later = window_read_stamp();
+        record_window_page(&store, "lib", &later, &listed[..1])
+            .await
+            .unwrap();
+        assert_eq!(
+            finish_window_read(&store, "lib", &later).await.unwrap(),
+            u64::try_from(BOOKS - 1).unwrap(),
+            "{name}"
+        );
+        assert_eq!(
+            clear_window_books(&store, "lib").await.unwrap(),
+            1,
+            "{name}"
+        );
     }
+}
+
+/// A work with more editions than one frame allows goes on under extra
+/// keys of the page, which the window merges back by identifier.
+#[tokio::test]
+async fn a_work_with_many_editions_spills_into_extra_keys() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    let owner = store
+        .create_user(UserRole::Owner, Some("Owner"), None)
+        .await
+        .unwrap()
+        .id;
+    add_branch(&store, BRANCH, owner).await;
+    // Ten accounts in ten marketplaces, each holding the same ASIN: ten
+    // distinct (store, marketplace, product) editions.
+    let mut accounts = Vec::new();
+    for n in 0..10 {
+        let account = format!("acct-{n}");
+        let market = format!("m{n}");
+        store
+            .upsert_account(PLUGIN, &account, &market, None, true, "audible")
+            .await
+            .unwrap();
+        let identity = store
+            .ensure_local_portal_identity(owner, None)
+            .await
+            .unwrap();
+        store
+            .link_account(identity.id, PLUGIN, &account, "test")
+            .await
+            .unwrap();
+        let mut b = book(&account, "B0SAMEWORK");
+        b.marketplace = market;
+        store.upsert_book(&b).await.unwrap();
+        accounts.push(account);
+    }
+    let listed = read_all(&store, BRANCH).await;
+    let editions: usize = listed.iter().map(|w| w.editions.len()).sum();
+    assert_eq!(editions, 10, "{listed:?}");
+    assert!(listed
+        .iter()
+        .all(|w| w.editions.len() <= MAX_LOOKUP_EDITIONS));
 }
 
 fn edition(asin: &str, title: &str) -> LookupEdition {
