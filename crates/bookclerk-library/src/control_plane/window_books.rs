@@ -532,6 +532,33 @@ pub async fn finish_window_read(
     .await
 }
 
+/// Drops the rows a read cut short by a settings change wrote (stamped
+/// `seen_at`), so a read that began before downloading was turned on
+/// cannot put back the list the change cleared.
+///
+/// # Returns
+///
+/// How many rows were dropped.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn discard_window_read(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    seen_at: &str,
+) -> Result<u64> {
+    run_batches(
+        store,
+        "window book",
+        vec![exec(
+            "DELETE FROM window_books WHERE owner_cluster_id = ? AND seen_at = ?",
+            vec![text(owner_cluster_id), text(seen_at)],
+        )],
+    )
+    .await
+}
+
 /// Drops every window book of library `owner_cluster_id` (its link
 /// downloads again, or was left).
 ///

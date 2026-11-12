@@ -12,12 +12,13 @@
 //! previous complete read left and tries again on the next trigger. While
 //! the setting is on, the link's window books are cleared.
 
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use bookclerk_library::control_plane::{
-    clear_window_books, finish_window_read, load_cluster_link, record_window_page,
-    window_read_stamp,
+    clear_window_books, discard_window_read, finish_window_read, load_cluster_link,
+    record_window_page, window_read_stamp,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_client::HostClientHandle;
@@ -32,11 +33,37 @@ pub const WINDOW_POLL: Duration = Duration::from_secs(1800);
 /// library's database answers one row per page.
 const MAX_PAGES_PER_READ: usize = 1_000_000;
 
-/// Bumped when a link's "Use this computer to download" setting changes.
+/// Bumped when any link's "Use this computer to download" setting
+/// changes; wakes every reader.
 static WINDOW_CHANGED: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0).0);
 
-/// Tells every running window reader to read (or clear) now.
-pub fn notify_window_changed() {
+/// Per library (owner cluster id), bumped when that link's setting
+/// changes: before the setting is written and again after. A read checks
+/// it after every write, so a page stored after the setting's own clear is
+/// always seen and discarded.
+static GENERATIONS: LazyLock<Mutex<HashMap<String, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The setting generation of library `cluster_id`'s link.
+fn generation(cluster_id: &str) -> u64 {
+    GENERATIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(cluster_id)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Records that library `cluster_id`'s setting changed and tells every
+/// running window reader to read (or clear) now.
+pub fn notify_window_changed(cluster_id: &str) {
+    {
+        let mut generations = GENERATIONS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = generations.entry(cluster_id.to_string()).or_insert(0);
+        *entry = entry.wrapping_add(1);
+    }
     WINDOW_CHANGED.send_modify(|generation| *generation = generation.wrapping_add(1));
 }
 
@@ -56,6 +83,9 @@ pub enum WindowRead {
     /// The link downloads (or is gone or inactive); its window books were
     /// cleared.
     NotAWindow,
+    /// The setting changed while the read ran: what it wrote was discarded,
+    /// and the next read starts over.
+    Superseded,
     /// A complete read stored this many editions and dropped this many rows
     /// the library no longer names.
     Read {
@@ -77,7 +107,7 @@ impl WindowReader {
             }
             if self.handle.is_connected() {
                 match self.read_once().await {
-                    Ok(WindowRead::NotAWindow) => {}
+                    Ok(WindowRead::NotAWindow | WindowRead::Superseded) => {}
                     Ok(WindowRead::Read { stored, dropped }) => tracing::debug!(
                         cluster_id = %self.cluster_id,
                         stored,
@@ -148,9 +178,22 @@ impl WindowReader {
     /// local read or write fails; the rows of the previous complete read
     /// stay.
     pub async fn read_once(&self) -> anyhow::Result<WindowRead> {
+        let generation = generation(&self.cluster_id);
         if self.clear_unless_window().await? {
             return Ok(WindowRead::NotAWindow);
         }
+        self.read_pages(generation).await
+    }
+
+    /// The paging part of [`Self::read_once`], for a read that began when
+    /// the setting generation was `generation`. When the generation moves
+    /// on during the read, everything the read wrote is discarded.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::read_once`].
+    async fn read_pages(&self, generation: u64) -> anyhow::Result<WindowRead> {
+        let superseded = || self::generation(&self.cluster_id) != generation;
         let seen_at = window_read_stamp();
         let mut after = 0;
         let mut stored = 0;
@@ -161,11 +204,19 @@ impl WindowReader {
                 .await
                 .map_err(|err| anyhow::anyhow!("window.books: {err:?}"))?;
             stored += record_window_page(&self.library, &self.cluster_id, &seen_at, &works).await?;
+            if superseded() {
+                discard_window_read(&self.library, &self.cluster_id, &seen_at).await?;
+                return Ok(WindowRead::Superseded);
+            }
             match next {
                 Some(next) => after = next,
                 None => {
                     let dropped =
                         finish_window_read(&self.library, &self.cluster_id, &seen_at).await?;
+                    if superseded() {
+                        discard_window_read(&self.library, &self.cluster_id, &seen_at).await?;
+                        return Ok(WindowRead::Superseded);
+                    }
                     if stored > 0 || dropped > 0 {
                         crate::live::poke(bookclerk_library::control_plane::LiveTopic::Clusters);
                     }

@@ -1513,6 +1513,11 @@ pub async fn post_join_sharing(
         settings,
     } = body.into_request();
     let cluster_id = cluster_id.as_str();
+    if settings.download.is_some() {
+        // Before the write too: a window read that stores a page after the
+        // write's clear then sees the change and discards what it wrote.
+        super::window::notify_window_changed(cluster_id);
+    }
     // Every setting goes in one statement, so a failed write changes none of
     // them and nothing changes unaudited. A setting the body leaves out is
     // not written at all, so it keeps whatever is stored when the statement
@@ -1567,7 +1572,7 @@ pub async fn post_join_sharing(
     // check; this runs one now.
     super::consent::notify_consent_changed();
     if settings.download.is_some() {
-        super::window::notify_window_changed();
+        super::window::notify_window_changed(cluster_id);
     }
     match bookclerk_library::control_plane::load_cluster_link(&store, cluster_id).await {
         Ok(Some(link)) => Json(SharingChanged {

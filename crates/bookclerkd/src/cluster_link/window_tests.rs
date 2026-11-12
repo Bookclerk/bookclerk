@@ -140,6 +140,23 @@ async fn a_window_reads_the_books_its_library_holds_for_its_person() {
         }
     );
 
+    // A read under way when the setting changes discards what it wrote,
+    // so it cannot put back a list the change cleared.
+    let before = super::generation(&link.owner_cluster_id);
+    super::notify_window_changed(&link.owner_cluster_id);
+    assert_eq!(
+        reader.read_pages(before).await.unwrap(),
+        WindowRead::Superseded
+    );
+    assert!(window_view(&w).await.unwrap().is_empty(), "discarded");
+    assert_eq!(
+        reader.read_once().await.unwrap(),
+        WindowRead::Read {
+            stored: 1,
+            dropped: 0
+        }
+    );
+
     // Download back on: the window's copy of the list is cleared.
     set_cluster_link_download(&w, &link.owner_cluster_id, true)
         .await

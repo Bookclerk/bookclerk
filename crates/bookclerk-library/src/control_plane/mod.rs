@@ -248,8 +248,9 @@ pub use versions::{
     PluginInstall, PluginVersion, ARTIFACT_BLOB_SCHEME,
 };
 pub use window_books::{
-    clear_window_books, finish_window_read, record_window_page, window_books_page,
-    window_read_stamp, window_view, WindowEntry, WindowEntryEdition, WINDOW_BOOKS_READ,
+    clear_window_books, discard_window_read, finish_window_read, record_window_page,
+    window_books_page, window_read_stamp, window_view, WindowEntry, WindowEntryEdition,
+    WINDOW_BOOKS_READ,
 };
 
 use documents::{import_if_absent, load_document, replace_document};
