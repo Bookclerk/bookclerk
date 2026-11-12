@@ -536,3 +536,81 @@ async fn one_edition_on_two_pages_of_a_read_keeps_every_format() {
         vec![LookupFormat::Pdf]
     );
 }
+
+/// A work's overflow groups (`<work>-x<n>`) are stored under the work's own
+/// grouping key, so the window shows one entry even with no identifier to
+/// join them.
+#[tokio::test]
+async fn a_works_overflow_group_joins_the_work_without_identifiers() {
+    assert_eq!(grouping_key("0b1e-4c2a-x2"), "0b1e-4c2a");
+    assert_eq!(grouping_key("book-12"), "book-12");
+    assert_eq!(grouping_key("book-12-x1"), "book-12");
+    assert_eq!(grouping_key("-x1"), "-x1");
+    assert_eq!(grouping_key("w-x"), "w-x");
+    assert_eq!(grouping_key(&overflow_key("w", 3)), "w");
+
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    link(&store, "alpha", false).await;
+    let read = window_read_stamp();
+    let page = vec![
+        WindowWork {
+            work: "book-7".into(),
+            identifiers: Vec::new(),
+            editions: vec![edition("B0OVERFL01", "Overflowing")],
+        },
+        WindowWork {
+            work: overflow_key("book-7", 1),
+            identifiers: Vec::new(),
+            editions: vec![edition("B0OVERFL02", "Overflowing")],
+        },
+    ];
+    record_window_page(&store, "alpha", &read, &page)
+        .await
+        .unwrap();
+    let view = window_view(&store).await.unwrap();
+    assert_eq!(view.len(), 1, "{view:?}");
+    assert_eq!(view[0].editions.len(), 2);
+}
+
+/// One product listed in several marketplaces (several listings, and a
+/// work with several identifiers) is read in full under every profile,
+/// even where the database answers one row per read.
+#[tokio::test]
+async fn a_product_in_several_marketplaces_is_read_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let store = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        let owner = store
+            .create_user(UserRole::Owner, Some("Owner"), None)
+            .await
+            .unwrap()
+            .id;
+        add_branch(&store, BRANCH, owner).await;
+        hold(&store, owner, "owner-acct", &["B0MULTI001".into()]).await;
+        for market in ["uk", "de"] {
+            let account = format!("owner-acct-{market}");
+            hold(&store, owner, &account, &[]).await;
+            let mut b = book(&account, "B0MULTI001");
+            b.marketplace = market.into();
+            store.upsert_book(&b).await.unwrap();
+        }
+        let listed = read_all(&store, BRANCH).await;
+        let mut markets: Vec<&str> = listed
+            .iter()
+            .flat_map(|w| w.editions.iter())
+            .filter(|e| e.product_id == "B0MULTI001")
+            .map(|e| e.marketplace.as_str())
+            .collect();
+        markets.sort_unstable();
+        markets.dedup();
+        assert_eq!(markets, ["de", "uk", "us"], "{name}: {listed:?}");
+        assert!(
+            listed.iter().all(|w| !w.identifiers.is_empty()),
+            "{name}: every work keeps its identifiers"
+        );
+    }
+}

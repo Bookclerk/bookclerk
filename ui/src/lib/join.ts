@@ -601,6 +601,27 @@ export function fetchWindowBooks(): Promise<WindowBooks> {
 }
 
 /**
+ * The entries matching a Library search: `q` (trimmed, case-insensitive)
+ * appears in an edition's title, subtitle, authors, narrators or series.
+ * An empty search keeps every entry.
+ *
+ * @param books - The merged window entries.
+ * @param q - The Library search text.
+ * @returns The entries to show, in their order.
+ */
+export function filterWindowBooks(books: WindowEntryView[], q: string): WindowEntryView[] {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return books;
+  return books.filter((entry) =>
+    entry.editions.some((edition) =>
+      [edition.title, edition.subtitle, edition.authors, edition.narrators, edition.series].some(
+        (field) => typeof field === "string" && field.toLowerCase().includes(needle),
+      ),
+    ),
+  );
+}
+
+/**
  * The libraries an entry is held in, by host, each once, in order.
  *
  * @param entry - A window entry.

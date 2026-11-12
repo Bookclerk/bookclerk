@@ -19,6 +19,7 @@ import {
   looksLikeBranchInvite,
   parseJoinCallback,
   windowEntryFormats,
+  filterWindowBooks,
   windowEntryLibraries,
 } from "./join";
 import { isAppPath, joinPage } from "./routes";
@@ -366,5 +367,31 @@ describe("window view helpers", () => {
       "not a url",
     ]);
     expect(windowEntryFormats(entry)).toEqual(["audio", "pdf"]);
+  });
+
+  it("narrows to the entries matching a Library search", () => {
+    const dune = {
+      key: "work:1",
+      editions: [
+        { ...edition("https://a.example", "audible", []), title: "Dune", authors: "Frank Herbert" },
+      ],
+    };
+    const emma = {
+      key: "work:2",
+      editions: [
+        {
+          ...edition("https://a.example", "audible", []),
+          title: "Emma",
+          series: "Classics",
+          subtitle: null,
+        },
+      ],
+    };
+    const books = [dune, emma];
+    expect(filterWindowBooks(books, "")).toEqual(books);
+    expect(filterWindowBooks(books, "  ")).toEqual(books);
+    expect(filterWindowBooks(books, "HERBERT")).toEqual([dune]);
+    expect(filterWindowBooks(books, " classics ")).toEqual([emma]);
+    expect(filterWindowBooks(books, "nothing")).toEqual([]);
   });
 });

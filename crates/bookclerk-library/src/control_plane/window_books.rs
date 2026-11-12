@@ -37,7 +37,7 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
 use super::batch::{exec, text, text_opt};
 use super::catalog_lookup::{
-    book_edition, identifiers_of, in_chunk, is_trusted_branch, read_chunked, read_paged,
+    book_edition, identifiers_of, in_chunk, is_trusted_branch, read_chunked_all, read_paged,
     result_page, run_batches, stamp, work_for_question, works_of_editions,
 };
 use super::cluster_links::list_cluster_links;
@@ -96,7 +96,8 @@ async fn works_of_books(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let listings = read_chunked(store, &products, |part| {
+    // A product id can be listed in several marketplaces: page each chunk.
+    let listings = read_chunked_all(store, &products, |part| {
         store_listings::Entity::find().filter(store_listings::Column::ProductId.is_in(part))
     })
     .await?;
@@ -125,6 +126,27 @@ async fn works_of_books(
                 .map(|work| (b.id, work.clone()))
         })
         .collect())
+}
+
+/// The page key of a work's `n`th overflow group (`<work>-x<n>`). Work ids
+/// are UUIDs (hex digits and dashes) or `book-<id>`, so the suffix never
+/// ends a real key and [`grouping_key`] can take it off again.
+fn overflow_key(work: &str, n: usize) -> String {
+    format!("{work}-x{n}")
+}
+
+/// The library's grouping key of page key `key`: the key without an
+/// [`overflow_key`] suffix, so a work's overflow editions group with the
+/// rest of it.
+fn grouping_key(key: &str) -> &str {
+    match key.rsplit_once("-x") {
+        Some((work, n))
+            if !work.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            work
+        }
+        _ => key,
+    }
 }
 
 /// Encoded size of `value` in bytes, plus one for the separator; the whole
@@ -264,7 +286,7 @@ pub async fn window_books_page(
                 break;
             }
             overflow += 1;
-            key = format!("{work}-x{overflow}");
+            key = overflow_key(&work, overflow);
         }
         let mut size = encoded_len(&edition);
         let at = index.get(&key).copied();
@@ -402,7 +424,7 @@ pub async fn record_window_page(
                  edition_json = ?, seen_at = ? WHERE owner_cluster_id = ? AND store = ? \
                  AND marketplace = ? AND product_id = ?",
                 vec![
-                    text(&work.work),
+                    text(grouping_key(&work.work)),
                     text_opt(local.as_deref()),
                     text(&identifiers_json),
                     text(&edition_json),
@@ -422,7 +444,7 @@ pub async fn record_window_page(
                     text(&edition.store),
                     text(&edition.marketplace),
                     text(&edition.product_id),
-                    text(&work.work),
+                    text(grouping_key(&work.work)),
                     text_opt(local.as_deref()),
                     text(&identifiers_json),
                     text(&edition_json),
@@ -462,7 +484,7 @@ async fn earlier_in_read(
         .collect();
     let owner = owner_cluster_id.to_string();
     let stamp_now = seen_at.to_string();
-    let rows = read_chunked(store, &products, move |part| {
+    let rows = read_chunked_all(store, &products, move |part| {
         window_books::Entity::find()
             .filter(window_books::Column::OwnerClusterId.eq(owner.clone()))
             .filter(window_books::Column::SeenAt.eq(stamp_now.clone()))

@@ -470,7 +470,7 @@ async fn supervise_cluster_links(state: Arc<AppState>) {
         // Once per store: state of libraries left or revoked while this
         // daemon was not running (or whose purge failed last time).
         if let Ok(links) = list_cluster_links(&library).await {
-            purge_departed_link_state(&state, &links).await;
+            purge_departed_link_state(&state, &library, &links).await;
         }
         let swapped = loop {
             joins.borrow_and_update();
@@ -547,7 +547,7 @@ async fn purge_after_grace(
     }
     match load_cluster_link(&library, &cluster_id).await {
         Ok(Some(link)) if !purge_cancelled(&store_stopped) => {
-            purge_departed_link_state(&state, &[link]).await;
+            purge_departed_link_state(&state, &library, &[link]).await;
         }
         Ok(_) => {}
         Err(err) => {
@@ -563,7 +563,8 @@ fn purge_cancelled(store_stopped: &watch::Receiver<bool>) -> bool {
     *store_stopped.borrow() || store_stopped.has_changed().is_err()
 }
 
-/// Deletes the plugin state kept for each library in `links` this install
+/// Deletes the plugin state (and window books, in `library`, the store
+/// `links` came from) kept for each library in `links` this install
 /// left or was revoked from, so a library's plugin caches and logins do
 /// not outlive the membership.
 ///
@@ -572,7 +573,11 @@ fn purge_cancelled(store_stopped: &watch::Receiver<bool>) -> bool {
 /// live store records as not active are purged: a subtree this store does
 /// not know (another database's links) is left alone. A purge that fails
 /// is logged and tried again at the next start.
-async fn purge_departed_link_state(state: &Arc<AppState>, links: &[ClusterLink]) {
+async fn purge_departed_link_state(
+    state: &Arc<AppState>,
+    library: &LibraryStore,
+    links: &[ClusterLink],
+) {
     let departed: Vec<_> = links
         .iter()
         .filter(|link| !link.is_active())
@@ -586,11 +591,11 @@ async fn purge_departed_link_state(state: &Arc<AppState>, links: &[ClusterLink])
     if departed.is_empty() {
         return;
     }
-    // The person's book list from a library this install left goes too.
-    let library = state.library_snapshot().await;
+    // The person's book list from a library this install left goes too,
+    // from the store whose links these are.
     for (cluster_id, _) in &departed {
         if let Err(err) =
-            bookclerk_library::control_plane::clear_window_books(&library, cluster_id).await
+            bookclerk_library::control_plane::clear_window_books(library, cluster_id).await
         {
             tracing::warn!(%cluster_id, error = %err, "could not clear a departed library's window books; retrying at the next start");
         }

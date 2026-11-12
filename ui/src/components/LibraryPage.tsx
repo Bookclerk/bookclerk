@@ -433,7 +433,7 @@ export function LibraryPage({
       <div className="min-h-0 flex-1 overflow-auto">
         <main className={cn("w-full", pageWidthClass)}>
           {/* On a window: the books the libraries it joined hold for its person. */}
-          {canChangeBranchSharing(role) ? <WindowBooksSection /> : null}
+          {canChangeBranchSharing(role) ? <WindowBooksSection query={debouncedQ} /> : null}
           <div className="animate-[rowIn_500ms_ease-out] bg-card shadow-[inset_0_1px_0_rgba(11,53,83,0.06)]">
             {visibleBooks.length === 0 && !loaded ? (
               <div className="flex justify-center px-4 py-16" role="status">

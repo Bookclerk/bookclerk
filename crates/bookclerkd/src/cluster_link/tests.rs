@@ -4195,7 +4195,7 @@ async fn departed_libraries_lose_their_plugin_state() {
     );
 
     let links = list_cluster_links(&store).await.unwrap();
-    super::purge_departed_link_state(&state, &links).await;
+    super::purge_departed_link_state(&state, &store, &links).await;
     assert!(
         !state_dir("cluster-left").exists(),
         "a departed library's state goes"

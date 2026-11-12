@@ -348,6 +348,46 @@ where
     crate::store::library_model::find_chunked::<E, _>(store, ids, |part| query(part.to_vec())).await
 }
 
+/// Binds a [`read_chunked_all`] statement may carry besides its `ids`: the
+/// query's other filters and the page's limit and offset.
+const PAGED_FIXED_BINDS: usize = 8;
+
+/// [`read_chunked`] for a key that can match several rows (a work's
+/// expressions, an edition's identifiers, a product's listings): each chunk
+/// is read a database result page at a time, so one key with more rows
+/// than `maxResultRows` is still read in full.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub(crate) async fn read_chunked_all<E, F>(
+    store: &LibraryStore,
+    ids: &[String],
+    query: F,
+) -> Result<Vec<E::Model>>
+where
+    E: EntityTrait,
+    F: Fn(Vec<String>) -> sea_orm::Select<E>,
+{
+    let fits = |part: &[String]| {
+        super::sea_exec(&query(part.to_vec()))
+            .map(|statement| store.admits_read(&statement))
+            .unwrap_or(true)
+    };
+    let mut out = Vec::new();
+    let mut rest = ids;
+    while !rest.is_empty() {
+        let mut width = in_chunk(store, PAGED_FIXED_BINDS).min(rest.len());
+        while width > 1 && !fits(&rest[..width]) {
+            width /= 2;
+        }
+        let (part, tail) = rest.split_at(width);
+        out.extend(read_paged(store, query(part.to_vec()), None).await?);
+        rest = tail;
+    }
+    Ok(out)
+}
+
 /// One statement per run of `ids`, each run as long as `build`'s
 /// statement still fits the database plugin's per-statement limits (binds
 /// and payload), starting from [`in_chunk`] ids and halving.
@@ -377,14 +417,14 @@ pub(crate) async fn identifiers_of(
     store: &LibraryStore,
     work_ids: &[String],
 ) -> Result<BTreeMap<String, Vec<LookupIdentifier>>> {
-    let expressions = read_chunked(store, work_ids, |part| {
+    let expressions = read_chunked_all(store, work_ids, |part| {
         expressions::Entity::find().filter(expressions::Column::WorkId.is_in(part))
     })
     .await?;
     let work_of_expression: HashMap<String, String> =
         expressions.into_iter().map(|x| (x.id, x.work_id)).collect();
     let expression_ids: Vec<String> = work_of_expression.keys().cloned().collect();
-    let editions = read_chunked(store, &expression_ids, |part| {
+    let editions = read_chunked_all(store, &expression_ids, |part| {
         editions::Entity::find().filter(editions::Column::ExpressionId.is_in(part))
     })
     .await?;
@@ -398,7 +438,7 @@ pub(crate) async fn identifiers_of(
         .collect();
     let edition_ids: Vec<String> = work_of_edition.keys().cloned().collect();
     let mut found: BTreeMap<String, BTreeSet<(u8, LookupIdentifier)>> = BTreeMap::new();
-    for row in read_chunked(store, &edition_ids, |part| {
+    for row in read_chunked_all(store, &edition_ids, |part| {
         edition_identifiers::Entity::find()
             .filter(edition_identifiers::Column::EditionId.is_in(part))
     })

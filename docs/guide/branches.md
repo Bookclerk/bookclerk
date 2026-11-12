@@ -107,11 +107,13 @@ it:
 - **Library** shows **Your books in other libraries**: the books each
   library holds for you, merged into one list. The same book in two
   libraries shows once, with both libraries named.
+- The search box on **Library** narrows this list too.
 - The list is refreshed when your server connects, every 30 minutes, and
-  when you change the setting.
+  when you change the setting. If a refresh fails, the last list stays
+  with a **Try again** button.
 
 Turn the setting back on to download again. The list for that library is
-then cleared.
+then cleared, even while the library can't be reached.
 
 > [!NOTE]
 > Asking a library to send you one of these books isn't possible yet.

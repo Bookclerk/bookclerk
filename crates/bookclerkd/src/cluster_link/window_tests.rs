@@ -106,7 +106,7 @@ async fn a_window_reads_the_books_its_library_holds_for_its_person() {
     let w = host_store(w_files.path()).await;
     let link = join(&a, &w, riley, &a_origin, None).await.unwrap();
     assert!(link.download, "a new link downloads");
-    let (handle, _stop) = start(&w, &link).await;
+    let (handle, stop) = start(&w, &link).await;
     let reader = WindowReader {
         library: w.clone(),
         cluster_id: link.owner_cluster_id.clone(),
@@ -149,4 +149,22 @@ async fn a_window_reads_the_books_its_library_holds_for_its_person() {
         .await
         .unwrap();
     assert!(window_view(&w).await.unwrap().is_empty(), "cleared");
+
+    // With the library unreachable, turning downloading on still clears
+    // the list (no request is sent).
+    reader.read_once().await.unwrap();
+    assert_eq!(window_view(&w).await.unwrap().len(), 1);
+    stop.send_replace(true);
+    assert!(
+        !reader.clear_unless_window().await.unwrap(),
+        "still a window"
+    );
+    set_cluster_link_download(&w, &link.owner_cluster_id, true)
+        .await
+        .unwrap();
+    assert!(reader.clear_unless_window().await.unwrap());
+    set_cluster_link_download(&w, &link.owner_cluster_id, false)
+        .await
+        .unwrap();
+    assert!(window_view(&w).await.unwrap().is_empty(), "cleared offline");
 }

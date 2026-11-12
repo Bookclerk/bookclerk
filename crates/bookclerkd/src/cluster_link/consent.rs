@@ -404,6 +404,13 @@ impl LinkSupervisor {
         if self.reconcile(&mut entries).await {
             outcome = Refreshed::Unfinished;
         }
+        if self.window_mode().await != Some(false) {
+            // Downloads were turned off (or the link became unreadable)
+            // while this refresh ran: publish no claims; the loop sees the
+            // change and refreshes as a window.
+            self.handle.set_consented_plugins(BTreeSet::new());
+            return Refreshed::Unfinished;
+        }
         self.catalog.replace(entries.clone());
         self.publish();
         // The catalog and consent now describe this connection.

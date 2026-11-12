@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { CoverThumb } from "@/components/CoverThumb";
 import { StoreLogo } from "@/components/StoreLogo";
 import { storeLabel } from "@/lib/catalogTitle";
+import { ApiError } from "@/lib/api";
 import {
   fetchWindowBooks,
+  filterWindowBooks,
   windowEntryFormats,
   windowEntryLibraries,
   type WindowBooks,
@@ -59,19 +62,35 @@ function WindowRow({ entry }: { entry: WindowEntryView }) {
 /**
  * Library on a window: the books each library this server is a window of
  * ("Use this computer to download" off) holds for its person, merged by
- * work. Renders nothing when this server is a window of no library, or the
- * caller may not read the view (only the operator or an Owner may).
+ * work, narrowed by the Library search. Renders nothing when this server
+ * is a window of no library, or the caller may not read the view (only the
+ * operator or an Owner may). A refresh that fails for another reason keeps
+ * the list it has and offers to try again.
  */
-export function WindowBooksSection() {
+export function WindowBooksSection({ query = "" }: { query?: string }) {
   const [view, setView] = useState<WindowBooks | null>(null);
+  const [stale, setStale] = useState(false);
+  // Only the latest refresh may change the view, so an older answer that
+  // arrives late never replaces a newer one.
+  const latest = useRef(0);
 
   const load = useCallback(async () => {
+    const request = ++latest.current;
     try {
-      setView(await fetchWindowBooks());
-    } catch {
-      // Not allowed, or not reachable now: show nothing rather than an error
-      // over the server's own library.
-      setView(null);
+      const next = await fetchWindowBooks();
+      if (request !== latest.current) return;
+      setView(next);
+      setStale(false);
+    } catch (err) {
+      if (request !== latest.current) return;
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        // Not allowed: show nothing over the server's own library.
+        setView(null);
+        setStale(false);
+      } else {
+        // Not reachable now: keep what was read and offer a retry.
+        setStale(true);
+      }
     }
   }, []);
 
@@ -81,6 +100,7 @@ export function WindowBooksSection() {
   useLiveRefresh(["clusters"], load, { pollMs: 0, openPollMs: 300_000 });
 
   if (!view || view.clusters.length === 0) return null;
+  const shown = filterWindowBooks(view.books, query);
   const libraries = view.clusters.map((link) => {
     try {
       return new URL(link.owner_origin).host || link.owner_origin;
@@ -99,12 +119,27 @@ export function WindowBooksSection() {
           &ldquo;Use this computer to download&rdquo; in Settings to keep copies here.
         </p>
       </div>
+      {stale ? (
+        <div
+          className="flex flex-wrap items-center gap-2 border-b border-ink/10 px-3 py-2 text-xs text-ink/60 sm:px-4"
+          role="status"
+        >
+          <span>Couldn&apos;t refresh this list; showing the last one read.</span>
+          <Button variant="secondary" className="h-7 px-2 text-xs" onClick={() => void load()}>
+            Try again
+          </Button>
+        </div>
+      ) : null}
       {view.books.length === 0 ? (
         <p className="px-4 py-6 text-center text-sm text-ink/60">
           No books there yet, or the list hasn&apos;t been read yet.
         </p>
+      ) : shown.length === 0 ? (
+        <p className="px-4 py-6 text-center text-sm text-ink/60">
+          None of your books in other libraries match this search.
+        </p>
       ) : (
-        view.books.map((entry) => <WindowRow key={entry.key} entry={entry} />)
+        shown.map((entry) => <WindowRow key={entry.key} entry={entry} />)
       )}
     </section>
   );

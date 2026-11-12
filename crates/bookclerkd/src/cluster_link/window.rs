@@ -5,8 +5,9 @@
 //! "Use this computer to download" setting is off, it reads every page of
 //! the person's books from the library (`window.books`) on each welcomed
 //! connection, every [`WINDOW_POLL`], and when Settings → Library changes
-//! the setting ([`notify_window_changed`]). Each page is stored as it
-//! arrives; once the last one is in, the books the read no longer named are
+//! the setting ([`notify_window_changed`]); while the library is
+//! unreachable it still clears the list when the setting is on. Each page
+//! is stored as it arrives; once the last one is in, the books the read no longer named are
 //! dropped. A read cut short (a lost connection, a refusal) keeps what the
 //! previous complete read left and tries again on the next trigger. While
 //! the setting is on, the link's window books are cleared.
@@ -89,6 +90,12 @@ impl WindowReader {
                         "could not read the library's books for this window; retrying later"
                     ),
                 }
+            } else if let Err(err) = self.clear_unless_window().await {
+                tracing::warn!(
+                    cluster_id = %self.cluster_id,
+                    error = %err,
+                    "could not clear this link's window books; retrying later"
+                );
             }
             tokio::select! {
                 result = shutdown.changed() => {
@@ -111,6 +118,27 @@ impl WindowReader {
         }
     }
 
+    /// Clears the link's window books when it is not a window (it
+    /// downloads, or is gone or inactive). Needs no connection, so turning
+    /// downloading back on clears the list even while the library is
+    /// unreachable.
+    ///
+    /// # Returns
+    ///
+    /// True when the link is not a window (its books are cleared).
+    ///
+    /// # Errors
+    ///
+    /// Returns a local read or write error.
+    pub async fn clear_unless_window(&self) -> anyhow::Result<bool> {
+        let link = load_cluster_link(&self.library, &self.cluster_id).await?;
+        if link.is_some_and(|link| link.is_active() && !link.download) {
+            return Ok(false);
+        }
+        clear_window_books(&self.library, &self.cluster_id).await?;
+        Ok(true)
+    }
+
     /// One complete read of the person's books, or a clear when the link
     /// downloads.
     ///
@@ -120,9 +148,7 @@ impl WindowReader {
     /// local read or write fails; the rows of the previous complete read
     /// stay.
     pub async fn read_once(&self) -> anyhow::Result<WindowRead> {
-        let link = load_cluster_link(&self.library, &self.cluster_id).await?;
-        if !link.is_some_and(|link| link.is_active() && !link.download) {
-            clear_window_books(&self.library, &self.cluster_id).await?;
+        if self.clear_unless_window().await? {
             return Ok(WindowRead::NotAWindow);
         }
         let seen_at = window_read_stamp();
