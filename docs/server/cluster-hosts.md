@@ -273,7 +273,9 @@ Each call to a library is bounded at 12 seconds, inside the routes'
   `accounts.remove` up every active link the account was shared with, in
   either direction, all at once. Each library removes the person's links to the account and, in
   the same atomic batch, deletes its secrets and marks it revoked when no
-  other member's link holds it. A library that can't be reached is named
+  other member's link holds it. A revoked account then loses its holdings
+  (each with a `holding_removed` event) and its scan checkpoints, as any
+  revocation does. A library that can't be reached is named
   in the answer's `unreached`, and the account stays connected there.
   **Revoke here** (or `everywhere: false`) disconnects it on the branch
   only.

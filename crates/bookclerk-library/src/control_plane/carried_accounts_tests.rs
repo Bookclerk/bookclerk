@@ -731,6 +731,21 @@ async fn disconnecting_everywhere_withdraws_only_the_persons_links() {
             .unwrap();
         connect(store, ana.id, SHAREABLE, "ana@example.com", b"ana-token").await;
         connect(store, ben.id, SHAREABLE, "ben@example.com", b"ben-token").await;
+        // Ana's account was scanned: one holding and a checkpoint.
+        let libro = store.scope(SHAREABLE, "libro");
+        libro
+            .upsert_book(&crate::NewBook::minimal(
+                "ISBN1",
+                "ana@example.com",
+                "us",
+                "ISBN1",
+            ))
+            .await
+            .unwrap();
+        libro
+            .save_scan_checkpoint("ana@example.com", "c1", "t0", "p1")
+            .await
+            .unwrap();
 
         // Not Ana's: nothing changes.
         assert_eq!(
@@ -774,6 +789,23 @@ async fn disconnecting_everywhere_withdraws_only_the_persons_links() {
             secret_of(store, SHAREABLE, "ana@example.com")
                 .await
                 .is_none(),
+            "{name}"
+        );
+        // As a revocation does: the holding and the checkpoint go too.
+        assert_eq!(
+            store
+                .remove_account_holdings(SHAREABLE, "ana@example.com", crate::HoldingSelection::All)
+                .await
+                .unwrap(),
+            0,
+            "{name}"
+        );
+        assert!(
+            store
+                .scan_state(SHAREABLE, "ana@example.com")
+                .await
+                .unwrap()
+                .is_none_or(|state| state.resume_cursor.is_empty()),
             "{name}"
         );
     }

@@ -762,7 +762,9 @@ pub enum Withdrawn {
 /// Disconnects a store account "everywhere" on this library for the
 /// person `user_id`: removes every link from their identities to the
 /// account and, in the same atomic batch, deletes its secrets and marks it
-/// `revoked` with scans off when no other link holds it.
+/// `revoked` with scans off when no other link holds it. A revoked account
+/// then loses its holdings (each with a `holding_removed` event) and its
+/// scan checkpoints, as [`LibraryStore::revoke_credentials`] does.
 ///
 /// An account another member is linked to keeps that member's link,
 /// secrets and status.
@@ -802,6 +804,23 @@ pub async fn withdraw_person_account(
         .execute_host_batch(batch::request(&operation_id, statements))
         .await?;
     crate::secrets::cache_invalidate_account(account_id);
+    // Taken back (no other member's link held it): finish the revocation
+    // as `LibraryStore::revoke_credentials` does, so its holdings go with
+    // `holding_removed` events and a reconnect starts a full scan.
+    let taken_back = store
+        .get_account(plugin_key, account_id)
+        .await?
+        .is_some_and(|account| account.connection_status == "revoked")
+        && store
+            .count_account_links_for_account(plugin_key, account_id)
+            .await?
+            == 0;
+    if taken_back {
+        store
+            .remove_account_holdings(plugin_key, account_id, crate::HoldingSelection::All)
+            .await?;
+        store.reset_scan_state(plugin_key, account_id).await?;
+    }
     Ok(Withdrawn::Unlinked)
 }
 
