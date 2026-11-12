@@ -24,6 +24,9 @@ use super::named::{j_i64, j_opt_i64, j_opt_str, j_str, sql, SqlStmt};
 use crate::atomic_ops::atomic_status;
 use crate::library_link::{CreditBatchParams, LinkWorkRow, ListingLinkParams};
 
+/// Event type of a new holding; see [`plan_link_listing`].
+const HOLDING_ADDED: &str = "holding_added";
+
 /// Real bind, or a typed REAL null.
 fn j_opt_f64(n: Option<f64>) -> DbValue {
     match n {
@@ -457,23 +460,58 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
         ));
     }
     if let Some(h) = &p.holding {
-        let mut binds = vec![
-            j_str(&p.listing_id),
-            j_str(&h.holder),
-            j_str(&h.entitlement),
-            j_opt_str(h.purchased_at.as_deref()),
-            j_str(now),
-            j_str(now),
-        ];
-        binds.extend(linked_binds.clone());
-        out.push(sql(
-            &format!(
-                "INSERT OR IGNORE INTO holdings \
-                 (listing_id, holder, entitlement, purchased_at, created_at, updated_at) \
-                 SELECT ?, ?, ?, ?, ?, ? WHERE {is_linked}"
-            ),
-            binds,
-        ));
+        // The typed holder columns follow from the stored key; a holding is
+        // only written while its node exists or its account exists and is
+        // not revoked, so a page still in flight when the account was
+        // revoked or deleted adds nothing back (and the foreign key never
+        // aborts).
+        // A key the schema does not accept writes no holding at all.
+        let typed = match bookclerk_resolve::Holder::parse(&h.holder) {
+            Some(bookclerk_resolve::Holder::Account(account)) => Some((
+                "account",
+                j_str(&p.plugin_key),
+                j_str(&account),
+                j_opt_str(None),
+                "EXISTS (SELECT 1 FROM accounts WHERE plugin_key = ? AND account_id = ? \
+                 AND connection_status <> 'revoked')",
+                vec![j_str(&p.plugin_key), j_str(&account)],
+            )),
+            Some(bookclerk_resolve::Holder::Node(node)) => Some((
+                "node",
+                j_opt_str(None),
+                j_opt_str(None),
+                j_str(&node),
+                "EXISTS (SELECT 1 FROM nodes WHERE node_id = ?)",
+                vec![j_str(&node)],
+            )),
+            None => None,
+        };
+        if let Some((kind, plugin_key, account_id, node_id, holder_exists, holder_binds)) = typed {
+            let mut binds = vec![
+                j_str(&h.holding_id),
+                j_str(&p.listing_id),
+                j_str(&h.holder),
+                j_str(kind),
+                plugin_key,
+                account_id,
+                node_id,
+                j_str(&h.entitlement),
+                j_opt_str(h.purchased_at.as_deref()),
+                j_str(now),
+                j_str(now),
+            ];
+            binds.extend(holder_binds);
+            binds.extend(linked_binds.clone());
+            out.push(sql(
+                &format!(
+                    "INSERT OR IGNORE INTO holdings \
+                     (id, listing_id, holder, holder_kind, plugin_key, account_id, node_id, \
+                      entitlement, purchased_at, created_at, updated_at) \
+                     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE {holder_exists} AND {is_linked}"
+                ),
+                binds,
+            ));
+        }
         out.push(sql(
             "UPDATE holdings SET entitlement = ?, purchased_at = COALESCE(?, purchased_at), \
              updated_at = ? WHERE listing_id = ? AND holder = ?",
@@ -523,6 +561,15 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             j_str(&event.event_type),
             j_str(&event.dedup_key),
         ];
+        // `holding_added` is published only by the batch whose insert made
+        // the holding: a concurrent writer's insert wins the `UNIQUE`, and
+        // its own event names its own id.
+        let held = if let (HOLDING_ADDED, Some(h)) = (event.event_type.as_str(), &p.holding) {
+            binds.push(j_str(&h.holding_id));
+            " AND EXISTS (SELECT 1 FROM holdings WHERE id = ?)"
+        } else {
+            ""
+        };
         binds.extend(linked_binds.clone());
         out.push(sql(
             &format!(
@@ -535,7 +582,7 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
                     SELECT 1 FROM domain_events \
                     WHERE queue_name = 'core.events' AND account_id = ? AND source = ? \
                       AND event_type = ? AND dedup_key = ?\
-                 ) AND {is_linked}"
+                 ){held} AND {is_linked}"
             ),
             binds,
         ));

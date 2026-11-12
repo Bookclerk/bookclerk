@@ -12,9 +12,8 @@
 //!   sells the edition, a holding event the titles of its listing, and
 //!   `book_acquired` its one title. A refresh deletes the listing's
 //!   documents and re-adds the titles that still sell it, so
-//!   `holding_removed`, which book model step 5 adds with the same
-//!   `listingId` payload as `holding_added`, drops a title that is gone;
-//!   the consumer already parses it, and that step subscribes to it.
+//!   `holding_removed` (same `listingId` payload as `holding_added`) drops
+//!   a title that is gone.
 //! - **Rebuild job.** When the index has no finished rebuild of the current
 //!   layout (a new node, a deleted directory, an older layout), the
 //!   heartbeat queues a `search_index_rebuild` job pinned to this node
@@ -51,13 +50,12 @@ const CONSUMER_PREFIX: &str = "host:search-index:";
 ///
 /// Every one is a host event type
 /// ([`bookclerk_plugin_manifest::HOST_EVENT_TYPES`]), which no plugin may
-/// produce, so the payloads come from the host. `holding_removed` already
-/// parses ([`parse_change`]); book model step 5, which publishes it, adds it
-/// to the host types and here.
-pub const INDEX_EVENT_TYPES: [&str; 4] = [
+/// produce, so the payloads come from the host.
+pub const INDEX_EVENT_TYPES: [&str; 5] = [
     "edition_linked",
     "edition_updated",
     "holding_added",
+    "holding_removed",
     "book_acquired",
 ];
 

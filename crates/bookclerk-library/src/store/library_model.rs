@@ -368,8 +368,9 @@ fn conflict_row(conflict: &resolve::Conflict) -> LinkConflictRow {
     }
 }
 
-/// The outbox row for one resolver event.
-fn link_event(listing: &resolve::Listing, event: &resolve::Event) -> LinkEvent {
+/// The outbox row for one resolver event; `holding_id` is the id a new
+/// holding is inserted with.
+fn link_event(listing: &resolve::Listing, event: &resolve::Event, holding_id: &str) -> LinkEvent {
     let id = Uuid::new_v4().to_string();
     let (account_id, dedup_key, payload, ordering_key) = match event {
         resolve::Event::EditionLinked {
@@ -395,8 +396,12 @@ fn link_event(listing: &resolve::Listing, event: &resolve::Event) -> LinkEvent {
             };
             (
                 account,
-                format!("holding_added:{listing_id}:{}", holder.stored()),
-                serde_json::json!({ "listingId": listing_id, "holder": holder.stored() }),
+                format!("holding_added:{holding_id}"),
+                serde_json::json!({
+                    "listingId": listing_id,
+                    "holder": holder.stored(),
+                    "holdingId": holding_id,
+                }),
                 listing_id.clone(),
             )
         }
@@ -451,6 +456,7 @@ fn link_params(
     } else {
         Vec::new()
     };
+    let holding_id = Uuid::new_v4().to_string();
     ListingLinkParams {
         listing_id: plan.listing.id.clone(),
         listing_is_new: plan.listing_is_new,
@@ -562,11 +568,16 @@ fn link_params(
             .collect(),
         holding: plan.holding.as_ref().map(|h| LinkHoldingRow {
             holder: h.holder.stored(),
+            holding_id: holding_id.clone(),
             entitlement: h.entitlement.as_str().to_string(),
             purchased_at: h.purchased_at.clone(),
         }),
         conflicts: plan.conflicts.iter().map(conflict_row).collect(),
-        events: plan.events.iter().map(|e| link_event(listing, e)).collect(),
+        events: plan
+            .events
+            .iter()
+            .map(|e| link_event(listing, e, &holding_id))
+            .collect(),
     }
 }
 
@@ -2485,13 +2496,28 @@ mod store_tests {
     use sea_orm::PaginatorTrait;
     use std::sync::Arc;
 
-    /// A store over a fresh in-memory library.
+    /// A store over a fresh in-memory library, with the test accounts.
     async fn store() -> LibraryStore {
-        LibraryStore::from_connection(
+        let store = LibraryStore::from_connection(
             bookclerk_plugin_database_sqlite::open_memory()
                 .await
                 .unwrap(),
-        )
+        );
+        seed_accounts(&store).await;
+        store
+    }
+
+    /// The accounts the tests' holdings name, on every test plugin: a
+    /// holding is only written for an account the library has.
+    async fn seed_accounts(store: &LibraryStore) {
+        for plugin in ["audible", "libro", "chirp"] {
+            for id in ["a1", "a2", "c1", "l1"] {
+                store
+                    .upsert_account(plugin, id, "us", None, true, plugin)
+                    .await
+                    .unwrap();
+            }
+        }
     }
 
     /// A Dune audiobook draft sold by `plugin` as `product`.
@@ -3258,6 +3284,7 @@ mod store_tests {
             .unwrap();
         let store = LibraryStore::from_connection(db.clone())
             .with_atomic_txn(Arc::new(InProcessSqliteAtomic::on(db)));
+        seed_accounts(&store).await;
         let listing = resolve::Listing::from_draft(&dune("audible", "B001")).unwrap();
         let plan = store
             .record_listing(&listing, &account("a1"))
@@ -4139,6 +4166,8 @@ mod store_tests {
             let by_page = crate::test_support::sqlite::memory(profile)
                 .await
                 .into_store();
+            seed_accounts(&by_listing).await;
+            seed_accounts(&by_page).await;
             let mut listings = seeded(&by_listing).await;
             seeded(&by_page).await;
             listings.push(resolve::Listing::from_draft(&dune("chirp", "C001")).unwrap());

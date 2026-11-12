@@ -695,7 +695,10 @@ library holds as works, expressions and editions:
 - `store_listings` (one per plugin, marketplace and product, with the
   store's own text for it: synopsis, cover, credits as printed, ratings),
   `listing_offers` (its price per audience, `non_member` or `member`) and
-  `holdings` (who holds each listing: an account or a branch library). A
+  `holdings` (who holds each listing: an account or a branch library, in
+  typed columns whose foreign keys drop the holding with its account or
+  node; a holding a scan no longer lists, or of a revoked account, is
+  removed with a `holding_removed` event). A
   listing with no holding is a catalog title a store returned to Discover;
   Discover's candidates and its storefront call cache refer to listings
   instead of keeping their own copies
