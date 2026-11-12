@@ -68,6 +68,18 @@ Details: [Operations → Reverse proxy](operations.md#reverse-proxy--tls).
 Hosts of one library talk to each other over TLS, except on loopback.
 Details: [Libraries and branches](cluster-hosts.md).
 
+### Store connections a branch receives
+
+A person who joins a branch may bring their store connections. Only stores
+that declare their sign-in shareable travel, and the user must tick the
+box for it on the library. The library seals the accounts' secrets to the
+joining branch's own box key, so the code, the browser and any proxy on
+the way never see them. The branch re-seals each secret with its own
+`master.key` before it writes it. Neither side logs the values, and the
+library audits what it sent, without them. Each operator can stop a
+member from connecting store accounts on their server. Details:
+[Store connections that follow the person](cluster-hosts.md#store-connections-that-follow-the-person).
+
 ### Leave the web app's policy in place
 
 The web app is served with a Content-Security-Policy. Pages run only

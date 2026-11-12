@@ -84,6 +84,36 @@ impl GraphicAudioSource {
             .collect())
     }
 
+    /// The full catalog record of one product, read from its product page.
+    ///
+    /// # Arguments
+    ///
+    /// * `product_id` - The store's numeric product id.
+    ///
+    /// # Returns
+    ///
+    /// The record, or `None` when the id is not numeric or the page names
+    /// no product.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the page cannot be fetched.
+    pub async fn catalog_detail(
+        &self,
+        product_id: &str,
+    ) -> bookclerk_storefront::Result<Option<CatalogHit>> {
+        let id = product_id.trim();
+        if id.is_empty() || id.len() > 20 || !id.bytes().all(|b| b.is_ascii_digit()) {
+            return Ok(None);
+        }
+        let http = catalog_http_client()?;
+        let base = self.store_url.trim_end_matches('/');
+        let url = format!("{base}/catalog/product/view/id/{id}");
+        let html = crate::catalog::fetch_catalog_html(&http, &url).await?;
+        // A page for another product (a redirect to a set, say) is not this one.
+        Ok(crate::detail::parse_product_detail(&html).filter(|hit| hit.product_id == id))
+    }
+
     /// Finds up to `limit` titles related to `seed` (same author, series, …).
     ///
     /// # Errors

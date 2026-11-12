@@ -5,6 +5,7 @@ import {
   clerkNodes,
   authorizeParams,
   branchSharingSummary,
+  broughtConnectionsSummary,
   canChangeBranchSharing,
   branchTitlesNote,
   fingerprintGroups,
@@ -208,6 +209,23 @@ describe("answerBranchConsent", () => {
     expect(body.approve).toBe(true);
     expect(body).not.toHaveProperty("connection");
     expect(body).not.toHaveProperty("step_up");
+    expect(body).not.toHaveProperty("bring_connections");
+  });
+
+  it("asks to bring connections only with a branch approval", async () => {
+    const fetchMock = stubFetch();
+    await answerBranchConsent(AUTHORIZE, true, undefined, true);
+    await answerBranchConsent(AUTHORIZE, false, undefined, true);
+    await answerBranchConsent(
+      AUTHORIZE,
+      true,
+      { step_up: { method: "totp", code: "123456" } },
+      true,
+    );
+    const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1].body)));
+    expect(bodies[0].bring_connections).toBe(true);
+    expect(bodies[1]).not.toHaveProperty("bring_connections");
+    expect(bodies[2]).not.toHaveProperty("bring_connections");
   });
 
   it("sends a clerk approval with its step-up, and never on a denial", async () => {
@@ -277,5 +295,33 @@ describe("listClerks", () => {
     vi.stubGlobal("fetch", fetchMock);
     await expect(listClerks()).resolves.toEqual({ node_id: "a", nodes: [] });
     expect(fetchMock.mock.calls[0][0]).toBe("/api/config/clerks");
+  });
+});
+
+describe("broughtConnectionsSummary", () => {
+  const base = { offered: 3, added: 0, already_here: 0, taken: 0, not_kept: null } as const;
+
+  it("says nothing when none came", () => {
+    expect(broughtConnectionsSummary(undefined)).toBeNull();
+    expect(broughtConnectionsSummary(null)).toBeNull();
+    expect(broughtConnectionsSummary({ ...base, offered: 0 })).toBeNull();
+  });
+
+  it("counts what was added, already here, and taken", () => {
+    expect(broughtConnectionsSummary({ ...base, added: 1, already_here: 1, taken: 1 })).toBe(
+      "1 store connection added, 1 already here, 1 already connected by someone else here, left as they are.",
+    );
+    expect(broughtConnectionsSummary({ ...base, added: 2 })).toBe("2 store connections added.");
+    expect(broughtConnectionsSummary({ ...base, added: 1, failed: 1 })).toBe(
+      "1 store connection added, 1 couldn't be added; connect them in Accounts.",
+    );
+  });
+
+  it("explains why none were kept", () => {
+    expect(broughtConnectionsSummary({ ...base, not_kept: "not_allowed" })).toMatch(
+      /administrator doesn't let you/,
+    );
+    expect(broughtConnectionsSummary({ ...base, not_kept: "no_owner" })).toMatch(/no single owner/);
+    expect(broughtConnectionsSummary({ ...base, not_kept: "failed" })).toMatch(/couldn't be added/);
   });
 });

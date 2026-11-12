@@ -225,7 +225,7 @@ guests that export `cli` (and optional event and job triggers), not a
 | `env.KV` | `[[kv_namespaces]]` → `get` / `getWithMetadata` / `put` / `delete` / `list` with `expiration`, `expirationTtl`, and `metadata` |
 | `env.SECRETS` | `[secrets]` → granted on `env` |
 | `[[queues.producers]]` / `[[queues.consumers]]` | `env.<BINDING>.send` / `sendBatch` and `queue(batch)` with per-message `ack` / `retry` |
-| `[[events.consumers]]` | `event(batch)` with `ack` / `retry` / `reject` / `deadLetter` / `suspend` |
+| `[[events.consumers]]` | `event(batch)` with `ack` / `retry` / `reject` / `deadLetter` / `suspend`, and `env.EVENTS.read` to catch up on past events |
 | `[[events.producers]]` | `env.EVENTS.publish` (host outbox; forced `source`) |
 | `[triggers] crons` / `scheduled(controller)` | `[triggers] crons` and `scheduled(controller)`, five-field UTC schedules (see [Scheduled triggers](#scheduled-triggers)) |
 | `[triggers] jobs` | `job(controller)` (durable command envelope) |
@@ -270,11 +270,12 @@ The host `EventPublisher` writes straight into the library outbox
   `[[events.consumers]]`, but can't declare them under
   `[[events.producers]]` (`check` and load fail), and the host publisher
   refuses them even from an older grant.
-- **Producer grant.** The binding exists only when the manifest declares
-  `[[events.producers]]` *and* the operator grant covers those types (the
-  consent request lists them). Publishing a type outside that
-  intersection fails with `forbidden`. An empty intersection means no
-  `EVENTS` on `env`.
+- **Producer grant.** Publishing needs the manifest to declare
+  `[[events.producers]]` *and* the operator grant to cover those types
+  (the consent request lists them). Publishing a type outside that
+  intersection fails with `forbidden`. With no consented producer and no
+  consented consumer (see [Reading past events](#reading-past-events-enveventsread)),
+  `env` has no `EVENTS`.
 - **Payload cap.** `payload` is UTF-8 JSON of at most 64 KiB
   (`payload_too_large` otherwise). Non-JSON bytes are `invalid_params`,
   and an empty payload is stored as `{}`.
@@ -298,6 +299,71 @@ capability. Under workerd:
    publisher.
 
 Author isolates never see `GRANTED` or the grant token.
+
+## Reading past events (`env.EVENTS.read`)
+
+A plugin that sleeps, or that was down, can miss deliveries: they
+[expire](#retention-of-undelivered-events) after the consumer's
+`message_retention_period`. Instead of a growing backlog, the plugin pulls
+what it missed from the outbox when it next runs, the way a Workers
+consumer re-reads its source after a gap.
+
+```ts
+let after = await env.KV.get("events-cursor") ?? undefined;
+for (;;) {
+  const page = await env.EVENTS.read({ after, types: ["book_acquired"], limit: 100 });
+  for (const event of page.events) {
+    // event.deduplicationKey is the event id; dedupe on it.
+  }
+  if (page.cursor) await env.KV.put("events-cursor", page.cursor);
+  if (!page.more) break;
+  after = page.cursor;
+}
+```
+
+The `EVENTS` binding exists when a consented `[[events.producers]]` **or**
+`[[events.consumers]]` row exists. `read` needs a consumer; `publish` still
+needs a producer.
+
+- **What it returns.** Events, oldest first, that the plugin's consented
+  `[[events.consumers]]` rows match by type, schema version and `filter`,
+  exactly as delivery matches them. `types` narrows the read to some of
+  those types; an empty list means all of them, and a type outside the
+  consent is `forbidden`. Queue messages are never returned.
+- **Account scope.** An invocation opened for an account reads only that
+  account's events. An invocation with no account reads every account, as
+  its deliveries do.
+- **Where it starts.** Pass at most one of `after` (a cursor from an
+  earlier page) and `since` (a `Date` or Unix milliseconds; `sinceUnixMs`
+  is accepted as the same field). With neither,
+  the read starts at the oldest event the host keeps. Reads never go back
+  further than `[events].retention_days`; `truncated` is true when the
+  start was older than that, so the plugin knows it may have lost events
+  for good.
+- **Paging.** `limit` defaults to, and may not exceed, `MAX_LIST_PAGE`.
+  Keep the `cursor` and pass it back as `after` while `more` is true. The
+  cursor is opaque, at most 512 bytes (`MAX_EVENT_CURSOR_BYTES`), and a
+  cursor the host did not issue is `invalid_cursor`. A page can hold fewer
+  events than `limit` with `more` set: each read scans a bounded number of
+  outbox rows, and the cursor then marks how far it got.
+- **The last 30 seconds wait.** A read returns only events stored at least
+  30 seconds ago (`EVENT_STREAM_SETTLE_SECS`). The host stamps an event's
+  time before its insert commits, so a slow publication can land behind a
+  newer one; holding the newest events back keeps a cursor from moving
+  past an event that has not appeared yet. Newer events still arrive
+  through delivery, and the next read picks them up.
+- **Gap notice.** `expiredEventIds` lists the events in the page whose
+  delivery to this plugin expired unhandled.
+- **Not a delivery.** A read changes no delivery state and is not
+  acknowledged. `deliveryAttempt` is `0` and `deduplicationKey` is the
+  event id, so a plugin that also receives deliveries dedupes the two on
+  the event id.
+
+**Transports.** Native guests call `EventPublisher.read` on the
+`Bindings.events` capability. Under workerd, `read()` POSTs to
+`/events/read` on the same grant as `publish()`; the launcher refuses a
+body over 64 KiB or one that is not a JSON request object, then the host
+checks consent and bounds.
 
 ## KV namespaces
 
@@ -677,8 +743,9 @@ piling up work.
   that runs it is down) waits the full `[events].retention_days`, since
   its declared period cannot be read.
 - Expired rows stay until `[events].retention_days` passes, as the record
-  of which events an instance missed. A later change lets a plugin read
-  past events from the outbox to catch up after a gap.
+  of which events an instance missed. A plugin catches up after a gap with
+  [`env.EVENTS.read`](#reading-past-events-enveventsread), which names
+  those events in `expiredEventIds`.
 - Deliveries for the host's own consumers (`host:` and node queues) never
   expire.
 - A plugin is live when any heartbeating node (60 s TTL) has it enabled.
@@ -889,6 +956,42 @@ Each removal publishes `holding_removed`. So a plugin must set `complete`
 only when the pass really listed every title: a complete full pass that
 lists none removes every holding of the account. The flat library rows
 and acquired files stay.
+
+Each SDK has a helper that does the paging for you: `scanPage` in
+TypeScript, `scan_page` in Python and in the Rust SDK. You give it a
+function that fetches one page of the store's own listing, by the store's
+own cursor, and it returns the reply for the call:
+
+```ts
+import { scanPage, type ScanPage, type ScanParams } from "@bookclerk/plugin-sdk/workerd";
+
+scan(params: ScanParams): Promise<ScanPage> {
+  return scanPage(params, async (storeCursor) => {
+    const page = Number(storeCursor || "1");
+    const listing = await this.library(params.accountId, page);
+    return {
+      books: listing.items.map(toScanBook),
+      next: listing.hasMore ? String(page + 1) : "",
+      complete: true,
+    };
+  });
+}
+```
+
+1. The function gets an empty store cursor for the first store page, then
+   each `next` it returned. An empty `next` marks the last store page.
+2. A store page may hold any number of titles and removed ids. The helper
+   returns them 500 at a time, fetching that store page again for each
+   slice, so the plugin keeps no state between calls.
+3. Set `syncToken` and `complete` on the last store page. The helper sends
+   them only with the pass's last reply.
+4. The helper rejects a cursor it did not write, or a slice past the end
+   of a store page that shrank mid-pass, with `invalid_cursor`, so the host
+   restarts the pass. A store cursor longer than about 4 KB fails with
+   `internal`.
+
+The three SDKs write the same cursors, so a plugin can move between them
+without breaking a pass in progress.
 
 #### Catalog search capabilities
 

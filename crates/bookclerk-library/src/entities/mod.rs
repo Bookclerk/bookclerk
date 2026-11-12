@@ -10,6 +10,7 @@
 
 pub mod account_links;
 pub mod account_scan_state;
+pub mod account_shares;
 pub mod accounts;
 pub mod bookclerk_receipts;
 pub mod books;
@@ -46,6 +47,7 @@ pub mod job_temp_paths;
 pub mod jobs;
 pub mod listening_progress;
 pub mod listing_offers;
+pub mod member_account_rules;
 pub mod node_credentials;
 pub mod node_enrollment_links;
 pub mod node_status;

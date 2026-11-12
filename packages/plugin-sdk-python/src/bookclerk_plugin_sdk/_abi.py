@@ -27,6 +27,9 @@ MAX_SCAN_PAGE_BOOKS: int = 500
 MAX_SCAN_CURSOR_BYTES: int = 4096
 """Maximum bytes of a scan cursor or sync token."""
 
+MAX_EVENT_CURSOR_BYTES: int = 512
+"""Maximum bytes of an `EventReadRequest.after` / `EventReadPage.cursor`."""
+
 MAX_IDENTIFIER_BYTES: int = 64
 """Maximum plugin / account identifier length (bytes)."""
 
@@ -212,6 +215,7 @@ __all__ = [
     "MAX_CHECKPOINT_BYTES",
     "MAX_SCAN_PAGE_BOOKS",
     "MAX_SCAN_CURSOR_BYTES",
+    "MAX_EVENT_CURSOR_BYTES",
     "MAX_IDENTIFIER_BYTES",
     "MAX_CRON_BYTES",
     "MAX_CONFIG_PAYLOAD_BYTES",

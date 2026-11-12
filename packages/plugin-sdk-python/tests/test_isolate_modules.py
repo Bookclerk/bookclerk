@@ -3,7 +3,7 @@
 A Python workerd isolate only holds the modules the launcher injects, so an
 SDK import that reaches a module missing from that list fails with
 ``ModuleNotFoundError`` inside the isolate (#748). These tests walk the
-in-package imports of ``workerd.py`` with :mod:`ast` and compare the closure
+in-package imports of ``workerd.py`` and ``scan_page.py`` with :mod:`ast` and compare the closure
 with the lists in the Python sparse config, the TypeScript sparse config and
 the launcher (``bookclerk-workerd``).
 """
@@ -77,11 +77,12 @@ def _runtime_imports(source: str) -> set[str]:
 
 
 def _closure() -> set[str]:
-    """Every SDK module reachable from ``workerd.py``, except ``__init__.py``.
+    """Every SDK module reachable from ``workerd.py`` or ``scan_page.py``.
 
-    The isolate's ``__init__.py`` is a stub, not the package's own.
+    Authors import both directly. ``__init__.py`` is left out: the isolate's
+    is a stub, not the package's own.
     """
-    pending = [SDK_PY_WORKERD_MODULE]
+    pending = [SDK_PY_WORKERD_MODULE, f"{PACKAGE}/scan_page.py"]
     reached: set[str] = set()
     while pending:
         module = pending.pop()

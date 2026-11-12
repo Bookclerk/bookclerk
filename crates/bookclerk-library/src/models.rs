@@ -2015,6 +2015,67 @@ impl BookRecord {
     }
 }
 
+/// Where one event stream read starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventStreamStart {
+    /// The oldest retained event.
+    Oldest,
+    /// The first event stored at or after this time.
+    Since(DateTime<Utc>),
+    /// The first event after this stored `(created_at, id)` position.
+    After {
+        /// Stored `created_at` text of the last row already read.
+        created_at: String,
+        /// Event id of the last row already read.
+        id: String,
+    },
+}
+
+/// One page request over the domain-event outbox (`EventPublisher.read`).
+#[derive(Debug, Clone)]
+pub struct EventStreamRead {
+    /// Where the read starts.
+    pub start: EventStreamStart,
+    /// The reader's consented subscriptions, already narrowed to the types it
+    /// asked for. An event is returned when any of them matches it.
+    pub subscriptions: Vec<EventCatalogSubscription>,
+    /// `Some` limits the read to one account's events; `None` reads every
+    /// account, as delivery does for a host-wide invocation.
+    pub account_id: Option<String>,
+    /// The reader's PluginKey. Its deliveries are filed under this key and
+    /// under each of its instance ids; they report which returned events it
+    /// missed. Empty reports none.
+    pub plugin_key: String,
+    /// `[events].retention_days`: nothing older is returned.
+    pub retention_days: u64,
+    /// Events stored less than this many seconds before `now` are left for a
+    /// later read ([`crate::EVENT_STREAM_SETTLE_SECS`] in production), so a
+    /// publication that commits behind a newer one is never skipped.
+    pub settle_secs: u64,
+    /// Most events to return (at least one).
+    pub limit: usize,
+    /// Current time, which fixes the retention cutoff.
+    pub now: DateTime<Utc>,
+}
+
+/// One page of [`EventStreamRead`].
+#[derive(Debug, Clone, Default)]
+pub struct EventStreamPage {
+    /// Matching events, oldest first.
+    pub events: Vec<DomainEventRecord>,
+    /// Stored `(created_at, id)` of the last row scanned, the next page's
+    /// start; `None` when nothing was scanned.
+    pub last_scanned: Option<(String, String)>,
+    /// True when more events may follow (the page filled or the scan budget
+    /// ran out).
+    pub more: bool,
+    /// Ids of returned events whose delivery to one of the subscriber ids
+    /// expired unleased.
+    pub expired_event_ids: Vec<String>,
+    /// True when the start position is older than the retention window.
+    pub truncated: bool,
+}
+
 /// Producer-side domain event (or queue message) to persist in the outbox.
 ///
 /// A domain event leaves `queue_name` empty (the bus, [`CORE_EVENTS_QUEUE`])

@@ -200,6 +200,46 @@ The exchange runs in five steps:
    It seals both private keys into its `encrypted_secrets`, records the
    link in `cluster_links`, and starts the link's client.
 
+### Store connections that follow the person
+
+On the consent page the user may tick **Bring my store connections to this
+branch** (off by default). The page lists the user's connected store
+accounts and which of them would travel.
+
+- **What travels.** The user's own connected store accounts whose
+  storefront declares `credentials = "shareable"` in every `plugin.toml`
+  the library knows for it, discovered or installed (see
+  [`credentials`](../plugins/manifest.md#credentials-storefronts)).
+  Accounts of a single-keeper store, such as Audible, never travel. At
+  most 64 accounts go with one join.
+- **How.** The choice is kept on the enrollment link. The redeem answer
+  carries the accounts and their secrets as one bundle sealed to the
+  branch's X25519 box key (the same sealed box as a clerk's bootstrap,
+  with its own associated-data domain). A retried redeem answers it
+  again, but only while the user is still active and the branch has not
+  been revoked. The library records each account as sent to that node in
+  `account_shares` and audits `branch_connections_sent` (without the
+  secrets). A bundle that can't be made is logged and left out: the
+  branch still joins.
+- **On the branch.** The daemon opens and checks the bundle, then keeps
+  each account for the Owner who signed in to run the join, or else the
+  branch's single active Owner. Each account is one atomic batch: the
+  account row, its secrets re-sealed with the branch's own key, the link
+  to the person, and a `received` row in `account_shares`. An account
+  already linked to someone else on the branch is left as it is, and one
+  that came without a secret is not added. The join's answer counts what
+  was added, already there, taken, or not kept.
+- **The branch operator's rule.** Each operator decides per member
+  whether they may connect store accounts there (**Settings → User
+  Management**, `PATCH /api/users/{id}` with `may_connect_accounts`). The
+  rule is on by default, and nobody can change their own. A member it is off for adds nothing from a join,
+  and the connect routes answer `403`. A sign-in that finishes after the
+  rule was turned off is not linked, and an account it newly stored (or
+  found revoked) is revoked again and its secrets deleted. A join already adding accounts when
+  the rule is turned off (or the member is disabled) stops: each account
+  is added in its own batch that checks the rule again, and the ones not
+  yet added count as not kept.
+
 > [!NOTE]
 > A retry of the same exchange (a lost answer) replays the same node, and
 > two concurrent redeems still make one node. Anything else, such as a
@@ -426,6 +466,21 @@ the approved grant through `bookclerk-workerd`, exactly as it runs its own
 plugins (see [The guest jail](../internals/guest-jail.md#the-guest-jail)).
 There is no in-process fallback.
 
+### Plugin state on a branch
+
+A branch keeps each joined library's plugin state apart from every other
+library's and from its own. A guest that runs for a library gets
+`plugin-state/link-<32 hex>/<PluginKey fs-id>/data` and `…/tmp`. The leaf
+is the first 128 bits of the SHA-256 of that library's cluster id. The
+branch's own guests keep `plugin-state/<PluginKey fs-id>/`. So when two
+libraries deploy the same plugin, their guests never see each other's
+caches, cookies or logins. The plugin code cache under
+`plugins/.versions/` stays shared, because it is read-only and addressed
+by digest.
+
+The design record is
+[ADR: Library catalog network](../adr/library-catalog-network.md).
+
 ## What a branch runs
 
 ### Scans
@@ -619,6 +674,12 @@ Open **Settings → Library → Leave library**, or run
 2. The link is marked `left` and its node keys are deleted, so this
    install can never sign as that node again.
 3. The link's client stops.
+4. Once it has stopped, the branch deletes that library's plugin state
+   (`plugin-state/link-<32 hex>/`). A Windows ACL journal still recorded
+   there is revoked first; if that is refused, the state stays and the
+   delete is tried again every few seconds.
+
+A revoked branch deletes the library's plugin state the same way.
 
 > [!NOTE]
 > If the library can't be reached within 10 seconds, the branch leaves
@@ -642,6 +703,11 @@ in the library, marked as from a branch that left (see
   bindings over the node socket, aren't served to hosts. Instance
   `SECRETS` reach only a node trusted with every job.
 - Pebble (ACME) doesn't run in CI.
+- Store connections travel only with a sign-in join, not an invite, and
+  only shareable stores' accounts. Adding connections to a library you
+  already joined, disconnecting on every instance at once, and one
+  refresh keeper for single-keeper stores such as Audible are still to
+  come.
 
 ## Next steps
 

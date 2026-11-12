@@ -424,6 +424,10 @@ const SDK_LIMITS_PY: &str =
 const SDK_PLUGIN_MIGRATION_PY: &str = include_str!(
     "../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/plugin_migration.py"
 );
+/// Injected as `bookclerk_plugin_sdk/scan_page.py` (the storefront paging
+/// helper authors import directly).
+const SDK_SCAN_PAGE_PY: &str =
+    include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/scan_page.py");
 /// First-party adapter isolate: owns GRANTED / BRIDGE_TOKEN (author `PLUGIN`).
 const ADAPTER_JS: &str = r#"import { wrapPluginFromBinding } from "@bookclerk/plugin-sdk/workerd";
 export default wrapPluginFromBinding();
@@ -462,6 +466,8 @@ pub const SDK_PY_GUEST_SQL_MODULE: &str = "bookclerk_plugin_sdk/guest_sql.py";
 pub const SDK_PY_LIMITS_MODULE: &str = "bookclerk_plugin_sdk/limits.py";
 /// Python module path for the plugin-owned migration registration checks.
 pub const SDK_PY_PLUGIN_MIGRATION_MODULE: &str = "bookclerk_plugin_sdk/plugin_migration.py";
+/// Python module path for the storefront `scan` paging helper.
+pub const SDK_PY_SCAN_PAGE_MODULE: &str = "bookclerk_plugin_sdk/scan_page.py";
 /// Python module path that initializes the sparse workerd guest SDK.
 pub const SDK_PY_INIT_MODULE: &str = "bookclerk_plugin_sdk/__init__.py";
 
@@ -527,6 +533,11 @@ const SDK_PY_MODULES: &[InjectedPyModule] = &[
         embed_file: "sdk-workerd.py",
         source: SDK_WORKERD_PY,
     },
+    InjectedPyModule {
+        module: SDK_PY_SCAN_PAGE_MODULE,
+        embed_file: "sdk-scan-page.py",
+        source: SDK_SCAN_PAGE_PY,
+    },
 ];
 
 // Re-export so call sites / docs can discover the shared list beside workerd config.
@@ -548,7 +559,8 @@ fn plugin_root_prefix(plugin_root: &Path) -> String {
 /// Stable leaf under `$TMPDIR` for one materialization session.
 ///
 /// Unix `sockaddr_un` is about 108 bytes. Guest scratch is already
-/// `$FILES_DIR/plugin-state/<PluginKey fs-id>/tmp`. Eight hex chars identify
+/// `$FILES_DIR/plugin-state/<PluginKey fs-id>/tmp` (or that path under a
+/// joined library's `plugin-state/link-<32 hex>/` on a branch). Eight hex chars identify
 /// the plugin root; four more are a per-session nonce so concurrent
 /// `materialize` callers of the *same* root cannot clobber
 /// `workerd-config.capnp`. Unix sockets no longer need this leaf to keep

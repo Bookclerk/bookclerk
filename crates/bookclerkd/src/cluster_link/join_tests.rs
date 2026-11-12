@@ -613,3 +613,184 @@ async fn an_empty_install_joins_as_a_clerk_and_takes_the_librarys_bootstrap() {
     assert!(actions.iter().any(|a| a == "clerk_enrolled"), "{actions:?}");
     ASSUME_DATABASE_GUESTS.store(false, std::sync::atomic::Ordering::SeqCst);
 }
+
+/// Writes a storefront `plugin.toml` declaring `credentials` under the
+/// library's `plugins/` directory, and answers the plugin key discovery
+/// gives it.
+pub(crate) fn stage_storefront(
+    files: &tempfile::TempDir,
+    state: &Arc<AppState>,
+    credentials: &str,
+) -> String {
+    let dir = files.path().join("plugins/libro");
+    std::fs::create_dir_all(&dir).unwrap();
+    // Discovery wants the guest's command to exist; it is never run here.
+    std::fs::write(dir.join("guest"), b"").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir.join("guest"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+    }
+    std::fs::write(
+        dir.join("plugin.toml"),
+        format!(
+            "api_version = 3\nid = \"libro\"\nname = \"Libro.fm\"\nversion = \"0.1.0\"\n\
+             runtime = \"native\"\ncommand = \"./guest\"\nentrypoints = [\"storefront\"]\n\
+             credentials = \"{credentials}\"\n\n[capabilities.network]\nmode = \"deny\"\n"
+        ),
+    )
+    .unwrap();
+    let cfg = state.config.try_read().unwrap().clone();
+    let found = bookclerk_plugin_host::discover_plugins(&cfg).unwrap();
+    assert_eq!(found.len(), 1, "the staged storefront is discovered");
+    found[0].identity.plugin_key.to_string()
+}
+
+/// Connects `account_id` of `plugin_key` for `user_id`, with an `auth`
+/// secret holding `value`.
+pub(crate) async fn connect_account(
+    store: &LibraryStore,
+    user_id: i64,
+    plugin_key: &str,
+    account_id: &str,
+    value: &[u8],
+) {
+    use bookclerk_library::secrets::{
+        build_sealed_record, secret_account_type, secret_kind, upsert_secret,
+    };
+    store
+        .upsert_account(plugin_key, account_id, "us", Some("Reader"), true, "libro")
+        .await
+        .unwrap();
+    let identity = store
+        .ensure_local_portal_identity(user_id, None)
+        .await
+        .unwrap();
+    store
+        .link_account(identity.id, plugin_key, account_id, "libro")
+        .await
+        .unwrap();
+    let record = build_sealed_record(
+        value,
+        secret_kind::SOURCE_AUTH,
+        plugin_key,
+        secret_account_type::INTEGRATION,
+        account_id,
+        "auth",
+    )
+    .unwrap();
+    upsert_secret(store.db(), &record).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_branch_join_brings_the_persons_store_connections_when_asked() {
+    use bookclerk_library::secrets::{get_secret, secret_account_type, secret_kind, unseal_secret};
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let (owner_state, owner_store, origin, member) = owner(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let (host_state, host_store) = crate::node_api::tests::test_state(&host_files).await;
+    // Both libraries share this process's master key, which the last
+    // bootstrap set: seal the library's secret after both exist.
+    let plugin_key = stage_storefront(&owner_files, &owner_state, "shareable");
+    // A token big enough that the sealed answer outgrows an ordinary
+    // response (64 KiB) once encoded.
+    let token = "t".repeat(60 * 1024);
+    connect_account(
+        &owner_store,
+        member,
+        &plugin_key,
+        "riley@example.com",
+        token.as_bytes(),
+    )
+    .await;
+    // The branch's single Owner is the person the connections are kept for.
+    let me = host_store
+        .create_user(UserRole::Owner, Some("Riley"), None)
+        .await
+        .unwrap();
+    let host = host_routes(&host_state);
+    let start = json!({ "address": origin, "branch_name": "Den PC" });
+    let (status, _, started) = call(&host, "POST", "/api/config/join/start", Some(start)).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let authorize_url = started["authorize_url"].as_str().unwrap().to_string();
+
+    // The consent page lists the connection as one that travels.
+    let query = url::Url::parse(&authorize_url)
+        .unwrap()
+        .query()
+        .unwrap()
+        .to_string();
+    let page_routes = routes(&owner_state, UserCaller::User { user_id: member }, LOOPBACK);
+    let (status, _, page) = call(
+        &page_routes,
+        "GET",
+        &format!("/api/auth/branch-consent?{query}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(
+        page["connections"],
+        json!([{ "source": "libro", "account_id": "riley@example.com", "label": "Reader", "travels": true }])
+    );
+
+    let back = consent_with(
+        &owner_state,
+        member,
+        &authorize_url,
+        true,
+        json!({ "bring_connections": true }),
+    )
+    .await;
+    let callback = json!({ "code": back["code"], "state": back["state"] });
+    let (status, _, joined) =
+        call(&host, "POST", "/api/config/join/callback", Some(callback)).await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(
+        joined["connections"],
+        json!({ "offered": 1, "added": 1, "already_here": 0, "taken": 0, "failed": 0, "not_kept": null })
+    );
+
+    // The account is connected on the branch for its Owner, with its secret.
+    let account = host_store
+        .get_account(&plugin_key, "riley@example.com")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(account.connection_status, "active");
+    let identity = host_store
+        .ensure_local_portal_identity(me.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        host_store
+            .list_account_links(identity.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let secret = get_secret(
+        host_store.db(),
+        secret_kind::SOURCE_AUTH,
+        Some(&plugin_key),
+        secret_account_type::INTEGRATION,
+        Some("riley@example.com"),
+        "auth",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(unseal_secret(&secret).unwrap(), token.as_bytes());
+    // The library recorded what it sent.
+    let sent = owner_store
+        .list_security_audit_events(50)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.action == "branch_connections_sent")
+        .count();
+    assert_eq!(sent, 1);
+}

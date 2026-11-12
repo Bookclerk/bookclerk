@@ -1,8 +1,17 @@
-# Headers for the dashboard's static files (served without the Worker).
+# Headers for the dashboard's static files (served without the Worker), with
+# the closed cross-origin set the Worker gives every answer (CLOSED_HEADERS in
+# cross-origin.ts; a test keeps them equal).
 /static/*
-  X-Content-Type-Options: nosniff
   Content-Security-Policy: default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; frame-ancestors 'none'
   Strict-Transport-Security: max-age=31536000
+  Cross-Origin-Resource-Policy: same-origin
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Origin-Agent-Cluster: ?1
+  X-Permitted-Cross-Domain-Policies: none
+  X-XSS-Protection: 0
 
 # Font files carry their upstream version in the name (see fonts/README.md).
 /static/fonts/*

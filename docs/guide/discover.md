@@ -32,6 +32,9 @@ more, taking turns between series, and so may **Top picks for you**.
 
 Suggestions come from the stores' catalogs, so they include books nobody in
 your library owns yet. The more you rate and finish, the better they get.
+Rows only suggest books in the languages of the books that shape your taste,
+or in English when none of those books says its language. A book whose store
+does not give its language can still appear.
 Until you have a few books or listens of your own, your household's library
 shapes your rows too.
 

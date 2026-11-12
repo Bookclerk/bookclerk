@@ -260,6 +260,33 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE UNIQUE INDEX IF NOT EXISTS idx_account_links_account_exclusive ON account_links(plugin_key, account_id)",
     ),
+    // The operator's per-member rule "may connect store accounts here". No
+    // row means allowed (the default); `may_connect = 0` refuses a connect
+    // on this instance and any account that arrives for the member from
+    // another library (`control_plane::carried_accounts`).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS member_account_rules (
+        user_id INTEGER PRIMARY KEY,
+        may_connect INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    )",
+    ),
+    // Where a store account travelled with its person: `sent` to a branch
+    // (`peer = node:<node_id>`) or `received` from a library this install
+    // joined (`peer = link:<cluster_id>`). Read to disconnect an account
+    // everywhere and to keep a single-keeper login in step.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_shares (
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        peer TEXT NOT NULL,
+        direction TEXT NOT NULL CHECK (direction IN ('sent', 'received')),
+        shared_at TEXT NOT NULL,
+        PRIMARY KEY (plugin_key, account_id, peer, direction),
+        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
+    )",
+    ),
     // The library data model (docs/adr/library-data-model.md): FRBR works,
     // expressions and editions (manifestations), the store listings that
     // sell editions and the holdings that own listings. The CHECK lists are
@@ -1373,7 +1400,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         expires_at TEXT NOT NULL,
         redeemed_at TEXT,
         redeemed_node_id TEXT,
-        revoked_at TEXT
+        revoked_at TEXT,
+        bring_accounts INTEGER NOT NULL DEFAULT 0
     )",
     ),
     MigrationOp::Schema(

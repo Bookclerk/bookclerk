@@ -101,6 +101,15 @@ impl Gaps {
     }
 }
 
+/// Titles read per library page while looking for gaps to fill.
+#[cfg(not(test))]
+const ENRICH_PAGE: u64 = 200;
+
+/// Titles read per library page in tests, small so the tests' few titles
+/// span several pages.
+#[cfg(test)]
+const ENRICH_PAGE: u64 = 2;
+
 /// Fills missing description, subjects, cover and language from the
 /// deployed metadata providers.
 ///
@@ -128,85 +137,102 @@ pub async fn enrich_books_from_metadata(
     let mut enriched = 0usize;
     let mut requests = 0usize;
 
-    for book in library.list_books(None).await? {
-        if already_enriched(&book) {
-            continue;
-        }
-        let gaps = Gaps::of(&book);
-        if !gaps.any() {
-            continue;
-        }
-        let isbn = book
-            .isbn
-            .as_deref()
-            .map(normalize_isbn)
-            .filter(|s| !s.is_empty());
-        if isbn.is_none() && book.title.trim().is_empty() {
-            continue;
-        }
+    // The library is read a page at a time, and reading stops once the
+    // run's request cap is spent.
+    let mut offset = 0u64;
+    'pages: loop {
+        // A spent budget reads no further page, even when the titles left
+        // would not have needed a request.
         if requests >= opts.max_requests {
-            tracing::info!(
-                requests,
-                max = opts.max_requests,
-                "metadata enrichment capped for this run"
-            );
             break;
         }
-        sleep(opts.min_interval).await;
-        requests += 1;
-        let (answer, matched) = match isbn.as_deref() {
-            Some(isbn) => {
-                let answer = providers
-                    .lookup(&MetadataLookupParams {
-                        identifiers: vec![isbn_identifier(isbn)],
-                        marketplace: None,
-                        limit: Some(1),
-                    })
-                    .await;
-                let matched = answer
-                    .records
-                    .iter()
-                    .find(|provided| gaps.filled_by(&provided.record))
-                    .cloned();
-                (answer, matched)
-            }
-            None => {
-                let answer = providers
-                    .search(&MetadataSearchParams {
-                        title: book.title.trim().to_string(),
-                        author: book
-                            .authors
-                            .as_deref()
-                            .and_then(primary_author)
-                            .map(str::to_string),
-                        language: None,
-                        marketplace: None,
-                        limit: Some(SEARCH_LIMIT),
-                    })
-                    .await;
-                let matched = first_title_match(&answer, &book.title, gaps);
-                (answer, matched)
-            }
-        };
-        for failure in &answer.failures {
-            tracing::debug!(
-                uuid = %book.uuid,
-                provider = %failure.provider,
-                error = %failure.message,
-                "metadata provider failed for this title"
-            );
+        let page = library
+            .list_books_filtered_page(None, None, ENRICH_PAGE, offset)
+            .await?;
+        if page.books.is_empty() {
+            break;
         }
-        let Some(matched) = matched else {
-            continue;
-        };
-        if apply_record(library, &book, gaps, &matched).await? {
-            enriched += 1;
-            tracing::info!(
-                uuid = %book.uuid,
-                title = %book.title,
-                provider = %matched.provider,
-                "filled title metadata from a metadata provider"
-            );
+        offset = offset.saturating_add(ENRICH_PAGE);
+        for book in page.books {
+            if already_enriched(&book) {
+                continue;
+            }
+            let gaps = Gaps::of(&book);
+            if !gaps.any() {
+                continue;
+            }
+            let isbn = book
+                .isbn
+                .as_deref()
+                .map(normalize_isbn)
+                .filter(|s| !s.is_empty());
+            if isbn.is_none() && book.title.trim().is_empty() {
+                continue;
+            }
+            if requests >= opts.max_requests {
+                tracing::info!(
+                    requests,
+                    max = opts.max_requests,
+                    "metadata enrichment capped for this run"
+                );
+                break 'pages;
+            }
+            sleep(opts.min_interval).await;
+            requests += 1;
+            let (answer, matched) = match isbn.as_deref() {
+                Some(isbn) => {
+                    let answer = providers
+                        .lookup(&MetadataLookupParams {
+                            identifiers: vec![isbn_identifier(isbn)],
+                            marketplace: None,
+                            limit: Some(1),
+                        })
+                        .await;
+                    let matched = answer
+                        .records
+                        .iter()
+                        .find(|provided| gaps.filled_by(&provided.record))
+                        .cloned();
+                    (answer, matched)
+                }
+                None => {
+                    let answer = providers
+                        .search(&MetadataSearchParams {
+                            title: book.title.trim().to_string(),
+                            author: book
+                                .authors
+                                .as_deref()
+                                .and_then(primary_author)
+                                .map(str::to_string),
+                            language: None,
+                            marketplace: None,
+                            limit: Some(SEARCH_LIMIT),
+                        })
+                        .await;
+                    let matched = first_title_match(&answer, &book.title, gaps);
+                    (answer, matched)
+                }
+            };
+            for failure in &answer.failures {
+                tracing::debug!(
+                    uuid = %book.uuid,
+                    provider = %failure.provider,
+                    error = %failure.message,
+                    "metadata provider failed for this title"
+                );
+            }
+            let Some(matched) = matched else {
+                continue;
+            };
+            if apply_record(library, &book, gaps, &matched).await? {
+                enriched += 1;
+                tracing::info!(
+                    uuid = %book.uuid,
+                    title = %book.title,
+                    provider = %matched.provider,
+                    "filled title metadata from a metadata provider"
+                );
+            }
         }
     }
 
@@ -534,6 +560,62 @@ mod tests {
         ])
         .await;
         let providers = Fixed::default();
+        enrich_books_from_metadata(&store, &providers, &opts(1))
+            .await
+            .unwrap();
+        assert_eq!(providers.asks.lock().unwrap().len(), 1);
+    }
+
+    /// A library longer than one page is read to the end, each title once.
+    #[tokio::test]
+    async fn every_page_of_the_library_is_read() {
+        let isbns = [
+            "9780441172719",
+            "9780553293357",
+            "9780141439518",
+            "9780141439600",
+            "9780140449136",
+        ];
+        let books: Vec<(String, String)> = isbns
+            .iter()
+            .enumerate()
+            .map(|(i, isbn)| (format!("p{i}"), (*isbn).to_string()))
+            .collect();
+        let seeds: Vec<(&str, &str, Option<&str>)> = books
+            .iter()
+            .map(|(p, isbn)| (p.as_str(), p.as_str(), Some(isbn.as_str())))
+            .collect();
+        let (store, _) = store_with(&seeds).await;
+        let providers = Fixed {
+            by_isbn: isbns
+                .iter()
+                .map(|isbn| ((*isbn).to_string(), ol_record("Any")))
+                .collect(),
+            ..Fixed::default()
+        };
+        let n = enrich_books_from_metadata(&store, &providers, &opts(50))
+            .await
+            .unwrap();
+        assert_eq!(n, isbns.len(), "every title on every page was filled");
+        assert_eq!(providers.asks.lock().unwrap().len(), isbns.len());
+    }
+
+    /// A run whose budget is spent reads no further page of the library.
+    #[tokio::test]
+    async fn a_spent_budget_reads_no_further_page() {
+        let (store, _) = store_with(&[
+            ("p1", "A", Some("9780441172719")),
+            ("p2", "B", Some("9780553293357")),
+            ("p3", "C", Some("9780141439518")),
+        ])
+        .await;
+        let providers = Fixed::default();
+        // Nothing is asked with no budget; with one request, only the first
+        // page's first title is.
+        enrich_books_from_metadata(&store, &providers, &opts(0))
+            .await
+            .unwrap();
+        assert!(providers.asks.lock().unwrap().is_empty());
         enrich_books_from_metadata(&store, &providers, &opts(1))
             .await
             .unwrap();

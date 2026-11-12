@@ -333,6 +333,23 @@ impl OwnerEndpoint {
     /// Returns [`DialError`] when the request cannot be made or the answer
     /// is malformed.
     pub async fn post_json(&self, path: &str, body: &[u8]) -> Result<(u16, Vec<u8>), DialError> {
+        self.post_json_within(path, body, 0).await
+    }
+
+    /// [`post_json`](Self::post_json) for an answer that may carry up to
+    /// `extra_body` more bytes than the usual response limit (a redeem
+    /// answer with sealed store connections).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DialError`] when the request cannot be made or the answer
+    /// is malformed or over the limit.
+    pub async fn post_json_within(
+        &self,
+        path: &str,
+        body: &[u8],
+        extra_body: usize,
+    ) -> Result<(u16, Vec<u8>), DialError> {
         let exchange = async {
             let mut io = self.connect().await?;
             let head = format!(
@@ -344,7 +361,7 @@ impl OwnerEndpoint {
             io.write_all(head.as_bytes()).await?;
             io.write_all(body).await?;
             io.flush().await?;
-            read_http_response(&mut io, MAX_HTTP_RESPONSE_BYTES).await
+            read_http_response(&mut io, MAX_HTTP_RESPONSE_BYTES.saturating_add(extra_body)).await
         };
         tokio::time::timeout(Duration::from_secs(HTTP_TIMEOUT_SECS), exchange)
             .await

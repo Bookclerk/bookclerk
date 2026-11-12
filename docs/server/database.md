@@ -668,7 +668,8 @@ collection deletes unreferenced objects.
 Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `accounts`, `books`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
-`operator_sessions`, `account_links`, `listening_progress`, `title_requests`, `title_request_sources`,
+`operator_sessions`, `account_links`, `member_account_rules`,
+`account_shares`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `discover_candidates`, `discover_store_calls`,
 `discover_store_call_hits`, `discover_feeds`, `discover_fetches`,
 `discover_request_queue`,
@@ -677,6 +678,13 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `event_subscriber_nodes`, `event_outbox_stats`, `bookclerk_slots`,
 `plugin_databases` and `bookclerk_schema_migrations`, plus the library
 model tables below.
+
+`member_account_rules` holds the operator's per-member rule on store
+accounts: a row with `may_connect = 0` stops that user from connecting
+store accounts here, and no row allows it. `account_shares` records each
+account a person's join sent to a branch (`sent`, peer `node:<id>`) or
+received from a library (`received`, peer `link:<cluster id>`); it is
+removed with the account.
 
 The library model ([ADR](../adr/library-data-model.md)) stores what the
 library holds as works, expressions and editions:

@@ -45,3 +45,14 @@ pub use types::{
     CoverHeaders, ExternalUser, FetchedCover, IntegrationHealth, ListeningProgressSnapshot,
     SyncListeningProviderResult, SyncListeningSummary,
 };
+
+/// Serializes tests that install a process master key: the key is
+/// process-wide, so a test that seals a secret must not see another test
+/// swap it out mid-test.
+#[cfg(test)]
+pub(crate) async fn master_key_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}

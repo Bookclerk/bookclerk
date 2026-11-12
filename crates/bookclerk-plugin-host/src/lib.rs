@@ -139,13 +139,16 @@ pub use discover::{
     is_first_party_s3_output, occupancy_matches_alias, occupancy_names_alias, occupancy_spec,
     plugin_matches_occupancy, plugin_search_dirs, resolve_plugin_ref, resolve_plugin_slot,
     settings_table, settings_table_for, stamp_occupancy_plugin_key, upgrade_unique_alias_occupancy,
-    DiscoveredPlugin,
+    DiscoveredPlugin, LinkStateDir, StateScope,
 };
 pub use enrollment::{
     enroll_local_plugins, enroll_one, has_covering_grant, is_bootstrap_only, EnrolledPlugin,
 };
 pub use error::{PluginError, Result};
-pub use event_publisher::{EventOutbox, OutboxEventPublisher};
+pub use event_publisher::{
+    granted_event_subscriptions, manifest_event_subscriptions, EventOutbox, EventReaders,
+    OutboxEventPublisher,
+};
 pub use host::{
     backup_adapter_id, database_connect_bindings, export_registered_plugin_units,
     load_external_database, migrate_database_plugin, migrate_library_schema, open_library_store,
@@ -175,10 +178,10 @@ pub use jail::{guest_reservation, plugin_data_dir};
 pub use kv_binding::{KvNamespaces, LibraryKvNamespace, KV_GRANT_BINDING};
 pub use manifest::{
     embedded_logo_api_path, entrypoint_family, logo_content_type, validate_logo,
-    BindingCapabilities, CapabilitiesManifest, DatabaseBindingManifest, Entrypoint, EventConsumer,
-    EventProducer, EventsManifest, JailNetworkNeed, LogoKind, ModuleSpec, NamedBinding,
-    NetworkCapabilities, NetworkMode, PluginFamily, PluginManifest, PluginRuntimeKind,
-    TriggersManifest, WorkerdLimits, WorkerdRuntimeManifest, ALL_ENTRYPOINTS,
+    BindingCapabilities, CapabilitiesManifest, CredentialSharing, DatabaseBindingManifest,
+    Entrypoint, EventConsumer, EventProducer, EventsManifest, JailNetworkNeed, LogoKind,
+    ModuleSpec, NamedBinding, NetworkCapabilities, NetworkMode, PluginFamily, PluginManifest,
+    PluginRuntimeKind, TriggersManifest, WorkerdLimits, WorkerdRuntimeManifest, ALL_ENTRYPOINTS,
     MAX_EMBEDDED_LOGO_BYTES,
 };
 pub use queue_producer::{OutboxQueueProducer, QueueOutbox};
@@ -201,7 +204,7 @@ pub use spawn_plan::{
     WORKERD_LAUNCHER_ENV,
 };
 pub use spawn_stdio::{
-    note_spawn_stage, recent_spawn_diagnostics, retry_abandoned_acl_journals,
-    revoke_plugin_state_before_purge, TEST_CHANNEL_IDENT_ENV, TEST_CHANNEL_TAG_FILE,
-    TEST_INJECT_EXTRA_ENDPOINT_ENV, TEST_OBSERVE_EXTRA_ENDPOINT_ENV,
+    note_spawn_stage, purge_link_plugin_state, recent_spawn_diagnostics,
+    retry_abandoned_acl_journals, revoke_plugin_state_before_purge, TEST_CHANNEL_IDENT_ENV,
+    TEST_CHANNEL_TAG_FILE, TEST_INJECT_EXTRA_ENDPOINT_ENV, TEST_OBSERVE_EXTRA_ENDPOINT_ENV,
 };

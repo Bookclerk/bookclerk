@@ -135,6 +135,18 @@ export interface DocsOptions {
  * or to `cloudflareinsights.com` when embedded by hand. The beacon's URL
  * carries a version after the file name, so its host is allowed rather than
  * one path.
+ *
+ * The cross-origin headers close every response by default: no other origin
+ * may embed it (CORP), share a browsing context group with it (COOP) or be
+ * loaded by it without opting in (COEP), and no `Access-Control-Allow-Origin`
+ * is ever sent. The favicons and the Open Graph image are the only files
+ * opened, by the rules cross-origin.ts adds to dist/_headers. The beacon's
+ * host answers with `Cross-Origin-Resource-Policy: cross-origin`, so it loads
+ * under COEP.
+ *
+ * `X-XSS-Protection: 0` turns off the XSS filter old browsers had (current
+ * ones removed it), which could be abused to leak page content; the CSP is
+ * what stops injected script.
  */
 export const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   "Content-Security-Policy":
@@ -143,6 +155,13 @@ export const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   "Referrer-Policy": "strict-origin-when-cross-origin",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
   "Strict-Transport-Security": "max-age=31536000",
+  "X-Frame-Options": "DENY",
+  "Cross-Origin-Resource-Policy": "same-origin",
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Embedder-Policy": "require-corp",
+  "Origin-Agent-Cluster": "?1",
+  "X-Permitted-Cross-Domain-Policies": "none",
+  "X-XSS-Protection": "0",
 };
 
 /** Media types that ask for Markdown. */

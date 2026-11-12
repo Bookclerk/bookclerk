@@ -53,8 +53,8 @@ use crate::generated::{
 #[cfg(feature = "host")]
 use crate::host_roles::HostAdapterDatabaseSession;
 use crate::limits::{
-    ScalarLimits, MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES,
-    MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
+    ScalarLimits, MAX_EVENT_CURSOR_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES,
+    MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
     MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES,
     MAX_STREAM_WINDOW_BYTES,
 };
@@ -64,16 +64,17 @@ use crate::plugin_capnp::{
     cover_fetcher as cover_fetcher_capnp, database as database_capnp, describe_reply,
     destination as dest_iface, domain_event, empty_reply, entrypoints, entrypoints_reply,
     event_batch_reply, event_consumer as event_consumer_capnp,
-    event_publisher as event_publisher_capnp, event_result as event_result_capnp,
-    execute_stream_reply, get_reply, guest_database as guest_database_capnp, handle_reply,
-    head_reply, health_reply, job_invocation, job_outcome, job_runner as job_runner_capnp,
-    kv_namespace as kv_namespace_capnp, list_reply, metadata_provider as metadata_provider_capnp,
-    object_metadata, oidc as oidc_capnp, oidc_client_template, oidc_clients_reply, open_reply,
-    plugin_cli as plugin_cli_capnp, plugin_describe, plugin_error, plugin_migration,
-    plugin_migration_op, plugin_migrations_ok, plugin_migrations_reply, plugin_worker,
-    progress_sink, pull_reply, put_reply, queue_consumer as queue_consumer_capnp,
-    queue_producer as queue_producer_capnp, remote_library as remote_library_capnp,
-    scheduled_handler as scheduled_handler_capnp, source as source_capnp, write_options,
+    event_publisher as event_publisher_capnp, event_read_page, event_read_reply,
+    event_read_request, event_result as event_result_capnp, execute_stream_reply, get_reply,
+    guest_database as guest_database_capnp, handle_reply, head_reply, health_reply, job_invocation,
+    job_outcome, job_runner as job_runner_capnp, kv_namespace as kv_namespace_capnp, list_reply,
+    metadata_provider as metadata_provider_capnp, object_metadata, oidc as oidc_capnp,
+    oidc_client_template, oidc_clients_reply, open_reply, plugin_cli as plugin_cli_capnp,
+    plugin_describe, plugin_error, plugin_migration, plugin_migration_op, plugin_migrations_ok,
+    plugin_migrations_reply, plugin_worker, progress_sink, pull_reply, put_reply,
+    queue_consumer as queue_consumer_capnp, queue_producer as queue_producer_capnp,
+    remote_library as remote_library_capnp, scheduled_handler as scheduled_handler_capnp,
+    source as source_capnp, write_options,
 };
 #[cfg(feature = "host")]
 use crate::plugin_host_capnp::host_adapter_database_session as host_adapter_database_session_capnp;
@@ -91,13 +92,15 @@ use crate::rpc_types::{
 };
 use crate::{
     capnp_u32_len, require_plugin_migration_registration, AuthenticateUserParams,
-    CatalogDetailParams, CatalogHit, CliInvokeParams, CliInvokeResult, CliSchema,
-    ExpandCandidatesParams, ExternalUser, FetchTitleParams, ListDealsParams, ListeningProgress,
-    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch, PluginError,
-    PluginMigration, PluginMigrationOp, PurchaseHint, PurchaseHintParams, PurchaseHintsParams,
-    Result, RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams,
-    SourceAccount, MAX_PLUGIN_MIGRATION_ID_BYTES,
+    CatalogDetailParams, CatalogHit, CliInvokeParams, CliInvokeResult, CliSchema, EventReadPage,
+    EventReadRequest, ExpandCandidatesParams, ExternalUser, FetchTitleParams, ListDealsParams,
+    ListeningProgress, LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch,
+    PluginError, PluginMigration, PluginMigrationOp, PurchaseHint, PurchaseHintParams,
+    PurchaseHintsParams, Result, RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams,
+    SearchCatalogParams, SourceAccount, MAX_PLUGIN_MIGRATION_ID_BYTES,
 };
+
+use crate::generated::RoundTripFailure;
 
 pub(super) fn from_capnp(err: impl std::fmt::Display) -> PluginError {
     PluginError::unavailable(err.to_string())
@@ -2039,6 +2042,251 @@ fn write_domain_event(mut e: domain_event::Builder<'_>, event: &DomainEvent) {
     e.set_source(&event.source);
 }
 
+/// Reads a `List(Text)` of at most `maxListPage` entries.
+///
+/// # Errors
+///
+/// Returns `payload_too_large` when the list is longer than `maxListPage`,
+/// or the Cap'n Proto error when a text cannot be read.
+fn read_bounded_texts(list: capnp::text_list::Reader<'_>, what: &str) -> Result<Vec<String>> {
+    if list.len() > MAX_LIST_PAGE {
+        return Err(PluginError::payload_too_large(format!(
+            "{what} of {} entries exceeds {MAX_LIST_PAGE}",
+            list.len()
+        )));
+    }
+    list.iter()
+        .map(|text| text.map(text_of).map_err(from_capnp))
+        .collect()
+}
+
+/// Rejects a cursor text longer than `maxEventCursorBytes`.
+///
+/// # Errors
+///
+/// Returns `invalid_cursor` when `cursor` is too long.
+fn bounded_event_cursor(cursor: String) -> Result<String> {
+    if cursor.len() > MAX_EVENT_CURSOR_BYTES as usize {
+        return Err(PluginError::invalid_cursor(format!(
+            "event cursor of {} bytes exceeds {MAX_EVENT_CURSOR_BYTES}",
+            cursor.len()
+        )));
+    }
+    Ok(cursor)
+}
+
+/// Decodes an [`EventReadRequest`] from Cap'n Proto.
+///
+/// # Errors
+///
+/// Returns when a field cannot be read, the cursor exceeds
+/// `maxEventCursorBytes`, or the type list exceeds `maxListPage`.
+pub(crate) fn read_event_read_request(
+    r: event_read_request::Reader<'_>,
+) -> Result<EventReadRequest> {
+    Ok(EventReadRequest {
+        after: bounded_event_cursor(text_of(r.get_after().map_err(from_capnp)?))?,
+        since_unix_ms: r.get_since_unix_ms(),
+        types: read_bounded_texts(r.get_types().map_err(from_capnp)?, "event types")?,
+        limit: r.get_limit(),
+    })
+}
+
+/// Encodes an [`EventReadRequest`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns when the type list is longer than a Cap'n Proto list can hold.
+pub(crate) fn write_event_read_request(
+    mut b: event_read_request::Builder<'_>,
+    request: &EventReadRequest,
+) -> capnp::Result<()> {
+    b.set_after(&request.after);
+    b.set_since_unix_ms(request.since_unix_ms);
+    b.set_limit(request.limit);
+    let mut types = b.init_types(u32_len(request.types.len())?);
+    for (i, event_type) in request.types.iter().enumerate() {
+        types.set(u32_len(i)?, event_type);
+    }
+    Ok(())
+}
+
+/// Decodes an [`EventReadPage`] from Cap'n Proto.
+///
+/// # Errors
+///
+/// Returns when a field cannot be read, an event breaks its own bounds, the
+/// cursor exceeds `maxEventCursorBytes`, or a list exceeds `maxListPage`.
+pub(crate) fn read_event_read_page(r: event_read_page::Reader<'_>) -> Result<EventReadPage> {
+    let list = r.get_events().map_err(from_capnp)?;
+    if list.len() > MAX_LIST_PAGE {
+        return Err(PluginError::payload_too_large(format!(
+            "event page of {} exceeds {MAX_LIST_PAGE}",
+            list.len()
+        )));
+    }
+    let events = list
+        .iter()
+        .map(read_domain_event)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(EventReadPage {
+        events,
+        cursor: bounded_event_cursor(text_of(r.get_cursor().map_err(from_capnp)?))?,
+        more: r.get_more(),
+        expired_event_ids: read_bounded_texts(
+            r.get_expired_event_ids().map_err(from_capnp)?,
+            "expired event ids",
+        )?,
+        truncated: r.get_truncated(),
+    })
+}
+
+/// Encodes an [`EventReadPage`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns when a list is longer than a Cap'n Proto list can hold.
+pub(crate) fn write_event_read_page(
+    mut b: event_read_page::Builder<'_>,
+    page: &EventReadPage,
+) -> capnp::Result<()> {
+    b.set_cursor(&page.cursor);
+    b.set_more(page.more);
+    b.set_truncated(page.truncated);
+    {
+        let mut events = b.reborrow().init_events(u32_len(page.events.len())?);
+        for (i, event) in page.events.iter().enumerate() {
+            write_domain_event(events.reborrow().get(u32_len(i)?), event);
+        }
+    }
+    let mut ids = b.init_expired_event_ids(u32_len(page.expired_event_ids.len())?);
+    for (i, id) in page.expired_event_ids.iter().enumerate() {
+        ids.set(u32_len(i)?, id);
+    }
+    Ok(())
+}
+
+/// Encodes an `EventPublisher.read` outcome onto its reply union.
+///
+/// # Errors
+///
+/// Returns when the page cannot be encoded.
+fn write_event_read_reply(
+    b: event_read_reply::Builder<'_>,
+    outcome: &Result<EventReadPage>,
+) -> capnp::Result<()> {
+    match outcome {
+        Ok(page) => write_event_read_page(b.init_ok(), page),
+        Err(err) => {
+            write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decodes an `EventPublisher.read` reply union.
+///
+/// # Errors
+///
+/// Returns the guest-visible error the reply carried, or the decode error.
+fn read_event_read_reply(r: event_read_reply::Reader<'_>) -> Result<EventReadPage> {
+    match r.which().map_err(from_capnp)? {
+        event_read_reply::Ok(page) => read_event_read_page(page.map_err(from_capnp)?),
+        event_read_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
+    }
+}
+
+/// Which `EVENTS.read` Cap'n Proto struct [`roundtrip_event_read_message`]
+/// decodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventReadCodec {
+    /// `EventReadRequest`, which the host decodes from a guest.
+    Request,
+    /// `EventReadPage`, which a guest decodes from the host.
+    Page,
+}
+
+/// A value [`roundtrip_event_read_message`] decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventReadMessage {
+    /// A decoded `EventReadRequest`.
+    Request(EventReadRequest),
+    /// A decoded `EventReadPage`.
+    Page(EventReadPage),
+}
+
+/// Decodes one unpacked single-segment `EventReadRequest` or
+/// `EventReadPage` message with the codec the RPC server and client use,
+/// then checks `read(write(v)) == v`. The fuzz target and its replay test
+/// drive this, so they reach the same bounds checks a peer's bytes do.
+///
+/// # Arguments
+///
+/// * `codec` - Which struct the message holds.
+/// * `bytes` - The message, as `capnp::serialize` writes it.
+///
+/// # Returns
+///
+/// The decoded value, for the caller to check against its own bounds.
+///
+/// # Errors
+///
+/// [`RoundTripFailure::Rejected`] when the bytes do not decode or break a
+/// bound; [`RoundTripFailure::Codec`] when a decoded value does not survive
+/// `write` then `read` intact.
+pub fn roundtrip_event_read_message(
+    codec: EventReadCodec,
+    bytes: &[u8],
+) -> std::result::Result<EventReadMessage, RoundTripFailure> {
+    let words = (bytes.len() / 8).saturating_add(16);
+    let mut opts = capnp::message::ReaderOptions::new();
+    opts.traversal_limit_in_words(Some(words));
+    opts.nesting_limit(32);
+    let reader = capnp::serialize::read_message(&mut std::io::Cursor::new(bytes), opts)?;
+    let rejected =
+        |err: PluginError| RoundTripFailure::Rejected(capnp::Error::failed(err.to_string()));
+    let codec_failure = |what: &str, err: &dyn std::fmt::Display| {
+        RoundTripFailure::Codec(format!("{what} failed: {err}"))
+    };
+    let mut message = capnp::message::Builder::new_default();
+    match codec {
+        EventReadCodec::Request => {
+            let first = read_event_read_request(reader.get_root()?).map_err(rejected)?;
+            write_event_read_request(message.init_root(), &first)
+                .map_err(|err| codec_failure("re-encode", &err))?;
+            let again = read_event_read_request(
+                message
+                    .get_root_as_reader()
+                    .map_err(|err| codec_failure("re-read", &err))?,
+            )
+            .map_err(|err| codec_failure("re-decode", &err))?;
+            if first != again {
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded EventReadRequest".to_string(),
+                ));
+            }
+            Ok(EventReadMessage::Request(first))
+        }
+        EventReadCodec::Page => {
+            let first = read_event_read_page(reader.get_root()?).map_err(rejected)?;
+            write_event_read_page(message.init_root(), &first)
+                .map_err(|err| codec_failure("re-encode", &err))?;
+            let again = read_event_read_page(
+                message
+                    .get_root_as_reader()
+                    .map_err(|err| codec_failure("re-read", &err))?,
+            )
+            .map_err(|err| codec_failure("re-decode", &err))?;
+            if first != again {
+                return Err(RoundTripFailure::Codec(
+                    "round trip changed the decoded EventReadPage".to_string(),
+                ));
+            }
+            Ok(EventReadMessage::Page(first))
+        }
+    }
+}
+
 struct ContentSourceServer {
     inner: Arc<dyn ContentSource>,
 }
@@ -2570,6 +2818,18 @@ impl event_publisher_capnp::Server for EventPublisherServer {
             self.inner.publish(event).await
         };
         write_publish_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn read(
+        self: Rc<Self>,
+        params: event_publisher_capnp::ReadParams,
+        mut results: event_publisher_capnp::ReadResults,
+    ) -> capnp::Result<()> {
+        let outcome = match read_event_read_request(params.get()?.get_request()?) {
+            Ok(request) => self.inner.read(request).await,
+            Err(err) => Err(err),
+        };
+        write_event_read_reply(results.get().init_result(), &outcome)
     }
 }
 
@@ -4314,6 +4574,13 @@ impl EventPublisher for EventPublisherClient {
         let reply = req.send().promise.await.map_err(from_capnp)?;
         read_publish_reply(reply_result!(reply)).map_err(from_capnp)?
     }
+
+    async fn read(&self, request: EventReadRequest) -> Result<EventReadPage> {
+        let mut req = self.client.read_request();
+        write_event_read_request(req.get().init_request(), &request).map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_event_read_reply(reply_result!(reply))
+    }
 }
 
 /// Cap'n Proto client for [`ScheduledHandler`] (host → guest cron fire).
@@ -5803,6 +6070,166 @@ mod tests {
                 assert_eq!(err.code, PluginErrorCode::RateLimited, "{err}");
             })
             .await;
+    }
+
+    /// Host `EVENTS` binding for the read round trip: records each request
+    /// and answers with a fixed page, or `forbidden` for the type `secret`.
+    struct PagePublisher {
+        /// Requests the server decoded, in order.
+        seen: Mutex<Vec<EventReadRequest>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl EventPublisher for PagePublisher {
+        async fn publish(&self, _event: PluginEvent) -> Result<PublishOk> {
+            Ok(PublishOk::default())
+        }
+
+        async fn read(&self, request: EventReadRequest) -> Result<EventReadPage> {
+            let forbidden = request.types.iter().any(|t| t == "secret");
+            self.seen.lock().expect("lock").push(request);
+            if forbidden {
+                return Err(PluginError::forbidden("not a consented subscription"));
+            }
+            Ok(EventReadPage {
+                events: vec![DomainEvent {
+                    event_id: "e1".into(),
+                    event_type: "demo.pinged".into(),
+                    schema_version: 1,
+                    occurred_at_unix_ms: 5_000,
+                    account_id: "acct".into(),
+                    source: "demo".into(),
+                    payload: b"{}".to_vec(),
+                    deduplication_key: "e1".into(),
+                    ..DomainEvent::default()
+                }],
+                cursor: "v1.aa.bb".into(),
+                more: true,
+                expired_event_ids: vec!["e1".into()],
+                truncated: true,
+            })
+        }
+    }
+
+    /// Publisher that keeps the trait's default `read`.
+    struct PublishOnly;
+
+    #[async_trait::async_trait(?Send)]
+    impl EventPublisher for PublishOnly {
+        async fn publish(&self, _event: PluginEvent) -> Result<PublishOk> {
+            Ok(PublishOk::default())
+        }
+    }
+
+    /// `EventPublisher.read` carries the request and the page across Cap'n
+    /// Proto unchanged, carries a host refusal with its code, and the server
+    /// refuses an oversized cursor or type list before the host sees it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn event_reads_round_trip_over_capnp() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let host = Arc::new(PagePublisher {
+                    seen: Mutex::new(Vec::new()),
+                });
+                let client = EventPublisherClient {
+                    client: capnp_rpc::new_client(EventPublisherServer {
+                        inner: host.clone(),
+                    }),
+                };
+                let request = EventReadRequest {
+                    after: "v1.01.02".into(),
+                    since_unix_ms: 7,
+                    types: vec!["demo.pinged".into(), "demo.ponged".into()],
+                    limit: 3,
+                };
+                let page = client.read(request.clone()).await.expect("a page");
+                assert_eq!(page.cursor, "v1.aa.bb");
+                assert!(page.more && page.truncated);
+                assert_eq!(page.expired_event_ids, vec!["e1".to_string()]);
+                assert_eq!(page.events.len(), 1);
+                assert_eq!(page.events[0].event_type, "demo.pinged");
+                assert_eq!(page.events[0].payload, b"{}".to_vec());
+                assert_eq!(host.seen.lock().expect("lock").as_slice(), &[request]);
+
+                let err = client
+                    .read(EventReadRequest {
+                        types: vec!["secret".into()],
+                        ..EventReadRequest::default()
+                    })
+                    .await
+                    .expect_err("a refusal");
+                assert_eq!(err.code, PluginErrorCode::Forbidden, "{err}");
+
+                let long_cursor = client
+                    .read(EventReadRequest {
+                        after: "x".repeat(MAX_EVENT_CURSOR_BYTES as usize + 1),
+                        ..EventReadRequest::default()
+                    })
+                    .await
+                    .expect_err("an oversized cursor");
+                assert_eq!(long_cursor.code, PluginErrorCode::InvalidCursor);
+
+                let many_types = client
+                    .read(EventReadRequest {
+                        types: (0..=MAX_LIST_PAGE).map(|i| format!("t{i}")).collect(),
+                        ..EventReadRequest::default()
+                    })
+                    .await
+                    .expect_err("too many types");
+                assert_eq!(many_types.code, PluginErrorCode::PayloadTooLarge);
+                assert_eq!(host.seen.lock().expect("lock").len(), 2);
+
+                let publish_only = EventPublisherClient {
+                    client: capnp_rpc::new_client(EventPublisherServer {
+                        inner: Arc::new(PublishOnly),
+                    }),
+                };
+                let unsupported = publish_only
+                    .read(EventReadRequest::default())
+                    .await
+                    .expect_err("the default read");
+                assert_eq!(unsupported.code, PluginErrorCode::Unsupported);
+            })
+            .await;
+    }
+
+    /// A page that breaks its bounds is refused when the guest decodes it.
+    #[test]
+    fn event_read_pages_are_bounded_on_decode() {
+        let mut message = capnp::message::Builder::new_default();
+        write_event_read_page(
+            message.init_root::<event_read_page::Builder<'_>>(),
+            &EventReadPage {
+                cursor: "x".repeat(MAX_EVENT_CURSOR_BYTES as usize + 1),
+                ..EventReadPage::default()
+            },
+        )
+        .expect("encode page");
+        let err = read_event_read_page(
+            message
+                .get_root_as_reader::<event_read_page::Reader<'_>>()
+                .expect("page root"),
+        )
+        .expect_err("an oversized cursor");
+        assert_eq!(err.code, PluginErrorCode::InvalidCursor);
+
+        let mut message = capnp::message::Builder::new_default();
+        write_event_read_page(
+            message.init_root::<event_read_page::Builder<'_>>(),
+            &EventReadPage {
+                events: vec![DomainEvent::default(); MAX_LIST_PAGE as usize + 1],
+                ..EventReadPage::default()
+            },
+        )
+        .expect("encode page");
+        let err = read_event_read_page(
+            message
+                .get_root_as_reader::<event_read_page::Reader<'_>>()
+                .expect("page root"),
+        )
+        .expect_err("too many events");
+        assert_eq!(err.code, PluginErrorCode::PayloadTooLarge);
     }
 
     /// A peer that answers `executeStreamed` with `unimplemented` is reported

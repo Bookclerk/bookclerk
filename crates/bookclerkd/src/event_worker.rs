@@ -470,27 +470,7 @@ fn event_node_id(files_dir: &Path) -> String {
 fn catalog_from_manifest(
     manifest: &bookclerk_plugin_host::PluginManifest,
 ) -> Vec<EventCatalogSubscription> {
-    manifest
-        .events
-        .consumers
-        .iter()
-        .map(|s| EventCatalogSubscription {
-            event_type: s.event_type.clone(),
-            schema_versions: s.schema_versions.clone(),
-            supports_suspend: s.supports_suspend,
-            resource_class: if s.resource_class.trim().is_empty() {
-                "network".into()
-            } else {
-                s.resource_class.clone()
-            },
-            filter: s.filter.clone().filter(|v| !v.is_null()),
-            queue: String::new(),
-            max_retries: s.max_retries,
-            dead_letter_queue: None,
-            retry_delay_secs: 0,
-            message_retention_secs: s.message_retention_period,
-        })
-        .collect()
+    bookclerk_plugin_host::manifest_event_subscriptions(manifest)
 }
 
 /// Map `[[queues.consumers]]` rows onto the durable catalog JSON shape.
@@ -597,30 +577,7 @@ fn filter_catalog_by_granted_consumers(
     catalog: &[EventCatalogSubscription],
     admitted: &std::collections::BTreeSet<bookclerk_plugin_host::GrantedEventConsumer>,
 ) -> Vec<EventCatalogSubscription> {
-    catalog
-        .iter()
-        .filter_map(|s| {
-            let catalog_filter = bookclerk_plugin_host::canonical_event_filter(&s.filter);
-            admitted.iter().find_map(|c| {
-                if c.event_type != s.event_type {
-                    return None;
-                }
-                if !s
-                    .schema_versions
-                    .iter()
-                    .all(|v| c.schema_versions.contains(v))
-                {
-                    return None;
-                }
-                if c.filter != catalog_filter {
-                    return None;
-                }
-                let mut row = s.clone();
-                row.supports_suspend = s.supports_suspend && c.supports_suspend;
-                Some(row)
-            })
-        })
-        .collect()
+    bookclerk_plugin_host::granted_event_subscriptions(catalog, admitted)
 }
 
 /// Map loaded in-process / guest runtime subscriptions onto the catalog shape.

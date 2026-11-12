@@ -45,6 +45,7 @@ import {
 import type {
   BookclerkEnv,
   EventPublisherBinding,
+  EventReadOptions,
   JsonObject,
   KvListOptionsBinding,
   KvListResultBinding,
@@ -78,6 +79,7 @@ import type {
   DbBootstrap,
   DbCapabilities,
   DomainEvent,
+  EventReadPage,
   ExpandCandidatesParams,
   ExtensibleConfig,
   ExternalUser,
@@ -2781,6 +2783,62 @@ class GrantedEvents extends RpcTarget implements EventPublisherBinding {
       throw PluginError.fromWire("internal", `events publish HTTP ${resp.status}`);
     }
     return { eventId: String(value.eventId ?? ""), duplicate: Boolean(value.duplicate) };
+  }
+
+  /**
+   * Read one page of past events the granted subscriptions match.
+   *
+   * @param options - Start position, types, and page size.
+   * @returns One page of events and the cursor after it.
+   */
+  async read(options: EventReadOptions = {}): Promise<EventReadPage> {
+    const since =
+      options.since instanceof Date
+        ? options.since.getTime()
+        : (options.since ?? options.sinceUnixMs);
+    if (since !== undefined && (!Number.isSafeInteger(since) || since < 0)) {
+      throw PluginError.fromWire("invalid_params", "since must be a non-negative instant");
+    }
+    const limit = options.limit ?? 0;
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw PluginError.fromWire("invalid_params", "limit must be a non-negative integer");
+    }
+    const resp = await this.#granted.fetch("http://granted/events/read", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/json" },
+      body: JSON.stringify({
+        after: String(options.after ?? ""),
+        sinceUnixMs: since ?? 0,
+        types: (options.types ?? []).map(String),
+        limit,
+      }),
+    });
+    // A successful reply that does not decode is an error, never an empty
+    // page: a catch-up loop would stop early and miss retained events.
+    const value = (await resp.json().catch((error: unknown) => {
+      if (resp.ok) {
+        throw PluginError.fromWire("internal", `events read reply is not JSON: ${String(error)}`);
+      }
+      return {};
+    })) as {
+      error?: { code?: string; message?: string };
+    } & Partial<EventReadPage>;
+    if (value && value.error) {
+      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+    }
+    if (!resp.ok) {
+      throw PluginError.fromWire("internal", `events read HTTP ${resp.status}`);
+    }
+    const events = Array.isArray(value.events) ? value.events : [];
+    return {
+      events: events.map((event) => fromBridgeJson(event) as DomainEvent),
+      cursor: String(value.cursor ?? ""),
+      more: Boolean(value.more),
+      expiredEventIds: Array.isArray(value.expiredEventIds)
+        ? value.expiredEventIds.map(String)
+        : [],
+      truncated: Boolean(value.truncated),
+    };
   }
 }
 

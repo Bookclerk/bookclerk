@@ -154,6 +154,16 @@ pub struct OAuthEnrollAnswer {
         example = "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0"
     )]
     pub bootstrap: Option<String>,
+    /// For a branch whose user chose "Bring my store connections to this
+    /// branch": the user's own store accounts as a
+    /// [`crate::AccountBundle`] sealed to the node's box key
+    /// ([`crate::seal_account_bundle`]), as base64url without padding.
+    /// Left out when the user did not choose it or had none to bring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "Qm9va2NsZXJrIHNlYWxlZCBhY2NvdW50IGJ1bmRsZTogZXBoZW1lcmFsIGtleSArIGNpcGhlcnRleHQ"
+    )]
+    pub accounts: Option<String>,
 }
 
 impl std::fmt::Debug for OAuthEnrollAnswer {
@@ -163,6 +173,7 @@ impl std::fmt::Debug for OAuthEnrollAnswer {
             .field("node_id", &self.node_id)
             .field("connection", &self.connection)
             .field("bootstrap", &self.bootstrap.as_ref().map(|_| "<sealed>"))
+            .field("accounts", &self.accounts.as_ref().map(|_| "<sealed>"))
             .finish()
     }
 }

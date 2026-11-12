@@ -202,6 +202,69 @@ pub struct BranchJoined {
     /// Whether the link's client is running now.
     #[schema(example = true)]
     pub running: bool,
+    /// What became of the store connections the library's user chose to
+    /// bring to this branch; left out when none came.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connections: Option<BroughtConnectionsView>,
+}
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+/// The store connections a library sent with its person, as this install
+/// kept them.
+pub struct BroughtConnectionsView {
+    /// How many came with the join.
+    #[schema(example = 2)]
+    pub offered: usize,
+    /// How many are now connected here for the person.
+    #[schema(example = 1)]
+    pub added: usize,
+    /// How many the person had already connected here (left as they are).
+    #[schema(example = 1)]
+    pub already_here: usize,
+    /// How many are connected to someone else here (left as they are).
+    #[schema(example = 0)]
+    pub taken: usize,
+    /// How many could not be kept: no secret came with them, or their
+    /// write failed.
+    #[schema(example = 0)]
+    pub failed: usize,
+    /// Why none were kept, when none were: `not_allowed` (this install's
+    /// operator does not let the person connect store accounts),
+    /// `no_owner` (no single Owner here to keep them for) or `failed`.
+    #[schema(example = json!(null))]
+    pub not_kept: Option<&'static str>,
+}
+
+impl BroughtConnectionsView {
+    /// The view of what [`bookclerk_node_client::keep_brought_connections`]
+    /// did with `offered` accounts.
+    fn from_kept(
+        offered: usize,
+        kept: &bookclerk_library::Result<bookclerk_node_client::BroughtConnections>,
+    ) -> Self {
+        use bookclerk_node_client::BroughtConnections;
+        let empty = |not_kept| Self {
+            offered,
+            added: 0,
+            already_here: 0,
+            taken: 0,
+            failed: 0,
+            not_kept: Some(not_kept),
+        };
+        match kept {
+            Ok(BroughtConnections::Kept(report)) if report.refused_by_rule => empty("not_allowed"),
+            Ok(BroughtConnections::Kept(report)) => Self {
+                offered,
+                added: report.imported.len(),
+                already_here: report.already_here.len(),
+                taken: report.taken.len(),
+                failed: report.failed.len(),
+                not_kept: None,
+            },
+            Ok(BroughtConnections::NoPerson(_)) => empty("no_owner"),
+            Err(_) => empty("failed"),
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
@@ -748,6 +811,7 @@ const CALLBACK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 )]
 pub async fn post_join_callback(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(body): Json<CallbackBody>,
 ) -> Response {
     let code = Zeroizing::new(body.code);
@@ -850,8 +914,8 @@ pub async fn post_join_callback(
         // node); a retryable failure keeps the node for the next retry.
         *one_at_a_time = None;
     }
-    let link = match joined {
-        Ok(link) => link,
+    let redeemed = match joined {
+        Ok(redeemed) => redeemed,
         Err(err) if err.is_retryable() => {
             return join_error(
                 StatusCode::BAD_GATEWAY,
@@ -866,11 +930,33 @@ pub async fn post_join_callback(
     };
     finish().await;
     drop(one_at_a_time);
+    let link = redeemed.link;
+    let connections = match &redeemed.accounts {
+        Some(bundle) => {
+            // The person is the Owner who elevated into this operator
+            // session, or else the install's only Owner.
+            let auth = state.auth_snapshot().await;
+            let elevated = crate::auth::resolve_operator_session(&state, &auth, &headers)
+                .await
+                .and_then(|session| session.elevated_from_user_id);
+            let kept =
+                bookclerk_node_client::keep_brought_connections(&store, elevated, bundle).await;
+            if let Err(err) = &kept {
+                tracing::warn!(error = %err, "the store connections brought from the library could not be kept");
+            }
+            Some(BroughtConnectionsView::from_kept(
+                bundle.accounts.len(),
+                &kept,
+            ))
+        }
+        None => None,
+    };
     let running = super::start_link_now(&state, &link.owner_cluster_id).await;
     Json(JoinCompleted::Branch(BranchJoined {
         cluster: link_json(&link),
         library_name: Some(taken.join.library_name),
         running,
+        connections,
     }))
     .into_response()
 }
@@ -1173,6 +1259,7 @@ pub async fn post_join_invite(
         cluster: link_json(&link),
         library_name: None,
         running,
+        connections: None,
     })
     .into_response()
 }
@@ -1379,4 +1466,4 @@ pub async fn post_join_sharing(
 
 #[cfg(test)]
 #[path = "join_tests.rs"]
-mod tests;
+pub(crate) mod tests;

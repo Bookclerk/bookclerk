@@ -28,6 +28,10 @@ pub struct Model {
     pub redeemed_node_id: Option<String>,
     /// RFC 3339 revoke time, once revoked.
     pub revoked_at: Option<String>,
+    /// `1` when the user who approved a branch sign-in chose "Bring my
+    /// store connections to this branch": the redeem answer then carries
+    /// the user's own shareable store accounts, sealed to the node.
+    pub bring_accounts: i64,
 }
 
 /// Declared SeaORM relations (none).
