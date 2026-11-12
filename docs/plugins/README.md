@@ -228,8 +228,9 @@ cargo test --release -p bookclerk-plugin-e2e --test cold_start -- --ignored --no
 ```
 
 It spawns every guest several times through the production path and
-reports the ready time (spawn plus the first `describe`) and the first
-`health` call per plugin, family and runtime.
+reports, per plugin, family and runtime, the ready time (the spawn, which
+waits for the guest's first `describe`), a warm `describe` round trip and
+the first `health` call.
 
 - Set `BOOKCLERK_COLD_START_RUNS` to the spawns per guest (default 5; the
   first is the coldest).

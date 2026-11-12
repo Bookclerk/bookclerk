@@ -17,25 +17,27 @@ use std::time::Duration;
 /// One spawn of one guest, measured phase by phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartupSample {
-    /// From the spawn call to a session whose Cap'n Proto handshake
-    /// finished (process start, jail, runtime boot, `open`).
+    /// From the spawn call to a ready session: process start, jail, runtime
+    /// boot, the Cap'n Proto handshake, and the guest's first `describe`
+    /// with its negotiation, which the spawn waits for.
     pub spawn: Duration,
-    /// The first `describe` round trip on that session.
-    pub describe: Duration,
+    /// One more `describe` on the started session: a warm round trip, for
+    /// comparing against the cold one inside `spawn`.
+    pub warm_describe: Duration,
     /// The first entrypoint call (`health`), when the guest has one the
     /// measurement can make without credentials; `None` otherwise.
     pub first_call: Option<Duration>,
 }
 
 impl StartupSample {
-    /// Time until the guest could serve a call: spawn plus `describe`.
+    /// Time until the guest could serve a call.
     ///
     /// # Returns
     ///
-    /// `spawn + describe`.
+    /// `spawn`, which already includes the guest's first `describe`.
     #[must_use]
     pub fn ready(&self) -> Duration {
-        self.spawn + self.describe
+        self.spawn
     }
 }
 
@@ -51,8 +53,8 @@ pub struct StartupStats {
     pub median_ready_ms: f64,
     /// Largest `ready` across all samples.
     pub max_ready_ms: f64,
-    /// Median `spawn` across all samples.
-    pub median_spawn_ms: f64,
+    /// Median warm `describe` round trip across all samples.
+    pub median_warm_rpc_ms: f64,
     /// Median first entrypoint call, over the samples that made one.
     pub median_first_call_ms: Option<f64>,
 }
@@ -91,7 +93,7 @@ pub fn median(values: &[f64]) -> Option<f64> {
 pub fn summarize(samples: &[StartupSample]) -> Option<StartupStats> {
     let first = samples.first()?;
     let ready: Vec<f64> = samples.iter().map(|s| ms(s.ready())).collect();
-    let spawn: Vec<f64> = samples.iter().map(|s| ms(s.spawn)).collect();
+    let warm: Vec<f64> = samples.iter().map(|s| ms(s.warm_describe)).collect();
     let calls: Vec<f64> = samples
         .iter()
         .filter_map(|s| s.first_call.map(ms))
@@ -101,7 +103,7 @@ pub fn summarize(samples: &[StartupSample]) -> Option<StartupStats> {
         first_ready_ms: ms(first.ready()),
         median_ready_ms: median(&ready)?,
         max_ready_ms: ready.iter().copied().fold(0.0, f64::max),
-        median_spawn_ms: median(&spawn)?,
+        median_warm_rpc_ms: median(&warm)?,
         median_first_call_ms: median(&calls),
     })
 }
@@ -203,11 +205,11 @@ pub fn markdown_report(plugins: &[PluginStartup], context: &str) -> String {
     let _ = writeln!(out, "# Plugin cold start\n\n{context}\n");
     let _ = writeln!(
         out,
-        "Times in ms. Ready = spawn (process, jail, runtime, handshake) + first `describe`.\n"
+        "Times in ms. Ready = spawn (process, jail, runtime, handshake, first `describe`). Warm RPC = one more `describe` once started.\n"
     );
     let _ = writeln!(
         out,
-        "| Plugin | Runtime | Families | Runs | First ready | Median ready | Max ready | Median spawn | Median first call |"
+        "| Plugin | Runtime | Families | Runs | First ready | Median ready | Max ready | Median warm RPC | Median first call |"
     );
     let _ = writeln!(
         out,
@@ -225,7 +227,7 @@ pub fn markdown_report(plugins: &[PluginStartup], context: &str) -> String {
             s.first_ready_ms,
             s.median_ready_ms,
             s.max_ready_ms,
-            s.median_spawn_ms,
+            s.median_warm_rpc_ms,
             opt(s.median_first_call_ms),
         );
     }
@@ -268,7 +270,7 @@ pub fn json_report(plugins: &[PluginStartup], context: &str) -> serde_json::Valu
             "first_ready_ms": p.stats.first_ready_ms,
             "median_ready_ms": p.stats.median_ready_ms,
             "max_ready_ms": p.stats.max_ready_ms,
-            "median_spawn_ms": p.stats.median_spawn_ms,
+            "median_warm_rpc_ms": p.stats.median_warm_rpc_ms,
             "median_first_call_ms": p.stats.median_first_call_ms,
         })).collect::<Vec<_>>(),
     })
@@ -278,10 +280,10 @@ pub fn json_report(plugins: &[PluginStartup], context: &str) -> serde_json::Valu
 mod tests {
     use super::*;
 
-    fn sample(spawn: u64, describe: u64, call: Option<u64>) -> StartupSample {
+    fn sample(spawn: u64, warm: u64, call: Option<u64>) -> StartupSample {
         StartupSample {
             spawn: Duration::from_millis(spawn),
-            describe: Duration::from_millis(describe),
+            warm_describe: Duration::from_millis(warm),
             first_call: call.map(Duration::from_millis),
         }
     }
@@ -303,10 +305,10 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(stats.runs, 3);
-        assert!((stats.first_ready_ms - 1000.0).abs() < 1e-6);
-        assert!((stats.median_ready_ms - 120.0).abs() < 1e-6);
-        assert!((stats.max_ready_ms - 1000.0).abs() < 1e-6);
-        assert!((stats.median_spawn_ms - 110.0).abs() < 1e-6);
+        assert!((stats.first_ready_ms - 900.0).abs() < 1e-6);
+        assert!((stats.median_ready_ms - 110.0).abs() < 1e-6);
+        assert!((stats.max_ready_ms - 900.0).abs() < 1e-6);
+        assert!((stats.median_warm_rpc_ms - 10.0).abs() < 1e-6);
         assert_eq!(stats.median_first_call_ms, Some(5.0));
     }
 

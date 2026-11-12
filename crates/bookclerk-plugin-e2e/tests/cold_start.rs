@@ -18,7 +18,8 @@
 //! | `BOOKCLERK_STAGED_PLUGINS` | Measure only these ids (plus platform guests) |
 //!
 //! Each run times the production path: `PluginSession::spawn_for_account`
-//! (front door, jail, runtime boot, handshake), the first `describe`, the
+//! (front door, jail, runtime boot, handshake, and the guest's first
+//! `describe`, which the spawn waits for), then one warm `describe` and the
 //! first credential-free entrypoint call (`health`). Dropping the session
 //! only signals shutdown, so stop time is not measured.
 
@@ -235,17 +236,19 @@ async fn measure_staged_plugin_cold_start() {
             .unwrap_or_else(|_| panic!("spawn {} timed out", plugin.manifest.id))
             .unwrap_or_else(|e| panic!("spawn {}: {e}", plugin.manifest.id));
             let spawn = started.elapsed();
+            // The spawn already waited for the guest's first `describe`;
+            // this one is a warm round trip.
             let described = Instant::now();
             tokio::time::timeout(RPC_TIMEOUT, session.describe())
                 .await
                 .unwrap_or_else(|_| panic!("describe {} timed out", plugin.manifest.id))
                 .unwrap_or_else(|e| panic!("describe {}: {e}", plugin.manifest.id));
-            let describe = described.elapsed();
+            let warm_describe = described.elapsed();
             let first_call = first_call(&plugin.manifest.id, &session).await;
             drop(session);
             samples.push(StartupSample {
                 spawn,
-                describe,
+                warm_describe,
                 first_call,
             });
         }
