@@ -275,6 +275,10 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
     .await;
     assert_eq!(status, StatusCode::OK, "{shared}");
     assert_eq!(shared["cluster"]["share_books"], false);
+    // Work for other members and copies of their books start off, and a
+    // body that leaves them out keeps them as they are.
+    assert_eq!(shared["cluster"]["work_for_members"], false);
+    assert_eq!(shared["cluster"]["keep_member_copies"], false);
     assert_eq!(
         shared["cluster"]["list_members_books"], true,
         "left as it is when absent"
@@ -297,6 +301,46 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
         load_node(&owner_store, &node_id).await.unwrap().share_books == Some(false)
     })
     .await;
+    let (status, _, worked) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({
+            "cluster_id": cluster_id,
+            "share_books": false,
+            "include_branches": true,
+            "work_for_members": true,
+            "keep_member_copies": true,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{worked}");
+    assert_eq!(worked["cluster"]["work_for_members"], true);
+    assert_eq!(worked["cluster"]["keep_member_copies"], true);
+    let (status, _, kept) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({
+            "cluster_id": cluster_id,
+            "share_books": false,
+            "include_branches": true,
+            "keep_member_copies": false,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    assert_eq!(kept["cluster"]["work_for_members"], true);
+    assert_eq!(kept["cluster"]["keep_member_copies"], false);
+    let link = load_cluster_link(&host_store, &cluster_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        link.claim_scope(),
+        bookclerk_node_proto::ClaimScope::AllMembers
+    );
+    assert!(!link.keep_member_copies);
     let (status, _, _) = call(
         &host,
         "POST",
@@ -315,12 +359,12 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
         &host,
         "POST",
         "/api/config/join/sharing",
-        Some(json!({ "cluster_id": cluster_id, "download": false })),
+        Some(json!({ "cluster_id": cluster_id, "share_books": false, "include_branches": true, "download": false })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{windowed}");
     assert_eq!(windowed["cluster"]["download"], false);
-    assert_eq!(windowed["cluster"]["share_books"], false, "left as it is");
+    assert_eq!(windowed["cluster"]["share_books"], false);
     assert_eq!(
         windowed["cluster"]["list_members_books"], false,
         "left as it is"
@@ -335,7 +379,7 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
         &host,
         "POST",
         "/api/config/join/sharing",
-        Some(json!({ "cluster_id": cluster_id, "download": true })),
+        Some(json!({ "cluster_id": cluster_id, "share_books": false, "include_branches": true, "download": true })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{downloading}");

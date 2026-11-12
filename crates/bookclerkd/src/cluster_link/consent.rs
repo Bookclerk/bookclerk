@@ -34,6 +34,9 @@
 //!   instance whose archive or `instance.config` failed) is retried with
 //!   backoff ([`RETRY_MIN`] doubling to [`RETRY_MAX`]) until it does, so a
 //!   transient failure never leaves a consented plugin unclaimable;
+//! - on the same poll and notification it reads the link's "Download for
+//!   other members of *library*" setting and tells the client whose work
+//!   to claim ([`bookclerk_node_proto::ClaimScope`]);
 //! - an operator's revoke is recorded and holds: a platform plugin is not
 //!   approved automatically again until the operator approves it;
 //! - while the link's "Use this computer to download" setting is off (a
@@ -54,7 +57,7 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_client::{HostClientHandle, AWAITING_HOST_CONSENT};
-use bookclerk_node_proto::{Body, RemoteDeployment, RemoteVersion};
+use bookclerk_node_proto::{Body, ClaimScope, RemoteDeployment, RemoteVersion};
 use bookclerk_plugin_host::{
     approve_remote_request, host_artifact, is_sha256_hex, materialize_owner_version,
     remote_platform_auto_approval, remote_row_consent_state, PluginGrant, RemoteConsentState,
@@ -289,6 +292,20 @@ impl LinkSupervisor {
         self.handle.cluster_id()
     }
 
+    /// Tells the client whose work to claim, from the link's "Download for
+    /// other members of *library*" setting. An unreadable link claims only
+    /// the node owner's work.
+    async fn apply_claim_scope(&self) {
+        let scope = match load_cluster_link(&self.library, self.cluster_id()).await {
+            Ok(link) => link.map_or(ClaimScope::Own, |link| link.claim_scope()),
+            Err(err) => {
+                tracing::warn!(cluster_id = self.cluster_id(), error = %err, "link settings unreadable; claiming only the owner's work");
+                ClaimScope::Own
+            }
+        };
+        self.handle.set_claim_scope(scope);
+    }
+
     /// Publishes the consented set to the client.
     fn publish(&self) {
         self.handle
@@ -306,6 +323,7 @@ impl LinkSupervisor {
             self.handle.set_consented_plugins(BTreeSet::new());
             return None;
         }
+        self.apply_claim_scope().await;
         let rows = match list_remote_plugin_consents(&self.library, Some(self.cluster_id())).await {
             Ok(rows) => rows,
             Err(err) => {

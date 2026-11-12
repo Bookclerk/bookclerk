@@ -215,6 +215,11 @@ pub struct Recommendation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(example = "Science Fiction")]
     pub starter_genre: Option<String>,
+    /// Branches of this library that currently list this title (they
+    /// answered a catalog lookup for its work). Filled when the feed is
+    /// read, never stored with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_through: Vec<crate::availability::BranchAvailability>,
 }
 
 /// Per-book multipliers on taste weight, keyed by book uuid; a book that is

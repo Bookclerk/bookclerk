@@ -649,18 +649,12 @@ fn resolve_jail_bin(worker: Option<&Path>) -> std::result::Result<PathBuf, Strin
     }
     let exe = std::env::current_exe()
         .map_err(|err| format!("could not locate the current executable: {err}"))?;
-    let dir = exe
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", exe.display()))?;
-    if let Ok(path) = bookclerk_sandbox::require_spawn_executable(&dir.join(&name)) {
+    // Beside the host; a test binary also looks in its Cargo profile directory.
+    if let Some(path) = bookclerk_sandbox::helper_search_dirs(&exe)
+        .into_iter()
+        .find_map(|dir| bookclerk_sandbox::require_spawn_executable(&dir.join(&name)).ok())
+    {
         return Ok(path);
-    }
-    if dir.file_name().is_some_and(|last| last == "deps") {
-        if let Some(parent) = dir.parent() {
-            if let Ok(path) = bookclerk_sandbox::require_spawn_executable(&parent.join(&name)) {
-                return Ok(path);
-            }
-        }
     }
     Err(format!(
         "{JAIL_BIN_NAME} not found beside the worker/host and {JAIL_BIN_ENV} is unset"

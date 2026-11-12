@@ -13493,7 +13493,7 @@
         "tags": [
           "Cluster"
         ],
-        "summary": "`POST /api/config/join/sharing`: Settings → Library's sharing settings\nfor one library this install is a branch of (the two book-sharing\nsettings, and optionally \"List my members' books\"). The operator or\nan Owner (verified from the stored role); anyone else gets 403.",
+        "summary": "`POST /api/config/join/sharing`: Settings → Library's sharing and work\nsettings for one library this install is a branch of (the two\nbook-sharing settings, the two work settings, and optionally \"List my\nmembers' books\"). The operator or\nan Owner (verified from the stored role); anyone else gets 403.",
         "operationId": "post_join_sharing",
         "requestBody": {
           "content": {
@@ -18175,7 +18175,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CatalogListing"
+                  "$ref": "#/components/schemas/CatalogListingView"
                 }
               }
             }
@@ -18297,7 +18297,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CatalogListing"
+                  "$ref": "#/components/schemas/CatalogListingView"
                 }
               }
             }
@@ -27186,6 +27186,40 @@
           }
         }
       },
+      "BranchAvailability": {
+        "type": "object",
+        "description": "One branch a title is available through.",
+        "required": [
+          "node_id",
+          "store",
+          "product_id"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "The branch node id.",
+            "example": "node-7f3a"
+          },
+          "owner_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The branch owner's display name, for \"available through Riley's\nbranch\"; absent when the owner has none.",
+            "example": "Riley"
+          },
+          "store": {
+            "type": "string",
+            "description": "The store the branch has the book from.",
+            "example": "audible"
+          },
+          "product_id": {
+            "type": "string",
+            "description": "The store's product id of the branch's copy.",
+            "example": "B002V0QK4C"
+          }
+        }
+      },
       "BranchConsentBody": {
         "allOf": [
           {
@@ -27710,6 +27744,34 @@
         },
         "additionalProperties": false
       },
+      "CatalogListingView": {
+        "type": "object",
+        "description": "The caller's listing choice and how many libraries it applies to.",
+        "required": [
+          "listed",
+          "libraries",
+          "always_listed"
+        ],
+        "properties": {
+          "listed": {
+            "type": "boolean",
+            "description": "The caller's choice; see [`CatalogListing::listed`].",
+            "example": true
+          },
+          "libraries": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Libraries this install is currently a branch of (active links).\nWith none, the choice has no effect yet, and the app hides it.",
+            "example": 1,
+            "minimum": 0
+          },
+          "always_listed": {
+            "type": "boolean",
+            "description": "`true` for an active Owner: an Owner's books are always listed, so\n`listed` has no effect and the app shows that instead of the toggle.",
+            "example": false
+          }
+        }
+      },
       "CatalogSearchHit": {
         "type": "object",
         "description": "One autocomplete / results-page hit (possibly spanning multiple storefronts).",
@@ -27910,6 +27972,13 @@
               "$ref": "#/components/schemas/PurchaseHint"
             },
             "description": "Buy / open-in-store links with optional member vs list pricing."
+          },
+          "available_through": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BranchAvailability"
+            },
+            "description": "Branches of this library that currently list this title, matched\nthrough a store listing the library already holds. Filled by the\ndaemon after the search."
           }
         }
       },
@@ -28166,6 +28235,8 @@
           "enrolled_at",
           "share_books",
           "include_branches",
+          "work_for_members",
+          "keep_member_copies",
           "list_members_books",
           "download"
         ],
@@ -28209,6 +28280,16 @@
             "type": "boolean",
             "description": "\"Include books from my own branches\".",
             "example": true
+          },
+          "work_for_members": {
+            "type": "boolean",
+            "description": "\"Download for other members of the library\": this install takes the library's work for its other members too, not only its owner's (off by default).",
+            "example": false
+          },
+          "keep_member_copies": {
+            "type": "boolean",
+            "description": "\"Keep copies of other members' books\": a book acquired here for another member is also written to this install's own destinations (off by default).",
+            "example": false
           },
           "max_jobs": {
             "type": [
@@ -36601,6 +36682,13 @@
             ],
             "description": "Starter genre this card was browsed from while the taste was thin.",
             "example": "Science Fiction"
+          },
+          "available_through": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BranchAvailability"
+            },
+            "description": "Branches of this library that currently list this title (they\nanswered a catalog lookup for its work). Filled when the feed is\nread, never stored with it."
           }
         }
       },
@@ -37372,9 +37460,11 @@
       },
       "SharingBody": {
         "type": "object",
-        "description": "`POST /api/config/join/sharing` body.",
+        "description": "`POST /api/config/join/sharing` body: one library and the settings to\nchange for it.",
         "required": [
-          "cluster_id"
+          "cluster_id",
+          "share_books",
+          "include_branches"
         ],
         "properties": {
           "cluster_id": {
@@ -37383,19 +37473,13 @@
             "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
           },
           "share_books": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "\"Share this branch's books with *library*\"; left as it is when\nabsent.",
+            "type": "boolean",
+            "description": "\"Share this branch's books with *library*\".",
             "example": true
           },
           "include_branches": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "\"Include books from my own branches\"; left as it is when absent.",
+            "type": "boolean",
+            "description": "\"Include books from my own branches\".",
             "example": false
           },
           "list_members_books": {
@@ -37403,15 +37487,31 @@
               "boolean",
               "null"
             ],
-            "description": "\"List my members' books to *library*\"; left as it is when absent.",
+            "description": "\"List my members' books to *library*\"; absent or `null` keeps the\nstored setting.",
             "example": true
+          },
+          "work_for_members": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "\"Download for other members of *library*\": take the library's work\nfor its other members too, not only this install owner's. Absent or\n`null` keeps the stored setting.",
+            "example": false
+          },
+          "keep_member_copies": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "\"Keep copies of other members' books\": also write a book acquired\nhere for another member to this install's own destinations. Absent\nor `null` keeps the stored setting.",
+            "example": false
           },
           "download": {
             "type": [
               "boolean",
               "null"
             ],
-            "description": "\"Use this computer to download\"; left as it is when absent. Off\nmakes this install a window of the library.",
+            "description": "\"Use this computer to download\": off makes this install a window of\nthe library (it runs none of the library's work and shows the books\nthe library holds for its person instead). Absent or `null` keeps\nthe stored setting.",
             "example": true
           }
         },
@@ -37442,7 +37542,7 @@
             "items": {
               "$ref": "#/components/schemas/ClusterLinkView"
             },
-            "description": "Every library this install is a branch of, with its two sharing settings."
+            "description": "Every library this install is a branch of, with its sharing and work settings."
           }
         }
       },

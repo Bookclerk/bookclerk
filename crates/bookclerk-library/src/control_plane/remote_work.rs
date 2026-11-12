@@ -47,7 +47,8 @@ use super::semaphore::{
     permits_with_holder_prefix, release_permits, renew_permits, SemaphorePermit,
 };
 use super::trust::{
-    accounts_named, handoff_routed_job, node_may_claim_job, node_trust, Claimant, NodeTrust,
+    accounts_named, handoff_routed_job, node_may_claim_job, node_may_claim_job_in_scope,
+    node_trust, Claimant, NodeTrust,
 };
 use crate::entities::{encrypted_secrets, job_secret_handoffs};
 use crate::error::{LibraryError, Result};
@@ -145,6 +146,10 @@ pub struct RemoteJobClaim {
     /// The claim resumed a suspended job ([`RoutedJobClaim::resumed`]).
     /// Pass it back to [`release_remote_job`] if the claim is given back.
     pub resumed: bool,
+    /// Every store account the job touches belongs to the user who owns
+    /// the node ([`super::job_for_node_owner`]): the branch owner's own
+    /// work.
+    pub for_node_owner: bool,
 }
 
 /// Outcome of [`renew_remote_job`].
@@ -275,12 +280,28 @@ pub async fn claim_remote_job(
             return Err(err);
         }
     };
+    // Whose work it is decides whether the branch keeps a copy, so an
+    // unreadable answer gives the claim back rather than guess.
+    let for_node_owner = match super::job_for_node_owner(store, node_id, &job).await {
+        Ok(mine) => mine,
+        Err(err) => {
+            give_back_claim(store, &fence, &permits, resumed).await;
+            return Err(err);
+        }
+    };
     match unseal_job_secrets(store, &job).await {
         Ok(secrets) => {
             // Trust can change while the secrets are read: check it once
             // more right before they are recorded and handed out. Every
             // later frame under the fence checks it again.
-            let still_trusted = node_may_claim_job(store, node_id, Claimant::Remote, &job).await;
+            let still_trusted = node_may_claim_job_in_scope(
+                store,
+                node_id,
+                Claimant::Remote,
+                request.scope(),
+                &job,
+            )
+            .await;
             if !matches!(still_trusted, Ok(true)) {
                 give_back_claim(store, &fence, &permits, resumed).await;
                 return still_trusted.map(|_| None);
@@ -292,6 +313,7 @@ pub async fn claim_remote_job(
                     plugin_keys,
                     source_plugin_key,
                     resumed,
+                    for_node_owner,
                 })),
                 Ok(false) => {
                     // The lease ran out or was lost while the secrets were

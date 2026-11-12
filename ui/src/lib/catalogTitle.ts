@@ -1,4 +1,5 @@
 import type {
+  BranchAvailability,
   CatalogSearchFilters,
   CatalogSearchHit,
   CatalogSearchSort,
@@ -48,6 +49,8 @@ export type CatalogTitle = {
   wishers?: QueueWisher[];
   /** Distinct wisher count (may exceed `wishers.length`). */
   wish_count?: number;
+  /** Branches of this library that currently list this title. */
+  available_through?: BranchAvailability[];
 };
 
 /**
@@ -543,6 +546,7 @@ export function catalogTitleFromHit(
     is_abridged: hit.is_abridged ?? null,
     rating_overall: hit.rating_overall ?? null,
     wishlist_uuid: wishlistUuid ?? null,
+    available_through: hit.available_through,
   });
 }
 
@@ -594,6 +598,7 @@ export function catalogTitleFromRec(
     wishlist_uuid: wishlistUuid ?? rec.request_uuid,
     wishers: rec.wishers,
     wish_count: rec.wish_count,
+    available_through: rec.available_through,
   });
 }
 

@@ -74,19 +74,21 @@ pub use carried_accounts::{
 };
 pub use catalog_lookup::{
     answer_questions, ask_branches, branch_listing_key, branch_listings_for_works,
-    catalog_listing_opted_out, pending_questions, record_answers, set_catalog_listing_opt_out,
-    trusted_branches, works_of_interest, AnswerReport, AnswersRecorded, AskReport, BranchListing,
+    branch_offers_for_works, catalog_listing_always, catalog_listing_opted_out, pending_questions,
+    record_answers, set_catalog_listing_opt_out, trusted_branches, works_of_interest,
+    works_of_listings, AnswerReport, AnswersRecorded, AskReport, BranchListing, BranchOffer,
     BRANCH_LISTING_PREFIX, BRANCH_LISTING_TTL, LOOKUP_ANSWER_TTL, LOOKUP_RESEND,
 };
 pub use clerks::{library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents};
 pub use cluster_links::{
     decode_spki_pin, join_cycle, join_overflows_ancestry, leave_cluster_link, library_ancestry,
     list_cluster_links, load_cluster_link, load_cluster_link_keys, mark_cluster_link_revoked,
-    parse_job_cap_request, record_cluster_link, set_cluster_link_ancestry,
+    parse_job_cap_request, parse_sharing_request, record_cluster_link, set_cluster_link_ancestry,
     set_cluster_link_download, set_cluster_link_job_cap, set_cluster_link_listing,
-    set_cluster_link_sharing, set_cluster_link_state, CapacityBody, ClusterLink, ClusterLinkKeys,
-    JobCapRequest, LinkJobCap, NewClusterLink, CLUSTER_LINK_ACTIVE, CLUSTER_LINK_KEYS_NAME,
-    CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
+    set_cluster_link_settings, set_cluster_link_sharing, set_cluster_link_state,
+    set_cluster_link_work, CapacityBody, ClusterLink, ClusterLinkKeys, ClusterLinkSettings,
+    JobCapRequest, LinkJobCap, NewClusterLink, SharingBody, SharingRequest, CLUSTER_LINK_ACTIVE,
+    CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
 };
 pub use cron_fires::{
     claim_cron_fire, ensure_cron_cursor, load_cron_cursor, CronCursor, CronFireClaim,
@@ -222,9 +224,11 @@ pub use semaphore::{
 };
 pub use template::{strip_install_state, TemplateStrip};
 pub use trust::{
-    accounts_owned_by, book_matches_title, claimant_may_run, handoff_routed_job, job_item_accounts,
-    job_trusted, node_may_claim_job, node_trust, plan_acquire, plan_scan, remote_node_may_view_job,
-    remote_node_requester, AccountKey, Claimant, NodeTrust, ScanRequester,
+    accounts_owned_by, book_matches_title, claimant_may_run, handoff_routed_job,
+    job_for_node_owner, job_item_accounts, job_trusted, node_may_claim_job,
+    node_may_claim_job_in_scope, node_trust, node_trust_in_scope, plan_acquire, plan_scan,
+    remote_node_may_view_job, remote_node_requester, AccountKey, Claimant, NodeTrust,
+    ScanRequester,
 };
 pub use uploads::{
     abort_job_uploads, abort_upload, authorize_upload, commit_upload, extend_job_uploads,

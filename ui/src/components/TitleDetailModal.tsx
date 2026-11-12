@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import {
   coverSrc,
   coverUrl,
+  availableThroughLabel,
   fetchBooks,
   fetchPurchaseHints,
   fetchTitleMeta,
@@ -924,6 +925,14 @@ export function TitleDetailModal({
                 <MetaRow label="Added" value={formatDate(detail.created_at ?? null)} />
                 <MetaRow label="Updated" value={formatDate(detail.updated_at ?? null)} />
               </dl>
+              {(() => {
+                const through = availableThroughLabel(detail.available_through);
+                return through ? (
+                  <p className="rounded-md bg-teal/10 px-3 py-2 text-sm font-medium text-teal">
+                    {through}
+                  </p>
+                ) : null;
+              })()}
               {(() => {
                 const reason = displayReasons(detail.reasons)[0];
                 return reason ? (

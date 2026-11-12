@@ -770,6 +770,29 @@ async fn ancestry_lists_this_library_then_every_parent_and_refuses_cycles() {
         .unwrap());
     let link = load_cluster_link(&store, "parent").await.unwrap().unwrap();
     assert!(!link.share_books && link.include_branches);
+    // Settings → Library writes every setting at once, keeping the ones it
+    // leaves out.
+    let settings = ClusterLinkSettings {
+        share_books: true,
+        include_branches: false,
+        list_members_books: Some(false),
+        work_for_members: Some(true),
+        keep_member_copies: None,
+        download: Some(false),
+    };
+    assert!(set_cluster_link_settings(&store, "parent", settings)
+        .await
+        .unwrap());
+    let link = load_cluster_link(&store, "parent").await.unwrap().unwrap();
+    assert!(link.share_books && !link.include_branches && !link.list_members_books);
+    assert!(link.work_for_members && !link.keep_member_copies);
+    assert!(
+        !link.download,
+        "the window setting is written with the rest"
+    );
+    assert!(!set_cluster_link_settings(&store, "elsewhere", settings)
+        .await
+        .unwrap());
     // A left link no longer counts.
     leave_cluster_link(&store, "parent", None).await.unwrap();
     assert_eq!(library_ancestry(&store).await.unwrap(), vec![own]);

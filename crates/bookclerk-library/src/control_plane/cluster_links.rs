@@ -145,6 +145,12 @@ pub struct ClusterLink {
     /// The owner library's ancestry as it last reported it: its own
     /// cluster id first, then each library above it.
     pub ancestry: Vec<String>,
+    /// "Download for other members of *library*" (off by default): with it
+    /// off the branch takes only its owner's work from the library.
+    pub work_for_members: bool,
+    /// "Keep copies of other members' books" (off by default): with it off
+    /// a book acquired for another member goes only to the library.
+    pub keep_member_copies: bool,
     /// The operator's cap on jobs run for this library at once; `None`
     /// leaves the link its equal share of the machine.
     pub max_jobs: Option<LinkJobCap>,
@@ -233,30 +239,61 @@ impl<'de> Deserialize<'de> for CapacityBody {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
-        /// Accepts a map and nothing else.
-        struct ObjectOnly;
-
-        impl<'de> serde::de::Visitor<'de> for ObjectOnly {
-            type Value = CapacityFields;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("a JSON object with cluster_id and max_jobs")
-            }
-
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                map: A,
-            ) -> std::result::Result<CapacityFields, A::Error> {
-                CapacityFields::deserialize(serde::de::value::MapAccessDeserializer::new(map))
-            }
-        }
-
-        let fields = deserializer.deserialize_map(ObjectOnly)?;
+        let fields: CapacityFields =
+            from_object(deserializer, "a JSON object with cluster_id and max_jobs")?;
         Ok(Self {
             cluster_id: fields.cluster_id,
             max_jobs: fields.max_jobs,
         })
     }
+}
+
+/// Reads `T` from a JSON object and nothing else: a derived struct would
+/// also take its fields positionally from an array.
+///
+/// # Arguments
+///
+/// * `deserializer` - The body's deserializer.
+/// * `expecting` - What the error says was expected.
+///
+/// # Errors
+///
+/// Returns the deserializer's error for anything but an object `T` reads.
+fn from_object<'de, D, T>(
+    deserializer: D,
+    expecting: &'static str,
+) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    /// Accepts a map and nothing else.
+    struct ObjectOnly<T> {
+        /// What the error says was expected.
+        expecting: &'static str,
+        /// The type read from the map.
+        target: std::marker::PhantomData<T>,
+    }
+
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for ObjectOnly<T> {
+        type Value = T;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.expecting)
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            map: A,
+        ) -> std::result::Result<T, A::Error> {
+            T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_map(ObjectOnly {
+        expecting,
+        target: std::marker::PhantomData,
+    })
 }
 
 /// Reads a field that is present, `null` included, as `Some`; an absent
@@ -320,11 +357,148 @@ pub fn parse_job_cap_request(body: &[u8]) -> Result<JobCapRequest> {
         .validate()
 }
 
+/// `POST /api/config/join/sharing` body: one library and the settings to
+/// change for it.
+#[derive(Debug, utoipa::ToSchema)]
+// Read by the schema only (no unknown fields); `SharingFields` enforces it.
+#[serde(deny_unknown_fields)]
+pub struct SharingBody {
+    /// The library (owner cluster id).
+    #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
+    cluster_id: String,
+    /// "Share this branch's books with *library*".
+    #[schema(example = true)]
+    share_books: bool,
+    /// "Include books from my own branches".
+    #[schema(example = false)]
+    include_branches: bool,
+    /// "List my members' books to *library*"; absent or `null` keeps the
+    /// stored setting.
+    #[schema(example = true)]
+    list_members_books: Option<bool>,
+    /// "Download for other members of *library*": take the library's work
+    /// for its other members too, not only this install owner's. Absent or
+    /// `null` keeps the stored setting.
+    #[schema(example = false)]
+    work_for_members: Option<bool>,
+    /// "Keep copies of other members' books": also write a book acquired
+    /// here for another member to this install's own destinations. Absent
+    /// or `null` keeps the stored setting.
+    #[schema(example = false)]
+    keep_member_copies: Option<bool>,
+    /// "Use this computer to download": off makes this install a window of
+    /// the library (it runs none of the library's work and shows the books
+    /// the library holds for its person instead). Absent or `null` keeps
+    /// the stored setting.
+    #[schema(example = true)]
+    download: Option<bool>,
+}
+
+/// [`SharingBody`]'s fields as JSON carries them; read only from a JSON
+/// object ([`SharingBody`]'s `Deserialize`), never from an array.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SharingFields {
+    /// See [`SharingBody`].
+    cluster_id: String,
+    /// See [`SharingBody`].
+    share_books: bool,
+    /// See [`SharingBody`].
+    include_branches: bool,
+    /// See [`SharingBody`].
+    #[serde(default)]
+    list_members_books: Option<bool>,
+    /// See [`SharingBody`].
+    #[serde(default)]
+    work_for_members: Option<bool>,
+    /// See [`SharingBody`].
+    #[serde(default)]
+    keep_member_copies: Option<bool>,
+    /// See [`SharingBody`].
+    #[serde(default)]
+    download: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for SharingBody {
+    /// Reads the body from a JSON object only.
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let fields: SharingFields = from_object(
+            deserializer,
+            "a JSON object with cluster_id, share_books and include_branches",
+        )?;
+        Ok(Self {
+            cluster_id: fields.cluster_id,
+            share_books: fields.share_books,
+            include_branches: fields.include_branches,
+            list_members_books: fields.list_members_books,
+            work_for_members: fields.work_for_members,
+            keep_member_copies: fields.keep_member_copies,
+            download: fields.download,
+        })
+    }
+}
+
+/// A sharing settings change: the library it names (trimmed) and the
+/// settings to write, each `None` setting left as stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharingRequest {
+    /// The library (owner cluster id), surrounding whitespace removed.
+    pub cluster_id: String,
+    /// The settings to write ([`set_cluster_link_settings`]).
+    pub settings: ClusterLinkSettings,
+}
+
+impl SharingBody {
+    /// The change the body asks for.
+    #[must_use]
+    pub fn into_request(self) -> SharingRequest {
+        SharingRequest {
+            cluster_id: self.cluster_id.trim().to_string(),
+            settings: ClusterLinkSettings {
+                share_books: self.share_books,
+                include_branches: self.include_branches,
+                list_members_books: self.list_members_books,
+                work_for_members: self.work_for_members,
+                keep_member_copies: self.keep_member_copies,
+                download: self.download,
+            },
+        }
+    }
+}
+
+/// Parses a `POST /api/config/join/sharing` body from its raw bytes, sans
+/// IO, the way the route reads it: JSON into [`SharingBody`], then
+/// [`SharingBody::into_request`].
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for bytes that are not the body's JSON
+/// shape: not an object, unknown or duplicate fields, a missing
+/// `cluster_id`, `share_books` or `include_branches`, or a value of the
+/// wrong type.
+pub fn parse_sharing_request(body: &[u8]) -> Result<SharingRequest> {
+    serde_json::from_slice::<SharingBody>(body)
+        .map(SharingBody::into_request)
+        .map_err(|err| LibraryError::Invalid(format!("sharing body: {err}")))
+}
+
 impl ClusterLink {
     /// True when the host client should connect this link.
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.state == CLUSTER_LINK_ACTIVE
+    }
+
+    /// Whose work the branch takes from this library.
+    #[must_use]
+    pub fn claim_scope(&self) -> bookclerk_node_proto::ClaimScope {
+        if self.work_for_members {
+            bookclerk_node_proto::ClaimScope::AllMembers
+        } else {
+            bookclerk_node_proto::ClaimScope::Own
+        }
     }
 }
 
@@ -344,6 +518,8 @@ impl From<cluster_links::Model> for ClusterLink {
                 .into_iter()
                 .filter(|id| bookclerk_node_proto::is_cluster_id(id))
                 .collect(),
+            work_for_members: row.work_for_members != 0,
+            keep_member_copies: row.keep_member_copies != 0,
             max_jobs: LinkJobCap::from_column(row.max_jobs),
             list_members_books: row.list_members_books != 0,
             download: row.download != 0,
@@ -440,6 +616,8 @@ pub async fn record_cluster_link(
         share_books: Set(1),
         include_branches: Set(1),
         ancestry_json: Set("[]".into()),
+        work_for_members: Set(0),
+        keep_member_copies: Set(0),
         max_jobs: Set(None),
         list_members_books: Set(1),
         download: Set(1),
@@ -759,6 +937,133 @@ pub async fn set_cluster_link_download(
         return Ok(load_cluster_link(store, owner_cluster_id).await?.is_some());
     }
     Ok(true)
+}
+
+/// Sets a link's two work settings: "Download for other members of
+/// *library*" and "Keep copies of other members' books". Answers false
+/// when no such link exists. The running client claims under the new
+/// scope from its next consent check.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn set_cluster_link_work(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    work_for_members: bool,
+    keep_member_copies: bool,
+) -> Result<bool> {
+    let update = cluster_links::Entity::update_many()
+        .col_expr(
+            cluster_links::Column::WorkForMembers,
+            Expr::value(i64::from(work_for_members)),
+        )
+        .col_expr(
+            cluster_links::Column::KeepMemberCopies,
+            Expr::value(i64::from(keep_member_copies)),
+        )
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id));
+    let probe = cluster_links::Entity::find()
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(
+            sea_orm::Condition::any()
+                .add(cluster_links::Column::WorkForMembers.ne(i64::from(work_for_members)))
+                .add(cluster_links::Column::KeepMemberCopies.ne(i64::from(keep_member_copies))),
+        );
+    let updated = store
+        .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
+        .await?;
+    Ok(updated == 1)
+}
+
+/// Every setting Settings → Library changes on one link at once; see
+/// [`set_cluster_link_settings`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClusterLinkSettings {
+    /// "Share this branch's books with *library*".
+    pub share_books: bool,
+    /// "Include books from my own branches".
+    pub include_branches: bool,
+    /// "List my members' books to *library*"; `None` keeps the stored value.
+    pub list_members_books: Option<bool>,
+    /// "Download for other members of *library*"; `None` keeps the stored
+    /// value.
+    pub work_for_members: Option<bool>,
+    /// "Keep copies of other members' books"; `None` keeps the stored value.
+    pub keep_member_copies: Option<bool>,
+    /// "Use this computer to download"; `None` keeps the stored value.
+    /// Turning it on also clears the window's copy of the library's list
+    /// ([`set_cluster_link_download`]).
+    pub download: Option<bool>,
+}
+
+/// Sets a link's sharing, listing and work settings in one statement, so a
+/// failed write leaves every one of them as it was.
+///
+/// # Arguments
+///
+/// * `owner_cluster_id` - The library the link joined.
+/// * `settings` - The new values; each `None` keeps the stored one.
+///
+/// # Returns
+///
+/// Whether the link exists (`false` when there is no such link); setting
+/// the values it already has still returns `true`.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn set_cluster_link_settings(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    settings: ClusterLinkSettings,
+) -> Result<bool> {
+    let optional = [
+        (
+            cluster_links::Column::ListMembersBooks,
+            settings.list_members_books,
+        ),
+        (
+            cluster_links::Column::WorkForMembers,
+            settings.work_for_members,
+        ),
+        (
+            cluster_links::Column::KeepMemberCopies,
+            settings.keep_member_copies,
+        ),
+        (cluster_links::Column::Download, settings.download),
+    ];
+    let mut update = cluster_links::Entity::update_many()
+        .col_expr(
+            cluster_links::Column::ShareBooks,
+            Expr::value(i64::from(settings.share_books)),
+        )
+        .col_expr(
+            cluster_links::Column::IncludeBranches,
+            Expr::value(i64::from(settings.include_branches)),
+        )
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id));
+    let mut changed = sea_orm::Condition::any()
+        .add(cluster_links::Column::ShareBooks.ne(i64::from(settings.share_books)))
+        .add(cluster_links::Column::IncludeBranches.ne(i64::from(settings.include_branches)));
+    for (column, value) in optional {
+        if let Some(value) = value {
+            update = update.col_expr(column, Expr::value(i64::from(value)));
+            changed = changed.add(column.ne(i64::from(value)));
+        }
+    }
+    let probe = cluster_links::Entity::find()
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(changed);
+    let updated = store
+        .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
+        .await?;
+    if settings.download == Some(true) {
+        // As in `set_cluster_link_download`: the window reader may not run
+        // before downloading is turned off again.
+        crate::control_plane::window_books::clear_window_books(store, owner_cluster_id).await?;
+    }
+    Ok(updated == 1)
 }
 
 /// Records the owner library's ancestry as it reported it (`info` at join,

@@ -92,9 +92,9 @@ pub use spawn_diag::{
     SPAWN_DIAG_TOTAL_BYTES,
 };
 pub use spawn_path::{
-    canonicalize, create_process_path, require_absolute_or_name, require_absolute_spawn_path,
-    require_existing_regular_file, require_helper_beside_or_absolute, require_spawn_executable,
-    require_under_root, SpawnPathError,
+    canonicalize, create_process_path, helper_search_dirs, require_absolute_or_name,
+    require_absolute_spawn_path, require_existing_regular_file, require_helper_beside_or_absolute,
+    require_spawn_executable, require_under_root, SpawnPathError,
 };
 pub use spec::{Spec, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV, SPEC_ENV};
 

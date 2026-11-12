@@ -55,6 +55,9 @@ pub struct CandidatePool {
     /// `(source, product_id)` of each row's primary edition → its candidate.
     /// Rows are read oldest fetch first, so the newest row wins a tie.
     by_edition: HashMap<(String, String), StorefrontCandidate>,
+    /// `(source, product_id)` of each row's primary edition → the work its
+    /// listing's edition belongs to, when it has one.
+    work_by_edition: HashMap<(String, String), String>,
 }
 
 impl CandidatePool {
@@ -72,15 +75,28 @@ impl CandidatePool {
     pub fn from_rows(rows: &[StoredCandidate]) -> Self {
         let now = chrono::Utc::now();
         let mut by_edition = HashMap::with_capacity(rows.len());
+        let mut work_by_edition = HashMap::new();
         for row in rows {
             let c = candidate_from_stored(row, now);
-            by_edition.insert((c.source.clone(), c.product_id.clone()), c);
+            let key = (c.source.clone(), c.product_id.clone());
+            match &row.listing.work_id {
+                Some(work) => {
+                    work_by_edition.insert(key.clone(), work.clone());
+                }
+                None => {
+                    work_by_edition.remove(&key);
+                }
+            }
+            by_edition.insert(key, c);
         }
-        Self { by_edition }
+        Self {
+            by_edition,
+            work_by_edition,
+        }
     }
 
-    /// The pool rows behind one card, the card's own edition first, then its
-    /// other store editions in card order.
+    /// The work behind one card: that of the first of its store editions
+    /// (its own edition first) whose pooled listing has a work.
     ///
     /// # Arguments
     ///
@@ -88,8 +104,20 @@ impl CandidatePool {
     ///
     /// # Returns
     ///
-    /// The matching candidates; empty when none is stored.
-    fn rows_for<'a>(&'a self, card: &Recommendation) -> Vec<&'a StorefrontCandidate> {
+    /// The `works.id`, or `None` when no pooled edition of the card has one.
+    pub(crate) fn work_for(&self, card: &Recommendation) -> Option<&str> {
+        Self::edition_keys(card)
+            .into_iter()
+            .find_map(|(source, product)| {
+                self.work_by_edition
+                    .get(&(source.to_owned(), product.to_owned()))
+                    .map(String::as_str)
+            })
+    }
+
+    /// A card's store editions as pool keys, its own edition first, then its
+    /// other store editions in card order, without repeats.
+    fn edition_keys(card: &Recommendation) -> Vec<(&str, &str)> {
         let mut keys: Vec<(&str, &str)> = Vec::with_capacity(card.store_editions.len() + 1);
         if let (Some(source), Some(product)) = (
             card.candidate_source.as_deref(),
@@ -103,7 +131,22 @@ impl CandidatePool {
                 keys.push(key);
             }
         }
-        keys.into_iter()
+        keys
+    }
+
+    /// The pool rows behind one card, the card's own edition first, then its
+    /// other store editions in card order.
+    ///
+    /// # Arguments
+    ///
+    /// * `card` - The card to look up.
+    ///
+    /// # Returns
+    ///
+    /// The matching candidates; empty when none is stored.
+    fn rows_for<'a>(&'a self, card: &Recommendation) -> Vec<&'a StorefrontCandidate> {
+        Self::edition_keys(card)
+            .into_iter()
             .filter_map(|(source, product)| {
                 self.by_edition
                     .get(&(source.to_owned(), product.to_owned()))
@@ -152,6 +195,9 @@ macro_rules! pool_fields {
 /// * `card` - The card to shorten.
 /// * `pool` - The subject's candidate pool.
 fn strip_card(card: &mut Recommendation, pool: &CandidatePool) {
+    // Read-time only: a branch that stops listing a title must drop off
+    // the card on the next read.
+    card.available_through.clear();
     let rows = pool.rows_for(card);
     if rows.is_empty() {
         return;
@@ -472,6 +518,35 @@ mod tests {
             read.shelves[0].items[0].description, card.description,
             "the stored value wins"
         );
+    }
+
+    /// A card's work comes from the first of its editions whose pooled
+    /// listing has one, and branch availability is never stored.
+    #[test]
+    fn a_card_finds_its_work_through_the_pool_and_stores_no_availability() {
+        let a = candidate("audible", "B001", "Blurb.");
+        let b = candidate("libro", "978001", "Other blurb.");
+        let mut no_work = row(&a);
+        no_work.listing.work_id = None;
+        let mut with_work = row(&b);
+        with_work.listing.work_id = Some("w-libro".into());
+        let pool = CandidatePool::from_rows(&[no_work, with_work]);
+        let mut card = card_from(&a);
+        assert_eq!(pool.work_for(&card), None);
+        card.store_editions
+            .push(StoreEdition::new("libro", "978001"));
+        assert_eq!(pool.work_for(&card), Some("w-libro"));
+
+        card.available_through = vec![crate::availability::BranchAvailability {
+            node_id: "node-b".into(),
+            owner_name: Some("Riley".into()),
+            store: "audible".into(),
+            product_id: "B001".into(),
+        }];
+        let mut stored = feed(vec![card]);
+        let json = encode_stored_feed(&mut stored, &pool, 192 * 1024).unwrap();
+        assert!(!json.contains("node-b"), "{json}");
+        assert!(!json.contains("available_through"), "{json}");
     }
 
     /// Another store edition's row fills a field the card's own row lacks.

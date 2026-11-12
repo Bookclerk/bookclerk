@@ -89,6 +89,8 @@ pub(crate) fn link_json(link: &ClusterLink) -> ClusterLinkView {
         enrolled_at: link.enrolled_at.clone(),
         share_books: link.share_books,
         include_branches: link.include_branches,
+        work_for_members: link.work_for_members,
+        keep_member_copies: link.keep_member_copies,
         max_jobs: link.max_jobs.map(|cap| cap.jobs()),
         job_share: None,
         list_members_books: link.list_members_books,
@@ -131,6 +133,12 @@ pub struct ClusterLinkView {
     /// "Include books from my own branches".
     #[schema(example = true)]
     pub include_branches: bool,
+    /// "Download for other members of the library": this install takes the library's work for its other members too, not only its owner's (off by default).
+    #[schema(example = false)]
+    pub work_for_members: bool,
+    /// "Keep copies of other members' books": a book acquired here for another member is also written to this install's own destinations (off by default).
+    #[schema(example = false)]
+    pub keep_member_copies: bool,
     /// The most jobs this install runs for the library at once, as its operator set it; `null` gives the library an equal share of the machine.
     #[schema(example = 2, minimum = 0, maximum = 16)]
     pub max_jobs: Option<usize>,

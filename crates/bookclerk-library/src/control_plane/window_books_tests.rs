@@ -250,6 +250,8 @@ async fn many_books_page_out_within_every_profiles_limits() {
             include_branches: Set(1),
             ancestry_json: Set("[]".into()),
             list_members_books: Set(1),
+            work_for_members: Set(0),
+            keep_member_copies: Set(0),
             download: Set(0),
             max_jobs: Set(None),
         }
@@ -268,6 +270,8 @@ async fn many_books_page_out_within_every_profiles_limits() {
             include_branches: Set(1),
             ancestry_json: Set("[]".into()),
             list_members_books: Set(1),
+            work_for_members: Set(0),
+            keep_member_copies: Set(0),
             download: Set(1),
             max_jobs: Set(None),
         }

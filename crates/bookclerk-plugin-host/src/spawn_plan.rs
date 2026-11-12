@@ -311,8 +311,8 @@ pub(crate) fn cloudflare_workerd_bin_name() -> &'static str {
     }
 }
 
-/// Finds `bookclerk-workerd`: env override, beside the host executable (or its
-/// `deps/` parent), then `PATH`.
+/// Finds `bookclerk-workerd`: env override, beside the host executable (or, for
+/// a test binary, its Cargo profile directory), then `PATH`.
 pub(crate) fn locate_launcher() -> Result<PathBuf> {
     let name = launcher_bin_name();
     if let Some(path) = std::env::var_os(WORKERD_LAUNCHER_ENV) {
@@ -327,23 +327,14 @@ pub(crate) fn locate_launcher() -> Result<PathBuf> {
     }
     let mut searched = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
+        // Beside the host; a test binary also looks in its Cargo profile
+        // directory.
+        for dir in bookclerk_sandbox::helper_search_dirs(&exe) {
             let candidate = dir.join(name);
             if candidate.is_file() {
                 return Ok(candidate);
             }
-            searched.push(dir.to_path_buf());
-            // An integration test binary runs from `target/<profile>/deps`, one
-            // level below where cargo puts the launcher.
-            if dir.file_name().is_some_and(|last| last == "deps") {
-                if let Some(parent) = dir.parent() {
-                    let candidate = parent.join(name);
-                    if candidate.is_file() {
-                        return Ok(candidate);
-                    }
-                    searched.push(parent.to_path_buf());
-                }
-            }
+            searched.push(dir);
         }
     }
     if let Some(path) = which_in_path(name) {
