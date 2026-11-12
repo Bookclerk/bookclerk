@@ -659,3 +659,101 @@ async fn a_product_in_several_marketplaces_is_read_under_every_profile() {
         assert_eq!(works, ["OL1W", "OL2W"], "{name}: {listed:?}");
     }
 }
+
+/// An edition whose metadata together is wider than one database cell
+/// (each field fits on its own) is stored in pieces and read back whole,
+/// under every profile; a newer read replaces the pieces and a finished
+/// read drops the old ones.
+#[tokio::test]
+async fn an_edition_wider_than_a_cell_is_kept_whole_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let store = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        crate::entities::cluster_links::ActiveModel {
+            owner_cluster_id: Set("lib".into()),
+            owner_origin: Set("https://lib.example".into()),
+            remote_node_id: Set("node-lib".into()),
+            spki_pin: Set(None),
+            state: Set("active".into()),
+            enrolled_at: Set(Utc::now().to_rfc3339()),
+            share_books: Set(1),
+            include_branches: Set(1),
+            ancestry_json: Set("[]".into()),
+            list_members_books: Set(1),
+            work_for_members: Set(0),
+            keep_member_copies: Set(0),
+            download: Set(0),
+            max_jobs: Set(None),
+        }
+        .insert(store.db())
+        .await
+        .unwrap();
+        let mut wide = edition("B0WIDE0001", &"T\u{e9}".repeat(200));
+        wide.metadata.authors = Some("A\u{2014}".repeat(150));
+        wide.metadata.narrators = Some("N".repeat(600));
+        assert!(wide.problem().is_none(), "{name}");
+        let work = WindowWork {
+            work: "w1".into(),
+            identifiers: vec![asin("B0WIDE0001")],
+            editions: vec![wide.clone()],
+        };
+        let first = window_read_stamp();
+        record_window_page(&store, "lib", &first, std::slice::from_ref(&work))
+            .await
+            .unwrap();
+        finish_window_read(&store, "lib", &first).await.unwrap();
+        let view = window_view(&store).await.unwrap();
+        assert_eq!(view.len(), 1, "{name}");
+        assert_eq!(view[0].editions[0].edition, wide, "{name}");
+
+        // A later read with a shorter title replaces every piece.
+        let mut short = wide.clone();
+        short.metadata.title = "Short".into();
+        let later = window_read_stamp();
+        let work = WindowWork {
+            editions: vec![short.clone()],
+            ..work
+        };
+        record_window_page(&store, "lib", &later, &[work])
+            .await
+            .unwrap();
+        finish_window_read(&store, "lib", &later).await.unwrap();
+        let view = window_view(&store).await.unwrap();
+        assert_eq!(view[0].editions[0].edition, short, "{name}");
+        assert_eq!(
+            clear_window_books(&store, "lib").await.unwrap(),
+            1,
+            "{name}"
+        );
+        assert!(window_view(&store).await.unwrap().is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn json_is_cut_on_character_boundaries_and_joined_in_order() {
+    let json = "\u{e9}a\u{1f600}bc";
+    let pieces = cut(json, 1);
+    assert!(pieces.iter().all(|p| p.len() <= 4));
+    assert_eq!(pieces.concat(), json);
+    let part = |seq: i64, body: &str| window_book_parts::Model {
+        owner_cluster_id: "lib".into(),
+        store: "audible".into(),
+        marketplace: "us".into(),
+        product_id: "B0X".into(),
+        seq,
+        body: body.into(),
+        seen_at: "t".into(),
+    };
+    let stored = serde_json::to_string(&StoredBook {
+        identifiers: vec![],
+        edition: edition("B0X", "Title"),
+    })
+    .unwrap();
+    let (a, b) = stored.split_at(10);
+    // Out of order in, joined in order.
+    assert_eq!(join_parts(vec![part(1, b), part(0, a)]).len(), 1);
+    // A gap spoils the book.
+    assert!(join_parts(vec![part(0, a), part(2, b)]).is_empty());
+}

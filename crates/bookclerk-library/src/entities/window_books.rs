@@ -26,12 +26,6 @@ pub struct Model {
     /// The work of this install's library the identifiers reach, when
     /// exactly one does.
     pub local_work_id: Option<String>,
-    /// The work's identifiers in the library (JSON list of
-    /// `bookclerk_node_proto::LookupIdentifier`).
-    pub identifiers_json: String,
-    /// The edition as the library sent it (JSON
-    /// `bookclerk_node_proto::LookupEdition`).
-    pub edition_json: String,
     /// RFC 3339 stamp of the read that last named this edition.
     pub seen_at: String,
 }

@@ -1618,14 +1618,31 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         product_id TEXT NOT NULL,
         work_ref TEXT NOT NULL,
         local_work_id TEXT,
-        identifiers_json TEXT NOT NULL DEFAULT '[]',
-        edition_json TEXT NOT NULL,
         seen_at TEXT NOT NULL,
         PRIMARY KEY (owner_cluster_id, store, marketplace, product_id)
     )",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_window_books_seen ON window_books(owner_cluster_id, seen_at)",
+    ),
+    // Each window book's edition and identifiers as the library sent them
+    // (JSON), cut into pieces no wider than the database's cell limit and
+    // joined again in `seq` order. Written, kept and dropped with their
+    // `window_books` row by the same read stamp.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS window_book_parts (
+        owner_cluster_id TEXT NOT NULL REFERENCES cluster_links(owner_cluster_id) ON DELETE CASCADE,
+        store TEXT NOT NULL,
+        marketplace TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        seen_at TEXT NOT NULL,
+        PRIMARY KEY (owner_cluster_id, store, marketplace, product_id, seq)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_window_book_parts_seen ON window_book_parts(owner_cluster_id, seen_at)",
     ),
     // On a branch: the branch owner's books acquired for a library it
     // joined and imported into this library as well

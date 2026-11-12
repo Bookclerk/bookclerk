@@ -92,6 +92,7 @@ pub mod user_title_state;
 pub mod users;
 pub mod webauthn_challenges;
 pub mod webauthn_credentials;
+pub mod window_book_parts;
 pub mod window_books;
 pub mod work_identifiers;
 pub mod works;
