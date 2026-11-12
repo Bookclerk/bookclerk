@@ -83,6 +83,22 @@ impl ContentSource for StubSource {
                 .upsert_account(&account_id, &opts.marketplace, None, true)
                 .await
                 .unwrap();
+            // `linked@…` stands for an account another login of the same
+            // store account connected while this one ran.
+            if account_id.starts_with("linked@") {
+                let other = library
+                    .create_user(bookclerk_library::UserRole::Member, Some("Other"), None)
+                    .await
+                    .unwrap();
+                let identity = library
+                    .ensure_local_portal_identity(other.id, None)
+                    .await
+                    .unwrap();
+                library
+                    .link_account(identity.id, self.key, &account_id, self.id)
+                    .await
+                    .unwrap();
+            }
             bookclerk_library::control_plane::set_member_may_connect_accounts(
                 library, *user_id, false,
             )
@@ -584,4 +600,38 @@ async fn a_login_the_operator_stopped_midway_is_taken_back() {
         .await
         .unwrap()
         .is_empty());
+}
+
+/// A refused login never takes back an account another login connected
+/// while it ran.
+#[tokio::test]
+async fn a_refused_login_keeps_an_account_another_login_connected() {
+    let stop = Arc::new(std::sync::OnceLock::new());
+    let sources: Vec<Arc<dyn ContentSource>> = vec![Arc::new(StubSource {
+        id: "libro",
+        key: "test:source-libro",
+        mode: PortalAuthMode::Password,
+        refusal: None,
+        stops_member: Some(Arc::clone(&stop)),
+    })];
+    let (app, library, cookie) = harness(sources).await;
+    let member = library.list_users().await.unwrap()[0].id;
+    stop.set((library.clone(), member)).ok().unwrap();
+
+    let (status, _, answer) = call(
+        &app,
+        "POST",
+        "/sources/libro/login",
+        Some(&cookie),
+        Some({
+            let mut body = credentials();
+            body["email"] = json!("linked@example.com");
+            body
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    let accounts = library.list_accounts().await.unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_ne!(accounts[0].connection_status, "revoked");
 }
