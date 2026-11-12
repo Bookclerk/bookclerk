@@ -88,41 +88,78 @@ fn family_labels(families: &[PluginFamily]) -> Vec<String> {
         .collect()
 }
 
+/// Settles one timed `health` call into its latency sample.
+///
+/// # Arguments
+///
+/// * `id` - Plugin id, for the failure message.
+/// * `started` - When the call began.
+/// * `outcome` - The call wrapped in [`RPC_TIMEOUT`].
+///
+/// # Returns
+///
+/// The latency when the call answered, or `None` when it answered with an
+/// error (logged): an error is not a latency sample, and a guest may refuse
+/// `health` without credentials, as the staged suite allows.
+///
+/// # Panics
+///
+/// When the call timed out, so a hung entrypoint fails the run instead of
+/// looking like one without a measurable call.
+fn settle_first_call<T, E: std::fmt::Display>(
+    id: &str,
+    started: Instant,
+    outcome: Result<Result<T, E>, tokio::time::error::Elapsed>,
+) -> Option<Duration> {
+    match outcome {
+        Err(_) => panic!("health {id} timed out after {RPC_TIMEOUT:?}"),
+        Ok(Err(e)) => {
+            eprintln!("cold_start: {id} health failed, first call not sampled: {e}");
+            None
+        }
+        Ok(Ok(_)) => Some(started.elapsed()),
+    }
+}
+
 /// Times the first credential-free entrypoint call, when the guest has one.
-async fn first_call(session: &PluginSession) -> Option<Duration> {
+///
+/// # Returns
+///
+/// `None` when the guest has no `health` entrypoint or its call failed (see
+/// [`settle_first_call`]).
+async fn first_call(id: &str, session: &PluginSession) -> Option<Duration> {
     let started = Instant::now();
-    let called = if session.has_entrypoint(Entrypoint::Storefront) {
-        tokio::time::timeout(
+    if session.has_entrypoint(Entrypoint::Storefront) {
+        let outcome = tokio::time::timeout(
             RPC_TIMEOUT,
             session.storefront(|stub| async move { stub.health().await }),
         )
-        .await
-        .is_ok()
+        .await;
+        settle_first_call(id, started, outcome)
     } else if session.has_entrypoint(Entrypoint::RemoteLibrary) {
-        tokio::time::timeout(
+        let outcome = tokio::time::timeout(
             RPC_TIMEOUT,
             session.remote_library(|stub| async move { stub.health().await }),
         )
-        .await
-        .is_ok()
+        .await;
+        settle_first_call(id, started, outcome)
     } else if session.has_entrypoint(Entrypoint::Metadata) {
-        tokio::time::timeout(
+        let outcome = tokio::time::timeout(
             RPC_TIMEOUT,
             session.metadata(|stub| async move { stub.health().await }),
         )
-        .await
-        .is_ok()
+        .await;
+        settle_first_call(id, started, outcome)
     } else if session.has_entrypoint(Entrypoint::Covers) {
-        tokio::time::timeout(
+        let outcome = tokio::time::timeout(
             RPC_TIMEOUT,
             session.covers(|stub| async move { stub.health().await }),
         )
-        .await
-        .is_ok()
+        .await;
+        settle_first_call(id, started, outcome)
     } else {
-        return None;
-    };
-    called.then(|| started.elapsed())
+        None
+    }
 }
 
 #[tokio::test]
@@ -137,6 +174,16 @@ async fn measure_staged_plugin_cold_start() {
         skip_or_fail("BOOKCLERK_FILES_DIR is unset (run `cargo install-platform`)");
         return;
     };
+    assert!(
+        artifacts.is_dir(),
+        "BOOKCLERK_PLUGIN_ARTIFACTS is not a directory: {}",
+        artifacts.display()
+    );
+    assert!(
+        files.is_dir(),
+        "BOOKCLERK_FILES_DIR is not a directory: {}",
+        files.display()
+    );
     let runs: usize = std::env::var("BOOKCLERK_COLD_START_RUNS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -151,6 +198,13 @@ async fn measure_staged_plugin_cold_start() {
         ..Default::default()
     };
     let plugins = discover_plugins(&config).expect("discover");
+    let ids: Vec<_> = plugins.iter().map(|p| p.manifest.id.as_str()).collect();
+    for expected in scope.required_ids() {
+        assert!(
+            ids.contains(&expected.as_str()),
+            "expected plugin `{expected}` in {ids:?}"
+        );
+    }
     let mut grants = PluginGrantStore::load(&config.paths().files_dir).expect("load grants");
     for plugin in &plugins {
         grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
@@ -187,7 +241,7 @@ async fn measure_staged_plugin_cold_start() {
                 .unwrap_or_else(|_| panic!("describe {} timed out", plugin.manifest.id))
                 .unwrap_or_else(|e| panic!("describe {}: {e}", plugin.manifest.id));
             let describe = described.elapsed();
-            let first_call = first_call(&session).await;
+            let first_call = first_call(&plugin.manifest.id, &session).await;
             drop(session);
             samples.push(StartupSample {
                 spawn,
