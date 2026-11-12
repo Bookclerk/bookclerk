@@ -384,6 +384,57 @@ pub fn require_helper_beside_or_absolute(
     require_spawn_executable(&path)
 }
 
+/// Directories a host searches for a helper it ships beside itself.
+///
+/// The first entry is always the directory holding `exe`. When `exe` is a
+/// test binary that Cargo placed below its profile directory, the profile
+/// directory (where Cargo puts the workspace's binaries, helpers included)
+/// follows. Cargo has used two layouts for test binaries:
+///
+/// * `<profile>/deps/<test>-<hash>` (up to Rust 1.99).
+/// * `<profile>/build/<package>/<hash>/out/<test>-<hash>` (from Rust 1.100).
+///
+/// Only these exact shapes add the profile directory, so an installed host
+/// still finds helpers only beside itself. The result names directories;
+/// callers still validate any helper they find in them.
+///
+/// # Arguments
+///
+/// * `exe` - Path of the running executable, usually `std::env::current_exe()`.
+///
+/// # Returns
+///
+/// One or two directories, nearest first. Empty when `exe` has no parent.
+#[must_use]
+pub fn helper_search_dirs(exe: &Path) -> Vec<PathBuf> {
+    let Some(dir) = exe.parent() else {
+        return Vec::new();
+    };
+    let mut dirs = vec![dir.to_path_buf()];
+    if let Some(profile) = cargo_test_profile_dir(dir) {
+        dirs.push(profile.to_path_buf());
+    }
+    dirs
+}
+
+/// The Cargo profile directory above `dir` when `dir` is where Cargo puts
+/// test binaries (`<profile>/deps` or `<profile>/build/<package>/<hash>/out`).
+fn cargo_test_profile_dir(dir: &Path) -> Option<&Path> {
+    let name = dir.file_name()?;
+    if name == "deps" {
+        return dir.parent();
+    }
+    if name != "out" {
+        return None;
+    }
+    // out -> <hash> -> <package> -> build -> <profile>
+    let build = dir.parent()?.parent()?.parent()?;
+    if build.file_name()? != "build" {
+        return None;
+    }
+    build.parent()
+}
+
 /// Path passed to `CreateProcess`, `Command`, or a child that parses Win32 paths.
 ///
 /// Windows canonical paths use the `\\?\` prefix. An AppContainer can open
@@ -417,6 +468,46 @@ fn strip_verbatim_prefix(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn helper_search_dirs_stays_beside_an_installed_host() {
+        let exe = Path::new("/opt/bookclerk/bin/bookclerkd");
+        assert_eq!(
+            helper_search_dirs(exe),
+            vec![PathBuf::from("/opt/bookclerk/bin")]
+        );
+        // An `out` or `deps` directory that is not Cargo's adds nothing beyond
+        // its own parent rule: `out` needs the full `build/<pkg>/<hash>` shape.
+        let exe = Path::new("/srv/out/bookclerkd");
+        assert_eq!(helper_search_dirs(exe), vec![PathBuf::from("/srv/out")]);
+        let exe = Path::new("/srv/x/y/z/out/bookclerkd");
+        assert_eq!(
+            helper_search_dirs(exe),
+            vec![PathBuf::from("/srv/x/y/z/out")]
+        );
+        assert!(helper_search_dirs(Path::new("/")).is_empty());
+    }
+
+    #[test]
+    fn helper_search_dirs_reaches_the_profile_from_both_cargo_test_layouts() {
+        let deps = Path::new("/w/target/debug/deps/smoke-0123abcd");
+        assert_eq!(
+            helper_search_dirs(deps),
+            vec![
+                PathBuf::from("/w/target/debug/deps"),
+                PathBuf::from("/w/target/debug"),
+            ]
+        );
+        let build =
+            Path::new("/w/target/debug/build/bookclerk-plugin-e2e/99f21c02/out/smoke-99f21c02");
+        assert_eq!(
+            helper_search_dirs(build),
+            vec![
+                PathBuf::from("/w/target/debug/build/bookclerk-plugin-e2e/99f21c02/out"),
+                PathBuf::from("/w/target/debug"),
+            ]
+        );
+    }
 
     #[test]
     fn rejects_nul_and_relative_segments() {

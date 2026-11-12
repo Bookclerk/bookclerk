@@ -1333,17 +1333,13 @@ fn resolve_launcher(config: &Config, isolation: Isolation) -> std::result::Resul
         .parent()
         .ok_or_else(|| format!("{} has no parent directory", exe.display()))?;
     let name = format!("{JAIL_BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
-    if dir.join(&name).is_file() {
-        return Ok(dir.join(name));
-    }
-    // An integration test binary runs from `target/<profile>/deps`, one level
-    // below where cargo puts the launcher.
-    if dir.file_name().is_some_and(|last| last == "deps") {
-        if let Some(parent) = dir.parent() {
-            if parent.join(&name).is_file() {
-                return Ok(parent.join(name));
-            }
-        }
+    // Beside the host; a test binary also looks in its Cargo profile directory.
+    if let Some(found) = bookclerk_sandbox::helper_search_dirs(&exe)
+        .into_iter()
+        .map(|dir| dir.join(&name))
+        .find(|candidate| candidate.is_file())
+    {
+        return Ok(found);
     }
     Err(format!(
         "{JAIL_BIN_NAME} not found in {} and {JAIL_BIN_ENV} is unset",
