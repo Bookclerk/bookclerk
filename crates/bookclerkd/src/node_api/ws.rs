@@ -209,14 +209,14 @@ pub fn close_node_sessions(node_id: &str, code: u16) {
     }
 }
 
-/// True when a newer connection of `node_id` replaced connection `serial`
-/// as the node's live one. A connection with no live slot at all (one
-/// still finishing, or a test's context) is not superseded.
-pub(super) fn superseded(node_id: &str, serial: u64) -> bool {
+/// True while connection `serial` is still the live connection of
+/// `node_id`: not replaced by a newer one, and not ended (a replacement
+/// that ended too leaves no live slot, and that is not this connection).
+pub(super) fn is_live_session(node_id: &str, serial: u64) -> bool {
     sessions()
         .live
         .get(node_id)
-        .is_some_and(|slot| slot.serial != serial)
+        .is_some_and(|slot| slot.serial == serial)
 }
 
 /// Makes a new connection of `node_id` its live one, as a welcomed

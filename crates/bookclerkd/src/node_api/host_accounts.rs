@@ -16,8 +16,8 @@
 //! library's per-member rule decides whether the person may connect any.
 //!
 //! Both frames run one at a time on this owner node ([`ACCOUNTS_GATE`]),
-//! and an offer is refused once a newer connection of the branch replaced
-//! the one it came on. A branch that timed out waiting for an offer and
+//! and an offer is refused unless the connection it came on is still the
+//! branch's live one. A branch that timed out waiting for an offer and
 //! then disconnected the account over a new connection therefore never
 //! has the stale offer land after the removal: either the offer finished
 //! first and the removal takes it back, or the offer finds its connection
@@ -68,9 +68,10 @@ pub(super) async fn add(
     sealed: &str,
 ) -> bookclerk_library::Result<Frame> {
     let _serialized = ACCOUNTS_GATE.lock().await;
-    // An offer from a connection a newer one replaced may be one the
-    // branch gave up on before disconnecting the account over the new one.
-    if super::ws::superseded(&host.node_id, host.serial) {
+    // An offer from a connection that is no longer the branch's live one
+    // (replaced, even by one that has since ended too) may be one the
+    // branch gave up on before disconnecting the account over another.
+    if !super::ws::is_live_session(&host.node_id, host.serial) {
         return Ok(error(id, "refused", "superseded"));
     }
     let Some(user_id) = branch_owner(library, host).await? else {

@@ -706,7 +706,7 @@ async fn branches_show_their_sharing_and_the_owner_removes_what_a_branch_left() 
 }
 
 /// A host context for the branch `node_id` whose owner box secret is
-/// `[3; 32]`.
+/// `[3; 32]`, as its newest live connection.
 async fn branch_context(state: &Arc<AppState>, node_id: &str) -> super::super::work::HostContext {
     let cfg = state.config.read().await;
     super::super::work::HostContext {
@@ -723,7 +723,7 @@ async fn branch_context(state: &Arc<AppState>, node_id: &str) -> super::super::w
         },
         owner_node_id: "owner-node".into(),
         state: Arc::clone(state),
-        serial: 0,
+        serial: super::super::ws::go_live_for_test(node_id),
     }
 }
 
@@ -886,7 +886,7 @@ async fn a_branch_adds_and_withdraws_its_persons_connections() {
     set_member_may_connect_accounts(&store, member, true)
         .await
         .unwrap();
-    let live = super::super::ws::go_live_for_test(&node_id);
+    let current = branch_context(&state, &node_id).await;
     let stale = offer(&node_id, vec![offered(&plugin_key, "stale@example.com")]);
     let answer = super::super::host_accounts::add(&store, &host, "a4".into(), &stale)
         .await
@@ -900,10 +900,6 @@ async fn a_branch_adds_and_withdraws_its_persons_connections() {
         .await
         .unwrap()
         .is_none());
-    let current = super::super::work::HostContext {
-        serial: live,
-        ..branch_context(&state, &node_id).await
-    };
     let answer = super::super::host_accounts::add(&store, &current, "a5".into(), &stale)
         .await
         .unwrap();
@@ -911,5 +907,15 @@ async fn a_branch_adds_and_withdraws_its_persons_connections() {
         matches!(answer.body, Body::AccountsAdded { added: 1, .. }),
         "{answer:?}"
     );
-    super::super::ws::unregister_for_test(&node_id, live);
+    // Once the replacement ended too, the old connection is still not the
+    // live one: its offer stays refused.
+    super::super::ws::unregister_for_test(&node_id, current.serial);
+    let late = offer(&node_id, vec![offered(&plugin_key, "late@example.com")]);
+    let answer = super::super::host_accounts::add(&store, &host, "a6".into(), &late)
+        .await
+        .unwrap();
+    assert!(
+        matches!(&answer.body, Body::Error { code, message } if code == "refused" && message == "superseded"),
+        "{answer:?}"
+    );
 }

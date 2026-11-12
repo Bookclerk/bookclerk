@@ -273,8 +273,8 @@ gone.
   `accounts.added`, counts what was added, already there, taken, or not
   kept, and whether the rule refused them all. The library handles
   `accounts.add` and `accounts.remove` one at a time, and refuses an offer
-  (`superseded`) once a newer connection of the branch replaced the one it
-  came on, so an offer the branch gave up on can't land after a later
+  (`superseded`) unless the connection it came on is still the branch's
+  live one, so an offer the branch gave up on can't land after a later
   disconnect.
 - **Disconnect everywhere.** **Revoke everywhere** on the branch
   (`POST /api/config/join/connections/disconnect` with
