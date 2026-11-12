@@ -1,0 +1,195 @@
+{
+ "total_count": 14,
+ "jobs": [
+  {
+   "id": 130855363954,
+   "run_id": 43119304487,
+   "name": "plan",
+   "status": "completed",
+   "conclusion": "success",
+   "created_at": "2026-11-11T23:22:21Z",
+   "started_at": "2026-11-11T23:22:24Z",
+   "completed_at": "2026-11-11T23:23:32Z",
+   "runner_name": "GitHub Actions 1000062012",
+   "labels": [
+    "ubuntu-latest"
+   ]
+  },
+  {
+   "id": 130855366803,
+   "run_id": 43119304487,
+   "name": "merge-queue fail-fast",
+   "status": "completed",
+   "conclusion": "skipped",
+   "created_at": "2026-11-11T23:22:22Z",
+   "started_at": "2026-11-11T23:22:22Z",
+   "completed_at": "2026-11-11T23:22:21Z",
+   "runner_name": null,
+   "labels": [
+    "ubuntu-latest"
+   ]
+  },
+  {
+   "id": 130855885614,
+   "run_id": 43119304487,
+   "name": "unit + integration tests \u00b7 lane 3",
+   "status": "pending",
+   "conclusion": null,
+   "created_at": "2026-11-11T23:23:32Z",
+   "started_at": "2026-11-11T23:23:32Z",
+   "completed_at": null,
+   "runner_name": null,
+   "labels": [
+    "ubuntu-latest"
+   ]
+  },
+  {
+   "id": 130855886203,
+   "run_id": 43119304487,
+   "name": "fmt / clippy / docs \u00b7 lane 3",
+   "status": "pending",
+   "conclusion": null,
+   "created_at": "2026-11-11T23:23:32Z",
+   "started_at": "2026-11-11T23:23:32Z",
+   "completed_at": null,
+   "runner_name": null,
+   "labels": [
+    "ubuntu-latest"
+   ]
+  },
+  {
+   "id": 130855886219,
+   "run_id": 43119304487,
+   "name": "release build + small-VPS envelope (thin LTO) \u00b7 lane 12",
+   "status": "in_progress",
+   "conclusion": null,
+   "created_at": "2026-11-11T23:23:32Z",
+   "started_at": "2026-11-11T23:47:45Z",
+   "completed_at": null,
+   "runner_name": "GitHub Actions 1000062019",
+   "labels": [
+    "ubuntu-latest"
+   ]
+  },
+  {
+   "id": 130855886859,
+   "run_id": 43119304487,
+   "name": "postgres ${{ matrix.postgres }}",
+   "status": "completed",
+   "conclusion": "skipped",
+   "created_at": "2026-11-11T23:23:32Z",
+   "started_at": "2026-11-11T23:23:32Z",
+   "completed_at": "2026-11-11T23:23:32Z",
+   "runner_name": null,
+   "labels": [
+    "ubuntu-latest"
+   ]
+  },
+  {
+   "id": 130855886860,
+   "run_id": 43119304487,
+   "name": "website + collector Workers",
+   "status": "completed",
+   "conclusion": "skipped",
+   "created_at": "2026-11-11T23:23:32Z",
+   "started_at": "2026-11-11T23:23:32Z",
+   "completed_at": "2026-11-11T23:23:32Z",
+   "runner_name": null,
+   "labels": [
+    "ubuntu-latest"
+   ]
+  },
+  {
+   "id": 130855886980,
+   "run_id": 43119304487,
+   "name": "sandbox + jailed tiers (${{ matrix.os }})",
+   "status": "completed",
+   "conclusion": "skipped",
+   "created_at": "2026-11-11T23:23:32Z",
+   "started_at": "2026-11-11T23:23:32Z",
+   "completed_at": "2026-11-11T23:23:32Z",
+   "runner_name": null,
+   "labels": []
+  },
+  {
+   "id": 130855887484,
+   "run_id": 43119304487,
+   "name": "tray (${{ matrix.os }})",
+   "status": "completed",
+   "conclusion": "skipped",
+   "created_at": "2026-11-11T23:23:32Z",
+   "started_at": "2026-11-11T23:23:32Z",
+   "completed_at": "2026-11-11T23:23:32Z",
+   "runner_name": null,
+   "labels": []
+  },
+  {
+   "id": 130855887584,
+   "run_id": 43119304487,
+   "name": "native-behind-workerd gateway (${{ matrix.os }})",
+   "status": "completed",
+   "conclusion": "skipped",
+   "created_at": "2026-11-11T23:23:32Z",
+   "started_at": "2026-11-11T23:23:32Z",
+   "completed_at": "2026-11-11T23:23:32Z",
+   "runner_name": null,
+   "labels": []
+  },
+  {
+   "id": 130855887732,
+   "run_id": 43119304487,
+   "name": "staged plugin installation (e2e)",
+   "status": "completed",
+   "conclusion": "skipped",
+   "created_at": "2026-11-11T23:23:32Z",
+   "started_at": "2026-11-11T23:23:32Z",
+   "completed_at": "2026-11-11T23:23:32Z",
+   "runner_name": null,
+   "labels": [
+    "ubuntu-latest"
+   ]
+  },
+  {
+   "id": 130855887775,
+   "run_id": 43119304487,
+   "name": "windows cluster startup + identity",
+   "status": "completed",
+   "conclusion": "skipped",
+   "created_at": "2026-11-11T23:23:32Z",
+   "started_at": "2026-11-11T23:23:32Z",
+   "completed_at": "2026-11-11T23:23:32Z",
+   "runner_name": null,
+   "labels": [
+    "windows-latest"
+   ]
+  },
+  {
+   "id": 130855888129,
+   "run_id": 43119304487,
+   "name": "macOS (sandbox, gateway, tray)",
+   "status": "completed",
+   "conclusion": "skipped",
+   "created_at": "2026-11-11T23:23:32Z",
+   "started_at": "2026-11-11T23:23:32Z",
+   "completed_at": "2026-11-11T23:23:32Z",
+   "runner_name": null,
+   "labels": [
+    "macos-latest"
+   ]
+  },
+  {
+   "id": 130855363954,
+   "run_id": 43119304487,
+   "name": "site \u00b7 lane 5",
+   "status": "completed",
+   "conclusion": "success",
+   "created_at": "2026-11-11T23:22:21Z",
+   "started_at": "2026-11-11T23:22:24Z",
+   "completed_at": "2026-11-11T23:23:32Z",
+   "runner_name": "GitHub Actions 1000062012",
+   "labels": [
+    "ubuntu-latest"
+   ]
+  }
+ ]
+}
