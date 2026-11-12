@@ -138,6 +138,7 @@ export type {
 export type {
   BookclerkEnv,
   EventPublisherBinding,
+  EventReadOptions,
   JsonObject,
   KvListKeyBinding,
   KvListOptionsBinding,
@@ -235,6 +236,8 @@ export {
   WriteChunksError,
   writeChunksOperationId,
 } from "./db-execute.js";
+export { scanPage } from "./scan-page.js";
+export type { FetchStorePage, StorePage } from "./scan-page.js";
 export { decodeDbValue, encodeDbValue, parseDbValue } from "./db-value.js";
 export type { DbType, DbValue } from "./db-value.js";
 export type {

@@ -1531,6 +1531,7 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
         "webauthn_challenges",
         "oidc_rp_states",
         "user_title_state",
+        "member_account_rules",
     ] {
         let mut p = vec![j_i64(user_id)];
         p.extend(allow_p.clone());

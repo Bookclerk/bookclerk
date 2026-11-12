@@ -523,6 +523,12 @@ pub(crate) fn insert_candidate(
                 return Some(key.clone());
             }
         }
+        // Editions in two different known languages are different
+        // expressions even when their titles and authors match, and the
+        // language filter must be able to keep one and drop the other.
+        if languages_differ(c.language.as_deref(), existing.language.as_deref()) {
+            return None;
+        }
         if identities_match(
             WorkIdentity::new(
                 c.asin.as_deref(),
@@ -555,13 +561,62 @@ pub(crate) fn insert_candidate(
             existing.source = c.source.clone();
             existing.product_id = c.product_id.clone();
         }
-        let new_key = candidate_map_key(&existing);
-        map.insert(new_key, existing);
+        insert_keyed(map, existing);
         return;
     }
 
-    let key = candidate_map_key(&c);
+    insert_keyed(map, c);
+}
+
+/// Inserts `c` under its map key, kept apart from a different-language
+/// edition already stored under the same key.
+///
+/// A soft key names only the title and authors, so an edition kept apart
+/// for its language would otherwise replace the other one. Both a new
+/// candidate and a merged one are reinserted through here, so a later hit
+/// for the qualified edition never falls back to the bare key.
+///
+/// # Arguments
+///
+/// * `map` - Candidates by key; `c` must not be in it.
+/// * `c` - The candidate to store.
+fn insert_keyed(map: &mut HashMap<String, StorefrontCandidate>, c: StorefrontCandidate) {
+    let mut key = candidate_map_key(&c);
+    if map
+        .get(&key)
+        .is_some_and(|other| languages_differ(c.language.as_deref(), other.language.as_deref()))
+    {
+        if let Some(language) = c
+            .language
+            .as_deref()
+            .and_then(bookclerk_source::normalize_language)
+        {
+            key = format!("{key}|lang:{language}");
+        }
+    }
     map.insert(key, c);
+}
+
+/// Whether two candidates' languages are both known and name different
+/// languages.
+///
+/// # Arguments
+///
+/// * `a`, `b` - The candidates' raw language values; an absent value or
+///   one [`bookclerk_source::normalize_language`] does not recognize counts
+///   as unknown.
+///
+/// # Returns
+///
+/// `true` only when both normalize and the results differ.
+fn languages_differ(a: Option<&str>, b: Option<&str>) -> bool {
+    match (
+        a.and_then(bookclerk_source::normalize_language),
+        b.and_then(bookclerk_source::normalize_language),
+    ) {
+        (Some(a), Some(b)) => a != b,
+        _ => false,
+    }
 }
 
 /// Pick local seed books for storefront expansion (finished / high-rated first).
@@ -794,5 +849,58 @@ mod tests {
         assert_eq!(c.asin.as_deref(), Some("B00HAIL"));
         assert_eq!(c.isbn.as_deref(), Some("9781234567890"));
         assert_eq!(c.store_editions.len(), 3);
+    }
+
+    #[test]
+    fn editions_in_different_languages_stay_separate() {
+        let edition = |product_id: &str, language: Option<&str>| StorefrontCandidate {
+            source: "chirp".into(),
+            product_id: product_id.into(),
+            title: "Dune".into(),
+            authors: Some("Frank Herbert".into()),
+            narrators: None,
+            series: None,
+            series_index: None,
+            asin: None,
+            isbn: None,
+            cover_url: None,
+            seed_categories: None,
+            origin: "chirp search".into(),
+            seed_title: None,
+            starter_genre: None,
+            store_editions: Vec::new(),
+            subtitle: None,
+            description: None,
+            publisher: None,
+            length_minutes: None,
+            published_at: None,
+            categories: None,
+            language: language.map(str::to_string),
+            price_cents: None,
+            currency: None,
+            price_label: None,
+            rating_overall: None,
+            rating_count: None,
+            is_abridged: None,
+            store_rank: None,
+            work_id: None,
+        };
+        let none = HashSet::new();
+        let mut map = HashMap::new();
+        for c in [
+            edition("en", Some("English")),
+            edition("es", Some("Spanish")),
+            edition("es-2", Some("Spanish")),
+            edition("unknown", None),
+        ] {
+            insert_candidate(&mut map, c, &none, &none, &none);
+        }
+        // The Spanish and English editions stay apart, a second Spanish hit
+        // merges into the Spanish one without displacing the English one,
+        // and the one with no language still merges into a match.
+        assert_eq!(map.len(), 2, "{:?}", map.keys());
+        let languages: HashSet<Option<String>> = map.values().map(|c| c.language.clone()).collect();
+        assert!(languages.contains(&Some("English".into())));
+        assert!(languages.contains(&Some("Spanish".into())));
     }
 }

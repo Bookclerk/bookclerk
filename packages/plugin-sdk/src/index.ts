@@ -65,6 +65,8 @@ export {
   FEATURE_STREAMS,
   FEATURE_STORAGE_COPY,
 } from "./plugin.js";
+export { scanPage } from "./scan-page.js";
+export type { FetchStorePage, StorePage } from "./scan-page.js";
 export { decodeDbValue, encodeDbValue, parseDbValue } from "./db-value.js";
 export type { DbType, DbValue } from "./db-value.js";
 export { limitExceededMessage, parseLimitExceeded } from "./errors.js";
@@ -189,6 +191,7 @@ export { MAX_CHECKPOINT_BYTES } from "./abi.js";
 export type {
   BookclerkEnv,
   EventPublisherBinding,
+  EventReadOptions,
   JsonObject,
   KvListKeyBinding,
   KvListOptionsBinding,

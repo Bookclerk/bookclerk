@@ -39,12 +39,29 @@ export const PAGE_CSP = [
 export const TURNSTILE_SCRIPT =
   "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=bookclerkDemoTurnstile";
 
-/** Headers every Worker page and proxied response carries. */
+/**
+ * Headers every Worker response, redirect and proxied response carries.
+ *
+ * The cross-origin headers close the demo to other origins: no other site
+ * may embed its files (CORP), share a browsing context group with it (COOP),
+ * or read it from script, since no `Access-Control-Allow-Origin` is ever sent.
+ * COEP holds the demo's own pages to resources that opt in; Turnstile's
+ * script and challenge frame and the Web Analytics beacon do.
+ * `X-XSS-Protection: 0` turns off old browsers' XSS filter, which could leak
+ * page content; PAGE_CSP is what stops injected script.
+ * public/_headers gives the files under /_demo/ the same set.
+ */
 export const SECURITY_HEADERS = Object.freeze({
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
   "Referrer-Policy": "same-origin",
   "Strict-Transport-Security": "max-age=31536000",
+  "Cross-Origin-Resource-Policy": "same-origin",
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Embedder-Policy": "require-corp",
+  "Origin-Agent-Cluster": "?1",
+  "X-Permitted-Cross-Domain-Policies": "none",
+  "X-XSS-Protection": "0",
 });
 
 /**

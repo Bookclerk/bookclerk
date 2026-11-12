@@ -30,8 +30,12 @@ You might add a branch when:
    **Settings → Branches** page, and confirm.
 5. Name the branch and choose **Sign in**. Your browser goes to the
    library.
-6. Sign in there as yourself and choose **Allow**.
-7. You are back on the branch, which now says it is connected.
+6. Sign in there as yourself. To have your store connections on the
+   branch too, tick **Bring my store connections to this branch** (see
+   [Your store connections](#your-store-connections)). Then choose
+   **Allow**.
+7. You are back on the branch, which now says it is connected, and how
+   many store connections it added.
 
 ### Join with an invite
 
@@ -43,6 +47,24 @@ invite instead:
 2. In step 3 above, you use the **I have an invite** tab.
 
 An invite works once and expires, after a day by default.
+
+## Your store connections
+
+Your store accounts can follow you to the branch, so you don't sign in to
+each store again there. On the library's **Allow** page, tick **Bring my
+store connections to this branch**. It is off unless you tick it.
+
+- Only stores that let one sign-in be used in several places travel, such
+  as Libro.fm, Chirp and GraphicAudio. The page lists which of yours will.
+- A store that keeps one sign-in, such as Audible, stays on the library.
+  Connect it on the branch yourself if you want it there.
+- On the branch, the connections are added for its owner. An account
+  someone else already connected there is left as it is.
+- The branch's operator decides whether you may connect store accounts
+  there at all. If they turned that off for you, nothing is added.
+
+Disconnecting an account on the branch doesn't disconnect it on the
+library, and the other way round.
 
 ## Approve the library's plugins
 

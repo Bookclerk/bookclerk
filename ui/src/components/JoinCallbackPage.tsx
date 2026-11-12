@@ -3,6 +3,7 @@ import { JoinShell } from "@/components/JoinShell";
 import { Button } from "@/components/ui/button";
 import { isApiError } from "@/lib/api";
 import {
+  broughtConnectionsSummary,
   finishJoin,
   isClerkJoined,
   joinErrorMessage,
@@ -12,7 +13,8 @@ import {
 
 type Phase =
   | { kind: "working" }
-  | { kind: "connected"; library: string; running: boolean }
+  /** `connections`: what happened to the store connections the person brought, if any. */
+  | { kind: "connected"; library: string; running: boolean; connections: string | null }
   | { kind: "clerk"; library: string; wrapped: boolean }
   /** `retry`: the daemon kept the sign-in, so the same code can be sent again. */
   | { kind: "failed"; message: string; retry: boolean };
@@ -61,6 +63,7 @@ export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
                 kind: "connected",
                 library: joined.library_name || joined.cluster.owner_origin,
                 running: joined.running,
+                connections: broughtConnectionsSummary(joined.connections),
               },
         ),
       )
@@ -166,6 +169,7 @@ export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
         </>
       }
     >
+      {phase.connections ? <p className="text-sm text-ink/75">{phase.connections}</p> : null}
       <Button type="button" onClick={onOpenLibrary}>
         Review plugin requests
       </Button>

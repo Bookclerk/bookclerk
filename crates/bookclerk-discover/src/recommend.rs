@@ -393,7 +393,8 @@ pub async fn recommend(
     registry: &SourceRegistry,
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
-    let mut recs = recommend_all(library, registry, opts).await?;
+    let books = library.list_books(None).await?;
+    let mut recs = recommend_all(library, registry, &books, opts).await?;
     recs.truncate(opts.limit);
     Ok(recs)
 }
@@ -418,8 +419,9 @@ pub async fn recommend_feed(
     registry: &SourceRegistry,
     opts: &RecommendOptions,
 ) -> Result<crate::shelves::DiscoverFeed> {
-    let recs = recommend_all(library, registry, opts).await?;
+    // One library read serves both the candidates and the shelf taste.
     let books = library.list_books(None).await?;
+    let recs = recommend_all(library, registry, &books, opts).await?;
     let listening = load_listening(library, opts).await?;
     let taste = shelf_taste(&books, &TasteWeights::new(), &listening);
     Ok(feed_from_recommendations(&recs, &taste, opts))
@@ -539,17 +541,18 @@ async fn load_listening(
 }
 
 /// Full scored candidate pool (not truncated) used by flat list + shelves.
+///
+/// `books` is the library as the caller read it, so one call reads it once.
 async fn recommend_all(
     library: &LibraryStore,
     registry: &SourceRegistry,
+    books: &[BookRecord],
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
-    let books = library.list_books(None).await?;
-
-    let (owned_asins, owned_isbns, owned_product_keys) = owned_identity_sets(&books);
+    let (owned_asins, owned_isbns, owned_product_keys) = owned_identity_sets(books);
 
     let listening = load_listening(library, opts).await?;
-    let seeds = select_taste_seeds(&books, &engagement_by_book(&listening));
+    let seeds = select_taste_seeds(books, &engagement_by_book(&listening));
     let mut candidates = Vec::new();
     if opts.fetch_storefront_candidates && !seeds.is_empty() {
         let fetch_opts = CandidateFetchOptions {
@@ -573,7 +576,7 @@ async fn recommend_all(
     rank_candidates(
         library,
         registry,
-        &books,
+        books,
         &TasteWeights::new(),
         &listening,
         candidates,
@@ -664,6 +667,7 @@ pub(crate) async fn rank_candidates(
     candidates: Vec<crate::candidates::StorefrontCandidate>,
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
+    let candidates = retain_reader_languages(candidates, &reader_languages(taste_books));
     let candidates = retain_unowned_works(library, candidates).await?;
     let profile = build_taste_profile(library, taste_books, taste_weights, listening, opts).await?;
     let mut embedder = open_candidate_embedder(opts)?;
@@ -1142,8 +1146,8 @@ async fn library_owns_work(library: &LibraryStore, entry: &GlobalQueueEntry) -> 
 /// identifiers, then the work's identifiers, then the work-level
 /// title-and-author match). A candidate whose work has a held title is
 /// dropped. A sequel that shares
-/// its series' name is its own work and stays. Whether a work is held is
-/// read once per work.
+/// its series' name is its own work and stays. Whether the works are held
+/// is read for all of them at once ([`LibraryStore::book_uuids_for_works`]).
 ///
 /// # Arguments
 ///
@@ -1164,18 +1168,14 @@ pub(crate) async fn retain_unowned_works(
     if candidates.is_empty() {
         return Ok(candidates);
     }
-    let mut held: HashMap<String, bool> = HashMap::new();
-    let mut kept = Vec::with_capacity(candidates.len());
+    // Each candidate's work: a candidate read from the listing pool already
+    // knows it; only a live store hit is resolved here, one at a time.
+    let mut placed = Vec::with_capacity(candidates.len());
     for c in candidates {
-        if c.title.trim().is_empty() {
-            kept.push(c);
-            continue;
-        }
-        // A candidate read from the listing pool already knows its work;
-        // only a live store hit is resolved here.
-        let work_id = match c.work_id.clone() {
-            Some(work_id) => Some(work_id),
-            None => {
+        let work_id = match (&c.work_id, c.title.trim().is_empty()) {
+            (Some(work_id), _) => Some(work_id.clone()),
+            (None, true) => None,
+            (None, false) => {
                 let query = bookclerk_library::TitleQuery {
                     title: &c.title,
                     authors: c.authors.as_deref(),
@@ -1187,23 +1187,76 @@ pub(crate) async fn retain_unowned_works(
                 library.work_for(&query).await?
             }
         };
-        let Some(work_id) = work_id else {
-            kept.push(c);
-            continue;
-        };
-        let owned = match held.get(&work_id) {
-            Some(owned) => *owned,
-            None => {
-                let owned = !library.book_uuids_for_work(&work_id).await?.is_empty();
-                held.insert(work_id, owned);
-                owned
-            }
-        };
-        if !owned {
-            kept.push(c);
-        }
+        placed.push((c, work_id));
     }
-    Ok(kept)
+    // Which of those works the library holds, in one chunked read rather
+    // than one per work: a page of candidates is a few hundred works.
+    let works: Vec<String> = placed
+        .iter()
+        .filter_map(|(_, work_id)| work_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let held = if works.is_empty() {
+        std::collections::BTreeMap::new()
+    } else {
+        library.book_uuids_for_works(&works).await?
+    };
+    Ok(placed
+        .into_iter()
+        .filter(|(_, work_id)| work_id.as_ref().is_none_or(|w| !held.contains_key(w)))
+        .map(|(c, _)| c)
+        .collect())
+}
+
+/// The languages a taste listens in: the normalized language of each taste
+/// book whose language is known, or the default preferred language
+/// ([`bookclerk_source::default_preferred_language`]) when none is.
+///
+/// # Arguments
+///
+/// * `taste_books` - The books the ranking's taste comes from.
+///
+/// # Returns
+///
+/// Normalized language codes (`en`, `es`, …), never empty.
+pub(crate) fn reader_languages(taste_books: &[BookRecord]) -> HashSet<String> {
+    let mut languages: HashSet<String> = taste_books
+        .iter()
+        .filter_map(|b| b.language.as_deref())
+        .filter_map(bookclerk_source::normalize_language)
+        .collect();
+    if languages.is_empty() {
+        languages.insert(bookclerk_source::default_preferred_language().to_owned());
+    }
+    languages
+}
+
+/// Drops candidates in a language the reader does not listen in.
+///
+/// A candidate whose language the store did not give (or gave in a form
+/// [`bookclerk_source::normalize_language`] does not know) is kept, so a
+/// store that leaves the language out loses no titles.
+///
+/// # Arguments
+///
+/// * `candidates` - Storefront candidates, in rank order.
+/// * `languages` - Normalized codes from [`reader_languages`].
+///
+/// # Returns
+///
+/// The candidates in one of `languages` or of unknown language, in order.
+pub(crate) fn retain_reader_languages(
+    mut candidates: Vec<crate::candidates::StorefrontCandidate>,
+    languages: &HashSet<String>,
+) -> Vec<crate::candidates::StorefrontCandidate> {
+    candidates.retain(|c| {
+        c.language
+            .as_deref()
+            .and_then(bookclerk_source::normalize_language)
+            .is_none_or(|code| languages.contains(&code))
+    });
+    candidates
 }
 
 /// Inserts or merges a recommendation when ASIN/ISBN/title identity already exists.
@@ -1716,6 +1769,77 @@ mod tests {
         }
         let audible = recs.iter().find(|r| r.title == "Audible Pick").unwrap();
         assert!(audible.purchase_hints[0].url.is_some(), "{audible:?}");
+    }
+
+    /// Candidates in a language the reader does not listen in leave the
+    /// ranking; those in the reader's language, or of unknown language,
+    /// stay. With no known language in the taste, English is assumed.
+    #[tokio::test]
+    async fn candidates_in_other_languages_are_dropped() {
+        let (store, mut books) = rated_library().await;
+        let candidate = |product_id: &str, language: Option<&str>| {
+            crate::candidates::hit_to_candidate(
+                "chirp",
+                bookclerk_source::CatalogHit {
+                    product_id: product_id.into(),
+                    title: format!("Title {product_id}"),
+                    language: language.map(str::to_owned),
+                    ..Default::default()
+                },
+            )
+        };
+        let pool = || {
+            vec![
+                candidate("english", Some("English")),
+                candidate("spanish", Some("Spanish")),
+                candidate("unknown", None),
+                candidate("unparsed", Some("Klingon dialect")),
+            ]
+        };
+        let opts = RecommendOptions {
+            include_purchase_hints: false,
+            embeddings_enabled: false,
+            ..RecommendOptions::default()
+        };
+        let ranked = |books: Vec<BookRecord>| {
+            let store = &store;
+            let opts = &opts;
+            async move {
+                let mut ids: Vec<String> = rank_candidates(
+                    store,
+                    &SourceRegistry::new(),
+                    &books,
+                    &TasteWeights::new(),
+                    &[],
+                    pool(),
+                    opts,
+                )
+                .await
+                .unwrap()
+                .into_iter()
+                .filter_map(|r| r.candidate_product_id)
+                .collect();
+                ids.sort();
+                ids
+            }
+        };
+        assert_eq!(
+            ranked(books.clone()).await,
+            ["english", "unknown", "unparsed"],
+            "no known language in the taste means English"
+        );
+        books[0].language = Some("es".into());
+        assert_eq!(
+            ranked(books.clone()).await,
+            ["spanish", "unknown", "unparsed"]
+        );
+        let mut english = books[0].clone();
+        english.language = Some("english".into());
+        books.push(english);
+        assert_eq!(
+            ranked(books).await,
+            ["english", "spanish", "unknown", "unparsed"]
+        );
     }
 
     /// A store holding one unfinished book rated 5 by "Ada Author", and its rows.

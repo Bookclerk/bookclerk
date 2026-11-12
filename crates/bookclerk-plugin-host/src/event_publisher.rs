@@ -10,16 +10,96 @@
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
-use bookclerk_library::{LibraryStore, PublishDomainEventOutcome, PublishDomainEventSpec};
-use bookclerk_plugin_abi::{
-    EventPublisher, Invocation, PluginError, PluginEvent, PublishOk, MAX_EVENT_PAYLOAD_BYTES,
+use bookclerk_library::{
+    DomainEventRecord, EventCatalogSubscription, EventStreamRead, EventStreamStart, LibraryStore,
+    PublishDomainEventOutcome, PublishDomainEventSpec,
 };
+use bookclerk_plugin_abi::{
+    validate_event_read_request, DomainEvent, EventCursor, EventPublisher, EventReadPage,
+    EventReadRequest, EventReadStart, Invocation, PluginError, PluginEvent, PublishOk,
+    MAX_EVENT_PAYLOAD_BYTES,
+};
+
+use crate::consent::{canonical_event_filter, GrantedEventConsumer};
+use crate::PluginManifest;
 
 /// Plugin ABI result (the wire error the guest receives).
 type Result<T> = std::result::Result<T, PluginError>;
 
+/// Catalog rows for a manifest's `[[events.consumers]]` declarations, before
+/// consent narrows them.
+#[must_use]
+pub fn manifest_event_subscriptions(manifest: &PluginManifest) -> Vec<EventCatalogSubscription> {
+    manifest
+        .events
+        .consumers
+        .iter()
+        .map(|s| EventCatalogSubscription {
+            event_type: s.event_type.clone(),
+            schema_versions: s.schema_versions.clone(),
+            supports_suspend: s.supports_suspend,
+            resource_class: if s.resource_class.trim().is_empty() {
+                "network".into()
+            } else {
+                s.resource_class.clone()
+            },
+            filter: s.filter.clone().filter(|v| !v.is_null()),
+            queue: String::new(),
+            max_retries: s.max_retries,
+            dead_letter_queue: None,
+            retry_delay_secs: 0,
+            message_retention_secs: s.message_retention_period,
+        })
+        .collect()
+}
+
+/// Keeps the catalog rows an operator grant admits.
+///
+/// A row is admitted when a granted consumer has its type, covers all its
+/// schema versions, and carries the same canonical filter; suspend support
+/// is kept only when both sides allow it.
+#[must_use]
+pub fn granted_event_subscriptions(
+    catalog: &[EventCatalogSubscription],
+    admitted: &BTreeSet<GrantedEventConsumer>,
+) -> Vec<EventCatalogSubscription> {
+    catalog
+        .iter()
+        .filter_map(|s| {
+            let catalog_filter = canonical_event_filter(&s.filter);
+            admitted.iter().find_map(|c| {
+                if c.event_type != s.event_type
+                    || !s
+                        .schema_versions
+                        .iter()
+                        .all(|v| c.schema_versions.contains(v))
+                    || c.filter != catalog_filter
+                {
+                    return None;
+                }
+                let mut row = s.clone();
+                row.supports_suspend = s.supports_suspend && c.supports_suspend;
+                Some(row)
+            })
+        })
+        .collect()
+}
+
+/// What an `EVENTS` binding may read back from the outbox.
+#[derive(Clone, Debug, Default)]
+pub struct EventReaders {
+    /// Consented `[[events.consumers]]` subscriptions (manifest ∩ grant).
+    pub subscriptions: Vec<EventCatalogSubscription>,
+    /// `[events].retention_days`: reads never go further back.
+    pub retention_days: u64,
+    /// Seconds an event must age before a read returns it
+    /// ([`bookclerk_library::EVENT_STREAM_SETTLE_SECS`] in a session), so a
+    /// late-committing publication is never behind a returned cursor.
+    pub settle_secs: u64,
+}
+
 /// Host-owned facts a session needs before it can hand a guest an `EVENTS`
-/// binding: the outbox store plus the producer allowlist.
+/// binding: the outbox store, the producer allowlist and what it may read.
 #[derive(Clone)]
 pub struct EventOutbox {
     /// Library store whose outbox receives the rows.
@@ -28,17 +108,21 @@ pub struct EventOutbox {
     plugin_id: String,
     /// Consented `[[events.producers]]` event types (manifest ∩ grant).
     producers: BTreeSet<String>,
+    /// Consented subscriptions `read` may return.
+    readers: EventReaders,
 }
 
 impl EventOutbox {
-    /// Builds the outbox hook for `plugin_id`, or `None` when no producer is
-    /// both declared and granted (the guest then sees no `EVENTS` binding).
+    /// Builds the outbox hook for `plugin_id`, or `None` when the plugin
+    /// neither publishes a consented producer nor consumes a consented
+    /// subscription (the guest then sees no `EVENTS` binding).
     #[must_use]
     pub fn new(
         store: LibraryStore,
         plugin_id: &str,
         declared: impl IntoIterator<Item = String>,
         granted: &BTreeSet<String>,
+        readers: EventReaders,
     ) -> Option<Self> {
         // Host-emitted types (`book_acquired`) never reach a plugin's
         // publisher, even from a grant recorded before the reservation.
@@ -47,13 +131,22 @@ impl EventOutbox {
             .filter(|event_type| granted.contains(event_type))
             .filter(|event_type| !bookclerk_plugin_manifest::is_host_event_type(event_type))
             .collect();
-        if producers.is_empty() {
+        let readers = EventReaders {
+            subscriptions: readers
+                .subscriptions
+                .into_iter()
+                .filter(|sub| !sub.is_queue())
+                .collect(),
+            ..readers
+        };
+        if producers.is_empty() && readers.subscriptions.is_empty() {
             return None;
         }
         Some(Self {
             store,
             plugin_id: plugin_id.to_string(),
             producers,
+            readers,
         })
     }
 
@@ -65,6 +158,7 @@ impl EventOutbox {
             store: self.store.clone(),
             plugin_id: self.plugin_id.clone(),
             producers: self.producers.clone(),
+            readers: self.readers.clone(),
             account_id: invocation.account_id.clone(),
             correlation_id: invocation.correlation_id.clone(),
             causation_id: invocation.causation_id.clone(),
@@ -81,6 +175,8 @@ pub struct OutboxEventPublisher {
     plugin_id: String,
     /// Consented `[[events.producers]]` event types.
     producers: BTreeSet<String>,
+    /// Consented subscriptions `read` may return.
+    readers: EventReaders,
     /// `Invocation.accountId` stamped on every row.
     account_id: String,
     /// Default `correlationId` when the guest leaves it empty.
@@ -174,6 +270,76 @@ impl EventPublisher for OutboxEventPublisher {
             ))),
         }
     }
+
+    async fn read(&self, request: EventReadRequest) -> Result<EventReadPage> {
+        let consented: BTreeSet<String> = self
+            .readers
+            .subscriptions
+            .iter()
+            .map(|sub| sub.event_type.clone())
+            .collect();
+        let query = validate_event_read_request(&request, &consented)?;
+        let read = EventStreamRead {
+            start: match &query.start {
+                EventReadStart::Oldest => EventStreamStart::Oldest,
+                EventReadStart::Since(since) => EventStreamStart::Since(*since),
+                EventReadStart::After(cursor) => EventStreamStart::After {
+                    created_at: cursor.created_at().to_string(),
+                    id: cursor.id().to_string(),
+                },
+            },
+            subscriptions: self
+                .readers
+                .subscriptions
+                .iter()
+                .filter(|sub| query.types.contains(&sub.event_type))
+                .cloned()
+                .collect(),
+            account_id: (!self.account_id.is_empty()).then(|| self.account_id.clone()),
+            plugin_key: self.plugin_id.clone(),
+            retention_days: self.readers.retention_days,
+            settle_secs: self.readers.settle_secs,
+            limit: usize::try_from(query.limit).unwrap_or(usize::MAX),
+            now: chrono::Utc::now(),
+        };
+        let page = self
+            .store
+            .read_event_stream(&read)
+            .await
+            .map_err(|err| PluginError::unavailable(format!("outbox read failed: {err}")))?;
+        let cursor = match &page.last_scanned {
+            Some((created_at, id)) => EventCursor::new(created_at.clone(), id.clone())
+                .map_err(|_| PluginError::internal("outbox row has no valid position"))?
+                .encode(),
+            None => request.after,
+        };
+        Ok(EventReadPage {
+            events: page.events.iter().map(read_event).collect(),
+            cursor,
+            more: page.more,
+            expired_event_ids: page.expired_event_ids,
+            truncated: page.truncated,
+        })
+    }
+}
+
+/// Maps an outbox row onto the ABI event a read returns: not a delivery, so
+/// `deliveryAttempt` is zero and the event id is the deduplication key.
+fn read_event(event: &DomainEventRecord) -> DomainEvent {
+    DomainEvent {
+        event_id: event.id.clone(),
+        event_type: event.event_type.clone(),
+        schema_version: u32::try_from(event.schema_version).unwrap_or(1),
+        occurred_at_unix_ms: u64::try_from(event.occurred_at.timestamp_millis()).unwrap_or(0),
+        account_id: event.account_id.clone(),
+        source: event.source.clone(),
+        correlation_id: event.correlation_id.clone(),
+        causation_id: event.causation_id.clone(),
+        deduplication_key: event.id.clone(),
+        delivery_attempt: 0,
+        payload: event.payload.as_bytes().to_vec(),
+        ..DomainEvent::default()
+    }
 }
 
 #[cfg(test)]
@@ -211,6 +377,7 @@ mod tests {
             "demo",
             declared.iter().map(|t| (*t).to_string()),
             &granted(grant),
+            EventReaders::default(),
         )
         .map(|outbox| outbox.publisher(&invocation("acct")))
     }
@@ -345,6 +512,7 @@ mod tests {
             "demo",
             vec!["demo_pinged".to_string()],
             &granted(&["demo_pinged"]),
+            EventReaders::default(),
         )
         .expect("outbox");
         let publisher = outbox.publisher(&invocation("acct"));
@@ -384,5 +552,176 @@ mod tests {
         );
         assert_ne!(fresh.event_id, first.event_id);
         assert_eq!(store.list_domain_events(10).await.expect("list").len(), 2);
+    }
+
+    /// A reader-only outbox for `reader` consenting to `demo_pinged`.
+    fn reader_outbox(store: &LibraryStore) -> EventOutbox {
+        EventOutbox::new(
+            store.clone(),
+            "reader",
+            Vec::<String>::new(),
+            &BTreeSet::new(),
+            EventReaders {
+                subscriptions: vec![
+                    EventCatalogSubscription::new("demo_pinged", vec![1]),
+                    EventCatalogSubscription::queue("jobs"),
+                ],
+                retention_days: 7,
+                // Reads right after publishing; production waits
+                // `EVENT_STREAM_SETTLE_SECS`.
+                settle_secs: 0,
+            },
+        )
+        .expect("a consented consumer alone yields a binding")
+    }
+
+    /// Publishes `count` `event_type` rows from `producer` under `account`.
+    async fn seed(store: &LibraryStore, event_type: &str, account: &str, count: usize) {
+        let outbox = EventOutbox::new(
+            store.clone(),
+            "producer",
+            vec![event_type.to_string()],
+            &granted(&[event_type]),
+            EventReaders::default(),
+        )
+        .expect("producer");
+        let publisher = outbox.publisher(&invocation(account));
+        for n in 0..count {
+            publisher
+                .publish(PluginEvent {
+                    event_type: event_type.into(),
+                    payload: format!(r#"{{"n":{n}}}"#).into_bytes(),
+                    ..PluginEvent::default()
+                })
+                .await
+                .expect("publish");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reader_only_binding_reads_but_cannot_publish() {
+        let store = memory_store().await;
+        seed(&store, "demo_pinged", "acct", 2).await;
+        seed(&store, "demo_other", "acct", 1).await;
+        let reader = reader_outbox(&store).publisher(&invocation(""));
+
+        let page = reader
+            .read(EventReadRequest::default())
+            .await
+            .expect("read");
+        assert_eq!(page.events.len(), 2, "only the consented type");
+        assert!(!page.more);
+        assert!(!page.truncated);
+        assert!(page.expired_event_ids.is_empty());
+        for event in &page.events {
+            assert_eq!(event.event_type, "demo_pinged");
+            assert_eq!(event.source, "producer");
+            assert_eq!(event.delivery_attempt, 0);
+            assert_eq!(event.deduplication_key, event.event_id);
+        }
+        assert!(EventCursor::decode(&page.cursor).is_ok());
+
+        let err = reader
+            .publish(PluginEvent {
+                event_type: "demo_pinged".into(),
+                ..PluginEvent::default()
+            })
+            .await
+            .expect_err("a consumer is not a producer");
+        assert_eq!(err.code, PluginErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn read_refuses_types_outside_the_consent() {
+        let store = memory_store().await;
+        let reader = reader_outbox(&store).publisher(&invocation(""));
+        for event_type in ["demo_other", "jobs", ""] {
+            let err = reader
+                .read(EventReadRequest {
+                    types: vec![event_type.into()],
+                    ..EventReadRequest::default()
+                })
+                .await
+                .expect_err("not consented");
+            assert_ne!(err.code, PluginErrorCode::Unavailable, "{event_type:?}");
+        }
+        let err = reader
+            .read(EventReadRequest {
+                types: vec!["demo_other".into()],
+                ..EventReadRequest::default()
+            })
+            .await
+            .expect_err("not consented");
+        assert_eq!(err.code, PluginErrorCode::Forbidden);
+    }
+
+    #[tokio::test]
+    async fn an_account_scoped_read_sees_only_its_account() {
+        let store = memory_store().await;
+        seed(&store, "demo_pinged", "acct-a", 2).await;
+        seed(&store, "demo_pinged", "acct-b", 3).await;
+        let outbox = reader_outbox(&store);
+        let read = |account: &'static str| {
+            let reader = outbox.publisher(&invocation(account));
+            async move {
+                reader
+                    .read(EventReadRequest::default())
+                    .await
+                    .expect("read")
+                    .events
+            }
+        };
+        let a = read("acct-a").await;
+        assert_eq!(a.len(), 2);
+        assert!(a.iter().all(|e| e.account_id == "acct-a"));
+        assert_eq!(read("acct-b").await.len(), 3);
+        assert_eq!(read("").await.len(), 5, "an unscoped invocation sees all");
+    }
+
+    #[tokio::test]
+    async fn the_cursor_continues_a_read_without_repeats() {
+        let store = memory_store().await;
+        seed(&store, "demo_pinged", "acct", 5).await;
+        let reader = reader_outbox(&store).publisher(&invocation(""));
+        let mut seen = Vec::new();
+        let mut after = String::new();
+        loop {
+            let page = reader
+                .read(EventReadRequest {
+                    after: after.clone(),
+                    limit: 2,
+                    ..EventReadRequest::default()
+                })
+                .await
+                .expect("read");
+            assert!(page.events.len() <= 2);
+            seen.extend(page.events.into_iter().map(|e| e.event_id));
+            after = page.cursor;
+            if !page.more {
+                break;
+            }
+        }
+        assert_eq!(seen.len(), 5);
+        let unique: BTreeSet<_> = seen.iter().collect();
+        assert_eq!(unique.len(), 5);
+
+        let tail = reader
+            .read(EventReadRequest {
+                after: after.clone(),
+                ..EventReadRequest::default()
+            })
+            .await
+            .expect("read");
+        assert!(tail.events.is_empty());
+        assert_eq!(tail.cursor, after, "an empty page keeps the position");
+
+        let err = reader
+            .read(EventReadRequest {
+                after: "v1.zz".into(),
+                ..EventReadRequest::default()
+            })
+            .await
+            .expect_err("bad cursor");
+        assert_eq!(err.code, PluginErrorCode::InvalidCursor);
     }
 }

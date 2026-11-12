@@ -209,6 +209,8 @@ mod tests {
         known: Vec<CatalogHit>,
         /// When true every lookup fails, as a broken store would.
         fails: bool,
+        /// When true every lookup takes longer than `EDITION_LOOKUP_TIMEOUT`.
+        slow: bool,
         /// Product ids it was asked about.
         calls: Arc<Mutex<Vec<String>>>,
     }
@@ -272,6 +274,9 @@ mod tests {
             product_id: &str,
         ) -> bookclerk_source::Result<Option<CatalogHit>> {
             self.calls.lock().unwrap().push(product_id.to_string());
+            if self.slow {
+                tokio::time::sleep(EDITION_LOOKUP_TIMEOUT * 2).await;
+            }
             if self.fails {
                 return Err(bookclerk_source::SourceError::api("store is down"));
             }
@@ -312,6 +317,7 @@ mod tests {
             id,
             known,
             fails,
+            slow: false,
             calls: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -385,5 +391,70 @@ mod tests {
         let pooled = pool_wish_editions(&library, &registry, &editions, &[], "us").await;
         assert!(pooled.is_empty(), "the store knows none of them");
         assert_eq!(logs[0].lock().unwrap().len(), MAX_WISH_EDITIONS);
+    }
+
+    /// A store that does not answer in time leaves its edition out, and the
+    /// other stores' answers are still pooled.
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_store_is_left_out_of_the_wish() {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let mut slow = store("chirp", vec![hit("C1", "Dune", 1599)], false);
+        slow.slow = true;
+        let (registry, logs) = registry(vec![
+            store("libro", vec![hit("L1", "Dune", 1999)], false),
+            slow,
+        ]);
+        let editions = vec![
+            (String::from("chirp"), String::from("C1")),
+            (String::from("libro"), String::from("L1")),
+        ];
+        let pooled = pool_wish_editions(&library, &registry, &editions, &[], "us").await;
+        assert_eq!(
+            *logs[1].lock().unwrap(),
+            vec!["C1"],
+            "the slow store was asked"
+        );
+        let named: Vec<_> = pooled.iter().map(|p| p.source.as_str()).collect();
+        assert_eq!(named, vec!["libro"]);
+    }
+
+    /// A hint without a member price adds no member offer, and a hint for
+    /// another edition does not price this one.
+    #[tokio::test]
+    async fn only_a_quoted_member_price_reaches_the_pool() {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let (registry, _logs) = registry(vec![store(
+            "libro",
+            vec![hit("L1", "Dune", 1999), hit("L2", "Emma", 999)],
+            false,
+        )]);
+        let hints = vec![
+            PurchaseHint {
+                source: String::from("libro"),
+                product_id: String::from("L1"),
+                ..PurchaseHint::default()
+            },
+            PurchaseHint {
+                source: String::from("libro"),
+                product_id: String::from("OTHER"),
+                member_price_cents: Some(100),
+                ..PurchaseHint::default()
+            },
+        ];
+        let editions = vec![
+            (String::from("libro"), String::from("L1")),
+            (String::from("libro"), String::from("L2")),
+        ];
+        let pooled = pool_wish_editions(&library, &registry, &editions, &hints, "us").await;
+        assert_eq!(pooled.len(), 2);
+        let ids: Vec<String> = pooled.iter().map(|p| p.listing_id.clone()).collect();
+        for record in library.catalog_listings(&ids).await.unwrap() {
+            assert!(record.offer(OfferAudience::Member).is_none());
+            assert!(record.offer(OfferAudience::NonMember).is_some());
+        }
     }
 }

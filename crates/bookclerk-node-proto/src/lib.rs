@@ -56,11 +56,15 @@
 //! [`OAuthEnrollRequest`]). An Owner of the library may instead let the
 //! install join as a clerk (an owner node, [`ConnectionType::Clerk`]): its
 //! redeem answer carries a [`ClerkBootstrap`] sealed to the node's box key.
+//! A branch's redeem answer may carry the signing-in user's own store
+//! accounts as an [`AccountBundle`] sealed the same way, when the user
+//! chose to bring them.
 //!
 //! This crate is pure: no I/O, no clock, no randomness. The daemon (owner)
 //! and the host client share it so both sides sign and check the same
 //! bytes.
 
+mod accounts;
 mod catalog;
 mod clerk;
 mod frames;
@@ -70,6 +74,13 @@ mod lookup;
 mod sealed;
 mod signature;
 
+pub use accounts::{
+    account_bundle_aad, check_account_bundle, open_account_bundle, parse_account_bundle,
+    seal_account_bundle, AccountBundle, CarriedAccount, CarriedSecret, ACCOUNT_BUNDLE_AAD_DOMAIN,
+    ACCOUNT_BUNDLE_VERSION, MAX_ACCOUNT_BUNDLE_BYTES, MAX_ACCOUNT_SECRETS, MAX_BUNDLE_ACCOUNTS,
+    MAX_CARRIED_ACCOUNT_ID_BYTES, MAX_CARRIED_FIELD_BYTES, MAX_CARRIED_PLUGIN_KEY_BYTES,
+    MAX_CARRIED_SECRET_BYTES,
+};
 pub use catalog::{
     is_ancestry, is_cluster_id, is_product_id, is_store_id, CatalogFile, CatalogMetadata,
     CatalogRef, CatalogTitle, CATALOG_ITEM, MAX_ANCESTRY, MAX_CATALOG_BATCH_TITLES,

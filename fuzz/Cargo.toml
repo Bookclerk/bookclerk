@@ -16,6 +16,8 @@ httparse = "1"
 serde_json = "1"
 # Determinism checks in the libro_catalog oracle serialize the records.
 serde = "1"
+# The event_read oracle restates the cursor time rule.
+chrono = "0.4"
 bookclerk-plugin-abi = { path = "../crates/bookclerk-plugin-abi", features = ["host"] }
 bookclerk-plugin-manifest = { path = "../crates/bookclerk-plugin-manifest" }
 bookclerk-db-exec = { path = "../crates/bookclerk-db-exec" }
@@ -27,6 +29,7 @@ bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
 bookclerk-config = { path = "../crates/bookclerk-config" }
 bookclerk-plugin-source-libro = { path = "../crates/bookclerk-plugins/optional/source-libro" }
+bookclerk-plugin-source-graphicaudio = { path = "../crates/bookclerk-plugins/optional/source-graphicaudio" }
 # plan_authz drives the scan and acquire planners over an in-memory library.
 bookclerk-library = { path = "../crates/bookclerk-library" }
 bookclerk-plugin-database-sqlite = { path = "../crates/bookclerk-plugins/platform/database-sqlite", features = ["host-helpers"] }
@@ -123,6 +126,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "event_read"
+path = "fuzz_targets/event_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "abi_decode"
 path = "fuzz_targets/abi_decode.rs"
 test = false
@@ -172,6 +182,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "node_account_bundle"
+path = "fuzz_targets/node_account_bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "cover_process"
 path = "fuzz_targets/cover_process.rs"
 test = false
@@ -209,6 +226,13 @@ bench = false
 [[bin]]
 name = "libro_catalog"
 path = "fuzz_targets/libro_catalog.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graphicaudio_catalog"
+path = "fuzz_targets/graphicaudio_catalog.rs"
 test = false
 doc = false
 bench = false

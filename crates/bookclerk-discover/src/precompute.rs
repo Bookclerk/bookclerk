@@ -137,6 +137,33 @@ pub struct SubjectTaste {
     pub wish_titles: Vec<String>,
     /// Lowercase storefront ids the subject has an account with.
     pub linked_sources: HashSet<String>,
+    /// Identifiers of every title the library holds, read with the taste so
+    /// a subject job reads the library once.
+    pub owned: OwnedIdentities,
+}
+
+/// Identifiers of every title the library holds, used to keep titles the
+/// library already has out of a subject's candidates and feed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OwnedIdentities {
+    /// Upper-cased ASINs.
+    pub asins: HashSet<String>,
+    /// Canonical ISBN-13s.
+    pub isbns: HashSet<String>,
+    /// `source:product_id` keys and bare product ids.
+    pub products: HashSet<String>,
+}
+
+impl OwnedIdentities {
+    /// The identifiers of `books`.
+    fn of(books: &[BookRecord]) -> Self {
+        let (asins, isbns, products) = owned_identity_sets(books);
+        Self {
+            asins,
+            isbns,
+            products,
+        }
+    }
 }
 
 impl SubjectTaste {
@@ -145,6 +172,7 @@ impl SubjectTaste {
         books: Vec<BookRecord>,
         listening: Vec<ListeningSignal>,
         linked_sources: HashSet<String>,
+        owned: OwnedIdentities,
     ) -> Self {
         Self {
             scope: SeedScope::Household,
@@ -154,6 +182,7 @@ impl SubjectTaste {
             wishlist: Vec::new(),
             wish_titles: Vec::new(),
             linked_sources,
+            owned,
         }
     }
 
@@ -202,6 +231,7 @@ pub async fn load_subject_taste(
     opts: &RecommendOptions,
 ) -> Result<SubjectTaste> {
     let household = library.list_books(None).await?;
+    let owned = OwnedIdentities::of(&household);
     let all_listening = if opts.include_listening {
         let mut rows = library.list_listening_progress(None).await?;
         if !opts.listening_providers.is_empty() {
@@ -233,7 +263,12 @@ pub async fn load_subject_taste(
             .into_iter()
             .map(|a| a.source.to_ascii_lowercase())
             .collect();
-        return Ok(SubjectTaste::household(household, all_listening, linked));
+        return Ok(SubjectTaste::household(
+            household,
+            all_listening,
+            linked,
+            owned,
+        ));
     }
 
     let identity_ids: HashSet<i64> = identities.iter().map(|i| i.id).collect();
@@ -291,6 +326,7 @@ pub async fn load_subject_taste(
             household,
             all_listening,
             linked_sources,
+            owned,
         ));
     }
     // `own` already holds every book they listened to, so it is their signal.
@@ -320,6 +356,7 @@ pub async fn load_subject_taste(
         wishlist,
         wish_titles,
         linked_sources,
+        owned,
     })
 }
 
@@ -366,8 +403,7 @@ pub async fn fetch_subject_candidates(
     opts: &RecommendOptions,
 ) -> Result<FetchReport> {
     let taste = load_subject_taste(library, subject, opts).await?;
-    let household = library.list_books(None).await?;
-    let owned = owned_identity_sets(&household);
+    let owned = &taste.owned;
     let book_seeds = taste.book_seeds(opts.storefront_seed_limit, &opts.region);
     let wish_seeds: Vec<SeedTitle> = taste
         .wishlist
@@ -449,7 +485,9 @@ pub async fn fetch_subject_candidates(
         let mut rows: Vec<CandidateRef> = fetched
             .candidates
             .into_iter()
-            .filter(|p| !candidate_is_owned(&p.candidate, &owned.0, &owned.1, &owned.2))
+            .filter(|p| {
+                !candidate_is_owned(&p.candidate, &owned.asins, &owned.isbns, &owned.products)
+            })
             .filter(|p| seen.insert(p.listing_id.clone()))
             .map(|p| CandidateRef {
                 listing_id: p.listing_id,
@@ -976,8 +1014,11 @@ pub async fn rank_subject_feed(
     opts: &RecommendOptions,
 ) -> Result<RankReport> {
     let taste = load_subject_taste(library, subject, opts).await?;
-    let household = library.list_books(None).await?;
-    let (asins, isbns, products) = owned_identity_sets(&household);
+    let OwnedIdentities {
+        asins,
+        isbns,
+        products,
+    } = &taste.owned;
     // With storefront candidates turned off, stored rows from before stay
     // out of the feed; rows fetched for another seed scope (before the
     // subject had taste of their own, or after they lost it) do too.
@@ -996,9 +1037,9 @@ pub async fn rank_subject_feed(
         insert_candidate(
             &mut map,
             candidate_from_stored(row, now),
-            &asins,
-            &isbns,
-            &products,
+            asins,
+            isbns,
+            products,
         );
     }
     let mut rank_opts = opts.clone();

@@ -502,3 +502,42 @@ async fn search_with_a_zero_limit_returns_the_default_page() {
     assert_eq!(hits.len(), DEFAULT_CATALOG_SEARCH_LIMIT);
     assert_eq!(hits[0].title, "Title 0");
 }
+
+/// A catalog detail lookup reads the product page into a full record; a
+/// page for another product, a missing page, or an id that is not numeric
+/// gives none.
+#[tokio::test]
+async fn catalog_detail_reads_the_product_page() {
+    let server = MockServer::start().await;
+    let page = include_str!("fixtures/product-1716.html");
+    Mock::given(method("GET"))
+        .and(path("/catalog/product/view/id/1716"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(page))
+        .mount(&server)
+        .await;
+    // A redirect target that is another product's page.
+    Mock::given(method("GET"))
+        .and(path("/catalog/product/view/id/42"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(page))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/catalog/product/view/id/7"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let source = GraphicAudioSource::new().with_store_url(server.uri());
+
+    let hit = source.catalog_detail(" 1716 ").await.unwrap().unwrap();
+    assert_eq!(hit.product_id, "1716");
+    assert_eq!(hit.authors().as_deref(), Some("Brandon Sanderson"));
+    assert_eq!(hit.isbn().as_deref(), Some("9781648812989"));
+    assert!(hit.description.is_some());
+
+    assert!(source.catalog_detail("42").await.unwrap().is_none());
+    assert!(source.catalog_detail("7").await.is_err());
+    assert!(source.catalog_detail("../admin").await.unwrap().is_none());
+    assert!(source.catalog_detail("").await.unwrap().is_none());
+    let asked = server.received_requests().await.unwrap();
+    assert_eq!(asked.len(), 3, "only numeric ids reach the store");
+}

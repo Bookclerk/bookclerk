@@ -67,6 +67,48 @@ export default class EventPlugin extends BookclerkEntrypoint {
           }
           break;
         }
+        case "test_read": {
+          // Read past events through the granted `EVENTS` binding and report
+          // the page (payloads decoded) as the reject reason.
+          try {
+            const page = await this.env.EVENTS.read({
+              after: "v1.start",
+              types: ["fixture_pinged"],
+              limit: 2,
+            });
+            msg.reject(
+              JSON.stringify({
+                ...page,
+                events: page.events.map((e) => ({
+                  id: e.eventId,
+                  attempt: e.deliveryAttempt,
+                  payload: new TextDecoder().decode(e.payload),
+                })),
+              }),
+            );
+          } catch (err) {
+            msg.reject(`read failed: ${err.code ?? "unknown"}: ${err.message}`);
+          }
+          break;
+        }
+        case "test_read_since": {
+          try {
+            const page = await this.env.EVENTS.read({ since: new Date(5000) });
+            msg.reject(`read ok: ${page.events.length}`);
+          } catch (err) {
+            msg.reject(`read failed: ${err.code ?? "unknown"}`);
+          }
+          break;
+        }
+        case "test_read_forbidden": {
+          try {
+            await this.env.EVENTS.read({ types: ["not_granted"] });
+            msg.reject("unexpected success");
+          } catch (err) {
+            msg.reject(`read failed: ${err.code ?? "unknown"}`);
+          }
+          break;
+        }
         case "test_publish_forbidden": {
           try {
             await this.env.EVENTS.publish({ eventType: "not_granted", payload: {} });

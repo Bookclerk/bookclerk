@@ -103,6 +103,13 @@ operator, a household user, or a portal identity) has a **subject key**
    for the person's current seeds (their own, or the household's), and none
    when `discovery.storefront_candidates` is off.
 
+   Each job reads the library once: the taste and the set of titles the
+   library already holds (by ASIN, ISBN and store product id, used to keep
+   owned titles out of the candidates and the feed) come from the same
+   read. A per-person taste profile stored between jobs, so a job no
+   longer reads the whole library at all, is planned with the book model's
+   step that retires the `books` table.
+
    Both steps read through the database plugin's streamed result path
    ([SQL contract](../plugins/sql-contract/v1.md#streamed-results)), so a
    page of candidates or a stored feed larger than one inline 256 KiB
@@ -297,7 +304,9 @@ Per [Open Library API guidelines](https://openlibrary.org/developers/api):
 
 - The `openlibrary` plugin identifies itself with its `contact_email`
   setting ([integrations](../server/integrations.md#open-library-and-audnexus))
-- The host spaces rows about 400 ms apart and stops after 25 rows per run
+- The host spaces rows about 400 ms apart and stops after 25 rows per run.
+  It reads the library a page at a time and stops reading once the run's
+  requests are spent
 - A row with an ISBN is looked up by ISBN; one without is searched by title
   and author, and only a result with the same title (ignoring case and
   punctuation) is used. The first record that fills a gap wins, and the
@@ -393,6 +402,16 @@ Candidates are **unowned** storefront hits (plus open wishlist items), scored by
 4. Embedding similarity to finished / highly rated / recently listened works
 5. Wishlist boost (`wish_count × 40` on the shared queue / Discover merge)
 6. Purchase hints resolved at view time (see below)
+
+Before scoring, a candidate in a language the reader does not listen in is
+dropped (`retain_reader_languages` in `bookclerk-discover`). The reader's
+languages are the normalized languages of the taste books (the subject's own,
+with the household's blended in while those are few), or the default
+preferred language (`en`) when no taste book has one. A candidate whose store
+gave no language, or one `normalize_language` does not recognize, stays, as
+in catalog search. Editions in two different known languages are never merged
+into one candidate by a title-and-author match, so dropping one language never
+drops the other edition with it.
 
 Whether a wished title is already owned is decided by the library's
 resolver (`LibraryStore::owned_work_for`), the same way a scanned listing

@@ -14,7 +14,7 @@ operator-auth layers, and every request first passes the transport policy.
 | --- | --- |
 | `GET info` | The library: `{cluster_id, library_name, origin, transport, enrollment, spki_fingerprint?, software_version, ancestry}` |
 | `POST enroll` | Redeem an invite: `{link_id, secret, sign_pk, box_pk, software_version}` → `{cluster_id, node_id}` |
-| `POST enroll/oauth` | Redeem an approved sign-in: `{code, code_verifier, redirect_uri, sign_pk, box_pk, branch_name, software_version, connection?}` → `{cluster_id, node_id}`; for `connection: "clerk"` also `{connection, bootstrap}` (sealed to `box_pk`) |
+| `POST enroll/oauth` | Redeem an approved sign-in: `{code, code_verifier, redirect_uri, sign_pk, box_pk, branch_name, software_version, connection?}` → `{cluster_id, node_id}`; for `connection: "clerk"` also `{connection, bootstrap}` (sealed to `box_pk`); for a branch whose user chose to bring their store connections, also `accounts`, the user's shareable store accounts and secrets sealed to `box_pk` |
 | `GET connect` | The node socket (WebSocket, subprotocol `bookclerk-node.v1`) |
 | `GET artifacts/{sha256}` | An owner plugin archive, for a request signed `Authorization: Bookclerk-Node <node_id> <issued_at> <sig>` |
 | `PUT uploads/{id}/files/{n}`, `POST uploads/{id}/commit` | Uploads (see [Uploads](../server/cluster-hosts.md#uploads)) |

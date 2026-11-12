@@ -942,6 +942,89 @@ the missing tail is retried.
 """
 
 
+class EventReadRequest(TypedDict):
+    """Request of `EventPublisher.read`: one page of past outbox events, oldest
+    first. Only types the instance's consented `[[events.consumers]]` rows
+    subscribe to are returned, through the same schema-version and filter match
+    as delivery, and only back to `[events].retention_days`.
+
+    Attributes:
+        after: Opaque cursor from an earlier `EventReadPage.cursor`; empty starts at
+            `sinceUnixMs`. At most `maxEventCursorBytes`. Set at most one of `after` and
+            `sinceUnixMs`.
+        sinceUnixMs: UTC Unix milliseconds to start from when `after` is empty; zero
+            starts at the oldest retained event.
+        types: Event types to return; empty means every consented subscription. Each
+            entry must be a consented subscription type; at most `maxListPage`.
+        limit: Most events to return; zero means `maxListPage`. At most `maxListPage`.
+    """
+
+    after: str
+    sinceUnixMs: int
+    types: list[str]
+    limit: int
+
+
+class EventReadPage(TypedDict):
+    """Success payload of `EventPublisher.read`.
+
+    Attributes:
+        events: Matching events in outbox order. `deliveryAttempt` is zero and
+            `deduplicationKey` is the event id: a read is not a delivery, so dedupe on
+            `eventId`.
+        cursor: Opaque position after the last event scanned; pass it as `after` to
+            continue. Empty only when nothing was scanned and the request had no cursor.
+            At most `maxEventCursorBytes`.
+        more: True when more events may follow: the page filled or the host's scan
+            budget ran out before the newest event.
+        expiredEventIds: Ids of the events on this page whose delivery to this plugin
+            expired unleased: the events the instance missed.
+        truncated: True when the start position is older than `[events].retention_days`,
+            so events before the retained window may be gone.
+    """
+
+    events: list[DomainEvent]
+    cursor: str
+    more: bool
+    expiredEventIds: list[str]
+    truncated: bool
+
+
+class EventReadReplyOk(TypedDict):
+    """``EventReadReply`` member ``ok``.
+
+    Success: one page.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: one page.
+    """
+
+    kind: Literal["ok"]
+    value: EventReadPage
+
+
+class EventReadReplyErr(TypedDict):
+    """``EventReadReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+EventReadReply = Union[
+    EventReadReplyOk,
+    EventReadReplyErr,
+]
+"""Result union of `EventPublisher.read`."""
+
+
 class JobController(TypedDict):
     """Everything one `JobRunner.job` invocation may touch. Capabilities are
     host-served; the guest never sees OS paths or sockets.
@@ -1690,6 +1773,18 @@ class EventPublisher(Protocol):
 
         Returns:
             ``PublishReply``
+        """
+        ...
+
+    async def read(self, request: EventReadRequest) -> EventReadReply:
+        """Read one page of past outbox events this instance subscribes to, oldest
+        first, to catch up after a gap (`env.EVENTS.read`).
+
+        Args:
+            request: Where to start, which types, how many.
+
+        Returns:
+            ``EventReadReply``
         """
         ...
 
@@ -6072,6 +6167,11 @@ __all__ = [
     "EventBatchReplyOk",
     "EventBatchReplyErr",
     "EventBatchReply",
+    "EventReadRequest",
+    "EventReadPage",
+    "EventReadReplyOk",
+    "EventReadReplyErr",
+    "EventReadReply",
     "JobController",
     "HeadOk",
     "HeadReplyOk",

@@ -1,0 +1,15 @@
+# Headers for the launch and waiting pages' files under /_demo/, which are
+# served without the Worker. The same set as SECURITY_HEADERS in
+# src/pages.ts (a test keeps them equal): nothing here is open to other
+# origins.
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: same-origin
+  Strict-Transport-Security: max-age=31536000
+  Cross-Origin-Resource-Policy: same-origin
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Origin-Agent-Cluster: ?1
+  X-Permitted-Cross-Domain-Policies: none
+  X-XSS-Protection: 0

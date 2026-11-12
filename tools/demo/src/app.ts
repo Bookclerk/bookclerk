@@ -246,7 +246,11 @@ function json(body: unknown, status: number, extra: Record<string, string> = {})
  * @returns 303 See Other.
  */
 function redirect(location: string, cookies: string[] = []): Response {
-  const headers = new Headers({ Location: location, "Cache-Control": CACHE_CONTROL.noStore });
+  const headers = new Headers({
+    Location: location,
+    "Cache-Control": CACHE_CONTROL.noStore,
+    ...SECURITY_HEADERS,
+  });
   for (const c of cookies) headers.append("Set-Cookie", c);
   return new Response(null, { status: 303, headers });
 }

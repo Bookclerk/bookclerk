@@ -230,6 +230,14 @@ bookclerk library scan --source graphicaudio
 
 The Magento paths use the password stored when the account was connected.
 
+Catalog search and Discover read GraphicAudio's public store, which needs no
+account. Search and series pages only list a title, a link and a cover. The
+plugin's title-details call reads the product page instead, and the demo
+library's seed uses it. Title dialogs in the web app don't ask GraphicAudio
+for details yet. A product page gives the author, the cast (shown as
+narrators), the synopsis, the ISBN, the release date, the running time, the
+genre, the review score and the price.
+
 > [!NOTE]
 > A ZIP purchase also unlocks the app and the browser player. An
 > app-only purchase does **not** include a computer ZIP. To test every

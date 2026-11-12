@@ -38,12 +38,15 @@ boundary extends it.
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back and the account it names | `bookclerk-plugin-abi::validate_scan_page` |
+| `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
+| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person | `bookclerk-node-proto::parse_account_bundle` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
+| `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 
 Some boundaries need more than a cell:
@@ -166,6 +169,18 @@ only that. The others check:
   page round-trips through the codec and is accepted again. The shared
   oracle is `fuzz/oracles/scan_page.rs`, replayed from
   `bookclerk-plugin-abi`.
+- **`event_read`**: byte 0 modulo 4 picks a `/events/read` JSON body (0),
+  a bare cursor (1), or a Cap'n Proto `EventReadRequest` (2) or
+  `EventReadPage` (3). The body parser accepts exactly the JSON objects whose
+  keys are request fields, and an accepted request round-trips through
+  JSON. Validation against a fixed consent agrees with an independent
+  restatement of every rule: the error code, or the resolved start, types
+  and limit. The cursor decoder accepts exactly the canonical cursors a
+  hand-written decoder accepts, and an accepted cursor re-encodes to the
+  same text. A Cap'n Proto request or page that the RPC codec accepts
+  survives `write` then `read` unchanged and stays inside the cursor and
+  list bounds. The shared oracle is `fuzz/oracles/event_read.rs`, replayed
+  from `bookclerk-plugin-abi`.
 - **`guest_sql_authz`**: every table, column, function and schema action
   that SQLite's own authorizer reports for an admitted statement is inside
   the policy. The shared oracle is `fuzz/oracles/guest_sql_authz.rs`,
@@ -200,6 +215,16 @@ only that. The others check:
   keys; its identifiers are plain ASCII with a marketplace exactly on an
   ASIN, and each answer lists 1 to 8 distinct editions with a title. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
+- **`node_account_bundle`**: an accepted bundle is within the size limit,
+  has the bundle version and names the cluster and node it was opened
+  for. It carries at most the account and secret limits; every text field
+  is non-empty, within its limit, free of control characters and
+  surrounding whitespace; every secret is 1 byte to its limit; no account,
+  and no secret within an account, repeats. These are checked character by
+  character in the oracle, not through the parser's own rule. An accepted
+  bundle serializes and parses back to an equal bundle. The shared oracle
+  is `fuzz/oracles/node_account_bundle.rs`, replayed from
+  `bookclerk-node-proto`.
 - **`plan_authz`**: decodes a small library (store accounts on two plugins
   whose ids and labels collide, who each is linked to, library rows and
   plugin instances) and one Member's scan or acquire request into an

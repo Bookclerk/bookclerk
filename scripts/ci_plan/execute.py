@@ -111,8 +111,17 @@ def _nextest_mode(event: str) -> list[str]:
 # scripts/tests/test_ci_contract.py fails when a new one is not listed here.
 CUSTOM_HARNESS_TESTS: tuple[tuple[str, str], ...] = (("bookclerk-plugin-catalog", "plugin_mutation_lock"),)
 # Staged-installation targets of the e2e crate. `native_gateway*` is its own
-# check (three OSes) and must not run again here.
-E2E_STAGED_TARGETS = ("--lib", "--test", "staged_plugins", "--test", "installed_plugin_path")
+# check (three OSes) and must not run again here. `cold_start` only
+# measures (its one test is ignored); listing it keeps it compiling.
+E2E_STAGED_TARGETS = (
+    "--lib",
+    "--test",
+    "staged_plugins",
+    "--test",
+    "installed_plugin_path",
+    "--test",
+    "cold_start",
+)
 NATIVE_GATEWAY_TESTS = (
     "native_gateway",
     "native_gateway_isolation",
@@ -955,6 +964,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             "test:path-security",
             "test:db-value",
             "test:db-stream",
+            "test:scan-page",
             "test:db-adapter",
             "test:plugin-migrations",
             "test:entrypoints",

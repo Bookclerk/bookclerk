@@ -51,6 +51,7 @@
 //! node API transport policy: TLS, or loopback when both ends are on this
 //! machine.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use axum::extract::{Query, Request, State};
@@ -60,18 +61,19 @@ use axum::{Extension, Json};
 use bookclerk_config::DatabasePluginKind;
 use bookclerk_config::NodeApiMode;
 use bookclerk_library::control_plane::{
-    authorized_enrollment_link, branch_title_counts, check_redeem_request, library_ancestry,
-    list_nodes, load_cluster_row, load_host_enrollment, load_node_credential,
+    accounts_to_carry, authorized_enrollment_link, branch_title_counts, check_redeem_request,
+    enrollment_link_brings_accounts, library_ancestry, list_nodes, load_cluster_row,
+    load_host_enrollment, load_node_credential, member_accounts, record_accounts_sent,
     record_authorized_enrollment_link, redeem_enrollment_link_as, remove_detached_branch_titles,
     set_host_enrollment_enabled, verify_cluster_owner, ConfigActor, EnrolledNode, NodeKind,
     RedeemRequest,
 };
 use bookclerk_library::{hash_token, LibraryError, UserStatus};
 use bookclerk_node_proto::{
-    canonical_origin, is_branch_name, is_branch_redirect_uri, pkce_challenge, seal_clerk_bootstrap,
-    ClerkBootstrap, ClerkDatabase, ConnectionType, OAuthEnrollAnswer, OAuthEnrollRequest,
-    OwnerInfo, SecretValue, BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS, BRANCH_SCOPE,
-    CLERK_BOOTSTRAP_VERSION,
+    canonical_origin, is_branch_name, is_branch_redirect_uri, pkce_challenge, seal_account_bundle,
+    seal_clerk_bootstrap, AccountBundle, ClerkBootstrap, ClerkDatabase, ConnectionType,
+    OAuthEnrollAnswer, OAuthEnrollRequest, OwnerInfo, SecretValue, ACCOUNT_BUNDLE_VERSION,
+    BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS, BRANCH_SCOPE, CLERK_BOOTSTRAP_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -281,13 +283,17 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
             // The scope holds the connection type and the branch name
             // chosen at consent: a code approved for a branch never redeems
             // as a clerk (or the other way round).
-            let consented = consented_branch_name(&scope, connection);
+            let consented = consented_branch(&scope, connection);
             let matches = client_id == BRANCH_CLIENT_ID
                 && redirect_uri == body.redirect_uri
                 && method == "S256"
                 && consented.is_some()
                 && constant_time_eq(pkce_challenge(verifier).as_bytes(), challenge.as_bytes());
-            let Some(label) = consented.filter(|_| matches) else {
+            let Some(Consented {
+                name: label,
+                bring_connections,
+            }) = consented.filter(|_| matches)
+            else {
                 tracing::warn!(
                     user_id,
                     connection = connection.as_str(),
@@ -324,6 +330,7 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
                 &request.secret,
                 user_id,
                 &label,
+                bring_connections,
             )
             .await
             {
@@ -356,14 +363,210 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
         }
     }
     match connection {
-        ConnectionType::Branch => {
-            redeem_answer(redeem_enrollment_link_as(&library, &request, kind).await)
-        }
+        ConnectionType::Branch => match redeem_enrollment_link_as(&library, &request, kind).await {
+            Ok(enrolled) => branch_answer(&state, &library, enrolled, &request).await,
+            Err(err) => redeem_answer(Err(err)),
+        },
         ConnectionType::Clerk => match redeem_enrollment_link_as(&library, &request, kind).await {
             Ok(enrolled) => clerk_answer(&state, &library, &enrolled, &request).await,
             Err(err) => redeem_answer(Err(err)),
         },
     }
+}
+
+/// Plugin keys whose storefront declares `credentials = "shareable"` in
+/// every `plugin.toml` this node knows for it: the plugins discovered on
+/// disk and the active installed versions. Any other plugin counts as a
+/// single keeper, whose accounts do not travel.
+pub(crate) async fn shareable_plugin_keys(
+    state: &Arc<AppState>,
+    library: &bookclerk_library::LibraryStore,
+) -> BTreeSet<String> {
+    use bookclerk_plugin_host::{CredentialSharing, PluginManifest};
+    /// Records one manifest's declaration for `key`; `None` is a manifest
+    /// that could not be read, which is not a declaration.
+    fn note(seen: &mut BTreeMap<String, bool>, key: String, manifest: Option<&PluginManifest>) {
+        let shareable = manifest
+            .is_some_and(|manifest| manifest.credential_sharing() == CredentialSharing::Shareable);
+        let entry = seen.entry(key).or_insert(true);
+        *entry = *entry && shareable;
+    }
+    let mut seen: BTreeMap<String, bool> = BTreeMap::new();
+    let cfg = state.config.read().await.clone();
+    match tokio::task::spawn_blocking(move || bookclerk_plugin_host::discover_plugins(&cfg)).await {
+        Ok(Ok(plugins)) => {
+            for plugin in plugins {
+                note(
+                    &mut seen,
+                    plugin.identity.plugin_key.to_string(),
+                    Some(&plugin.manifest),
+                );
+            }
+        }
+        // Without every declaration, nothing travels.
+        Ok(Err(err)) => {
+            tracing::warn!(error = %err, "plugin discovery failed; no connections travel");
+            return BTreeSet::new();
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "plugin discovery stopped; no connections travel");
+            return BTreeSet::new();
+        }
+    }
+    match bookclerk_library::control_plane::list_installs(library).await {
+        Ok(installs) => {
+            for install in installs {
+                let version = match bookclerk_library::control_plane::load_active_version(
+                    library,
+                    &install.plugin_key,
+                )
+                .await
+                {
+                    Ok(Some(version)) => version,
+                    Ok(None) => continue,
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "an installed plugin could not be read; no connections travel"
+                        );
+                        return BTreeSet::new();
+                    }
+                };
+                let manifest = PluginManifest::parse(&version.manifest_toml).ok();
+                note(&mut seen, install.plugin_key, manifest.as_ref());
+            }
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "installed plugins could not be read; no connections travel");
+            return BTreeSet::new();
+        }
+    }
+    seen.into_iter()
+        .filter_map(|(key, shareable)| shareable.then_some(key))
+        .collect()
+}
+
+/// The answer to a branch redeem: its cluster and node ids, and when the
+/// user who approved it chose "Bring my store connections to this
+/// branch", the user's own shareable store accounts sealed to the node's
+/// box key ([`seal_account_bundle`]). A retry of the same exchange answers
+/// with them again. A bundle that cannot be made is logged and left out:
+/// the branch still joins, and the person connects the accounts there.
+async fn branch_answer(
+    state: &Arc<AppState>,
+    library: &bookclerk_library::LibraryStore,
+    enrolled: EnrolledNode,
+    request: &RedeemRequest,
+) -> Response {
+    let bring = enrollment_link_brings_accounts(library, &request.link_id)
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "branch enrollment could not read the connections choice");
+            false
+        });
+    let accounts = if bring {
+        sealed_connections(state, library, &enrolled, &request.box_public_key).await
+    } else {
+        None
+    };
+    Json(OAuthEnrollAnswer {
+        cluster_id: enrolled.cluster_id,
+        node_id: enrolled.node_id,
+        connection: ConnectionType::Branch,
+        bootstrap: None,
+        accounts,
+    })
+    .into_response()
+}
+
+/// The enrolled node owner's shareable store accounts sealed to
+/// `box_public_key`, recorded as sent to the node; `None` when there are
+/// none or they cannot be sealed (logged).
+async fn sealed_connections(
+    state: &Arc<AppState>,
+    library: &bookclerk_library::LibraryStore,
+    enrolled: &EnrolledNode,
+    box_public_key: &[u8],
+) -> Option<String> {
+    // Checked on every redeem, a replay included: a user disabled since
+    // the join sends nothing more.
+    match library.get_user(enrolled.owner_user_id).await {
+        Ok(Some(user)) if user.status == UserStatus::Active => {}
+        Ok(_) => return None,
+        Err(err) => {
+            tracing::warn!(error = %err, "branch enrollment could not read the joining user");
+            return None;
+        }
+    }
+    // Also checked on every redeem: a branch revoked since the join (or
+    // whose credential is gone) is no longer trusted with secrets.
+    match load_node_credential(library, &enrolled.node_id).await {
+        Ok(Some(credential)) if credential.revoked_at.is_none() => {}
+        Ok(_) => return None,
+        Err(err) => {
+            tracing::warn!(error = %err, "branch enrollment could not read the branch's credential");
+            return None;
+        }
+    }
+    let shareable = shareable_plugin_keys(state, library).await;
+    let is_shareable = move |key: &str| shareable.contains(key);
+    let accounts = match accounts_to_carry(library, enrolled.owner_user_id, &is_shareable).await {
+        Ok(accounts) if accounts.is_empty() => return None,
+        Ok(accounts) => accounts,
+        Err(err) => {
+            tracing::warn!(error = %err, "branch enrollment could not gather the store connections");
+            return None;
+        }
+    };
+    let bundle = AccountBundle {
+        v: ACCOUNT_BUNDLE_VERSION,
+        cluster_id: enrolled.cluster_id.clone(),
+        node_id: enrolled.node_id.clone(),
+        accounts,
+    };
+    let ephemeral = {
+        use rand::RngCore as _;
+        let mut raw = Zeroizing::new([0u8; 32]);
+        rand::rngs::OsRng.fill_bytes(raw.as_mut_slice());
+        raw
+    };
+    let sealed = match seal_account_bundle(box_public_key, &ephemeral, &bundle) {
+        Ok(sealed) => sealed,
+        Err(err) => {
+            tracing::warn!(error = %err, "branch enrollment could not seal the store connections");
+            return None;
+        }
+    };
+    // Audited on every send, a retried redeem included, since a retry
+    // gathers the accounts again. Nothing is sent without its record.
+    let detail = json!({
+        "node_id": enrolled.node_id,
+        "accounts": bundle.accounts.len(),
+        "replayed": enrolled.replayed,
+    })
+    .to_string();
+    if let Err(err) = library
+        .insert_security_audit_event(
+            &format!("user:{}", enrolled.owner_user_id),
+            "branch_connections_sent",
+            Some(&detail),
+        )
+        .await
+    {
+        tracing::warn!(error = %err, "branch enrollment could not audit the connections; none sent");
+        return None;
+    }
+    // Nor without the record of where each account went.
+    if let Err(err) = record_accounts_sent(library, &enrolled.node_id, &bundle.accounts).await {
+        tracing::warn!(error = %err, "branch enrollment could not record the connections; none sent");
+        return None;
+    }
+    tracing::info!(
+        node_id = %enrolled.node_id,
+        accounts = bundle.accounts.len(),
+        "store connections sealed to a joining branch for its owner"
+    );
+    Some(sealed)
 }
 
 /// Refuses a clerk redeem unless the code's user is still an active Owner
@@ -465,6 +668,7 @@ async fn clerk_answer(
             node_id: enrolled.node_id.clone(),
             connection: ConnectionType::Clerk,
             bootstrap: Some(sealed),
+            accounts: None,
         })
         .into_response(),
     )
@@ -473,72 +677,124 @@ async fn clerk_answer(
 /// Marks the branch name kept in a code's stored scope.
 const CONSENTED_NAME_MARK: &str = " name:";
 
+/// Ends a stored scope whose user chose "Bring my store connections to
+/// this branch".
+const BRING_CONNECTIONS_MARK: &str = " bring:connections";
+
 /// The scope stored with a sign-in's authorization code: the connection
 /// type's granted scope ([`BRANCH_SCOPE`] for a branch,
 /// [`bookclerk_node_proto::CLERK_GRANTED_SCOPE`] for a clerk), then the
-/// branch name the user consented to (base64url). The redeem enrolls the
-/// node under that name, not one the redeem body picks, and only as that
-/// type.
-fn consented_scope(connection: ConnectionType, branch_name: &str) -> String {
+/// branch name the user consented to (base64url), then
+/// [`BRING_CONNECTIONS_MARK`] when the user chose to bring their store
+/// connections (a branch only). The redeem enrolls the node under that
+/// name, not one the redeem body picks, and only as that type.
+fn consented_scope(connection: ConnectionType, branch_name: &str, bring: bool) -> String {
     use base64::Engine as _;
     format!(
-        "{}{CONSENTED_NAME_MARK}{}",
+        "{}{CONSENTED_NAME_MARK}{}{}",
         connection.granted_scope(),
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(branch_name.as_bytes())
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(branch_name.as_bytes()),
+        if bring && connection == ConnectionType::Branch {
+            BRING_CONNECTIONS_MARK
+        } else {
+            ""
+        }
     )
 }
 
-/// The consented branch name in a stored scope written by
-/// [`consented_scope`] for `connection`; `None` for any other scope (a
-/// code approved for the other connection type among them) or a name that
-/// is not a valid branch name.
-fn consented_branch_name(scope: &str, connection: ConnectionType) -> Option<String> {
+/// What a user consented to, read back from a stored scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Consented {
+    /// The branch name.
+    name: String,
+    /// The user chose to bring their store connections.
+    bring_connections: bool,
+}
+
+/// What [`consented_scope`] wrote for `connection`; `None` for any other
+/// scope (a code approved for the other connection type among them) or a
+/// name that is not a valid branch name.
+fn consented_branch(scope: &str, connection: ConnectionType) -> Option<Consented> {
     use base64::Engine as _;
     // The granted scopes contain no `name:` token and base64url has no
     // space, so a branch scope never parses as a clerk one or back.
-    let encoded = scope
+    let rest = scope
         .strip_prefix(connection.granted_scope())?
         .strip_prefix(CONSENTED_NAME_MARK)?;
+    let (encoded, bring_connections) = match rest.strip_suffix(BRING_CONNECTIONS_MARK) {
+        Some(encoded) if connection == ConnectionType::Branch => (encoded, true),
+        Some(_) => return None,
+        None => (rest, false),
+    };
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(encoded)
         .ok()?;
     let name = String::from_utf8(bytes).ok()?;
-    is_branch_name(&name).then_some(name)
+    is_branch_name(&name).then_some(Consented {
+        name,
+        bring_connections,
+    })
 }
 
 #[cfg(test)]
 mod scope_tests {
-    use super::{consented_branch_name, consented_scope, ConnectionType};
+    use super::{consented_branch, consented_scope, ConnectionType, Consented};
+
+    /// The consented name, when the scope parses for `connection`.
+    fn name(scope: &str, connection: ConnectionType) -> Option<String> {
+        consented_branch(scope, connection).map(|consented| consented.name)
+    }
 
     #[test]
     fn the_scope_carries_the_type_and_the_consented_name() {
         for connection in [ConnectionType::Branch, ConnectionType::Clerk] {
-            let scope = consented_scope(connection, "Den PC");
-            assert_eq!(
-                consented_branch_name(&scope, connection).as_deref(),
-                Some("Den PC")
-            );
+            let scope = consented_scope(connection, "Den PC", false);
+            assert_eq!(name(&scope, connection).as_deref(), Some("Den PC"));
         }
-        let branch = consented_scope(ConnectionType::Branch, "Den PC");
-        let clerk = consented_scope(ConnectionType::Clerk, "Den PC");
+        let branch = consented_scope(ConnectionType::Branch, "Den PC", false);
+        let clerk = consented_scope(ConnectionType::Clerk, "Den PC", false);
         assert_eq!(branch, "node:enroll name:RGVuIFBD");
         assert_eq!(clerk, "node:enroll node:clerk name:RGVuIFBD");
         // A branch-approved code never redeems as a clerk, nor the reverse.
-        assert_eq!(consented_branch_name(&branch, ConnectionType::Clerk), None);
-        assert_eq!(consented_branch_name(&clerk, ConnectionType::Branch), None);
+        assert_eq!(name(&branch, ConnectionType::Clerk), None);
+        assert_eq!(name(&clerk, ConnectionType::Branch), None);
         // The bare scopes (no consented name) and an invalid name refuse.
+        assert_eq!(name("node:enroll", ConnectionType::Branch), None);
+        assert_eq!(name("node:enroll node:clerk", ConnectionType::Clerk), None);
         assert_eq!(
-            consented_branch_name("node:enroll", ConnectionType::Branch),
-            None
-        );
-        assert_eq!(
-            consented_branch_name("node:enroll node:clerk", ConnectionType::Clerk),
-            None
-        );
-        assert_eq!(
-            consented_branch_name(
-                &consented_scope(ConnectionType::Clerk, ""),
+            name(
+                &consented_scope(ConnectionType::Clerk, "", false),
                 ConnectionType::Clerk
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn only_a_branch_scope_carries_the_choice_to_bring_connections() {
+        let branch = consented_scope(ConnectionType::Branch, "Den PC", true);
+        assert_eq!(branch, "node:enroll name:RGVuIFBD bring:connections");
+        assert_eq!(
+            consented_branch(&branch, ConnectionType::Branch),
+            Some(Consented {
+                name: "Den PC".into(),
+                bring_connections: true,
+            })
+        );
+        // A clerk shares the library's database: nothing to bring.
+        let clerk = consented_scope(ConnectionType::Clerk, "Den PC", true);
+        assert_eq!(clerk, "node:enroll node:clerk name:RGVuIFBD");
+        assert_eq!(
+            consented_branch(
+                "node:enroll node:clerk name:RGVuIFBD bring:connections",
+                ConnectionType::Clerk
+            ),
+            None
+        );
+        assert_eq!(
+            consented_branch(
+                "node:enroll name:RGVuIFBD bring:other",
+                ConnectionType::Branch
             ),
             None
         );
@@ -698,6 +954,29 @@ pub struct BranchConsentPage {
     pub user: ConsentingUser,
     /// The connection types the page may offer.
     pub connection: ConnectionChoice,
+    /// The user's store connections here, and whether each would travel
+    /// to the branch if the user chooses to bring them.
+    pub connections: Vec<ConsentConnection>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// One of the consenting user's store connections, as the consent page
+/// lists it.
+pub struct ConsentConnection {
+    /// Display alias of the storefront.
+    #[schema(example = "libro")]
+    pub source: String,
+    /// Store account id.
+    #[schema(example = "sam@example.com")]
+    pub account_id: String,
+    /// The account's display label, when it has one.
+    #[schema(example = "Sam")]
+    pub label: Option<String>,
+    /// True when the storefront lets its login be used in more than one
+    /// place, so the connection travels; false when it keeps one login
+    /// that only this library refreshes.
+    #[schema(example = true)]
+    pub travels: bool,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -949,6 +1228,7 @@ pub async fn get_branch_consent(
         Ok(view) => view,
         Err(response) => return response,
     };
+    let connections = consent_connections(&state, user.id).await;
     Json(BranchConsentPage {
         library_name: info.library_name,
         branch_name: params.branch_name.unwrap_or_default().trim().to_owned(),
@@ -959,6 +1239,7 @@ pub async fn get_branch_consent(
             display_name: user.display_name,
         },
         connection,
+        connections,
     })
     .into_response()
 }
@@ -1060,6 +1341,45 @@ impl std::fmt::Debug for StepUp {
     }
 }
 
+/// The store connections `user_id` has here, each marked with whether it
+/// would travel to a branch. A read failure lists none, so the page
+/// offers nothing to bring rather than refusing the consent.
+async fn consent_connections(state: &Arc<AppState>, user_id: i64) -> Vec<ConsentConnection> {
+    let library = state.library_snapshot().await;
+    let accounts = match member_accounts(&library, user_id).await {
+        Ok(accounts) => accounts,
+        Err(err) => {
+            tracing::warn!(error = %err, "branch consent could not list the user's connections");
+            return Vec::new();
+        }
+    };
+    if accounts.is_empty() {
+        return Vec::new();
+    }
+    // The same selection a redeem makes, so a listed connection travels
+    // exactly when it would be sent.
+    let shareable = shareable_plugin_keys(state, &library).await;
+    let is_shareable = move |key: &str| shareable.contains(key);
+    let carried: BTreeSet<(String, String)> = accounts_to_carry(&library, user_id, &is_shareable)
+        .await
+        .map(|carried| {
+            carried
+                .into_iter()
+                .map(|account| (account.plugin_key, account.account_id))
+                .collect()
+        })
+        .unwrap_or_default();
+    accounts
+        .into_iter()
+        .map(|account| ConsentConnection {
+            travels: carried.contains(&(account.plugin_key.clone(), account.account_id.clone())),
+            source: account.source,
+            account_id: account.account_id,
+            label: account.label,
+        })
+        .collect()
+}
+
 /// WebAuthn challenge kind of a clerk step-up.
 pub(crate) const CLERK_STEP_UP_KIND: &str = "clerk_step_up";
 
@@ -1079,6 +1399,11 @@ pub struct BranchConsentBody {
     /// The fresh second factor a clerk needs.
     #[serde(default)]
     pub step_up: Option<StepUp>,
+    /// True to send the user's store connections that may travel to the
+    /// branch when it joins. Ignored for a clerk. Defaults to false.
+    #[serde(default)]
+    #[schema(example = false)]
+    pub bring_connections: bool,
 }
 
 /// `POST /api/auth/branch-consent`: approve or deny. Answers `{redirect}`,
@@ -1218,6 +1543,7 @@ pub async fn post_branch_consent(
             &consented_scope(
                 connection,
                 params.branch_name.as_deref().unwrap_or("").trim(),
+                body.bring_connections,
             ),
             expires,
         )
