@@ -41,7 +41,9 @@ use super::catalog_lookup::{
     result_page, run_batches, stamp, work_for_question, works_of_editions,
 };
 use super::cluster_links::list_cluster_links;
-use crate::entities::{books, nodes, store_listings, window_books};
+use crate::entities::{
+    account_links, books, nodes, portal_identities, store_listings, window_books,
+};
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
@@ -56,10 +58,25 @@ const WINDOW_PAGE_BUDGET: usize = MAX_FRAME_BYTES / 2;
 const MAX_IN_ACCOUNTS: usize = 64;
 
 /// The store accounts linked to `user_id`, as `(plugin key, account id)`.
+///
+/// Both the person's sign-in identities and each identity's account links
+/// are read a database result page at a time.
 async fn person_accounts(store: &LibraryStore, user_id: i64) -> Result<BTreeSet<(String, String)>> {
+    let identities = read_paged(
+        store,
+        portal_identities::Entity::find().filter(portal_identities::Column::UserId.eq(user_id)),
+        None,
+    )
+    .await?;
     let mut accounts = BTreeSet::new();
-    for identity in store.list_portal_identities_for_user(user_id).await? {
-        for link in store.list_account_links(identity.id).await? {
+    for identity in identities {
+        let links = read_paged(
+            store,
+            account_links::Entity::find().filter(account_links::Column::IdentityId.eq(identity.id)),
+            None,
+        )
+        .await?;
+        for link in links {
             accounts.insert((link.plugin_key, link.account_id));
         }
     }
@@ -331,6 +348,7 @@ pub async fn record_window_page(
     seen_at: &str,
     works: &[WindowWork],
 ) -> Result<usize> {
+    let earlier = earlier_in_read(store, owner_cluster_id, seen_at, works).await?;
     let mut statements = Vec::new();
     let mut stored = 0;
     for work in works {
@@ -349,6 +367,27 @@ pub async fn record_window_page(
         let identifiers_json = serde_json::to_string(&work.identifiers)
             .map_err(|err| LibraryError::Invalid(err.to_string()))?;
         for edition in &work.editions {
+            let key = (
+                edition.store.clone(),
+                edition.marketplace.clone(),
+                edition.product_id.clone(),
+            );
+            let merged;
+            let edition = match earlier.get(&key) {
+                Some(formats) => {
+                    let mut richer = edition.clone();
+                    richer.formats = formats
+                        .iter()
+                        .chain(&edition.formats)
+                        .copied()
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect();
+                    merged = richer;
+                    &merged
+                }
+                None => edition,
+            };
             let edition_json = serde_json::to_string(edition)
                 .map_err(|err| LibraryError::Invalid(err.to_string()))?;
             statements.push(exec(
@@ -388,6 +427,52 @@ pub async fn record_window_page(
     }
     run_batches(store, "window book", statements).await?;
     Ok(stored)
+}
+
+/// The formats already stored by this same read (stamped `seen_at`) for the
+/// editions of `works`, by `(store, marketplace, product id)`.
+///
+/// Two of the person's accounts can hold one edition with their books on
+/// different pages; the second copy then adds its formats to the first
+/// instead of replacing them. A later complete read starts from its own
+/// stamp, so a format no longer held still goes.
+async fn earlier_in_read(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    seen_at: &str,
+    works: &[WindowWork],
+) -> Result<HashMap<(String, String, String), Vec<LookupFormat>>> {
+    let wanted: BTreeSet<(String, String, String)> = works
+        .iter()
+        .flat_map(|work| &work.editions)
+        .map(|e| (e.store.clone(), e.marketplace.clone(), e.product_id.clone()))
+        .collect();
+    let products: Vec<String> = wanted
+        .iter()
+        .map(|(_, _, product)| product.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let owner = owner_cluster_id.to_string();
+    let stamp_now = seen_at.to_string();
+    let rows = read_chunked(store, &products, move |part| {
+        window_books::Entity::find()
+            .filter(window_books::Column::OwnerClusterId.eq(owner.clone()))
+            .filter(window_books::Column::SeenAt.eq(stamp_now.clone()))
+            .filter(window_books::Column::ProductId.is_in(part))
+    })
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let key = (row.store, row.marketplace, row.product_id);
+            if !wanted.contains(&key) {
+                return None;
+            }
+            let edition: LookupEdition = serde_json::from_str(&row.edition_json).ok()?;
+            Some((key, edition.formats))
+        })
+        .collect())
 }
 
 /// Ends a complete read of library `owner_cluster_id`'s window books: drops

@@ -184,7 +184,28 @@ async fn many_books_page_out_within_every_profiles_limits() {
             .id;
         add_branch(&store, BRANCH, owner).await;
         let asins: Vec<String> = (0..BOOKS).map(|n| format!("B0PAGE{n:04}")).collect();
-        hold(&store, owner, "owner-acct", &asins).await;
+        hold(&store, owner, "owner-acct", &asins[..BOOKS - 10]).await;
+        // A second account on the same identity, and a third on a second
+        // sign-in identity: every one is read, whatever the row limit.
+        hold(&store, owner, "owner-acct-2", &asins[BOOKS - 10..BOOKS - 5]).await;
+        let second = store
+            .link_portal_identity_to_user("oidc", "owner-sso", owner, None)
+            .await
+            .unwrap();
+        store
+            .upsert_account(PLUGIN, "owner-acct-3", "us", None, true, "audible")
+            .await
+            .unwrap();
+        store
+            .link_account(second.id, PLUGIN, "owner-acct-3", "test")
+            .await
+            .unwrap();
+        for asin in &asins[BOOKS - 5..] {
+            store
+                .upsert_book(&book("owner-acct-3", asin))
+                .await
+                .unwrap();
+        }
         let listed = read_all(&store, BRANCH).await;
         let mut products: Vec<&str> = listed
             .iter()
@@ -438,4 +459,58 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
         .unwrap();
     assert_eq!(window_view(&store).await.unwrap().len(), 1);
     assert_eq!(clear_window_books(&store, "beta").await.unwrap(), 2);
+}
+
+/// Two accounts holding one edition with their books on different pages of
+/// one read: the second copy adds its formats instead of replacing them,
+/// and a later complete read still drops a format no longer held.
+#[tokio::test]
+async fn one_edition_on_two_pages_of_a_read_keeps_every_format() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    link(&store, "alpha", false).await;
+    let held = |formats: Vec<LookupFormat>| {
+        let mut copy = edition("B0TWICE001", "Twice");
+        copy.formats = formats;
+        vec![WindowWork {
+            work: "w-1".into(),
+            identifiers: vec![asin("B0TWICE001")],
+            editions: vec![copy],
+        }]
+    };
+    let formats = |view: Vec<WindowEntry>| -> Vec<LookupFormat> {
+        view.into_iter()
+            .flat_map(|entry| entry.editions)
+            .flat_map(|held| held.edition.formats)
+            .collect()
+    };
+
+    let read = window_read_stamp();
+    record_window_page(&store, "alpha", &read, &held(vec![LookupFormat::Audio]))
+        .await
+        .unwrap();
+    record_window_page(&store, "alpha", &read, &held(vec![LookupFormat::Pdf]))
+        .await
+        .unwrap();
+    record_window_page(&store, "alpha", &read, &held(Vec::new()))
+        .await
+        .unwrap();
+    finish_window_read(&store, "alpha", &read).await.unwrap();
+    assert_eq!(
+        formats(window_view(&store).await.unwrap()),
+        vec![LookupFormat::Audio, LookupFormat::Pdf]
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let next = window_read_stamp();
+    assert_ne!(next, read);
+    record_window_page(&store, "alpha", &next, &held(vec![LookupFormat::Pdf]))
+        .await
+        .unwrap();
+    finish_window_read(&store, "alpha", &next).await.unwrap();
+    assert_eq!(
+        formats(window_view(&store).await.unwrap()),
+        vec![LookupFormat::Pdf]
+    );
 }
