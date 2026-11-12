@@ -459,6 +459,23 @@ impl LibraryStore {
         .is_ok()
     }
 
+    /// Whether `statement` fits the negotiated limits as a store read sends
+    /// it: alone in a request shaped as the database proxy builds one (a
+    /// `proxy-query-<uuid>` operation id), authorized as the proxy authorizes
+    /// it (request hash stamped), so `maxRequestBytes` is measured on the
+    /// bytes that go out.
+    pub(crate) fn admits_read(&self, statement: &TypedDbStatement) -> bool {
+        let mut req = bookclerk_plugin_abi::ExecuteRequest {
+            operation_id: format!("proxy-query-{}", uuid::Uuid::nil()),
+            request_hash: String::new(),
+            statements: vec![statement.clone()],
+            deadline_unix_ms: 0,
+        };
+        // The proxy's own authorization: kinds, the stamped hash, then the
+        // negotiated limits over the request as sent.
+        crate::sql_plan::authorize_typed_request(&mut req, self.db_capabilities()).is_ok()
+    }
+
     /// Bumps `topic` after a write too large for a host batch, which ran
     /// on the store connection as it did before the counters existed.
     ///
