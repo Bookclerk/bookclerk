@@ -101,6 +101,11 @@ pub struct StorefrontCandidate {
         skip_serializing_if = "Option::is_none"
     )]
     pub store_rank: Option<u32>,
+    /// The work the pool resolved this listing into, when the candidate was
+    /// read from the shared listing pool. Lets the ranking drop titles the
+    /// library holds by work identity without resolving the title again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_id: Option<String>,
 }
 
 /// Options for storefront candidate expansion.
@@ -209,7 +214,7 @@ pub async fn gather_storefront_candidates(
                     for hit in hits {
                         if opts.exclude_graphicaudio_series_sets
                             && id.eq_ignore_ascii_case("graphicaudio")
-                            && looks_like_series_set(&hit)
+                            && looks_like_series_set(&hit.title)
                         {
                             continue;
                         }
@@ -321,12 +326,13 @@ pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCa
         rating_count: hit.rating_count,
         is_abridged: hit.is_abridged,
         store_rank: None,
+        work_id: None,
     }
 }
 
 /// True when the title looks like a boxed series set (usually dropped from recs).
-pub(crate) fn looks_like_series_set(hit: &CatalogHit) -> bool {
-    let title = hit.title.to_ascii_lowercase();
+pub(crate) fn looks_like_series_set(title: &str) -> bool {
+    let title = title.to_ascii_lowercase();
     title.contains("series set") || title.ends_with(" set")
 }
 
@@ -451,6 +457,39 @@ fn merge_category_strings(into: &mut Option<String>, extra: Option<&str>) {
     }
 }
 
+/// True when the library already holds the candidate's title, by ASIN,
+/// canonical ISBN or `source:product` key.
+///
+/// # Arguments
+///
+/// * `c` - The candidate.
+/// * `owned_asins` - Upper-cased ASINs the library holds.
+/// * `owned_isbns` - ISBNs the library holds (canonical and as stored).
+/// * `owned_product_keys` - `source:product` keys and product ids it holds.
+pub(crate) fn candidate_is_owned(
+    c: &StorefrontCandidate,
+    owned_asins: &HashSet<String>,
+    owned_isbns: &HashSet<String>,
+    owned_product_keys: &HashSet<String>,
+) -> bool {
+    if let Some(asin) = c.asin.as_deref() {
+        if owned_asins.contains(&asin.to_ascii_uppercase()) {
+            return true;
+        }
+    }
+    if let Some(isbn) = c.isbn.as_deref() {
+        let norm = bookclerk_enrich::canonicalize_isbn(isbn);
+        if owned_isbns.contains(isbn) || (!norm.is_empty() && owned_isbns.contains(&norm)) {
+            return true;
+        }
+    }
+    let source_key = format!("{}:{}", c.source, c.product_id);
+    owned_product_keys.contains(&source_key)
+        || owned_asins.contains(&c.product_id.to_ascii_uppercase())
+        || owned_isbns.contains(&c.product_id)
+        || owned_product_keys.contains(&c.product_id)
+}
+
 /// Inserts a candidate unless its ASIN, ISBN, or source:product id is already owned.
 pub(crate) fn insert_candidate(
     map: &mut HashMap<String, StorefrontCandidate>,
@@ -459,29 +498,14 @@ pub(crate) fn insert_candidate(
     owned_isbns: &HashSet<String>,
     owned_product_keys: &HashSet<String>,
 ) {
-    if let Some(asin) = c.asin.as_deref() {
-        if owned_asins.contains(&asin.to_ascii_uppercase()) {
-            return;
-        }
-    }
-    if let Some(isbn) = c.isbn.clone() {
-        let norm = bookclerk_enrich::canonicalize_isbn(&isbn);
-        if !norm.is_empty() {
-            c.isbn = Some(norm.clone());
-            if owned_isbns.contains(&norm) || owned_isbns.contains(&isbn) {
-                return;
-            }
-        } else if owned_isbns.contains(&isbn) {
-            return;
-        }
-    }
-    let source_key = format!("{}:{}", c.source, c.product_id);
-    if owned_product_keys.contains(&source_key)
-        || owned_asins.contains(&c.product_id.to_ascii_uppercase())
-        || owned_isbns.contains(&c.product_id)
-        || owned_product_keys.contains(&c.product_id)
-    {
+    if candidate_is_owned(&c, owned_asins, owned_isbns, owned_product_keys) {
         return;
+    }
+    if let Some(isbn) = c.isbn.as_deref() {
+        let norm = bookclerk_enrich::canonicalize_isbn(isbn);
+        if !norm.is_empty() {
+            c.isbn = Some(norm);
+        }
     }
 
     push_edition(
@@ -677,6 +701,7 @@ mod tests {
                 rating_count: None,
                 is_abridged: None,
                 store_rank: None,
+                work_id: None,
             },
             &owned_asins,
             &owned_isbns,
@@ -714,6 +739,7 @@ mod tests {
                 rating_count: None,
                 is_abridged: None,
                 store_rank: None,
+                work_id: None,
             },
             &owned_asins,
             &owned_isbns,
@@ -751,6 +777,7 @@ mod tests {
                 rating_count: None,
                 is_abridged: None,
                 store_rank: None,
+                work_id: None,
             },
             &owned_asins,
             &owned_isbns,

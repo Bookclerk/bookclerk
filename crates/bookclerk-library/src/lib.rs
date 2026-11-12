@@ -162,6 +162,10 @@ pub use sql_plan::{
 };
 pub use store::event_outbox::{EVENT_STREAM_SCAN_FACTOR, EVENT_STREAM_SETTLE_SECS};
 pub use store::{
+    catalog_listings::{
+        CatalogListing, CatalogListingRecord, ListingDetail, ListingOffer, OfferAudience,
+        RecordedListings, CATALOG_LISTING_REFRESH,
+    },
     event_outbox::{deliver_after_for, prepare_publish_domain_event, EventPruneStep},
     fallback_work_key, inject_dispatch_page_failures,
     library_model::{
@@ -178,11 +182,12 @@ pub use store::{
     },
     scan_state::{plan_pass, PassStart, ScanState, FULL_PASS_INTERVAL, RESUME_CURSOR_TTL},
     search_feed::ListingRef,
-    set_dispatch_chunk_for_test, AcquiredBookKey, BookPage, CatalogEnrichmentFields,
+    set_dispatch_chunk_for_test, AcquiredBookKey, BookPage, CandidateRef, CatalogEnrichmentFields,
     DiscoverSubject, EditionFile, FileOwner, FileRole, LibraryStore, NewBook, NewListeningProgress,
     NewTitleRequest, NewTitleRequestSource, QueueRank, SavedFilterRecord, ScannedTitle, SeedScope,
-    StoredCandidate, StoredFeed, StoredQueueRank, UserBookFields, ACQUIRED_KEYS_MAX_PAGE,
-    ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT, MAX_QUEUE_REASONS,
+    StoreCallHit, StoredCandidate, StoredFeed, StoredQueueRank, UserBookFields, WishWork,
+    ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
+    MAX_QUEUE_REASONS,
 };
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

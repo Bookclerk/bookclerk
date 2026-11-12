@@ -55,9 +55,10 @@ pub use callback_tunnel::{TunnelGuest, TunnelHost, TunnelStream};
 #[cfg(feature = "db")]
 pub use db::{db_value_from_sea, proxy_rows_from_typed};
 pub use db_binding::{
-    chunk_indexes, execute_reply_to_d1_results, statement_result_to_d1_result, ChunkCaps,
-    D1ExecResult, D1Meta, D1Result, DatabaseBinding, DatabaseBindingOptions, PreparedStatement,
-    RetryToken, RowStream,
+    chunk_indexes, execute_reply_to_d1_results, statement_result_to_d1_result,
+    write_chunks_operation_id, ChunkCaps, D1ExecResult, D1Meta, D1Result, DatabaseBinding,
+    DatabaseBindingOptions, PreparedStatement, RetryToken, RowStream, WriteChunksError,
+    WriteProgress, MAX_WRITE_KEY_BYTES,
 };
 pub use error::{Result, SdkError};
 pub use fetch_dir::{fetch_work_dir, upload_file_path, FetchWorkDir, UploadFile};

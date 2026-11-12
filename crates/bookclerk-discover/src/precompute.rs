@@ -8,15 +8,18 @@
 //!    [`OWN_TASTE_THRESHOLD`] of their own), asks **every** deployed
 //!    storefront about them concurrently, and stores each store's answer as
 //!    soon as it arrives. A thin taste also browses each store's
-//!    [`STARTER_GENRES`]. Storefront answers are cached for a day in
-//!    `discover_store_calls`, shared by every subject.
+//!    [`STARTER_GENRES`]. Every title a store returns is resolved into the
+//!    shared catalog pool (`store_listings`, prices in `listing_offers`);
+//!    the subject's `discover_candidates` rows refer to those listings.
+//!    Storefront answers are cached for a day in `discover_store_calls` as
+//!    the listings they returned, shared by every subject.
 //! 2. [`rank_subject_feed`] (the `discover_feed` job) ranks the stored
 //!    candidates against the same taste, with no network, and stores the
 //!    shelves.
 //! 3. [`stored_subject_feed`] reads them back for the page, dropping the
 //!    subject's hidden shelves and joining each card's catalog metadata
-//!    (description, cover, …) from the stored candidates, which the stored
-//!    feed leaves out.
+//!    (description, cover, …) from the subject's listings in the pool, which
+//!    the stored feed leaves out.
 //!
 //! See `docs/internals/discovery.md`, *Precomputed shelves*.
 
@@ -24,7 +27,10 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use crate::listening::ListeningSignal;
-use bookclerk_library::{BookRecord, DiscoverSubject, LibraryStore, RequestStatus, SeedScope};
+use bookclerk_library::{
+    BookRecord, CandidateRef, DiscoverSubject, LibraryStore, ListingOffer, OfferAudience,
+    RequestStatus, SeedScope, StoreCallHit,
+};
 use bookclerk_source::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, ContentSource,
     PurchaseHintOpts, SourceError, SourceRegistry,
@@ -34,10 +40,13 @@ use sha2::{Digest, Sha256};
 use tokio::task::JoinSet;
 
 use crate::candidates::{
-    apply_seed_title, hit_to_candidate, insert_candidate, looks_like_series_set,
-    select_taste_seeds, SeedTitle, StorefrontCandidate,
+    apply_seed_title, candidate_is_owned, insert_candidate, select_taste_seeds, SeedTitle,
+    StorefrontCandidate,
 };
 use crate::error::Result;
+use crate::pool::{
+    candidate_from_listing, candidate_from_stored, catalog_listing, PooledCandidate,
+};
 use crate::recommend::{
     engagement_by_book, feed_from_recommendations, owned_identity_sets, rank_candidates,
     shelf_taste, RecommendOptions, TasteWeights,
@@ -95,40 +104,13 @@ const STARTER_GENRE_HITS: usize = 24;
 /// rest stay unpriced until a card asks live.
 pub const PRICE_PRECOMPUTE_LIMIT: usize = 120;
 
-/// Most remembered prices one store keeps in its row of the store-call
-/// cache, oldest dropped first. About 130 bytes each once escaped, so the
-/// row stays well under the database plugins' 256 KiB cell limit.
-const PRICE_MEMO_MAX_ENTRIES: usize = 1_000;
-
-/// One candidate's price as last fetched from its store.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct RememberedPrice {
-    /// List price in integer cents of `currency`.
-    cents: Option<i64>,
-    /// ISO 4217 currency code.
-    currency: Option<String>,
-    /// Display price from the store.
-    label: Option<String>,
-    /// When the store answered; older than [`STORE_CALL_MAX_AGE`] is asked again.
-    at: DateTime<Utc>,
-}
-
-impl RememberedPrice {
-    /// Writes this price onto `candidate`.
-    fn apply(&self, candidate: &mut StorefrontCandidate) {
-        candidate.price_cents = self.cents;
-        candidate.currency.clone_from(&self.currency);
-        candidate.price_label.clone_from(&self.label);
-    }
-}
-
 /// Most bytes a stored feed's JSON may take once escaped as a JSON string.
 ///
 /// The feed is one `discover_feeds` cell. The first-party database plugins
 /// refuse a cell or query result over 256 KiB (`maxResultBytes`) and count
 /// a row as JSON, so the budget applies to the escaped feed. The row read
 /// back carries a few more columns, so the feed keeps 64 KiB of headroom
-/// under that. Cards are stored without the metadata the candidate pool
+/// under that. Cards are stored without the metadata the listing pool
 /// holds, so a feed normally takes a fraction of this; the budget is a
 /// backstop.
 pub const STORED_FEED_MAX_BYTES: usize = 192 * 1024;
@@ -417,7 +399,7 @@ pub async fn fetch_subject_candidates(
     let base = total / stores.len();
     let extra = total % stores.len();
 
-    let mut tasks: JoinSet<(String, Vec<StorefrontCandidate>, bool, usize)> = JoinSet::new();
+    let mut tasks: JoinSet<(String, StoreFetch, usize)> = JoinSet::new();
     for (index, source) in stores.into_iter().enumerate() {
         // Split the total budget so the stores together never exceed it; a
         // store whose share is zero is not asked and keeps its stored rows.
@@ -432,7 +414,7 @@ pub async fn fetch_subject_candidates(
         let exclude_sets = opts.exclude_graphicaudio_series_sets;
         tasks.spawn(async move {
             let id = source.id().to_string();
-            let (mut hits, ok) = fetch_one_store(
+            let mut fetched = fetch_one_store(
                 &library,
                 source.as_ref(),
                 &seeds,
@@ -442,36 +424,59 @@ pub async fn fetch_subject_candidates(
                 exclude_sets,
             )
             .await;
-            let priced = if ok {
-                price_candidates(&library, source.as_ref(), &mut hits, &region).await
+            let priced = if fetched.answered {
+                price_candidates(&library, source.as_ref(), &mut fetched.candidates, &region).await
             } else {
                 0
             };
-            (id, hits, ok, priced)
+            (id, fetched, priced)
         });
     }
     while let Some(joined) = tasks.join_next().await {
-        let Ok((store, candidates, ok, priced)) = joined else {
+        let Ok((store, fetched, priced)) = joined else {
             tracing::warn!("a discover store fetch task stopped before it finished");
             continue;
         };
-        if !ok {
+        if !fetched.answered {
             report.stores_failed.push(store);
             continue;
         }
         report.priced += priced;
-        let mut map: HashMap<String, StorefrontCandidate> = HashMap::new();
-        for c in candidates {
-            insert_candidate(&mut map, c, &owned.0, &owned.1, &owned.2);
-        }
-        let mut rows = Vec::with_capacity(map.len());
-        for (key, c) in map {
-            match serde_json::to_string(&c) {
-                Ok(json) => rows.push((key, json)),
-                Err(err) => {
-                    tracing::warn!(%store, error = %err, "skip a candidate that does not serialize")
-                }
-            }
+        // One row per listing (the first seed that found it explains it),
+        // leaving out titles the library holds. Merging editions of one
+        // work across stores is the ranking's job.
+        let mut seen = HashSet::new();
+        let mut rows: Vec<CandidateRef> = fetched
+            .candidates
+            .into_iter()
+            .filter(|p| !candidate_is_owned(&p.candidate, &owned.0, &owned.1, &owned.2))
+            .filter(|p| seen.insert(p.listing_id.clone()))
+            .map(|p| CandidateRef {
+                listing_id: p.listing_id,
+                origin: p.candidate.origin,
+                seed_title: p.candidate.seed_title,
+                seed_categories: p.candidate.seed_categories,
+                starter_genre: p.candidate.starter_genre,
+            })
+            .collect();
+        if !fetched.complete {
+            // Some title could not be placed in the pool this time. Keep
+            // the store's stored rows the new answer does not name, so a
+            // title the store still sells is not dropped until a complete
+            // fetch replaces them.
+            let kept = library
+                .list_discover_candidates(subject)
+                .await?
+                .into_iter()
+                .filter(|c| c.source == store && seen.insert(c.listing.id.clone()))
+                .map(|c| CandidateRef {
+                    listing_id: c.listing.id,
+                    origin: c.origin,
+                    seed_title: c.seed_title,
+                    seed_categories: c.seed_categories,
+                    starter_genre: c.starter_genre,
+                });
+            rows.extend(kept);
         }
         library
             .replace_discover_candidates(subject, &store, taste.scope, &rows)
@@ -497,13 +502,14 @@ pub async fn fetch_subject_candidates(
 /// Prices one store's candidates, so cards show a price before any live
 /// lookup.
 ///
-/// Prices answered in the last day come from the store's row in the
-/// store-call cache, shared by every subject, so a refresh after a wish asks
-/// the store only about titles it has not priced. The rest, up to
-/// [`PRICE_PRECOMPUTE_LIMIT`], go in one `purchase_hints` call. A store
-/// paused for rate limiting is not asked; one that asks to slow down is
-/// paused for live lookups too. A failure or timeout leaves the rest
-/// unpriced.
+/// A candidate whose listing has a current `non_member` offer in the pool
+/// (quoted in the last day by any subject's fetch) is
+/// already priced. The rest, up to [`PRICE_PRECOMPUTE_LIMIT`] distinct
+/// titles, go in one `purchase_hints` call, and the answers are stored as
+/// the listings' offers: the price someone without an account pays as
+/// `non_member`, a member price as `member`. A store paused for rate
+/// limiting is not asked; one that asks to slow down is paused for live
+/// lookups too. A failure or timeout leaves the rest unpriced.
 ///
 /// # Returns
 ///
@@ -511,36 +517,24 @@ pub async fn fetch_subject_candidates(
 async fn price_candidates(
     library: &LibraryStore,
     source: &dyn ContentSource,
-    candidates: &mut [StorefrontCandidate],
+    candidates: &mut [PooledCandidate],
     region: &str,
 ) -> usize {
     let id = source.id().to_string();
-    let memo_key = call_key(&id, "prices", &[region]);
     let now = Utc::now();
-    let mut memo: HashMap<String, RememberedPrice> = library
-        .get_discover_store_call(&memo_key, STORE_CALL_MAX_AGE)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default();
-    memo.retain(|_, price| price.at + STORE_CALL_MAX_AGE > now);
-    let mut priced = 0;
-    for candidate in candidates.iter_mut() {
-        if candidate.price_cents.is_none() {
-            if let Some(price) = memo.get(&candidate.product_id) {
-                price.apply(candidate);
-                priced += 1;
-            }
-        }
-    }
-    // One question per title: seeds that found the same product share it.
+    let mut priced = candidates
+        .iter()
+        .filter(|p| p.candidate.price_cents.is_some())
+        .count();
+    // One question per listing: seeds that found the same title share it.
     let mut asked = HashSet::new();
     let unpriced: Vec<usize> = candidates
         .iter()
         .enumerate()
-        .filter(|(_, c)| c.price_cents.is_none() && !c.product_id.trim().is_empty())
-        .filter(|(_, c)| asked.insert(c.product_id.clone()))
+        .filter(|(_, p)| {
+            p.candidate.price_cents.is_none() && !p.candidate.product_id.trim().is_empty()
+        })
+        .filter(|(_, p)| asked.insert(p.listing_id.clone()))
         .map(|(i, _)| i)
         .take(PRICE_PRECOMPUTE_LIMIT)
         .collect();
@@ -550,7 +544,7 @@ async fn price_candidates(
     let opts: Vec<PurchaseHintOpts> = unpriced
         .iter()
         .map(|&i| {
-            let c = &candidates[i];
+            let c = &candidates[i].candidate;
             PurchaseHintOpts {
                 product_id: Some(c.product_id.clone()),
                 title: Some(c.title.clone()),
@@ -578,41 +572,41 @@ async fn price_candidates(
             return priced;
         }
     };
-    let mut learned = false;
+    let mut offers = Vec::new();
     for (&i, answer) in unpriced.iter().zip(answers) {
         let Some(hint) = answer else { continue };
+        let listing_id = candidates[i].listing_id.clone();
+        let member = ListingOffer {
+            audience: OfferAudience::Member,
+            price_cents: hint.member_price_cents,
+            price_label: hint.member_price_label.clone(),
+            currency: hint.currency.clone(),
+            observed_at: now,
+        };
+        if !member.is_empty() {
+            offers.push((listing_id.clone(), member));
+        }
         // The list price: what someone without an account there pays.
-        let cents = hint.list_price_cents.or(hint.price_cents);
-        let label = hint.list_price_label.or(hint.price_label);
-        if cents.is_none() && label.is_none() {
+        let non_member = ListingOffer {
+            audience: OfferAudience::NonMember,
+            price_cents: hint.list_price_cents.or(hint.price_cents),
+            price_label: hint.list_price_label.or(hint.price_label),
+            currency: hint.currency,
+            observed_at: now,
+        };
+        if non_member.is_empty() {
             continue;
         }
-        let price = RememberedPrice {
-            cents,
-            currency: hint.currency,
-            label,
-            at: now,
-        };
-        let product_id = candidates[i].product_id.clone();
-        for candidate in candidates.iter_mut().filter(|c| c.product_id == product_id) {
-            price.apply(candidate);
+        for p in candidates.iter_mut().filter(|p| p.listing_id == listing_id) {
+            p.candidate.price_cents = non_member.price_cents;
+            p.candidate.price_label.clone_from(&non_member.price_label);
+            p.candidate.currency.clone_from(&non_member.currency);
             priced += 1;
         }
-        memo.insert(product_id, price);
-        learned = true;
+        offers.push((listing_id, non_member));
     }
-    if learned {
-        if memo.len() > PRICE_MEMO_MAX_ENTRIES {
-            let mut ages: Vec<DateTime<Utc>> = memo.values().map(|p| p.at).collect();
-            ages.sort_unstable();
-            let cutoff = ages[memo.len() - PRICE_MEMO_MAX_ENTRIES];
-            memo.retain(|_, price| price.at >= cutoff);
-        }
-        if let Ok(json) = serde_json::to_string(&memo) {
-            if let Err(err) = library.put_discover_store_call(&memo_key, &id, &json).await {
-                tracing::debug!(store = %id, error = %err, "candidate price memo write failed");
-            }
-        }
+    if let Err(err) = library.record_listing_offers(&offers).await {
+        tracing::debug!(store = %id, error = %err, "candidate price write failed");
     }
     priced
 }
@@ -642,10 +636,9 @@ fn interleave_seeds(books: Vec<SeedTitle>, wishes: Vec<SeedTitle>) -> Vec<SeedTi
 ///
 /// # Returns
 ///
-/// The store's candidates, and `false` when no call returned a title (so
-/// the store's stored rows are kept rather than wiped). An empty answer
-/// counts as no answer: plugin adapters report some guest failures as an
-/// empty success, and those must not erase the store's shelves.
+/// A [`StoreFetch`]: the store's candidates with their pool listings,
+/// whether any call returned a title, and whether every answer was stored
+/// whole.
 async fn fetch_one_store(
     library: &LibraryStore,
     source: &dyn ContentSource,
@@ -654,26 +647,37 @@ async fn fetch_one_store(
     region: &str,
     budget: usize,
     exclude_series_sets: bool,
-) -> (Vec<StorefrontCandidate>, bool) {
+) -> StoreFetch {
     let id = source.id().to_string();
+    let store = StoreRef {
+        id: &id,
+        plugin_key: source.plugin_key(),
+        region,
+    };
     let mut out = Vec::new();
     let mut calls = 0usize;
     let mut answered = 0usize;
+    let mut complete = true;
     // Deals first: one call, and they fill the deals shelf whatever the seeds.
     if budget == 0 {
-        return (out, false);
+        return StoreFetch {
+            candidates: out,
+            answered: false,
+            complete,
+        };
     }
     let deal_key = call_key(&id, "deals", &[]);
-    let skip_set = |hit: &CatalogHit| {
-        exclude_series_sets && id.eq_ignore_ascii_case("graphicaudio") && looks_like_series_set(hit)
+    let keep = |p: &PooledCandidate| {
+        !(exclude_series_sets
+            && id.eq_ignore_ascii_case("graphicaudio")
+            && crate::candidates::looks_like_series_set(&p.candidate.title))
     };
-    if let Some(hits) = cached_or_call(library, &id, &deal_key, || source.list_deals(32)).await {
+    if let Some(answer) = cached_or_call(library, &store, &deal_key, || source.list_deals(32)).await
+    {
+        complete &= answer.complete;
+        let hits = answer.candidates;
         answered += usize::from(!hits.is_empty());
-        out.extend(
-            hits.into_iter()
-                .filter(|h| !skip_set(h))
-                .map(|h| hit_to_candidate(&id, h)),
-        );
+        out.extend(hits.into_iter().filter(|p| keep(p)));
     }
     calls += 1;
     let started = std::time::Instant::now();
@@ -698,15 +702,16 @@ async fn fetch_one_store(
                 &s.region,
             ],
         );
-        let hits = cached_or_call(library, &id, &key, || source.expand_candidates(s, 24)).await;
+        let answer =
+            cached_or_call(library, &store, &key, || source.expand_candidates(s, 24)).await;
         calls += 1;
-        let Some(hits) = hits else { continue };
+        let Some(answer) = answer else { continue };
+        complete &= answer.complete;
+        let hits = answer.candidates;
         answered += usize::from(!hits.is_empty());
-        for hit in hits {
-            if skip_set(&hit) {
-                continue;
-            }
-            out.push(apply_seed_title(hit_to_candidate(&id, hit), seed));
+        for mut p in hits.into_iter().filter(|p| keep(p)) {
+            p.candidate = apply_seed_title(p.candidate, seed);
+            out.push(p);
         }
     }
     for genre in starter_genres {
@@ -723,76 +728,200 @@ async fn fetch_one_store(
             field: Some(CatalogSearchField::Genre),
             language: None,
         };
-        let hits = cached_or_call(library, &id, &key, || source.search_catalog(&search)).await;
+        let answer = cached_or_call(library, &store, &key, || source.search_catalog(&search)).await;
         calls += 1;
-        let Some(hits) = hits else { continue };
+        let Some(answer) = answer else { continue };
+        complete &= answer.complete;
+        let hits = answer.candidates;
         answered += usize::from(!hits.is_empty());
-        for hit in hits {
-            if skip_set(&hit) {
-                continue;
+        for mut p in hits.into_iter().filter(|p| keep(p)) {
+            p.candidate.starter_genre = Some(genre.clone());
+            if p.candidate.origin.is_empty() {
+                p.candidate.origin = format!("{id} popular in {genre}");
             }
-            let mut c = hit_to_candidate(&id, hit);
-            c.starter_genre = Some(genre.clone());
-            if c.origin.is_empty() {
-                c.origin = format!("{id} popular in {genre}");
-            }
-            out.push(c);
+            out.push(p);
         }
     }
-    (out, answered > 0)
+    StoreFetch {
+        candidates: out,
+        answered: answered > 0,
+        complete,
+    }
 }
 
-/// Returns a cached answer, or makes the call (with [`STORE_CALL_TIMEOUT`]) and caches it.
+/// What one store's fetch produced.
+struct StoreFetch {
+    /// The candidates with their pool listings, in the order asked.
+    candidates: Vec<PooledCandidate>,
+    /// Whether any call returned a title. An empty answer counts as no
+    /// answer: plugin adapters report some guest failures as an empty
+    /// success, and those must not erase the store's shelves, so a fetch
+    /// with no answer keeps the stored rows.
+    answered: bool,
+    /// Whether every answer was stored whole. `false` when a title could
+    /// not be placed in the pool this time; the store's stored rows are
+    /// then kept beside the new ones, so the title is not dropped.
+    complete: bool,
+}
+
+/// One storefront answer read from the pool.
+struct StoreAnswer {
+    /// The answer's candidates, in its order.
+    candidates: Vec<PooledCandidate>,
+    /// `false` when some of its titles could not be placed in the pool this
+    /// time and are missing from `candidates` (the answer was not cached).
+    complete: bool,
+}
+
+/// The store a fetch is asking, as the pool needs it.
+struct StoreRef<'a> {
+    /// Storefront plugin id (`audible`), the candidates' `source`.
+    id: &'a str,
+    /// Its PluginKey, the listings' `plugin_key`.
+    plugin_key: &'a str,
+    /// Marketplace the store is asked about.
+    region: &'a str,
+}
+
+/// Returns a cached answer, or makes the call (with [`STORE_CALL_TIMEOUT`]),
+/// resolves its titles into the listing pool and caches the listings.
+///
+/// Either way the candidates are read back from the pool, so a cached and
+/// a fresh answer give the same fields, and a price another subject's
+/// fetch stored already shows.
 ///
 /// # Returns
 ///
 /// `None` when the call failed or timed out; the failure is logged, not
 /// cached. An empty answer is returned but not cached either, since it may
 /// be a guest failure the adapter softened, so the next subject asks again.
+/// An answer with titles that could not be placed in the pool is returned
+/// without them, marked incomplete, and not cached.
 async fn cached_or_call<F, Fut>(
     library: &LibraryStore,
-    store: &str,
+    store: &StoreRef<'_>,
     key: &str,
     call: F,
-) -> Option<Vec<CatalogHit>>
+) -> Option<StoreAnswer>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = bookclerk_source::Result<Vec<CatalogHit>>>,
 {
+    let id = store.id;
     match library
         .get_discover_store_call(key, STORE_CALL_MAX_AGE)
         .await
     {
-        Ok(Some(json)) => match serde_json::from_str::<Vec<CatalogHit>>(&json) {
-            Ok(hits) => return Some(hits),
-            Err(err) => {
-                tracing::debug!(%store, error = %err, "ignore an unreadable cached store answer")
+        Ok(Some(hits)) => match pooled(library, id, &hits).await {
+            Ok(Some(found)) => {
+                return Some(StoreAnswer {
+                    candidates: found,
+                    complete: true,
+                })
             }
+            // A listing the answer named is gone; ask the store again.
+            Ok(None) => {}
+            Err(err) => tracing::debug!(store = %id, error = %err, "discover pool read failed"),
         },
         Ok(None) => {}
-        Err(err) => tracing::debug!(%store, error = %err, "discover store cache read failed"),
+        Err(err) => tracing::debug!(store = %id, error = %err, "discover store cache read failed"),
     }
-    match tokio::time::timeout(STORE_CALL_TIMEOUT, call()).await {
-        Ok(Ok(hits)) => {
-            if hits.is_empty() {
-                return Some(hits);
-            }
-            if let Ok(json) = serde_json::to_string(&hits) {
-                if let Err(err) = library.put_discover_store_call(key, store, &json).await {
-                    tracing::debug!(%store, error = %err, "discover store cache write failed");
-                }
-            }
-            Some(hits)
-        }
+    let hits = match tokio::time::timeout(STORE_CALL_TIMEOUT, call()).await {
+        Ok(Ok(hits)) => hits,
         Ok(Err(err)) => {
-            tracing::debug!(%store, error = %err, "discover store call failed");
-            None
+            tracing::debug!(store = %id, error = %err, "discover store call failed");
+            return None;
         }
         Err(_) => {
-            tracing::debug!(%store, "discover store call timed out");
+            tracing::debug!(store = %id, "discover store call timed out");
+            return None;
+        }
+    };
+    if hits.is_empty() {
+        return Some(StoreAnswer {
+            candidates: Vec::new(),
+            complete: true,
+        });
+    }
+    let now = Utc::now();
+    let listings: Vec<_> = hits
+        .iter()
+        .map(|hit| catalog_listing(store.plugin_key, store.region, hit, now))
+        .collect();
+    let recorded = match library.record_catalog_listings(&listings).await {
+        Ok(recorded) => recorded,
+        Err(err) => {
+            tracing::warn!(store = %id, error = %err, "discover could not store a store answer");
+            return None;
+        }
+    };
+    let call_hits: Vec<StoreCallHit> = hits
+        .iter()
+        .zip(recorded.ids)
+        .filter_map(|(hit, listing_id)| {
+            Some(StoreCallHit {
+                listing_id: listing_id?,
+                origin: hit.origin.clone(),
+                rank_hint: hit.rank_hint,
+            })
+        })
+        .collect();
+    // An answer none of whose titles could be stored is not cached, like an
+    // empty one, and neither is one with titles the resolver could not place
+    // this time, so the store is asked again next time.
+    if !call_hits.is_empty() && recorded.unresolved == 0 {
+        if let Err(err) = library.put_discover_store_call(key, id, &call_hits).await {
+            tracing::debug!(store = %id, error = %err, "discover store cache write failed");
+        }
+    }
+    match pooled(library, id, &call_hits).await {
+        Ok(found) => Some(StoreAnswer {
+            candidates: found.unwrap_or_default(),
+            complete: recorded.unresolved == 0,
+        }),
+        Err(err) => {
+            tracing::warn!(store = %id, error = %err, "discover pool read failed");
             None
         }
     }
+}
+
+/// The candidates a store answer's listings read as, in the answer's order.
+///
+/// # Returns
+///
+/// `None` when a listing the answer named is no longer in the pool.
+///
+/// # Errors
+///
+/// Returns the library read error.
+async fn pooled(
+    library: &LibraryStore,
+    source: &str,
+    hits: &[StoreCallHit],
+) -> bookclerk_library::Result<Option<Vec<PooledCandidate>>> {
+    let ids: Vec<String> = hits.iter().map(|h| h.listing_id.clone()).collect();
+    let by_id: HashMap<String, bookclerk_library::CatalogListingRecord> = library
+        .catalog_listings(&ids)
+        .await?
+        .into_iter()
+        .map(|l| (l.id.clone(), l))
+        .collect();
+    let now = Utc::now();
+    let mut out = Vec::with_capacity(hits.len());
+    for hit in hits {
+        let Some(listing) = by_id.get(&hit.listing_id) else {
+            return Ok(None);
+        };
+        let mut candidate = candidate_from_listing(source, listing, now);
+        candidate.origin.clone_from(&hit.origin);
+        candidate.store_rank = hit.rank_hint;
+        out.push(PooledCandidate {
+            listing_id: hit.listing_id.clone(),
+            candidate,
+        });
+    }
+    Ok(Some(out))
 }
 
 /// SHA-256 hex over the store, call kind and query parts (NUL-separated).
@@ -862,11 +991,15 @@ pub async fn rank_subject_feed(
         Vec::new()
     };
     let mut map: HashMap<String, StorefrontCandidate> = HashMap::new();
+    let now = Utc::now();
     for row in stored.iter().filter(|row| row.seed_scope == taste.scope) {
-        match serde_json::from_str::<StorefrontCandidate>(&row.candidate_json) {
-            Ok(c) => insert_candidate(&mut map, c, &asins, &isbns, &products),
-            Err(err) => tracing::debug!(error = %err, "skip an unreadable stored candidate"),
-        }
+        insert_candidate(
+            &mut map,
+            candidate_from_stored(row, now),
+            &asins,
+            &isbns,
+            &products,
+        );
     }
     let mut rank_opts = opts.clone();
     rank_opts.include_purchase_hints = false;
@@ -922,9 +1055,9 @@ pub struct StoredSubjectFeed {
 /// each card's catalog metadata from the candidate pool.
 ///
 /// The stored feed keeps card references and what is personal to the
-/// subject; the description, cover and other metadata the subject's
-/// `discover_candidates` rows hold are read from them here, in pages that
-/// stay under the database plugin's result limit.
+/// subject; the description, cover and other metadata of the subject's
+/// listings are read from the pool here, in chunks that stay under the
+/// database plugin's result limit.
 ///
 /// # Returns
 ///
@@ -1416,16 +1549,17 @@ mod tests {
         assert_eq!(fetched.candidates, 5);
         assert_eq!(fetched.priced, 5);
         let stored = library.list_discover_candidates(&subject).await.unwrap();
-        assert!(stored.iter().all(|c| {
-            serde_json::from_str::<StorefrontCandidate>(&c.candidate_json)
-                .unwrap()
-                .price_label
-                .as_deref()
-                == Some("$12.34")
-        }));
+        let now = Utc::now();
+        assert!(stored
+            .iter()
+            .all(|c| { candidate_from_stored(c, now).price_label.as_deref() == Some("$12.34") }));
+        // The prices live once, on the listings, for every subject.
+        assert!(stored
+            .iter()
+            .all(|c| { c.listing.offer(OfferAudience::NonMember).is_some() }));
         let near = stored
             .iter()
-            .map(|c| serde_json::from_str::<StorefrontCandidate>(&c.candidate_json).unwrap())
+            .map(|c| candidate_from_stored(c, now))
             .find(|c| c.product_id == "near-a1")
             .unwrap();
         assert_eq!(near.seed_title.as_deref(), Some("Alice Book"));
@@ -1500,20 +1634,42 @@ mod tests {
             .is_none());
     }
 
-    /// A candidate stub at `product_id`, unpriced.
-    fn unpriced(product_id: &str) -> StorefrontCandidate {
-        hit_to_candidate(
-            "fake",
-            CatalogHit {
-                product_id: product_id.into(),
-                title: format!("Title {product_id}"),
-                ..CatalogHit::default()
-            },
-        )
+    /// Unpriced titles of store `store`, recorded into the pool and read
+    /// back as the fetch reads them.
+    async fn pooled_titles(
+        library: &LibraryStore,
+        store: &str,
+        products: &[&str],
+    ) -> Vec<PooledCandidate> {
+        let now = Utc::now();
+        let listings: Vec<_> = products
+            .iter()
+            .map(|p| {
+                let hit = CatalogHit {
+                    product_id: (*p).to_string(),
+                    title: format!("Title {p}"),
+                    ..CatalogHit::default()
+                };
+                catalog_listing(store, "us", &hit, now)
+            })
+            .collect();
+        let hits: Vec<StoreCallHit> = library
+            .record_catalog_listings(&listings)
+            .await
+            .unwrap()
+            .ids
+            .into_iter()
+            .map(|id| StoreCallHit {
+                listing_id: id.unwrap(),
+                origin: String::new(),
+                rank_hint: None,
+            })
+            .collect();
+        pooled(library, store, &hits).await.unwrap().unwrap()
     }
 
-    /// Prices answered once are remembered for every later fetch, so a
-    /// refresh only asks the store about titles it has not priced.
+    /// Prices answered once are stored on the listings for every later
+    /// fetch, so a refresh only asks the store about titles it has not priced.
     #[tokio::test]
     async fn a_price_is_asked_for_once_a_day() {
         let library = bookclerk_plugin_database_sqlite::open_store_memory()
@@ -1527,22 +1683,22 @@ mod tests {
             price_calls: std::sync::Arc::clone(&price_calls),
         };
         // Two seeds found "a": one question, both copies priced.
-        let mut first = vec![unpriced("a"), unpriced("b"), unpriced("a")];
+        let mut first = pooled_titles(&library, "memo", &["a", "b", "a"]).await;
         assert_eq!(
             price_candidates(&library, &store, &mut first, "us").await,
             3
         );
         assert_eq!(price_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
-        let mut again = vec![unpriced("a"), unpriced("b"), unpriced("c")];
+        let mut again = pooled_titles(&library, "memo", &["a", "b", "c"]).await;
         assert_eq!(
             price_candidates(&library, &store, &mut again, "us").await,
             3
         );
-        // Only "c" reached the store; "a" and "b" came from the memo.
+        // Only "c" reached the store; "a" and "b" came from their offers.
         assert_eq!(price_calls.load(std::sync::atomic::Ordering::SeqCst), 3);
         assert!(again
             .iter()
-            .all(|c| c.price_label.as_deref() == Some("$12.34")));
+            .all(|p| p.candidate.price_label.as_deref() == Some("$12.34")));
     }
 
     /// A 429 during a fetch pauses the store, and a paused store is not asked.
@@ -1559,12 +1715,12 @@ mod tests {
             price_calls: std::sync::Arc::clone(&price_calls),
         };
         for _ in 0..2 {
-            let mut batch = vec![unpriced("a"), unpriced("b")];
+            let mut batch = pooled_titles(&library, "limited", &["a", "b"]).await;
             assert_eq!(
                 price_candidates(&library, &store, &mut batch, "us").await,
                 0
             );
-            assert!(batch.iter().all(|c| c.price_cents.is_none()));
+            assert!(batch.iter().all(|p| p.candidate.price_cents.is_none()));
         }
         assert_eq!(price_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
@@ -1575,12 +1731,19 @@ mod tests {
             .await
             .unwrap();
         let subject = DiscoverSubject::User(1);
+        let old = pooled_titles(&library, "down", &["old"]).await;
         library
             .replace_discover_candidates(
                 &subject,
                 "down",
                 SeedScope::Household,
-                &[(String::from("old"), String::from("{}"))],
+                &[CandidateRef {
+                    listing_id: old[0].listing_id.clone(),
+                    origin: String::new(),
+                    seed_title: None,
+                    seed_categories: None,
+                    starter_genre: None,
+                }],
             )
             .await
             .unwrap();
@@ -1610,7 +1773,7 @@ mod tests {
         let rows = library.list_discover_candidates(&subject).await.unwrap();
         let mut by_store: Vec<(&str, &str)> = rows
             .iter()
-            .map(|r| (r.source.as_str(), r.candidate_key.as_str()))
+            .map(|r| (r.source.as_str(), r.listing.product_id.as_str()))
             .collect();
         by_store.sort_unstable();
         assert_eq!(by_store.len(), 3, "{by_store:?}");
@@ -1632,12 +1795,19 @@ mod tests {
             .await
             .unwrap();
         let subject = DiscoverSubject::User(1);
+        let old = pooled_titles(&library, "quiet", &["old"]).await;
         library
             .replace_discover_candidates(
                 &subject,
                 "quiet",
                 SeedScope::Household,
-                &[(String::from("old"), String::from("{}"))],
+                &[CandidateRef {
+                    listing_id: old[0].listing_id.clone(),
+                    origin: String::new(),
+                    seed_title: None,
+                    seed_categories: None,
+                    starter_genre: None,
+                }],
             )
             .await
             .unwrap();
@@ -1658,7 +1828,7 @@ mod tests {
         }
         let rows = library.list_discover_candidates(&subject).await.unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].candidate_key, "old");
+        assert_eq!(rows[0].listing.product_id, "old");
         // The empty deals answer was not cached, so both fetches asked.
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }

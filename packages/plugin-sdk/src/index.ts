@@ -113,7 +113,10 @@ export {
   encodeExecuteResultReply,
   encodeExecuteRequest,
   executeReplyToD1Results,
+  MAX_WRITE_KEY_BYTES,
   statementResultToD1Result,
+  WriteChunksError,
+  writeChunksOperationId,
 } from "./db-execute.js";
 export type {
   AtomicTransport,
@@ -133,6 +136,8 @@ export type {
   RetryToken,
   StatementResult,
   TypedDbStatement,
+  WriteChunksOptions,
+  WriteProgress,
 } from "./db-execute.js";
 export type {
   AdapterEnv,

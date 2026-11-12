@@ -669,8 +669,9 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `accounts`, `books`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
 `operator_sessions`, `account_links`, `listening_progress`, `title_requests`, `title_request_sources`,
-`embeddings`, `discover_candidates`, `discover_store_calls`, `discover_feeds`,
-`discover_fetches`, `discover_request_queue`,
+`embeddings`, `discover_candidates`, `discover_store_calls`,
+`discover_store_call_hits`, `discover_feeds`, `discover_fetches`,
+`discover_request_queue`,
 `user_preferences`, `encrypted_secrets`, `jobs`,
 `job_temp_paths`, `domain_events`, `event_deliveries`,
 `event_subscriber_nodes`, `event_outbox_stats`, `bookclerk_slots`,
@@ -683,8 +684,14 @@ library holds as works, expressions and editions:
 - `works`, `expressions` and `editions`, with `work_identifiers` and
   `edition_identifiers` (a strong identifier is unique through
   `strong_key`);
-- `store_listings` (one per plugin, marketplace and product) and
-  `holdings` (who holds each listing: an account or a branch library);
+- `store_listings` (one per plugin, marketplace and product, with the
+  store's own text for it: synopsis, cover, credits as printed, ratings),
+  `listing_offers` (its price per audience, `non_member` or `member`) and
+  `holdings` (who holds each listing: an account or a branch library). A
+  listing with no holding is a catalog title a store returned to Discover;
+  Discover's candidates and its storefront call cache refer to listings
+  instead of keeping their own copies
+  ([Shared listing pool](../internals/discovery.md#shared-listing-pool));
 - `contributors` and `credits`, `series` and `series_entries`;
 - `resolution_overrides` (an Administrator's pins and splits) and
   `resolution_conflicts` (identifier clashes the resolver recorded instead
