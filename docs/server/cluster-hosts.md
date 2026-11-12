@@ -271,7 +271,11 @@ gone.
   `node:<node id>`, and an audit row `branch_connections_added`. Accounts
   of storefronts that are not shareable there are not kept. The answer,
   `accounts.added`, counts what was added, already there, taken, or not
-  kept, and whether the rule refused them all.
+  kept, and whether the rule refused them all. The library handles
+  `accounts.add` and `accounts.remove` one at a time, and refuses an offer
+  (`superseded`) once a newer connection of the branch replaced the one it
+  came on, so an offer the branch gave up on can't land after a later
+  disconnect.
 - **Disconnect everywhere.** **Revoke everywhere** on the branch
   (`POST /api/config/join/connections/disconnect` with
   `everywhere: true`) disconnects it on the branch first, then sends
@@ -279,9 +283,11 @@ gone.
   direction, all at once. A link the branch left or lost is named in
   `unreached`. Each library removes the person's links to the account and, in
   the same atomic batch, deletes its secrets and marks it revoked when no
-  other member's link holds it. A revoked account then loses its holdings
-  (each with a `holding_removed` event) and its scan checkpoints, as any
-  revocation does. A library that can't be reached is named
+  other member's link holds it. When it is the only holder, the library
+  first marks the account revoked, so a scan still running can't write
+  more, then removes its holdings (each with a `holding_removed` event)
+  and its scan checkpoints, as any revocation does, and only then the
+  links: a failed step is retried by disconnecting again. A library that can't be reached is named
   in the answer's `unreached`, and the account stays connected there.
   **Revoke here** (or `everywhere: false`) disconnects it on the branch
   only.

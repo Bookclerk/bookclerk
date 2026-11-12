@@ -808,6 +808,35 @@ async fn disconnecting_everywhere_withdraws_only_the_persons_links() {
                 .is_none_or(|state| state.resume_cursor.is_empty()),
             "{name}"
         );
+        // A scan page still in flight adds nothing back: the account was
+        // revoked before the cleanup ran.
+        let _ = libro
+            .upsert_book(&crate::NewBook::minimal(
+                "ISBN2",
+                "ana@example.com",
+                "us",
+                "ISBN2",
+            ))
+            .await;
+        let _ = libro
+            .save_scan_checkpoint("ana@example.com", "c2", "t1", "p2")
+            .await;
+        assert_eq!(
+            store
+                .remove_account_holdings(SHAREABLE, "ana@example.com", crate::HoldingSelection::All)
+                .await
+                .unwrap(),
+            0,
+            "{name}"
+        );
+        assert!(
+            store
+                .scan_state(SHAREABLE, "ana@example.com")
+                .await
+                .unwrap()
+                .is_none_or(|state| state.resume_cursor.is_empty()),
+            "{name}"
+        );
     }
 }
 

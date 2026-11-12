@@ -14,6 +14,14 @@
 //! here and only for this branch. Only accounts of storefronts every
 //! installed copy declares `credentials = "shareable"` are kept, and this
 //! library's per-member rule decides whether the person may connect any.
+//!
+//! Both frames run one at a time on this owner node ([`ACCOUNTS_GATE`]),
+//! and an offer is refused once a newer connection of the branch replaced
+//! the one it came on. A branch that timed out waiting for an offer and
+//! then disconnected the account over a new connection therefore never
+//! has the stale offer land after the removal: either the offer finished
+//! first and the removal takes it back, or the offer finds its connection
+//! superseded.
 
 use bookclerk_library::control_plane::{
     import_offered_accounts, load_cluster_row, load_node, withdraw_person_account,
@@ -26,6 +34,10 @@ use bookclerk_node_proto::{
 use serde_json::json;
 
 use super::work::{error, HostContext};
+
+/// Serializes `accounts.add` and `accounts.remove` on this owner node,
+/// across every branch connection. Both are rare, person-driven actions.
+static ACCOUNTS_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The branch's owner user, while one is assigned and active.
 async fn branch_owner(
@@ -55,6 +67,12 @@ pub(super) async fn add(
     id: String,
     sealed: &str,
 ) -> bookclerk_library::Result<Frame> {
+    let _serialized = ACCOUNTS_GATE.lock().await;
+    // An offer from a connection a newer one replaced may be one the
+    // branch gave up on before disconnecting the account over the new one.
+    if super::ws::superseded(&host.node_id, host.serial) {
+        return Ok(error(id, "refused", "superseded"));
+    }
     let Some(user_id) = branch_owner(library, host).await? else {
         return Ok(error(id, "refused", "no_owner"));
     };
@@ -133,6 +151,7 @@ pub(super) async fn remove(
     {
         return Ok(error(id, "refused", "invalid_account"));
     }
+    let _serialized = ACCOUNTS_GATE.lock().await;
     let Some(user_id) = branch_owner(library, host).await? else {
         return Ok(error(id, "refused", "no_owner"));
     };

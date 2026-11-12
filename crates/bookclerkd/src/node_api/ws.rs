@@ -209,6 +209,31 @@ pub fn close_node_sessions(node_id: &str, code: u16) {
     }
 }
 
+/// True when a newer connection of `node_id` replaced connection `serial`
+/// as the node's live one. A connection with no live slot at all (one
+/// still finishing, or a test's context) is not superseded.
+pub(super) fn superseded(node_id: &str, serial: u64) -> bool {
+    sessions()
+        .live
+        .get(node_id)
+        .is_some_and(|slot| slot.serial != serial)
+}
+
+/// Makes a new connection of `node_id` its live one, as a welcomed
+/// reconnect does, and returns its serial; [`unregister`] it when done.
+#[cfg(test)]
+pub(crate) fn go_live_for_test(node_id: &str) -> u64 {
+    let (serial, _close) = register_pending(node_id);
+    assert!(promote(node_id, serial));
+    serial
+}
+
+/// Removes connection `serial` of `node_id` from the session table.
+#[cfg(test)]
+pub(crate) fn unregister_for_test(node_id: &str, serial: u64) {
+    unregister(node_id, serial);
+}
+
 /// True while this owner node holds a live connection of `node_id`.
 #[cfg(test)]
 pub(crate) fn node_session_live(node_id: &str) -> bool {
@@ -491,6 +516,7 @@ async fn run(
         settings,
         owner_node_id: receiving_node_id,
         state: Arc::clone(&state),
+        serial,
     };
     session(&library, socket, &host, authed.resume, &mut wakes, close).await;
     end_session(&library, &authed.node_id, serial, wakes).await;

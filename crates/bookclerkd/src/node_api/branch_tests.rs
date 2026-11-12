@@ -723,6 +723,7 @@ async fn branch_context(state: &Arc<AppState>, node_id: &str) -> super::super::w
         },
         owner_node_id: "owner-node".into(),
         state: Arc::clone(state),
+        serial: 0,
     }
 }
 
@@ -877,4 +878,38 @@ async fn a_branch_adds_and_withdraws_its_persons_connections() {
         .await
         .unwrap();
     assert!(matches!(answer.body, Body::Error { .. }), "{answer:?}");
+
+    // The branch reconnected (it may have given up on an offer and then
+    // disconnected the account over the new connection): an offer still
+    // arriving on the old connection is refused, and one on the new
+    // connection is answered.
+    set_member_may_connect_accounts(&store, member, true)
+        .await
+        .unwrap();
+    let live = super::super::ws::go_live_for_test(&node_id);
+    let stale = offer(&node_id, vec![offered(&plugin_key, "stale@example.com")]);
+    let answer = super::super::host_accounts::add(&store, &host, "a4".into(), &stale)
+        .await
+        .unwrap();
+    assert!(
+        matches!(&answer.body, Body::Error { code, message } if code == "refused" && message == "superseded"),
+        "{answer:?}"
+    );
+    assert!(store
+        .get_account(&plugin_key, "stale@example.com")
+        .await
+        .unwrap()
+        .is_none());
+    let current = super::super::work::HostContext {
+        serial: live,
+        ..branch_context(&state, &node_id).await
+    };
+    let answer = super::super::host_accounts::add(&store, &current, "a5".into(), &stale)
+        .await
+        .unwrap();
+    assert!(
+        matches!(answer.body, Body::AccountsAdded { added: 1, .. }),
+        "{answer:?}"
+    );
+    super::super::ws::unregister_for_test(&node_id, live);
 }

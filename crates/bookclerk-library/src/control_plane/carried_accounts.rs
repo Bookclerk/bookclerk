@@ -797,13 +797,35 @@ pub async fn withdraw_person_account(
     // Taken back when only the person's links hold it: finish what a
     // revocation does (`LibraryStore::revoke_credentials`) before the links
     // go, while a failed step can still be retried from this person's
-    // link. The holdings go with `holding_removed` events and a reconnect
-    // starts a full scan. Should another member link it meanwhile, their
-    // next scan brings the holdings back.
+    // link. The account is marked revoked first, so a scan page still in
+    // flight can neither add holdings back nor save a checkpoint after the
+    // cleanup (the holding and checkpoint writes are fenced on it). The
+    // holdings go with `holding_removed` events and a reconnect starts a
+    // full scan. Should another member link it meanwhile, their next scan
+    // brings the holdings back.
     let all = store
         .count_account_links_for_account(plugin_key, account_id)
         .await?;
     if all <= theirs {
+        let fence = vec![batch::exec(
+            "UPDATE accounts SET scan_enabled = 0, connection_status = 'revoked', \
+             updated_at = ? WHERE plugin_key = ? AND account_id = ? \
+             AND NOT EXISTS (SELECT 1 FROM account_links WHERE plugin_key = ? \
+             AND account_id = ? AND identity_id NOT IN \
+             (SELECT id FROM portal_identities WHERE user_id = ?))",
+            vec![
+                text(&Utc::now().to_rfc3339()),
+                text(plugin_key),
+                text(account_id),
+                text(plugin_key),
+                text(account_id),
+                int(user_id),
+            ],
+        )];
+        let operation_id = format!("withdraw-fence-{}", uuid::Uuid::new_v4());
+        store
+            .execute_host_batch(batch::request(&operation_id, fence))
+            .await?;
         store
             .remove_account_holdings(plugin_key, account_id, crate::HoldingSelection::All)
             .await?;

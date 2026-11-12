@@ -88,6 +88,10 @@ pub(crate) struct HostContext {
     pub owner_node_id: String,
     /// The daemon, for this node's output destinations and settings.
     pub state: std::sync::Arc<crate::api::AppState>,
+    /// This connection's session serial: a work frame that changes what
+    /// the node holds here is refused once a newer connection of the same
+    /// node replaced this one (see [`super::ws::superseded`]).
+    pub serial: u64,
 }
 
 /// An `error` answer.
