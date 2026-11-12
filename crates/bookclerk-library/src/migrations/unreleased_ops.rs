@@ -1627,6 +1627,25 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_window_books_seen ON window_books(owner_cluster_id, seen_at)",
     ),
+    // On a branch: the branch owner's books acquired for a library it
+    // joined and imported into this library as well
+    // (`control_plane::link_imports`), one row per library and store
+    // identity, so the catalog sync never sends a library a book it
+    // acquired itself. `marketplace` and `product_id` are stored as
+    // `store_listings` stores them.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS link_imports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cluster_id TEXT NOT NULL,
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        marketplace TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (cluster_id, plugin_key, account_id, marketplace, product_id),
+        FOREIGN KEY (plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
+    )",
+    ),
     // Last claimed fire per plugin cron schedule (`control_plane::cron_fires`).
     // `claim` is the token of the batch that last moved the cursor; the job
     // insert in that batch selects only while the token is still there.
