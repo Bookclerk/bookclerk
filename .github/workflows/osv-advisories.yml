@@ -99,10 +99,17 @@ jobs:
           mkdir -p "$RUNNER_TEMP/osv-advisories"
           python3 scripts/osv-advisories.py fetch --out "$RUNNER_TEMP/osv-advisories/state.json"
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pins.outputs.rust }}
 
       # `cargo metadata` downloads and resolves packages but runs no build
       # script or proc macro; the rest is lockfile parsing.
@@ -168,11 +175,18 @@ jobs:
             echo '{}' > "$RUNNER_TEMP/osv-advisories-analysis/bundle.json"
           fi
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         if: needs.fetch.outputs.call-analysis == 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pins.outputs.rust }}
 
       - name: Prepare the call-analysis build
         if: needs.fetch.outputs.call-analysis == 'true'

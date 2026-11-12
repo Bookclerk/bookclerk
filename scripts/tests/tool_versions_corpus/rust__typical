@@ -1,0 +1,26 @@
+[
+ {
+  "tag_name": "1.100.0",
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-10-29T15:00:00Z"
+ },
+ {
+  "tag_name": "1.99.1",
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-10-13T15:00:00Z"
+ },
+ {
+  "tag_name": "1.99.0",
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-10-01T15:00:00Z"
+ },
+ {
+  "tag_name": "1.98.0",
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-08-20T15:00:00Z"
+ }
+]

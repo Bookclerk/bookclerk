@@ -135,10 +135,17 @@ jobs:
           key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
           sha: ${{ inputs.private-sha }}
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pins.outputs.rust }}
 
       - name: Resolve base / head
         id: shas
@@ -336,11 +343,18 @@ jobs:
       - name: Validate CI plan
         run: python3 scripts/ci-exec.py validate
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         if: needs.plan.outputs.check_needs_cargo == 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pins.outputs.rust }}
           components: rustfmt, clippy
 
       - name: Install Node.js
@@ -526,16 +540,18 @@ jobs:
       - name: Validate CI plan
         run: python3 scripts/ci-exec.py validate
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pins.outputs.rust }}
           components: llvm-tools-preview
-
-      # Tool versions shared with the Dev Container (docs/contributing/ci.md#tool-versions).
-      - name: Read tool pins
-        id: pins
-        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
@@ -686,10 +702,17 @@ jobs:
       - name: Validate CI plan
         run: python3 scripts/ci-exec.py validate
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pins.outputs.rust }}
 
       - name: Install capnproto
         run: |
@@ -755,10 +778,17 @@ jobs:
       - name: Validate CI plan
         run: python3 scripts/ci-exec.py validate
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pins.outputs.rust }}
 
       - name: Install Node.js
         if: needs.plan.outputs.release_mode == 'full'
@@ -870,10 +900,17 @@ jobs:
       - name: Validate CI plan
         run: python scripts/ci-exec.py validate
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pins.outputs.rust }}
           components: clippy
 
       - name: Cache cargo
@@ -927,10 +964,17 @@ jobs:
       - name: Validate CI plan
         run: python scripts/ci-exec.py validate
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pins.outputs.rust }}
           components: clippy
 
       # Build-only main push: the dependency cache key covers Cargo.lock, the
@@ -1034,10 +1078,17 @@ jobs:
       - name: Validate CI plan
         run: python scripts/ci-exec.py validate
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pins.outputs.rust }}
           components: clippy
 
       - name: Cache cargo
@@ -1093,10 +1144,17 @@ jobs:
       - name: Validate CI plan
         run: python scripts/ci-exec.py validate
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pins.outputs.rust }}
           components: clippy
 
       # Build-only main push: as in `native-gateway`, skip the build when
@@ -1199,10 +1257,17 @@ jobs:
       - name: Validate CI plan
         run: python3 scripts/ci-exec.py validate
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pins.outputs.rust }}
 
       - name: Install capnproto
         run: |
@@ -1250,10 +1315,17 @@ jobs:
       - name: Validate CI plan
         run: python scripts/ci-exec.py validate
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pins.outputs.rust }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3

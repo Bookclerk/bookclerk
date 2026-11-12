@@ -85,17 +85,18 @@ jobs:
           fi
           echo "Mutating the Rust changes in \`$base..$GITHUB_SHA\`." >> "$GITHUB_STEP_SUMMARY"
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         if: steps.diff.outputs.rust == 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-
-      # Tool versions shared with the Dev Container (docs/contributing/ci.md#tool-versions).
-      - name: Read tool pins
-        id: pins
-        if: steps.diff.outputs.rust == 'true'
-        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+          toolchain: ${{ steps.pins.outputs.rust }}
 
       - name: Install cargo-nextest and cargo-mutants
         if: steps.diff.outputs.rust == 'true'

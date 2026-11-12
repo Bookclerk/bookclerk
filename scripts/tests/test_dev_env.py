@@ -167,6 +167,36 @@ class ProvisionScriptTests(unittest.TestCase):
         dockerfile = DEVCONTAINER_DOCKERFILE.read_text(encoding="utf-8")
         self.assertIn("COPY .tool-versions /tmp/bookclerk-dev/.tool-versions", dockerfile)
 
+    def test_rust_comes_from_tool_versions(self) -> None:
+        """rust-toolchain.toml, provision.sh and every CI Rust install use the ``rust`` pin."""
+        pins = _tool_versions()
+        toolchain = (ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")
+        self.assertEqual(pins["rust"], tool_versions.toolchain_channel(toolchain))
+        script = PROVISION.read_text(encoding="utf-8")
+        self.assertIn('awk \'$1 == "rust" { print $2 }\' "${repo}/.tool-versions"', script)
+        self.assertIn('rustup toolchain install "${RUST_VERSION}"', script)
+        self.assertNotIn("rustup toolchain install stable", script)
+        steps = _setup_steps("dtolnay/rust-toolchain")
+        self.assertTrue(steps, "no dtolnay/rust-toolchain step found")
+        for where, step in steps:
+            with self.subTest(job=where):
+                toolchain_input = str((step.get("with") or {}).get("toolchain", ""))
+                # Nightly-only jobs pin a dated nightly; the reusable publisher
+                # takes the caller's toolchain. Everything else reads the pin.
+                if toolchain_input.startswith("nightly-") or toolchain_input == "${{ inputs.rust_toolchain }}":
+                    continue
+                self.assertEqual("${{ steps.pins.outputs.rust }}", toolchain_input)
+        for workflow in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+            jobs = yaml.safe_load(workflow.read_text(encoding="utf-8")).get("jobs", {})
+            for name, job in jobs.items():
+                ids: list[str] = []
+                for step in job.get("steps", []):
+                    if "steps.pins.outputs.rust" in str(step.get("with") or {}):
+                        with self.subTest(job=f"{workflow.name}:{name}"):
+                            self.assertIn("pins", ids, "the Read tool pins step must come first")
+                    if step.get("id"):
+                        ids.append(step["id"])
+
     def test_tool_versions_parses(self) -> None:
         """``.tool-versions`` holds exactly the pins ``scripts/tool_versions.py`` knows."""
         pins = _tool_versions()
