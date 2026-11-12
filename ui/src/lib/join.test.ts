@@ -18,6 +18,7 @@ import {
   listClerks,
   looksLikeBranchInvite,
   parseJoinCallback,
+  setMembersListing,
   setBranchSharing,
 } from "./join";
 import { isAppPath, joinPage } from "./routes";
@@ -365,5 +366,36 @@ describe("broughtConnectionsSummary", () => {
     );
     expect(broughtConnectionsSummary({ ...base, not_kept: "no_owner" })).toMatch(/no single owner/);
     expect(broughtConnectionsSummary({ ...base, not_kept: "failed" })).toMatch(/couldn't be added/);
+  });
+});
+
+describe("setMembersListing", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends the members setting with the link's current sharing settings", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify({ cluster: { cluster_id: "c1" } }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await setMembersListing(
+      { cluster_id: "c1", share_books: false, include_branches: true },
+      false,
+    );
+    await setMembersListing({ cluster_id: "c2" }, true);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/config/join/sharing");
+    const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1].body)));
+    expect(bodies[0]).toEqual({
+      cluster_id: "c1",
+      share_books: false,
+      include_branches: true,
+      list_members_books: false,
+    });
+    expect(bodies[1]).toEqual({
+      cluster_id: "c2",
+      share_books: true,
+      include_branches: true,
+      list_members_books: true,
+    });
   });
 });

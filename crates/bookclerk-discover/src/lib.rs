@@ -15,6 +15,7 @@
     clippy::expect_used
 )]
 
+mod availability;
 mod candidates;
 mod catalog_search;
 mod embed;
@@ -34,6 +35,9 @@ mod title_meta;
 mod ttl_cache;
 mod wish_pool;
 
+pub use availability::{
+    join_branch_availability, join_search_branch_availability, BranchAvailability,
+};
 pub use bookclerk_source::{
     default_preferred_language, language_rank, normalize_language, CatalogSearchField,
     CatalogSearchSort, CatalogSortDir,

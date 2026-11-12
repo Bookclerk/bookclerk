@@ -65,6 +65,8 @@ export interface BranchLinkView {
   share_books?: boolean;
   /** "Include books from my own branches" (on by default). */
   include_branches?: boolean;
+  /** "List my members' books" when the library asks (on by default). */
+  list_members_books?: boolean;
   /** "Download for other members of <library>" (off by default): take the library's work for its other members too. */
   work_for_members?: boolean;
   /** "Keep copies of other members' books" (off by default): also write their books to this server's own outputs. */
@@ -538,6 +540,31 @@ export function jobShareSummary(maxJobs: number | null | undefined, jobShare?: n
   if (maxJobs === 0) return "Runs no work for this library";
   if (maxJobs === null || maxJobs === undefined) return `Equal share of this computer${now}`;
   return `Up to ${jobs(maxJobs)} at once${now}`;
+}
+
+/**
+ * Settings → Library: "List my members' books" for one library this server
+ * is a branch of (the operator or an Owner). The two book-sharing settings
+ * are sent as they are, since the route takes them on every change.
+ *
+ * @param link - The library, with its current sharing settings.
+ * @param listMembersBooks - Whether members' books are listed when the
+ *   library asks (the owner's books always are).
+ * @returns The link with the stored settings.
+ */
+export function setMembersListing(
+  link: Pick<BranchLinkView, "cluster_id" | "share_books" | "include_branches">,
+  listMembersBooks: boolean,
+): Promise<{ cluster: BranchLinkView }> {
+  return request("/api/config/join/sharing", {
+    method: "POST",
+    body: {
+      cluster_id: link.cluster_id,
+      share_books: link.share_books ?? true,
+      include_branches: link.include_branches ?? true,
+      list_members_books: listMembersBooks,
+    },
+  });
 }
 
 /**
