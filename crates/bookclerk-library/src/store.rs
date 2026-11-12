@@ -650,6 +650,30 @@ impl LibraryStore {
             .collect())
     }
 
+    /// List the accounts of one storefront plugin, ordered by account id.
+    ///
+    /// The filter runs in the query, so the read is bounded by that
+    /// plugin's accounts rather than the whole library's.
+    ///
+    /// # Arguments
+    ///
+    /// * `plugin_key` - Canonical plugin key whose accounts to read.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read error.
+    pub async fn list_accounts_for_plugin(&self, plugin_key: &str) -> Result<Vec<AccountRecord>> {
+        Ok(accounts::Entity::find()
+            .filter(accounts::Column::PluginKey.eq(plugin_key))
+            .order_by_asc(accounts::Column::AccountId)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_account)
+            .collect())
+    }
+
     /// Count library identity rows (SQL `COUNT`, not a full fetch).
     ///
     /// Same cardinality as [`Self::count_accounts`]. Prefer this when the caller

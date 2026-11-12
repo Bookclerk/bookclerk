@@ -613,6 +613,29 @@ async fn a_login_the_operator_stopped_midway_is_taken_back() {
         .await
         .unwrap()
         .is_empty());
+
+    // The revoked row stays behind. A later login the operator stops the
+    // same way finds it there, but the row was not in use, so the new
+    // credential is taken back too.
+    bookclerk_library::control_plane::set_member_may_connect_accounts(&library, member, true)
+        .await
+        .unwrap();
+    let (status, _, answer) = call(
+        &app,
+        "POST",
+        "/sources/libro/login",
+        Some(&cookie),
+        Some(credentials()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    let accounts = library.list_accounts().await.unwrap();
+    assert_eq!(accounts[0].connection_status, "revoked");
+    assert!(scope
+        .load_source_auth("reader@example.com", "auth")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 /// A refused login never takes back an account another login connected

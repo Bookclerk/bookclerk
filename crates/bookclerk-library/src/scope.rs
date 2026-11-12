@@ -130,11 +130,7 @@ impl SourceScope {
     ///
     /// Returns a crate error when the database operation fails or inputs are invalid.
     pub async fn list_accounts(&self) -> Result<Vec<AccountRecord>> {
-        let all = self.store.list_accounts().await?;
-        Ok(all
-            .into_iter()
-            .filter(|a| a.plugin_key == self.plugin_key)
-            .collect())
+        self.store.list_accounts_for_plugin(&self.plugin_key).await
     }
 
     /// Fetch one account if it belongs to this plugin.

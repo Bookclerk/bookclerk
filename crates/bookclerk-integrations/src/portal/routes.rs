@@ -1032,9 +1032,9 @@ async fn require_may_connect(state: &PortalState, identity_id: i64) -> Result<()
     }
 }
 
-/// The ids of the accounts `scope`'s storefront already has, read before a
-/// login so a refused login can tell an account it added from one that was
-/// already here.
+/// The ids of the usable accounts `scope`'s storefront already has, read
+/// before a login so a refused login can tell an account it added (or
+/// brought back from `revoked`) from one that was already in use here.
 async fn known_account_ids(
     scope: &bookclerk_library::SourceScope,
 ) -> Result<std::collections::HashSet<String>, PortalError> {
@@ -1042,18 +1042,25 @@ async fn known_account_ids(
         .list_accounts()
         .await?
         .into_iter()
+        .filter(|account| account.connection_status != "revoked")
         .map(|account| account.account_id)
         .collect())
 }
+
+/// How many times a refused login's cleanup batch is tried before the
+/// failure is left to the log.
+const UNDO_ATTEMPTS: usize = 3;
 
 /// Takes back an account a login stored when the operator's rule refused
 /// it afterwards: its secrets are deleted and the account is marked
 /// revoked with scans off, so nothing can use it.
 ///
-/// An account that was already here before the login (in `known`), or
-/// that someone's link holds when the cleanup runs (another login of it
-/// finished meanwhile), is left as it is: the cleanup is one atomic batch
-/// guarded on the account having no link.
+/// An account that was already in use here before the login (in
+/// `known`), or that someone's link holds when the cleanup runs (another
+/// login of it finished meanwhile), is left as it is: the cleanup is one
+/// atomic batch guarded on the account having no link. The batch is
+/// idempotent, so a failed one is tried again, up to [`UNDO_ATTEMPTS`]
+/// times.
 async fn undo_refused_login(
     library: &bookclerk_library::LibraryStore,
     plugin_key: &str,
@@ -1063,11 +1070,18 @@ async fn undo_refused_login(
     if known.contains(account_id) {
         return;
     }
-    if let Err(err) =
-        bookclerk_library::control_plane::revoke_unlinked_account(library, plugin_key, account_id)
-            .await
-    {
-        warn!(error = %err, plugin_key, "could not take back a refused login's account");
+    for attempt in 1..=UNDO_ATTEMPTS {
+        match bookclerk_library::control_plane::revoke_unlinked_account(
+            library, plugin_key, account_id,
+        )
+        .await
+        {
+            Ok(()) => return,
+            Err(err) if attempt == UNDO_ATTEMPTS => {
+                warn!(error = %err, plugin_key, "could not take back a refused login's account");
+            }
+            Err(_) => {}
+        }
     }
 }
 
