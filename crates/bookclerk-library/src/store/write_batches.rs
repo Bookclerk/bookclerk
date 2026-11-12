@@ -43,6 +43,9 @@ pub(crate) struct WriteBatches {
     /// What the statements write, named in the error for an oversized one
     /// (for example `discover candidate`).
     what: &'static str,
+    /// A statement every batch ends with (a live-topic counter bump), whose
+    /// slot and bytes the limits above already leave free.
+    trailer: Option<TypedDbStatement>,
 }
 
 impl WriteBatches {
@@ -65,7 +68,32 @@ impl WriteBatches {
             max_bytes: request_cap / 8 * BATCH_BYTES_EIGHTHS,
             max_single_bytes: request_cap.saturating_sub(SINGLE_STATEMENT_HEADROOM),
             what,
+            trailer: None,
         }
+    }
+
+    /// Ends every batch with `trailer`, such as the live-topic counter bump
+    /// that must commit with the rows it announces, and leaves room for it
+    /// in each batch's statement count and bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the trailer cannot be encoded.
+    pub(crate) fn with_trailer(mut self, trailer: TypedDbStatement) -> Result<Self> {
+        let size = encoded_len(std::slice::from_ref(&trailer))?.saturating_sub(self.empty_bytes);
+        self.max_statements = self.max_statements.saturating_sub(1).max(1);
+        self.max_bytes = self.max_bytes.saturating_sub(size);
+        self.max_single_bytes = self.max_single_bytes.saturating_sub(size);
+        self.trailer = Some(trailer);
+        Ok(self)
+    }
+
+    /// Takes the pending statements as one batch, ending with the trailer.
+    fn close(&mut self) -> Vec<TypedDbStatement> {
+        self.pending_bytes = self.empty_bytes;
+        let mut batch = std::mem::take(&mut self.pending);
+        batch.extend(self.trailer.clone());
+        batch
     }
 
     /// Adds one statement.
@@ -89,8 +117,7 @@ impl WriteBatches {
         let full = self.pending.len() >= self.max_statements
             || self.pending_bytes.saturating_add(size) > self.max_bytes;
         let closed = if full && !self.pending.is_empty() {
-            self.pending_bytes = self.empty_bytes;
-            Some(std::mem::take(&mut self.pending))
+            Some(self.close())
         } else {
             None
         };
@@ -140,8 +167,7 @@ impl WriteBatches {
         let full = self.pending.len().saturating_add(group.len()) > self.max_statements
             || self.pending_bytes.saturating_add(total) > self.max_bytes;
         let closed = if full && !self.pending.is_empty() {
-            self.pending_bytes = self.empty_bytes;
-            Some(std::mem::take(&mut self.pending))
+            Some(self.close())
         } else {
             None
         };
@@ -151,14 +177,14 @@ impl WriteBatches {
     }
 
     /// The last, partly filled batch, when anything is left.
-    pub(crate) fn finish(self) -> Option<Vec<TypedDbStatement>> {
-        (!self.pending.is_empty()).then_some(self.pending)
+    pub(crate) fn finish(mut self) -> Option<Vec<TypedDbStatement>> {
+        (!self.pending.is_empty()).then(|| self.close())
     }
 }
 
 /// Operation-id prefix used while sizing. It is at least as long as every
-/// real batch prefix (`discover-candidates-`, `listening-progress-`), so a
-/// sized request is never smaller than the one sent.
+/// real batch prefix (`discover-candidates-`, `listening-progress-`,
+/// `scanned-books-`), so a sized request is never smaller than the one sent.
 const SIZING_PREFIX: &str = "host-write-batch-sizing-";
 
 /// Encoded bytes of a request carrying `statements`.
@@ -227,5 +253,26 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("request limit"), "{err}");
         assert!(batches.finish().is_none());
+    }
+
+    #[test]
+    fn a_trailer_ends_every_batch_inside_the_limits() {
+        let mut caps = DbCapabilities::advertised_sqlite();
+        caps.max_statements = 3;
+        let mut batches = WriteBatches::new(&caps, "test")
+            .with_trailer(stmt("bump"))
+            .unwrap();
+        assert!(batches.push(stmt("a")).unwrap().is_none());
+        assert!(batches.push(stmt("b")).unwrap().is_none());
+        // Two rows and the trailer fill three statements: the third row
+        // starts a new batch.
+        let closed = batches.push(stmt("c")).unwrap().unwrap();
+        assert_eq!(closed, vec![stmt("a"), stmt("b"), stmt("bump")]);
+        assert_eq!(batches.finish(), Some(vec![stmt("c"), stmt("bump")]));
+
+        let empty = WriteBatches::new(&caps, "test")
+            .with_trailer(stmt("bump"))
+            .unwrap();
+        assert!(empty.finish().is_none());
     }
 }

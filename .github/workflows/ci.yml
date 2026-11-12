@@ -69,8 +69,14 @@ jobs:
   plan:
     name: plan
     runs-on: ubuntu-latest
+    # `actions: read` lets the lane step see which lanes other pull request
+    # runs hold and whether a merge group is running.
+    permissions:
+      contents: read
+      actions: read
     outputs:
       mode: ${{ steps.resolve.outputs.mode }}
+      lanes: ${{ steps.lanes.outputs.lanes || '{}' }}
       job_check: ${{ steps.resolve.outputs.job_check }}
       job_test: ${{ steps.resolve.outputs.job_test }}
       job_e2e: ${{ steps.resolve.outputs.job_e2e }}
@@ -176,6 +182,7 @@ jobs:
           "$PY" scripts/tests/test_ci_plan.py
           "$PY" scripts/tests/test_ci_relations.py
           "$PY" scripts/tests/test_ci_contract.py
+          "$PY" scripts/tests/test_ci_lanes.py
           "$PY" scripts/tests/test_plugin_publisher.py
           "$PY" scripts/tests/test_envelope.py
           "$PY" scripts/tests/test_source_apk_probe.py
@@ -254,6 +261,18 @@ jobs:
             --selective "$SELECTIVE_CI" \
             "${EXTRA[@]+"${EXTRA[@]}"}"
 
+      # Each heavy pull request job waits in the lane with the shortest line;
+      # lanes beyond the base ones are lent only while no merge group runs
+      # (docs/contributing/ci.md#pull-request-lanes). When the API can't be
+      # read, the jobs use the base lanes only.
+      - name: Pick pull request lanes
+        id: lanes
+        if: github.event_name == 'pull_request' && !inputs.private-head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESOLVED: ${{ toJSON(steps.resolve.outputs) }}
+        run: python3 scripts/ci_lanes.py --repo "${{ github.repository }}" --run-id "${{ github.run_id }}" --outputs "$RESOLVED"
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-plan
@@ -284,11 +303,11 @@ jobs:
           retention-days: 7
 
   check:
-    name: fmt / clippy / docs
-    # Pull request runs take turns in one slot per job, so they leave
-    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    name: fmt / clippy / docs${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('check-{0}', strategy.job-index)].label }}
+    # Pull request runs wait in the lane the plan picked, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-lanes).
     concurrency:
-      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-check' || format('ci-{0}-{1}-check-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      group: ${{ github.event_name == 'pull_request' && (fromJSON(needs.plan.outputs.lanes || '{}')[format('check-{0}', strategy.job-index)].group || 'ci-pr-lane-0') || format('ci-{0}-{1}-check-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
       queue: max
     needs: plan
     if: needs.plan.outputs.job_check == 'true'
@@ -466,11 +485,11 @@ jobs:
         run: python3 scripts/ci-exec.py run store_free
 
   test:
-    name: unit + integration tests
-    # Pull request runs take turns in one slot per job, so they leave
-    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    name: unit + integration tests${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('test-{0}', strategy.job-index)].label }}
+    # Pull request runs wait in the lane the plan picked, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-lanes).
     concurrency:
-      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-test' || format('ci-{0}-{1}-test-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      group: ${{ github.event_name == 'pull_request' && (fromJSON(needs.plan.outputs.lanes || '{}')[format('test-{0}', strategy.job-index)].group || 'ci-pr-lane-0') || format('ci-{0}-{1}-test-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
       queue: max
     needs: plan
     if: needs.plan.outputs.job_test == 'true'
@@ -618,11 +637,11 @@ jobs:
           retention-days: 7
 
   e2e:
-    name: staged plugin installation (e2e)
-    # Pull request runs take turns in one slot per job, so they leave
-    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    name: staged plugin installation (e2e)${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('e2e-{0}', strategy.job-index)].label }}
+    # Pull request runs wait in the lane the plan picked, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-lanes).
     concurrency:
-      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-e2e' || format('ci-{0}-{1}-e2e-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      group: ${{ github.event_name == 'pull_request' && (fromJSON(needs.plan.outputs.lanes || '{}')[format('e2e-{0}', strategy.job-index)].group || 'ci-pr-lane-0') || format('ci-{0}-{1}-e2e-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
       queue: max
     needs: plan
     if: needs.plan.outputs.job_e2e == 'true'
@@ -669,11 +688,11 @@ jobs:
         run: python3 scripts/ci-exec.py run e2e
 
   release:
-    name: release build + small-VPS envelope (${{ matrix.lto }} LTO)
-    # Pull request runs take turns in one slot per job, so they leave
-    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    name: release build + small-VPS envelope (${{ matrix.lto }} LTO)${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('release-{0}', strategy.job-index)].label }}
+    # Pull request runs wait in the lane the plan picked, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-lanes).
     concurrency:
-      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-release' || format('ci-{0}-{1}-release-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      group: ${{ github.event_name == 'pull_request' && (fromJSON(needs.plan.outputs.lanes || '{}')[format('release-{0}', strategy.job-index)].group || 'ci-pr-lane-0') || format('ci-{0}-{1}-release-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
       queue: max
     needs: plan
     if: needs.plan.outputs.job_release == 'true'
@@ -793,11 +812,11 @@ jobs:
           if-no-files-found: warn
 
   confinement:
-    name: sandbox + jailed tiers (${{ matrix.os }})
-    # Pull request runs take turns in one slot per job, so they leave
-    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    name: sandbox + jailed tiers (${{ matrix.os }})${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('confinement-{0}', strategy.job-index)].label }}
+    # Pull request runs wait in the lane the plan picked, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-lanes).
     concurrency:
-      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-confinement' || format('ci-{0}-{1}-confinement-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      group: ${{ github.event_name == 'pull_request' && (fromJSON(needs.plan.outputs.lanes || '{}')[format('confinement-{0}', strategy.job-index)].group || 'ci-pr-lane-0') || format('ci-{0}-{1}-confinement-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
       queue: max
     needs: plan
     if: needs.plan.outputs.job_confinement == 'true'
@@ -849,11 +868,11 @@ jobs:
         run: python scripts/ci-exec.py run confinement
 
   native-gateway:
-    name: native-behind-workerd gateway (${{ matrix.os }})
-    # Pull request runs take turns in one slot per job, so they leave
-    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    name: native-behind-workerd gateway (${{ matrix.os }})${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('native-gateway-{0}', strategy.job-index)].label }}
+    # Pull request runs wait in the lane the plan picked, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-lanes).
     concurrency:
-      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-native-gateway' || format('ci-{0}-{1}-native-gateway-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      group: ${{ github.event_name == 'pull_request' && (fromJSON(needs.plan.outputs.lanes || '{}')[format('native-gateway-{0}', strategy.job-index)].group || 'ci-pr-lane-0') || format('ci-{0}-{1}-native-gateway-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
       queue: max
     needs: plan
     timeout-minutes: 45
@@ -957,11 +976,11 @@ jobs:
         run: python scripts/ci-exec.py run native_gateway
 
   tray:
-    name: tray (${{ matrix.os }})
-    # Pull request runs take turns in one slot per job, so they leave
-    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    name: tray (${{ matrix.os }})${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('tray-{0}', strategy.job-index)].label }}
+    # Pull request runs wait in the lane the plan picked, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-lanes).
     concurrency:
-      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-tray' || format('ci-{0}-{1}-tray-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      group: ${{ github.event_name == 'pull_request' && (fromJSON(needs.plan.outputs.lanes || '{}')[format('tray-{0}', strategy.job-index)].group || 'ci-pr-lane-0') || format('ci-{0}-{1}-tray-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
       queue: max
     needs: plan
     if: needs.plan.outputs.job_tray == 'true'
@@ -1110,11 +1129,11 @@ jobs:
         run: python scripts/ci-exec.py run tray
 
   postgres:
-    name: postgres ${{ matrix.postgres }}
-    # Pull request runs take turns in one slot per job, so they leave
-    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    name: postgres ${{ matrix.postgres }}${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('postgres-{0}', strategy.job-index)].label }}
+    # Pull request runs wait in the lane the plan picked, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-lanes).
     concurrency:
-      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-postgres' || format('ci-{0}-{1}-postgres-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      group: ${{ github.event_name == 'pull_request' && (fromJSON(needs.plan.outputs.lanes || '{}')[format('postgres-{0}', strategy.job-index)].group || 'ci-pr-lane-0') || format('ci-{0}-{1}-postgres-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
       queue: max
     needs: plan
     if: needs.plan.outputs.job_postgres == 'true'
@@ -1249,11 +1268,11 @@ jobs:
         run: python scripts/ci-exec.py run windows_cluster
 
   site:
-    name: website + collector Workers
-    # Pull request runs take turns in one slot per job, so they leave
-    # runners for the merge queue (docs/contributing/ci.md#pull-request-slots).
+    name: website + collector Workers${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('site-{0}', strategy.job-index)].label }}
+    # Pull request runs wait in the lane the plan picked, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-lanes).
     concurrency:
-      group: ${{ github.event_name == 'pull_request' && 'ci-pr-slot-site' || format('ci-{0}-{1}-site-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      group: ${{ github.event_name == 'pull_request' && (fromJSON(needs.plan.outputs.lanes || '{}')[format('site-{0}', strategy.job-index)].group || 'ci-pr-lane-0') || format('ci-{0}-{1}-site-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
       queue: max
     needs: plan
     if: needs.plan.outputs.job_site == 'true'

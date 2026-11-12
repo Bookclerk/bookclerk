@@ -424,6 +424,25 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     integer `id` and `run_number`, a string head branch and a timestamp
     `created_at`.
 
+- **Pull request lanes** (`active_runs` and `lane_loads` in
+  `scripts/ci_lanes.py`). It reads GitHub API responses about this
+  repository's active CI runs and their jobs, so it isn't an untrusted
+  boundary. Its output decides which lane each pull request job waits in
+  and whether lanes are lent (see [Pull request lanes](ci.md#pull-request-lanes)),
+  though, so it is fuzzed the same way.
+  - Test and corpus: `scripts/tests/test_ci_lanes.py`,
+    `scripts/tests/ci_lanes_corpus/` (files named `runs__<case>` or
+    `jobs__<case>`, trimmed from the runs waiting on 11 November 2026),
+    replayed and mutated both as bytes and as JSON values.
+  - Oracle: explicit walks with exact type checks. A listing is unreadable
+    when any run lacks an integer `id` or a string `event` or `status`, or
+    any job lacks a string `name` or `status`. A run counts only when it is
+    a `ci.yml` run in this repository with a queued, in-progress, pending,
+    waiting or requested status; a `merge_group` one marks the queue busy.
+    A job counts toward a lane only when its status is one of those and its
+    name ends in ` · lane ` and a lane number below 17 with no leading
+    zero, split off with `rpartition` and checked digit by digit.
+
 - **Mutation testing start commit** (`choose` in
   `scripts/mutation_base.py`). The nightly mutation workflows read the
   commit of their last successful run from the GitHub API and diff `main`

@@ -63,6 +63,12 @@ pub struct Model {
     pub member_price_label: Option<String>,
     /// RFC 3339 time when this storefront snapshot was observed.
     pub observed_at: Option<String>,
+    /// The shared pool's `store_listings` row for this store edition, when
+    /// the server looked the edition up at the store. The pool holds only
+    /// what the store reported; the text and prices on this row are the
+    /// wish's own and may come from the browser. Cleared if the listing is
+    /// deleted.
+    pub listing_id: Option<String>,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,
     /// RFC 3339 timestamp when the row was last modified.
