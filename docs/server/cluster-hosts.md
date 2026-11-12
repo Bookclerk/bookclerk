@@ -521,7 +521,8 @@ library can take the whole machine.
    CPU budget over 0.8 of a core and its memory budget over 512 MiB (what
    one guest is assumed to need), whichever is smaller, from 1 to 16. A
    drained branch (`bookclerk nodes set --drain`) has none, so its
-   libraries stop handing it work too.
+   libraries stop handing it work too. Until the branch records its first
+   heartbeat after starting (within seconds) it also has none.
 2. **The branch's own work comes first.** Each job its own workers run
    takes a slot.
 3. **The rest is split equally** between the libraries it is a branch of,
@@ -534,10 +535,12 @@ Each library sees only its share:
   that shrinks cancels nothing: jobs already running finish, and claims
   wait until enough of them have.
 - The branch's heartbeat to that library reports its share of the
-  branch's CPU and memory budget (or of the whole machine, when that is
-  smaller), and of that share only what the machine has free now, so the
-  library's scheduler never counts on more than the budget or on headroom
-  other work already took. Free disk is reported whole.
+  machine's CPU and memory, and of that share only what the machine has
+  free now, so the library's scheduler never counts on the whole machine
+  or on headroom other work already took. The library then applies its
+  own budget for the branch (`bookclerk nodes set` there) as it does for any
+  node; the branch's budget decides how many slots there are. Free disk is
+  reported whole.
 
 For example, a branch of two libraries with four slots runs up to two
 jobs for each. While it runs one job of its own, the first library (by
