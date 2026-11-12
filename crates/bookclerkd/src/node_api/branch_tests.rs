@@ -907,15 +907,35 @@ async fn a_branch_adds_and_withdraws_its_persons_connections() {
         matches!(answer.body, Body::AccountsAdded { added: 1, .. }),
         "{answer:?}"
     );
-    // Once the replacement ended too, the old connection is still not the
-    // live one: its offer stays refused.
+    // The branch disconnects that account over the new connection, which
+    // then ends too. The offer still held by the old connection arrives
+    // last: it is refused, and the account stays revoked.
+    let answer = super::super::host_accounts::remove(
+        &store,
+        &current,
+        "r3".into(),
+        &plugin_key,
+        "stale@example.com",
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer.body, Body::Accepted {});
     super::super::ws::unregister_for_test(&node_id, current.serial);
-    let late = offer(&node_id, vec![offered(&plugin_key, "late@example.com")]);
-    let answer = super::super::host_accounts::add(&store, &host, "a6".into(), &late)
+    let answer = super::super::host_accounts::add(&store, &host, "a6".into(), &stale)
         .await
         .unwrap();
     assert!(
         matches!(&answer.body, Body::Error { code, message } if code == "refused" && message == "superseded"),
         "{answer:?}"
     );
+    let account = store
+        .get_account(&plugin_key, "stale@example.com")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(account.connection_status, "revoked");
+    let links = store.list_account_links(identity.id).await.unwrap();
+    assert!(!links
+        .iter()
+        .any(|link| link.account_id == "stale@example.com"));
 }
