@@ -54,11 +54,11 @@ fn stored_ids(product_ids: &[String]) -> Vec<String> {
 /// Splits `ids` into chunks of at most `width`, halving a chunk until
 /// `fits` admits its statement, so long ids (UUIDs on D1) stay under the
 /// backend's `maxPayloadBytes` where a bind count alone would not.
-fn fitting_chunks<'a>(
-    ids: &'a [String],
+fn fitting_chunks(
+    ids: &[String],
     width: usize,
     fits: impl Fn(&[String]) -> bool,
-) -> Vec<&'a [String]> {
+) -> Vec<&[String]> {
     let mut out = Vec::new();
     let mut width = width.max(1);
     let mut rest = ids;
