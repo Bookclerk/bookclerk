@@ -136,7 +136,8 @@ function SharingSettings({ link, onSaved }: { link: ClusterLinkView; onSaved: ()
           onChange={(e) =>
             void save(share, include, {
               workForMembers: e.target.checked,
-              keepMemberCopies,
+              // Copies follow the work: turning it off turns them off too.
+              keepMemberCopies: e.target.checked && keepMemberCopies,
             })
           }
         />

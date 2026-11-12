@@ -4143,4 +4143,28 @@ async fn an_administrators_branch_takes_other_members_work_only_when_asked() {
         .await
         .expect("asked for, another member's job is claimed");
     assert_eq!(claimed.job.id, sams);
+
+    // The owner's pinned job, or one with requirements, is still the
+    // owner's work: an Own claim keeps it, where a Member's Host could not.
+    let mut pinned = claimed.job.clone();
+    pinned.payload.account = Some("alex-acct".into());
+    pinned.payload.requires = vec!["some-instance".into()];
+    pinned.payload.plugin_instance_id = Some("some-instance".into());
+    for (scope, job, expected) in [
+        (ClaimScope::Own, &pinned, true),
+        (ClaimScope::AllMembers, &pinned, true),
+        (ClaimScope::Own, &claimed.job, false),
+    ] {
+        let may = crate::control_plane::node_may_claim_job_in_scope(
+            &store,
+            HOST,
+            Claimant::Remote,
+            scope,
+            job,
+        )
+        .await
+        .unwrap();
+        assert_eq!(may, expected, "{scope:?}");
+    }
+    assert!(job_for_node_owner(&store, HOST, &pinned).await.unwrap());
 }

@@ -68,6 +68,14 @@ pub enum NodeTrust {
     All,
     /// Only jobs whose secrets all belong to this user.
     OwnedBy(i64),
+    /// Any job a node trusted with [`NodeTrust::All`] may run, but only
+    /// when it names an account and every store account that name reaches
+    /// belongs to this user: an Owner's or Administrator's branch claiming
+    /// only its owner's work ([`node_trust_in_scope`]). Unlike
+    /// [`NodeTrust::OwnedBy`] the job's shape (an instance pin,
+    /// requirements, its kind) does not refuse it. Only claims produce it;
+    /// [`node_trust`] never does.
+    AllOfOwner(i64),
     /// No job at all.
     Nothing,
 }
@@ -165,7 +173,20 @@ pub async fn job_trusted(store: &LibraryStore, trust: &NodeTrust, job: &JobRecor
             Some(account) => account_owned(store, *user_id, account).await,
             None => Ok(false),
         },
+        NodeTrust::AllOfOwner(user_id) => match job_named_account(job) {
+            Some(account) => account_owned(store, *user_id, account).await,
+            None => Ok(false),
+        },
     }
+}
+
+/// The non-empty account `job` names, whatever its shape: what a
+/// [`NodeTrust::AllOfOwner`] node must own to receive it.
+pub(super) fn job_named_account(job: &JobRecord) -> Option<&str> {
+    job.payload
+        .account
+        .as_deref()
+        .filter(|a| !a.trim().is_empty())
 }
 
 /// The account a [`NodeTrust::OwnedBy`] node must own to receive `job`.
@@ -286,7 +307,9 @@ pub fn book_matches_title(book: &BookRecord, id: &str) -> bool {
 ///
 /// [`ClaimScope::Own`] narrows a Host trusted with every job
 /// ([`NodeTrust::All`], an Owner's or Administrator's) to the work of the
-/// user who owns it, as a branch takes only its owner's work unless its
+/// user who owns it ([`NodeTrust::AllOfOwner`], which still admits that
+/// user's pinned jobs and jobs with requirements), as a branch takes only
+/// its owner's work unless its
 /// operator turned on "Download for other members". A scope never widens
 /// trust, and an owner node, which shares the database, keeps every job.
 ///
@@ -316,7 +339,7 @@ pub async fn node_trust_in_scope(
     }
     Ok(row
         .owner_user_id
-        .map_or(NodeTrust::Nothing, NodeTrust::OwnedBy))
+        .map_or(NodeTrust::Nothing, NodeTrust::AllOfOwner))
 }
 
 /// True when `node_id` may claim `job` right now, whoever's work it is.
@@ -373,7 +396,7 @@ pub async fn job_for_node_owner(
     let Some(owner) = owner else {
         return Ok(false);
     };
-    job_trusted(store, &NodeTrust::OwnedBy(owner), job).await
+    job_trusted(store, &NodeTrust::AllOfOwner(owner), job).await
 }
 
 /// Whom library work a remote node asks for runs as (a `scan.request` over
@@ -419,7 +442,7 @@ pub async fn remote_node_may_view_job(
     match node_trust(store, node_id, Claimant::Remote).await? {
         NodeTrust::All => Ok(true),
         NodeTrust::Nothing => Ok(false),
-        NodeTrust::OwnedBy(user_id) => {
+        NodeTrust::OwnedBy(user_id) | NodeTrust::AllOfOwner(user_id) => {
             let Some(account) = job.payload.account.as_deref().filter(|a| !a.is_empty()) else {
                 return Ok(false);
             };

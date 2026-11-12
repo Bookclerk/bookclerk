@@ -1453,6 +1453,13 @@ pub async fn post_join_sharing(
     };
     let store = state.library_snapshot().await;
     let cluster_id = body.cluster_id.trim();
+    // The work settings first: the sharing write below is the last one, so
+    // a failure here leaves both unchanged rather than half applied with
+    // no audit row or notification.
+    let work = match work_settings(&store, cluster_id, &body).await {
+        Ok(work) => work,
+        Err(err) => return crate::config_authority::events_error(err),
+    };
     match bookclerk_library::control_plane::set_cluster_link_sharing(
         &store,
         cluster_id,
@@ -1471,10 +1478,6 @@ pub async fn post_join_sharing(
         }
         Err(err) => return crate::config_authority::events_error(err),
     }
-    let work = match work_settings(&store, cluster_id, &body).await {
-        Ok(work) => work,
-        Err(err) => return crate::config_authority::events_error(err),
-    };
     tracing::info!(
         %cluster_id,
         %actor,

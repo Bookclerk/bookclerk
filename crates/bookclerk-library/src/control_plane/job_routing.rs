@@ -50,8 +50,8 @@ use super::semaphore::{
     acquire_permits, release_permits, PermitAcquire, SemaphorePermit, SemaphoreRequest,
 };
 use super::trust::{
-    account_owned, accounts_named, claimant_may_run, job_trusted, node_trust_in_scope,
-    owned_job_account, Claimant, NodeTrust,
+    account_owned, accounts_named, claimant_may_run, job_named_account, job_trusted,
+    node_trust_in_scope, owned_job_account, Claimant, NodeTrust,
 };
 use crate::entities::accounts;
 use crate::error::{LibraryError, Result};
@@ -661,17 +661,22 @@ pub async fn claim_routed_job(
             {
                 continue;
             }
-            let trusted = match (&trust, owned_job_account(&job)) {
-                (NodeTrust::OwnedBy(_), None) => false,
-                (NodeTrust::OwnedBy(user_id), Some(account)) => match owned_accounts.get(account) {
+            let named = match &trust {
+                NodeTrust::OwnedBy(user_id) => Some((*user_id, owned_job_account(&job))),
+                NodeTrust::AllOfOwner(user_id) => Some((*user_id, job_named_account(&job))),
+                NodeTrust::All | NodeTrust::Nothing => None,
+            };
+            let trusted = match named {
+                Some((_, None)) => false,
+                Some((user_id, Some(account))) => match owned_accounts.get(account) {
                     Some(known) => *known,
                     None => {
-                        let known = account_owned(store, *user_id, account).await?;
+                        let known = account_owned(store, user_id, account).await?;
                         owned_accounts.insert(account.to_owned(), known);
                         known
                     }
                 },
-                _ => job_trusted(store, &trust, &job).await?,
+                None => job_trusted(store, &trust, &job).await?,
             };
             if !trusted {
                 continue;

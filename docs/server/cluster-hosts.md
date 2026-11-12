@@ -652,7 +652,7 @@ joined, both off by default:
 
 - **Download for other members of <library>.** Off: B asks A only for
   work on the store accounts of the A user who owns B, its owner's own
-  books. On: B also takes work for A's other members, where A trusts B
+  books (including jobs pinned to one plugin instance). On: B also takes work for A's other members, where A trusts B
   with it (an Administrator's or Owner's branch). A still hands B only
   work it is trusted with, so this setting never widens trust.
 - **Keep copies of other members' books.** Off: a book B acquires for

@@ -767,6 +767,8 @@ async fn acquire_titles<G: HostGuests>(
     let mut attempted = BTreeSet::new();
     let mut acquired = 0u32;
     let mut failed = 0u32;
+    // Read once per job, so every title of one job follows one setting.
+    let keep_copy = keeps_local_copy(host, guests).await;
     'plan: loop {
         let (targets, planned) = with_retries(|| host.acquire_plan())
             .await
@@ -829,7 +831,7 @@ async fn acquire_titles<G: HostGuests>(
                     &title,
                     &outbox,
                     &done,
-                    &copied,
+                    keep_copy.then_some(&copied),
                     &commit_unsettled,
                 )
                 .await
@@ -1137,19 +1139,19 @@ pub async fn remove_local_copies(book_uuid: &str, copies: &[LocalCopy], fence_lo
     }
 }
 
-/// True when a title this job acquires is also kept on this host's own
+/// True when the titles this job acquires are also kept on this host's own
 /// destinations (H-2): always for the branch owner's own books, and for
 /// another member's only when the link's "Keep copies of other members'
-/// books" is on.
+/// books" is on. Read once as the job starts acquiring.
 async fn keeps_local_copy<G: HostGuests>(host: &HostJobCtx, guests: &G) -> bool {
     host.job.job.for_node_owner || guests.keeps_member_copies().await
 }
 
-/// Copies one title's files to this host's own destinations (H-2) when it
-/// keeps them ([`keeps_local_copy`]), then streams them to the owner and
-/// commits the title. A title it keeps is uploaded only once every one of
-/// this host's destinations got it. Each copy
-/// is put in `copied` as it is written, so the caller can remove them when
+/// Copies one title's files to this host's own destinations (H-2) when
+/// the job keeps them (`copied` is `Some`, [`keeps_local_copy`]), then
+/// streams them to the owner and commits the title. A title it keeps is
+/// uploaded only once every one of this host's destinations got it. Each
+/// copy is put in `copied` as it is written, so the caller can remove them when
 /// the owner does not commit the title ([`remove_local_copies`]), whether
 /// this fails or is dropped. `commit_unsettled` turns true as the commit is
 /// first sent and back to false only when the owner definitively refuses
@@ -1166,12 +1168,12 @@ async fn upload_title<G: HostGuests>(
     title: &HostTitle,
     outbox: &Path,
     acquired: &AcquiredTitle,
-    copied: &std::sync::Mutex<Vec<LocalCopy>>,
+    copied: Option<&std::sync::Mutex<Vec<LocalCopy>>>,
     commit_unsettled: &AtomicBool,
 ) -> anyhow::Result<()> {
     let book_uuid = title.book.uuid.as_str();
     let manifest = upload_manifest(&title.destinations, outbox, acquired).await?;
-    if keeps_local_copy(host, guests).await {
+    if let Some(copied) = copied {
         copy_to_local_destinations(guests, book_uuid, outbox, acquired, copied).await?;
     }
     let (files, paths): (Vec<UploadFile>, Vec<PathBuf>) = manifest.into_iter().unzip();
