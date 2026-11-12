@@ -50,6 +50,9 @@ tests open the same binding with `bookclerk_db_testkit::BindingDatabase`
 under `bookclerk_db_testkit::selected_profile()`, so `bookclerk-plugin test .`
 runs them under every profile (see
 [Testing against the limits](../../database-limits.md#testing-against-the-limits)).
+A storefront's `scan` can hand its paging to `scan_page(&params, fetch)`,
+which slices the store's own pages into replies the host accepts; see
+[Paged scans](../../abi.md#paged-scans).
 [`examples/plugins-echo-native-rust`](../../../../examples/plugins-echo-native-rust)
 does all of this end to end in its `notes` table.
 

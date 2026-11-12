@@ -43,7 +43,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bookclerk_config::{Config, Isolation};
 use bookclerk_sandbox::{Enforcement, NetPolicy, Spec};
 
-use crate::discover::DiscoveredPlugin;
+use crate::discover::{DiscoveredPlugin, StateScope};
 use crate::manifest::JailNetworkNeed;
 use crate::spawn_plan::{GuestRuntimeKind, SpawnPlan};
 use crate::{PluginError, PluginGrant, PluginRuntimeKind, Result};
@@ -77,14 +77,21 @@ fn plugin_scratch_dir(config: &Config, plugin: &DiscoveredPlugin) -> Result<Path
 /// Where one plugin's host-managed directories live.
 ///
 /// Distinct from [`DiscoveredPlugin::root`], which is where the plugin is
-/// installed and is read-only to the guest.
+/// installed and is read-only to the guest. A guest this install runs for a
+/// library it joined as a branch gets that library's own subtree
+/// ([`StateScope::Link`]), so two libraries' copies of one plugin, and this
+/// install's own copy, never share a `HOME`.
 fn plugin_state_root(config: &Config, plugin: &DiscoveredPlugin) -> Result<PathBuf> {
-    Ok(config
-        .paths()
-        .files_dir
-        .join("plugin-state")
-        .join(plugin.plugin_key().fs_id()))
+    let base = config.paths().files_dir.join(PLUGIN_STATE_DIR);
+    let base = match &plugin.state_scope {
+        StateScope::Local => base,
+        StateScope::Link(dir) => base.join(dir.as_str()),
+    };
+    Ok(base.join(plugin.plugin_key().fs_id()))
 }
+
+/// Directory under the files dir that holds every guest's host-managed state.
+pub(crate) const PLUGIN_STATE_DIR: &str = "plugin-state";
 
 /// Default host budget for each of `plugin-state/<fs_id>/data` and `…/tmp`.
 ///
@@ -1850,6 +1857,96 @@ entrypoints = ["{entrypoint}"]
             !ipc.exists(),
             "dropping the jail removes the guest IPC directory"
         );
+    }
+
+    #[test]
+    fn each_joined_library_gets_its_own_copy_of_a_plugins_state() {
+        let files = tempfile::tempdir().expect("tempdir");
+        let install = tempfile::tempdir().expect("tempdir");
+        let config = config_at(files.path());
+        let own = plugin_at(install.path(), "audible", JailNetworkNeed::Outbound);
+        let mut for_x = own.clone();
+        for_x.state_scope = StateScope::Link(crate::LinkStateDir::for_cluster("cluster-x"));
+        let mut for_y = own.clone();
+        for_y.state_scope = StateScope::Link(crate::LinkStateDir::for_cluster("cluster-y"));
+        let own_dir = plugin_data_dir(&config, &own).unwrap();
+        let x_dir = plugin_data_dir(&config, &for_x).unwrap();
+        let y_dir = plugin_data_dir(&config, &for_y).unwrap();
+        // Same plugin key, three libraries, three homes, none inside another.
+        for (a, b) in [(&own_dir, &x_dir), (&own_dir, &y_dir), (&x_dir, &y_dir)] {
+            assert_ne!(a, b);
+            assert!(!a.starts_with(b) && !b.starts_with(a));
+        }
+        let fs_id = own.plugin_key().fs_id();
+        let x_leaf = crate::LinkStateDir::for_cluster("cluster-x");
+        assert_eq!(
+            x_dir,
+            files
+                .path()
+                .join("plugin-state")
+                .join(x_leaf.as_str())
+                .join(&fs_id)
+                .join("data")
+        );
+        assert_eq!(
+            plugin_scratch_dir(&config, &for_x).unwrap(),
+            files
+                .path()
+                .join("plugin-state")
+                .join(x_leaf.as_str())
+                .join(&fs_id)
+                .join("tmp")
+        );
+    }
+
+    #[test]
+    fn link_state_dirs_are_fixed_length_and_never_a_plugin_fs_id() {
+        let dir = crate::LinkStateDir::for_cluster("../../etc/passwd");
+        assert!(crate::LinkStateDir::is_leaf(dir.as_str()));
+        assert_eq!(dir.as_str().len(), "link-".len() + 32);
+        assert_eq!(dir, crate::LinkStateDir::for_cluster("../../etc/passwd"));
+        assert_ne!(dir, crate::LinkStateDir::for_cluster("cluster-x"));
+        assert!(!crate::LinkStateDir::is_leaf(
+            "pk-0123456789abcdef0123456789abcdef"
+        ));
+        assert!(!crate::LinkStateDir::is_leaf("link-0123"));
+        assert!(!crate::LinkStateDir::is_leaf(
+            "link-0123456789ABCDEF0123456789ABCDEF"
+        ));
+    }
+
+    #[test]
+    fn purging_a_departed_library_removes_only_its_state() {
+        let files = tempfile::tempdir().expect("tempdir");
+        let install = tempfile::tempdir().expect("tempdir");
+        let config = config_at(files.path());
+        let own = plugin_at(install.path(), "audible", JailNetworkNeed::Outbound);
+        let mut for_x = own.clone();
+        let x_leaf = crate::LinkStateDir::for_cluster("cluster-x");
+        for_x.state_scope = StateScope::Link(x_leaf.clone());
+        let mut for_y = own.clone();
+        for_y.state_scope = StateScope::Link(crate::LinkStateDir::for_cluster("cluster-y"));
+        for plugin in [&own, &for_x, &for_y] {
+            let data = plugin_data_dir(&config, plugin).unwrap();
+            std::fs::create_dir_all(&data).unwrap();
+            std::fs::write(data.join("cookies"), b"session").unwrap();
+        }
+        crate::purge_link_plugin_state(files.path(), &x_leaf).expect("purged");
+        assert!(!files
+            .path()
+            .join("plugin-state")
+            .join(x_leaf.as_str())
+            .exists());
+        assert!(plugin_data_dir(&config, &own)
+            .unwrap()
+            .join("cookies")
+            .is_file());
+        assert!(plugin_data_dir(&config, &for_y)
+            .unwrap()
+            .join("cookies")
+            .is_file());
+        // Nothing left to purge is not an error.
+        crate::purge_link_plugin_state(files.path(), &x_leaf).expect("idempotent");
     }
 
     #[test]

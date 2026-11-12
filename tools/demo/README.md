@@ -107,7 +107,14 @@ every content signal to `no` (`use=immediate`).
      JSON and redirects are `no-store` and `robots.txt` keeps an hour
      (`src/cache-control.ts`, checked by `test/app.test.ts`); the files
      under `public/_demo/` keep the platform default, checked before each
-     use.
+     use;
+   - closes every answer to other origins: its own pages, JSON, redirects
+     and everything it forwards carry `SECURITY_HEADERS` (`src/pages.ts`):
+     `Cross-Origin-Resource-Policy`, `Cross-Origin-Opener-Policy` and
+     `X-Frame-Options` that refuse other sites, `Cross-Origin-Embedder-Policy:
+     require-corp` (Turnstile and the Web Analytics beacon opt in), and no
+     `Access-Control-Allow-Origin`. `public/_headers` gives the files under
+     `/_demo/` the same set, and `test/pages.test.ts` keeps the two equal.
 
    The waiting page and the banner follow the session over a WebSocket
    (`/_demo/live`, `src/live.ts`, `public/_demo/live.js`): the Durable Object

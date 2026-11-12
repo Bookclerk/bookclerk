@@ -270,16 +270,18 @@ Reserved classes (no worker in this release): `media`, `transcription`,
 
 - **From events.** Each node registers its own consumer,
   `host:search-index:{node id}`, on the `core.events` outbox for
-  `edition_linked`, `edition_updated`, `holding_added` and
-  `book_acquired`, all host event types no plugin may produce. The id names
+  `edition_linked`, `edition_updated`, `holding_added`, `holding_removed`
+  and `book_acquired`, all host event types no plugin may produce. The id names
   the node, so every node gets every event (Discover's `host:discover` is
   one consumer for the cluster). An edition event refreshes each listing
   that sells the edition, a holding event its listing, and `book_acquired`
   its title. A listing refresh deletes the listing's documents and adds
   back the titles that still sell it (and any older document of the same
   title), so a title that is gone leaves the index. A holding event whose
-  listing is already gone removes the marker below, so the node rebuilds. `holding_removed`, which carries the same `listingId` as
-  `holding_added`, is subscribed by the change that starts publishing it.
+  listing is already gone removes the marker below, so the node rebuilds.
+  The index holds one document per `books` row, and a removed holding
+  leaves its row in place until the library model replaces `books`, so
+  until then `holding_removed` refreshes the title rather than dropping it.
 - **Rebuild job.** A finished rebuild leaves a marker for the current
   document layout in the index folder. When it is missing (a new node, a
   deleted folder, or an index of an older layout, which is discarded), the
@@ -600,7 +602,8 @@ See [configuration.md](../server/configuration.md) (`[jobs]` / `BOOKCLERK_JOBS_*
 ## Cluster maintenance
 
 Cluster-wide cleanup runs on one daemon at a time. Each duty holds its own
-`cluster_leases` row; every daemon polls them every 60 s, the holder renews
+`cluster_leases` row; every daemon polls them every 60 s, starting 5 minutes
+after it starts so the first pass doesn't compete with startup. The holder renews
 its leases on each poll and runs a duty when it takes the lease and then
 hourly. A daemon that stops polling loses its leases after 180 s and the
 next daemon to poll takes them over with a larger fencing token. Before

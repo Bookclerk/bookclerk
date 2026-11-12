@@ -22,14 +22,28 @@ pub(crate) const MAX_PASS_PAGES: u32 = 10_000;
 pub(crate) trait PassIo {
     /// Asks the guest for the page at `cursor` of a pass sent `sync_token`.
     async fn page(&mut self, cursor: &str, sync_token: &str) -> Result<ScanPage, PluginError>;
-    /// Writes a validated page's titles; returns how many rows were written.
+    /// Writes a validated page's titles and marks them listed by this pass;
+    /// returns how many rows were written.
     async fn write(&mut self, books: Vec<ScanBook>) -> bookclerk_source::Result<usize>;
+    /// Removes the account's holdings of products a page reported gone.
+    async fn remove(&mut self, product_ids: &[String]) -> bookclerk_source::Result<()>;
     /// Records that the pass continues at `cursor` (started with `sync_token`).
     async fn checkpoint(&mut self, cursor: &str, sync_token: &str) -> bookclerk_source::Result<()>;
-    /// Records the end of the pass.
-    async fn finish(&mut self, sync_token: &str, complete: bool) -> bookclerk_source::Result<()>;
+    /// Records the end of the pass. `full` is true when no page was sent a
+    /// sync token, so with `complete` the pass listed every title the
+    /// account holds and the holdings it did not list are gone.
+    async fn finish(
+        &mut self,
+        sync_token: &str,
+        complete: bool,
+        full: bool,
+    ) -> bookclerk_source::Result<()>;
     /// Forgets the stored token and cursor (the guest called one invalid).
     async fn reset(&mut self) -> bookclerk_source::Result<()>;
+    /// Starts the pass over from its first page under a new pass id, so
+    /// nothing the abandoned pages listed counts as listed by the restart.
+    /// Called before any checkpoint of the restarted pass.
+    fn restart(&mut self);
     /// True when the scan job asked to stop.
     fn cancelled(&self) -> bool;
 }
@@ -92,6 +106,7 @@ pub(crate) async fn run_pass(
                 tracing::warn!(account_id, error = %err, "scan cursor refused; restarting as a full pass");
                 restarted = true;
                 io.reset().await?;
+                io.restart();
                 cursor.clear();
                 token.clear();
                 resumed = false;
@@ -100,6 +115,7 @@ pub(crate) async fn run_pass(
             Err(err) if !restarted && resumed && !cursor.is_empty() => {
                 tracing::warn!(account_id, error = %err, "resumed scan page failed; restarting the pass");
                 restarted = true;
+                io.restart();
                 // Forget the stored cursor now, so a restart that fails too
                 // does not leave the next job resuming the same page.
                 io.checkpoint("", &token).await?;
@@ -114,6 +130,7 @@ pub(crate) async fn run_pass(
                 // the full pass finishes and replaces it.
                 tracing::warn!(account_id, error = %err, "delta scan failed; restarting as a full pass");
                 restarted = true;
+                io.restart();
                 token.clear();
                 resumed = false;
                 asked.clear();
@@ -140,8 +157,14 @@ pub(crate) async fn run_pass(
             }
         }
         outcome.upserted += io.write(books).await?;
+        if !page.removed.is_empty() {
+            io.remove(&page.removed).await?;
+        }
         if page.next_cursor.is_empty() {
-            io.finish(&page.sync_token, page.complete).await?;
+            // Every page of this pass was sent `token` (a restart clears it
+            // and starts over), so an empty one means a full pass.
+            io.finish(&page.sync_token, page.complete, token.is_empty())
+                .await?;
             outcome.complete = page.complete;
             return Ok(outcome);
         }
@@ -176,10 +199,14 @@ mod tests {
         accounts: Vec<String>,
         /// Checkpoints recorded.
         checkpoints: Vec<(String, String)>,
-        /// Finish recorded.
-        finished: Option<(String, bool)>,
+        /// Finish recorded: `(token, complete, full)`.
+        finished: Option<(String, bool, bool)>,
+        /// Product ids reported removed.
+        removed: Vec<String>,
         /// Resets recorded.
         resets: usize,
+        /// Restarts recorded.
+        restarts: usize,
         /// Cancel after this many guest calls.
         cancel_after: Option<usize>,
     }
@@ -203,13 +230,25 @@ mod tests {
             self.checkpoints.push((cursor.into(), token.into()));
             Ok(())
         }
-        async fn finish(&mut self, token: &str, complete: bool) -> bookclerk_source::Result<()> {
-            self.finished = Some((token.into(), complete));
+        async fn remove(&mut self, product_ids: &[String]) -> bookclerk_source::Result<()> {
+            self.removed.extend_from_slice(product_ids);
+            Ok(())
+        }
+        async fn finish(
+            &mut self,
+            token: &str,
+            complete: bool,
+            full: bool,
+        ) -> bookclerk_source::Result<()> {
+            self.finished = Some((token.into(), complete, full));
             Ok(())
         }
         async fn reset(&mut self) -> bookclerk_source::Result<()> {
             self.resets += 1;
             Ok(())
+        }
+        fn restart(&mut self) {
+            self.restarts += 1;
         }
         fn cancelled(&self) -> bool {
             self.cancel_after.is_some_and(|n| self.calls.len() >= n)
@@ -246,6 +285,7 @@ mod tests {
             cursor: cursor.into(),
             sync_token: token.into(),
             resumed,
+            pass_id: "p".into(),
         }
     }
 
@@ -268,8 +308,9 @@ mod tests {
         );
         assert_eq!(io.calls, [("".into(), "".into()), ("c2".into(), "".into())]);
         assert_eq!(io.checkpoints, [("c2".into(), "".into())]);
-        assert_eq!(io.finished, Some(("t1".into(), true)));
+        assert_eq!(io.finished, Some(("t1".into(), true, true)));
         assert_eq!(io.written, ["1", "2", "3"]);
+        assert_eq!(io.removed, ["gone"], "removed ids reach the library");
         assert!(
             io.accounts.iter().all(|a| a == "a"),
             "empty accounts are filled"
@@ -288,7 +329,11 @@ mod tests {
         assert!(!outcome.complete);
         assert!(io.calls.iter().all(|(_, token)| token == "t1"));
         assert_eq!(io.checkpoints, [("c2".into(), "t1".into())]);
-        assert_eq!(io.finished, Some(("t2".into(), false)));
+        assert_eq!(
+            io.finished,
+            Some(("t2".into(), false, false)),
+            "a delta pass is never full"
+        );
     }
 
     #[tokio::test]
@@ -305,7 +350,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(io.resets, 1);
+        assert_eq!(io.restarts, 1, "the restart gets a new pass id");
         assert_eq!(io.calls[1], ("".into(), "".into()));
+        assert_eq!(
+            io.finished,
+            Some(("t9".into(), true, true)),
+            "the restart is a full pass"
+        );
 
         let mut io = Script {
             pages: [
@@ -335,6 +386,7 @@ mod tests {
             .unwrap();
         assert_eq!(io.calls[1], ("".into(), "t1".into()));
         assert_eq!(io.resets, 0);
+        assert_eq!(io.restarts, 1, "the restart gets a new pass id");
         assert_eq!(
             io.checkpoints[0],
             ("".into(), "t1".into()),
@@ -429,7 +481,8 @@ mod tests {
             io.resets, 0,
             "the stored token stays until the full pass ends"
         );
-        assert_eq!(io.finished, Some(("t2".into(), true)));
+        assert_eq!(io.restarts, 1);
+        assert_eq!(io.finished, Some(("t2".into(), true, true)));
 
         let mut io = Script {
             pages: [

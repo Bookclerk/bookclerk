@@ -83,6 +83,11 @@ pub enum NodeMessage {
         /// Revoked host node.
         node_id: String,
     },
+    /// Catalog questions wait for this branch
+    /// (`control_plane::catalog_lookup`). The branch pulls them with
+    /// `catalog.questions`; the message itself carries none.
+    #[serde(rename = "catalog.asked", rename_all = "camelCase")]
+    CatalogAsked {},
 }
 
 impl NodeMessage {
@@ -103,6 +108,8 @@ impl NodeMessage {
                 revision,
             } => format!("configuration.changed:{scope_type}:{scope_id}:{namespace}:{revision}"),
             Self::NodeRevoked { node_id } => format!("node.revoked:{node_id}"),
+            // Each ask is its own wakeup; the branch pulls whatever waits.
+            Self::CatalogAsked {} => format!("catalog.asked:{}", uuid::Uuid::new_v4()),
             Self::PlacementChanged { subject, revision } => format!(
                 "placement.changed:{subject}:{revision}:{}",
                 uuid::Uuid::new_v4()

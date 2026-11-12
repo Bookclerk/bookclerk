@@ -104,6 +104,19 @@ Worker's compatibility date and against real D1 databases with
 needs Node. `npm run coverage` adds a V8 coverage report. `public/static/assets/dashboard.*.js` is the browser script the dashboard
 serves, not Worker code, and stays JavaScript.
 
+### Cross-origin headers
+
+Every answer is closed to other origins with explicit headers:
+`withCrossOriginPolicy` in `cross-origin.ts` sets `CLOSED_HEADERS`
+(`Cross-Origin-Resource-Policy`, `Cross-Origin-Opener-Policy` and
+`Cross-Origin-Embedder-Policy` at their strictest, `X-Frame-Options: DENY`,
+`nosniff`, `Origin-Agent-Cluster`, `X-Permitted-Cross-Domain-Policies: none`
+and `X-XSS-Protection: 0`) and strips any `Access-Control-*` grant. No
+browser on another origin needs the collector: the daemon posts `/submit`
+from its own process, and the Actions call the key-protected routes
+directly. `public/_headers` gives `/static/*` the same set, and
+`cross-origin.test.ts` checks every route and the file.
+
 ### Caching
 
 Every answer carries a `Cache-Control` from the table in `cache-control.ts`,

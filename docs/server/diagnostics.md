@@ -496,6 +496,13 @@ SHA-256, with the member, their role and the session's times.
 - Pages carry a strict Content-Security-Policy (only this origin's
   styles, script, fonts and images; no inline script or style),
   `no-store`, and `frame-ancestors 'none'`.
+- Every answer from the collector, dashboard or not, is closed to other
+  origins: `Cross-Origin-Resource-Policy: same-origin`,
+  `Cross-Origin-Opener-Policy: same-origin`,
+  `Cross-Origin-Embedder-Policy: require-corp` and `X-Frame-Options: DENY`,
+  and never an `Access-Control-Allow-Origin`. No browser needs it: the
+  daemon posts reports from its own process, and the Actions call the
+  key-protected routes directly.
 - Report and issue text is escaped everywhere.
 
 ### Data

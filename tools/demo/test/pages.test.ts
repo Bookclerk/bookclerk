@@ -13,6 +13,7 @@ import {
   LEGAL,
   launchPage,
   PAGE_CSP,
+  SECURITY_HEADERS,
   SOCIAL_IMAGE_ALT,
   TURNSTILE_SCRIPT,
   waitPage,
@@ -284,5 +285,21 @@ describe("banner", () => {
   it("shows the password the demo Owner is created with", () => {
     const js = file("../public/_demo/banner.js").toString("utf8");
     assert.ok(js.includes(`const PASSWORD = ${JSON.stringify(VISITOR_PASSWORD)};`));
+  });
+});
+
+describe("public/_headers", () => {
+  it("gives the files under /_demo/ the Worker's security headers", () => {
+    const text = file("../public/_headers").toString("utf8");
+    const rules = text.split("\n").filter((line) => line !== "" && !line.startsWith("#"));
+    assert.equal(rules[0], "/*");
+    const fromFile = Object.fromEntries(
+      rules.slice(1).map((line) => {
+        const at = line.indexOf(":");
+        assert.ok(line.startsWith("  ") && at > 0, line);
+        return [line.slice(0, at).trim(), line.slice(at + 1).trim()];
+      }),
+    );
+    assert.deepEqual(fromFile, SECURITY_HEADERS);
   });
 });

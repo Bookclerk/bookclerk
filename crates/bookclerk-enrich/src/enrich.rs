@@ -311,7 +311,9 @@ pub async fn apply_enrichment_to_book(
         published_at,
     };
 
-    library.upsert_book(&book).await?;
+    // Metadata only: enrichment never asserts that the account holds the
+    // title, so it cannot bring back a holding a scan removed.
+    library.update_book_metadata(&book).await?;
 
     library
         .update_catalog_enrichment(

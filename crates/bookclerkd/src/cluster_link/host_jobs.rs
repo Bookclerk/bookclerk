@@ -242,13 +242,24 @@ pub struct GuestHost {
     state: Arc<AppState>,
     /// This host's files dir.
     files_dir: PathBuf,
+    /// The joined library's own plugin-state subtree, so its guests never
+    /// share a `HOME` with another library's copy of the same plugin or
+    /// with this install's own.
+    state_scope: bookclerk_plugin_host::StateScope,
 }
 
 impl GuestHost {
-    /// Guests for the daemon at `state`, whose files dir is `files_dir`.
+    /// Guests for the daemon at `state`, whose files dir is `files_dir`,
+    /// running the plugins of the library with `cluster_id`.
     #[must_use]
-    pub fn new(state: Arc<AppState>, files_dir: PathBuf) -> Self {
-        Self { state, files_dir }
+    pub fn new(state: Arc<AppState>, files_dir: PathBuf, cluster_id: &str) -> Self {
+        Self {
+            state,
+            files_dir,
+            state_scope: bookclerk_plugin_host::StateScope::Link(
+                bookclerk_plugin_host::LinkStateDir::for_cluster(cluster_id),
+            ),
+        }
     }
 
     /// Spawns the job's guest under the consented grant, with only the
@@ -262,6 +273,7 @@ impl GuestHost {
                 .context("the owner's plugin is not usable on this host")?;
         // Exactly the grant this host's operator consented to.
         plugin.version_grant = Some(bindings.grant.clone());
+        plugin.state_scope = self.state_scope.clone();
         let config = self.state.config.read().await.clone();
         let source = bookclerk_plugin_host::ExternalSource::spawn_prepared(
             &plugin,

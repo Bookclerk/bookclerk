@@ -110,8 +110,11 @@ it advertises one, `prepare(sql).iterate()` yields rows one at a time
 from the same read, `db.chunk(statements)` splits a long list into
 batches that each fit one request, and `db.write_chunks(...)` commits those
 batches resumably; see
-[Working within database limits](../../database-limits.md). Generate a
-typed `Env` protocol from `plugin.toml`:
+[Working within database limits](../../database-limits.md). A
+storefront's `scan` can hand its paging to `scan_page(params, fetch)`
+(`from bookclerk_plugin_sdk.scan_page import scan_page`, which also works
+inside a workerd isolate), which slices the store's own pages into replies
+the host accepts; see [Paged scans](../../abi.md#paged-scans). Generate a typed `Env` protocol from `plugin.toml`:
 
 ```bash
 python -m bookclerk_plugin_sdk types .   # writes bookclerk_configuration.py

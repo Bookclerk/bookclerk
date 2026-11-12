@@ -570,6 +570,31 @@ pub enum Body {
         /// Store account id.
         account_id: String,
     },
+    /// Branch → library: send the catalog questions waiting for this
+    /// branch (see [`crate::LookupWork`]). Answered with
+    /// [`Body::CatalogAsk`], or `error {code: "refused"}` when the node is
+    /// not a branch this library trusts.
+    #[serde(rename = "catalog.questions")]
+    CatalogQuestions {},
+    /// Library → branch: the questions waiting for it, at most
+    /// [`crate::MAX_LOOKUP_WORKS`]; empty when none is.
+    #[serde(rename = "catalog.ask")]
+    CatalogAsk {
+        /// The questions.
+        works: Vec<crate::lookup::LookupWork>,
+    },
+    /// Branch → library: answers to questions it was asked; a question
+    /// with no answer means the branch cannot supply that work. Answered
+    /// with [`Body::Accepted`] or `error`.
+    #[serde(rename = "catalog.found")]
+    CatalogFound {
+        /// The answers, at most [`crate::MAX_LOOKUP_WORKS`].
+        answers: Vec<crate::lookup::LookupAnswer>,
+        /// Works of the batch the branch looked up and cannot supply, so
+        /// the library stops asking until the answer expires.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        missing: Vec<String>,
+    },
     /// Owner → host: the request with this frame id was applied.
     #[serde(rename = "ok")]
     Accepted {},

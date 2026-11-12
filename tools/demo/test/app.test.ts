@@ -18,6 +18,7 @@ import type { Env, SessionApi } from "../src/env.ts";
 import { finish, recordStartup } from "../src/limits.ts";
 import type { LiveStatus } from "../src/live.ts";
 import { createD1 } from "../test-support/d1.ts";
+import { SECURITY_HEADERS } from "../src/pages.ts";
 
 const ORIGIN = "https://demo.example.test";
 
@@ -205,6 +206,45 @@ function onlyStub(env: TestEnv): FakeStub {
 }
 
 beforeEach(() => resetEstimateCache());
+
+/**
+ * Asserts a response carries the demo's closed cross-origin headers and no
+ * CORS grant.
+ *
+ * @param res - The response.
+ * @param what - Names the response in a failure.
+ */
+function assertClosed(res: Response, what: string): void {
+  for (const [name, value] of Object.entries(SECURITY_HEADERS))
+    assert.equal(res.headers.get(name), value, `${what}: ${name}`);
+  assert.equal(res.headers.get("Access-Control-Allow-Origin"), null, what);
+  assert.equal(res.headers.get("Access-Control-Allow-Credentials"), null, what);
+}
+
+describe("cross-origin headers", () => {
+  it("close every Worker answer to other origins, even with a foreign Origin", async () => {
+    const env = makeEnv();
+    for (const [path, init] of [
+      ["/robots.txt", {}],
+      ["/_demo/health", {}],
+      ["/", {}],
+      ["/_demo/wait", {}],
+      ["/_demo/nope", {}],
+      ["/api/status", {}],
+      ["/_demo/start", { method: "OPTIONS" }],
+    ] as const) {
+      const res = await handle(
+        new Request(`${ORIGIN}${path}`, {
+          ...init,
+          headers: { Origin: "https://elsewhere.example" },
+        }),
+        env,
+        makeDeps(),
+      );
+      assertClosed(res, `${init.method ?? "GET"} ${path} ${res.status}`);
+    }
+  });
+});
 
 describe("robots.txt", () => {
   it("blocks every crawler and refuses every content signal, without a session", async () => {
@@ -448,7 +488,7 @@ describe("a running session", () => {
     assert.equal(onlyStub(env).opened!.origin, ORIGIN);
     assert.equal(sent!.headers.get("Forwarded"), null);
     assert.equal(sent!.headers.get("X-Real-IP"), null);
-    assert.equal(res.headers.get("X-Frame-Options"), "DENY");
+    assertClosed(res, "proxied answer");
   });
 
   it("refuses cross-site writes the browser would carry cookies for", async () => {

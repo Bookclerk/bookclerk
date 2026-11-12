@@ -36,6 +36,9 @@ a later change supersedes one, its **Status** says so.
 - [Event delivery model](event-delivery-model.md): events fan out to
   every subscriber, jobs have one handler, and subscriptions follow
   deployments.
+- [Library catalog network](library-catalog-network.md): a branch of
+  several libraries, what each library owns, and how libraries list and
+  lend books.
 
 ## Adding a record
 

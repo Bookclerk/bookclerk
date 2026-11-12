@@ -21,7 +21,7 @@ pub struct Model {
     pub scan_enabled: i64,
     /// Display alias of the owning plugin (`audible`, `libro`, …).
     pub source: String,
-    /// Credential health: `active` or `revoked` (books retained).
+    /// Credential health: `active` or `revoked` (holdings removed; books retained).
     pub connection_status: String,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,

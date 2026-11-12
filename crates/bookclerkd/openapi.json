@@ -13493,7 +13493,7 @@
         "tags": [
           "Cluster"
         ],
-        "summary": "`POST /api/config/join/sharing`: Settings → Library's two sharing\nsettings for one library this install is a branch of. The operator or\nan Owner (verified from the stored role); anyone else gets 403.",
+        "summary": "`POST /api/config/join/sharing`: Settings → Library's sharing settings\nfor one library this install is a branch of (the two book-sharing\nsettings, and optionally \"List my members' books\"). The operator or\nan Owner (verified from the stored role); anyone else gets 403.",
         "operationId": "post_join_sharing",
         "requestBody": {
           "content": {
@@ -18144,6 +18144,275 @@
           },
           "500": {
             "description": "The library could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session."
+      }
+    },
+    "/api/auth/profile/catalog-listing": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Reads whether the caller's books are listed to the libraries this\ninstall is a branch of.",
+        "operationId": "get_catalog_listing",
+        "responses": {
+          "200": {
+            "description": "The caller's listing choice.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogListing"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session."
+      },
+      "put": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Sets whether the caller's books are listed to the libraries this install\nis a branch of.",
+        "operationId": "put_catalog_listing",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CatalogListing"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The caller's listing choice after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogListing"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `listed` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be written.",
             "content": {
               "application/json": {
                 "schema": {
@@ -27489,6 +27758,21 @@
           }
         }
       },
+      "CatalogListing": {
+        "type": "object",
+        "description": "Whether the caller's books are listed to the libraries this install is\na branch of (`GET` / `PUT /api/auth/profile/catalog-listing`).",
+        "required": [
+          "listed"
+        ],
+        "properties": {
+          "listed": {
+            "type": "boolean",
+            "description": "`true` (the default): the libraries this install joined can see,\nwhen they ask, that it can supply the caller's books. `false` keeps\nthem out of those answers; the owner's books are always listed.",
+            "example": true
+          }
+        },
+        "additionalProperties": false
+      },
       "CatalogSearchHit": {
         "type": "object",
         "description": "One autocomplete / results-page hit (possibly spanning multiple storefronts).",
@@ -27944,7 +28228,8 @@
           "state",
           "enrolled_at",
           "share_books",
-          "include_branches"
+          "include_branches",
+          "list_members_books"
         ],
         "properties": {
           "cluster_id": {
@@ -27985,6 +28270,11 @@
           "include_branches": {
             "type": "boolean",
             "description": "\"Include books from my own branches\".",
+            "example": true
+          },
+          "list_members_books": {
+            "type": "boolean",
+            "description": "\"List my members' books to the library\": the library's catalog\nlookups are answered with members' books (except those who opted\nout) as well as the owner's.",
             "example": true
           },
           "running": {
@@ -37255,6 +37545,14 @@
             "type": "boolean",
             "description": "\"Include books from my own branches\".",
             "example": false
+          },
+          "list_members_books": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "\"List my members' books to *library*\"; left as it is when absent.",
+            "example": true
           }
         },
         "additionalProperties": false

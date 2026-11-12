@@ -22,6 +22,7 @@ paths = [
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_capnp.py",
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_wire.py",
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/plugin_migration.py",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/scan_page.py",
 ]
 # Injected into every workerd isolate: check the workerd-runtime guests,
 # not the whole installation.
