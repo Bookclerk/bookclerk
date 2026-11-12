@@ -4088,10 +4088,34 @@ impl LibraryStore {
     ///
     /// Returns an error when the flat row cannot be read or written.
     pub async fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
+        self.upsert_book_with(book, Some(&holding_from_book(book)))
+            .await
+    }
+
+    /// Updates a title's metadata: the flat row, and its listing, without
+    /// asserting that its account holds it.
+    ///
+    /// For metadata from elsewhere (enrichment), which must not bring back
+    /// a holding a scan or a revoke removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the flat row cannot be read or written; a
+    /// listing that cannot be resolved is logged, not returned.
+    pub async fn update_book_metadata(&self, book: &NewBook) -> Result<BookRecord> {
+        self.upsert_book_with(book, None).await
+    }
+
+    /// [`Self::upsert_book`], recording `holding` when one is given.
+    async fn upsert_book_with(
+        &self,
+        book: &NewBook,
+        holding: Option<&bookclerk_resolve::HoldingDraft>,
+    ) -> Result<BookRecord> {
         let record = self.upsert_book_row(book).await?;
         match listing_from_book(book) {
             Ok(listing) => {
-                self.record_listing_after_row(&listing, &holding_from_book(book), &record)
+                self.record_listing_after_row(&listing, holding, &record)
                     .await;
             }
             Err(err) => tracing::warn!(
@@ -4122,7 +4146,7 @@ impl LibraryStore {
         let record = self.upsert_book_row(&title.book).await?;
         let mut listing = listing.clone();
         listing.key.plugin_key.clone_from(&title.book.plugin_key);
-        self.record_listing_after_row(&listing, &holding_from_book(&title.book), &record)
+        self.record_listing_after_row(&listing, Some(&holding_from_book(&title.book)), &record)
             .await;
         Ok(record)
     }
@@ -4189,14 +4213,20 @@ impl LibraryStore {
     /// resolves the listing again.
     ///
     /// The work the listing reaches also takes the row's description,
-    /// subjects, categories and cover where it has none yet.
+    /// subjects, categories and cover where it has none yet. `holding` is
+    /// recorded when given; without one the listing is linked as a catalog
+    /// listing and no holding is added.
     async fn record_listing_after_row(
         &self,
         listing: &bookclerk_resolve::Listing,
-        holding: &bookclerk_resolve::HoldingDraft,
+        holding: Option<&bookclerk_resolve::HoldingDraft>,
         record: &BookRecord,
     ) {
-        let result = match self.record_listing(listing, holding).await {
+        let linked = match holding {
+            Some(holding) => self.record_listing(listing, holding).await,
+            None => self.record_catalog_listing(listing).await,
+        };
+        let result = match linked {
             Ok(plan) => {
                 self.fill_work_from_book(&plan.listing.edition_id, &WorkEnrichment::of_book(record))
                     .await

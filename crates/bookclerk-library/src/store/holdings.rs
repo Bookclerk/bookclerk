@@ -789,6 +789,24 @@ mod tests {
         }
     }
 
+    /// Metadata from elsewhere updates a title without holding it again.
+    #[tokio::test]
+    async fn a_metadata_update_does_not_hold_a_removed_title() {
+        for profile in Profile::ALL {
+            let store = library(profile, &["B1"]).await;
+            store
+                .remove_account_holdings(PLUGIN, "a1", HoldingSelection::All)
+                .await
+                .unwrap();
+            let mut book = crate::NewBook::minimal("B1", "a1", "us", "Title B1");
+            book.plugin_key = PLUGIN.into();
+            store.update_book_metadata(&book).await.unwrap();
+            assert!(held(&store).await.is_empty(), "{profile:?}");
+            store.upsert_book(&book).await.unwrap();
+            assert_eq!(held(&store).await.len(), 1, "{profile:?}: upsert holds it");
+        }
+    }
+
     /// A remap moves holdings to the new id with an event pair each, and a
     /// holding the new id already has is kept rather than duplicated.
     #[tokio::test]

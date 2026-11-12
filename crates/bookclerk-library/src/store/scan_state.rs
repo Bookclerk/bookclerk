@@ -170,6 +170,7 @@ impl LibraryStore {
         self.write_scan_state(
             "UPDATE account_scan_state SET resume_cursor = ?, resume_token = ?, pass_id = ?, \
              updated_at = ? WHERE plugin_key = ? AND account_id = ?",
+            Fence::Unrevoked,
             vec![
                 batch::text(cursor),
                 batch::text(pass_token),
@@ -228,6 +229,7 @@ impl LibraryStore {
         ]);
         self.write_scan_state(
             sql,
+            Fence::Unrevoked,
             params,
             InsertRow {
                 plugin_key,
@@ -254,6 +256,7 @@ impl LibraryStore {
         self.write_scan_state(
             "UPDATE account_scan_state SET sync_token = '', resume_cursor = '', \
              resume_token = '', updated_at = ? WHERE plugin_key = ? AND account_id = ?",
+            Fence::None,
             vec![
                 batch::text(&now),
                 batch::text(plugin_key),
@@ -274,35 +277,67 @@ impl LibraryStore {
     }
 
     /// Runs `update` and the matching insert of a missing row as one batch.
+    ///
+    /// Under [`Fence::Unrevoked`] neither statement writes once the account
+    /// is revoked, so a pass still in flight when its account was revoked
+    /// cannot store a token or cursor the revoke cleared.
     async fn write_scan_state(
         &self,
         update: &str,
-        update_params: Vec<bookclerk_plugin_abi::DbValue>,
+        fence: Fence,
+        mut update_params: Vec<bookclerk_plugin_abi::DbValue>,
         row: InsertRow<'_>,
     ) -> Result<()> {
+        let (guard, guard_params) = match fence {
+            Fence::None => ("", Vec::new()),
+            Fence::Unrevoked => (
+                " AND NOT EXISTS (SELECT 1 FROM accounts WHERE plugin_key = ? \
+                 AND account_id = ? AND connection_status = 'revoked')",
+                vec![batch::text(row.plugin_key), batch::text(row.account_id)],
+            ),
+        };
+        update_params.extend(guard_params.iter().cloned());
+        let mut insert_params = vec![
+            batch::text(row.plugin_key),
+            batch::text(row.account_id),
+            batch::text(row.sync_token),
+            batch::text(row.resume_cursor),
+            batch::text(row.resume_token),
+            batch::text_opt(row.last_complete_at),
+            batch::text(row.pass_id),
+            batch::text(row.now),
+        ];
+        insert_params.extend(guard_params);
         let insert = batch::exec(
-            "INSERT OR IGNORE INTO account_scan_state \
-             (plugin_key, account_id, sync_token, resume_cursor, resume_token, \
-              last_complete_at, pass_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            vec![
-                batch::text(row.plugin_key),
-                batch::text(row.account_id),
-                batch::text(row.sync_token),
-                batch::text(row.resume_cursor),
-                batch::text(row.resume_token),
-                batch::text_opt(row.last_complete_at),
-                batch::text(row.pass_id),
-                batch::text(row.now),
-            ],
+            &format!(
+                "INSERT OR IGNORE INTO account_scan_state \
+                 (plugin_key, account_id, sync_token, resume_cursor, resume_token, \
+                  last_complete_at, pass_id, updated_at) \
+                 SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE 1 = 1{guard}"
+            ),
+            insert_params,
         );
         let operation_id = format!("scan-state-{}", uuid::Uuid::new_v4());
         self.execute_host_batch(batch::request(
             &operation_id,
-            vec![batch::exec(update, update_params), insert],
+            vec![
+                batch::exec(&format!("{update}{guard}"), update_params),
+                insert,
+            ],
         ))
         .await?;
         Ok(())
     }
+}
+
+/// Whether a scan-state write stands down for a revoked account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fence {
+    /// The write runs whatever the account's state (a reset).
+    None,
+    /// The write runs only while the account is not revoked (a pass's
+    /// checkpoint or finish).
+    Unrevoked,
 }
 
 /// The row [`LibraryStore::write_scan_state`] inserts when none exists.
@@ -399,6 +434,81 @@ mod tests {
             plan_pass(Some(&state("", 0, None)), Utc::now()).sync_token,
             ""
         );
+    }
+
+    /// A pass still in flight when its account is revoked stores no token
+    /// or cursor, so reconnecting runs a full pass; a reset still runs.
+    #[tokio::test]
+    async fn a_revoked_account_keeps_no_pass_progress() {
+        use crate::test_support::{sqlite, Profile};
+        for profile in Profile::ALL {
+            let store = sqlite::memory(profile).await.into_store();
+            store
+                .upsert_account("plugin:audible", "a1", "us", None, true, "audible")
+                .await
+                .unwrap();
+            store
+                .upsert_account("plugin:audible", "a2", "us", None, true, "audible")
+                .await
+                .unwrap();
+            store
+                .revoke_credentials("plugin:audible", "a1")
+                .await
+                .unwrap();
+            store
+                .save_scan_checkpoint("plugin:audible", "a1", "page:2", "t0", "p-1")
+                .await
+                .unwrap();
+            store
+                .finish_scan_pass("plugin:audible", "a1", "t1", true)
+                .await
+                .unwrap();
+            let row = store
+                .scan_state("plugin:audible", "a1")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.sync_token, "", "{profile:?}");
+            assert_eq!(row.resume_cursor, "", "{profile:?}");
+            assert!(row.last_complete_at.is_none(), "{profile:?}");
+
+            // A revoked account with no row yet gets none.
+            store
+                .upsert_account("plugin:audible", "a3", "us", None, true, "audible")
+                .await
+                .unwrap();
+            store
+                .revoke_credentials("plugin:audible", "a3")
+                .await
+                .unwrap();
+            sea_orm::ConnectionTrait::execute_unprepared(
+                &store.db,
+                "DELETE FROM account_scan_state WHERE account_id = 'a3'",
+            )
+            .await
+            .unwrap();
+            store
+                .finish_scan_pass("plugin:audible", "a3", "t1", true)
+                .await
+                .unwrap();
+            assert_eq!(
+                store.scan_state("plugin:audible", "a3").await.unwrap(),
+                None,
+                "{profile:?}"
+            );
+
+            // Another account is not fenced.
+            store
+                .finish_scan_pass("plugin:audible", "a2", "t9", true)
+                .await
+                .unwrap();
+            let row = store
+                .scan_state("plugin:audible", "a2")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.sync_token, "t9", "{profile:?}");
+        }
     }
 
     /// Every write lands under each database profile, and removing the
