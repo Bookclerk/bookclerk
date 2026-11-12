@@ -844,9 +844,10 @@ learns whose copy B sent. Requests made before B stopped listing a book
 are answered "not listed".
 
 > [!NOTE]
-> A book B sends because of a request stays shared with A while B has
-> it, even if the member later opts out. The record is kept with B's
-> other per-library state.
+> A book B sends because of a request keeps going to A only while B
+> still lists it: turning off **Share this branch's books** or **List my
+> members' books**, or the member opting out, stops it at the next sync
+> pass. Files A already received stay there.
 
 ### No loops
 
