@@ -92,6 +92,7 @@ fn host_routes_as(state: &Arc<AppState>, caller: UserCaller) -> axum::Router {
             get(super::get_join_sharing).post(super::post_join_sharing),
         )
         .route("/api/config/join/capacity", post(super::post_join_capacity))
+        .route("/api/config/join/window", get(super::get_join_window))
         .layer(axum::Extension(caller))
         .with_state(Arc::clone(state))
 }
@@ -305,6 +306,43 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
+    // "Use this computer to download" off: the link becomes a window, the
+    // other settings keep their values, and the window view lists it.
+    let (status, _, window) = call(&host, "GET", "/api/config/join/window", None).await;
+    assert_eq!(status, StatusCode::OK, "{window}");
+    assert_eq!(window["clusters"], json!([]));
+    let (status, _, windowed) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({ "cluster_id": cluster_id, "download": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{windowed}");
+    assert_eq!(windowed["cluster"]["download"], false);
+    assert_eq!(windowed["cluster"]["share_books"], false, "left as it is");
+    assert_eq!(
+        windowed["cluster"]["list_members_books"], false,
+        "left as it is"
+    );
+    let (status, headers, window) = call(&host, "GET", "/api/config/join/window", None).await;
+    assert_eq!(status, StatusCode::OK, "{window}");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(window["clusters"][0]["cluster_id"], cluster_id.as_str());
+    assert_eq!(window["clusters"][0]["download"], false);
+    assert!(window["books"].is_array(), "{window}");
+    let (status, _, downloading) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({ "cluster_id": cluster_id, "download": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{downloading}");
+    assert_eq!(downloading["cluster"]["download"], true);
+    let (_, _, window) = call(&host, "GET", "/api/config/join/window", None).await;
+    assert_eq!(window["clusters"], json!([]));
+
     // Settings → Library's job cap: the running link's share follows it.
     let (status, _, listed) = call(&host, "GET", "/api/config/join/sharing", None).await;
     assert_eq!(status, StatusCode::OK, "{listed}");
@@ -374,6 +412,8 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
         let app = host_routes_as(&host_state, UserCaller::User { user_id: refused });
         let (status, _, _) = call(&app, "GET", "/api/config/join/sharing", None).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = call(&app, "GET", "/api/config/join/window", None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _, _) = call(
             &app,
             "POST",
@@ -407,6 +447,8 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
     );
     let (status, _, listed) = call(&as_owner, "GET", "/api/config/join/sharing", None).await;
     assert_eq!(status, StatusCode::OK, "{listed}");
+    let (status, _, _) = call(&as_owner, "GET", "/api/config/join/window", None).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(listed["clusters"][0]["cluster_id"], cluster_id.as_str());
     assert_eq!(listed["clusters"][0]["share_books"], false);
     let (status, _, shared) = call(
