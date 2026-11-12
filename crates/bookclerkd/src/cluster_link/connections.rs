@@ -4,7 +4,7 @@
 //! - `POST /api/config/join/connections` `{cluster_id, accounts}`: "Add my
 //!   connections to *library*". The branch's person picks some of their own
 //!   connected accounts; the branch seals them to the library's owner box
-//!   key over the link's socket ([`HostClientHandle::offer_accounts`]),
+//!   key over the link's socket ([`HostClientHandle::offer_accounts`](bookclerk_node_client::HostClientHandle::offer_accounts)),
 //!   records where each went (`account_shares`, peer `link:<cluster>`) and
 //!   answers what the library kept.
 //! - `POST /api/config/join/connections/disconnect` `{plugin_key,
