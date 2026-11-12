@@ -62,7 +62,7 @@ fn lookup_chunk(max_binds: u32) -> usize {
 /// # Errors
 ///
 /// Returns [`LibraryError::Orm`] when a read fails.
-pub(super) async fn find_chunked<E, F>(
+pub(crate) async fn find_chunked<E, F>(
     store: &LibraryStore,
     ids: &[String],
     query: F,

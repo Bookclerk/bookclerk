@@ -402,3 +402,67 @@ async fn a_branch_lists_members_books_unless_turned_off_or_opted_out() {
     let (answers, _) = answer_questions(&store, &questions, true).await.unwrap();
     assert_eq!(answers.len(), 2);
 }
+
+/// More works than one statement may bind are asked, sent in batches of at
+/// most [`MAX_LOOKUP_WORKS`], answered, and answered on the branch side,
+/// under every database profile.
+#[tokio::test]
+async fn many_works_are_asked_and_answered_within_every_profiles_limits() {
+    const WORKS: usize = 110;
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let store = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        let owner = store
+            .create_user(UserRole::Owner, Some("Owner"), None)
+            .await
+            .unwrap();
+        add_branch(&store, BRANCH, owner.id).await;
+        store
+            .upsert_account(PLUGIN, "owner-acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let mut works = Vec::new();
+        for n in 0..WORKS {
+            let asin = format!("B0MANY{n:04}");
+            let record = store
+                .upsert_book(&book("owner-acct", &asin, &format!("Title {asin}")))
+                .await
+                .unwrap();
+            works.push(store.work_id_for_book(&record.uuid).await.unwrap().unwrap());
+        }
+
+        let asked = ask_branches(&store, &works).await.unwrap();
+        assert_eq!(asked.asked, u64::try_from(WORKS).unwrap(), "{name}");
+        assert_eq!(
+            works_of_interest(&store, 10).await.unwrap(),
+            Vec::<String>::new(),
+            "{name}: no wishes or candidates"
+        );
+
+        let first = pending_questions(&store, BRANCH).await.unwrap().unwrap();
+        assert_eq!(first.len(), MAX_LOOKUP_WORKS, "{name}");
+        // The branch side looks a full batch up in one pass.
+        let (answers, missing) = answer_questions(&store, &first, true).await.unwrap();
+        assert_eq!(answers.len(), MAX_LOOKUP_WORKS, "{name}");
+        assert!(missing.is_empty(), "{name}");
+        let gone: Vec<String> = first.iter().map(|q| q.work.clone()).collect();
+        let report = recorded(&store, &[], &gone).await;
+        assert_eq!(
+            report.works,
+            u64::try_from(MAX_LOOKUP_WORKS).unwrap(),
+            "{name}"
+        );
+
+        let rest = pending_questions(&store, BRANCH).await.unwrap().unwrap();
+        assert_eq!(rest.len(), WORKS - MAX_LOOKUP_WORKS, "{name}");
+        assert!(
+            branch_listings_for_works(&store, &works)
+                .await
+                .unwrap()
+                .is_empty(),
+            "{name}"
+        );
+    }
+}

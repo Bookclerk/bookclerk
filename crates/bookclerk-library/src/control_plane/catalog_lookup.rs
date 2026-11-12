@@ -75,11 +75,25 @@ pub const BRANCH_LISTING_TTL: chrono::Duration = chrono::Duration::days(2);
 /// Plugin key prefix of the listings branches answer with.
 pub const BRANCH_LISTING_PREFIX: &str = "branch:";
 
-/// Ids per `IN (...)` read.
-const READ_CHUNK: usize = 200;
+/// Binds an `IN (...)` read here may add besides the list (its other
+/// filters), so a chunk plus them stays within the adapter's bind limit.
+const READ_FIXED_BINDS: usize = 4;
 
-/// Work ids per `IN (...)` list in one [`ask_branches`] statement.
-const ASK_CHUNK: usize = 100;
+/// Binds of an [`ask_branches`] statement besides its `IN (...)` list.
+const ASK_FIXED_BINDS: usize = 3;
+
+/// Most ids per `IN (...)` list, whatever the adapter allows.
+const MAX_IN_LIST: usize = 200;
+
+/// Ids per `IN (...)` list on `store`'s database plugin: its advertised
+/// bind limit less `fixed` binds the statement also carries, at least 1
+/// and at most [`MAX_IN_LIST`].
+fn in_chunk(store: &LibraryStore, fixed: usize) -> usize {
+    usize::try_from(store.db_capabilities().max_binds)
+        .unwrap_or(usize::MAX)
+        .saturating_sub(fixed)
+        .clamp(1, MAX_IN_LIST)
+}
 
 /// Rows read per [`pending_questions`] call, so works with no identifiers
 /// skipped along the way do not starve the batch.
@@ -228,11 +242,9 @@ pub async fn ask_branches(store: &LibraryStore, work_ids: &[String]) -> Result<A
     let stale = stamp(now - LOOKUP_ANSWER_TTL);
     let works: Vec<&String> = works.into_iter().collect();
     for node_id in &branches {
-        let mut statements = Vec::new();
-        for part in works.chunks(ASK_CHUNK) {
+        let mut statements = fitting_statements(store, &works, |part| {
             let marks = vec!["?"; part.len()].join(", ");
-            let ids = part.iter().map(|id| text(id));
-            statements.push(exec(
+            exec(
                 &format!(
                     "UPDATE catalog_lookups SET asked_at = ?, sent_at = NULL, answered_at = NULL \
                      WHERE node_id = ? AND answered_at IS NOT NULL AND answered_at < ? \
@@ -240,20 +252,23 @@ pub async fn ask_branches(store: &LibraryStore, work_ids: &[String]) -> Result<A
                 ),
                 [text(&now_text), text(node_id), text(&stale)]
                     .into_iter()
-                    .chain(ids.clone())
+                    .chain(part.iter().map(|id| text(id)))
                     .collect(),
-            ));
-            statements.push(exec(
+            )
+        });
+        statements.extend(fitting_statements(store, &works, |part| {
+            let marks = vec!["?"; part.len()].join(", ");
+            exec(
                 &format!(
                     "INSERT OR IGNORE INTO catalog_lookups (node_id, work_id, asked_at) \
                      SELECT ?, id, ? FROM works WHERE id IN ({marks})"
                 ),
                 [text(node_id), text(&now_text)]
                     .into_iter()
-                    .chain(ids)
+                    .chain(part.iter().map(|id| text(id)))
                     .collect(),
-            ));
-        }
+            )
+        }));
         let asked = run_batches(store, "catalog question", statements).await?;
         if asked > 0 {
             notify_node(store, node_id, NodeMessage::CatalogAsked {}).await;
@@ -263,22 +278,37 @@ pub async fn ask_branches(store: &LibraryStore, work_ids: &[String]) -> Result<A
     Ok(report)
 }
 
-/// Reads `ids` in chunks with `query`.
+/// Reads `ids` in chunks with `query`, each statement narrowed until it
+/// fits the database plugin's limits (`maxBinds`, `maxPayloadBytes`,
+/// `maxRequestBytes`); see [`crate::store::library_model::find_chunked`].
 async fn read_chunked<E, F>(store: &LibraryStore, ids: &[String], query: F) -> Result<Vec<E::Model>>
 where
     E: EntityTrait,
     F: Fn(Vec<String>) -> sea_orm::Select<E>,
 {
+    crate::store::library_model::find_chunked::<E, _>(store, ids, |part| query(part.to_vec())).await
+}
+
+/// One statement per run of `ids`, each run as long as `build`'s
+/// statement still fits the database plugin's per-statement limits (binds
+/// and payload), starting from [`in_chunk`] ids and halving.
+fn fitting_statements<F>(store: &LibraryStore, ids: &[&String], build: F) -> Vec<TypedDbStatement>
+where
+    F: Fn(&[&String]) -> TypedDbStatement,
+{
     let mut out = Vec::new();
-    for part in ids.chunks(READ_CHUNK) {
-        out.extend(
-            query(part.to_vec())
-                .all(store.db())
-                .await
-                .map_err(LibraryError::Orm)?,
-        );
+    let mut rest = ids;
+    while !rest.is_empty() {
+        let mut width = in_chunk(store, ASK_FIXED_BINDS).min(rest.len());
+        let mut statement = build(&rest[..width]);
+        while width > 1 && !store.admits_statement(&statement) {
+            width /= 2;
+            statement = build(&rest[..width]);
+        }
+        out.push(statement);
+        rest = &rest[width..];
     }
-    Ok(out)
+    out
 }
 
 /// The identifiers each of `work_ids` is asked about by: its editions'
@@ -1026,7 +1056,7 @@ impl Listers {
         .await?;
         let identity_ids: Vec<i64> = links.iter().map(|l| l.identity_id).collect();
         let mut user_of_identity = HashMap::new();
-        for part in identity_ids.chunks(READ_CHUNK) {
+        for part in identity_ids.chunks(in_chunk(store, READ_FIXED_BINDS)) {
             for identity in portal_identities::Entity::find()
                 .filter(portal_identities::Column::Id.is_in(part.to_vec()))
                 .all(store.db())
@@ -1057,7 +1087,7 @@ impl Listers {
         let mut owners = BTreeSet::new();
         let mut active = BTreeSet::new();
         let mut opted_out = BTreeSet::new();
-        for part in user_ids.chunks(READ_CHUNK) {
+        for part in user_ids.chunks(in_chunk(store, READ_FIXED_BINDS)) {
             for user in users::Entity::find()
                 .filter(users::Column::Id.is_in(part.to_vec()))
                 .all(store.db())
