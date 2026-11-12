@@ -233,7 +233,9 @@ accounts and which of them would travel.
   whether they may connect store accounts there (**Settings → User
   Management**, `PATCH /api/users/{id}` with `may_connect_accounts`). The
   rule is on by default, and nobody can change their own. A member it is off for adds nothing from a join,
-  and the connect routes answer `403`.
+  and the connect routes answer `403`. A sign-in that finishes after the
+  rule was turned off is not linked, and an account it newly stored is
+  revoked and its secrets deleted.
 
 > [!NOTE]
 > A retry of the same exchange (a lost answer) replays the same node, and

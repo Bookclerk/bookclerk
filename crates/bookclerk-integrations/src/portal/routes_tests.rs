@@ -45,6 +45,10 @@ struct StubSource {
     mode: PortalAuthMode,
     /// When set, every login fails with this store message.
     refusal: Option<&'static str>,
+    /// When set, a login stores its account (as a real storefront's login
+    /// does) and then the operator stops this user from connecting, before
+    /// the login returns.
+    stops_member: Option<Arc<std::sync::OnceLock<(LibraryStore, i64)>>>,
 }
 
 #[async_trait::async_trait]
@@ -67,14 +71,26 @@ impl ContentSource for StubSource {
 
     async fn login(
         &self,
-        _scope: &bookclerk_library::SourceScope,
+        scope: &bookclerk_library::SourceScope,
         opts: LoginOptions,
     ) -> bookclerk_source::Result<SourceAccount> {
         if let Some(refusal) = self.refusal {
             return Err(SourceError::auth(refusal));
         }
+        let account_id = opts.email.unwrap_or_else(|| "oauth-user".into());
+        if let Some((library, user_id)) = self.stops_member.as_ref().and_then(|s| s.get()) {
+            scope
+                .upsert_account(&account_id, &opts.marketplace, None, true)
+                .await
+                .unwrap();
+            bookclerk_library::control_plane::set_member_may_connect_accounts(
+                library, *user_id, false,
+            )
+            .await
+            .unwrap();
+        }
         Ok(SourceAccount {
-            account_id: opts.email.unwrap_or_else(|| "oauth-user".into()),
+            account_id,
             source: self.id.into(),
             marketplace: opts.marketplace,
             label: opts.label,
@@ -129,12 +145,14 @@ fn stores() -> Vec<Arc<dyn ContentSource>> {
             key: "test:source-libro",
             mode: PortalAuthMode::Password,
             refusal: None,
+            stops_member: None,
         }),
         Arc::new(StubSource {
             id: "audible",
             key: "test:source-audible",
             mode: PortalAuthMode::Oauth,
             refusal: None,
+            stops_member: None,
         }),
     ]
 }
@@ -396,6 +414,7 @@ async fn password_login_refusals_name_their_cause() {
         key: "test:source-chirp",
         mode: PortalAuthMode::Password,
         refusal: Some("internal: authentication error: oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"),
+        stops_member: None,
     }));
     let (app, _library, cookie) = harness(sources).await;
 
@@ -524,4 +543,45 @@ async fn a_member_the_operator_stopped_cannot_connect() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{answer}");
+}
+
+/// A login that finishes after the operator stopped the member leaves no
+/// usable account: the account it stored is revoked with scans off and
+/// never linked.
+#[tokio::test]
+async fn a_login_the_operator_stopped_midway_is_taken_back() {
+    let stop = Arc::new(std::sync::OnceLock::new());
+    let sources: Vec<Arc<dyn ContentSource>> = vec![Arc::new(StubSource {
+        id: "libro",
+        key: "test:source-libro",
+        mode: PortalAuthMode::Password,
+        refusal: None,
+        stops_member: Some(Arc::clone(&stop)),
+    })];
+    let (app, library, cookie) = harness(sources).await;
+    let member = library.list_users().await.unwrap()[0].id;
+    stop.set((library.clone(), member)).ok().unwrap();
+
+    let (status, _, answer) = call(
+        &app,
+        "POST",
+        "/sources/libro/login",
+        Some(&cookie),
+        Some(credentials()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    let accounts = library.list_accounts().await.unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].connection_status, "revoked");
+    assert!(!accounts[0].scan_enabled);
+    let identity = library
+        .ensure_local_portal_identity(member, None)
+        .await
+        .unwrap();
+    assert!(library
+        .list_account_links(identity.id)
+        .await
+        .unwrap()
+        .is_empty());
 }
