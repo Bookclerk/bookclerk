@@ -172,10 +172,12 @@ async fn only_the_owners_own_books_are_shared_upward() {
             .unwrap()
             .id;
         connect(&store, "own-acct", Some(owner)).await;
+        connect(&store, "own-acct-2", Some(owner)).await;
         connect(&store, "sam-acct", Some(member)).await;
         connect(&store, "loose-acct", None).await;
         for (account, product) in [
             ("own-acct", "OWN"),
+            ("own-acct-2", "OWN2"),
             ("sam-acct", "SAM"),
             ("loose-acct", "LOOSE"),
         ] {
@@ -212,11 +214,15 @@ async fn only_the_owners_own_books_are_shared_upward() {
                 .collect()
         };
         let to_a = OwnerShareFilter::load(&store, "lib-a").await.unwrap();
-        assert_eq!(sent(&to_a), BTreeSet::from(["OWN".into()]), "{name}");
+        assert_eq!(
+            sent(&to_a),
+            BTreeSet::from(["OWN".into(), "OWN2".into()]),
+            "{name}"
+        );
         let to_b = OwnerShareFilter::load(&store, "lib-b").await.unwrap();
         assert_eq!(
             sent(&to_b),
-            BTreeSet::from(["OWN".into(), "FROM-A".into()]),
+            BTreeSet::from(["OWN".into(), "OWN2".into(), "FROM-A".into()]),
             "{name}"
         );
     }
