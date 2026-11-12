@@ -498,6 +498,16 @@ async fn sealed_connections(
             return None;
         }
     }
+    // Also checked on every redeem: a branch revoked since the join (or
+    // whose credential is gone) is no longer trusted with secrets.
+    match load_node_credential(library, &enrolled.node_id).await {
+        Ok(Some(credential)) if credential.revoked_at.is_none() => {}
+        Ok(_) => return None,
+        Err(err) => {
+            tracing::warn!(error = %err, "branch enrollment could not read the branch's credential");
+            return None;
+        }
+    }
     let shareable = shareable_plugin_keys(state, library).await;
     let is_shareable = move |key: &str| shareable.contains(key);
     let accounts = match accounts_to_carry(library, enrolled.owner_user_id, &is_shareable).await {

@@ -216,7 +216,8 @@ accounts and which of them would travel.
   carries the accounts and their secrets as one bundle sealed to the
   branch's X25519 box key (the same sealed box as a clerk's bootstrap,
   with its own associated-data domain). A retried redeem answers it
-  again. The library records each account as sent to that node in
+  again, but only while the user is still active and the branch has not
+  been revoked. The library records each account as sent to that node in
   `account_shares` and audits `branch_connections_sent` (without the
   secrets). A bundle that can't be made is logged and left out: the
   branch still joins.

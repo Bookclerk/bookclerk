@@ -617,7 +617,11 @@ async fn an_empty_install_joins_as_a_clerk_and_takes_the_librarys_bootstrap() {
 /// Writes a storefront `plugin.toml` declaring `credentials` under the
 /// library's `plugins/` directory, and answers the plugin key discovery
 /// gives it.
-fn stage_storefront(files: &tempfile::TempDir, state: &Arc<AppState>, credentials: &str) -> String {
+pub(crate) fn stage_storefront(
+    files: &tempfile::TempDir,
+    state: &Arc<AppState>,
+    credentials: &str,
+) -> String {
     let dir = files.path().join("plugins/libro");
     std::fs::create_dir_all(&dir).unwrap();
     // Discovery wants the guest's command to exist; it is never run here.
@@ -645,7 +649,7 @@ fn stage_storefront(files: &tempfile::TempDir, state: &Arc<AppState>, credential
 
 /// Connects `account_id` of `plugin_key` for `user_id`, with an `auth`
 /// secret holding `value`.
-async fn connect_account(
+pub(crate) async fn connect_account(
     store: &LibraryStore,
     user_id: i64,
     plugin_key: &str,

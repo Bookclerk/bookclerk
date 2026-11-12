@@ -1466,4 +1466,4 @@ pub async fn post_join_sharing(
 
 #[cfg(test)]
 #[path = "join_tests.rs"]
-mod tests;
+pub(crate) mod tests;

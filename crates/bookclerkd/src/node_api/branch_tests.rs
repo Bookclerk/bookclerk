@@ -286,6 +286,63 @@ async fn a_consented_code_enrolls_one_node_and_retries_replay() {
 }
 
 #[tokio::test]
+async fn a_revoked_branch_gets_no_connections_on_a_retry() {
+    use crate::cluster_link::join::tests::{connect_account, stage_storefront};
+    use bookclerk_library::control_plane::{revoke_node_credential, EnrollmentActor};
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store, member) = owner(&files).await;
+    let plugin_key = stage_storefront(&files, &state, "shareable");
+    connect_account(&store, member, &plugin_key, "riley@example.com", b"token").await;
+    let app = routes(&state, UserCaller::User { user_id: member }, LOOPBACK);
+
+    // The user approves and chooses to bring their connections.
+    let v = verifier('r');
+    let mut body = params(&v);
+    body["approve"] = json!(true);
+    body["bring_connections"] = json!(true);
+    let (status, _, answer) = call(&app, "POST", "/api/auth/branch-consent", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let redirect = url::Url::parse(answer["redirect"].as_str().unwrap()).unwrap();
+    let pairs: std::collections::HashMap<_, _> = redirect.query_pairs().into_owned().collect();
+    let code = pairs["code"].clone();
+
+    let (status, _, enrolled) = call(
+        &app,
+        "POST",
+        "/api/node/v1/enroll/oauth",
+        Some(redeem(&code, &v, 30)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{enrolled}");
+    assert!(
+        enrolled["accounts"].is_string(),
+        "the first answer brings them"
+    );
+    let node_id = enrolled["node_id"].as_str().unwrap().to_string();
+
+    // Once the branch is revoked, a retry of the same exchange carries none.
+    revoke_node_credential(
+        &store,
+        &EnrollmentActor::Operator { id: "test".into() },
+        &node_id,
+    )
+    .await
+    .unwrap();
+    let (_, _, again) = call(
+        &app,
+        "POST",
+        "/api/node/v1/enroll/oauth",
+        Some(redeem(&code, &v, 30)),
+    )
+    .await;
+    assert!(
+        again.get("accounts").is_none_or(Value::is_null),
+        "{again:?}"
+    );
+}
+
+#[tokio::test]
 async fn codes_are_refused_unless_every_check_passes() {
     let _dek = crate::auth::tests::process_dek_lock().await;
     let files = tempfile::tempdir().unwrap();

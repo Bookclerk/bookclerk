@@ -7079,14 +7079,16 @@ pub(crate) mod tests {
             .any(|event| event.action == "user_account_rule");
         assert!(audited);
 
-        // An administrator can't change their own rule, not even to lift it.
+        // An Administrator the Owner stopped can't change their own rule,
+        // not even to lift it.
+        let admin_cookie = portal_cookie_for(&library, "test", "administrator-ext").await;
         let me = library
-            .get_portal_identity("test", "admin-ext")
+            .get_portal_identity("test", "administrator-ext")
             .await
             .unwrap()
             .and_then(|identity| identity.user_id)
-            .expect("the admin's user");
-        let own = app
+            .expect("the administrator's user");
+        let stop = app
             .clone()
             .oneshot(
                 Request::builder()
@@ -7094,8 +7096,22 @@ pub(crate) mod tests {
                     .uri(format!("/api/users/{me}"))
                     .header(header::COOKIE, &cookie)
                     .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"may_connect_accounts":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stop.status(), StatusCode::OK);
+        let own = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/users/{me}"))
+                    .header(header::COOKIE, &admin_cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
-                        r#"{"display_name":"Changed","may_connect_accounts":false}"#,
+                        r#"{"display_name":"Changed","may_connect_accounts":true}"#,
                     ))
                     .unwrap(),
             )
@@ -7105,7 +7121,7 @@ pub(crate) mod tests {
         let unchanged = library.get_user(me).await.unwrap().unwrap();
         assert_ne!(unchanged.display_name.as_deref(), Some("Changed"));
         assert!(
-            bookclerk_library::control_plane::member_may_connect_accounts(&library, me)
+            !bookclerk_library::control_plane::member_may_connect_accounts(&library, me)
                 .await
                 .unwrap()
         );
