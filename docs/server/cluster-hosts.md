@@ -235,7 +235,10 @@ accounts and which of them would travel.
   rule is on by default, and nobody can change their own. A member it is off for adds nothing from a join,
   and the connect routes answer `403`. A sign-in that finishes after the
   rule was turned off is not linked, and an account it newly stored is
-  revoked and its secrets deleted.
+  revoked and its secrets deleted. A join already adding accounts when
+  the rule is turned off (or the member is disabled) stops: each account
+  is added in its own batch that checks the rule again, and the ones not
+  yet added count as not kept.
 
 > [!NOTE]
 > A retry of the same exchange (a lost answer) replays the same node, and

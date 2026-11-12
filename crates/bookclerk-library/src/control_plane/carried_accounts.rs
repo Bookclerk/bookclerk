@@ -492,7 +492,9 @@ pub struct CarriedImport {
     /// nothing of them was stored.
     pub failed: Vec<(String, String)>,
     /// This instance's operator does not let the person connect store
-    /// accounts here; nothing was stored.
+    /// accounts here; nothing was stored. A rule turned off while the
+    /// import runs instead stops it: the accounts not yet kept land in
+    /// [`Self::failed`].
     pub refused_by_rule: bool,
 }
 
@@ -501,6 +503,8 @@ pub struct CarriedImport {
 ///
 /// Refused whole, storing nothing, when this instance's rule does not let
 /// the person connect accounts ([`member_may_connect_accounts`]). Each
+/// batch checks the rule again, so a rule turned off midway stops the
+/// accounts not yet kept. Each
 /// other account is one atomic batch that inserts the account (scanning
 /// on, connected), writes its secrets re-sealed with this install's key,
 /// links it to the person's local identity and records the share. Every
@@ -540,7 +544,7 @@ pub async fn import_carried_accounts(
         }
     }
     let peer = link_peer(cluster_id);
-    for account in accounts {
+    for (index, account) in accounts.iter().enumerate() {
         let key = (account.plugin_key.clone(), account.account_id.clone());
         if mine.contains(&key) {
             report.already_here.push(key);
@@ -573,9 +577,33 @@ pub async fn import_carried_accounts(
             report.failed.push(key);
             continue;
         }
-        match import_one(store, identity.id, &peer, account).await {
+        match import_one(store, user_id, identity.id, &peer, account).await {
             Ok(true) => report.imported.push(key),
-            Ok(false) => report.taken.push(key),
+            // The batch stored nothing: either someone linked the account
+            // meanwhile, or the operator turned the person's rule off (or
+            // disabled them) while the import ran. In that case this and
+            // every later account are not kept.
+            Ok(false) => {
+                if member_may_connect_accounts(store, user_id)
+                    .await
+                    .unwrap_or(false)
+                {
+                    report.taken.push(key);
+                } else {
+                    tracing::warn!(
+                        "store connections stopped being allowed while they were kept; \
+                         the rest were not kept"
+                    );
+                    report.failed.push(key);
+                    report.failed.extend(
+                        accounts
+                            .iter()
+                            .skip(index + 1)
+                            .map(|rest| (rest.plugin_key.clone(), rest.account_id.clone())),
+                    );
+                    break;
+                }
+            }
             // One account that can't be written doesn't lose the others,
             // nor the report of what was kept.
             Err(err) => {
@@ -661,18 +689,34 @@ pub async fn revoke_unlinked_account(
     Ok(())
 }
 
-/// One account's import batch; `false` when the account was linked by
-/// the time the batch ran.
-async fn import_one(
+/// One account's import batch; `false` when, by the time the batch ran,
+/// the account was linked or `user_id` could no longer connect accounts.
+///
+/// Every statement before the link is guarded on both: no link holds the
+/// account yet, and the user is active and not barred by a
+/// `member_account_rules` row. An operator who turns the rule off while
+/// an import runs therefore stops every batch that has not committed.
+pub(super) async fn import_one(
     store: &LibraryStore,
+    user_id: i64,
     identity_id: i64,
     peer: &str,
     account: &CarriedAccount,
 ) -> Result<bool> {
     const UNLINKED: &str = "NOT EXISTS (SELECT 1 FROM account_links \
-                            WHERE plugin_key = ? AND account_id = ?)";
+                            WHERE plugin_key = ? AND account_id = ?) \
+                            AND EXISTS (SELECT 1 FROM users WHERE id = ? AND status = 'active') \
+                            AND NOT EXISTS (SELECT 1 FROM member_account_rules \
+                            WHERE user_id = ? AND may_connect = 0)";
     let now = Utc::now().to_rfc3339();
-    let key = || vec![text(&account.plugin_key), text(&account.account_id)];
+    let key = || {
+        vec![
+            text(&account.plugin_key),
+            text(&account.account_id),
+            int(user_id),
+            int(user_id),
+        ]
+    };
     let with_key = |mut values: Vec<DbValue>| {
         values.extend(key());
         values

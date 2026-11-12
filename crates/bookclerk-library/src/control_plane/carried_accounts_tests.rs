@@ -627,3 +627,86 @@ async fn a_refused_logins_account_is_taken_back_only_while_unlinked() {
         assert_eq!(kit.refused_begins(), 0, "{name}");
     }
 }
+
+#[tokio::test]
+async fn an_import_batch_stores_nothing_once_the_rule_is_turned_off() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    let library = {
+        let kit = sqlite::memory(Profile::ALL[0]).await;
+        let store = kit.store();
+        let ana = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        connect(store, ana.id, SHAREABLE, "ana@example.com", b"ana-token").await;
+        accounts_to_carry(store, ana.id, &shareable).await.unwrap()
+    };
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let me = store
+            .create_user(UserRole::Member, Some("Ana"), None)
+            .await
+            .unwrap();
+        let identity = store
+            .ensure_local_portal_identity(me.id, Some("Ana"))
+            .await
+            .unwrap();
+        // The import read the rule as allowed; the operator turns it off
+        // before this account's batch runs.
+        set_member_may_connect_accounts(store, me.id, false)
+            .await
+            .unwrap();
+        let peer = link_peer("cluster-x");
+        let kept = carried_accounts::import_one(store, me.id, identity.id, &peer, &library[0])
+            .await
+            .unwrap();
+        assert!(!kept, "{name}");
+        assert!(
+            accounts::Entity::find()
+                .all(store.db())
+                .await
+                .unwrap()
+                .is_empty(),
+            "{name}"
+        );
+        assert!(
+            secret_of(store, SHAREABLE, "ana@example.com")
+                .await
+                .is_none(),
+            "{name}"
+        );
+        assert!(
+            account_links::Entity::find()
+                .all(store.db())
+                .await
+                .unwrap()
+                .is_empty(),
+            "{name}"
+        );
+        // A person disabled meanwhile is stopped the same way.
+        set_member_may_connect_accounts(store, me.id, true)
+            .await
+            .unwrap();
+        store
+            .set_user_status(me.id, UserStatus::Disabled)
+            .await
+            .unwrap();
+        let kept = carried_accounts::import_one(store, me.id, identity.id, &peer, &library[0])
+            .await
+            .unwrap();
+        assert!(!kept, "{name}");
+        // Active again with the rule on, the same batch keeps the account.
+        store
+            .set_user_status(me.id, UserStatus::Active)
+            .await
+            .unwrap();
+        let kept = carried_accounts::import_one(store, me.id, identity.id, &peer, &library[0])
+            .await
+            .unwrap();
+        assert!(kept, "{name}");
+    }
+}
