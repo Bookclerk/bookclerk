@@ -29,11 +29,11 @@ use bookclerk_node_proto::{
 };
 use bookclerk_plugin_abi::{DbValue, TypedDbStatement};
 use chrono::Utc;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use zeroize::Zeroizing;
 
 use super::batch::{self, int, text};
-use crate::entities::{encrypted_secrets, member_account_rules};
+use crate::entities::{encrypted_secrets, member_account_rules, users};
 use crate::error::{LibraryError, Result};
 use crate::models::{UserRole, UserStatus};
 use crate::secrets::{build_sealed_record, get_secret, secret_account_type, unseal_secret};
@@ -465,13 +465,31 @@ pub async fn branch_person(store: &LibraryStore, preferred: Option<i64>) -> Resu
             return Ok(Some(user_id));
         }
     }
-    let owners: Vec<i64> = store
-        .list_users()
-        .await?
-        .into_iter()
-        .filter(|user| user.role == UserRole::Owner && user.status == UserStatus::Active)
-        .map(|user| user.id)
-        .collect();
+    // Two active Owners already settle it (no single person), so read no
+    // further than that, a page at a time.
+    let page = super::trust::result_page(store);
+    let mut owners: Vec<i64> = Vec::new();
+    let mut after: Option<i64> = None;
+    while owners.len() < 2 {
+        let mut query = users::Entity::find()
+            .filter(users::Column::Role.eq(UserRole::Owner.as_str()))
+            .filter(users::Column::Status.eq(UserStatus::Active.as_str()))
+            .order_by_asc(users::Column::Id);
+        if let Some(after) = after {
+            query = query.filter(users::Column::Id.gt(after));
+        }
+        let rows = query
+            .limit(page.min(2))
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        let full = u64::try_from(rows.len()).unwrap_or(u64::MAX) >= page.min(2);
+        after = rows.last().map(|user| user.id);
+        owners.extend(rows.into_iter().map(|user| user.id));
+        if !full {
+            break;
+        }
+    }
     Ok(match owners.as_slice() {
         [only] => Some(*only),
         _ => None,

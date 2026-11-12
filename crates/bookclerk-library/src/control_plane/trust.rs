@@ -35,7 +35,8 @@
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::sea_query::Query;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
 use bookclerk_node_proto::ClaimScope;
 
@@ -675,30 +676,61 @@ async fn resolve_named_account(
 
 /// Store accounts linked to `user_id` through any of the user's identities.
 ///
+/// Read in keyset pages no larger than the database plugin's
+/// `maxResultRows`.
+///
 /// # Errors
 ///
 /// Returns an error when a read fails.
 pub async fn accounts_owned_by(store: &LibraryStore, user_id: i64) -> Result<BTreeSet<AccountKey>> {
-    let identities: Vec<i64> = portal_identities::Entity::find()
-        .filter(portal_identities::Column::UserId.eq(user_id))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .into_iter()
-        .map(|identity| identity.id)
-        .collect();
-    if identities.is_empty() {
-        return Ok(BTreeSet::new());
+    let page = result_page(store);
+    let mut out = BTreeSet::new();
+    let mut after: Option<i64> = None;
+    loop {
+        let mut query = account_links::Entity::find()
+            .filter(
+                account_links::Column::IdentityId.in_subquery(
+                    Query::select()
+                        .column(portal_identities::Column::Id)
+                        .from(portal_identities::Entity)
+                        .and_where(portal_identities::Column::UserId.eq(user_id))
+                        .to_owned(),
+                ),
+            )
+            .order_by_asc(account_links::Column::Id);
+        if let Some(after) = after {
+            query = query.filter(account_links::Column::Id.gt(after));
+        }
+        let links = query
+            .limit(page)
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        let full = u64::try_from(links.len()).unwrap_or(u64::MAX) >= page;
+        after = links.last().map(|link| link.id);
+        out.extend(
+            links
+                .into_iter()
+                .map(|link| (link.plugin_key, link.account_id)),
+        );
+        if !full {
+            return Ok(out);
+        }
     }
-    Ok(account_links::Entity::find()
-        .filter(account_links::Column::IdentityId.is_in(identities))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .into_iter()
-        .map(|link| (link.plugin_key, link.account_id))
-        .collect())
 }
+
+/// Rows one read of `store` may return: its database plugin's advertised
+/// `maxResultRows`, at most [`MAX_RESULT_PAGE`] (and that when it sets
+/// none).
+pub(crate) fn result_page(store: &LibraryStore) -> u64 {
+    match store.db_capabilities().max_result_rows {
+        0 => MAX_RESULT_PAGE,
+        rows => u64::from(rows).clamp(1, MAX_RESULT_PAGE),
+    }
+}
+
+/// Upper bound of [`result_page`].
+const MAX_RESULT_PAGE: u64 = 256;
 
 /// Plans the scan jobs one request admits.
 ///

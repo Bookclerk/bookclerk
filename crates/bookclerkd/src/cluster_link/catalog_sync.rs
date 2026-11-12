@@ -13,7 +13,9 @@
 //!    wants;
 //! 2. with sharing on, sends the titles after the cursor in fenced
 //!    `catalog.sync` batches, in a stable order (last change, then id): the
-//!    books acquired on this install itself and, with the second setting
+//!    branch owner's own books acquired on this install (held by a store
+//!    account connected here to its Owner, and not imported from that
+//!    library, [`OwnerShareFilter`]) and, with the second setting
 //!    on, the titles this install's own branches shared with it and whose
 //!    files arrived here. A title carries store, product id, metadata and
 //!    its file manifest only ([`bookclerk_node_proto::CatalogTitle`]): no
@@ -36,7 +38,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use bookclerk_library::control_plane::{
     forwardable_branch_title, forwardable_branch_title_keys_page, load_cluster_link,
-    set_cluster_link_ancestry, ForwardableBranchKey, FORWARDABLE_KEYS_MAX_PAGE,
+    set_cluster_link_ancestry, ForwardableBranchKey, OwnerShareFilter, FORWARDABLE_KEYS_MAX_PAGE,
 };
 use bookclerk_library::entities::branch_titles;
 use bookclerk_library::{
@@ -332,6 +334,9 @@ impl<S: BranchShelf> CatalogSync<S> {
         let mut seen = BTreeSet::new();
         let mut out = Vec::new();
         let mut after = None;
+        // Only the branch owner's own books go up, never one the library
+        // acquired itself and this install imported.
+        let owners = OwnerShareFilter::load(&self.library, &self.cluster_id).await?;
         loop {
             let page = self
                 .library
@@ -340,6 +345,9 @@ impl<S: BranchShelf> CatalogSync<S> {
             let full = u64::try_from(page.len()).unwrap_or(u64::MAX) >= ENTRY_PAGE;
             after = page.last().map(|key| key.id);
             for key in page {
+                if !owners.admits(&key) {
+                    continue;
+                }
                 let reference = CatalogRef {
                     store: store_id(&key.source),
                     product_id: key.product_id.clone(),
