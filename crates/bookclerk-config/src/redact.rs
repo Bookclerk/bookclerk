@@ -45,6 +45,32 @@ pub fn register_secret(value: impl AsRef<str>) {
     insert_secret_variants(&mut guard, trimmed);
 }
 
+/// Registers one secret value given as bytes, when it is UTF-8 text.
+///
+/// A JSON credential (a token bundle) also registers each string inside
+/// it, at any depth, since a log quotes the token field rather than the
+/// whole document. Bytes that are not UTF-8 register nothing: the text
+/// scrubber can never see them in a log line.
+pub fn register_secret_bytes(value: &[u8]) {
+    let Ok(text) = std::str::from_utf8(value) else {
+        return;
+    };
+    register_secret(text);
+    if let Ok(document) = serde_json::from_str::<serde_json::Value>(text) {
+        register_json_strings(&document);
+    }
+}
+
+/// Registers every string in `value`, at any depth.
+fn register_json_strings(value: &serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => register_secret(text),
+        serde_json::Value::Array(items) => items.iter().for_each(register_json_strings),
+        serde_json::Value::Object(fields) => fields.values().for_each(register_json_strings),
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
 /// Forget a secret [`register_secret`] registered, with its encoded forms,
 /// once nothing in the process holds it any more (a short-lived bearer
 /// token whose holder was dropped), so per-request credentials do not pile

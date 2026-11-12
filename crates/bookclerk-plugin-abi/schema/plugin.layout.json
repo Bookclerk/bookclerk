@@ -4926,6 +4926,187 @@
         }
       ]
     },
+    "EventPublisher.read$Params": {
+      "name": "EventPublisher.read$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EventReadRequest"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "EventPublisher.read$Results": {
+      "name": "EventPublisher.read$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EventReadReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "EventReadPage": {
+      "name": "EventReadPage",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "events",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "DomainEvent"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "cursor",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "more",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        },
+        {
+          "name": "expiredEventIds",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 2
+        },
+        {
+          "name": "truncated",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "EventReadReply": {
+      "name": "EventReadReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "EventReadPage"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "EventReadRequest": {
+      "name": "EventReadRequest",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "after",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "sinceUnixMs",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 0
+        },
+        {
+          "name": "types",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 1
+        },
+        {
+          "name": "limit",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 2
+        }
+      ]
+    },
     "EventReject": {
       "name": "EventReject",
       "file": "plugin.capnp",
@@ -13085,6 +13266,12 @@
           "ordinal": 0,
           "params": "EventPublisher.publish$Params",
           "results": "EventPublisher.publish$Results"
+        },
+        {
+          "name": "read",
+          "ordinal": 1,
+          "params": "EventPublisher.read$Params",
+          "results": "EventPublisher.read$Results"
         }
       ]
     },
@@ -13439,6 +13626,11 @@
       "name": "maxCronBytes",
       "file": "plugin.capnp",
       "value": 128
+    },
+    "maxEventCursorBytes": {
+      "name": "maxEventCursorBytes",
+      "file": "plugin.capnp",
+      "value": 512
     },
     "maxEventPayloadBytes": {
       "name": "maxEventPayloadBytes",

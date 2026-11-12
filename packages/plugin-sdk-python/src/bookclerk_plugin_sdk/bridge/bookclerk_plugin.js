@@ -17,6 +17,8 @@ var MAX_SCALAR_BYTES = 262144;
 var MAX_STREAM_WINDOW_BYTES = 1048576;
 var MAX_LIST_PAGE = 256;
 var MAX_CHECKPOINT_BYTES = 65536;
+var MAX_SCAN_PAGE_BOOKS = 500;
+var MAX_SCAN_CURSOR_BYTES = 4096;
 var MAX_EVENT_PAYLOAD_BYTES = 65536;
 var MAX_KV_VALUE_BYTES = 1048576;
 var MAX_KV_KEY_BYTES = 512;
@@ -11056,6 +11058,52 @@ var GrantedEvents = class extends RpcTarget {
     }
     return { eventId: String(value.eventId ?? ""), duplicate: Boolean(value.duplicate) };
   }
+  /**
+   * Read one page of past events the granted subscriptions match.
+   *
+   * @param options - Start position, types, and page size.
+   * @returns One page of events and the cursor after it.
+   */
+  async read(options = {}) {
+    const since = options.since instanceof Date ? options.since.getTime() : options.since ?? options.sinceUnixMs;
+    if (since !== void 0 && (!Number.isSafeInteger(since) || since < 0)) {
+      throw PluginError.fromWire("invalid_params", "since must be a non-negative instant");
+    }
+    const limit = options.limit ?? 0;
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw PluginError.fromWire("invalid_params", "limit must be a non-negative integer");
+    }
+    const resp = await this.#granted.fetch("http://granted/events/read", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/json" },
+      body: JSON.stringify({
+        after: String(options.after ?? ""),
+        sinceUnixMs: since ?? 0,
+        types: (options.types ?? []).map(String),
+        limit
+      })
+    });
+    const value = await resp.json().catch((error) => {
+      if (resp.ok) {
+        throw PluginError.fromWire("internal", `events read reply is not JSON: ${String(error)}`);
+      }
+      return {};
+    });
+    if (value && value.error) {
+      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+    }
+    if (!resp.ok) {
+      throw PluginError.fromWire("internal", `events read HTTP ${resp.status}`);
+    }
+    const events = Array.isArray(value.events) ? value.events : [];
+    return {
+      events: events.map((event) => fromBridgeJson(event)),
+      cursor: String(value.cursor ?? ""),
+      more: Boolean(value.more),
+      expiredEventIds: Array.isArray(value.expiredEventIds) ? value.expiredEventIds.map(String) : [],
+      truncated: Boolean(value.truncated)
+    };
+  }
 };
 function queueBodyBytes(body, contentType) {
   const kind = contentType || "json";
@@ -12132,6 +12180,59 @@ function uint(n) {
   }
   return String(n);
 }
+
+// dist/scan-page.js
+var CURSOR_PREFIX = "sp1.";
+var UTF82 = new TextEncoder();
+function writeCursor(position) {
+  const cursor = `${CURSOR_PREFIX}${position.offset}.${position.storeCursor}`;
+  if (UTF82.encode(cursor).length > MAX_SCAN_CURSOR_BYTES) {
+    throw new PluginError("internal", `store cursor too long: a scan cursor is at most ${MAX_SCAN_CURSOR_BYTES} bytes`);
+  }
+  return cursor;
+}
+function readCursor(cursor) {
+  if (cursor === "")
+    return { storeCursor: "", offset: 0 };
+  const stale = () => new PluginError("invalid_cursor", "scan cursor was not written by scanPage");
+  if (!cursor.startsWith(CURSOR_PREFIX))
+    throw stale();
+  const rest = cursor.slice(CURSOR_PREFIX.length);
+  const dot = rest.indexOf(".");
+  const digits = dot < 0 ? "" : rest.slice(0, dot);
+  if (!/^(0|[1-9][0-9]{0,15})$/.test(digits))
+    throw stale();
+  const offset = Number(digits);
+  if (!Number.isSafeInteger(offset) || offset % MAX_SCAN_PAGE_BOOKS !== 0)
+    throw stale();
+  return { storeCursor: rest.slice(dot + 1), offset };
+}
+async function scanPage(params, fetchStorePage) {
+  const { storeCursor, offset } = readCursor(params.cursor);
+  const page = await fetchStorePage(storeCursor, params);
+  const removed = page.removed ?? [];
+  if (offset > 0 && offset >= page.books.length && offset >= removed.length) {
+    throw new PluginError("invalid_cursor", "the store page shrank during the pass");
+  }
+  const end = offset + MAX_SCAN_PAGE_BOOKS;
+  const reply = {
+    books: page.books.slice(offset, end),
+    removed: removed.slice(offset, end),
+    nextCursor: "",
+    syncToken: "",
+    complete: false,
+    storePages: page.storePages ?? 1
+  };
+  if (page.books.length > end || removed.length > end) {
+    reply.nextCursor = writeCursor({ storeCursor, offset: end });
+  } else if (page.next) {
+    reply.nextCursor = writeCursor({ storeCursor: page.next, offset: 0 });
+  } else {
+    reply.syncToken = page.syncToken ?? "";
+    reply.complete = page.complete ?? false;
+  }
+  return reply;
+}
 export {
   AdapterDatabaseSession,
   BookclerkEntrypoint,
@@ -12213,6 +12314,7 @@ export {
   rawStreamCeiling,
   requirePluginMigrationRegistration,
   runAdapterBatch,
+  scanPage,
   schemaMigrationOp,
   shouldSkipRemainingGuestWork,
   statementResultToD1Result,

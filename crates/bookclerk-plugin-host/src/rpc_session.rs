@@ -34,7 +34,9 @@ use tokio::io::AsyncRead;
 use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::discover::DiscoveredPlugin;
-use crate::event_publisher::EventOutbox;
+use crate::event_publisher::{
+    granted_event_subscriptions, manifest_event_subscriptions, EventOutbox, EventReaders,
+};
 use crate::kv_binding::KvNamespaces;
 use crate::queue_producer::QueueOutbox;
 use crate::spawn_plan::{GuestRuntimeKind, SpawnPlan, SpawnTransport};
@@ -779,10 +781,25 @@ impl PluginSession {
             .as_ref()
             .and_then(|dir| dir.path().map(std::path::Path::to_path_buf));
         let grant = spawned.grant.clone();
-        // `EVENTS` needs all three: a host outbox, a manifest producer, and
-        // the operator grant covering that producer.
+        // `EVENTS` needs a host outbox plus a manifest producer or consumer
+        // the operator grant covers: producers may publish, consumers may
+        // read back what they subscribe to.
+        let readers = EventReaders {
+            subscriptions: granted_event_subscriptions(
+                &manifest_event_subscriptions(&manifest),
+                &grant.consumers,
+            ),
+            retention_days: config.events.retention_days,
+            settle_secs: bookclerk_library::EVENT_STREAM_SETTLE_SECS,
+        };
         let events = services.event_outbox.clone().and_then(|store| {
-            EventOutbox::new(store, &id, manifest.producer_types(), &grant.producers)
+            EventOutbox::new(
+                store,
+                &id,
+                manifest.producer_types(),
+                &grant.producers,
+                readers,
+            )
         });
         // Queue producer bindings likewise need the outbox, a manifest row,
         // and the `queue:<BINDING>` grant token.

@@ -4123,3 +4123,85 @@ async fn record_for_book(
         .await
         .map(|recorded| assert!(recorded, "{key} is another edition's"))
 }
+
+/// A deferred plugin-state purge is cancelled once the store it read is
+/// swapped out (its stop flag turns true) or its supervisor is gone, so it
+/// never acts on a store that no longer owns the links.
+#[test]
+fn a_deferred_purge_is_cancelled_when_its_store_stops() {
+    let (stop, stopped) = watch::channel(false);
+    assert!(!super::purge_cancelled(&stopped));
+    stop.send(true).ok();
+    assert!(super::purge_cancelled(&stopped));
+
+    let (stop, stopped) = watch::channel(false);
+    drop(stop);
+    assert!(super::purge_cancelled(&stopped));
+}
+
+/// A library this install left loses its plugin state, a library it is
+/// still a member of keeps it, and a deferred purge whose store was
+/// swapped out deletes nothing.
+#[tokio::test]
+async fn departed_libraries_lose_their_plugin_state() {
+    use bookclerk_library::control_plane::{
+        leave_cluster_link, list_cluster_links, record_cluster_link, ClusterLinkKeys,
+        NewClusterLink,
+    };
+    use bookclerk_plugin_host::LinkStateDir;
+
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store) = crate::node_api::tests::test_state(&files).await;
+    let state_dir = |cluster: &str| {
+        files
+            .path()
+            .join("plugin-state")
+            .join(LinkStateDir::for_cluster(cluster).as_str())
+    };
+    for (cluster, node) in [("cluster-left", "node-left"), ("cluster-kept", "node-kept")] {
+        record_cluster_link(
+            &store,
+            &NewClusterLink {
+                owner_cluster_id: cluster.into(),
+                owner_origin: "https://owner.example".into(),
+                remote_node_id: node.into(),
+                spki_pin: None,
+            },
+            &ClusterLinkKeys::generate(),
+        )
+        .await
+        .unwrap();
+        std::fs::create_dir_all(state_dir(cluster).join("plugin").join("data")).unwrap();
+    }
+    leave_cluster_link(&store, "cluster-left", None)
+        .await
+        .unwrap()
+        .expect("the link");
+
+    // A deferred purge whose store already stopped returns without deleting.
+    let (stop, stopped) = watch::channel(true);
+    super::purge_after_grace(
+        Arc::clone(&state),
+        store.clone(),
+        "cluster-left".into(),
+        stopped,
+    )
+    .await;
+    drop(stop);
+    assert!(
+        state_dir("cluster-left").exists(),
+        "a cancelled purge keeps the state"
+    );
+
+    let links = list_cluster_links(&store).await.unwrap();
+    super::purge_departed_link_state(&state, &links).await;
+    assert!(
+        !state_dir("cluster-left").exists(),
+        "a departed library's state goes"
+    );
+    assert!(
+        state_dir("cluster-kept").join("plugin").exists(),
+        "an active library's state stays"
+    );
+}

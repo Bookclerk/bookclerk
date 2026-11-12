@@ -543,6 +543,7 @@ struct PasswordLoginBody {
             ("store_refused" = (summary = "The store rejected the email or password.", value = json!({"error": "internal: authentication error: oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"}))),
             ("library_failed" = (summary = "The library database refused the step.", value = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
         )),
+        (status = 403, description = "The library's administrator has not allowed the caller to connect store accounts here.", body = PortalErrorBody, example = json!({"error": "this library's administrator hasn't allowed you to connect store accounts here"})),
         (status = 401, description = "The caller is not signed in, or the portal session expired.", body = PortalErrorBody, examples(
             ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
             ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
@@ -556,6 +557,7 @@ async fn source_password_login(
     Json(body): Json<PasswordLoginBody>,
 ) -> Result<Json<SourceConnected>, PortalError> {
     let identity = require_identity(&state, &headers).await?;
+    require_may_connect(&state, identity.id).await?;
     let source = find_source(&state, &id)
         .await
         .ok_or_else(|| PortalError::bad("unknown source"))?;
@@ -570,6 +572,7 @@ async fn source_password_login(
     let plugin_key = source.plugin_key().to_string();
     let library = state.library_snapshot().await;
     let scope = bookclerk_source::source_scope(&library, source.as_ref());
+    let known = known_account_ids(&scope).await?;
     let account = source
         .login(
             &scope,
@@ -584,6 +587,12 @@ async fn source_password_login(
         )
         .await
         .map_err(|e| PortalError::bad(e.to_string()))?;
+    // The operator may have stopped this member while the store answered.
+    // The login already stored the account, so a new one is taken back.
+    if let Err(refused) = require_may_connect(&state, identity.id).await {
+        undo_refused_login(&library, &plugin_key, &account.account_id, &known).await;
+        return Err(refused);
+    }
 
     scope
         .upsert_account(
@@ -623,6 +632,7 @@ async fn source_password_login(
             ("login_stopped" = (summary = "The store login failed before it produced a URL.", value = json!({"error": "OAuth login URL channel closed"}))),
             ("library_failed" = (summary = "The library database refused the step.", value = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
         )),
+        (status = 403, description = "The library's administrator has not allowed the caller to connect store accounts here.", body = PortalErrorBody, example = json!({"error": "this library's administrator hasn't allowed you to connect store accounts here"})),
         (status = 401, description = "The caller is not signed in, or the portal session expired.", body = PortalErrorBody, examples(
             ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
             ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
@@ -635,6 +645,7 @@ async fn source_oauth_start(
     Path(id): Path<String>,
 ) -> Result<Json<OAuthStartUrl>, PortalError> {
     let identity = require_identity(&state, &headers).await?;
+    require_may_connect(&state, identity.id).await?;
     let source = find_source(&state, &id)
         .await
         .ok_or_else(|| PortalError::bad("unknown source"))?;
@@ -662,6 +673,7 @@ async fn source_oauth_start(
             ("store_refused" = (summary = "The store rejected the email or password.", value = json!({"error": "internal: authentication error: oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"}))),
             ("library_failed" = (summary = "The library database refused the step.", value = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
         )),
+        (status = 403, description = "The library's administrator has not allowed the caller to connect store accounts here.", body = PortalErrorBody, example = json!({"error": "this library's administrator hasn't allowed you to connect store accounts here"})),
         (status = 401, description = "The caller is not signed in, or the portal session expired.", body = PortalErrorBody, examples(
             ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
             ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
@@ -691,6 +703,7 @@ async fn libro_login_legacy(
             ("login_stopped" = (summary = "The store login failed before it produced a URL.", value = json!({"error": "OAuth login URL channel closed"}))),
             ("library_failed" = (summary = "The library database refused the step.", value = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
         )),
+        (status = 403, description = "The library's administrator has not allowed the caller to connect store accounts here.", body = PortalErrorBody, example = json!({"error": "this library's administrator hasn't allowed you to connect store accounts here"})),
         (status = 401, description = "The caller is not signed in, or the portal session expired.", body = PortalErrorBody, examples(
             ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
             ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
@@ -725,6 +738,13 @@ async fn start_source_oauth_session(
 
     tokio::spawn(async move {
         let scope = bookclerk_source::source_scope(&library, source.as_ref());
+        let known = match known_account_ids(&scope).await {
+            Ok(known) => known,
+            Err(err) => {
+                warn!(error = %err.message, source = %source_id, "portal OAuth login could not read the accounts");
+                return;
+            }
+        };
         let opts = LoginOptions {
             force: true,
             callback_bind: Some("0.0.0.0:0".into()),
@@ -740,6 +760,22 @@ async fn start_source_oauth_session(
             .await;
         match result {
             Ok(account) => {
+                // The operator may have stopped this member while the
+                // browser sign-in ran.
+                let allowed = bookclerk_library::control_plane::identity_may_connect_accounts(
+                    &library,
+                    identity_id,
+                )
+                .await
+                .unwrap_or(false);
+                if !allowed {
+                    warn!(
+                        source = %source_id,
+                        "portal OAuth login finished after connecting was turned off; not linked"
+                    );
+                    undo_refused_login(&library, &plugin_key, &account.account_id, &known).await;
+                    return;
+                }
                 let _ = library
                     .mark_connection_active(&plugin_key, &account.account_id)
                     .await;
@@ -983,6 +1019,77 @@ async fn require_source_enabled(state: &PortalState, id: &str) -> Result<(), Por
     Ok(())
 }
 
+/// Refuses with 403 when the library's operator turned off connecting
+/// store accounts for the user behind `identity_id`.
+async fn require_may_connect(state: &PortalState, identity_id: i64) -> Result<(), PortalError> {
+    let library = state.library_snapshot().await;
+    if bookclerk_library::control_plane::identity_may_connect_accounts(&library, identity_id)
+        .await?
+    {
+        Ok(())
+    } else {
+        Err(PortalError::forbidden(ACCOUNTS_NOT_ALLOWED))
+    }
+}
+
+/// The ids of the usable accounts `scope`'s storefront already has, read
+/// before a login so a refused login can tell an account it added (or
+/// brought back from `revoked`) from one that was already in use here.
+async fn known_account_ids(
+    scope: &bookclerk_library::SourceScope,
+) -> Result<std::collections::HashSet<String>, PortalError> {
+    Ok(scope
+        .list_accounts()
+        .await?
+        .into_iter()
+        .filter(|account| account.connection_status != "revoked")
+        .map(|account| account.account_id)
+        .collect())
+}
+
+/// How many times a refused login's cleanup batch is tried before the
+/// failure is left to the log.
+const UNDO_ATTEMPTS: usize = 3;
+
+/// Takes back an account a login stored when the operator's rule refused
+/// it afterwards: its secrets are deleted and the account is marked
+/// revoked with scans off, so nothing can use it.
+///
+/// An account that was already in use here before the login (in
+/// `known`), or that someone's link holds when the cleanup runs (another
+/// login of it finished meanwhile), is left as it is: the cleanup is one
+/// atomic batch guarded on the account having no link. The batch is
+/// idempotent, so a failed one is tried again, up to [`UNDO_ATTEMPTS`]
+/// times.
+async fn undo_refused_login(
+    library: &bookclerk_library::LibraryStore,
+    plugin_key: &str,
+    account_id: &str,
+    known: &std::collections::HashSet<String>,
+) {
+    if known.contains(account_id) {
+        return;
+    }
+    for attempt in 1..=UNDO_ATTEMPTS {
+        match bookclerk_library::control_plane::revoke_unlinked_account(
+            library, plugin_key, account_id,
+        )
+        .await
+        {
+            Ok(()) => return,
+            Err(err) if attempt == UNDO_ATTEMPTS => {
+                warn!(error = %err, plugin_key, "could not take back a refused login's account");
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+/// Message of the 403 a connect answers when the operator does not let
+/// the caller connect store accounts on this library.
+const ACCOUNTS_NOT_ALLOWED: &str =
+    "this library's administrator hasn't allowed you to connect store accounts here";
+
 /// Looks up a content source by plugin id or alias.
 async fn find_source(state: &PortalState, id_or_alias: &str) -> Option<Arc<dyn ContentSource>> {
     state.sources.read().await.get(id_or_alias)
@@ -1066,6 +1173,15 @@ impl PortalError {
     fn bad(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            message: msg.into(),
+        }
+    }
+
+    /// Builds a 403 response for a step the library's operator does not
+    /// allow this caller.
+    fn forbidden(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
             message: msg.into(),
         }
     }

@@ -641,13 +641,19 @@ export function UserManagementPanel({
       display_name?: string;
       login_name?: string;
       email?: string;
+      may_connect_accounts?: boolean;
     },
   ) {
     setBusy(true);
     setError(null);
     try {
       const res = await patchUser(id, patch);
-      setUsers((current) => current.map((u) => (u.id === id ? { ...u, ...res.user } : u)));
+      // The answer's user summary does not carry the store-connection rule.
+      const rule =
+        patch.may_connect_accounts === undefined
+          ? {}
+          : { may_connect_accounts: patch.may_connect_accounts };
+      setUsers((current) => current.map((u) => (u.id === id ? { ...u, ...res.user, ...rule } : u)));
     } catch (err) {
       if (isApiError(err) && err.status === 409) {
         setError("Cannot demote or disable the last active owner.");
@@ -1324,6 +1330,26 @@ export function UserManagementPanel({
                   </ul>
                 )}
               </div>
+
+              <label className="flex items-start gap-2 text-sm text-ink">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  aria-label={`Store connections allowed for user ${selected.id}`}
+                  checked={selected.may_connect_accounts ?? true}
+                  disabled={busy || !selectedEditable}
+                  onChange={(e) =>
+                    void onPatchUser(selected.id, { may_connect_accounts: e.target.checked })
+                  }
+                />
+                <span>
+                  <span className="block">May connect store accounts here</span>
+                  <span className="block text-xs text-ink/55">
+                    Covers connecting a store in Accounts and bringing connections from another
+                    library when this server joins it. Connections already here stay.
+                  </span>
+                </span>
+              </label>
 
               <div className="space-y-2">
                 <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">

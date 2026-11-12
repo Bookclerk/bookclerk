@@ -132,6 +132,36 @@ export interface BranchConsentView {
   user: { id: number; display_name: string | null };
   /** Branch or clerk (absent from an older library: branch only). */
   connection?: ConnectionChoiceView;
+  /** The user's store connections here (absent from an older library). */
+  connections?: ConsentConnectionView[];
+}
+
+/** One of the consenting user's store connections. */
+export interface ConsentConnectionView {
+  /** Display alias of the storefront (`libro`, `audible`, …). */
+  source: string;
+  /** Store account id. */
+  account_id: string;
+  /** Display label, when the account has one. */
+  label: string | null;
+  /** True when the store lets its login be used in more than one place, so it can travel. */
+  travels: boolean;
+}
+
+/** The store connections that came with a branch join, as the branch kept them. */
+export interface BroughtConnectionsView {
+  /** How many came with the join. */
+  offered: number;
+  /** How many are now connected on this install. */
+  added: number;
+  /** How many the person had already connected here. */
+  already_here: number;
+  /** How many are connected to someone else here (left as they are). */
+  taken: number;
+  /** How many could not be kept (no sign-in came with them, or writing them failed). */
+  failed?: number;
+  /** Why none were kept: `not_allowed`, `no_owner` or `failed`. */
+  not_kept: "not_allowed" | "no_owner" | "failed" | null;
 }
 
 /** A fresh second factor for a clerk consent. */
@@ -158,6 +188,8 @@ export interface BranchJoined {
   cluster: BranchLinkView;
   library_name: string;
   running: boolean;
+  /** The store connections that came with the join, when the person brought them. */
+  connections?: BroughtConnectionsView | null;
 }
 
 /** Counts of the titles one branch shared with this library. */
@@ -546,12 +578,14 @@ export function fetchBranchConsent(search: string): Promise<BranchConsentView> {
  * @param search - The authorize request (query string).
  * @param approve - True to let the branch join.
  * @param clerk - Set to join as a clerk instead, with the Owner's step-up proof.
+ * @param bringConnections - Send the user's store connections that can travel to the branch.
  * @returns Where to send the browser.
  */
 export function answerBranchConsent(
   search: string,
   approve: boolean,
   clerk?: { step_up: ClerkStepUp },
+  bringConnections = false,
 ): Promise<{ redirect: string }> {
   return request("/api/auth/branch-consent", {
     method: "POST",
@@ -559,8 +593,42 @@ export function answerBranchConsent(
       ...authorizeParams(search),
       approve,
       ...(clerk && approve ? { connection: "clerk", step_up: clerk.step_up } : {}),
+      ...(!clerk && approve && bringConnections ? { bring_connections: true } : {}),
     },
   });
+}
+
+/**
+ * One line saying what happened to the store connections a join brought.
+ *
+ * @param brought - What the branch kept, from {@link BranchJoined.connections}.
+ * @returns The sentence to show, or null when there is nothing to say.
+ */
+export function broughtConnectionsSummary(
+  brought: BroughtConnectionsView | null | undefined,
+): string | null {
+  if (!brought || brought.offered === 0) return null;
+  switch (brought.not_kept) {
+    case "not_allowed":
+      return "Your store connections weren't added: this install's administrator doesn't let you connect store accounts here.";
+    case "no_owner":
+      return "Your store connections weren't added: this install has no single owner to add them for. Connect them in Accounts.";
+    case "failed":
+      return "Your store connections couldn't be added. Connect them in Accounts.";
+    case null:
+      break;
+  }
+  const parts: string[] = [];
+  if (brought.added > 0) {
+    parts.push(`${brought.added} store connection${brought.added === 1 ? "" : "s"} added`);
+  }
+  if (brought.already_here > 0) parts.push(`${brought.already_here} already here`);
+  if (brought.taken > 0) {
+    parts.push(`${brought.taken} already connected by someone else here, left as they are`);
+  }
+  const failed = brought.failed ?? 0;
+  if (failed > 0) parts.push(`${failed} couldn't be added; connect them in Accounts`);
+  return parts.length > 0 ? `${parts.join(", ")}.` : null;
 }
 
 /**

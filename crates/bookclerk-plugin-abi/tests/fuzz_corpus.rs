@@ -1,5 +1,5 @@
 //! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
-//! `cover_sink_key` and `db_stream` fuzz corpora in PR CI
+//! `cover_sink_key`, `db_stream`, `scan_page` and `event_read` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -837,6 +837,144 @@ fn scan_page_seeds_are_current() {
         seed.push(u8::try_from(account.len()).expect("short account"));
         seed.extend_from_slice(account.as_bytes());
         seed.extend(encode_scan_page_bytes(&page).expect("encode"));
+        let path = dir.join(name);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
+}
+
+#[path = "../../../fuzz/oracles/event_read.rs"]
+mod event_read_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/event_read.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_event_read_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("event_read") {
+        event_read_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no event_read seed");
+}
+
+/// A `2`-prefixed Cap'n Proto `EventReadRequest` seed with `types` entries.
+// Test helper: an encoding failure is the test failing.
+#[allow(clippy::expect_used)]
+fn capnp_request(after: &str, types: u32) -> Vec<u8> {
+    use bookclerk_plugin_abi::plugin_capnp::event_read_request;
+    let mut message = capnp::message::Builder::new_default();
+    let mut root = message.init_root::<event_read_request::Builder<'_>>();
+    root.set_after(after);
+    root.set_limit(10);
+    let mut list = root.init_types(types);
+    for i in 0..types {
+        list.set(i, "book_acquired");
+    }
+    let mut seed = vec![2u8];
+    seed.extend(capnp::serialize::write_message_to_words(&message));
+    seed
+}
+
+/// A `3`-prefixed Cap'n Proto `EventReadPage` seed with `events` entries.
+// Test helper: an encoding failure is the test failing.
+#[allow(clippy::expect_used)]
+fn capnp_page(cursor: &str, events: u32) -> Vec<u8> {
+    use bookclerk_plugin_abi::plugin_capnp::event_read_page;
+    let mut message = capnp::message::Builder::new_default();
+    let mut root = message.init_root::<event_read_page::Builder<'_>>();
+    root.set_cursor(cursor);
+    root.set_more(true);
+    {
+        let mut list = root.reborrow().init_events(events);
+        for i in 0..events {
+            let mut event = list.reborrow().get(i);
+            event.set_event_id(format!("evt-{i}").as_str());
+            event.set_event_type("book_acquired");
+            event.set_schema_version(1);
+            event.set_payload(b"{}");
+        }
+    }
+    let mut ids = root.init_expired_event_ids(1);
+    ids.set(0, "evt-0");
+    let mut seed = vec![3u8];
+    seed.extend(capnp::serialize::write_message_to_words(&message));
+    seed
+}
+
+/// Seeds for `event_read`: accepted request bodies, cursors and Cap'n Proto
+/// messages, and one input breaking each rule. Byte 0 is `0` for a JSON
+/// body, `1` for a bare cursor, `2` for a Cap'n Proto request and `3` for a
+/// Cap'n Proto page. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O or encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn event_read_seeds_are_current() {
+    use bookclerk_plugin_abi::EventCursor;
+
+    let cursor = EventCursor::new("2026-11-11T10:00:00.123+00:00", "evt-1")
+        .expect("cursor")
+        .encode();
+    let body = |json: String| {
+        let mut seed = vec![0u8];
+        seed.extend(json.into_bytes());
+        seed
+    };
+    let bare = |text: &str| {
+        let mut seed = vec![1u8];
+        seed.extend_from_slice(text.as_bytes());
+        seed
+    };
+    let seeds: Vec<(&str, Vec<u8>)> = vec![
+        ("empty_body.bin", body("{}".into())),
+        (
+            "after_cursor.bin",
+            body(format!(
+                r#"{{"after":"{cursor}","types":["book_acquired"],"limit":10}}"#
+            )),
+        ),
+        ("since.bin", body(r#"{"sinceUnixMs":1762855200000}"#.into())),
+        (
+            "after_and_since.bin",
+            body(format!(r#"{{"after":"{cursor}","sinceUnixMs":1}}"#)),
+        ),
+        (
+            "unconsented_type.bin",
+            body(r#"{"types":["secret_event"]}"#.into()),
+        ),
+        ("limit_over_page.bin", body(r#"{"limit":100000}"#.into())),
+        ("unknown_field.bin", body(r#"{"cursor":"x"}"#.into())),
+        ("array_body.bin", body("[]".into())),
+        ("cursor.bin", bare(&cursor)),
+        ("cursor_uppercase.bin", bare(&cursor.to_uppercase())),
+        ("cursor_not_time.bin", bare("v1.6e6f77.6576742d31")),
+        ("capnp_request.bin", capnp_request(&cursor, 1)),
+        (
+            "capnp_request_many_types.bin",
+            capnp_request("", bookclerk_plugin_abi::MAX_LIST_PAGE + 1),
+        ),
+        ("capnp_page.bin", capnp_page(&cursor, 2)),
+        (
+            "capnp_page_long_cursor.bin",
+            capnp_page(
+                &"0".repeat(bookclerk_plugin_abi::MAX_EVENT_CURSOR_BYTES as usize + 1),
+                0,
+            ),
+        ),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/event_read");
+    if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+        std::fs::create_dir_all(&dir).expect("corpus dir");
+    }
+    for (name, seed) in seeds {
         let path = dir.join(name);
         if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
             std::fs::write(&path, &seed).expect("write seed");

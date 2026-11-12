@@ -106,6 +106,14 @@ pub mod publish {
     pub const NAME: &str = "publish";
 }
 
+/// Read one page of past outbox events (Cap'n Proto `EventPublisher.read`).
+///
+/// Params: [`crate::EventReadRequest`]. Result: [`crate::EventReadPage`].
+pub mod read {
+    /// Wire method name `"read"`.
+    pub const NAME: &str = "read";
+}
+
 /// Deliver one ordered batch of queue messages (Cap'n Proto `QueueConsumer.queue`).
 ///
 /// Params: [`crate::QueueBatch`]. Result: one [`crate::QueueResult`] per message.

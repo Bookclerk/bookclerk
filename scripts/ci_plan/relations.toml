@@ -22,6 +22,7 @@ paths = [
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_capnp.py",
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_wire.py",
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/plugin_migration.py",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/scan_page.py",
 ]
 # Injected into every workerd isolate: check the workerd-runtime guests,
 # not the whole installation.
@@ -78,6 +79,8 @@ paths = [
     "fuzz/oracles/db_stream.rs",
     "fuzz/corpus/scan_page/**",
     "fuzz/oracles/scan_page.rs",
+    "fuzz/corpus/event_read/**",
+    "fuzz/oracles/event_read.rs",
 ]
 
 # The guest SQL authorizer oracle is shared by the fuzz target and the
@@ -158,9 +161,22 @@ package = "bookclerk-plugin-source-libro"
 paths = ["fuzz/corpus/libro_catalog/**", "fuzz/oracles/libro_catalog.rs"]
 
 [[test_input]]
+package = "bookclerk-plugin-source-graphicaudio"
+# The product page oracle is shared with the replay test through `#[path]`.
+paths = ["fuzz/corpus/graphicaudio_catalog/**", "fuzz/oracles/graphicaudio_catalog.rs"]
+
+[[test_input]]
 package = "bookclerk-node-proto"
 # The frame oracle is shared with the replay test through `#[path]`.
 paths = ["fuzz/corpus/node_frame/**", "fuzz/oracles/node_frame.rs"]
+
+[[test_input]]
+package = "bookclerk-node-proto"
+# The account bundle oracle is shared with the replay test through `#[path]`.
+paths = [
+  "fuzz/corpus/node_account_bundle/**",
+  "fuzz/oracles/node_account_bundle.rs",
+]
 
 [[test_input]]
 package = "bookclerk-cli"

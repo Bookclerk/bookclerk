@@ -49,6 +49,7 @@ pub mod mux;
 pub mod net;
 mod pass_fd;
 pub mod protocol;
+mod scan_page;
 pub mod workerd;
 
 pub use callback_tunnel::{TunnelGuest, TunnelHost, TunnelStream};
@@ -87,6 +88,7 @@ pub use protocol::{
     SearchCatalogParams, SeriesEntry, SourceAccount, SourceAccounts, SyncListeningResult, WorkKind,
     MAX_RPC_LINE_BYTES, PROTOCOL_NAME,
 };
+pub use scan_page::{scan_page, StorePage};
 
 pub use bookclerk_plugin_abi::{
     byte_source_from_async_read, canonical_execute_request_hash, connect_plugin,
@@ -102,21 +104,22 @@ pub use bookclerk_plugin_abi::{
     DbCapabilities, DbColumn, DbIdentityHighWater, DbPlanStatementKind, DbResultSelection, DbRow,
     DbTiming, DbType, DbValue, Destination, DestinationClient, DestinationServer, DiagnoseResult,
     DomainEvent, Entrypoints, EventConsumer, EventConsumerClient, EventPublisher,
-    EventPublisherClient, EventResult, ExecuteReply, ExecuteRequest, ExecuteStream,
-    ExecuteStreamLimits, ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Invocation,
-    IsolationReq, JobCheckpoint, JobController, JobInvocation, JobInvocationLease, JobOutcome,
-    JobRunner, JobRunnerClient, KvDeleteOk, KvGetOk, KvListKey, KvListOk, KvListOptions,
-    KvNamespace, KvNamespaceClient, KvPutOk, KvPutOptions, LimitExceeded, ListOptions, ListPage,
-    MetadataChapter, MetadataChapters, MetadataChaptersParams, MetadataLookupParams,
-    MetadataProvider, MetadataProviderClient, MetadataRecord, MetadataSearchParams, NamedKvBinding,
-    NamedQueueBinding, NeverCancel, ObjectInfo, ObjectMetadata, Oidc, OidcClient,
-    OidcClientTemplate, OpenedEntrypoints, PluginCli, PluginCliClient, PluginClient,
-    PluginDescribe, PluginError, PluginErrorCode, PluginEvent, PluginMigration, PluginMigrationOp,
-    PluginServer, PluginWorker, ProgressSink, PublishOk, PutResult, QueryPage, QueueBatch,
-    QueueConsumer, QueueConsumerClient, QueueMessage, QueueProducer, QueueResult, QueueRetry,
-    QueueSendMessage, QueueSendOk, ReadResult, RemoteLibrary, RemoteLibraryClient, ScalarLimits,
-    Source, SourceClient, SourceServer, StatementResult, StreamCopyHandler, StreamCopySpec,
-    TypedDbStatement, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY, FEATURE_STREAMS,
+    EventPublisherClient, EventReadPage, EventReadRequest, EventResult, ExecuteReply,
+    ExecuteRequest, ExecuteStream, ExecuteStreamLimits, ExtensibleConfig, GuestDatabase, HealthOk,
+    HostBindings, Invocation, IsolationReq, JobCheckpoint, JobController, JobInvocation,
+    JobInvocationLease, JobOutcome, JobRunner, JobRunnerClient, KvDeleteOk, KvGetOk, KvListKey,
+    KvListOk, KvListOptions, KvNamespace, KvNamespaceClient, KvPutOk, KvPutOptions, LimitExceeded,
+    ListOptions, ListPage, MetadataChapter, MetadataChapters, MetadataChaptersParams,
+    MetadataLookupParams, MetadataProvider, MetadataProviderClient, MetadataRecord,
+    MetadataSearchParams, NamedKvBinding, NamedQueueBinding, NeverCancel, ObjectInfo,
+    ObjectMetadata, Oidc, OidcClient, OidcClientTemplate, OpenedEntrypoints, PluginCli,
+    PluginCliClient, PluginClient, PluginDescribe, PluginError, PluginErrorCode, PluginEvent,
+    PluginMigration, PluginMigrationOp, PluginServer, PluginWorker, ProgressSink, PublishOk,
+    PutResult, QueryPage, QueueBatch, QueueConsumer, QueueConsumerClient, QueueMessage,
+    QueueProducer, QueueResult, QueueRetry, QueueSendMessage, QueueSendOk, ReadResult,
+    RemoteLibrary, RemoteLibraryClient, ScalarLimits, Source, SourceClient, SourceServer,
+    StatementResult, StreamCopyHandler, StreamCopySpec, TypedDbStatement, WriteOptions,
+    FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY, FEATURE_STREAMS, MAX_EVENT_CURSOR_BYTES,
     MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE,
     MAX_PLUGIN_MIGRATION_OPS, MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
     MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,

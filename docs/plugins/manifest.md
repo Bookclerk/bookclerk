@@ -172,6 +172,26 @@ supports_suspend = true
   plugin's own `User-Agent`. See
   [Capabilities and consent](capabilities.md#declaring-what-a-plugin-needs).
 
+### `credentials` (storefronts)
+
+A storefront says whether its store sign-in may be held in more than one
+place. A person's store connections follow them to the branches they join
+only when every copy of the plugin there says `shareable`.
+
+```toml
+entrypoints = ["storefront"]
+credentials = "shareable"   # or "single_keeper" (the default)
+```
+
+- `shareable`: the store's token is not refreshed or rotated, or several
+  copies may refresh it on their own. Libro.fm, Chirp and GraphicAudio
+  declare it.
+- `single_keeper` (the default, also when the key is left out): one place
+  keeps and refreshes the sign-in, so a copy elsewhere would break it.
+  Audible is a single keeper. Its accounts stay where they were connected.
+
+The key is refused on a plugin without the `storefront` entrypoint.
+
 ### `command` (native)
 
 `command` may be absolute, or relative to the manifest folder. An absolute

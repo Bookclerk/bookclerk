@@ -102,3 +102,4 @@ Build and agent conventions for this repository live in
 - [Web API contract checks](adr/web-api-contract-checks.md): the document is checked against examples in tests and against real responses in CI
 - [Project licensing](adr/licensing.md): AGPL for the project, MIT OR Apache-2.0 for the plugin SDKs, a CLA and a trademark policy
 - [Event delivery model](adr/event-delivery-model.md): events fan out to every subscriber, jobs have one handler, subscriptions follow deployments
+- [Library catalog network](adr/library-catalog-network.md): a branch of several libraries, what each library owns, and how libraries list and lend books

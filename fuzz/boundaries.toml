@@ -119,6 +119,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.event_read]
+crate = "bookclerk-plugin-abi"
+boundary = "A guest's EVENTS.read request: the /events/read JSON body, its opaque cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.db_stream]
 crate = "bookclerk-plugin-abi"
 boundary = "executeStreamed frames an adapter sends, reassembled under the streamed result budget"
@@ -196,9 +203,23 @@ input_from = "store"
 side = "guest"
 artifacts = ["bookclerk"]
 
+[targets.graphicaudio_catalog]
+crate = "bookclerk-plugin-source-graphicaudio"
+boundary = "GraphicAudio product pages from the public Magento store"
+input_from = "store"
+side = "guest"
+artifacts = ["bookclerk"]
+
 [targets.node_frame]
 crate = "bookclerk-node-proto"
 boundary = "Node-to-node frames on the cluster socket"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.node_account_bundle]
+crate = "bookclerk-node-proto"
+boundary = "Store accounts and their secrets a library sends a joining branch for its person"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
