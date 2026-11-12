@@ -578,4 +578,48 @@ mod tests {
             .unwrap()
             .is_none());
     }
+
+    /// The scan-pass and holdings calls act on this plugin's account.
+    #[tokio::test]
+    async fn scope_runs_a_scan_pass_for_its_account() {
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let libro = store.scope("platform:bookclerk/libro", "libro");
+        libro.ensure_account("bob", "us", None).await.unwrap();
+        for product in ["ISBN1", "ISBN2"] {
+            libro
+                .upsert_book(&NewBook::minimal(product, "bob", "us", product))
+                .await
+                .unwrap();
+        }
+
+        libro
+            .save_scan_checkpoint("bob", "c1", "", "p1")
+            .await
+            .unwrap();
+        let state = libro.scan_state("bob").await.unwrap().unwrap();
+        assert_eq!(
+            (state.resume_cursor.as_str(), state.pass_id.as_str()),
+            ("c1", "p1")
+        );
+
+        libro
+            .mark_holdings_seen("bob", "p1", &["ISBN1".to_string()])
+            .await
+            .unwrap();
+        let removed = libro
+            .remove_account_holdings("bob", crate::HoldingSelection::UnseenBy("p1"))
+            .await
+            .unwrap();
+        assert_eq!(removed, 1, "ISBN2 was not stamped");
+        libro.finish_scan_pass("bob", "t1", true).await.unwrap();
+        assert_eq!(
+            libro.scan_state("bob").await.unwrap().unwrap().sync_token,
+            "t1"
+        );
+        libro.reset_scan_state("bob").await.unwrap();
+    }
 }

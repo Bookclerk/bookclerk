@@ -566,6 +566,58 @@ mod tests {
         assert!(held(&store).await.is_empty());
     }
 
+    /// A branch holding names its node in typed columns, is written only
+    /// while the node exists, and goes with it.
+    #[tokio::test]
+    async fn a_node_holding_needs_its_node() {
+        use sea_orm::ConnectionTrait;
+        for profile in Profile::ALL {
+            let store = library(profile, &[]).await;
+            let by_node = resolve::HoldingDraft {
+                holder: resolve::Holder::Node("n1".into()),
+                entitlement: resolve::Entitlement::Purchase,
+                purchased_at: None,
+            };
+            store
+                .record_listing(&listing("B1"), &by_node)
+                .await
+                .unwrap();
+            assert!(held(&store).await.is_empty(), "{profile:?}: no node yet");
+
+            store
+                .db
+                .execute_unprepared(
+                    "INSERT INTO nodes (node_id, cluster_id, created_at, incarnation, \
+                     heartbeat_at, software_version, schema_state, compatible) VALUES \
+                     ('n1', 'c1', '2026-01-01T00:00:00Z', 'i', '2026-01-01T00:00:00Z', \
+                     'v', 's', 1)",
+                )
+                .await
+                .unwrap();
+            store
+                .record_listing(&listing("B1"), &by_node)
+                .await
+                .unwrap();
+            let row = holdings::Entity::find()
+                .one(&store.db)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.holder, "node:n1", "{profile:?}");
+            assert_eq!(row.holder_kind, "node");
+            assert_eq!(row.node_id.as_deref(), Some("n1"));
+            assert_eq!(row.plugin_key, None);
+            assert_eq!(row.account_id, None);
+
+            store
+                .db
+                .execute_unprepared("DELETE FROM nodes WHERE node_id = 'n1'")
+                .await
+                .unwrap();
+            assert!(held(&store).await.is_empty(), "{profile:?}: cascades");
+        }
+    }
+
     /// A delta page's removed ids drop exactly those holdings, each with
     /// one `holding_removed`; a second removal publishes nothing.
     #[tokio::test]

@@ -577,11 +577,14 @@ impl ContentSource for ExternalSource {
             );
             let mut io = LibraryPass {
                 source: self,
-                scope,
                 opts: &opts,
-                account_id: account_id.clone(),
                 credential,
-                pass_id: start.pass_id.clone(),
+                ledger: PassLedger {
+                    scope,
+                    plugin: self.id(),
+                    account_id: account_id.clone(),
+                    pass_id: start.pass_id.clone(),
+                },
             };
             let pass = run_pass(&mut io, &account_id, start).await?;
             summary.accounts += 1;
@@ -890,38 +893,45 @@ fn full_pass() -> bookclerk_library::PassStart {
 struct LibraryPass<'a> {
     /// The guest.
     source: &'a ExternalSource,
-    /// The plugin's library scope.
-    scope: &'a SourceScope,
     /// Scan options.
     opts: &'a ScanOptions,
-    /// The account the pass scans.
-    account_id: String,
     /// Its credential blob.
     credential: Vec<u8>,
+    /// Where the pass's pages, removals and progress are written.
+    ledger: PassLedger<'a>,
+}
+
+/// The library side of one account's scan pass: the titles and holdings
+/// its pages write, and its progress in `account_scan_state`.
+struct PassLedger<'a> {
+    /// The plugin's library scope.
+    scope: &'a SourceScope,
+    /// The plugin's id, for logs and for mapping scanned titles.
+    plugin: &'a str,
+    /// The account the pass scans.
+    account_id: String,
     /// The pass's id, stamped on the holdings each page lists.
     pass_id: String,
 }
 
-impl PassIo for LibraryPass<'_> {
-    async fn page(
-        &mut self,
-        cursor: &str,
-        sync_token: &str,
-    ) -> std::result::Result<bookclerk_plugin_sdk::ScanPage, bookclerk_plugin_sdk::PluginError>
-    {
-        self.source
-            .scan_page(
-                self.opts,
-                &self.account_id,
-                &self.credential,
-                cursor,
-                sync_token,
-            )
-            .await
-    }
+/// Maps a library error into the source error a pass reports.
+fn pass_error(e: impl std::fmt::Display) -> bookclerk_source::SourceError {
+    bookclerk_source::SourceError::api(e.to_string())
+}
 
+impl PassLedger<'_> {
+    /// Writes one page's titles and stamps the pass on the account's
+    /// holdings of every product the page listed.
+    ///
+    /// # Returns
+    ///
+    /// How many titles were stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a write fails.
     async fn write(
-        &mut self,
+        &self,
         books: Vec<bookclerk_plugin_sdk::ScanBook>,
     ) -> bookclerk_source::Result<usize> {
         // Every product the page listed counts as still held, even one the
@@ -930,21 +940,26 @@ impl PassIo for LibraryPass<'_> {
         let listed: Vec<String> = books.iter().map(|b| b.product_id.clone()).collect();
         let titles: Vec<_> = books
             .into_iter()
-            .filter_map(|book| scanned_title(self.source.id(), book))
+            .filter_map(|book| scanned_title(self.plugin, book))
             .collect();
         let stored = self
             .scope
             .upsert_scanned_titles(&titles)
             .await
-            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+            .map_err(pass_error)?;
         self.scope
             .mark_holdings_seen(&self.account_id, &self.pass_id, &listed)
             .await
-            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+            .map_err(pass_error)?;
         Ok(stored.len())
     }
 
-    async fn remove(&mut self, product_ids: &[String]) -> bookclerk_source::Result<()> {
+    /// Removes the account's holdings of `product_ids`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read or write fails.
+    async fn remove(&self, product_ids: &[String]) -> bookclerk_source::Result<()> {
         self.scope
             .remove_account_holdings(
                 &self.account_id,
@@ -952,18 +967,29 @@ impl PassIo for LibraryPass<'_> {
             )
             .await
             .map(|_| ())
-            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))
+            .map_err(pass_error)
     }
 
-    async fn checkpoint(&mut self, cursor: &str, sync_token: &str) -> bookclerk_source::Result<()> {
+    /// Checkpoints the pass after a page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the write fails.
+    async fn checkpoint(&self, cursor: &str, sync_token: &str) -> bookclerk_source::Result<()> {
         self.scope
             .save_scan_checkpoint(&self.account_id, cursor, sync_token, &self.pass_id)
             .await
-            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))
+            .map_err(pass_error)
     }
 
+    /// Records the end of the pass; a complete full pass first removes the
+    /// holdings it did not stamp.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read or write fails.
     async fn finish(
-        &mut self,
+        &self,
         sync_token: &str,
         complete: bool,
         full: bool,
@@ -980,10 +1006,10 @@ impl PassIo for LibraryPass<'_> {
                     bookclerk_library::HoldingSelection::UnseenBy(&self.pass_id),
                 )
                 .await
-                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+                .map_err(pass_error)?;
             if removed > 0 {
                 tracing::info!(
-                    plugin = %self.source.id(),
+                    plugin = %self.plugin,
                     account_id = %self.account_id,
                     removed,
                     "full scan pass removed holdings the account no longer lists"
@@ -993,14 +1019,66 @@ impl PassIo for LibraryPass<'_> {
         self.scope
             .finish_scan_pass(&self.account_id, sync_token, complete)
             .await
-            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))
+            .map_err(pass_error)
     }
 
-    async fn reset(&mut self) -> bookclerk_source::Result<()> {
+    /// Forgets the pass's sync token and resume cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the write fails.
+    async fn reset(&self) -> bookclerk_source::Result<()> {
         self.scope
             .reset_scan_state(&self.account_id)
             .await
-            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))
+            .map_err(pass_error)
+    }
+}
+
+impl PassIo for LibraryPass<'_> {
+    async fn page(
+        &mut self,
+        cursor: &str,
+        sync_token: &str,
+    ) -> std::result::Result<bookclerk_plugin_sdk::ScanPage, bookclerk_plugin_sdk::PluginError>
+    {
+        self.source
+            .scan_page(
+                self.opts,
+                &self.ledger.account_id,
+                &self.credential,
+                cursor,
+                sync_token,
+            )
+            .await
+    }
+
+    async fn write(
+        &mut self,
+        books: Vec<bookclerk_plugin_sdk::ScanBook>,
+    ) -> bookclerk_source::Result<usize> {
+        self.ledger.write(books).await
+    }
+
+    async fn remove(&mut self, product_ids: &[String]) -> bookclerk_source::Result<()> {
+        self.ledger.remove(product_ids).await
+    }
+
+    async fn checkpoint(&mut self, cursor: &str, sync_token: &str) -> bookclerk_source::Result<()> {
+        self.ledger.checkpoint(cursor, sync_token).await
+    }
+
+    async fn finish(
+        &mut self,
+        sync_token: &str,
+        complete: bool,
+        full: bool,
+    ) -> bookclerk_source::Result<()> {
+        self.ledger.finish(sync_token, complete, full).await
+    }
+
+    async fn reset(&mut self) -> bookclerk_source::Result<()> {
+        self.ledger.reset().await
     }
 
     fn cancelled(&self) -> bool {
@@ -1206,6 +1284,82 @@ mod tests {
             dir
         });
         configure_master_key(dir.path()).unwrap();
+    }
+
+    /// A scanned audiobook of account `a1`.
+    fn scanned(product: &str) -> bookclerk_plugin_sdk::ScanBook {
+        bookclerk_plugin_sdk::ScanBook {
+            account_id: "a1".into(),
+            product_id: product.into(),
+            title: format!("Title {product}"),
+            marketplace: Some("us".into()),
+            media_kind: bookclerk_plugin_sdk::MediaKind::Audiobook,
+            ..bookclerk_plugin_sdk::ScanBook::default()
+        }
+    }
+
+    /// Count of the store's events of `event_type`.
+    async fn events(store: &bookclerk_library::LibraryStore, event_type: &str) -> usize {
+        store
+            .list_domain_events(500)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|e| e.event_type == event_type)
+            .count()
+    }
+
+    /// The ledger writes pages, removes what a delta reports, and a
+    /// complete full pass removes what it did not list; a partial pass
+    /// removes nothing.
+    #[tokio::test]
+    async fn the_pass_ledger_keeps_holdings_in_step_with_the_account() {
+        let store = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let scope = store.scope("path:file:///plugins/echo", "echo");
+        scope.upsert_account("a1", "us", None, true).await.unwrap();
+        let ledger = |pass_id: &str| PassLedger {
+            scope: &scope,
+            plugin: "echo",
+            account_id: "a1".into(),
+            pass_id: pass_id.into(),
+        };
+
+        let first = ledger("p1");
+        let stored = first
+            .write(vec![scanned("P1"), scanned("P2"), scanned("P3")])
+            .await
+            .unwrap();
+        assert_eq!(stored, 3);
+        first.checkpoint("next", "").await.unwrap();
+        assert_eq!(scope.scan_state("a1").await.unwrap().unwrap().pass_id, "p1");
+        first.finish("t1", true, true).await.unwrap();
+        assert_eq!(events(&store, "holding_added").await, 3);
+        assert_eq!(events(&store, "holding_removed").await, 0);
+
+        // A delta page reports P3 gone.
+        let delta = ledger("p2");
+        delta.remove(&["P3".to_string()]).await.unwrap();
+        assert_eq!(events(&store, "holding_removed").await, 1);
+
+        // A partial full pass that listed only P1 removes nothing.
+        let partial = ledger("p3");
+        partial.write(vec![scanned("P1")]).await.unwrap();
+        partial.finish("", false, true).await.unwrap();
+        assert_eq!(events(&store, "holding_removed").await, 1);
+
+        // A complete full pass that listed only P1 removes P2.
+        let full = ledger("p4");
+        full.write(vec![scanned("P1")]).await.unwrap();
+        full.finish("t2", true, true).await.unwrap();
+        assert_eq!(events(&store, "holding_removed").await, 2);
+        let state = scope.scan_state("a1").await.unwrap().unwrap();
+        assert_eq!(state.sync_token, "t2");
+
+        full.reset().await.unwrap();
+        let state = scope.scan_state("a1").await.unwrap();
+        assert!(state.is_none_or(|s| s.sync_token.is_empty()));
     }
 
     #[tokio::test]
