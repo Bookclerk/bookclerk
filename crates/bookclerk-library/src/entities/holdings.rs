@@ -33,6 +33,11 @@ pub struct Model {
     /// Id of the scan pass that last listed this holding
     /// (`account_scan_state.pass_id`); `None` until a pass lists it.
     pub seen_pass: Option<String>,
+    /// Where the holder's copy came from when it is not this library's own
+    /// acquire: `link:<cluster_id>` for a book this branch's owner acquired
+    /// for the library it joined, imported here as well. `None` for this
+    /// library's own work.
+    pub provenance: Option<String>,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,
     /// RFC 3339 timestamp when the row was last modified.

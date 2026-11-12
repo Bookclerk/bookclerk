@@ -24,6 +24,7 @@ mod instance_config;
 mod instances;
 mod job_routing;
 mod leases;
+mod link_imports;
 mod live;
 mod node_queue;
 mod node_status;
@@ -149,6 +150,10 @@ pub use leases::{
     release_lease_on, renew_lease, renew_lease_on, ClusterLease, LeaseFence, SingletonDuty,
     EVENT_RETENTION_LEASE, JOB_RETENTION_LEASE, KV_EXPIRY_LEASE, MIGRATION_LEASE,
     RECORD_RETENTION_LEASE, SESSION_EXPIRY_LEASE,
+};
+pub use link_imports::{
+    books_imported_from_link, import_link_title, link_provenance, HeldBookKey, LinkImport,
+    LinkImportOutcome, OwnerShareFilter,
 };
 pub(crate) use live::{
     bump, bump_if_any, bump_if_stamped, bump_on, exec_bumped_via, sea_exec, sea_probe, Bump,

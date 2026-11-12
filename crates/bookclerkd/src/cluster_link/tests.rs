@@ -1452,7 +1452,14 @@ mod results_and_uploads {
         dropped: Arc<AtomicBool>,
         /// The link's "Keep copies of other members' books".
         keep_member_copies: bool,
+        /// Each owner's title imported into this install's library: the
+        /// owner's book uuid and the `(destination, key)` files kept.
+        imported: Arc<Mutex<Vec<ImportedTitle>>>,
     }
+
+    /// An owner's title a [`StubGuests`] imported: the owner's book uuid and
+    /// the `(destination, key)` files kept.
+    type ImportedTitle = (String, Vec<(&'static str, String)>);
 
     /// Sets its flag when dropped.
     struct DropFlag(Arc<AtomicBool>);
@@ -1526,15 +1533,27 @@ mod results_and_uploads {
             self.keep_member_copies
         }
 
-        async fn local_destinations(&self) -> anyhow::Result<Vec<Box<dyn StorageBackend>>> {
+        async fn local_destinations(
+            &self,
+        ) -> anyhow::Result<Vec<super::super::host_jobs::LocalDestination>> {
             Ok(self
                 .local
                 .iter()
                 .map(|root| {
-                    Box::new(bookclerk_storage::LocalFsBackend::new(root.clone()).unwrap())
-                        as Box<dyn StorageBackend>
+                    (
+                        "local",
+                        Box::new(bookclerk_storage::LocalFsBackend::new(root.clone()).unwrap())
+                            as Box<dyn StorageBackend>,
+                    )
                 })
                 .collect())
+        }
+
+        async fn import_owner_title(&self, copy: super::super::host_jobs::OwnerTitleCopy<'_>) {
+            self.imported
+                .lock()
+                .unwrap()
+                .push((copy.book.uuid.clone(), copy.files.to_vec()));
         }
 
         fn work_dir(&self) -> PathBuf {
@@ -1876,6 +1895,11 @@ mod results_and_uploads {
             payload,
             "the host's own destination has its copy"
         );
+        assert_eq!(
+            guests.imported.lock().unwrap().as_slice(),
+            &[(book.uuid.clone(), vec![("local", key.clone())])],
+            "the owner's own title joins the branch's library with its copy"
+        );
         assert!(job(&world.owner, &job_id)
             .await
             .progress
@@ -1986,6 +2010,7 @@ mod results_and_uploads {
             keep_member_copies: keep,
             ..StubGuests::default()
         };
+        let imported = Arc::clone(&guests.imported);
         // The branch's operator turns on "Download for other members"; the
         // link's consent check tells the running client.
         bookclerk_library::control_plane::set_cluster_link_work(
@@ -2036,6 +2061,10 @@ mod results_and_uploads {
             std::fs::read(owner_out.path().join(&key)).unwrap(),
             b"sam's audio",
             "the library's destination has the file"
+        );
+        assert!(
+            imported.lock().unwrap().is_empty(),
+            "another member's title never joins the branch's library"
         );
         host_local.path().join(&key).exists()
     }
@@ -3955,9 +3984,10 @@ mod results_and_uploads {
             keys: vec![vec![key.clone()]],
         };
         let copied = Mutex::new(Vec::new());
-        copy_to_local_destinations(&guests, "t1", &outbox, &acquired, &copied)
+        let placed = copy_to_local_destinations(&guests, "t1", &outbox, &acquired, &copied)
             .await
             .unwrap();
+        assert_eq!(placed, vec![("local", key.clone())]);
         let copies = copied.into_inner().unwrap();
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].1, key);

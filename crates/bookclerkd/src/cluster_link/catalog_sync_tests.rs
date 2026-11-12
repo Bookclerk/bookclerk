@@ -22,7 +22,7 @@ use bookclerk_library::control_plane::{
     ClusterLink, BRANCH_TITLE_DETACHED, BRANCH_TITLE_SHARED, DETACHED_LEFT,
     DETACHED_STOPPED_SHARING, DETACHED_WITHDRAWN,
 };
-use bookclerk_library::{AcquireStatus, LibraryStore, NewBook, UserRole};
+use bookclerk_library::{AcquireStatus, LibraryStore, NewBook, UserRole, UserStatus};
 use bookclerk_node_client::{
     refuse_cycle, HostClient, HostClientConfig, HostClientHandle, JoinError,
 };
@@ -86,6 +86,54 @@ async fn start(host: &LibraryStore, link: &ClusterLink) -> (HostClientHandle, wa
 /// A store account of this install and one acquired book of it, its
 /// files (primary, cover, plus an unrelated file) written under `shelf`.
 async fn own_book(
+    store: &LibraryStore,
+    shelf: &Path,
+    source: &str,
+    account_id: &str,
+    product_id: &str,
+) -> String {
+    let primary = acquired_book(store, shelf, source, account_id, product_id).await;
+    let plugin = format!("path:file:///tmp/{source}");
+    let owner = install_owner(store).await;
+    let identity = store
+        .ensure_local_portal_identity(owner, None)
+        .await
+        .unwrap();
+    store
+        .link_account(identity.id, &plugin, account_id, "test")
+        .await
+        .unwrap();
+    primary
+}
+
+/// The install's only active Owner, created when it has none: the person
+/// a branch's own books belong to.
+async fn install_owner(store: &LibraryStore) -> i64 {
+    let owners: Vec<i64> = store
+        .list_users()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|user| user.role == UserRole::Owner && user.status == UserStatus::Active)
+        .map(|user| user.id)
+        .collect();
+    match owners.as_slice() {
+        [only] => *only,
+        [] => {
+            store
+                .create_user(UserRole::Owner, Some("Branch owner"), None)
+                .await
+                .unwrap()
+                .id
+        }
+        _ => panic!("several Owners"),
+    }
+}
+
+/// An acquired book of `account_id` on `store`, its files on `shelf`,
+/// held by no one in particular (the account is linked to no user);
+/// answers the primary key.
+async fn acquired_book(
     store: &LibraryStore,
     shelf: &Path,
     source: &str,
@@ -642,6 +690,8 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
     own_book(&b, b_out.path(), "libro", "b-store-acct", "b2").await;
     // The same store title on a second account is shared once.
     own_book(&b, b_out.path(), "libro", "b-other-acct", "b1").await;
+    // Another member's book on the branch is not the owner's: it stays.
+    acquired_book(&b, b_out.path(), "libro", "b-member-acct", "b3").await;
     let b_link = join(&a, &b, riley, &a_origin, None).await.unwrap();
     let (b_handle, _b_stop) = start(&b, &b_link).await;
     let fail = Arc::new(std::sync::Mutex::new(None));

@@ -518,6 +518,14 @@ there only when **Keep copies of other members' books** is on (see
 [Work settings on the branch](#work-settings-on-the-branch)). The owner
 says which titles are whose with each job.
 
+Once the owner has committed one of the owner's own titles, the host also
+adds it to its own library: the title, acquired, with its copy's files,
+held by the store account that bought it. This happens only when that
+store account is connected on the host to its Owner (for example brought
+along when joining). Another member's title is never added, even when its
+copy is kept. A title added this way is marked as coming from that
+library, so it is never shared back to it.
+
 ### Sharing this computer between libraries
 
 A branch of several libraries splits its work between them, so no one
@@ -649,12 +657,14 @@ C is B's.
   A has no record of C and never learns it exists. A's work runs on B
   itself and is never passed on to C. No store account, store token or
   user of B or C is ever sent to A.
-- **Books flow up.** B shares the books in its library with A: those
-  acquired on B, and (when "Include books from my own branches" is on)
-  those C shared with B. Each title carries its store, product id,
+- **Books flow up.** B shares its owner's books with A: those acquired on
+  B on a store account connected there to B's Owner, and (when "Include
+  books from my own branches" is on) those C shared with B. B's other
+  members' books stay on B. Each title carries its store, product id,
   metadata and file list, nothing else. A records them as belonging to the
   A user who owns B, so C's books are simply B's books there. A title B
-  got from A isn't sent back.
+  got from A, or acquired for A and added to its own library, isn't sent
+  back.
 - **Files** stream to A's outputs through the same upload endpoint a
   branch's acquire uses (nothing staged on A), under the keys they have on
   B. A title whose files would land on a key another book in A already

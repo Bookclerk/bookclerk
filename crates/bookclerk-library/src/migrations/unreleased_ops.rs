@@ -1119,6 +1119,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // held again announces itself again (`holding_added:<id>`). `seen_pass`
     // is the scan pass that last listed it (`account_scan_state.pass_id`);
     // a complete full pass removes the account's holdings it did not list.
+    // `provenance` is `link:<cluster_id>` for a book this branch's owner
+    // acquired for the library it joined, imported here as well.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS holdings (
         id TEXT PRIMARY KEY NOT NULL,
@@ -1131,6 +1133,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         entitlement TEXT NOT NULL CHECK (entitlement IN ('purchase', 'plus', 'loan', 'free')),
         purchased_at TEXT,
         seen_pass TEXT,
+        provenance TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE (listing_id, holder),
