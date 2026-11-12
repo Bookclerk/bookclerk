@@ -1142,8 +1142,8 @@ async fn library_owns_work(library: &LibraryStore, entry: &GlobalQueueEntry) -> 
 /// identifiers, then the work's identifiers, then the work-level
 /// title-and-author match). A candidate whose work has a held title is
 /// dropped. A sequel that shares
-/// its series' name is its own work and stays. Whether a work is held is
-/// read once per work.
+/// its series' name is its own work and stays. Whether the works are held
+/// is read for all of them at once ([`LibraryStore::book_uuids_for_works`]).
 ///
 /// # Arguments
 ///
@@ -1164,18 +1164,14 @@ pub(crate) async fn retain_unowned_works(
     if candidates.is_empty() {
         return Ok(candidates);
     }
-    let mut held: HashMap<String, bool> = HashMap::new();
-    let mut kept = Vec::with_capacity(candidates.len());
+    // Each candidate's work: a candidate read from the listing pool already
+    // knows it; only a live store hit is resolved here, one at a time.
+    let mut placed = Vec::with_capacity(candidates.len());
     for c in candidates {
-        if c.title.trim().is_empty() {
-            kept.push(c);
-            continue;
-        }
-        // A candidate read from the listing pool already knows its work;
-        // only a live store hit is resolved here.
-        let work_id = match c.work_id.clone() {
-            Some(work_id) => Some(work_id),
-            None => {
+        let work_id = match (&c.work_id, c.title.trim().is_empty()) {
+            (Some(work_id), _) => Some(work_id.clone()),
+            (None, true) => None,
+            (None, false) => {
                 let query = bookclerk_library::TitleQuery {
                     title: &c.title,
                     authors: c.authors.as_deref(),
@@ -1187,23 +1183,26 @@ pub(crate) async fn retain_unowned_works(
                 library.work_for(&query).await?
             }
         };
-        let Some(work_id) = work_id else {
-            kept.push(c);
-            continue;
-        };
-        let owned = match held.get(&work_id) {
-            Some(owned) => *owned,
-            None => {
-                let owned = !library.book_uuids_for_work(&work_id).await?.is_empty();
-                held.insert(work_id, owned);
-                owned
-            }
-        };
-        if !owned {
-            kept.push(c);
-        }
+        placed.push((c, work_id));
     }
-    Ok(kept)
+    // Which of those works the library holds, in one chunked read rather
+    // than one per work: a page of candidates is a few hundred works.
+    let works: Vec<String> = placed
+        .iter()
+        .filter_map(|(_, work_id)| work_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let held = if works.is_empty() {
+        std::collections::BTreeMap::new()
+    } else {
+        library.book_uuids_for_works(&works).await?
+    };
+    Ok(placed
+        .into_iter()
+        .filter(|(_, work_id)| work_id.as_ref().is_none_or(|w| !held.contains_key(w)))
+        .map(|(c, _)| c)
+        .collect())
 }
 
 /// Inserts or merges a recommendation when ASIN/ISBN/title identity already exists.
