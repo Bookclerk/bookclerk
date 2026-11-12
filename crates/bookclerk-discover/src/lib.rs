@@ -32,6 +32,7 @@ mod shelves;
 mod stored_feed;
 mod title_meta;
 mod ttl_cache;
+mod wish_pool;
 
 pub use bookclerk_source::{
     default_preferred_language, language_rank, normalize_language, CatalogSearchField,
@@ -89,3 +90,4 @@ pub use title_meta::{
     resolve_title_meta, resolve_title_meta_batch, resolve_title_reviews, TitleMeta, TitleMetaQuery,
     TitleReview, TitleReviewsPage, TitleReviewsQuery,
 };
+pub use wish_pool::{pool_wish_editions, PooledEdition, MAX_WISH_EDITIONS};
