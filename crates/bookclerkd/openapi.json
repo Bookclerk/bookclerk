@@ -27270,7 +27270,7 @@
       },
       "CapacityBody": {
         "type": "object",
-        "description": "`POST /api/config/join/capacity` body.",
+        "description": "`POST /api/config/join/capacity` body: one library and the job cap to\nset for it.",
         "required": [
           "cluster_id",
           "max_jobs"

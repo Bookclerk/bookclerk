@@ -1326,36 +1326,6 @@ pub async fn post_join_leave(
     }
 }
 
-/// `POST /api/config/join/capacity` body.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CapacityBody {
-    /// The library (owner cluster id).
-    #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
-    cluster_id: String,
-    /// The most jobs to run for the library at once (0 runs none); `null`
-    /// gives it an equal share of the machine. Required: a body without it
-    /// is refused rather than read as `null`.
-    #[serde(default, deserialize_with = "present")]
-    #[schema(value_type = Option<u32>, required = true, example = 1, minimum = 0, maximum = 16)]
-    max_jobs: Option<Option<u32>>,
-}
-
-/// Reads a field that is present, `null` included, as `Some`; an absent
-/// field stays `None` (its `#[serde(default)]`).
-///
-/// # Errors
-///
-/// Returns the deserializer's error for a value that is not a number or
-/// `null`.
-fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Option::<T>::deserialize(deserializer).map(Some)
-}
-
 /// The audit identity of a caller [`require_branch_admin`] let through.
 fn branch_actor(actor: &bookclerk_library::control_plane::ConfigActor) -> String {
     use bookclerk_library::control_plane::ConfigActor;
@@ -1378,7 +1348,7 @@ fn branch_actor(actor: &bookclerk_library::control_plane::ConfigActor) -> String
 #[utoipa::path(
     post,
     path = "/api/config/join/capacity",
-    request_body = CapacityBody,
+    request_body = bookclerk_library::control_plane::CapacityBody,
     responses(
         (status = 200, description = "The link after the change, with its share of the machine now.", body = SharingChanged),
         (status = 400, description = "`max_jobs` is missing or above 16 jobs (`invalid`).", body = crate::http_error::ErrorDetail, example = json!({"error": "invalid", "detail": "a library's job cap is 0 to 16 jobs"})),
@@ -1395,29 +1365,25 @@ fn branch_actor(actor: &bookclerk_library::control_plane::ConfigActor) -> String
 pub async fn post_join_capacity(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
-    Json(body): Json<CapacityBody>,
+    Json(body): Json<bookclerk_library::control_plane::CapacityBody>,
 ) -> Response {
     let actor = match require_branch_admin(&state, caller).await {
         Ok(actor) => actor,
         Err(refused) => return refused,
     };
     let actor = branch_actor(&actor);
-    let Some(max_jobs) = body.max_jobs else {
-        return join_error(
-            StatusCode::BAD_REQUEST,
-            "invalid",
-            "max_jobs is required (null for an equal share)",
-        );
-    };
-    let cap = match max_jobs
-        .map(bookclerk_library::control_plane::LinkJobCap::new)
-        .transpose()
-    {
-        Ok(cap) => cap,
+    let bookclerk_library::control_plane::JobCapRequest {
+        cluster_id,
+        max_jobs: cap,
+    } = match body.validate() {
+        Ok(request) => request,
         Err(err) => return join_error(StatusCode::BAD_REQUEST, "invalid", &err.to_string()),
     };
     let store = state.library_snapshot().await;
-    let cluster_id = body.cluster_id.trim();
+    let cluster_id = cluster_id.as_str();
+    // Stored and applied under one guard, so racing changes reach the
+    // running link in the order they were stored.
+    let cap_write = state.capacity.lock_cap_writes().await;
     match bookclerk_library::control_plane::set_cluster_link_job_cap(&store, cluster_id, cap).await
     {
         Ok(true) => {}
@@ -1431,6 +1397,8 @@ pub async fn post_join_capacity(
         Err(err) => return crate::config_authority::events_error(err),
     }
     state.capacity.set_cap(cluster_id, cap);
+    drop(cap_write);
+    let max_jobs = cap.map(bookclerk_library::control_plane::LinkJobCap::jobs);
     tracing::info!(%cluster_id, %actor, max_jobs = ?max_jobs, "branch job cap changed");
     let detail = json!({ "cluster_id": cluster_id, "max_jobs": max_jobs }).to_string();
     if let Err(err) = store

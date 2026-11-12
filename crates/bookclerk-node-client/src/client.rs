@@ -1754,15 +1754,20 @@ async fn heartbeat_loop(
 /// A claimed job's slot: its permit, and a wake for a claim loop waiting
 /// under its share when the slot is given back.
 struct JobSlot {
-    /// The semaphore permit the slot holds.
-    _permit: OwnedSemaphorePermit,
+    /// The semaphore permit the slot holds; `None` only while the slot is
+    /// being dropped.
+    permit: Option<OwnedSemaphorePermit>,
     /// Woken on drop.
     freed: Arc<Notify>,
 }
 
 impl Drop for JobSlot {
-    /// Wakes every claim loop waiting for a job to finish.
+    /// Gives the permit back, then wakes every claim loop waiting for a job
+    /// to finish. The permit goes first so a woken loop already counts the
+    /// slot as free; waking first could let a loop re-check, still see the
+    /// slot held, and wait for a notification that never comes.
     fn drop(&mut self) {
+        drop(self.permit.take());
         self.freed.notify_waiters();
     }
 }
@@ -1857,7 +1862,7 @@ async fn claim_loop<R: HostJobRunner>(
             return;
         };
         let slot = JobSlot {
-            _permit: permit,
+            permit: Some(permit),
             freed: Arc::clone(&shared.slot_freed),
         };
         // The wait for a slot can outlast a share that shrank meanwhile.

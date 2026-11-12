@@ -142,8 +142,8 @@ take all of it.
 - The branch claims no more of a library's jobs than its share. A smaller
   share cancels nothing; claims wait until enough jobs finish.
 - The branch's heartbeat to each library reports that library's share of
-  the CPU and memory, and of that share only what is free now, so a
-  library's scheduler never counts on the whole machine.
+  the branch's CPU and memory budget, and of that share only what is free
+  now, so a library's scheduler never counts on more than the budget.
 
 ### Kinds of install
 

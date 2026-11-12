@@ -18,7 +18,7 @@ use chrono::{SecondsFormat, Utc};
 use rand::RngCore as _;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QueryTrait};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::control_plane::{sea_probe, Bump, LiveTopic};
@@ -188,6 +188,83 @@ impl LinkJobCap {
         raw.and_then(|raw| u32::try_from(raw).ok())
             .and_then(|raw| Self::new(raw).ok())
     }
+}
+
+/// `POST /api/config/join/capacity` body: one library and the job cap to
+/// set for it.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CapacityBody {
+    /// The library (owner cluster id).
+    #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
+    cluster_id: String,
+    /// The most jobs to run for the library at once (0 runs none); `null`
+    /// gives it an equal share of the machine. Required: a body without it
+    /// is refused rather than read as `null`.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<u32>, required = true, example = 1, minimum = 0, maximum = 16)]
+    max_jobs: Option<Option<u32>>,
+}
+
+/// Reads a field that is present, `null` included, as `Some`; an absent
+/// field stays `None` (its `#[serde(default)]`).
+///
+/// # Errors
+///
+/// Returns the deserializer's error for a value that is not a number or
+/// `null`.
+fn present<'de, D, T>(deserializer: D) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// A validated job cap change: the library it names (trimmed) and its new
+/// cap, `None` for an equal share.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobCapRequest {
+    /// The library (owner cluster id), surrounding whitespace removed.
+    pub cluster_id: String,
+    /// The cap to store; `None` clears it (an equal share).
+    pub max_jobs: Option<LinkJobCap>,
+}
+
+impl CapacityBody {
+    /// Checks the body: `max_jobs` must be present (`null` included) and at
+    /// most [`LinkJobCap::MAX`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] when `max_jobs` is missing or above
+    /// the maximum.
+    pub fn validate(self) -> Result<JobCapRequest> {
+        let Some(max_jobs) = self.max_jobs else {
+            return Err(LibraryError::Invalid(
+                "max_jobs is required (null for an equal share)".into(),
+            ));
+        };
+        Ok(JobCapRequest {
+            cluster_id: self.cluster_id.trim().to_string(),
+            max_jobs: max_jobs.map(LinkJobCap::new).transpose()?,
+        })
+    }
+}
+
+/// Parses and validates a `POST /api/config/join/capacity` body from its
+/// raw bytes, sans IO, the way the route reads it: JSON into
+/// [`CapacityBody`], then [`CapacityBody::validate`].
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for bytes that are not the body's JSON
+/// shape (unknown or duplicate fields, wrong types, numbers outside `u32`),
+/// a missing `max_jobs`, or a cap above [`LinkJobCap::MAX`].
+pub fn parse_job_cap_request(body: &[u8]) -> Result<JobCapRequest> {
+    serde_json::from_slice::<CapacityBody>(body)
+        .map_err(|err| LibraryError::Invalid(format!("capacity body: {err}")))?
+        .validate()
 }
 
 impl ClusterLink {
@@ -797,12 +874,30 @@ mod tests {
     }
 
     /// A job cap is stored, kept across a re-enrollment, cleared, and
-    /// refused above the maximum; an unknown cluster answers false.
+    /// refused above the maximum; an unknown cluster answers false. Runs
+    /// under every database test profile.
     #[tokio::test]
     async fn a_links_job_cap_round_trips() {
         let _lock = master_key_test_lock_async().await;
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_in(dir.path()).await;
+        for profile in crate::test_support::Profile::ALL {
+            let kit = crate::test_support::sqlite::memory(profile).await;
+            let store = kit.store().clone();
+            let dir = tempfile::tempdir().unwrap();
+            crate::configure_master_key(dir.path()).expect("master key");
+            job_cap_round_trip(&store).await;
+            assert_eq!(
+                kit.refused_begins(),
+                0,
+                "{profile:?} took an interactive transaction"
+            );
+        }
+        assert!(LinkJobCap::new(u32::from(LinkJobCap::MAX) + 1).is_err());
+        assert!(LinkJobCap::new(u32::from(LinkJobCap::MAX)).is_ok());
+    }
+
+    /// Writes, keeps, clears and misses a job cap on `store`.
+    async fn job_cap_round_trip(store: &LibraryStore) {
+        let store = store.clone();
         let keys = ClusterLinkKeys::from_bytes(&[3; 32], &[4; 32]);
         record_cluster_link(&store, &new_link(None), &keys)
             .await
@@ -841,8 +936,6 @@ mod tests {
         assert!(!set_cluster_link_job_cap(&store, "nope", Some(cap))
             .await
             .unwrap());
-        assert!(LinkJobCap::new(u32::from(LinkJobCap::MAX) + 1).is_err());
-        assert!(LinkJobCap::new(u32::from(LinkJobCap::MAX)).is_ok());
     }
 
     /// Leaving marks the link left and deletes its keys; an unknown

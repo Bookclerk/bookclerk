@@ -55,6 +55,28 @@ pub fn machine_slots(status: &NodeStatus) -> usize {
         .clamp(1, MAX_MACHINE_SLOTS)
 }
 
+/// The CPU and memory the operator budgeted this node (`node.runtime`), as
+/// its last recorded heartbeat stated them: the most of the machine the
+/// libraries it joined are ever told about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineBudget {
+    /// CPU budget, in millicores.
+    pub cpu_millicores: i64,
+    /// Memory budget, in bytes; `None` when the node states none.
+    pub memory_bytes: Option<i64>,
+}
+
+impl MachineBudget {
+    /// The budget `status` records.
+    #[must_use]
+    pub fn of(status: &NodeStatus) -> Self {
+        Self {
+            cpu_millicores: status.cpu_budget_millicores,
+            memory_bytes: status.memory_budget_bytes,
+        }
+    }
+}
+
 /// Splits `machine` slots: `own_busy` go to the branch's own work first,
 /// and the rest are dealt out one at a time, in the order of `caps`, to
 /// each link still under its cap (`None` is uncapped).
@@ -101,6 +123,9 @@ struct LinkShare {
 struct State {
     /// Job slots the machine has.
     machine: usize,
+    /// The node's budget from its last recorded heartbeat; `None` before
+    /// the first.
+    budget: Option<MachineBudget>,
     /// Jobs the branch's own workers run now.
     own_busy: usize,
     /// Each running link's entry, by owner cluster id.
@@ -132,6 +157,10 @@ impl State {
 pub struct CapacityShares {
     /// The table.
     state: Mutex<State>,
+    /// Held by a cap change across its database write and
+    /// [`CapacityShares::set_cap`], so changes apply in the order they were
+    /// stored ([`CapacityShares::lock_cap_writes`]).
+    cap_writes: tokio::sync::Mutex<()>,
 }
 
 /// Holds one slot for a job the branch's own workers run; dropping it
@@ -187,10 +216,12 @@ impl CapacityShares {
         Self {
             state: Mutex::new(State {
                 machine: SLOTS_BEFORE_FIRST_HEARTBEAT,
+                budget: None,
                 own_busy: 0,
                 links: BTreeMap::new(),
                 pending_caps: BTreeMap::new(),
             }),
+            cap_writes: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -242,6 +273,13 @@ impl CapacityShares {
         }
     }
 
+    /// Serializes cap changes: hold the guard across storing a cap and
+    /// [`CapacityShares::set_cap`], so two changes racing for one link
+    /// leave the running link with the cap stored last.
+    pub async fn lock_cap_writes(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.cap_writes.lock().await
+    }
+
     /// Sets the cap of the link to `cluster_id`: at once when it runs, else
     /// when its client next registers.
     pub fn set_cap(&self, cluster_id: &str, cap: Option<LinkJobCap>) {
@@ -264,6 +302,20 @@ impl CapacityShares {
             state.machine = slots;
             state.publish();
         }
+    }
+
+    /// Records this node's heartbeat as stored: its job slots
+    /// ([`machine_slots`]) and its budget, which caps what each link's
+    /// heartbeat reports ([`scale_heartbeat`]).
+    pub fn record_status(&self, status: &NodeStatus) {
+        self.lock().budget = Some(MachineBudget::of(status));
+        self.set_machine(machine_slots(status));
+    }
+
+    /// The node's budget from its last recorded heartbeat.
+    #[must_use]
+    pub fn budget(&self) -> Option<MachineBudget> {
+        self.lock().budget
     }
 
     /// Takes a slot for a job the branch's own workers run, until the
@@ -340,15 +392,28 @@ impl ShareSampler {
 }
 
 /// `sample` as the library with `share` of `machine` slots sees it: its
-/// share of the CPU and memory, and of those only what the machine has
-/// free now (a library is never told about headroom the rest of the
-/// machine's work already took).
+/// share of the machine's CPU and memory, counted from the operator's
+/// `budget` where it is smaller than the machine (the slots come from the
+/// budget too), and of that share only what the machine has free now (a
+/// library is never told about headroom the rest of the machine's work
+/// already took).
 #[must_use]
-pub fn scale_heartbeat(sample: NodeHeartbeat, share: usize, machine: usize) -> NodeHeartbeat {
-    let cpu = scaled(sample.cpu_millicores, share, machine);
-    let memory = sample
-        .memory_bytes
-        .map(|value| scaled(value, share, machine));
+pub fn scale_heartbeat(
+    sample: NodeHeartbeat,
+    share: usize,
+    machine: usize,
+    budget: Option<MachineBudget>,
+) -> NodeHeartbeat {
+    let total_cpu = budget.map_or(sample.cpu_millicores, |budget| {
+        sample.cpu_millicores.min(budget.cpu_millicores.max(0))
+    });
+    let total_memory = sample.memory_bytes.map(|memory| {
+        budget
+            .and_then(|budget| budget.memory_bytes)
+            .map_or(memory, |limit| memory.min(limit.max(0)))
+    });
+    let cpu = scaled(total_cpu, share, machine);
+    let memory = total_memory.map(|value| scaled(value, share, machine));
     // Free CPU on the machine, capped at the share; the rest of the share
     // reads as used.
     let cpu_used = sample.cpu_used_millicores.map(|used| {
@@ -375,7 +440,7 @@ impl HeartbeatSource for ShareSampler {
     fn sample(&mut self) -> NodeHeartbeat {
         let sample = self.inner.sample();
         let share = *self.share.borrow();
-        scale_heartbeat(sample, share, self.shares.machine())
+        scale_heartbeat(sample, share, self.shares.machine(), self.shares.budget())
     }
 }
 
@@ -544,7 +609,7 @@ mod tests {
         };
         // Half the machine; the machine is mostly idle, so the library's
         // half is all free.
-        let half = scale_heartbeat(sample.clone(), 2, 4);
+        let half = scale_heartbeat(sample.clone(), 2, 4, None);
         assert_eq!(half.cpu_millicores, 4_000);
         assert_eq!(half.memory_bytes, Some(8_000));
         assert_eq!(half.cpu_used_millicores, Some(0));
@@ -556,7 +621,7 @@ mod tests {
             memory_available_bytes: Some(3_000),
             ..sample.clone()
         };
-        let quarter = scale_heartbeat(busy, 1, 4);
+        let quarter = scale_heartbeat(busy, 1, 4, None);
         assert_eq!(quarter.cpu_millicores, 2_000);
         assert_eq!(quarter.cpu_used_millicores, Some(0));
         assert_eq!(quarter.memory_available_bytes, Some(3_000));
@@ -565,15 +630,68 @@ mod tests {
             memory_available_bytes: Some(1_000),
             ..sample.clone()
         };
-        let quarter = scale_heartbeat(busier, 1, 4);
+        let quarter = scale_heartbeat(busier, 1, 4, None);
         assert_eq!(quarter.cpu_used_millicores, Some(1_500));
         assert_eq!(quarter.memory_available_bytes, Some(1_000));
-        let none = scale_heartbeat(sample.clone(), 0, 4);
+        let none = scale_heartbeat(sample.clone(), 0, 4, None);
         assert_eq!(none.cpu_millicores, 0);
         assert_eq!(none.memory_bytes, Some(0));
         assert_eq!(none.cpu_used_millicores, Some(0));
         assert_eq!(none.memory_available_bytes, Some(0));
-        assert_eq!(scale_heartbeat(sample.clone(), 3, 0).cpu_millicores, 0);
-        assert_eq!(scale_heartbeat(sample, 9, 4).cpu_millicores, 8_000);
+        assert_eq!(
+            scale_heartbeat(sample.clone(), 3, 0, None).cpu_millicores,
+            0
+        );
+        assert_eq!(scale_heartbeat(sample, 9, 4, None).cpu_millicores, 8_000);
+    }
+
+    /// A budget below the machine is what the shares divide: one uncapped
+    /// link on a node budgeted 40% of its CPU hears 3,200 millicores, not
+    /// 8,000, and free CPU beyond the budget never reads as its headroom.
+    #[test]
+    fn a_library_hears_shares_of_the_budget_not_the_machine() {
+        let sample = NodeHeartbeat {
+            incarnation: "i".into(),
+            started_at: "s".into(),
+            interval: Duration::from_secs(15),
+            cpu_millicores: 8_000,
+            memory_bytes: Some(16_000),
+            cpu_used_millicores: Some(1_000),
+            memory_available_bytes: Some(12_000),
+            files_dir_free_bytes: Some(5),
+            cache: None,
+        };
+        let budget = MachineBudget {
+            cpu_millicores: 3_200,
+            memory_bytes: Some(4_000),
+        };
+        let whole = scale_heartbeat(sample.clone(), 4, 4, Some(budget));
+        assert_eq!(whole.cpu_millicores, 3_200);
+        assert_eq!(whole.memory_bytes, Some(4_000));
+        assert_eq!(whole.cpu_used_millicores, Some(0));
+        assert_eq!(whole.memory_available_bytes, Some(4_000));
+        let half = scale_heartbeat(sample.clone(), 2, 4, Some(budget));
+        assert_eq!(half.cpu_millicores, 1_600);
+        assert_eq!(half.memory_bytes, Some(2_000));
+        // A budget above the machine, or without memory, changes nothing.
+        let roomy = MachineBudget {
+            cpu_millicores: 64_000,
+            memory_bytes: None,
+        };
+        let full = scale_heartbeat(sample, 4, 4, Some(roomy));
+        assert_eq!(full.cpu_millicores, 8_000);
+        assert_eq!(full.memory_bytes, Some(16_000));
+    }
+
+    /// Recording a heartbeat sets the slots and keeps its budget.
+    #[test]
+    fn recording_a_status_sets_slots_and_budget() {
+        let table = CapacityShares::new();
+        assert_eq!(table.budget(), None);
+        let gib = 1024 * 1024 * 1024;
+        let recorded = status(3_200, Some(4 * gib), true);
+        table.record_status(&recorded);
+        assert_eq!(table.machine(), 4);
+        assert_eq!(table.budget(), Some(MachineBudget::of(&recorded)));
     }
 }

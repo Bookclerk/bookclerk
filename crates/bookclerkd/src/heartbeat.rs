@@ -97,9 +97,7 @@ async fn beat(
         crate::search_index::queue_rebuild_if_missing(state, &node_id).await;
         // The libraries this node is a branch of share what its budget
         // fits now.
-        state
-            .capacity
-            .set_machine(crate::cluster_link::capacity::machine_slots(recorded));
+        state.capacity.record_status(recorded);
     }
     crate::cache_jobs::sweep_if_overdue(state);
     (sampler, status)
