@@ -272,10 +272,10 @@ gone.
   of storefronts that are not shareable there are not kept. The answer,
   `accounts.added`, counts what was added, already there, taken, or not
   kept, and whether the rule refused them all. The library handles
-  `accounts.add` and `accounts.remove` one at a time, and refuses an offer
+  `accounts.add` and `accounts.remove` one at a time, and refuses either
   (`superseded`) unless the connection it came on is still the branch's
-  live one, so an offer the branch gave up on can't land after a later
-  disconnect.
+  live one, so a request the branch gave up on can't land after a later
+  one.
 - **Disconnect everywhere.** **Revoke everywhere** on the branch
   (`POST /api/config/join/connections/disconnect` with
   `everywhere: true`) disconnects it on the branch first, then sends

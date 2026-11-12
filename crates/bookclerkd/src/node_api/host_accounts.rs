@@ -16,7 +16,7 @@
 //! library's per-member rule decides whether the person may connect any.
 //!
 //! Both frames run one at a time on this owner node ([`ACCOUNTS_GATE`]),
-//! and an offer is refused unless the connection it came on is still the
+//! and each is refused unless the connection it came on is still the
 //! branch's live one. A branch that timed out waiting for an offer and
 //! then disconnected the account over a new connection therefore never
 //! has the stale offer land after the removal: either the offer finished
@@ -153,6 +153,11 @@ pub(super) async fn remove(
         return Ok(error(id, "refused", "invalid_account"));
     }
     let _serialized = ACCOUNTS_GATE.lock().await;
+    // Likewise a removal left on an old connection: the branch may have
+    // added the account again over the live one since.
+    if !super::ws::is_live_session(&host.node_id, host.serial) {
+        return Ok(error(id, "refused", "superseded"));
+    }
     let Some(user_id) = branch_owner(library, host).await? else {
         return Ok(error(id, "refused", "no_owner"));
     };

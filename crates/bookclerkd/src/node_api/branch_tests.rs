@@ -920,6 +920,20 @@ async fn a_branch_adds_and_withdraws_its_persons_connections() {
     .await
     .unwrap();
     assert_eq!(answer.body, Body::Accepted {});
+    // A removal still held by an old connection is refused the same way.
+    let answer = super::super::host_accounts::remove(
+        &store,
+        &host,
+        "r4".into(),
+        &plugin_key,
+        "stale@example.com",
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(&answer.body, Body::Error { code, message } if code == "refused" && message == "superseded"),
+        "{answer:?}"
+    );
     super::super::ws::unregister_for_test(&node_id, current.serial);
     let answer = super::super::host_accounts::add(&store, &host, "a6".into(), &stale)
         .await
