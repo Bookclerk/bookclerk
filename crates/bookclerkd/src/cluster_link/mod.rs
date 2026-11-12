@@ -44,6 +44,7 @@
 
 pub mod api;
 pub mod catalog_sync;
+pub mod connections;
 pub mod consent;
 pub mod host_jobs;
 pub mod join;

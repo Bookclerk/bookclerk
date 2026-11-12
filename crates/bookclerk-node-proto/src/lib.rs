@@ -69,11 +69,12 @@ mod sealed;
 mod signature;
 
 pub use accounts::{
-    account_bundle_aad, check_account_bundle, open_account_bundle, parse_account_bundle,
-    seal_account_bundle, AccountBundle, CarriedAccount, CarriedSecret, ACCOUNT_BUNDLE_AAD_DOMAIN,
-    ACCOUNT_BUNDLE_VERSION, MAX_ACCOUNT_BUNDLE_BYTES, MAX_ACCOUNT_SECRETS, MAX_BUNDLE_ACCOUNTS,
-    MAX_CARRIED_ACCOUNT_ID_BYTES, MAX_CARRIED_FIELD_BYTES, MAX_CARRIED_PLUGIN_KEY_BYTES,
-    MAX_CARRIED_SECRET_BYTES,
+    account_bundle_aad, account_offer_aad, check_account_bundle, open_account_bundle,
+    open_account_offer, parse_account_bundle, seal_account_bundle, seal_account_offer,
+    AccountBundle, CarriedAccount, CarriedSecret, ACCOUNT_BUNDLE_AAD_DOMAIN,
+    ACCOUNT_BUNDLE_VERSION, ACCOUNT_OFFER_AAD_DOMAIN, MAX_ACCOUNT_BUNDLE_BYTES,
+    MAX_ACCOUNT_SECRETS, MAX_BUNDLE_ACCOUNTS, MAX_CARRIED_ACCOUNT_ID_BYTES,
+    MAX_CARRIED_FIELD_BYTES, MAX_CARRIED_PLUGIN_KEY_BYTES, MAX_CARRIED_SECRET_BYTES,
 };
 pub use catalog::{
     is_ancestry, is_cluster_id, is_product_id, is_store_id, CatalogFile, CatalogMetadata,

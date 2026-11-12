@@ -96,7 +96,7 @@ fn callback_origin(cfg: &bookclerk_config::Config, headers: &HeaderMap) -> Strin
 }
 
 /// A JSON error answer.
-fn join_error(status: StatusCode, error: &str, detail: &str) -> Response {
+pub(super) fn join_error(status: StatusCode, error: &str, detail: &str) -> Response {
     (
         status,
         Json(crate::http_error::ErrorDetail::new(error, detail)),

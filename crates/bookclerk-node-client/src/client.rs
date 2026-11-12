@@ -64,13 +64,14 @@ use bookclerk_library::control_plane::{
     ClusterLink, ClusterLinkKeys, NodeHeartbeat, NodeSampler, NODE_HEARTBEAT_INTERVAL,
 };
 use bookclerk_node_proto::{
-    decode_nonce, open_instance_secrets, open_secrets, open_upload_token, seal_secret_update,
-    sign_artifact_request, sign_auth, validate_box_public_key, AcquireTarget, ArtifactRequest,
-    AuthContext, Body, CatalogRef, CatalogTitle, ClaimFilter, Frame, HeldFence, PlanDestination,
-    SealError, SecretEntry, SecretRef, SecretValue, SigningKey, UploadAnswer, UploadCommitRequest,
-    UploadFile, ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED,
-    HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES,
-    UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
+    decode_nonce, open_instance_secrets, open_secrets, open_upload_token, seal_account_offer,
+    seal_secret_update, sign_artifact_request, sign_auth, validate_box_public_key, AccountBundle,
+    AcquireTarget, ArtifactRequest, AuthContext, Body, CarriedAccount, CatalogRef, CatalogTitle,
+    ClaimFilter, Frame, HeldFence, PlanDestination, SealError, SecretEntry, SecretRef, SecretValue,
+    SigningKey, UploadAnswer, UploadCommitRequest, UploadFile, ACCOUNT_BUNDLE_VERSION,
+    ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS,
+    IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH,
+    UPLOAD_AUTH_SCHEME,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -292,6 +293,21 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// State shared by the connection loop, job tasks, and handles.
+/// What the library kept of an [`HostClientHandle::offer_accounts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OfferedAccounts {
+    /// Accounts now connected there for the person.
+    pub added: u64,
+    /// Accounts the person had already connected there.
+    pub already_here: u64,
+    /// Accounts connected to someone else there; left as they are.
+    pub taken: u64,
+    /// Accounts that could not be kept.
+    pub failed: u64,
+    /// The library's operator does not let the person connect accounts.
+    pub not_allowed: bool,
+}
+
 pub(crate) struct Shared {
     /// Where the owner is.
     endpoint: OwnerEndpoint,
@@ -879,6 +895,88 @@ impl HostClientHandle {
         let timeout = self.shared.timing.request_timeout;
         let conn = self.shared.wait_conn(Instant::now() + timeout).await?;
         conn.request(body).await.ok()
+    }
+
+    /// Offers the branch person's store `accounts` to the library ("Add my
+    /// connections to *library*"): seals them to the live connection's
+    /// owner box key, bound to the cluster and this node, and answers the
+    /// library's report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError::Refused`] with the library's reason, or
+    /// [`OwnerCallError::Unavailable`] when no connection answered or the
+    /// bundle could not be sealed.
+    pub async fn offer_accounts(
+        &self,
+        accounts: Vec<CarriedAccount>,
+    ) -> Result<OfferedAccounts, OwnerCallError> {
+        let conn = self
+            .shared
+            .wait_conn(Instant::now() + self.shared.timing.request_timeout)
+            .await
+            .ok_or(OwnerCallError::Unavailable)?;
+        let bundle = AccountBundle {
+            v: ACCOUNT_BUNDLE_VERSION,
+            cluster_id: self.shared.cluster_id.clone(),
+            node_id: self.shared.node_id.clone(),
+            accounts,
+        };
+        let mut ephemeral = Zeroizing::new([0u8; 32]);
+        rand::rngs::OsRng.fill_bytes(ephemeral.as_mut_slice());
+        let sealed = seal_account_offer(&conn.owner_box_key, &ephemeral, &bundle)
+            .map_err(|_| OwnerCallError::Unavailable)?;
+        drop(ephemeral);
+        let answer = conn
+            .request(Body::AccountsAdd { sealed })
+            .await
+            .map_err(|Unavailable| OwnerCallError::Unavailable)?;
+        match answer.body {
+            Body::AccountsAdded {
+                added,
+                already_here,
+                taken,
+                failed,
+                not_allowed,
+            } => Ok(OfferedAccounts {
+                added,
+                already_here,
+                taken,
+                failed,
+                not_allowed,
+            }),
+            Body::Error { code, message } if code == "refused" => {
+                Err(OwnerCallError::Refused(message))
+            }
+            _ => Err(OwnerCallError::Unavailable),
+        }
+    }
+
+    /// Tells the library the person disconnected this store account
+    /// everywhere; it removes their links to it there.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::offer_accounts`].
+    pub async fn withdraw_account(
+        &self,
+        plugin_key: &str,
+        account_id: &str,
+    ) -> Result<(), OwnerCallError> {
+        let answer = self
+            .request(Body::AccountsRemove {
+                plugin_key: plugin_key.to_string(),
+                account_id: account_id.to_string(),
+            })
+            .await
+            .ok_or(OwnerCallError::Unavailable)?;
+        match answer.body {
+            Body::Accepted {} => Ok(()),
+            Body::Error { code, message } if code == "refused" => {
+                Err(OwnerCallError::Refused(message))
+            }
+            _ => Err(OwnerCallError::Unavailable),
+        }
     }
 
     /// Opens an instance's `SECRETS` sealed to this node's box key

@@ -65,10 +65,11 @@ pub use cache::{
     MIN_CACHE_BUDGET_BYTES,
 };
 pub use carried_accounts::{
-    accounts_to_carry, branch_person, identity_may_connect_accounts, import_carried_accounts,
-    link_peer, member_account_rules, member_accounts, member_may_connect_accounts, node_peer,
-    record_accounts_sent, revoke_unlinked_account, set_member_may_connect_accounts, CarriedImport,
-    MemberAccount, SHARE_RECEIVED, SHARE_SENT,
+    account_share_peers, accounts_to_carry, branch_person, identity_may_connect_accounts,
+    import_carried_accounts, import_offered_accounts, link_peer, member_account_rules,
+    member_accounts, member_may_connect_accounts, node_peer, record_accounts_sent,
+    record_accounts_sent_to, revoke_unlinked_account, set_member_may_connect_accounts,
+    withdraw_person_account, CarriedImport, MemberAccount, Withdrawn, SHARE_RECEIVED, SHARE_SENT,
 };
 pub use clerks::{library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents};
 pub use cluster_links::{

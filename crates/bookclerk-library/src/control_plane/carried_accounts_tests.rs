@@ -710,3 +710,118 @@ async fn an_import_batch_stores_nothing_once_the_rule_is_turned_off() {
         assert!(kept, "{name}");
     }
 }
+
+#[tokio::test]
+async fn disconnecting_everywhere_withdraws_only_the_persons_links() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let ana = store
+            .create_user(UserRole::Member, Some("Ana"), None)
+            .await
+            .unwrap();
+        let ben = store
+            .create_user(UserRole::Member, Some("Ben"), None)
+            .await
+            .unwrap();
+        connect(store, ana.id, SHAREABLE, "ana@example.com", b"ana-token").await;
+        connect(store, ben.id, SHAREABLE, "ben@example.com", b"ben-token").await;
+
+        // Not Ana's: nothing changes.
+        assert_eq!(
+            withdraw_person_account(store, ana.id, SHAREABLE, "ben@example.com")
+                .await
+                .unwrap(),
+            Withdrawn::NotTheirs,
+            "{name}"
+        );
+        assert!(
+            secret_of(store, SHAREABLE, "ben@example.com")
+                .await
+                .is_some(),
+            "{name}"
+        );
+
+        // Ana's own: her link goes, and the account with it.
+        assert_eq!(
+            withdraw_person_account(store, ana.id, SHAREABLE, "ana@example.com")
+                .await
+                .unwrap(),
+            Withdrawn::Unlinked,
+            "{name}"
+        );
+        assert_eq!(
+            store
+                .count_account_links_for_account(SHAREABLE, "ana@example.com")
+                .await
+                .unwrap(),
+            0,
+            "{name}"
+        );
+        let account = store
+            .get_account(SHAREABLE, "ana@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(account.connection_status, "revoked", "{name}");
+        assert!(!account.scan_enabled, "{name}");
+        assert!(
+            secret_of(store, SHAREABLE, "ana@example.com")
+                .await
+                .is_none(),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_offer_from_a_branch_is_recorded_against_that_node() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    let offered = {
+        let kit = sqlite::memory(Profile::ALL[0]).await;
+        let store = kit.store();
+        let ana = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        connect(store, ana.id, SHAREABLE, "ana@example.com", b"ana-token").await;
+        accounts_to_carry(store, ana.id, &shareable).await.unwrap()
+    };
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let me = store
+            .create_user(UserRole::Member, Some("Ana"), None)
+            .await
+            .unwrap();
+        let report = import_offered_accounts(store, me.id, "branch-node", &offered)
+            .await
+            .unwrap();
+        assert_eq!(report.imported.len(), 1, "{name}");
+        assert_eq!(
+            account_share_peers(store, SHAREABLE, "ana@example.com")
+                .await
+                .unwrap(),
+            vec![node_peer("branch-node")],
+            "{name}"
+        );
+        // A branch that offers on to a library records the link it went to.
+        record_accounts_sent_to(store, &link_peer("cluster-up"), &offered)
+            .await
+            .unwrap();
+        assert_eq!(
+            account_share_peers(store, SHAREABLE, "ana@example.com")
+                .await
+                .unwrap(),
+            vec![link_peer("cluster-up"), node_peer("branch-node")],
+            "{name}"
+        );
+    }
+}

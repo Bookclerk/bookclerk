@@ -459,6 +459,15 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             )
             .await
         }
+        Body::AccountsAdd { sealed } => {
+            super::host_accounts::add(library, host, id.clone(), &sealed).await
+        }
+        Body::AccountsRemove {
+            plugin_key,
+            account_id,
+        } => {
+            super::host_accounts::remove(library, host, id.clone(), &plugin_key, &account_id).await
+        }
         _ => {
             return error(
                 id,
