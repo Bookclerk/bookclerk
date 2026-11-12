@@ -1362,33 +1362,6 @@ pub struct SharingBody {
     keep_member_copies: Option<bool>,
 }
 
-/// Applies the body's two work settings to the link with `cluster_id`,
-/// keeping the stored value of each the body leaves out, and answers both
-/// as they now stand: `(work_for_members, keep_member_copies)`.
-///
-/// # Errors
-///
-/// Returns the read or write error.
-async fn work_settings(
-    store: &bookclerk_library::LibraryStore,
-    cluster_id: &str,
-    body: &SharingBody,
-) -> bookclerk_library::Result<(bool, bool)> {
-    let current = bookclerk_library::control_plane::load_cluster_link(store, cluster_id).await?;
-    let (stored_work, stored_copies) = current.as_ref().map_or((false, false), |link| {
-        (link.work_for_members, link.keep_member_copies)
-    });
-    let work = (
-        body.work_for_members.unwrap_or(stored_work),
-        body.keep_member_copies.unwrap_or(stored_copies),
-    );
-    if work != (stored_work, stored_copies) {
-        bookclerk_library::control_plane::set_cluster_link_work(store, cluster_id, work.0, work.1)
-            .await?;
-    }
-    Ok(work)
-}
-
 /// `GET /api/config/join/sharing`: Settings → Library for the operator or
 /// an Owner: every library this install is a branch of, with its two
 /// sharing settings (`{clusters: [...]}`).
@@ -1461,20 +1434,34 @@ pub async fn post_join_sharing(
     };
     let store = state.library_snapshot().await;
     let cluster_id = body.cluster_id.trim();
-    // The work settings first: the sharing write below is the last one, so
-    // a failure here leaves both unchanged rather than half applied with
-    // no audit row or notification.
-    let work = match work_settings(&store, cluster_id, &body).await {
-        Ok(work) => work,
+    // The work settings the body leaves out keep their stored values. Every
+    // setting then goes in one statement, so a failed read or write changes
+    // none of them and nothing changes unaudited.
+    let stored = match bookclerk_library::control_plane::load_cluster_link(&store, cluster_id).await
+    {
+        Ok(Some(link)) => link,
+        Ok(None) => {
+            return join_error(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "this install is not a branch of that library",
+            )
+        }
         Err(err) => return crate::config_authority::events_error(err),
     };
-    match bookclerk_library::control_plane::set_cluster_link_sharing(
-        &store,
-        cluster_id,
-        body.share_books,
-        body.include_branches,
-    )
-    .await
+    let work = (
+        body.work_for_members.unwrap_or(stored.work_for_members),
+        body.keep_member_copies.unwrap_or(stored.keep_member_copies),
+    );
+    let settings = bookclerk_library::control_plane::ClusterLinkSettings {
+        share_books: body.share_books,
+        include_branches: body.include_branches,
+        list_members_books: body.list_members_books,
+        work_for_members: Some(work.0),
+        keep_member_copies: Some(work.1),
+    };
+    match bookclerk_library::control_plane::set_cluster_link_settings(&store, cluster_id, settings)
+        .await
     {
         Ok(true) => {}
         Ok(false) => {
@@ -1485,14 +1472,6 @@ pub async fn post_join_sharing(
             )
         }
         Err(err) => return crate::config_authority::events_error(err),
-    }
-    if let Some(list) = body.list_members_books {
-        if let Err(err) =
-            bookclerk_library::control_plane::set_cluster_link_listing(&store, cluster_id, list)
-                .await
-        {
-            return crate::config_authority::events_error(err);
-        }
     }
     tracing::info!(
         %cluster_id,

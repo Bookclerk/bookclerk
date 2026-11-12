@@ -566,6 +566,86 @@ pub async fn set_cluster_link_work(
     Ok(updated == 1)
 }
 
+/// Every setting Settings → Library changes on one link at once; see
+/// [`set_cluster_link_settings`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClusterLinkSettings {
+    /// "Share this branch's books with *library*".
+    pub share_books: bool,
+    /// "Include books from my own branches".
+    pub include_branches: bool,
+    /// "List my members' books to *library*"; `None` keeps the stored value.
+    pub list_members_books: Option<bool>,
+    /// "Download for other members of *library*"; `None` keeps the stored
+    /// value.
+    pub work_for_members: Option<bool>,
+    /// "Keep copies of other members' books"; `None` keeps the stored value.
+    pub keep_member_copies: Option<bool>,
+}
+
+/// Sets a link's sharing, listing and work settings in one statement, so a
+/// failed write leaves every one of them as it was.
+///
+/// # Arguments
+///
+/// * `owner_cluster_id` - The library the link joined.
+/// * `settings` - The new values; each `None` keeps the stored one.
+///
+/// # Returns
+///
+/// Whether the link exists (`false` when there is no such link); setting
+/// the values it already has still returns `true`.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn set_cluster_link_settings(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    settings: ClusterLinkSettings,
+) -> Result<bool> {
+    let optional = [
+        (
+            cluster_links::Column::ListMembersBooks,
+            settings.list_members_books,
+        ),
+        (
+            cluster_links::Column::WorkForMembers,
+            settings.work_for_members,
+        ),
+        (
+            cluster_links::Column::KeepMemberCopies,
+            settings.keep_member_copies,
+        ),
+    ];
+    let mut update = cluster_links::Entity::update_many()
+        .col_expr(
+            cluster_links::Column::ShareBooks,
+            Expr::value(i64::from(settings.share_books)),
+        )
+        .col_expr(
+            cluster_links::Column::IncludeBranches,
+            Expr::value(i64::from(settings.include_branches)),
+        )
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id));
+    let mut changed = sea_orm::Condition::any()
+        .add(cluster_links::Column::ShareBooks.ne(i64::from(settings.share_books)))
+        .add(cluster_links::Column::IncludeBranches.ne(i64::from(settings.include_branches)));
+    for (column, value) in optional {
+        if let Some(value) = value {
+            update = update.col_expr(column, Expr::value(i64::from(value)));
+            changed = changed.add(column.ne(i64::from(value)));
+        }
+    }
+    let probe = cluster_links::Entity::find()
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(changed);
+    let updated = store
+        .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
+        .await?;
+    Ok(updated == 1)
+}
+
 /// Records the owner library's ancestry as it reported it (`info` at join,
 /// `catalog.session` on every sync). Ids that are not plain cluster ids are
 /// refused; at most [`bookclerk_node_proto::MAX_ANCESTRY`] are kept.
