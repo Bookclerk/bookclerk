@@ -185,7 +185,7 @@ pub use store::{
     DiscoverSubject, EditionFile, FileOwner, FileRole, HoldingSelection, LibraryStore, NewBook,
     NewListeningProgress, NewTitleRequest, NewTitleRequestSource, QueueRank, SavedFilterRecord,
     ScannedTitle, SeedScope, StoreCallHit, StoredCandidate, StoredFeed, StoredQueueRank,
-    UserBookFields, ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT,
+    UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT,
     BOOK_PAGE_MAX_LIMIT, HOLDING_REMOVED, MAX_QUEUE_REASONS,
 };
 pub use token_hash::{
