@@ -1406,7 +1406,7 @@ pub async fn revoke_node_credential(
     let credential = load_node_credential(store, node_id)
         .await?
         .ok_or_else(not_found)?;
-    // A revoked branch is one that left: its shared titles are marked.
+    // A revoked branch is one that left: it holds nothing here any more.
     super::branch_catalog::detach_branch_titles(store, node_id, super::DETACHED_LEFT).await?;
     tracing::info!(node_id, "revoked host node credential");
     notify_all_nodes(

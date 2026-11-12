@@ -801,16 +801,20 @@ batch as its rows:
 - `edition_updated` (`editionId`) when the listing filled a missing
   subtitle, publication date or duration on its edition;
 - `holding_added` (`listingId`, `holder`, `holdingId`) when an account or
-  branch library holds the listing, or holds it again after it was
-  removed; `account_id` is the account for an account holder.
+  branch library holds the listing (a title a branch shares, with holder
+  `node:<node id>`), or holds it again after it was removed;
+  `account_id` is the account for an account holder and empty for a
+  branch.
 
 The host publishes `holding_removed` (`listingId`, `holder`, `holdingId`)
 in the batch that deletes a holding: a scan no longer lists the title (see
-[Paged scans](#paged-scans)), the account is revoked, or its id is
-remapped (the holding moves, with `holding_removed` for the old account
-and `holding_added` for the new one).
+[Paged scans](#paged-scans)), the account is revoked, its id is remapped
+(the holding moves, with `holding_removed` for the old account and
+`holding_added` for the new one), or a branch no longer shares the title
+(its full catalog pass no longer names it, it stopped sharing, or it
+left).
 
-Their `source` is the storefront plugin that reported the listing.
+Their `source` is the plugin key of the listing's store.
 Each daemon's search index consumes them, with `book_acquired`, to keep its
 node-local index current (see
 [Search index](../internals/jobs.md#search-index)).

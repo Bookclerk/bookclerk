@@ -638,17 +638,33 @@ struct ClaimedKey<'a> {
     prior: Option<EditionFile>,
 }
 
-/// Claims every copy of `files` of the title `book_uuid` for `owner` with
-/// `upload_id` as its writer
+/// The upload a grant claims keys for ([`claim_upload_keys`]).
+#[derive(Clone, Copy)]
+struct UploadClaim<'a> {
+    /// The library title of a job upload, or the node holding of a catalog
+    /// upload.
+    book_uuid: &'a str,
+    /// The edition the claimed keys are recorded under.
+    owner: &'a FileOwner,
+    /// Whether this is a branch's catalog upload rather than a job's.
+    catalog: bool,
+    /// The upload's primary audio key, which gives each file its role.
+    primary: &'a str,
+    /// The upload recorded as each claimed key's writer.
+    upload_id: &'a str,
+}
+
+/// Claims every copy of `files` of the upload's title (`book_uuid`) for its
+/// `owner` with `upload_id` as its writer
 /// ([`LibraryStore::claim_edition_file`]); answers false as soon as one is
 /// a key another edition holds on that destination (one its acquire wrote,
 /// or another edition's upload claimed), so a folder several titles share
 /// never lets one overwrite another's chapter, part or sidecar files.
 /// `primary` is the upload's primary audio key, which gives each file its
-/// role ([`FileRole::for_key`]). A catalog upload (`owner` is a
-/// [`FileOwner::BranchTitle`]) is refused keys another branch title holds
-/// as well; a Host job's upload of a book takes those over, as an acquire
-/// on this node would.
+/// role ([`FileRole::for_key`]). `book_uuid` is the library title of a
+/// job upload, or the node holding of a catalog upload (`catalog`); a Host
+/// job's upload of a book may take over keys a catalog upload wrote, as an
+/// acquire on this node would.
 ///
 /// Every key claimed (or possibly claimed, when a write fails) is pushed
 /// onto `claimed` with its prior record, so a grant that is then refused or
@@ -659,25 +675,25 @@ struct ClaimedKey<'a> {
 /// Returns an error when a read or write fails.
 async fn claim_upload_keys<'a>(
     store: &LibraryStore,
-    book_uuid: &str,
-    owner: &FileOwner,
-    primary: &str,
-    upload_id: &str,
+    upload: &UploadClaim<'_>,
     files: &'a [UploadFile],
     claimed: &mut Vec<ClaimedKey<'a>>,
 ) -> Result<bool> {
+    let UploadClaim {
+        book_uuid,
+        owner,
+        catalog,
+        primary,
+        upload_id,
+    } = *upload;
     // Collected first: an iterator adapter held across the awaits below
     // would keep the future from being `Send`.
     let mut copies: Vec<(&'a UploadFile, &'a bookclerk_node_proto::FileCopy)> = Vec::new();
     for file in files {
         copies.extend(file.copies.iter().map(|copy| (file, copy)));
     }
-    // A job upload takes over its edition's keys only from uploads of its
+    // An upload takes over its edition's keys only from uploads of its
     // own title ([`LibraryStore::claim_edition_file`]).
-    let (title, catalog) = match owner {
-        FileOwner::Edition(_) => (Some(book_uuid), false),
-        FileOwner::BranchTitle(_) => (None, true),
-    };
     'copies: for (file, copy) in copies {
         let role = FileRole::for_key(&copy.key, Some(primary));
         let mut prior = store.edition_file(&copy.destination, &copy.key).await?;
@@ -698,8 +714,8 @@ async fn claim_upload_keys<'a>(
                     role,
                     Some(file.sha256.as_str()),
                     prior.as_ref(),
+                    book_uuid,
                     catalog,
-                    title,
                 )
                 .await?
             {
@@ -979,13 +995,16 @@ pub(super) async fn open_upload_session(
         .map_err(LibraryError::Orm)?;
     let catalog = job_id == bookclerk_node_proto::CATALOG_ITEM;
     let mut claimed = Vec::new();
-    // A branch title holds its keys itself; a book's are its edition's.
+    // A book's keys are its edition's, and so are a node holding's.
     let owner = if req.book_uuid.is_empty() {
         None
-    } else if catalog {
-        Some(FileOwner::BranchTitle(req.book_uuid.to_string()))
     } else {
-        match store.file_owner_of_book(req.book_uuid).await {
+        let owner = if catalog {
+            store.file_owner_of_holding(req.book_uuid).await
+        } else {
+            store.file_owner_of_book(req.book_uuid).await
+        };
+        match owner {
             Ok(Some(owner)) => Some(owner),
             Ok(None) => {
                 undo_grant(store, &upload_id, &claimed).await;
@@ -1000,10 +1019,13 @@ pub(super) async fn open_upload_session(
     if let Some(owner) = &owner {
         match claim_upload_keys(
             store,
-            req.book_uuid,
-            owner,
-            req.primary_key,
-            &upload_id,
+            &UploadClaim {
+                book_uuid: req.book_uuid,
+                owner,
+                catalog,
+                primary: req.primary_key,
+                upload_id: &upload_id,
+            },
             req.files,
             &mut claimed,
         )
@@ -1063,10 +1085,13 @@ pub(super) async fn open_upload_session(
     if let (Some(owner), false) = (&owner, superseded.is_empty()) {
         match claim_upload_keys(
             store,
-            req.book_uuid,
-            owner,
-            req.primary_key,
-            &upload_id,
+            &UploadClaim {
+                book_uuid: req.book_uuid,
+                owner,
+                catalog,
+                primary: req.primary_key,
+                upload_id: &upload_id,
+            },
             req.files,
             &mut claimed,
         )

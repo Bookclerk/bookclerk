@@ -13,7 +13,10 @@
 //!   round trips);
 //! - every library id an `acquire.targets` frame carries is 1 to 16 ASCII
 //!   letters and digits, checked byte by byte here rather than through the
-//!   parser's own rule, since a host names storage keys with it.
+//!   parser's own rule, since a host names storage keys with it;
+//! - every marketplace a `catalog.sync` title the library would accept
+//!   carries is at most 16 lowercase ASCII letters and digits, checked byte
+//!   by byte here, since the library scopes ASIN identifiers to it.
 
 use bookclerk_node_proto::{Body, Frame, FRAME_VERSION, MAX_FRAME_BYTES, MAX_LIBRARY_ID_BYTES};
 use serde_json::Value;
@@ -42,6 +45,19 @@ pub fn check(data: &[u8]) {
                     "library id {id:?} accepted"
                 );
             }
+        }
+    }
+    if let Body::CatalogSync { titles, .. } = &frame.body {
+        for title in titles.iter().filter(|title| title.problem().is_none()) {
+            let market = title.marketplace.as_bytes();
+            assert!(
+                market.len() <= 16
+                    && market
+                        .iter()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()),
+                "marketplace {:?} accepted",
+                title.marketplace
+            );
         }
     }
     let text_again = frame.to_text();

@@ -605,14 +605,18 @@ C is B's.
 - **Books flow up.** B shares the books in its library with A: those
   acquired on B, and (when "Include books from my own branches" is on)
   those C shared with B. Each title carries its store, product id,
-  metadata and file list, nothing else. A records them as belonging to the
-  A user who owns B, so C's books are simply B's books there. A title B
-  got from A isn't sent back.
+  marketplace, metadata (with its ASIN, ISBN and kind) and file list,
+  nothing else. A matches each one to the edition it already knows, as a
+  store scan would, and records B as holding it, so C's books are simply
+  B's books there, belonging to the A user who owns B. A title B got from
+  A isn't sent back.
 - **Files** stream to A's outputs through the same upload endpoint a
   branch's acquire uses (nothing staged on A), under the keys they have on
   B. A title whose files would land on a key another book in A already
-  uses is recorded, but its files aren't sent. If A has no output
-  deployed, it records the titles without files.
+  uses is recorded, but its files aren't sent. Neither are the files of an
+  edition A already has (acquired there, or delivered by another branch),
+  so each edition arrives once. If A has no output deployed, it records
+  the titles without files.
 - **Sync** runs when the branch connects, every 5 minutes, and at once
   when a setting changes. It is incremental and resumes after a
   reconnect. A full pass (after a setting changes, and once a day) also
@@ -624,8 +628,8 @@ C is B's.
 both on by default:
 
 - **Share this branch's books with <library>.** Off: nothing new is sent,
-  and A marks what it already got from B. Files already delivered stay in
-  A's outputs.
+  and A no longer counts B as holding what it got from B. Files already
+  delivered stay in A's outputs.
 - **Include books from my own branches.** Off: B shares only books
   acquired on B itself, and C's titles are withdrawn from A on the next
   pass.
@@ -644,9 +648,11 @@ The routes are `GET /api/config/join/sharing` (→ `{clusters}`) and
 shares (read-only, because B's operator or an Owner of B sets it), and
 counts of its titles.
 
-Titles from a branch that stopped sharing or left are kept, marked, until
-the owner removes the entries with **Remove** (or
-`POST /api/config/branches/titles/remove {node_id?}`). The files stay.
+When a branch stops sharing, withdraws a title or leaves, A no longer
+counts it as holding those titles. Files it already delivered are kept,
+marked as from a branch that left, until the owner removes the entries
+with **Remove** (or `POST /api/config/branches/titles/remove {node_id?}`).
+The files themselves stay in A's outputs.
 
 ### No loops
 
@@ -686,8 +692,8 @@ A revoked branch deletes the library's plugin state the same way.
 > anyway and says the library wasn't told. Revoke the node there
 > (**Settings → Nodes** or `bookclerk nodes revoke <node_id>`).
 
-Joining again needs a new sign-in or invite. Books the branch shared stay
-in the library, marked as from a branch that left (see
+Joining again needs a new sign-in or invite. Files of books the branch
+shared stay in the library, marked as from a branch that left (see
 [Branch titles on the library](#branch-titles-on-the-library)).
 
 ## Not built yet

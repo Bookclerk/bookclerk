@@ -1411,6 +1411,7 @@ mod tests {
                     titles: vec![crate::CatalogTitle {
                         store: "audible".into(),
                         product_id: "B1".into(),
+                        marketplace: "us".into(),
                         metadata: crate::CatalogMetadata {
                             title: "T".into(),
                             ..crate::CatalogMetadata::default()

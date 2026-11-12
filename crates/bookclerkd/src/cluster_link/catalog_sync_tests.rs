@@ -19,8 +19,7 @@ use bookclerk_library::control_plane::{
     accept_catalog_batch, begin_catalog, join_cycle, library_ancestry, list_branch_titles,
     load_cluster_link_keys, load_cluster_row, load_node, record_node_left,
     remove_detached_branch_titles, set_cluster_link_sharing, CatalogAccept, CatalogBegin,
-    ClusterLink, BRANCH_TITLE_DETACHED, BRANCH_TITLE_SHARED, DETACHED_LEFT,
-    DETACHED_STOPPED_SHARING, DETACHED_WITHDRAWN,
+    ClusterLink,
 };
 use bookclerk_library::{AcquireStatus, LibraryStore, NewBook, UserRole};
 use bookclerk_node_client::{
@@ -166,15 +165,14 @@ fn payload(product_id: &str, len: usize) -> Vec<u8> {
         .collect()
 }
 
-/// `(state, reason)` of the title `product_id` on `store`.
-async fn title_state(store: &LibraryStore, product_id: &str) -> (String, Option<String>) {
-    let row = list_branch_titles(store, None, 100)
+/// True while a branch shares the title `product_id` with `store` (a
+/// node holding of it).
+async fn shares(store: &LibraryStore, product_id: &str) -> bool {
+    list_branch_titles(store, None, 100)
         .await
         .unwrap()
-        .into_iter()
-        .find(|row| row.product_id == product_id)
-        .unwrap_or_else(|| panic!("no shared title {product_id}"));
-    (row.state, row.detached_reason)
+        .iter()
+        .any(|row| row.product_id == product_id)
 }
 
 /// Every file under `dir`, relative, sorted (the local backend's own
@@ -303,7 +301,7 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
         handle: b_handle,
         shelf: DirShelf(b_out.path().to_path_buf()),
     };
-    // What crosses the link: store, product id, metadata, files only.
+    // What crosses the link: store, product id, marketplace, metadata, files only.
     for entry in b_sync.entries(true).await.unwrap() {
         let shelf = b_sync.shelf.primary().await.unwrap();
         let loaded = b_sync.load(&entry).await.unwrap().unwrap();
@@ -313,6 +311,7 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
             assert!(
                 [
                     "files",
+                    "marketplace",
                     "metadata",
                     "pdf_key",
                     "primary_key",
@@ -451,21 +450,12 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
         report.sent, 1,
         "the pass resumed after the first of b1 and echo1"
     );
-    assert_eq!(
-        title_state(&a, "c1").await,
-        (
-            BRANCH_TITLE_DETACHED.into(),
-            Some(DETACHED_WITHDRAWN.into())
-        )
-    );
-    assert_eq!(
-        title_state(&a, "b1").await,
-        (BRANCH_TITLE_SHARED.into(), None)
-    );
+    assert!(!shares(&a, "c1").await, "C's title was withdrawn");
+    assert!(shares(&a, "b1").await);
     assert!(a_out.path().join("Author/c1/c1.m4b").exists());
 
-    // Sharing off: B's titles on A are marked, nothing new arrives, and
-    // the owner removes the entries in bulk; the files stay.
+    // Sharing off: B's titles on A go, nothing new arrives, and the owner
+    // forgets the files B left behind in bulk; the files stay.
     set_cluster_link_sharing(&b, &b_link.owner_cluster_id, false, false)
         .await
         .unwrap();
@@ -473,29 +463,15 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
     let report = b_sync.sync_once().await.unwrap();
     assert!(!report.shared);
     assert_eq!(report.sent, 0);
-    assert_eq!(
-        title_state(&a, "b1").await,
-        (
-            BRANCH_TITLE_DETACHED.into(),
-            Some(DETACHED_STOPPED_SHARING.into())
-        )
-    );
-    assert!(list_branch_titles(&a, None, 10)
-        .await
-        .unwrap()
-        .iter()
-        .all(|row| row.product_id != "b2"));
+    assert!(list_branch_titles(&a, None, 10).await.unwrap().is_empty());
     assert_eq!(remove_detached_branch_titles(&a, None).await.unwrap(), 2);
     assert!(list_branch_titles(&a, None, 10).await.unwrap().is_empty());
     assert!(a_out.path().join("Author/b1/b1.m4b").exists());
 
     let listed = b_sync.entries(true).await.unwrap();
-    // C leaves B: its title on B is marked as from a branch that left.
+    // C leaves B: B no longer holds its title.
     assert!(record_node_left(&b, &c_link.remote_node_id).await.unwrap());
-    assert_eq!(
-        title_state(&b, "c1").await,
-        (BRANCH_TITLE_DETACHED.into(), Some(DETACHED_LEFT.into()))
-    );
+    assert!(!shares(&b, "c1").await);
     assert!(
         bookclerk_library::control_plane::forwardable_branch_title_keys_page(&b, None, 256)
             .await
@@ -673,11 +649,7 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
     let report = b_sync.sync_once().await.unwrap();
     assert_eq!(report.sent, 1);
     for product in ["b1", "b2"] {
-        assert_eq!(
-            title_state(&a, product).await,
-            (BRANCH_TITLE_SHARED.into(), None),
-            "{product}"
-        );
+        assert!(shares(&a, product).await, "{product}");
     }
     // The pass did not end and its cursor stayed before b1 (the first
     // title): the next pass tries it again and ends, after which nothing
@@ -685,9 +657,6 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
     *fail.lock().unwrap() = None;
     let report = b_sync.sync_once().await.unwrap();
     assert_eq!(report.sent, 2, "the pass resumed before b1");
-    assert_eq!(
-        title_state(&a, "b1").await,
-        (BRANCH_TITLE_SHARED.into(), None)
-    );
+    assert!(shares(&a, "b1").await);
     assert_eq!(b_sync.sync_once().await.unwrap().sent, 0);
 }

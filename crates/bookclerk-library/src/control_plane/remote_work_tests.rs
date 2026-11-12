@@ -3989,26 +3989,34 @@ async fn a_lost_fence_upload_commit_answers_lost_before_key_taken() {
     );
 }
 
-/// A Host job's upload of a library book may take over keys a branch's
-/// delivered title holds (as an acquire run on the owner would): the grant
-/// is not refused as another title's key, and the upload commits.
+/// A Host job's upload of a library book may take over the keys a
+/// branch's delivered copy of the same edition holds (as an acquire run on
+/// the owner would): the grant is not refused as another title's key, and
+/// the upload commits.
 #[tokio::test]
-async fn a_job_upload_takes_over_a_branch_titles_keys() {
+async fn a_job_upload_takes_over_a_branch_delivered_copy_of_its_edition() {
     let _guard = master_key_test_lock_async().await;
     let w = world().await;
-    let branch = "branch-riley";
-    add_host_node(&w.store, branch, w.riley).await;
+    let branch = "branch-kim";
+    let kim = w
+        .store
+        .create_user(UserRole::Member, Some("Kim"), None)
+        .await
+        .unwrap();
+    add_host_node(&w.store, branch, kim.id).await;
     let (book_uuid, files) = riley_title(&w.store).await;
     let key = files[0].copies[0].key.clone();
 
-    // The branch shares a title at the same key and delivers it.
+    // Kim's branch shares the same store listing at the same key and
+    // delivers it.
     let CatalogBegin::Opened(opened) = begin_catalog(&w.store, branch, true, true).await.unwrap()
     else {
         panic!("a catalog session opens");
     };
     let shared = bookclerk_node_proto::CatalogTitle {
-        store: "audible".into(),
-        product_id: "b1".into(),
+        store: "test".into(),
+        product_id: "t1".into(),
+        marketplace: "us".into(),
         metadata: bookclerk_node_proto::CatalogMetadata {
             title: "Branch title".into(),
             ..Default::default()
@@ -4035,8 +4043,8 @@ async fn a_job_upload_takes_over_a_branch_titles_keys() {
         branch,
         opened.fence,
         "owner",
-        "audible",
-        "b1",
+        "test",
+        "t1",
         &files,
         &["local".to_string()],
     )

@@ -881,6 +881,7 @@ fn catalog_title(sample: &SampleTitle, hit: Option<&CatalogHit>) -> CatalogTitle
     CatalogTitle {
         store: sample.store.id.into(),
         product_id: book.product_id,
+        marketplace: book.marketplace.to_ascii_lowercase(),
         metadata: CatalogMetadata {
             title: book.title,
             subtitle: book.subtitle,

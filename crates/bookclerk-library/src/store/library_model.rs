@@ -2881,7 +2881,6 @@ mod store_tests {
         };
         record("A/Live.m4b", held.clone()).await;
         record("A/Gone.m4b", FileOwner::Edition("removed-edition".into())).await;
-        record("A/Branch.m4b", FileOwner::BranchTitle("shared".into())).await;
         assert!(store
             .name_held_by_another_owner("A/Live", &mine)
             .await
@@ -2890,7 +2889,7 @@ mod store_tests {
             .name_held_by_another_owner("A/Live", &held)
             .await
             .unwrap());
-        for stale in ["A/Gone", "A/Branch"] {
+        for stale in ["A/Gone"] {
             assert!(
                 !store
                     .name_held_by_another_owner(stale, &mine)

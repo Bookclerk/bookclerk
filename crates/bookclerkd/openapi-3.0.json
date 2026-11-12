@@ -27229,7 +27229,7 @@
           "detached": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles marked detached (it stopped sharing, left, or withdrew them).",
+            "description": "Titles whose files it delivered but no longer shares (it stopped\nsharing, left, or withdrew them).",
             "example": 3,
             "minimum": 0
           }

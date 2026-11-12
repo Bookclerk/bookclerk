@@ -641,6 +641,7 @@ async fn branches_show_their_sharing_and_the_owner_removes_what_a_branch_left() 
     let title = CatalogTitle {
         store: "libro".into(),
         product_id: "p1".into(),
+        marketplace: "us".into(),
         metadata: CatalogMetadata {
             title: "Title".into(),
             ..CatalogMetadata::default()
@@ -690,9 +691,11 @@ async fn branches_show_their_sharing_and_the_owner_removes_what_a_branch_left() 
     let (_, _, view) = call(&operator, "GET", "/api/config/branches", None).await;
     let branch = &view["branches"][0];
     assert_eq!(branch["joined"], false);
+    // Its holding went with it; no files had arrived, so it left nothing
+    // behind to forget.
     assert_eq!(
         branch["titles"],
-        json!({ "shared": 0, "delivered": 0, "detached": 1 })
+        json!({ "shared": 0, "delivered": 0, "detached": 0 })
     );
     let (status, _, removed) = call(
         &operator,
@@ -702,5 +705,5 @@ async fn branches_show_their_sharing_and_the_owner_removes_what_a_branch_left() 
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{removed}");
-    assert_eq!(removed["removed"], 1);
+    assert_eq!(removed["removed"], 0);
 }
