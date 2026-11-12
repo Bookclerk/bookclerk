@@ -25,8 +25,9 @@ Usage:
     Prints the newest release older than the cooldown that is newer than the
     pin. Exits 2 when there is none.
 ``tool_versions.py apply <tool> <version> [--digest sha256:<hex>]``
-    Writes the new pin, and the tool's image reference in every Dockerfile
-    that builds from it (``--digest`` is then required).
+    Writes the new pin, the tool's image reference in every Dockerfile that
+    builds from it (``--digest`` is then required) and, for ``rust``, the
+    ``channel`` in ``rust-toolchain.toml``.
 
 Exit codes: 0 success, 1 error, 2 nothing to bump.
 """
@@ -44,6 +45,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL_VERSIONS = ROOT / ".tool-versions"
+
+#: rustup's toolchain file. rustup cannot read ``.tool-versions``, so its
+#: ``channel`` repeats the ``rust`` pin and ``apply rust`` rewrites both.
+RUST_TOOLCHAIN = ROOT / "rust-toolchain.toml"
 
 #: Largest releases listing read, in bytes (100 releases are well under it).
 MAX_RELEASES_BYTES = 16 * 1024 * 1024
@@ -91,6 +96,7 @@ TOOLS = (
     Tool("nodejs", MAJOR_VERSION, None, "", None),
     Tool("uv", EXACT_VERSION, "astral-sh/uv", "", "ghcr.io/astral-sh/uv"),
     Tool("cargo-nextest", EXACT_VERSION, "nextest-rs/nextest", "cargo-nextest-", None),
+    Tool("rust", EXACT_VERSION, "rust-lang/rust", "", None),
 )
 
 TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
@@ -257,6 +263,46 @@ def rewrite_image(text: str, image: str, version: str, digest: str) -> str:
     return pattern.sub(lambda m: f"{m.group(1)}{image}:{version}@{digest}", text)
 
 
+#: The ``channel = "..."`` line of ``rust-toolchain.toml``'s ``[toolchain]`` table.
+TOOLCHAIN_CHANNEL = re.compile(r'^channel = "([^"\n]*)"$', re.MULTILINE)
+
+
+def toolchain_channel(text: str) -> str:
+    """Reads the ``channel`` that ``rust-toolchain.toml`` asks rustup for.
+
+    Args:
+        text: The toolchain file's contents.
+
+    Returns:
+        The channel, e.g. ``1.100.0``.
+
+    Raises:
+        ToolVersionsError: The file has no ``channel = "..."`` line, or more
+            than one.
+    """
+    found = TOOLCHAIN_CHANNEL.findall(text)
+    if len(found) != 1:
+        raise ToolVersionsError('rust-toolchain.toml needs exactly one `channel = "..."` line')
+    return found[0]
+
+
+def rewrite_toolchain_channel(text: str, version: str) -> str:
+    """Points ``rust-toolchain.toml``'s ``channel`` at a new Rust release.
+
+    Args:
+        text: The toolchain file's contents.
+        version: The new exact Rust version.
+
+    Returns:
+        The rewritten contents.
+
+    Raises:
+        ToolVersionsError: The file does not have exactly one ``channel`` line.
+    """
+    toolchain_channel(text)
+    return TOOLCHAIN_CHANNEL.sub(f'channel = "{version}"', text)
+
+
 def _tracked_dockerfiles() -> list[Path]:
     """Lists the Dockerfiles git tracks (``*Dockerfile``, as the bump workflow commits)."""
     out = subprocess.run(
@@ -356,6 +402,9 @@ def main(argv: list[str]) -> int:
                 updated = rewrite_image(text, tool.image, args.version, digest)
                 if updated != text:
                     writes[dockerfile] = updated
+        if tool.name == "rust":
+            text = RUST_TOOLCHAIN.read_text(encoding="utf-8")
+            writes[RUST_TOOLCHAIN] = rewrite_toolchain_channel(text, args.version)
         originals = {path: path.read_text(encoding="utf-8") for path in writes}
         try:
             for path, text in writes.items():

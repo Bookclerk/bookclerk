@@ -136,8 +136,8 @@ for everything else.
 | Linux desktop + tray | The optional [`devcontainer.linux-desktop.json`](../../.devcontainer/devcontainer.linux-desktop.json) |
 | `PATH` | `target/debug`, then `target/release` (through `remoteEnv`) |
 
-The provision script installs the `stable` toolchain that
-`rust-toolchain.toml` names (with rustfmt and clippy) on top of the base
+The provision script installs the Rust release that `.tool-versions` and
+`rust-toolchain.toml` pin (with rustfmt and clippy) on top of the base
 image, so the first cargo command doesn't download a toolchain.
 
 The **Dev Container image** CI workflow builds the image whenever these

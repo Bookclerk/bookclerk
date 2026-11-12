@@ -101,6 +101,13 @@ jobs:
           uv pip install --quiet --python "$UV_PROJECT_ENVIRONMENT/bin/python" "mutmut==$MUTMUT_VERSION"
           echo "$UV_PROJECT_ENVIRONMENT/bin" >> "$GITHUB_PATH"
 
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       # tests/test_testkit.py drives the bookclerk-db-testkit binary. Build it
       # once here, as CI's python_sdk check does, so mutmut's baseline run
       # does not try to build it (that needs capnp for bookclerk-plugin-abi's
@@ -109,7 +116,10 @@ jobs:
         if: steps.select.outputs.mutate == 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pins.outputs.rust }}
+          # The components rust-toolchain.toml lists; otherwise rustup
+          # installs them on the first cargo call, racing parallel calls.
+          components: rustfmt, clippy
 
       - name: Install capnproto
         if: steps.select.outputs.mutate == 'true'
