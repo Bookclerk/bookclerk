@@ -20,8 +20,10 @@
 //! Each run times the production path: `PluginSession::spawn_for_account`
 //! (front door, jail, runtime boot, handshake, and the guest's first
 //! `describe`, which the spawn waits for), then one warm `describe` and the
-//! first credential-free entrypoint call (`health`). Dropping the session
-//! only signals shutdown, so stop time is not measured.
+//! first credential-free entrypoint call (`health`). Between runs it waits,
+//! untimed, for the dropped session's processes to be reaped (Linux) and a
+//! short settle, so a spawn never overlaps the previous teardown; stop time
+//! is not measured.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -41,6 +43,10 @@ use bookclerk_plugin_manifest::{PluginManifest, PluginRuntimeKind};
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(45);
 /// Longest one RPC may take before the run fails.
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest the measurement waits for a dropped session's processes to go.
+const TEARDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+/// Pause after the processes are gone, for the host's file cleanup.
+const TEARDOWN_SETTLE: Duration = Duration::from_millis(200);
 
 /// How the guest runs, for grouping: `workerd/<js|python>` or
 /// `native/<launcher>`.
@@ -159,6 +165,39 @@ async fn first_call(id: &str, session: &PluginSession) -> Option<Duration> {
     }
 }
 
+/// Whether process `pid` is still around (not yet reaped).
+///
+/// # Returns
+///
+/// `true` while `/proc/<pid>` exists on Linux; elsewhere always `false`, so
+/// only [`TEARDOWN_SETTLE`] separates runs there.
+fn process_alive(pid: u32) -> bool {
+    cfg!(target_os = "linux") && std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Drops `session` and waits, outside any timed interval, until its
+/// processes are reaped, so the next spawn does not overlap the teardown.
+///
+/// # Panics
+///
+/// When the processes outlive [`TEARDOWN_TIMEOUT`].
+async fn drop_and_wait(id: &str, session: PluginSession) {
+    let pids: Vec<u32> = [session.guest_pid(), session.gateway_pid()]
+        .into_iter()
+        .flatten()
+        .collect();
+    drop(session);
+    let deadline = Instant::now() + TEARDOWN_TIMEOUT;
+    while pids.iter().any(|pid| process_alive(*pid)) {
+        assert!(
+            Instant::now() < deadline,
+            "{id} processes {pids:?} outlived {TEARDOWN_TIMEOUT:?} after shutdown"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(TEARDOWN_SETTLE).await;
+}
+
 #[tokio::test]
 #[ignore = "measurement only; needs a staged installation"]
 async fn measure_staged_plugin_cold_start() {
@@ -241,7 +280,7 @@ async fn measure_staged_plugin_cold_start() {
                 .unwrap_or_else(|e| panic!("describe {}: {e}", plugin.manifest.id));
             let warm_describe = described.elapsed();
             let first_call = first_call(&plugin.manifest.id, &session).await;
-            drop(session);
+            drop_and_wait(&plugin.manifest.id, session).await;
             samples.push(StartupSample {
                 spawn,
                 warm_describe,
