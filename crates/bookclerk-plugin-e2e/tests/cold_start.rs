@@ -47,11 +47,7 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 fn runtime_label(manifest: &PluginManifest) -> String {
     match manifest.runtime {
         PluginRuntimeKind::Workerd => {
-            let python = manifest
-                .workerd
-                .as_ref()
-                .is_some_and(|w| w.main_module.ends_with(".py"));
-            if python {
+            if manifest.declares_python() {
                 "workerd/python".into()
             } else {
                 "workerd/js".into()

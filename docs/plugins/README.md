@@ -224,7 +224,8 @@ sets the budget for starting asleep plugins on demand. The measurement is
 an ignored test, so run it explicitly against a staged installation:
 
 ```sh
-cargo test --release -p bookclerk-plugin-e2e --test cold_start -- --ignored --nocapture
+BOOKCLERK_PLUGIN_ARTIFACTS="$PWD/target/plugin-artifacts" \
+  cargo test --release -p bookclerk-plugin-e2e --test cold_start -- --ignored --nocapture
 ```
 
 It spawns every guest several times through the production path and
