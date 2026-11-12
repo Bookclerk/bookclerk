@@ -531,7 +531,7 @@ scripts:
 | `nodejs` (a major) | Every `actions/setup-node` step (`node-version-file`); the `node` images' tags | Hand, with the `node` image tags |
 | `uv` | Every `astral-sh/setup-uv` step (`version-file`); the Dev Container's `ghcr.io/astral-sh/uv` image | `tool-versions-bump.yml` |
 | `cargo-nextest` | The `unit + integration tests` job (through `scripts/tool_versions.py github-output`); `scripts/dev-env/provision.sh` | `tool-versions-bump.yml` |
-| `rust` | `rust-toolchain.toml` (`channel`, which repeats the pin because rustup can't read `.tool-versions`); every `dtolnay/rust-toolchain` step (through a `Read tool pins` step before it); `scripts/dev-env/provision.sh` | `tool-versions-bump.yml` |
+| `rust` | `rust-toolchain.toml` (`channel`, which repeats the pin because rustup can't read `.tool-versions`); every `dtolnay/rust-toolchain` step (through a `Read tool pins` step before it, installing the toolchain file's rustfmt and clippy so rustup doesn't add them mid-job); `scripts/dev-env/provision.sh` | `tool-versions-bump.yml` |
 
 `scripts/tests/test_dev_env.py` (in the `plan` job) fails when a workflow
 sets one of these versions itself, when a Dockerfile's `node` or uv image

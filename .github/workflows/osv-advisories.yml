@@ -110,6 +110,9 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
+          # The components rust-toolchain.toml lists; otherwise rustup
+          # installs them on the first cargo call, racing parallel calls.
+          components: rustfmt, clippy
 
       # `cargo metadata` downloads and resolves packages but runs no build
       # script or proc macro; the rest is lockfile parsing.
@@ -187,6 +190,9 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
+          # The components rust-toolchain.toml lists; otherwise rustup
+          # installs them on the first cargo call, racing parallel calls.
+          components: rustfmt, clippy
 
       - name: Prepare the call-analysis build
         if: needs.fetch.outputs.call-analysis == 'true'

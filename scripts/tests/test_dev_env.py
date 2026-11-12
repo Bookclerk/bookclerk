@@ -186,6 +186,12 @@ class ProvisionScriptTests(unittest.TestCase):
                 if toolchain_input.startswith("nightly-") or toolchain_input == "${{ inputs.rust_toolchain }}":
                     continue
                 self.assertEqual("${{ steps.pins.outputs.rust }}", toolchain_input)
+                # rust-toolchain.toml lists rustfmt and clippy; a pinned
+                # release is not the runner's preinstalled stable, so a step
+                # that skipped them would leave rustup installing them on the
+                # first cargo call, where parallel calls race (bin/cargo-fmt).
+                components = str((step.get("with") or {}).get("components", ""))
+                self.assertLessEqual({"rustfmt", "clippy"}, {c.strip() for c in components.split(",")})
         for workflow in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
             jobs = yaml.safe_load(workflow.read_text(encoding="utf-8")).get("jobs", {})
             for name, job in jobs.items():

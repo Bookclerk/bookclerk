@@ -146,6 +146,9 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
+          # The components rust-toolchain.toml lists; otherwise rustup
+          # installs them on the first cargo call, racing parallel calls.
+          components: rustfmt, clippy
 
       - name: Resolve base / head
         id: shas
@@ -551,7 +554,7 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
-          components: llvm-tools-preview
+          components: rustfmt, clippy, llvm-tools-preview
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
@@ -713,6 +716,9 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
+          # The components rust-toolchain.toml lists; otherwise rustup
+          # installs them on the first cargo call, racing parallel calls.
+          components: rustfmt, clippy
 
       - name: Install capnproto
         run: |
@@ -789,6 +795,9 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
+          # The components rust-toolchain.toml lists; otherwise rustup
+          # installs them on the first cargo call, racing parallel calls.
+          components: rustfmt, clippy
 
       - name: Install Node.js
         if: needs.plan.outputs.release_mode == 'full'
@@ -911,7 +920,7 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
-          components: clippy
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -975,7 +984,7 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
-          components: clippy
+          components: rustfmt, clippy
 
       # Build-only main push: the dependency cache key covers Cargo.lock, the
       # manifests, the toolchain and the CI env, not this repository's
@@ -1089,7 +1098,7 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
-          components: clippy
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -1155,7 +1164,7 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
-          components: clippy
+          components: rustfmt, clippy
 
       # Build-only main push: as in `native-gateway`, skip the build when
       # this key is already saved (docs/contributing/ci.md#build-only-main-pushes).
@@ -1268,6 +1277,9 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
+          # The components rust-toolchain.toml lists; otherwise rustup
+          # installs them on the first cargo call, racing parallel calls.
+          components: rustfmt, clippy
 
       - name: Install capnproto
         run: |
@@ -1326,6 +1338,9 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
+          # The components rust-toolchain.toml lists; otherwise rustup
+          # installs them on the first cargo call, racing parallel calls.
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
