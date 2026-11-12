@@ -371,7 +371,7 @@ fn open_granted_upload(
 /// Registers one secret value with the scrubber when it is UTF-8 text.
 /// A JSON credential (a token bundle) also registers each string inside
 /// it, since a log quotes the token field, not the whole document.
-fn register_value_for_redaction(value: &[u8]) {
+pub(crate) fn register_value_for_redaction(value: &[u8]) {
     let Ok(text) = std::str::from_utf8(value) else {
         return;
     };

@@ -690,12 +690,15 @@ async fn a_branch_join_brings_the_persons_store_connections_when_asked() {
     // Both libraries share this process's master key, which the last
     // bootstrap set: seal the library's secret after both exist.
     let plugin_key = stage_storefront(&owner_files, &owner_state, "shareable");
+    // A token big enough that the sealed answer outgrows an ordinary
+    // response (64 KiB) once encoded.
+    let token = "t".repeat(60 * 1024);
     connect_account(
         &owner_store,
         member,
         &plugin_key,
         "riley@example.com",
-        b"riley-token",
+        token.as_bytes(),
     )
     .await;
     // The branch's single Owner is the person the connections are kept for.
@@ -776,7 +779,7 @@ async fn a_branch_join_brings_the_persons_store_connections_when_asked() {
     .await
     .unwrap()
     .unwrap();
-    assert_eq!(unseal_secret(&secret).unwrap(), b"riley-token");
+    assert_eq!(unseal_secret(&secret).unwrap(), token.as_bytes());
     // The library recorded what it sent.
     let sent = owner_store
         .list_security_audit_events(50)

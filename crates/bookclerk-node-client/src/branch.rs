@@ -29,7 +29,7 @@ use bookclerk_node_proto::{
     canonical_origin, is_branch_name, is_branch_redirect_uri, is_library_name, open_account_bundle,
     pkce_challenge, AccountBundle, Body, ConnectionType, OAuthEnrollAnswer, OAuthEnrollRequest,
     OwnerInfo, AUTHORIZE_PATH, BRANCH_CLIENT_ID, BRANCH_SCOPE, CLERK_OFFER_PARAM,
-    ENROLL_OAUTH_PATH, INFO_PATH,
+    ENROLL_OAUTH_PATH, INFO_PATH, MAX_ACCOUNT_BUNDLE_BYTES,
 };
 use rand::RngCore as _;
 use tokio::sync::watch;
@@ -322,6 +322,10 @@ pub async fn keep_brought_connections(
     preferred: Option<i64>,
     bundle: &AccountBundle,
 ) -> bookclerk_library::Result<BroughtConnections> {
+    // The values are re-sealed here; keep them out of any log line too.
+    for secret in bundle.accounts.iter().flat_map(|account| &account.secrets) {
+        crate::client::register_value_for_redaction(secret.value.expose());
+    }
     let Some(person) = branch_person(store, preferred).await? else {
         tracing::warn!(
             accounts = bundle.accounts.len(),
@@ -462,7 +466,15 @@ pub(crate) async fn post_redeem(
         })
         .map_err(|err| JoinError::Record(err.to_string()))?,
     );
-    let (status, answer) = endpoint.post_json(ENROLL_OAUTH_PATH, &body).await?;
+    // A branch's answer may carry sealed store connections: the bundle's
+    // JSON limit, base64url of the sealed box (4/3), and room for its tag.
+    let extra = match connection {
+        ConnectionType::Branch => MAX_ACCOUNT_BUNDLE_BYTES.saturating_mul(2),
+        ConnectionType::Clerk => 0,
+    };
+    let (status, answer) = endpoint
+        .post_json_within(ENROLL_OAUTH_PATH, &body, extra)
+        .await?;
     drop(body);
     if status != 200 {
         return Err(http_error(status, &answer));
