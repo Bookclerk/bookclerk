@@ -110,9 +110,11 @@ pub struct Disconnected {
     #[schema(example = true)]
     pub here: bool,
     /// Linked libraries (owner cluster ids) that confirmed the disconnect.
+    #[schema(example = json!(["6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"]))]
     pub libraries: Vec<String>,
     /// Linked libraries that could not be reached or refused; the account
     /// stays connected there until the person disconnects it there.
+    #[schema(example = json!([]))]
     pub unreached: Vec<String>,
 }
 

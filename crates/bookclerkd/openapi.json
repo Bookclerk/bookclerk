@@ -28876,14 +28876,18 @@
             "items": {
               "type": "string"
             },
-            "description": "Linked libraries (owner cluster ids) that confirmed the disconnect."
+            "description": "Linked libraries (owner cluster ids) that confirmed the disconnect.",
+            "example": [
+              "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
+            ]
           },
           "unreached": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Linked libraries that could not be reached or refused; the account\nstays connected there until the person disconnects it there."
+            "description": "Linked libraries that could not be reached or refused; the account\nstays connected there until the person disconnects it there.",
+            "example": []
           }
         }
       },
