@@ -58,6 +58,7 @@ import {
 } from "./dashboard/github.ts";
 import { reportIdOf } from "./dashboard/report-ids.ts";
 import { CACHE_CONTROL } from "./cache-control.ts";
+import { withCrossOriginPolicy } from "./cross-origin.ts";
 import {
   dashboardFetch,
   dashboardFiledReportIds,
@@ -315,7 +316,8 @@ Disallow: /
 export default {
   /**
    * Answers one request, with a `Cache-Control` from the cache-class table
-   * on every answer (see {@link withCacheClass}).
+   * (see {@link withCacheClass}) and the closed cross-origin headers (see
+   * {@link withCrossOriginPolicy}) on every answer.
    *
    * @param request - The incoming request.
    * @param env - Bindings.
@@ -323,7 +325,7 @@ export default {
    * @returns The response.
    */
   async fetch(request: Request, env: Env, ctx: Background): Promise<Response> {
-    return withCacheClass(await respond(request, env, ctx));
+    return withCrossOriginPolicy(withCacheClass(await respond(request, env, ctx)));
   },
 
   async scheduled(_controller, env, ctx): Promise<void> {

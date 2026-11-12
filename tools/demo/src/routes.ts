@@ -77,6 +77,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["PATCH", "/api/auth/profile", "deny"],
   ["PUT", "/api/auth/profile/avatar", "deny"],
   ["DELETE", "/api/auth/profile/avatar", "deny"],
+  ["GET", "/api/auth/profile/catalog-listing", "allow"],
+  ["PUT", "/api/auth/profile/catalog-listing", "deny"],
   ["GET", "/api/auth/totp", "allow"],
   ["DELETE", "/api/auth/totp", "deny"],
   ["POST", "/api/auth/totp/enroll/begin", "deny"],

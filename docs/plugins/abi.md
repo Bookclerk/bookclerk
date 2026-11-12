@@ -265,7 +265,7 @@ The host `EventPublisher` writes straight into the library outbox
   `book_acquired` in the same transaction as the library row.
   `edition_linked`, `edition_updated` and `holding_added` are written by
   the library model resolver in the same batch as the store listing they
-  describe, and `wishlist_changed` and `listening_synced` by the library
+  describe, `holding_removed` in the batch that deletes the holding, and `wishlist_changed` and `listening_synced` by the library
   after a wishlist or listening write. A plugin can consume them under
   `[[events.consumers]]`, but can't declare them under
   `[[events.producers]]` (`check` and load fail), and the host publisher
@@ -800,9 +800,15 @@ batch as its rows:
   stored or now sells another edition;
 - `edition_updated` (`editionId`) when the listing filled a missing
   subtitle, publication date or duration on its edition;
-- `holding_added` (`listingId`, `holder`) when an account or branch
-  library holds the listing for the first time; `account_id` is the
-  account for an account holder.
+- `holding_added` (`listingId`, `holder`, `holdingId`) when an account or
+  branch library holds the listing, or holds it again after it was
+  removed; `account_id` is the account for an account holder.
+
+The host publishes `holding_removed` (`listingId`, `holder`, `holdingId`)
+in the batch that deletes a holding: a scan no longer lists the title (see
+[Paged scans](#paged-scans)), the account is revoked, or its id is
+remapped (the holding moves, with `holding_removed` for the old account
+and `holding_added` for the new one).
 
 Their `source` is the storefront plugin that reported the listing.
 Each daemon's search index consumes them, with `book_acquired`, to keep its
@@ -938,6 +944,19 @@ A store with no change feed returns full passes with an empty `syncToken`;
 a page number makes a fine cursor. A plugin that needs more state than one
 token can keep it in its own [KV namespace](#kv-namespaces).
 
+The host keeps the account's holdings in step with the pass:
+
+- It removes the account's holding of each `removed` product id.
+- Each page marks the account's holdings of the products it listed with
+  the pass's id, kept with the cursor so a resumed pass marks the same id.
+- When a full pass (no page was sent a token) ends `complete`, the host
+  removes the account's holdings that no page of the pass listed.
+
+Each removal publishes `holding_removed`. So a plugin must set `complete`
+only when the pass really listed every title: a complete full pass that
+lists none removes every holding of the account. The flat library rows
+and acquired files stay.
+
 Each SDK has a helper that does the paging for you: `scanPage` in
 TypeScript, `scan_page` in Python and in the Rust SDK. You give it a
 function that fetches one page of the store's own listing, by the store's
@@ -973,11 +992,6 @@ scan(params: ScanParams): Promise<ScanPage> {
 
 The three SDKs write the same cursors, so a plugin can move between them
 without breaking a pass in progress.
-
-> [!NOTE]
-> The host counts `removed` ids but does not yet take those titles off the
-> account. Holdings removal comes with the library data model's holdings
-> work.
 
 #### Catalog search capabilities
 

@@ -35,6 +35,10 @@ pub struct Model {
     /// book acquired here for another member is also written to this
     /// install's own destinations.
     pub keep_member_copies: i64,
+    /// "List my members' books to *library*" (1 = on, the default): the
+    /// branch answers that library's catalog lookups with its members'
+    /// books as well as its owner's.
+    pub list_members_books: i64,
 }
 
 /// Declared SeaORM relations (none).

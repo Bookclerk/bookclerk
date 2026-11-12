@@ -43,6 +43,7 @@
 //! held work, and stops that client; the link is not dialed again.
 
 pub mod api;
+pub mod catalog_lookup;
 pub mod catalog_sync;
 pub mod consent;
 pub mod host_jobs;
@@ -717,6 +718,16 @@ async fn start_clients(
                     state: Arc::clone(state),
                 },
             }
+            .run(link_shutdown.clone()),
+        )));
+        // The link's catalog answers (the library asking what this branch
+        // can supply) stop with its client the same way.
+        let catalog_answers = AbortOnDrop(Some(tokio::spawn(
+            catalog_lookup::CatalogAnswerer {
+                library: library.clone(),
+                cluster_id: cluster_id.clone(),
+                handle: handle.clone(),
+            }
             .run(link_shutdown),
         )));
         // The client stops on a swap (forwarded from `shutdown`), once its
@@ -755,9 +766,10 @@ async fn start_clients(
             let _ = link_stop.send(true);
             // Both exit before a client for a new enrollment can start, so
             // one cluster never has two consent supervisors (or two catalog
-            // syncs). They wind down side by side, so the client's exit
-            // waits for the slower of the two only.
-            let (mut supervisor, mut catalog_sync) = (supervisor, catalog_sync);
+            // syncs or answerers). They wind down side by side, so the
+            // client's exit waits for the slowest of them only.
+            let (mut supervisor, mut catalog_sync, mut catalog_answers) =
+                (supervisor, catalog_sync, catalog_answers);
             tokio::join!(
                 async {
                     if let Some(supervisor) = supervisor.0.take() {
@@ -767,6 +779,11 @@ async fn start_clients(
                 async {
                     if let Some(catalog_sync) = catalog_sync.0.take() {
                         join_or_abort(catalog_sync).await;
+                    }
+                },
+                async {
+                    if let Some(catalog_answers) = catalog_answers.0.take() {
+                        join_or_abort(catalog_answers).await;
                     }
                 },
             );

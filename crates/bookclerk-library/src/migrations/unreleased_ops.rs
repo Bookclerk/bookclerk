@@ -25,8 +25,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // Where each account's storefront scan stands (`store::scan_state`): the
     // opaque sync token the plugin returned at the end of its last pass, the
     // cursor and token of a pass that stopped part way (so the scan job
-    // resumes there), and when the last complete pass ended (a full pass is
-    // forced once that is older than the full-pass interval).
+    // resumes there), when the last complete pass ended (a full pass is
+    // forced once that is older than the full-pass interval), and the id of
+    // the pass in progress, which each page stamps on the holdings it lists
+    // (`holdings.seen_pass`).
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS account_scan_state (
         plugin_key TEXT NOT NULL,
@@ -35,6 +37,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         resume_cursor TEXT NOT NULL DEFAULT '',
         resume_token TEXT NOT NULL DEFAULT '',
         last_complete_at TEXT,
+        pass_id TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL,
         PRIMARY KEY (plugin_key, account_id),
         FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
@@ -461,20 +464,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         PRIMARY KEY (listing_id, audience)
     )",
     ),
-    // `holder` is `account:<account_id>` (an account of the listing's
-    // plugin) or `node:<node_id>` (a branch library).
-    MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS holdings (
-        listing_id TEXT NOT NULL REFERENCES store_listings(id) ON DELETE CASCADE,
-        holder TEXT NOT NULL,
-        entitlement TEXT NOT NULL CHECK (entitlement IN ('purchase', 'plus', 'loan', 'free')),
-        purchased_at TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (listing_id, holder)
-    )",
-    ),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_holdings_holder ON holdings(holder)"),
     // An Administrator's decision the resolver obeys: pin a listing to an
     // edition, or keep the work matcher away from a work it split.
     MigrationOp::Schema(
@@ -1121,6 +1110,40 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         catalog_full_pass_at TEXT
     )",
     ),
+    // Who holds a store listing (docs/adr/library-data-model.md): a store
+    // account of the listing's plugin, or a branch library node. The typed
+    // columns carry the foreign keys, so deleting the account or node drops
+    // its holdings; `holder` is the stored key (`account:<id>` /
+    // `node:<id>`, `bookclerk_resolve::Holder`) the uniqueness and the
+    // resolver read. `id` is new for each holding, so a title removed and
+    // held again announces itself again (`holding_added:<id>`). `seen_pass`
+    // is the scan pass that last listed it (`account_scan_state.pass_id`);
+    // a complete full pass removes the account's holdings it did not list.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS holdings (
+        id TEXT PRIMARY KEY NOT NULL,
+        listing_id TEXT NOT NULL REFERENCES store_listings(id) ON DELETE CASCADE,
+        holder TEXT NOT NULL,
+        holder_kind TEXT NOT NULL CHECK (holder_kind IN ('account', 'node')),
+        plugin_key TEXT,
+        account_id TEXT,
+        node_id TEXT REFERENCES nodes(node_id) ON DELETE CASCADE,
+        entitlement TEXT NOT NULL CHECK (entitlement IN ('purchase', 'plus', 'loan', 'free')),
+        purchased_at TEXT,
+        seen_pass TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (listing_id, holder),
+        FOREIGN KEY (plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE,
+        CHECK ((holder_kind = 'account' AND plugin_key IS NOT NULL AND account_id IS NOT NULL AND node_id IS NULL)
+            OR (holder_kind = 'node' AND node_id IS NOT NULL AND plugin_key IS NULL AND account_id IS NULL))
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_holdings_account ON holdings(plugin_key, account_id)",
+    ),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_holdings_node ON holdings(node_id)"),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_holdings_holder ON holdings(holder)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_nodes_heartbeat ON nodes(heartbeat_at)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_nodes_owner ON nodes(owner_user_id)"),
     MigrationOp::Schema(
@@ -1407,7 +1430,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         include_branches INTEGER NOT NULL DEFAULT 1 CHECK (include_branches IN (0, 1)),
         ancestry_json TEXT NOT NULL DEFAULT '[]',
         work_for_members INTEGER NOT NULL DEFAULT 0 CHECK (work_for_members IN (0, 1)),
-        keep_member_copies INTEGER NOT NULL DEFAULT 0 CHECK (keep_member_copies IN (0, 1))
+        keep_member_copies INTEGER NOT NULL DEFAULT 0 CHECK (keep_member_copies IN (0, 1)),
+        list_members_books INTEGER NOT NULL DEFAULT 1 CHECK (list_members_books IN (0, 1))
     )",
     ),
     MigrationOp::Schema(
@@ -1552,6 +1576,31 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_branch_titles_node ON branch_titles(node_id, state)",
+    ),
+    // Catalog lookup on a library (`control_plane::catalog_lookup`): one
+    // question per branch node and work, pulled by the branch. `sent_at` is
+    // when it last went out, `answered_at` when the branch answered (with
+    // editions or "not here"); an answer older than a day is asked again.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS catalog_lookups (
+        node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        asked_at TEXT NOT NULL,
+        sent_at TEXT,
+        answered_at TEXT,
+        PRIMARY KEY (node_id, work_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_catalog_lookups_pending ON catalog_lookups(node_id, answered_at, asked_at)",
+    ),
+    // On a branch: members who keep their books out of what this branch
+    // lists to the libraries it joined (listed by default).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS catalog_listing_optouts (
+        user_id INTEGER PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL
+    )",
     ),
     // Last claimed fire per plugin cron schedule (`control_plane::cron_fires`).
     // `claim` is the token of the batch that last moved the cursor; the job

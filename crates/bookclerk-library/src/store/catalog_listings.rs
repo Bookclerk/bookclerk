@@ -859,6 +859,11 @@ mod tests {
             .clone()
             .unwrap();
         let listing = resolve::Listing::from_draft(&catalog.draft).unwrap();
+        // A holding is only written for an account the library has.
+        store
+            .upsert_account(&listing.key.plugin_key, "a1", "us", None, true, "store")
+            .await
+            .unwrap();
         let holding = resolve::HoldingDraft {
             holder: resolve::Holder::Account(String::from("a1")),
             entitlement: resolve::Entitlement::Purchase,

@@ -46,6 +46,11 @@
 //! [`Body::CatalogUpload`]; see [`CatalogTitle`]): titles carry no account
 //! or user field, and files reuse the upload endpoint.
 //!
+//! A library asks its branches whether they can supply works it knows
+//! ([`LookupWork`], by strong identifiers, never titles): it stores the
+//! questions and wakes the branch, which pulls them with
+//! [`Body::CatalogQuestions`] and answers with [`Body::CatalogFound`].
+//!
 //! A host that leaves sends [`Body::NodeLeaving`]; the owner revokes the
 //! node at once. Joining with a sign-in instead of a link is the OAuth
 //! code + PKCE flow of the built-in client [`BRANCH_CLIENT_ID`] ([`OwnerInfo`],
@@ -66,6 +71,7 @@ mod clerk;
 mod frames;
 mod join;
 mod keys;
+mod lookup;
 mod sealed;
 mod signature;
 
@@ -104,6 +110,11 @@ pub use join::{
 pub use keys::{
     box_public_key, sign_public_key, validate_box_public_key, validate_sign_public_key, KeyError,
     PUBLIC_KEY_LEN,
+};
+pub use lookup::{
+    found_problem, is_work_ref, questions_problem, Availability, LookupAnswer, LookupEdition,
+    LookupFormat, LookupIdentifier, LookupScheme, LookupWork, MAX_LOOKUP_EDITIONS,
+    MAX_LOOKUP_IDENTIFIERS, MAX_LOOKUP_WORKS, MAX_WORK_REF_BYTES,
 };
 pub use sealed::{
     instance_secrets_aad, open, open_instance_secrets, open_secret_update, open_secrets,

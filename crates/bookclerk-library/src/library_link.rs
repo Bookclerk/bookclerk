@@ -267,8 +267,13 @@ pub struct ListingLinkParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkHoldingRow {
-    /// Stored holder (`account:<id>` or `node:<id>`).
+    /// Stored holder (`account:<id>` of an account of the listing's plugin,
+    /// or `node:<id>`); the typed holder columns are derived from it.
     pub holder: String,
+    /// Id a new holding is inserted with; the `holding_added` event names
+    /// it, so a later holding of the same listing announces itself again.
+    #[serde(default)]
+    pub holding_id: String,
     /// Stored entitlement.
     pub entitlement: String,
     /// When the holder bought or added it (RFC 3339).

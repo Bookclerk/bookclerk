@@ -32,12 +32,14 @@
 //! - `GET /api/config/join/sharing`: the libraries this install is a
 //!   branch of, with their sharing and work settings.
 //! - `POST /api/config/join/sharing` `{cluster_id, share_books,
-//!   include_branches, work_for_members?, keep_member_copies?}`: Settings →
-//!   Library's "Share this branch's books with *library*" and "Include
-//!   books from my own branches", which the catalog sync reports to the
-//!   library at once, and "Download for other members of *library*" and
-//!   "Keep copies of other members' books", which the link's client claims
-//!   and copies under from its next consent check.
+//!   include_branches, work_for_members?, keep_member_copies?,
+//!   list_members_books?}`: Settings → Library's "Share this branch's
+//!   books with *library*" and "Include books from my own branches" (the
+//!   catalog sync reports them to the library at once), "Download for
+//!   other members of *library*" and "Keep copies of other members'
+//!   books", which the link's client claims and copies under from its next
+//!   consent check, and "List my members' books to *library*", which the
+//!   next catalog lookup answer follows.
 //!
 //! Inspect and start refuse a library whose ancestry names this library's
 //! own cluster id (409 `join_cycle`), so a tree of libraries never loops;
@@ -1342,6 +1344,10 @@ pub struct SharingBody {
     /// "Include books from my own branches".
     #[schema(example = false)]
     include_branches: bool,
+    /// "List my members' books to *library*"; left as it is when absent.
+    #[serde(default)]
+    #[schema(example = true)]
+    list_members_books: Option<bool>,
     /// "Download for other members of *library*": take the library's work
     /// for its other members too, not only this install owner's. Absent
     /// keeps the current setting.
@@ -1418,7 +1424,9 @@ pub async fn get_join_sharing(
 }
 
 /// `POST /api/config/join/sharing`: Settings → Library's sharing and work
-/// settings for one library this install is a branch of. The operator or
+/// settings for one library this install is a branch of (the two
+/// book-sharing settings, the two work settings, and optionally "List my
+/// members' books"). The operator or
 /// an Owner (verified from the stored role); anyone else gets 403.
 #[utoipa::path(
     post,
@@ -1478,6 +1486,14 @@ pub async fn post_join_sharing(
         }
         Err(err) => return crate::config_authority::events_error(err),
     }
+    if let Some(list) = body.list_members_books {
+        if let Err(err) =
+            bookclerk_library::control_plane::set_cluster_link_listing(&store, cluster_id, list)
+                .await
+        {
+            return crate::config_authority::events_error(err);
+        }
+    }
     tracing::info!(
         %cluster_id,
         %actor,
@@ -1485,6 +1501,7 @@ pub async fn post_join_sharing(
         include_branches = body.include_branches,
         work_for_members = work.0,
         keep_member_copies = work.1,
+        list_members_books = ?body.list_members_books,
         "branch sharing settings changed"
     );
     let detail = json!({
@@ -1493,6 +1510,7 @@ pub async fn post_join_sharing(
         "include_branches": body.include_branches,
         "work_for_members": work.0,
         "keep_member_copies": work.1,
+        "list_members_books": body.list_members_books,
     })
     .to_string();
     if let Err(err) = store

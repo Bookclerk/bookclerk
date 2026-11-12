@@ -626,24 +626,28 @@ C is B's.
 
 ### Sharing settings on the branch
 
-**Settings → Library** on B has two settings for each library joined,
-both on by default:
+**Settings → Library** on B has these settings for each library joined,
+all on by default:
 
 - **Share this branch's books with <library>.** Off: nothing new is sent,
   and A marks what it already got from B. Files already delivered stay in
-  A's outputs.
+  A's outputs. B also lists nothing in answer to A's catalog questions.
 - **Include books from my own branches.** Off: B shares only books
   acquired on B itself, and C's titles are withdrawn from A on the next
   pass.
+- **List my members' books to <library>.** Off: B answers A's catalog
+  questions with its owner's books only (see
+  [Shared catalog](#shared-catalog)).
 
 B's operator or an Owner of B may change them. An Owner sees only the
-libraries and these two settings; joining, leaving and plugin approvals
+libraries and these settings; joining, leaving and plugin approvals
 stay the operator's. Anyone else is refused (403).
 
 The routes are `GET /api/config/join/sharing` (→ `{clusters}`) and
 `POST /api/config/join/sharing`
-`{cluster_id, share_books, include_branches}`, which also takes the
-[work settings](#work-settings-on-the-branch).
+`{cluster_id, share_books, include_branches, list_members_books?}`
+(`list_members_books` is left as it is when absent), which also takes
+the [work settings](#work-settings-on-the-branch).
 
 ### Work settings on the branch
 
@@ -652,8 +656,9 @@ joined, both off by default:
 
 - **Download for other members of <library>.** Off: B asks A only for
   work on the store accounts of the A user who owns B, its owner's own
-  books (including jobs pinned to one plugin instance). On: B also takes work for A's other members, where A trusts B
-  with it (an Administrator's or Owner's branch). A still hands B only
+  books (including jobs pinned to one plugin instance). On: B also takes
+  work for A's other members, where A trusts B with it (an
+  Administrator's or Owner's branch). A still hands B only
   work it is trusted with, so this setting never widens trust.
 - **Keep copies of other members' books.** Off: a book B acquires for
   another member goes only to A's outputs. On: it is also written to B's
@@ -674,6 +679,60 @@ counts of its titles.
 Titles from a branch that stopped sharing or left are kept, marked, until
 the owner removes the entries with **Remove** (or
 `POST /api/config/branches/titles/remove {node_id?}`). The files stay.
+
+### Shared catalog
+
+A library can ask its branches whether they can supply works its people
+are looking at, without copying their catalogs. The answers say "available
+through B", and nothing is fetched until someone asks for it.
+
+1. **The library asks.** Each Discover candidate fetch ends with an ask,
+   at most every 15 minutes per daemon: A stores one question per trusted
+   branch and work (works of open wishes and Discover candidates) and
+   wakes each branch. A question already waiting, or answered within a
+   day, isn't asked again.
+2. **The branch pulls the questions.** On the wake, when it connects, and
+   every 15 minutes, B sends `catalog.questions` and gets up to 100
+   questions. A question that goes unanswered for 10 minutes is sent
+   again.
+3. **The branch answers.** B looks each work up in its own library and
+   sends `catalog.found` with the editions it holds: store, product id,
+   the formats it has, and metadata. A work it can't supply is named as
+   missing.
+4. **The library records the answers.** Each edition becomes a listing in
+   A's shared listing pool, from source `branch:<B's node id>`. A listing
+   counts for two days after B last named it. A later answer that no
+   longer names it expires it.
+
+Questions name works by identifier only, because work ids differ between
+libraries:
+
+- A asks with the ASINs (and marketplace), ISBNs and OpenLibrary ids of its
+  editions of the work. Titles and authors are never compared.
+- B maps them to one of its works by a strong identifier (an ASIN or an
+  OpenLibrary id), or, when none matches, by ISBNs that reach one work
+  only. A question that reaches no work, or more than one, is answered as
+  missing.
+- A keeps an answered edition only when it lands on an edition A already
+  has of the asked work. An answer can't add works or editions to A.
+
+An answer names no store account, user, or other library. A asks only
+branches it still trusts, and records answers only for questions it sent
+that branch.
+
+**What B lists.** B always lists its owner's books. It never lists books on a store account linked to no one, such as one a member disconnected. It lists its members'
+books too while **List my members' books to <library>** is on (the
+default, set per library in the sharing settings below). A member can keep
+their own books out with `PUT /api/auth/profile/catalog-listing`
+`{"listed": false}`. With **Share this branch's books with <library>**
+off, B lists nothing to that library and answers every question as
+missing.
+
+> [!NOTE]
+> Turning a listing setting off, or a member opting out, takes effect at
+> B's next answer. A asks again a day after B last answered, and a listing
+> stops counting two days after B last named it, so A can still show B as
+> a source for up to two days.
 
 ### No loops
 
@@ -721,6 +780,10 @@ in the library, marked as from a branch that left (see
 
 - The sharing settings are set in **Settings → Library** (the operator or
   an Owner). There is no CLI command for them yet.
+- **List my members' books** and a member's own opt-out have API routes
+  only; the web app doesn't show them yet.
+- Search and Discover don't show branch listings yet, and a branch
+  answers only from its own library, not from other libraries it joined.
 - The library's name is the host of its public origin. There is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the

@@ -409,9 +409,33 @@ export async function launchChrome(
   }
 }
 
+/** How many times {@link runLighthouse} runs one page at most. */
+export const LIGHTHOUSE_ATTEMPTS = 3;
+
 /**
- * Runs Lighthouse on one page, once more when only performance misses (lab
- * noise on shared runners), and keeps the better run.
+ * Tells whether a run's misses are all lab measurements taken from the page
+ * load trace (the performance score and CLS), which another run may pass.
+ *
+ * Shared runners make those numbers noisy, and Chrome sometimes records a
+ * trace with no navigation start (Lighthouse's `NO_NAVSTART`, "Please run
+ * Lighthouse again"), most often when the page's
+ * `Cross-Origin-Opener-Policy` moves the load into a new browsing context
+ * group; that run has neither a performance score nor a CLS. Accessibility,
+ * best-practices and SEO misses are not retried.
+ *
+ * @param misses - The run's misses from {@link lighthouseMisses}.
+ * @returns Whether to run the page again.
+ */
+export function isLabMeasurementMiss(misses: readonly string[]): boolean {
+  return (
+    misses.length > 0 && misses.every((m) => m.startsWith("performance ") || m.startsWith("CLS "))
+  );
+}
+
+/**
+ * Runs Lighthouse on one page, again (up to {@link LIGHTHOUSE_ATTEMPTS} runs)
+ * while only trace measurements miss ({@link isLabMeasurementMiss}), and keeps
+ * the run with the fewest misses.
  *
  * @param url - The page.
  * @param form - The form factor.
@@ -434,7 +458,7 @@ async function runLighthouse(
   };
   const config = form === "desktop" ? desktopConfig : undefined;
   let best: LighthouseRun | null = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < LIGHTHOUSE_ATTEMPTS; attempt++) {
     const result = await lighthouse(url, flags, config);
     if (!result) throw new Error(`Lighthouse returned nothing for ${url}`);
     const [json, html] = result.report;
@@ -446,8 +470,7 @@ async function runLighthouse(
       misses: lighthouseMisses(result.lhr, limits),
     };
     if (best === null || run.misses.length < best.misses.length) best = run;
-    if (!best.misses.every((m) => m.startsWith("performance "))) break;
-    if (best.misses.length === 0) break;
+    if (!isLabMeasurementMiss(best.misses)) break;
   }
   if (best === null) throw new Error(`Lighthouse did not run for ${url}`);
   return best;

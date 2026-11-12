@@ -157,6 +157,7 @@ fn start_configured<R: HostJobRunner>(
         enrolled_at: "2026-10-17T00:00:00Z".into(),
         share_books: true,
         include_branches: true,
+        list_members_books: true,
         ancestry: Vec::new(),
         work_for_members: false,
         keep_member_copies: false,
