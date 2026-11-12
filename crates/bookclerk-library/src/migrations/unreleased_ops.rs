@@ -1429,7 +1429,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         share_books INTEGER NOT NULL DEFAULT 1 CHECK (share_books IN (0, 1)),
         include_branches INTEGER NOT NULL DEFAULT 1 CHECK (include_branches IN (0, 1)),
         ancestry_json TEXT NOT NULL DEFAULT '[]',
-        list_members_books INTEGER NOT NULL DEFAULT 1 CHECK (list_members_books IN (0, 1))
+        list_members_books INTEGER NOT NULL DEFAULT 1 CHECK (list_members_books IN (0, 1)),
+        person_user_id INTEGER
     )",
     ),
     MigrationOp::Schema(

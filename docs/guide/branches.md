@@ -65,8 +65,8 @@ store connections to this branch**. It is off unless you tick it.
 
 To add a connection to the library later, open **Accounts** on the branch
 and choose **Add to *library*** beside it. The library's operator rule
-applies there too. Adding later, and **Revoke everywhere** below, work only when you
-are the branch's only Owner.
+applies there too. Adding later, and **Revoke everywhere** below, work only for
+the Owner who joined the library from the branch.
 
 On the branch, **Revoke here** disconnects an account only on the branch.
 **Revoke everywhere** also disconnects it on every library you added it

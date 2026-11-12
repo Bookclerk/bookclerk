@@ -149,6 +149,10 @@ pub struct ClusterLink {
     /// lookups from that library are answered with the members' books
     /// (except those of members who opted out) as well as the owner's.
     pub list_members_books: bool,
+    /// The local user who joined the library through this link, when one
+    /// could be named: the only person who may add store connections to
+    /// that library, or withdraw them from it, through this link.
+    pub person_user_id: Option<i64>,
 }
 
 impl ClusterLink {
@@ -176,6 +180,7 @@ impl From<cluster_links::Model> for ClusterLink {
                 .filter(|id| bookclerk_node_proto::is_cluster_id(id))
                 .collect(),
             list_members_books: row.list_members_books != 0,
+            person_user_id: row.person_user_id,
         }
     }
 }
@@ -270,6 +275,9 @@ pub async fn record_cluster_link(
         include_branches: Set(1),
         ancestry_json: Set("[]".into()),
         list_members_books: Set(1),
+        // Bound by the join afterwards with [`set_cluster_link_person`]; a
+        // re-enrollment keeps the person until the join names one again.
+        person_user_id: Set(None),
     };
     let insert = cluster_links::Entity::insert(row).on_conflict(
         OnConflict::column(cluster_links::Column::OwnerClusterId)
@@ -505,6 +513,40 @@ pub async fn set_cluster_link_listing(
         .filter(cluster_links::Column::ListMembersBooks.ne(value));
     let updated = store
         .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
+        .await?;
+    Ok(updated == 1)
+}
+
+/// Binds the link to the local user who joined the library through it.
+///
+/// Only that person may add their store connections to the library, or
+/// withdraw them from it, through this link.
+///
+/// # Arguments
+///
+/// * `owner_cluster_id` - The library the link joined.
+/// * `person_user_id` - The local user who joined (`None` unbinds it).
+///
+/// # Returns
+///
+/// Whether the link exists (`false` when there is no such link).
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn set_cluster_link_person(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    person_user_id: Option<i64>,
+) -> Result<bool> {
+    let update = cluster_links::Entity::update_many()
+        .col_expr(
+            cluster_links::Column::PersonUserId,
+            Expr::value(person_user_id),
+        )
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id));
+    let updated = store
+        .exec_bumped(update, LiveTopic::Clusters, Bump::Always)
         .await?;
     Ok(updated == 1)
 }

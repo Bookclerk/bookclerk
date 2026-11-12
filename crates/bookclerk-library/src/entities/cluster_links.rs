@@ -31,6 +31,11 @@ pub struct Model {
     /// branch answers that library's catalog lookups with its members'
     /// books as well as its owner's.
     pub list_members_books: i64,
+    /// The local user who joined the library through this link (`NULL`
+    /// when nobody could be named, such as a join with several Owners and
+    /// no signed-in Administrator). Only this person may add their own
+    /// store connections to the library or withdraw them through it.
+    pub person_user_id: Option<i64>,
 }
 
 /// Declared SeaORM relations (none).

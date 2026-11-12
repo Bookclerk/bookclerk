@@ -947,19 +947,32 @@ async fn a_branch_adds_a_connection_to_its_library_and_disconnects_it_everywhere
         assert_eq!(account.connection_status, "revoked");
     }
 
-    // With a second Owner the link cannot tell whose join it was: neither
-    // Owner may act for it.
-    host_store
+    // The join bound the link to Riley, so a second Owner may not act
+    // through it: their add is refused and their disconnect stays here.
+    let link = bookclerk_library::control_plane::load_cluster_link(&host_store, &cluster_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(link.person_user_id, Some(me.id));
+    let sam = host_store
         .create_user(UserRole::Owner, Some("Sam"), None)
         .await
         .unwrap();
-    let (status, _, refused) = call(
-        &as_person,
+    let as_sam = host_routes_as(&host_state, UserCaller::User { user_id: sam.id });
+    let (status, _, refused) =
+        call(&as_sam, "POST", "/api/config/join/connections", Some(add)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["error"], "not_branch_person");
+    let (status, _, gone) = call(
+        &as_sam,
         "POST",
         "/api/config/join/connections/disconnect",
         Some(json!({ "plugin_key": plugin_key, "account_id": "den@example.com", "everywhere": true })),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
-    assert_eq!(refused["error"], "not_branch_person");
+    assert_eq!(status, StatusCode::OK, "{gone}");
+    assert_eq!(
+        gone,
+        json!({ "here": false, "libraries": [], "unreached": [] })
+    );
 }

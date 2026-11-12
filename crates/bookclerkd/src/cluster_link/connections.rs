@@ -12,11 +12,13 @@
 //!   here, and with `everywhere` also in every linked library it was
 //!   shared with (`accounts.remove` up each link).
 //!
-//! Only the branch's person may call them: the install's single active
-//! Owner ([`branch_person`] with no preference). An install with several
-//! Owners refuses them, because the link does not record which Owner a
-//! join belonged to, and the library attributes what arrives to the user
-//! its node row names as the branch's owner. Each call to a library is
+//! Only an active Owner may call them, and each acts only through the links
+//! that Owner joined: the join binds a link to its person
+//! ([`ClusterLink::person_user_id`](bookclerk_library::control_plane::ClusterLink::person_user_id),
+//! the Owner who elevated into the joining session, or else the install's
+//! only Owner), because the library attributes what arrives to the user its
+//! node row names as the branch's owner. Another Owner is refused on add
+//! and their disconnect stays on this install. Each call to a library is
 //! bounded by [`LIBRARY_CALL_TIMEOUT`], inside the routes' API deadline. Only accounts of
 //! storefronts every installed copy declares `credentials = "shareable"`
 //! travel.
@@ -28,8 +30,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::control_plane::{
-    account_share_peers, accounts_to_carry_where, branch_person, link_peer, list_cluster_links,
-    load_cluster_link, record_accounts_sent_to, withdraw_person_account, Withdrawn,
+    account_share_peers, accounts_to_carry_where, link_peer, list_cluster_links, load_cluster_link,
+    record_accounts_sent_to, withdraw_person_account, Withdrawn,
 };
 use bookclerk_node_client::OwnerCallError;
 use serde::{Deserialize, Serialize};
@@ -134,24 +136,32 @@ pub struct Disconnected {
     pub unreached: Vec<String>,
 }
 
-/// The branch's person, when `caller` is that user and the install's only
-/// active Owner.
+/// `403 not_branch_person`: the caller is not the person this branch (or
+/// this link) belongs to.
+fn not_branch_person() -> Response {
+    join_error(
+        StatusCode::FORBIDDEN,
+        "not_branch_person",
+        "sign in as the person this branch belongs to",
+    )
+}
+
+/// The caller's user id, when `caller` is a signed-in user who is an active
+/// Owner here now. Which links they may use is checked against each link's
+/// person.
 async fn caller_person(state: &Arc<AppState>, caller: UserCaller) -> Result<i64, Response> {
     let UserCaller::User { user_id } = caller else {
-        return Err(join_error(
-            StatusCode::FORBIDDEN,
-            "not_branch_person",
-            "sign in as the person this branch belongs to",
-        ));
+        return Err(not_branch_person());
     };
     let store = state.library_snapshot().await;
-    match branch_person(&store, None).await {
-        Ok(Some(person)) if person == user_id => Ok(user_id),
-        Ok(_) => Err(join_error(
-            StatusCode::FORBIDDEN,
-            "not_branch_person",
-            "sign in as the person this branch belongs to",
-        )),
+    match store.get_user(user_id).await {
+        Ok(Some(user))
+            if user.status == bookclerk_library::UserStatus::Active
+                && user.role == bookclerk_library::UserRole::Owner =>
+        {
+            Ok(user_id)
+        }
+        Ok(_) => Err(not_branch_person()),
         Err(err) => Err(crate::config_authority::events_error(err)),
     }
 }
@@ -202,6 +212,11 @@ pub async fn post_join_connections(
         }
         Err(err) => return crate::config_authority::events_error(err),
     };
+    // Only the person who joined through this link adds through it: the
+    // library files what arrives under its branch owner.
+    if link.person_user_id != Some(person) {
+        return not_branch_person();
+    }
     let shareable = crate::node_api::branch::shareable_plugin_keys(&state, &store).await;
     let picked = &body.accounts;
     let keep = move |plugin_key: &str, account_id: &str| {
@@ -317,6 +332,9 @@ pub async fn post_join_connections_disconnect(
             .into_iter()
             // A link this install left or lost still names a library that
             // holds the account: it is tried, and reported unreached.
+            // Only links this person joined: another Owner's library files
+            // what arrives from this branch under that Owner.
+            .filter(|link| link.person_user_id == Some(person))
             .filter(|link| peers.contains(&link_peer(&link.owner_cluster_id)))
             .collect();
     }

@@ -243,10 +243,13 @@ accounts and which of them would travel.
 ### Adding connections later, and disconnecting everywhere
 
 A branch's person can add store connections to a library the branch
-already joined, and take one back from every library at once. Both act
-only for the person the branch belongs to: the branch's single active
-Owner. Anyone else, and any caller on a branch with several Owners (the
-link doesn't record whose join it was), gets `403 not_branch_person`.
+already joined, and take one back from every library at once. The join
+binds each link to its person: the Owner who signed in to run the join,
+or else the branch's single active Owner (a join that can name neither
+binds nobody). Only an active Owner may call these routes, and only
+through the links they joined: anyone else, or an add through another
+Owner's link, gets `403 not_branch_person`, and a disconnect leaves other
+Owners' libraries alone.
 Each call to a library is bounded at 12 seconds, inside the routes'
 30-second deadline; the branch runs one such request at a time, so an
 offer never reaches a library after a disconnect reported the account
@@ -813,8 +816,8 @@ in the library, marked as from a branch that left (see
 - Store connections travel only with a sign-in join, not an invite, and
   only shareable stores' accounts. One refresh keeper for single-keeper
   stores such as Audible is still to come.
-- Adding connections later and disconnecting everywhere need a branch
-  with a single active Owner.
+- Adding connections later and disconnecting everywhere work only
+  through links the join could bind to a person.
 
 ## Next steps
 
