@@ -5,7 +5,7 @@
 //! client shuts down) is cancelled, and a waiting report keeps renewing.
 
 use bookclerk_library::control_plane::{ClusterLinkKeys, CLUSTER_LINK_ACTIVE};
-use bookclerk_node_proto::{box_public_key, encode_nonce, SUBPROTOCOL};
+use bookclerk_node_proto::{box_public_key, encode_nonce, ClaimScope, SUBPROTOCOL};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -158,6 +158,8 @@ fn start_configured<R: HostJobRunner>(
         share_books: true,
         include_branches: true,
         ancestry: Vec::new(),
+        work_for_members: false,
+        keep_member_copies: false,
     };
     let (client, handle) = HostClient::new(
         HostClientConfig {
@@ -190,6 +192,7 @@ fn work(job_id: &str, fence: i64, lease_secs: u64) -> Body {
             payload: serde_json::json!({}),
             attempt: 1,
             scan_import: None,
+            for_node_owner: true,
         },
         fence,
         lease_secs,
@@ -331,6 +334,46 @@ async fn unanswered_heartbeats_and_claims_are_retried() {
     assert!(beats >= 3, "heartbeats continue after a timeout: {beats}");
     assert!(claims >= 2, "claims continue after a timeout: {claims}");
     assert_eq!(*handle.connections().borrow(), 1, "on the same connection");
+}
+
+/// Claims ask only for the node owner's work until the link's "Download
+/// for other members" setting is turned on, and later claims follow it.
+#[tokio::test]
+async fn claims_carry_the_links_scope() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (handle, _stop) = start(listener.local_addr().unwrap().port(), 1);
+    assert_eq!(handle.claim_scope(), ClaimScope::Own);
+    let mut socket = accept(&listener).await;
+    let scopes = |frames: Vec<Frame>| -> Vec<ClaimScope> {
+        frames
+            .into_iter()
+            .filter_map(|frame| match frame.body {
+                Body::Claim {
+                    filter: Some(filter),
+                    ..
+                } => Some(filter.scope),
+                _ => None,
+            })
+            .collect()
+    };
+    let answer = |frame: &Frame| match &frame.body {
+        Body::Heartbeat { .. } => Some(Body::Accepted {}),
+        Body::Claim { .. } => Some(Body::NoWork {
+            retry_after_secs: 1,
+        }),
+        _ => None,
+    };
+    let before = scopes(read_for(&mut socket, Duration::from_millis(1500), answer).await);
+    assert!(!before.is_empty(), "the host claims");
+    assert!(before.iter().all(ClaimScope::is_own), "{before:?}");
+
+    handle.set_claim_scope(ClaimScope::AllMembers);
+    assert_eq!(handle.claim_scope(), ClaimScope::AllMembers);
+    let after = scopes(read_for(&mut socket, Duration::from_millis(2500), answer).await);
+    assert!(
+        after.contains(&ClaimScope::AllMembers),
+        "later claims take other members' work: {after:?}"
+    );
 }
 
 /// A wake no subscriber receives is not acked; once a subscriber is

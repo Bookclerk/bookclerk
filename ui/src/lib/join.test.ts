@@ -17,6 +17,7 @@ import {
   listClerks,
   looksLikeBranchInvite,
   parseJoinCallback,
+  setBranchSharing,
 } from "./join";
 import { isAppPath, joinPage } from "./routes";
 
@@ -239,6 +240,29 @@ describe("answerBranchConsent", () => {
     const denied = JSON.parse(String(fetchMock.mock.calls[1][1].body));
     expect(denied.approve).toBe(false);
     expect(denied).not.toHaveProperty("step_up");
+  });
+});
+
+describe("setBranchSharing", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends the work settings only when given", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify({ cluster: {} }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await setBranchSharing("c1", true, false);
+    await setBranchSharing("c1", true, false, { workForMembers: true, keepMemberCopies: false });
+    const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1].body)));
+    expect(bodies[0]).toEqual({ cluster_id: "c1", share_books: true, include_branches: false });
+    expect(bodies[1]).toEqual({
+      cluster_id: "c1",
+      share_books: true,
+      include_branches: false,
+      work_for_members: true,
+      keep_member_copies: false,
+    });
   });
 });
 

@@ -778,6 +778,7 @@ fn filter(kinds: &[&str], plugins: &[&str]) -> JobClaimFilter {
     JobClaimFilter {
         kinds: kinds.iter().map(|k| (*k).to_string()).collect(),
         plugin_keys: plugins.iter().map(|p| (*p).to_string()).collect(),
+        scope: bookclerk_node_proto::ClaimScope::AllMembers,
     }
 }
 
@@ -4087,4 +4088,59 @@ async fn record_for_book(
         .record_edition_file(destination, key, &owner, FileRole::for_key(key, None))
         .await
         .map(|recorded| assert!(recorded, "{key} is another edition's"))
+}
+
+/// An Administrator's branch takes only its owner's work unless its claim
+/// asks for every member's: another member's job stays pending under
+/// [`ClaimScope::Own`], is claimed under
+/// [`ClaimScope::AllMembers`], and the owner's own job is claimed either
+/// way. A job is the node owner's only when every account it touches is.
+#[tokio::test]
+async fn an_administrators_branch_takes_other_members_work_only_when_asked() {
+    use crate::control_plane::job_for_node_owner;
+    use bookclerk_node_proto::ClaimScope;
+
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    let alex = store
+        .create_user(UserRole::Administrator, Some("Alex"), None)
+        .await
+        .unwrap()
+        .id;
+    let sam = store
+        .create_user(UserRole::Member, Some("Sam"), None)
+        .await
+        .unwrap()
+        .id;
+    add_account(&store, "alex-acct").await;
+    add_account(&store, "sam-acct").await;
+    link(&store, alex, "alex-acct").await;
+    link(&store, sam, "sam-acct").await;
+    add_host(&store, alex).await;
+    save_token(&store, "alex-acct", "alex-token").await;
+    save_token(&store, "sam-acct", "sam-token").await;
+    let sams = enqueue(&store, JobKind::Scan, "sam-acct").await;
+
+    let own = JobClaimFilter {
+        scope: ClaimScope::Own,
+        ..filter(&["scan"], &[PLUGIN])
+    };
+    assert!(claim_filtered(&store, &own).await.is_none());
+    let sams_job = store.get_job(&sams).await.unwrap().unwrap();
+    assert!(!job_for_node_owner(&store, HOST, &sams_job).await.unwrap());
+
+    let alexs = enqueue(&store, JobKind::Scan, "alex-acct").await;
+    let claimed = claim_filtered(&store, &own)
+        .await
+        .expect("the owner's own job is claimed");
+    assert_eq!(claimed.job.id, alexs);
+    assert!(job_for_node_owner(&store, HOST, &claimed.job)
+        .await
+        .unwrap());
+
+    let claimed = claim_filtered(&store, &filter(&["scan"], &[PLUGIN]))
+        .await
+        .expect("asked for, another member's job is claimed");
+    assert_eq!(claimed.job.id, sams);
 }

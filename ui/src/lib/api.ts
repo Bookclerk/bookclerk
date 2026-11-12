@@ -2434,6 +2434,10 @@ export interface ClusterLinkView {
   share_books?: boolean;
   /** "Include books from my own branches" (on by default). */
   include_branches?: boolean;
+  /** "Download for other members of <library>" (off by default). */
+  work_for_members?: boolean;
+  /** "Keep copies of other members' books" (off by default). */
+  keep_member_copies?: boolean;
 }
 
 /**

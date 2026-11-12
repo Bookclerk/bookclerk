@@ -66,9 +66,9 @@ use bookclerk_library::control_plane::{
 use bookclerk_node_proto::{
     decode_nonce, open_instance_secrets, open_secrets, open_upload_token, seal_secret_update,
     sign_artifact_request, sign_auth, validate_box_public_key, AcquireTarget, ArtifactRequest,
-    AuthContext, Body, CatalogRef, CatalogTitle, ClaimFilter, Frame, HeldFence, PlanDestination,
-    SealError, SecretEntry, SecretRef, SecretValue, SigningKey, UploadAnswer, UploadCommitRequest,
-    UploadFile, ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED,
+    AuthContext, Body, CatalogRef, CatalogTitle, ClaimFilter, ClaimScope, Frame, HeldFence,
+    PlanDestination, SealError, SecretEntry, SecretRef, SecretValue, SigningKey, UploadAnswer,
+    UploadCommitRequest, UploadFile, ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED,
     HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES,
     UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
 };
@@ -315,6 +315,9 @@ pub(crate) struct Shared {
     claim_kinds: BTreeSet<String>,
     /// Plugin keys this host's operator consents to now.
     consented: watch::Sender<BTreeSet<String>>,
+    /// Whose work this host takes now (the link's "Download for other
+    /// members" setting).
+    claim_scope: watch::Sender<ClaimScope>,
     /// Fences held, by job id.
     held: Mutex<HashMap<String, HeldJob>>,
     /// The live connection, if any.
@@ -449,6 +452,7 @@ impl Shared {
         Some(ClaimFilter {
             kinds: self.claim_kinds.iter().cloned().collect(),
             plugins: consented.iter().cloned().collect(),
+            scope: *self.claim_scope.borrow(),
         })
     }
 
@@ -872,6 +876,23 @@ impl HostClientHandle {
         self.shared.consented.borrow().clone()
     }
 
+    /// Sets whose work later claims take. Jobs already held keep running:
+    /// the setting decides what this host asks for, and the library hands
+    /// only work the node is trusted with either way.
+    pub fn set_claim_scope(&self, scope: ClaimScope) {
+        self.shared.claim_scope.send_if_modified(|current| {
+            let changed = *current != scope;
+            *current = scope;
+            changed
+        });
+    }
+
+    /// Whose work claims take now.
+    #[must_use]
+    pub fn claim_scope(&self) -> ClaimScope {
+        *self.shared.claim_scope.borrow()
+    }
+
     /// Sends `body` on the live connection (waiting up to the request
     /// timeout for one) and answers the owner's frame, or `None` when no
     /// connection answered.
@@ -1224,6 +1245,7 @@ impl<R: HostJobRunner> HostClient<R> {
         let (connections, _) = watch::channel(0);
         let (refreshed, _) = watch::channel(0);
         let (consented, _) = watch::channel(BTreeSet::new());
+        let (claim_scope, _) = watch::channel(config.link.claim_scope());
         let (wakes, _) = broadcast::channel(WAKE_BUFFER);
         let shared = Arc::new(Shared {
             endpoint,
@@ -1237,6 +1259,7 @@ impl<R: HostJobRunner> HostClient<R> {
             max_jobs: config.max_jobs,
             claim_kinds: config.claim_kinds.into_iter().collect(),
             consented,
+            claim_scope,
             held: Mutex::new(HashMap::new()),
             conn,
             connections,

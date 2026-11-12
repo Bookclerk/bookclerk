@@ -5,7 +5,9 @@
 //! its own database and receives a job's secrets from the owner, so what it
 //! may claim follows the role of the user who owns it:
 //!
-//! - an active Owner or Administrator's Host may claim every job;
+//! - an active Owner or Administrator's Host may claim every job, though
+//!   a Host's claim filter can narrow that to its owner's own work
+//!   ([`node_trust_in_scope`], `ClaimScope::Own`, a branch's default);
 //! - any other active user's Host may claim a job only when every secret
 //!   the job needs belongs to that user. For a scan or acquire that means a
 //!   named store account, every `accounts` row of which (within the pinned
@@ -34,6 +36,8 @@ use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+use bookclerk_node_proto::ClaimScope;
 
 use super::enrollment::load_node_credential;
 use super::instances::{default_instance_for_key, load_plugin_instance, PluginInstanceId};
@@ -278,7 +282,44 @@ pub fn book_matches_title(book: &BookRecord, id: &str) -> bool {
             .is_some_and(|x| id.eq_ignore_ascii_case(x))
 }
 
-/// True when `node_id` may claim `job` right now.
+/// What `node_id` is trusted with for a claim of `scope`.
+///
+/// [`ClaimScope::Own`] narrows a Host trusted with every job
+/// ([`NodeTrust::All`], an Owner's or Administrator's) to the work of the
+/// user who owns it, as a branch takes only its owner's work unless its
+/// operator turned on "Download for other members". A scope never widens
+/// trust, and an owner node, which shares the database, keeps every job.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn node_trust_in_scope(
+    store: &LibraryStore,
+    node_id: &str,
+    claimant: Claimant,
+    scope: ClaimScope,
+) -> Result<NodeTrust> {
+    let trust = node_trust(store, node_id, claimant).await?;
+    if trust != NodeTrust::All || scope == ClaimScope::AllMembers {
+        return Ok(trust);
+    }
+    let Some(row) = nodes::Entity::find_by_id(node_id.to_string())
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+    else {
+        // A worker in this process (no `nodes` row) holds the database.
+        return Ok(trust);
+    };
+    if row.kind == "owner" {
+        return Ok(trust);
+    }
+    Ok(row
+        .owner_user_id
+        .map_or(NodeTrust::Nothing, NodeTrust::OwnedBy))
+}
+
+/// True when `node_id` may claim `job` right now, whoever's work it is.
 ///
 /// # Errors
 ///
@@ -289,11 +330,50 @@ pub async fn node_may_claim_job(
     claimant: Claimant,
     job: &JobRecord,
 ) -> Result<bool> {
+    node_may_claim_job_in_scope(store, node_id, claimant, ClaimScope::AllMembers, job).await
+}
+
+/// True when `node_id` may claim `job` right now under a claim of `scope`
+/// ([`node_trust_in_scope`]).
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn node_may_claim_job_in_scope(
+    store: &LibraryStore,
+    node_id: &str,
+    claimant: Claimant,
+    scope: ClaimScope,
+    job: &JobRecord,
+) -> Result<bool> {
     if !claimant_may_run(claimant, job) {
         return Ok(false);
     }
-    let trust = node_trust(store, node_id, claimant).await?;
+    let trust = node_trust_in_scope(store, node_id, claimant, scope).await?;
     job_trusted(store, &trust, job).await
+}
+
+/// True when every store account `job` touches belongs to the user who
+/// owns `node_id`: the job is the branch owner's own work
+/// ([`bookclerk_node_proto::WorkJob::for_node_owner`]).
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn job_for_node_owner(
+    store: &LibraryStore,
+    node_id: &str,
+    job: &JobRecord,
+) -> Result<bool> {
+    let owner = nodes::Entity::find_by_id(node_id.to_string())
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+        .and_then(|row| row.owner_user_id);
+    let Some(owner) = owner else {
+        return Ok(false);
+    };
+    job_trusted(store, &NodeTrust::OwnedBy(owner), job).await
 }
 
 /// Whom library work a remote node asks for runs as (a `scan.request` over
@@ -370,7 +450,8 @@ pub async fn remote_node_may_view_job(
 ///   fence (same lease owner and generation), that owner is
 ///   `request.owner`, and the lease has not expired. A claim that was
 ///   reclaimed, finished, released, or left to expire is not handed over;
-/// - the node is still trusted with the job ([`node_may_claim_job`]).
+/// - the node is still trusted with the job under the claim's scope
+///   ([`node_may_claim_job_in_scope`]).
 ///
 /// Ownership is checked again after the trust reads, so a lease lost while
 /// they ran is refused too.
@@ -394,7 +475,14 @@ pub async fn handoff_routed_job(
     let current = store.get_job(&claim.job.id).await?;
     let trusted = match &current {
         Some(job) if claim_owns_job(&claim.job, job, request.owner, Utc::now()) => {
-            node_may_claim_job(store, request.node_id, request.claimant, job).await?
+            node_may_claim_job_in_scope(
+                store,
+                request.node_id,
+                request.claimant,
+                request.scope(),
+                job,
+            )
+            .await?
         }
         _ => false,
     };

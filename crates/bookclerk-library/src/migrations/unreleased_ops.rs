@@ -1405,7 +1405,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         enrolled_at TEXT NOT NULL,
         share_books INTEGER NOT NULL DEFAULT 1 CHECK (share_books IN (0, 1)),
         include_branches INTEGER NOT NULL DEFAULT 1 CHECK (include_branches IN (0, 1)),
-        ancestry_json TEXT NOT NULL DEFAULT '[]'
+        ancestry_json TEXT NOT NULL DEFAULT '[]',
+        work_for_members INTEGER NOT NULL DEFAULT 0 CHECK (work_for_members IN (0, 1)),
+        keep_member_copies INTEGER NOT NULL DEFAULT 0 CHECK (keep_member_copies IN (0, 1))
     )",
     ),
     MigrationOp::Schema(

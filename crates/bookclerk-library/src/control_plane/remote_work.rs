@@ -47,7 +47,8 @@ use super::semaphore::{
     permits_with_holder_prefix, release_permits, renew_permits, SemaphorePermit,
 };
 use super::trust::{
-    accounts_named, handoff_routed_job, node_may_claim_job, node_trust, Claimant, NodeTrust,
+    accounts_named, handoff_routed_job, node_may_claim_job, node_may_claim_job_in_scope,
+    node_trust, Claimant, NodeTrust,
 };
 use crate::entities::{encrypted_secrets, job_secret_handoffs};
 use crate::error::{LibraryError, Result};
@@ -280,7 +281,14 @@ pub async fn claim_remote_job(
             // Trust can change while the secrets are read: check it once
             // more right before they are recorded and handed out. Every
             // later frame under the fence checks it again.
-            let still_trusted = node_may_claim_job(store, node_id, Claimant::Remote, &job).await;
+            let still_trusted = node_may_claim_job_in_scope(
+                store,
+                node_id,
+                Claimant::Remote,
+                request.scope(),
+                &job,
+            )
+            .await;
             if !matches!(still_trusted, Ok(true)) {
                 give_back_claim(store, &fence, &permits, resumed).await;
                 return still_trusted.map(|_| None);

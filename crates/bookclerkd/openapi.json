@@ -13493,7 +13493,7 @@
         "tags": [
           "Cluster"
         ],
-        "summary": "`POST /api/config/join/sharing`: Settings → Library's two sharing\nsettings for one library this install is a branch of. The operator or\nan Owner (verified from the stored role); anyone else gets 403.",
+        "summary": "`POST /api/config/join/sharing`: Settings → Library's sharing and work\nsettings for one library this install is a branch of. The operator or\nan Owner (verified from the stored role); anyone else gets 403.",
         "operationId": "post_join_sharing",
         "requestBody": {
           "content": {
@@ -27526,7 +27526,9 @@
           "state",
           "enrolled_at",
           "share_books",
-          "include_branches"
+          "include_branches",
+          "work_for_members",
+          "keep_member_copies"
         ],
         "properties": {
           "cluster_id": {
@@ -27568,6 +27570,16 @@
             "type": "boolean",
             "description": "\"Include books from my own branches\".",
             "example": true
+          },
+          "work_for_members": {
+            "type": "boolean",
+            "description": "\"Download for other members of the library\": this install takes the library's work for its other members too, not only its owner's (off by default).",
+            "example": false
+          },
+          "keep_member_copies": {
+            "type": "boolean",
+            "description": "\"Keep copies of other members' books\": a book acquired here for another member is also written to this install's own destinations (off by default).",
+            "example": false
           },
           "running": {
             "type": [
@@ -36723,6 +36735,22 @@
             "type": "boolean",
             "description": "\"Include books from my own branches\".",
             "example": false
+          },
+          "work_for_members": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "\"Download for other members of *library*\": take the library's work\nfor its other members too, not only this install owner's. Absent\nkeeps the current setting.",
+            "example": false
+          },
+          "keep_member_copies": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "\"Keep copies of other members' books\": also write a book acquired\nhere for another member to this install's own destinations. Absent\nkeeps the current setting.",
+            "example": false
           }
         },
         "additionalProperties": false
@@ -36752,7 +36780,7 @@
             "items": {
               "$ref": "#/components/schemas/ClusterLinkView"
             },
-            "description": "Every library this install is a branch of, with its two sharing settings."
+            "description": "Every library this install is a branch of, with its sharing and work settings."
           }
         }
       },

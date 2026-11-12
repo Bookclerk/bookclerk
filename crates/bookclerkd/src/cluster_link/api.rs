@@ -89,6 +89,8 @@ pub(crate) fn link_json(link: &ClusterLink) -> ClusterLinkView {
         enrolled_at: link.enrolled_at.clone(),
         share_books: link.share_books,
         include_branches: link.include_branches,
+        work_for_members: link.work_for_members,
+        keep_member_copies: link.keep_member_copies,
         running: None,
     }
 }
@@ -120,6 +122,12 @@ pub struct ClusterLinkView {
     /// "Include books from my own branches".
     #[schema(example = true)]
     pub include_branches: bool,
+    /// "Download for other members of the library": this install takes the library's work for its other members too, not only its owner's (off by default).
+    #[schema(example = false)]
+    pub work_for_members: bool,
+    /// "Keep copies of other members' books": a book acquired here for another member is also written to this install's own destinations (off by default).
+    #[schema(example = false)]
+    pub keep_member_copies: bool,
     /// Whether this install's client for the link is running now; only the join routes report it.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = true)]

@@ -145,6 +145,12 @@ pub struct ClusterLink {
     /// The owner library's ancestry as it last reported it: its own
     /// cluster id first, then each library above it.
     pub ancestry: Vec<String>,
+    /// "Download for other members of *library*" (off by default): with it
+    /// off the branch takes only its owner's work from the library.
+    pub work_for_members: bool,
+    /// "Keep copies of other members' books" (off by default): with it off
+    /// a book acquired for another member goes only to the library.
+    pub keep_member_copies: bool,
 }
 
 impl ClusterLink {
@@ -152,6 +158,16 @@ impl ClusterLink {
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.state == CLUSTER_LINK_ACTIVE
+    }
+
+    /// Whose work the branch takes from this library.
+    #[must_use]
+    pub fn claim_scope(&self) -> bookclerk_node_proto::ClaimScope {
+        if self.work_for_members {
+            bookclerk_node_proto::ClaimScope::AllMembers
+        } else {
+            bookclerk_node_proto::ClaimScope::Own
+        }
     }
 }
 
@@ -171,6 +187,8 @@ impl From<cluster_links::Model> for ClusterLink {
                 .into_iter()
                 .filter(|id| bookclerk_node_proto::is_cluster_id(id))
                 .collect(),
+            work_for_members: row.work_for_members != 0,
+            keep_member_copies: row.keep_member_copies != 0,
         }
     }
 }
@@ -264,6 +282,8 @@ pub async fn record_cluster_link(
         share_books: Set(1),
         include_branches: Set(1),
         ancestry_json: Set("[]".into()),
+        work_for_members: Set(0),
+        keep_member_copies: Set(0),
     };
     let insert = cluster_links::Entity::insert(row).on_conflict(
         OnConflict::column(cluster_links::Column::OwnerClusterId)
@@ -463,6 +483,43 @@ pub async fn set_cluster_link_sharing(
             sea_orm::Condition::any()
                 .add(cluster_links::Column::ShareBooks.ne(i64::from(share_books)))
                 .add(cluster_links::Column::IncludeBranches.ne(i64::from(include_branches))),
+        );
+    let updated = store
+        .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
+        .await?;
+    Ok(updated == 1)
+}
+
+/// Sets a link's two work settings: "Download for other members of
+/// *library*" and "Keep copies of other members' books". Answers false
+/// when no such link exists. The running client claims under the new
+/// scope from its next consent check.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn set_cluster_link_work(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    work_for_members: bool,
+    keep_member_copies: bool,
+) -> Result<bool> {
+    let update = cluster_links::Entity::update_many()
+        .col_expr(
+            cluster_links::Column::WorkForMembers,
+            Expr::value(i64::from(work_for_members)),
+        )
+        .col_expr(
+            cluster_links::Column::KeepMemberCopies,
+            Expr::value(i64::from(keep_member_copies)),
+        )
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id));
+    let probe = cluster_links::Entity::find()
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(
+            sea_orm::Condition::any()
+                .add(cluster_links::Column::WorkForMembers.ne(i64::from(work_for_members)))
+                .add(cluster_links::Column::KeepMemberCopies.ne(i64::from(keep_member_copies))),
         );
     let updated = store
         .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))

@@ -30,11 +30,14 @@
 //!   invite; the link is used once and not kept.
 //! - `POST /api/config/join/leave` `{cluster_id}`: Leave library.
 //! - `GET /api/config/join/sharing`: the libraries this install is a
-//!   branch of, with their two sharing settings.
+//!   branch of, with their sharing and work settings.
 //! - `POST /api/config/join/sharing` `{cluster_id, share_books,
-//!   include_branches}`: Settings → Library's "Share this branch's books
-//!   with *library*" and "Include books from my own branches"; the
-//!   catalog sync reports them to the library at once.
+//!   include_branches, work_for_members?, keep_member_copies?}`: Settings →
+//!   Library's "Share this branch's books with *library*" and "Include
+//!   books from my own branches", which the catalog sync reports to the
+//!   library at once, and "Download for other members of *library*" and
+//!   "Keep copies of other members' books", which the link's client claims
+//!   and copies under from its next consent check.
 //!
 //! Inspect and start refuse a library whose ancestry names this library's
 //! own cluster id (409 `join_cycle`), so a tree of libraries never loops;
@@ -306,7 +309,7 @@ pub struct LeaveStarted {
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 /// JSON body for `GET /api/config/join/sharing`.
 pub struct SharingSettings {
-    /// Every library this install is a branch of, with its two sharing settings.
+    /// Every library this install is a branch of, with its sharing and work settings.
     pub clusters: Vec<super::api::ClusterLinkView>,
 }
 
@@ -1339,6 +1342,45 @@ pub struct SharingBody {
     /// "Include books from my own branches".
     #[schema(example = false)]
     include_branches: bool,
+    /// "Download for other members of *library*": take the library's work
+    /// for its other members too, not only this install owner's. Absent
+    /// keeps the current setting.
+    #[serde(default)]
+    #[schema(example = false)]
+    work_for_members: Option<bool>,
+    /// "Keep copies of other members' books": also write a book acquired
+    /// here for another member to this install's own destinations. Absent
+    /// keeps the current setting.
+    #[serde(default)]
+    #[schema(example = false)]
+    keep_member_copies: Option<bool>,
+}
+
+/// Applies the body's two work settings to the link with `cluster_id`,
+/// keeping the stored value of each the body leaves out, and answers both
+/// as they now stand: `(work_for_members, keep_member_copies)`.
+///
+/// # Errors
+///
+/// Returns the read or write error.
+async fn work_settings(
+    store: &bookclerk_library::LibraryStore,
+    cluster_id: &str,
+    body: &SharingBody,
+) -> bookclerk_library::Result<(bool, bool)> {
+    let current = bookclerk_library::control_plane::load_cluster_link(store, cluster_id).await?;
+    let (stored_work, stored_copies) = current.as_ref().map_or((false, false), |link| {
+        (link.work_for_members, link.keep_member_copies)
+    });
+    let work = (
+        body.work_for_members.unwrap_or(stored_work),
+        body.keep_member_copies.unwrap_or(stored_copies),
+    );
+    if work != (stored_work, stored_copies) {
+        bookclerk_library::control_plane::set_cluster_link_work(store, cluster_id, work.0, work.1)
+            .await?;
+    }
+    Ok(work)
 }
 
 /// `GET /api/config/join/sharing`: Settings → Library for the operator or
@@ -1375,7 +1417,7 @@ pub async fn get_join_sharing(
     }
 }
 
-/// `POST /api/config/join/sharing`: Settings → Library's two sharing
+/// `POST /api/config/join/sharing`: Settings → Library's sharing and work
 /// settings for one library this install is a branch of. The operator or
 /// an Owner (verified from the stored role); anyone else gets 403.
 #[utoipa::path(
@@ -1429,17 +1471,25 @@ pub async fn post_join_sharing(
         }
         Err(err) => return crate::config_authority::events_error(err),
     }
+    let work = match work_settings(&store, cluster_id, &body).await {
+        Ok(work) => work,
+        Err(err) => return crate::config_authority::events_error(err),
+    };
     tracing::info!(
         %cluster_id,
         %actor,
         share_books = body.share_books,
         include_branches = body.include_branches,
+        work_for_members = work.0,
+        keep_member_copies = work.1,
         "branch sharing settings changed"
     );
     let detail = json!({
         "cluster_id": cluster_id,
         "share_books": body.share_books,
         "include_branches": body.include_branches,
+        "work_for_members": work.0,
+        "keep_member_copies": work.1,
     })
     .to_string();
     if let Err(err) = store
@@ -1454,6 +1504,9 @@ pub async fn post_join_sharing(
         );
     }
     super::catalog_sync::notify_sharing_changed();
+    // The link's client claims under the new scope from its next consent
+    // check; this runs one now.
+    super::consent::notify_consent_changed();
     match bookclerk_library::control_plane::load_cluster_link(&store, cluster_id).await {
         Ok(Some(link)) => Json(SharingChanged {
             cluster: link_json(&link),

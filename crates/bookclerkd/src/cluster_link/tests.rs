@@ -1449,6 +1449,8 @@ mod results_and_uploads {
         entered: Arc<AtomicBool>,
         /// Set when a blocked scan's call was dropped.
         dropped: Arc<AtomicBool>,
+        /// The link's "Keep copies of other members' books".
+        keep_member_copies: bool,
     }
 
     /// Sets its flag when dropped.
@@ -1517,6 +1519,10 @@ mod results_and_uploads {
                 pdf_key: None,
                 keys,
             })
+        }
+
+        async fn keeps_member_copies(&self) -> bool {
+            self.keep_member_copies
         }
 
         async fn local_destinations(&self) -> anyhow::Result<Vec<Box<dyn StorageBackend>>> {
@@ -1911,6 +1917,135 @@ mod results_and_uploads {
                 "{value} reached the logs as base64"
             );
         }
+    }
+
+    /// Acquires Sam's title on an Administrator's branch that asks for
+    /// every member's work, with the link's "Keep copies of other members'
+    /// books" set to `keep`, and answers whether the branch's own
+    /// destination got a copy. The owner's destination always gets it.
+    async fn branch_keeps_another_members_title(keep: bool) -> bool {
+        let world = linked().await;
+        let riley = world
+            .owner
+            .list_users()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|user| user.display_name.as_deref() == Some("Riley"))
+            .expect("the branch's owner")
+            .id;
+        world
+            .owner
+            .set_user_role(riley, UserRole::Administrator)
+            .await
+            .unwrap();
+        let sam = world
+            .owner
+            .create_user(UserRole::Member, Some("Sam"), None)
+            .await
+            .unwrap();
+        world
+            .owner
+            .upsert_account(PLUGIN, "sam-acct", "us", None, true, "test")
+            .await
+            .unwrap();
+        let identity = world
+            .owner
+            .ensure_local_portal_identity(sam.id, None)
+            .await
+            .unwrap();
+        world
+            .owner
+            .link_account(identity.id, PLUGIN, "sam-acct", "test")
+            .await
+            .unwrap();
+        let record = build_sealed_record(
+            b"sam-token",
+            secret_kind::SOURCE_AUTH,
+            PLUGIN,
+            secret_account_type::INTEGRATION,
+            "sam-acct",
+            "sam-acct.auth",
+        )
+        .unwrap();
+        upsert_secret(world.owner.db(), &record).await.unwrap();
+        let owner_out = tempfile::tempdir().unwrap();
+        let host_local = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("sam-acct", "s1"))
+            .await
+            .unwrap();
+        let guests = StubGuests {
+            payload: Arc::new(b"sam's audio".to_vec()),
+            local: Some(host_local.path().to_path_buf()),
+            work: world.host_files.path().join("cluster-work"),
+            keep_member_copies: keep,
+            ..StubGuests::default()
+        };
+        // The branch's operator turns on "Download for other members"; the
+        // link's consent check tells the running client.
+        bookclerk_library::control_plane::set_cluster_link_work(
+            &world.host,
+            &world.link.owner_cluster_id,
+            true,
+            keep,
+        )
+        .await
+        .unwrap();
+        let (handle, _stop) = start(&world, guests).await;
+        eventually("the client to claim every member's work", || async {
+            handle.claim_scope() == bookclerk_node_proto::ClaimScope::AllMembers
+        })
+        .await;
+        let job_id = match world
+            .owner
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Acquire,
+                payload: JobPayload {
+                    account: Some("sam-acct".into()),
+                    ..Default::default()
+                },
+                priority: 0,
+                max_attempts: 3,
+                max_pending: 256,
+                run_after: None,
+            })
+            .await
+            .unwrap()
+        {
+            EnqueueOutcome::Created { id } => id,
+            other => panic!("expected a new job: {other:?}"),
+        };
+        eventually("the branch to acquire Sam's title", || async {
+            job(&world.owner, &job_id).await.state == JobState::Succeeded
+        })
+        .await;
+        let key = world
+            .owner
+            .get_book_by_uuid(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap()
+            .storage_key
+            .unwrap_or_default();
+        assert_eq!(
+            std::fs::read(owner_out.path().join(&key)).unwrap(),
+            b"sam's audio",
+            "the library's destination has the file"
+        );
+        host_local.path().join(&key).exists()
+    }
+
+    /// A branch keeps no copy of a book it acquired for another member
+    /// unless "Keep copies of other members' books" is on.
+    #[tokio::test]
+    async fn another_members_book_is_kept_only_when_asked() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        assert!(!branch_keeps_another_members_title(false).await);
+        assert!(branch_keeps_another_members_title(true).await);
     }
 
     /// A title whose edition another account's copy already holds on every

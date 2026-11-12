@@ -486,6 +486,7 @@ fn claim_filter(filter: ClaimFilter) -> Result<JobClaimFilter, ()> {
     Ok(JobClaimFilter {
         kinds: filter.kinds.into_iter().collect(),
         plugin_keys: filter.plugins.into_iter().collect(),
+        scope: filter.scope,
     })
 }
 
@@ -559,6 +560,12 @@ async fn claim(
     };
     drop(secrets);
     let scan_import = scan_import(host, job.kind).await;
+    // A read failure only loses the hint: the branch then treats the job
+    // as another member's and keeps no copy unless asked to.
+    let for_node_owner =
+        bookclerk_library::control_plane::job_for_node_owner(library, &host.node_id, &job)
+            .await
+            .unwrap_or(false);
     let work = sealed.ok().map(|sealed_secrets| {
         Frame::new(
             id.clone(),
@@ -570,6 +577,7 @@ async fn claim(
                     payload: serde_json::to_value(&job.payload).unwrap_or_default(),
                     attempt: job.attempt_count,
                     scan_import,
+                    for_node_owner,
                 },
                 fence,
                 lease_secs: host.settings.lease_secs,
