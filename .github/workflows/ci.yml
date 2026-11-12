@@ -112,6 +112,7 @@ jobs:
       release_mode: ${{ steps.resolve.outputs.release_mode }}
       os_matrix: ${{ steps.resolve.outputs.os_matrix }}
       os_legs: ${{ steps.resolve.outputs.os_legs }}
+      test_parts: ${{ steps.resolve.outputs.test_parts }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -485,7 +486,7 @@ jobs:
         run: python3 scripts/ci-exec.py run store_free
 
   test:
-    name: unit + integration tests${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('test-{0}', strategy.job-index)].label }}
+    name: unit + integration tests${{ strategy.job-total > 1 && format(' ({0}/{1})', matrix.part, strategy.job-total) || '' }}${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('test-{0}', strategy.job-index)].label }}
     # Pull request runs wait in the lane the plan picked, so they leave
     # runners for the merge queue (docs/contributing/ci.md#pull-request-lanes).
     concurrency:
@@ -495,9 +496,17 @@ jobs:
     if: needs.plan.outputs.job_test == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # A whole-workspace run splits into parts (`test_parts`, TEST_PARTS in
+    # scripts/ci_plan/execute.py): each compiles every test binary and runs
+    # its share of the tests (docs/contributing/ci.md#test-runner-and-retries).
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ${{ fromJSON(needs.plan.outputs.test_parts) }}
     env:
       BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: "1"
       BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
+      CI_TEST_PART: ${{ format('{0}/{1}', matrix.part, strategy.job-total) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -574,6 +583,7 @@ jobs:
         shell: bash
         run: echo "CI_SAVED_CACHE_CURRENT=true" >> "$GITHUB_ENV"
 
+      # Only the first part saves the key (a build-only main push has one part).
       - name: Cache cargo
         if: env.CI_SAVED_CACHE_CURRENT != 'true'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -581,7 +591,7 @@ jobs:
           shared-key: debug
           env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.part == 1 && !inputs.private-head }}
 
       # Coverage: `cargo llvm-cov show-env` sets a rustc wrapper that
       # instruments only the workspace crates, so dependencies still come
@@ -606,32 +616,40 @@ jobs:
 
       # nextest writes the JUnit report Codecov Test Analytics reads into the
       # workspace (.config/nextest.toml), failed tests included.
+      # Each part keeps its reports under part-<n>/, which the coverage gate
+      # reads together (scripts/coverage_gate.py report_files).
       - name: Keep the Rust test results
         if: ${{ !cancelled() && env.CI_BUILD_ONLY != 'true' }}
+        env:
+          PART: ${{ matrix.part }}
         run: |
           if [ -f target/nextest/ci/junit.xml ]; then
-            mkdir -p "$CI_COVERAGE_DIR/rust"
-            cp target/nextest/ci/junit.xml "$CI_COVERAGE_DIR/rust/junit.xml"
+            mkdir -p "$CI_COVERAGE_DIR/rust/part-$PART"
+            cp target/nextest/ci/junit.xml "$CI_COVERAGE_DIR/rust/part-$PART/junit.xml"
           fi
 
       # The daemon's test build records every response it compared with the
       # OpenAPI document, one file per test process
       # (docs/contributing/ci.md#web-api-contract); CI Gate reports them.
+      # The files are named by process id, so each part keeps its own
+      # directory; CI Gate reads every file under contract/.
       - name: Keep the Web API contract report
         if: ${{ !cancelled() && env.CI_BUILD_ONLY != 'true' }}
+        env:
+          PART: ${{ matrix.part }}
         run: |
           shopt -s nullglob
           reports=(target/contract-report/*.jsonl)
           if [ ${#reports[@]} -gt 0 ]; then
-            mkdir -p "$CI_COVERAGE_DIR/contract"
-            cp "${reports[@]}" "$CI_COVERAGE_DIR/contract/"
+            mkdir -p "$CI_COVERAGE_DIR/contract/part-$PART"
+            cp "${reports[@]}" "$CI_COVERAGE_DIR/contract/part-$PART/"
           fi
 
       - name: Upload the Rust coverage report
         if: ${{ !cancelled() && env.CI_BUILD_ONLY != 'true' && !inputs.private-head }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: coverage-rust
+          name: coverage-rust-${{ matrix.part }}
           path: ${{ runner.temp }}/coverage
           if-no-files-found: ${{ job.status == 'success' && 'error' || 'ignore' }}
           retention-days: 7

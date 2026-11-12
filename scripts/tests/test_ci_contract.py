@@ -49,7 +49,7 @@ def _load() -> dict:
 
 
 def _emitted_keys() -> set[str]:
-    keys = {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs"}
+    keys = {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs", "test_parts"}
     keys |= {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
     keys |= {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]}
     return keys
@@ -463,6 +463,17 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertLess(steps.index(pins[0]), steps.index(install[0]))
         self.assertRegex(install[1]["with"]["tool"], r"^cargo-llvm-cov@\d+\.\d+\.\d+$")
 
+    def test_test_job_splits_into_parts(self) -> None:
+        """Each `test` leg runs one part and keeps its reports apart from the others'."""
+        job = self.jobs["test"]
+        self.assertEqual(job["strategy"], {"fail-fast": False, "matrix": {"part": "${{ fromJSON(needs.plan.outputs.test_parts) }}"}})
+        self.assertEqual(job["env"]["CI_TEST_PART"], "${{ format('{0}/{1}', matrix.part, strategy.job-total) }}")
+        keep = {s["name"]: s for s in job["steps"] if s.get("name", "").startswith("Keep the ")}
+        self.assertIn('"$CI_COVERAGE_DIR/rust/part-$PART/junit.xml"', keep["Keep the Rust test results"]["run"])
+        self.assertIn('"$CI_COVERAGE_DIR/contract/part-$PART/"', keep["Keep the Web API contract report"]["run"])
+        for step in keep.values():
+            self.assertEqual(step["env"]["PART"], "${{ matrix.part }}")
+
     def test_coverage_reports_flow_to_the_gate(self) -> None:
         """Test jobs upload `coverage-*` reports; CI Gate judges them after the job comparison."""
         uploads = {
@@ -471,7 +482,7 @@ class WorkflowContractTests(unittest.TestCase):
             for s in job["steps"]
             if str(s.get("uses", "")).startswith("actions/upload-artifact@") and s["with"]["name"].startswith("coverage-")
         }
-        self.assertEqual(set(uploads), {"coverage-rust", "coverage-check", "coverage-workers"})
+        self.assertEqual(set(uploads), {"coverage-rust-${{ matrix.part }}", "coverage-check", "coverage-workers"})
         for artifact, (job, step) in uploads.items():
             self.assertEqual(step["with"]["path"], "${{ runner.temp }}/coverage", artifact)
             # Not for an unpublished OSV remediation bump (see the plan job).
@@ -719,8 +730,9 @@ class DraftDeferredWorkflowTests(unittest.TestCase):
                 self.assertTrue(body["name"].endswith(f"${{{{ {key}.label }}}}"), body["name"])
                 # The plan knows how many legs the job has on a pull request.
                 matrix = body.get("strategy", {}).get("matrix", {})
-                if job in lanes.OS_MATRIX_JOBS:
-                    self.assertEqual(matrix.get("os"), "${{ fromJSON(needs.plan.outputs.os_matrix) }}")
+                if job in lanes.MATRIX_OUTPUTS:
+                    legs = [v for k, v in matrix.items() if k not in ("include", "exclude")]
+                    self.assertEqual(legs, [f"${{{{ fromJSON(needs.plan.outputs.{lanes.MATRIX_OUTPUTS[job]}) }}}}"], job)
                 elif job in lanes.FIXED_LEGS:
                     legs = [v for k, v in matrix.items() if k not in ("include", "exclude")]
                     self.assertEqual(len(legs), 1, job)

@@ -427,6 +427,10 @@ def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
     out["os_matrix"] = json.dumps(list(LINUX_RUNNERS if linux_only else ALL_RUNNERS), separators=(",", ":"))
     out["os_legs"] = _b(not linux_only)
     out["release_mode"] = plan.params("release").get("mode", "none") if plan.selected("release") else "none"
+    # The `test` job's matrix: one leg per part (see TEST_PARTS). A
+    # build-only `main` push only compiles, so it keeps one leg.
+    split = plan.selected("rust_test") and plan.params("rust_test").get("workspace") and not artifact.get("build_only")
+    out["test_parts"] = json.dumps(list(range(1, (TEST_PARTS if split else 1) + 1)), separators=(",", ":"))
     return out
 
 
@@ -558,6 +562,14 @@ def _pkg_args(pkgs: Sequence[str]) -> list[str]:
 # `<dir>/<area>/junit.xml` for Codecov Test Analytics. Unset, checks run
 # without either.
 COVERAGE_DIR_ENV = "CI_COVERAGE_DIR"
+# Which part of the split `test` job runs (`<part>/<parts>`); see test_part().
+TEST_PART_ENV = "CI_TEST_PART"
+# How many parts the `test` job splits a whole-workspace `rust_test` run
+# into. Each part compiles every test binary and runs every third test
+# (`--partition count:<part>/<parts>`), so the job takes about a third of
+# the time for two more compiles. A selective run of a few packages stays
+# whole: its tests are too few to repay the extra compiles.
+TEST_PARTS = 3
 # Set by the workflow on the jobs that build the web UI and the Workers: each
 # writes its built bundle to `<dir>/<bundle>/` for Codecov Bundle Analysis
 # (docs/contributing/ci.md#bundle-sizes). Unset, nothing is kept.
@@ -583,14 +595,41 @@ def _db_testkit(ctx: Context) -> tuple[Command, dict[str, str]]:
     return build, {"BOOKCLERK_DB_TESTKIT": str(ctx.bin_dir / exe)}
 
 
-def _coverage_report(area: str) -> Path | None:
-    """Where ``area``'s LCOV report goes (its directory created), or ``None`` without coverage."""
+def _coverage_report(area: str, part: tuple[int, int] | None = None) -> Path | None:
+    """Where ``area``'s LCOV report goes (its directory created), or ``None`` without coverage.
+
+    One part of a split test job writes under ``<area>/part-<n>/``, which
+    the coverage gate reads together with the other parts.
+    """
     root = os.environ.get(COVERAGE_DIR_ENV)
     if not root:
         return None
     report = Path(root) / area / "lcov.info"
+    if part is not None:
+        report = Path(root) / area / f"part-{part[0]}" / "lcov.info"
     report.parent.mkdir(parents=True, exist_ok=True)
     return report
+
+
+def test_part() -> tuple[int, int] | None:
+    """Which part of a split ``test`` job this is, from ``CI_TEST_PART``.
+
+    Returns:
+        ``(part, parts)`` for a value ``<part>/<parts>`` with
+        ``1 <= part <= parts <= 9``; ``None`` when the variable is unset or
+        empty (the whole suite in one job).
+
+    Raises:
+        ExecError: The variable is set to anything else, so a typo never
+            silently runs every test in every part, or none.
+    """
+    raw = os.environ.get(TEST_PART_ENV, "")
+    if not raw:
+        return None
+    match = re.fullmatch(r"([1-9])/([1-9])", raw)
+    if match is None or int(match.group(1)) > int(match.group(2)):
+        raise ExecError(f"{TEST_PART_ENV} must be <part>/<parts> with 1 <= part <= parts <= 9, not {raw!r}")
+    return int(match.group(1)), int(match.group(2))
 
 
 def workerd_guest_dirs(workspace: Path) -> list[Path]:
@@ -1117,10 +1156,18 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         env = {**runtime_env, "BOOKCLERK_REQUIRE_TEST_GUESTS": "1"}
         failure_mode = _nextest_mode(event)
         cmds: list[Command] = []
+        part = test_part()
+        if part is not None and part[1] > 1 and not params.get("workspace"):
+            raise ExecError(f"{TEST_PART_ENV}={part[0]}/{part[1]} splits only a whole-workspace rust_test run")
+        # The first part (or the only one) also runs everything nextest
+        # doesn't partition: custom harnesses, feature runs, bench and
+        # example builds.
+        first = part is None or part[0] == 1
+        partition = ["--partition", f"count:{part[0]}/{part[1]}"] if part is not None and part[1] > 1 else []
         # When measuring, the main run also writes a JUnit report; a stale
         # one from an earlier run in the same checkout is cleared first.
         main_mode = failure_mode
-        if _coverage_report("rust") is not None:
+        if _coverage_report("rust", part) is not None:
             cmds.append(Command("clear the JUnit report", ["<mkdir>", str(ctx.workspace / NEXTEST_JUNIT_DIR)]))
             main_mode = [*failure_mode, "--profile", NEXTEST_JUNIT_PROFILE]
         if params.get("workspace"):
@@ -1128,9 +1175,10 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             for ex in params.get("exclude", []):
                 scope += ["--exclude", ex]
             custom = [t for t in CUSTOM_HARNESS_TESTS if t[0] not in params.get("exclude", [])]
-            cmds.append(
-                Command("unit + integration tests (workspace)", [*NEXTEST_RUN, *main_mode, *scope, *_nextest_filter(custom)], env=env)
-            )
+            label = "unit + integration tests (workspace)"
+            if part is not None and partition:
+                label = f"unit + integration tests (workspace, part {part[0]} of {part[1]})"
+            cmds.append(Command(label, [*NEXTEST_RUN, *main_mode, *partition, *scope, *_nextest_filter(custom)], env=env))
         elif params.get("packages"):
             custom = [t for t in CUSTOM_HARNESS_TESTS if t[0] in params["packages"]]
             cmds.append(
@@ -1142,9 +1190,11 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             )
         else:
             custom = []
+        if not first:
+            custom = []
         for pkg, target in custom:
             cmds.append(Command(f"{pkg} {target} (custom harness)", ["cargo", "test", "-p", pkg, "--test", target], env=env))
-        for ft in params.get("feature_tests", []):
+        for ft in params.get("feature_tests", []) if first else []:
             ft_custom = [t for t in CUSTOM_HARNESS_TESTS if t[0] == ft["package"]]
             cmds.append(
                 Command(
@@ -1161,7 +1211,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
                     env=env,
                 )
             )
-        report = _coverage_report("rust")
+        report = _coverage_report("rust", part)
         if report is not None:
             # The workflow instruments the build (`cargo llvm-cov show-env`);
             # a report without it would fail on missing profiles.
@@ -1172,9 +1222,9 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             # with a warning instead of losing the whole report.
             report_args = ["--lcov", "--failure-mode", "all", "--output-path", str(report)]
             cmds.append(Command("coverage report", ["cargo", "llvm-cov", "report", *report_args]))
-        if params.get("benches"):
+        if params.get("benches") and first:
             cmds.append(Command("bench targets build", ["cargo", "bench", *_pkg_args(params["benches"]), "--benches", "--no-run"]))
-        if params.get("examples"):
+        if params.get("examples") and first:
             cmds.append(Command("example targets build", ["cargo", "build", *_pkg_args(params["examples"]), "--examples"]))
         return cmds
     if check == "e2e":
