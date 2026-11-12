@@ -123,8 +123,9 @@ whose `code` is `limit_exceeded` and whose `limit` names the cap. On a
 host that predates `limits()` the call rejects with `unsupported`.
 `all()` reads through the session's streamed budget when it advertises
 one, `prepare(sql).iterate()` yields rows one at a time from the same
-read, and `db.chunk(statements)` splits a long list into batches that
-each fit one request; see
+read, `db.chunk(statements)` splits a long list into batches that each
+fit one request, and `db.writeChunks(...)` commits those batches
+resumably; see
 [Working within database limits](../../database-limits.md).
 Generate the `Env` type from `plugin.toml`:
 
