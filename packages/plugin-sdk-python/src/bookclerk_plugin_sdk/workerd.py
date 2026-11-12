@@ -328,6 +328,23 @@ class PluginError(RuntimeError):
         return "" if self.details is None else json.dumps(self.details, separators=(",", ":"))
 
 
+class WriteChunksError(PluginError):
+    """A :meth:`DatabaseBinding.write_chunks` run that failed part way.
+
+    ``code``, ``message`` and ``details`` are the failed batch's.
+
+    Attributes:
+        next: Statements committed before the failure; resume with
+            ``start=next``. The failed batch may have committed with its reply
+            lost: resuming resends it under the same operation id, so the host
+            replays its receipt instead of writing it twice.
+    """
+
+    def __init__(self, next_offset: int, cause: PluginError) -> None:
+        super().__init__(cause.wire_code, str(cause), cause.details)
+        self.next = next_offset
+
+
 def _unsupported(method: str) -> PluginError:
     """Build the ``unsupported`` error the entrypoint base classes raise.
 

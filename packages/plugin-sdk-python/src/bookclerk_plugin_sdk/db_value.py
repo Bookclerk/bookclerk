@@ -708,6 +708,98 @@ class DatabaseBinding:
         for indexes in chunk_indexes(typed, statements_cap, bytes_cap):
             yield [statements[i] for i in indexes]
 
+    async def write_chunks(
+        self,
+        statements: list[PreparedStatement],
+        *,
+        key: str,
+        start: int = 0,
+        stop: Callable[[int], bool] | None = None,
+        max_statements: int | None = None,
+        max_request_bytes: int | None = None,
+    ) -> WriteProgress:
+        """Write ``statements`` in batches that fit one request, resumably.
+
+        The batches are the ones :meth:`chunk` yields for
+        ``statements[start:]``, each committed with :meth:`batch` under an
+        operation id derived from ``key`` and the batch's offset
+        (:func:`write_chunks_operation_id`). Store the returned ``next`` (for
+        example in a job checkpoint) and call again with the same list, the
+        same ``key`` and ``start=next`` to carry on: a batch whose reply was
+        lost is resent under the same id and the host replays its receipt.
+        Receipts are kept for 24 hours; a batch resent later runs again, so a
+        write that may pause that long uses statements safe to repeat.
+        The list and the caps must not change between calls with one ``key``,
+        or a resent batch no longer matches its receipt and the host answers
+        ``conflict``.
+
+        Args:
+            statements: The whole list, the same on every call.
+            key: Names this write, stable across resumes (a job id plus a step
+                name); at most :data:`MAX_WRITE_KEY_BYTES` UTF-8 bytes.
+            start: Statements already committed; ``0`` on the first call.
+            stop: Asked before each batch with the statements committed so
+                far; returning ``True`` pauses the run there.
+            max_statements: As for :meth:`chunk`.
+            max_request_bytes: As for :meth:`chunk`.
+
+        Returns:
+            ``{"next": n, "done": bool}``: statements committed, and whether
+            all of them are.
+
+        Raises:
+            WriteChunksError: Carrying ``next`` when the input is invalid or a
+                batch fails.
+        """
+        from .workerd import WriteChunksError
+
+        plugin_error = _plugin_error()
+
+        def fail(next_offset: int, err: Exception) -> WriteChunksError:
+            cause = err if isinstance(err, plugin_error) else plugin_error("internal", str(err))
+            return WriteChunksError(next_offset, cause)
+
+        key_bytes = len(key.encode("utf-8"))
+        if key_bytes == 0 or key_bytes > MAX_WRITE_KEY_BYTES:
+            raise fail(
+                start,
+                plugin_error(
+                    "invalid_params",
+                    f"write_chunks key must be 1 to {MAX_WRITE_KEY_BYTES} bytes",
+                ),
+            )
+        if start < 0 or start > len(statements):
+            raise fail(
+                start,
+                plugin_error(
+                    "invalid_params",
+                    f"write_chunks start {start} is not within the {len(statements)} statements",
+                ),
+            )
+        batches: list[list[PreparedStatement]] = []
+        try:
+            # A cap left as None keeps the session's, as in :meth:`chunk`.
+            async for b in self.chunk(
+                statements[start:],
+                max_statements=max_statements,
+                max_request_bytes=max_request_bytes,
+            ):
+                batches.append(b)
+        except Exception as err:
+            raise fail(start, err) from err
+        next_offset = start
+        for b in batches:
+            try:
+                # A ``stop`` that raises still reports how far the write got.
+                if stop is not None and stop(next_offset):
+                    return {"next": next_offset, "done": False}
+                retry = RetryToken(write_chunks_operation_id(key, next_offset), "")
+                await self.batch(b, retry=retry)
+            except Exception as err:
+                raise fail(next_offset, err) from err
+            next_offset += len(b)
+        return {"next": next_offset, "done": True}
+
     async def batch(
         self,
         statements: list[PreparedStatement],
@@ -1038,6 +1130,40 @@ def create_database_binding(
         request_hash=request_hash,
         deadline_unix_ms=deadline_unix_ms,
     )
+
+
+MAX_WRITE_KEY_BYTES = 256
+"""Longest ``key`` :meth:`DatabaseBinding.write_chunks` accepts, in UTF-8 bytes."""
+
+
+class WriteProgress(TypedDict):
+    """Where a :meth:`DatabaseBinding.write_chunks` run stands."""
+
+    next: int
+    """Statements committed from the start of the list; always a batch boundary."""
+    done: bool
+    """True when every statement is committed; false when ``stop`` paused the run."""
+
+
+def write_chunks_operation_id(key: str, offset: int) -> str:
+    r"""The operation id :meth:`DatabaseBinding.write_chunks` sends for a batch.
+
+    The first 16 bytes of SHA-256 over
+    ``"bookclerk-write-chunks\0" + key + "\0" + offset`` (decimal), as
+    lowercase hex grouped 8-4-4-4-12. The Rust and TypeScript SDKs derive
+    the same id.
+
+    Args:
+        key: Name of the write.
+        offset: Index of the batch's first statement.
+
+    Returns:
+        A UUID-shaped operation id.
+    """
+    digest = hashlib.sha256(
+        b"bookclerk-write-chunks\0" + key.encode("utf-8") + b"\0" + str(offset).encode("ascii")
+    ).hexdigest()
+    return f"{digest[0:8]}-{digest[8:12]}-{digest[12:16]}-{digest[16:20]}-{digest[20:32]}"
 
 
 class RetryToken:

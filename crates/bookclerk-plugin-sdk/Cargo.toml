@@ -52,6 +52,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "io-std", "macros", "rt", "sync", "time", "net"] }
+sha2.workspace = true
 toml.workspace = true
 tracing.workspace = true
 base64 = { workspace = true, optional = true }
