@@ -127,6 +127,9 @@ read, `db.chunk(statements)` splits a long list into batches that each
 fit one request, and `db.writeChunks(...)` commits those batches
 resumably; see
 [Working within database limits](../../database-limits.md).
+A storefront's `scan` can hand its paging to `scanPage(params, fetch)`,
+which slices the store's own pages into replies the host accepts; see
+[Paged scans](../../abi.md#paged-scans).
 Generate the `Env` type from `plugin.toml`:
 
 ```bash

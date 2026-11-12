@@ -39,6 +39,7 @@ const pluginWorker :Workerd.Worker = (
     (name = "bookclerk_plugin_sdk/limits.py", pythonModule = embed ".bookclerk/sdk-limits.py"),
     (name = "bookclerk_plugin_sdk/plugin_migration.py", pythonModule = embed ".bookclerk/sdk-plugin-migration.py"),
     (name = "bookclerk_plugin_sdk/db_value.py", pythonModule = embed ".bookclerk/sdk-db-value.py"),
+    (name = "bookclerk_plugin_sdk/scan_page.py", pythonModule = embed ".bookclerk/sdk-scan-page.py"),
     (name = "bookclerk_plugin_sdk/__init__.py", pythonModule = embed ".bookclerk/sdk-init.py"),
     (name = "bookclerk_plugin_sdk/workerd.py", pythonModule = embed ".bookclerk/sdk-workerd.py")
   ],
