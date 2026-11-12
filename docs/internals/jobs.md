@@ -600,7 +600,8 @@ See [configuration.md](../server/configuration.md) (`[jobs]` / `BOOKCLERK_JOBS_*
 ## Cluster maintenance
 
 Cluster-wide cleanup runs on one daemon at a time. Each duty holds its own
-`cluster_leases` row; every daemon polls them every 60 s, the holder renews
+`cluster_leases` row; every daemon polls them every 60 s, starting 5 minutes
+after it starts so the first pass doesn't compete with startup. The holder renews
 its leases on each poll and runs a duty when it takes the lease and then
 hourly. A daemon that stops polling loses its leases after 180 s and the
 next daemon to poll takes them over with a larger fencing token. Before
