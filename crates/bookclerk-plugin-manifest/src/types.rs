@@ -133,6 +133,41 @@ pub enum PluginRuntimeKind {
     Workerd,
 }
 
+/// How a storefront's store credentials may be used from several
+/// Bookclerk instances at once (`credentials` key in `plugin.toml`).
+///
+/// A person's store accounts follow them to every library and branch they
+/// connect ("Accounts on every instance" in the library catalog network
+/// ADR). Only the plugin knows whether its store tolerates one login being
+/// refreshed in several places, so it declares it. Defaults to
+/// [`CredentialSharing::SingleKeeper`], the choice that never logs a
+/// person out, when the key is left out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialSharing {
+    /// Every instance may hold a copy of the account's secrets and
+    /// refresh them on its own: the store neither rotates its refresh
+    /// tokens on use nor caps the devices one login may register.
+    Shareable,
+    /// One instance at a time keeps the account's login fresh (its
+    /// refresh keeper) and the others receive each new token from it.
+    /// For stores that rotate refresh tokens on use or register one
+    /// device per login (Audible).
+    #[default]
+    SingleKeeper,
+}
+
+impl CredentialSharing {
+    /// The `plugin.toml` spelling (`shareable` or `single_keeper`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shareable => "shareable",
+            Self::SingleKeeper => "single_keeper",
+        }
+    }
+}
+
 /// Network mode declared in `[capabilities.network]`.
 ///
 /// Defaults to [`NetworkMode::Deny`]. See `docs/plugins/README.md` for native vs
@@ -997,6 +1032,12 @@ pub struct PluginManifest {
     /// OAuth callback tunnel binding (`[oauth]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth: Option<NamedBinding>,
+    /// How the store accounts this storefront connects may be shared
+    /// between Bookclerk instances (`credentials`); see
+    /// [`CredentialSharing`] and [`Self::credential_sharing`]. Only a
+    /// plugin with the `storefront` entrypoint may set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<CredentialSharing>,
     /// Declared network capability (consent has no Wrangler analogue).
     pub capabilities: CapabilitiesManifest,
     /// Optional CLI schema advertised to `bookclerk plugins <id>` (from
@@ -1057,6 +1098,14 @@ fn default_true() -> bool {
 }
 
 impl PluginManifest {
+    /// How this plugin's store credentials may be shared between
+    /// instances: the declared `credentials`, or
+    /// [`CredentialSharing::SingleKeeper`] when it is left out.
+    #[must_use]
+    pub fn credential_sharing(&self) -> CredentialSharing {
+        self.credentials.unwrap_or_default()
+    }
+
     /// True when the manifest itself declares a Python workerd guest.
     ///
     /// Python means any of: `main_module` ending in `.py`, or a `[[modules]]`
@@ -1598,6 +1647,11 @@ impl PluginManifest {
         if let Some(logo) = self.logo.as_deref() {
             let _ = crate::validate_logo(logo)?;
         }
+        if self.credentials.is_some() && !self.has_entrypoint(Entrypoint::Storefront) {
+            return Err(Error::message(
+                "plugin.toml: `credentials` needs the `storefront` entrypoint (only storefronts connect store accounts)",
+            ));
+        }
         for (i, client) in self.oidc.clients.iter().enumerate() {
             if client.client_id.trim().is_empty() {
                 return Err(Error::message(format!(
@@ -2076,6 +2130,50 @@ mode = "deny"
 {extra}
 "#
         )
+    }
+
+    /// A native manifest with `entrypoint` and the top-level `line`.
+    fn top_level(entrypoint: &str, line: &str) -> String {
+        format!(
+            r#"
+api_version = 3
+id = "echo"
+runtime = "native"
+command = "./echo"
+entrypoints = ["{entrypoint}"]
+{line}
+[capabilities.network]
+mode = "deny"
+"#
+        )
+    }
+
+    #[test]
+    fn a_storefront_declares_how_its_credentials_may_be_shared() {
+        let shareable =
+            PluginManifest::parse(&top_level("storefront", "credentials = \"shareable\"")).unwrap();
+        assert_eq!(shareable.credentials, Some(CredentialSharing::Shareable));
+        assert_eq!(shareable.credential_sharing(), CredentialSharing::Shareable);
+        assert_eq!(shareable.credential_sharing().as_str(), "shareable");
+        let keeper =
+            PluginManifest::parse(&top_level("storefront", "credentials = \"single_keeper\""))
+                .unwrap();
+        assert_eq!(keeper.credential_sharing(), CredentialSharing::SingleKeeper);
+        assert_eq!(keeper.credential_sharing().as_str(), "single_keeper");
+        // Left out, a storefront is treated as the safe single keeper.
+        let silent = PluginManifest::parse(&top_level("storefront", "")).unwrap();
+        assert_eq!(silent.credentials, None);
+        assert_eq!(silent.credential_sharing(), CredentialSharing::SingleKeeper);
+    }
+
+    #[test]
+    fn credentials_are_refused_off_a_storefront_and_for_unknown_values() {
+        let err = PluginManifest::parse(&top_level("remoteLibrary", "credentials = \"shareable\""))
+            .unwrap_err();
+        assert!(err.to_string().contains("`storefront` entrypoint"), "{err}");
+        assert!(
+            PluginManifest::parse(&top_level("storefront", "credentials = \"copied\"")).is_err()
+        );
     }
 
     /// A native outbound manifest with `own` as its own-agent table body.

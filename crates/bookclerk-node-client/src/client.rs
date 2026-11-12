@@ -371,24 +371,8 @@ fn open_granted_upload(
 /// Registers one secret value with the scrubber when it is UTF-8 text.
 /// A JSON credential (a token bundle) also registers each string inside
 /// it, since a log quotes the token field, not the whole document.
-fn register_value_for_redaction(value: &[u8]) {
-    let Ok(text) = std::str::from_utf8(value) else {
-        return;
-    };
-    bookclerk_config::register_secret(text);
-    if let Ok(document) = serde_json::from_str::<serde_json::Value>(text) {
-        register_json_strings(&document);
-    }
-}
-
-/// Registers every string in `value`, at any depth.
-fn register_json_strings(value: &serde_json::Value) {
-    match value {
-        serde_json::Value::String(text) => bookclerk_config::register_secret(text),
-        serde_json::Value::Array(items) => items.iter().for_each(register_json_strings),
-        serde_json::Value::Object(fields) => fields.values().for_each(register_json_strings),
-        _ => {}
-    }
+pub(crate) fn register_value_for_redaction(value: &[u8]) {
+    bookclerk_config::register_secret_bytes(value);
 }
 
 /// Cancels every job `0` holds when dropped: [`HostClient::run`] keeps one

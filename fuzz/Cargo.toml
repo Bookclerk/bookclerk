@@ -182,6 +182,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "node_account_bundle"
+path = "fuzz_targets/node_account_bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "cover_process"
 path = "fuzz_targets/cover_process.rs"
 test = false

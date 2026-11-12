@@ -178,10 +178,10 @@ pub use jail::{guest_reservation, plugin_data_dir};
 pub use kv_binding::{KvNamespaces, LibraryKvNamespace, KV_GRANT_BINDING};
 pub use manifest::{
     embedded_logo_api_path, entrypoint_family, logo_content_type, validate_logo,
-    BindingCapabilities, CapabilitiesManifest, DatabaseBindingManifest, Entrypoint, EventConsumer,
-    EventProducer, EventsManifest, JailNetworkNeed, LogoKind, ModuleSpec, NamedBinding,
-    NetworkCapabilities, NetworkMode, PluginFamily, PluginManifest, PluginRuntimeKind,
-    TriggersManifest, WorkerdLimits, WorkerdRuntimeManifest, ALL_ENTRYPOINTS,
+    BindingCapabilities, CapabilitiesManifest, CredentialSharing, DatabaseBindingManifest,
+    Entrypoint, EventConsumer, EventProducer, EventsManifest, JailNetworkNeed, LogoKind,
+    ModuleSpec, NamedBinding, NetworkCapabilities, NetworkMode, PluginFamily, PluginManifest,
+    PluginRuntimeKind, TriggersManifest, WorkerdLimits, WorkerdRuntimeManifest, ALL_ENTRYPOINTS,
     MAX_EMBEDDED_LOGO_BYTES,
 };
 pub use queue_producer::{OutboxQueueProducer, QueueOutbox};

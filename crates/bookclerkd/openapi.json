@@ -1603,7 +1603,7 @@
         "tags": [
           "Users"
         ],
-        "summary": "Patch role/status/display/login for a first-party user (provisioner).",
+        "summary": "Patch role/status/display/login, or the store-account rule, for a\nfirst-party user (provisioner).",
         "operationId": "patch_user",
         "parameters": [
           {
@@ -24910,16 +24910,14 @@
             }
           },
           "403": {
-            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The library's administrator has not allowed the caller to connect store accounts here. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/PortalErrorBody"
                 },
                 "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                  "error": "this library's administrator hasn't allowed you to connect store accounts here"
                 }
               }
             }
@@ -25062,16 +25060,14 @@
             }
           },
           "403": {
-            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The library's administrator has not allowed the caller to connect store accounts here. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/PortalErrorBody"
                 },
                 "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                  "error": "this library's administrator hasn't allowed you to connect store accounts here"
                 }
               }
             }
@@ -25185,16 +25181,14 @@
             }
           },
           "403": {
-            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The library's administrator has not allowed the caller to connect store accounts here. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/PortalErrorBody"
                 },
                 "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                  "error": "this library's administrator hasn't allowed you to connect store accounts here"
                 }
               }
             }
@@ -25321,16 +25315,14 @@
             }
           },
           "403": {
-            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The library's administrator has not allowed the caller to connect store accounts here. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/PortalErrorBody"
                 },
                 "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                  "error": "this library's administrator hasn't allowed you to connect store accounts here"
                 }
               }
             }
@@ -26632,6 +26624,11 @@
                     "type": "null"
                   }
                 ]
+              },
+              "bring_connections": {
+                "type": "boolean",
+                "description": "True to send the user's store connections that may travel to the\nbranch when it joins. Ignored for a clerk. Defaults to false.",
+                "example": false
               }
             }
           }
@@ -26647,7 +26644,8 @@
           "redirect_origin",
           "enrollment",
           "user",
-          "connection"
+          "connection",
+          "connections"
         ],
         "properties": {
           "library_name": {
@@ -26677,6 +26675,13 @@
           "connection": {
             "$ref": "#/components/schemas/ConnectionChoice",
             "description": "The connection types the page may offer."
+          },
+          "connections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConsentConnection"
+            },
+            "description": "The user's store connections here, and whether each would travel\nto the branch if the user chooses to bring them."
           }
         }
       },
@@ -26718,6 +26723,17 @@
             "type": "boolean",
             "description": "Whether the link's client is running now.",
             "example": true
+          },
+          "connections": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BroughtConnectionsView",
+                "description": "What became of the store connections the library's user chose to\nbring to this branch; left out when none came."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -26930,6 +26946,57 @@
             "type": "string",
             "description": "Same-origin logo image (a 128 px copy of the brand's icon), or empty\nwhen there is none.",
             "example": "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.N14rqh66Bok9-eCqJKBNoQ"
+          }
+        }
+      },
+      "BroughtConnectionsView": {
+        "type": "object",
+        "description": "The store connections a library sent with its person, as this install\nkept them.",
+        "required": [
+          "offered",
+          "added",
+          "already_here",
+          "taken",
+          "failed"
+        ],
+        "properties": {
+          "offered": {
+            "type": "integer",
+            "description": "How many came with the join.",
+            "example": 2,
+            "minimum": 0
+          },
+          "added": {
+            "type": "integer",
+            "description": "How many are now connected here for the person.",
+            "example": 1,
+            "minimum": 0
+          },
+          "already_here": {
+            "type": "integer",
+            "description": "How many the person had already connected here (left as they are).",
+            "example": 1,
+            "minimum": 0
+          },
+          "taken": {
+            "type": "integer",
+            "description": "How many are connected to someone else here (left as they are).",
+            "example": 0,
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "description": "How many could not be kept: no secret came with them, or their\nwrite failed.",
+            "example": 0,
+            "minimum": 0
+          },
+          "not_kept": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why none were kept, when none were: `not_allowed` (this install's\noperator does not let the person connect store accounts),\n`no_owner` (no single Owner here to keep them for) or `failed`.",
+            "example": null
           }
         }
       },
@@ -27893,6 +27960,40 @@
           "consent": {
             "$ref": "#/components/schemas/RemoteConsentView",
             "description": "The consent as stored now."
+          }
+        }
+      },
+      "ConsentConnection": {
+        "type": "object",
+        "description": "One of the consenting user's store connections, as the consent page\nlists it.",
+        "required": [
+          "source",
+          "account_id",
+          "travels"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Display alias of the storefront.",
+            "example": "libro"
+          },
+          "account_id": {
+            "type": "string",
+            "description": "Store account id.",
+            "example": "sam@example.com"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The account's display label, when it has one.",
+            "example": "Sam"
+          },
+          "travels": {
+            "type": "boolean",
+            "description": "True when the storefront lets its login be used in more than one\nplace, so the connection travels; false when it keeps one login\nthat only this library refreshes.",
+            "example": true
           }
         }
       },
@@ -30871,6 +30972,14 @@
             ],
             "description": "For a clerk: the [`crate::ClerkBootstrap`] sealed to the node's box\nkey ([`crate::seal_clerk_bootstrap`]), as base64url without padding.",
             "example": "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0"
+          },
+          "accounts": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a branch whose user chose \"Bring my store connections to this\nbranch\": the user's own store accounts as a\n[`crate::AccountBundle`] sealed to the node's box key\n([`crate::seal_account_bundle`]), as base64url without padding.\nLeft out when the user did not choose it or had none to bring.",
+            "example": "Qm9va2NsZXJrIHNlYWxlZCBhY2NvdW50IGJ1bmRsZTogZXBoZW1lcmFsIGtleSArIGNpcGhlcnRleHQ"
           }
         }
       },
@@ -32605,6 +32714,14 @@
             ],
             "description": "Replacement email when present.",
             "example": "sam@example.com"
+          },
+          "may_connect_accounts": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the user may connect store accounts on this library, by\nhand or by bringing them from another library, when present.",
+            "example": false
           }
         }
       },
@@ -38503,6 +38620,7 @@
               "avatar_source",
               "sso_pictures",
               "integrations",
+              "may_connect_accounts",
               "identities"
             ],
             "properties": {
@@ -38569,6 +38687,11 @@
                   "$ref": "#/components/schemas/UserIntegrationHint"
                 },
                 "description": "Storefront and integration accounts linked to the user."
+              },
+              "may_connect_accounts": {
+                "type": "boolean",
+                "description": "Whether the operator lets the user connect store accounts here, by\nhand or by bringing them from another library. True unless an\nadministrator turned it off for this user.",
+                "example": true
               },
               "identities": {
                 "type": "array",

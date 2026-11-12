@@ -26,8 +26,8 @@ use std::time::{Duration, Instant};
 use bookclerk_config::DatabasePluginKind;
 use bookclerk_node_client::{
     apply_clerk_bootstrap, authorize_join, bootstrap_database_kind, database_guest_installed,
-    inspect_library, install_problem, redeem_branch_code, redeem_clerk_code, AppliedClerk,
-    BranchRedeem, InspectedLibrary, JoinError,
+    inspect_library, install_problem, keep_brought_connections, redeem_branch_code,
+    redeem_clerk_code, AppliedClerk, BranchRedeem, BroughtConnections, InspectedLibrary, JoinError,
 };
 use bookclerk_node_proto::{ConnectionType, JOIN_CALLBACK_PATH};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -390,7 +390,7 @@ pub async fn join_with_sign_in(
                 eprintln!("The library's user chose to let this install join as a branch.");
             }
             let redeem = &redeem;
-            redeem_with_retries(|enrolled: Option<String>| async move {
+            let redeemed = redeem_with_retries(|enrolled: Option<String>| async move {
                 let retry = BranchRedeem {
                     enrolled_node_id: enrolled.as_deref(),
                     ..*redeem
@@ -398,8 +398,11 @@ pub async fn join_with_sign_in(
                 redeem_branch_code(store, &retry, keys).await
             })
             .await
-            .map(Joined::Branch)
-            .map_err(join_failed)
+            .map_err(join_failed)?;
+            if let Some(bundle) = &redeemed.accounts {
+                report_brought_connections(keep_brought_connections(store, None, bundle).await);
+            }
+            Ok(Joined::Branch(redeemed.link))
         }
         ConnectionType::Clerk => {
             if !offer_clerk {
@@ -461,6 +464,39 @@ pub async fn join_with_sign_in(
                 applied,
             })
         }
+    }
+}
+
+/// Tells the operator what became of the store connections the library's
+/// user brought to this branch. The join stands either way.
+fn report_brought_connections(kept: bookclerk_library::Result<BroughtConnections>) {
+    eprintln!("{}", brought_connections_line(&kept));
+}
+
+/// The line [`report_brought_connections`] prints for `kept`.
+fn brought_connections_line(kept: &bookclerk_library::Result<BroughtConnections>) -> String {
+    match kept {
+        Ok(BroughtConnections::Kept(report)) if report.refused_by_rule => {
+            "Your store connections came with the join, but this install does not let you \
+             connect store accounts; none were kept."
+                .to_owned()
+        }
+        Ok(BroughtConnections::Kept(report)) => format!(
+            "Store connections brought from the library: {} added, {} already here, {} \
+             connected to someone else here (left as they are), {} not kept.",
+            report.imported.len(),
+            report.already_here.len(),
+            report.taken.len(),
+            report.failed.len()
+        ),
+        Ok(BroughtConnections::NoPerson(count)) => format!(
+            "{count} store connection(s) came with the join, but this install has no single \
+             Owner to keep them for; none were kept. Connect them in Accounts once you sign in."
+        ),
+        Err(err) => format!(
+            "Store connections came with the join but could not be kept ({err}); connect them \
+             in Accounts."
+        ),
     }
 }
 
@@ -532,6 +568,40 @@ fn default_branch_name() -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_brought_connections_line_says_what_was_kept() {
+        use bookclerk_library::control_plane::CarriedImport;
+        let key = || ("p".to_owned(), "a".to_owned());
+        let kept = CarriedImport {
+            imported: vec![key(), key()],
+            already_here: vec![key()],
+            taken: Vec::new(),
+            failed: vec![key()],
+            refused_by_rule: false,
+        };
+        assert_eq!(
+            brought_connections_line(&Ok(BroughtConnections::Kept(kept))),
+            "Store connections brought from the library: 2 added, 1 already here, 0 connected \
+             to someone else here (left as they are), 1 not kept."
+        );
+        let refused = CarriedImport {
+            refused_by_rule: true,
+            ..CarriedImport::default()
+        };
+        assert!(
+            brought_connections_line(&Ok(BroughtConnections::Kept(refused)))
+                .contains("does not let you connect store accounts")
+        );
+        assert!(
+            brought_connections_line(&Ok(BroughtConnections::NoPerson(3)))
+                .starts_with("3 store connection(s)")
+        );
+        let failed: bookclerk_library::Result<BroughtConnections> =
+            Err(bookclerk_library::LibraryError::NotFound("user 1".into()));
+        assert!(brought_connections_line(&failed).contains("could not be kept"));
+        report_brought_connections(Ok(BroughtConnections::NoPerson(1)));
+    }
     use super::*;
 
     async fn get(port: u16, target: &str) -> String {

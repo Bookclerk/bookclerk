@@ -43,6 +43,7 @@ boundary extends it.
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
+| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person | `bookclerk-node-proto::parse_account_bundle` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
@@ -211,6 +212,16 @@ only that. The others check:
   library id in `acquire.targets` is 1 to 16 ASCII letters and digits,
   checked byte by byte. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
+- **`node_account_bundle`**: an accepted bundle is within the size limit,
+  has the bundle version and names the cluster and node it was opened
+  for. It carries at most the account and secret limits; every text field
+  is non-empty, within its limit, free of control characters and
+  surrounding whitespace; every secret is 1 byte to its limit; no account,
+  and no secret within an account, repeats. These are checked character by
+  character in the oracle, not through the parser's own rule. An accepted
+  bundle serializes and parses back to an equal bundle. The shared oracle
+  is `fuzz/oracles/node_account_bundle.rs`, replayed from
+  `bookclerk-node-proto`.
 - **`plan_authz`**: decodes a small library (store accounts on two plugins
   whose ids and labels collide, who each is linked to, library rows and
   plugin instances) and one Member's scan or acquire request into an
