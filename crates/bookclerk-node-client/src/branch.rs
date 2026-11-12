@@ -284,8 +284,12 @@ fn ancestry_error(err: JoinError, enrolled: Option<&str>) -> JoinError {
 /// A branch sign-in the library redeemed and this install recorded.
 #[derive(Debug)]
 pub struct RedeemedBranch {
-    /// The recorded link.
+    /// The recorded link, as stored after this enrollment (another join
+    /// may have replaced it since).
     pub link: ClusterLink,
+    /// The node id this enrollment was minted: what the join binds its
+    /// person to, whatever the stored link names by then.
+    pub node_id: String,
     /// The store accounts the library's user chose to bring to this
     /// branch, opened with the link's box key; `None` when the user did not
     /// choose it, had none to bring, or the box did not open (logged).
@@ -389,6 +393,7 @@ pub async fn redeem_branch_code(
             })
             .ok()
     });
+    let enrolled_node_id = enrolled.node_id.clone();
     let mut recorded = record_cluster_link(
         store,
         &NewClusterLink {
@@ -426,6 +431,7 @@ pub async fn redeem_branch_code(
     );
     Ok(RedeemedBranch {
         link: recorded,
+        node_id: enrolled_node_id,
         accounts,
     })
 }
