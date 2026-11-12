@@ -935,7 +935,9 @@ pub async fn post_join_callback(
     let link = redeemed.link;
     // The person is the Owner who elevated into this operator session, or
     // else the install's only Owner. The link is bound to them: only they
-    // add connections to the library, or withdraw them, through it.
+    // add connections to the library, or withdraw them, through it. The
+    // enrollment left the link unbound, so a failure here fails closed:
+    // nobody can add or withdraw through it until the branch joins again.
     let auth = state.auth_snapshot().await;
     let elevated = crate::auth::resolve_operator_session(&state, &auth, &headers)
         .await

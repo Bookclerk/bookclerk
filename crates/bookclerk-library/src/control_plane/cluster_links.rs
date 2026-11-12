@@ -228,7 +228,9 @@ pub fn decode_spki_pin(pin: &str) -> Result<[u8; 32]> {
 /// a key row left by a failed write is replaced by the next enrollment.
 /// When the re-enrollment minted a different node id, the earlier node's
 /// key row is deleted once the new link row is stored, so the sealed
-/// private keys of a node the owner no longer knows are not kept.
+/// private keys of a node the owner no longer knows are not kept. The link
+/// is stored with no person bound (a re-enrollment unbinds it); the join
+/// binds one with [`set_cluster_link_person`].
 ///
 /// # Errors
 ///
@@ -275,8 +277,10 @@ pub async fn record_cluster_link(
         include_branches: Set(1),
         ancestry_json: Set("[]".into()),
         list_members_books: Set(1),
-        // Bound by the join afterwards with [`set_cluster_link_person`]; a
-        // re-enrollment keeps the person until the join names one again.
+        // Bound by the join afterwards with [`set_cluster_link_person`]. A
+        // re-enrollment unbinds it too (the conflict update below), so a
+        // join that cannot name its person leaves the link usable by
+        // nobody rather than by whoever joined before.
         person_user_id: Set(None),
     };
     let insert = cluster_links::Entity::insert(row).on_conflict(
@@ -287,6 +291,7 @@ pub async fn record_cluster_link(
                 cluster_links::Column::SpkiPin,
                 cluster_links::Column::State,
                 cluster_links::Column::EnrolledAt,
+                cluster_links::Column::PersonUserId,
             ])
             .to_owned(),
     );
@@ -891,13 +896,18 @@ mod tests {
             .await
             .is_err());
 
-        // Re-enrolling replaces the link and its keys and reactivates it.
+        // Re-enrolling replaces the link and its keys and reactivates it,
+        // and unbinds the person until the join names one again.
+        assert!(set_cluster_link_person(&store, "cluster-1", Some(7))
+            .await
+            .unwrap());
         let fresh = ClusterLinkKeys::from_bytes(&[3; 32], &[4; 32]);
         let again = record_cluster_link(&store, &new_link(None), &fresh)
             .await
             .unwrap();
         assert!(again.is_active());
         assert_eq!(again.spki_pin, None);
+        assert_eq!(again.person_user_id, None);
         let loaded = load_cluster_link_keys(&store, &again).await.unwrap();
         assert_eq!(loaded.sign_seed(), &[3; 32]);
     }
