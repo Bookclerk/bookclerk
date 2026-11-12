@@ -180,3 +180,41 @@ async fn a_branch_answers_its_librarys_question_over_the_socket() {
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn large_answer_batches_are_split_into_frames_that_fit() {
+    use bookclerk_node_proto::{
+        Availability, Body, CatalogMetadata, Frame, LookupAnswer, LookupEdition, MAX_FRAME_BYTES,
+    };
+    let long = "x".repeat(2000);
+    let answers: Vec<LookupAnswer> = (0..100)
+        .map(|n| LookupAnswer {
+            work: format!("work-{n}"),
+            editions: (0..8)
+                .map(|e| LookupEdition {
+                    store: "audible".into(),
+                    marketplace: "us".into(),
+                    product_id: format!("B0{n:04}{e:04}"),
+                    availability: Availability::Owned,
+                    formats: Vec::new(),
+                    metadata: CatalogMetadata {
+                        title: long.clone(),
+                        subtitle: Some(long.clone()),
+                        publisher: Some(long.clone()),
+                        ..CatalogMetadata::default()
+                    },
+                })
+                .collect(),
+        })
+        .collect();
+    let frames = found_frames(answers, vec!["gone".into()]);
+    assert!(frames.len() > 1, "split");
+    assert_eq!(frames[0].1, vec!["gone".to_string()], "missing rides first");
+    assert!(frames[1..].iter().all(|(_, missing)| missing.is_empty()));
+    assert_eq!(frames.iter().map(|(a, _)| a.len()).sum::<usize>(), 100);
+    for (answers, missing) in frames {
+        let text = Frame::new("req-1", Body::CatalogFound { answers, missing }).to_text();
+        assert!(text.len() <= MAX_FRAME_BYTES, "{} bytes", text.len());
+    }
+    assert_eq!(found_frames(Vec::new(), Vec::new()).len(), 1);
+}

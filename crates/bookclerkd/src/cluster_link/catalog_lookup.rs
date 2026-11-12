@@ -16,6 +16,7 @@ use anyhow::Context as _;
 use bookclerk_library::control_plane::{answer_questions, load_cluster_link};
 use bookclerk_library::LibraryStore;
 use bookclerk_node_client::HostClientHandle;
+use bookclerk_node_proto::{LookupAnswer, MAX_FRAME_BYTES};
 use tokio::sync::{broadcast, watch};
 
 /// Between pulls while connected, in case a wake was missed.
@@ -114,18 +115,56 @@ impl CatalogAnswerer {
             if questions.is_empty() {
                 return Ok(answered);
             }
-            let (answers, missing) =
+            let (answers, missing) = if link.share_books {
                 answer_questions(&self.library, &questions, link.list_members_books)
                     .await
-                    .context("looking the questions up in this library")?;
+                    .context("looking the questions up in this library")?
+            } else {
+                // Sharing off: this branch lists nothing to that library.
+                (
+                    Vec::new(),
+                    questions.iter().map(|q| q.work.clone()).collect(),
+                )
+            };
             answered += questions.len();
-            self.handle
-                .catalog_found(answers, missing)
-                .await
-                .map_err(|err| anyhow::anyhow!("catalog.found: {err:?}"))?;
+            for (answers, missing) in found_frames(answers, missing) {
+                self.handle
+                    .catalog_found(answers, missing)
+                    .await
+                    .map_err(|err| anyhow::anyhow!("catalog.found: {err:?}"))?;
+            }
         }
         Ok(answered)
     }
+}
+
+/// Bytes of answers one `catalog.found` frame carries at most, well under
+/// [`MAX_FRAME_BYTES`] so the frame's envelope always fits.
+const FOUND_FRAME_BUDGET: usize = MAX_FRAME_BYTES / 2;
+
+/// Splits one batch of answers into `catalog.found` frames that each stay
+/// within [`FOUND_FRAME_BUDGET`]; `missing` rides the first. An answer is
+/// never split (one answer of [`bookclerk_node_proto::MAX_LOOKUP_EDITIONS`]
+/// editions is far under the budget).
+fn found_frames(
+    answers: Vec<LookupAnswer>,
+    missing: Vec<String>,
+) -> Vec<(Vec<LookupAnswer>, Vec<String>)> {
+    let mut used: usize = missing.iter().map(|work| work.len() + 3).sum();
+    let mut frames = vec![(Vec::new(), missing)];
+    for answer in answers {
+        let size = serde_json::to_vec(&answer).map_or(FOUND_FRAME_BUDGET, |b| b.len() + 1);
+        let current_has_answers = frames.last().is_some_and(|(a, _)| !a.is_empty());
+        if current_has_answers && used + size > FOUND_FRAME_BUDGET {
+            frames.push((Vec::new(), Vec::new()));
+            used = 0;
+        }
+        used += size;
+        if let Some((current, _)) = frames.last_mut() {
+            current.push(answer);
+        }
+    }
+    frames
 }
 
 /// True for a `catalog.asked` wake.

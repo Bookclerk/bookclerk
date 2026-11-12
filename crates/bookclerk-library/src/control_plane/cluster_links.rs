@@ -485,8 +485,8 @@ pub async fn set_cluster_link_sharing(
 ///
 /// # Returns
 ///
-/// Whether the setting changed (`false` when there is no such link or it
-/// already had that value).
+/// Whether the link exists (`false` when there is no such link); setting
+/// the value it already has still returns `true`.
 ///
 /// # Errors
 ///

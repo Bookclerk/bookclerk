@@ -310,6 +310,40 @@ async fn an_untrusted_node_gets_no_questions_and_records_nothing() {
 }
 
 #[tokio::test]
+async fn an_answer_to_a_question_not_yet_sent_is_dropped() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, member) = library(dir.path()).await;
+    let work = hold(&store, member, "riley-acct", "B0ASIN0001").await;
+    ask_branches(&store, std::slice::from_ref(&work))
+        .await
+        .unwrap();
+    let answer = LookupAnswer {
+        work: work.clone(),
+        editions: vec![edition("B0ASIN0001")],
+    };
+    let early = recorded(&store, std::slice::from_ref(&answer), &[]).await;
+    assert_eq!((early.works, early.listings, early.dropped), (0, 0, 1));
+    assert!(
+        branch_listings_for_works(&store, std::slice::from_ref(&work))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // Once sent, the same answer is recorded.
+    assert_eq!(
+        pending_questions(&store, BRANCH)
+            .await
+            .unwrap()
+            .unwrap()
+            .len(),
+        1
+    );
+    let sent = recorded(&store, &[answer], &[]).await;
+    assert_eq!((sent.works, sent.listings), (1, 1));
+}
+
+#[tokio::test]
 async fn a_branch_lists_members_books_unless_turned_off_or_opted_out() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();

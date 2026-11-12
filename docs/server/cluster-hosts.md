@@ -570,7 +570,7 @@ all on by default:
 
 - **Share this branch's books with <library>.** Off: nothing new is sent,
   and A marks what it already got from B. Files already delivered stay in
-  A's outputs.
+  A's outputs. B also lists nothing in answer to A's catalog questions.
 - **Include books from my own branches.** Off: B shares only books
   acquired on B itself, and C's titles are withdrawn from A on the next
   pass.
@@ -641,7 +641,15 @@ that branch.
 books too while **List my members' books to <library>** is on (the
 default, set per library in the sharing settings below). A member can keep
 their own books out with `PUT /api/auth/profile/catalog-listing`
-`{"listed": false}`.
+`{"listed": false}`. With **Share this branch's books with <library>**
+off, B lists nothing to that library and answers every question as
+missing.
+
+> [!NOTE]
+> Turning a listing setting off, or a member opting out, takes effect at
+> B's next answer. A asks again a day after B last answered, and a listing
+> stops counting two days after B last named it, so A can still show B as
+> a source for up to two days.
 
 ### No loops
 

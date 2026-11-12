@@ -46,7 +46,7 @@ use bookclerk_node_proto::{
 use bookclerk_plugin_abi::TypedDbStatement;
 use bookclerk_resolve as resolve;
 use chrono::{DateTime, Utc};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
 use super::batch::{exec, request, rows_affected, text};
 use super::enrollment::load_node_credential;
@@ -77,6 +77,9 @@ pub const BRANCH_LISTING_PREFIX: &str = "branch:";
 
 /// Ids per `IN (...)` read.
 const READ_CHUNK: usize = 200;
+
+/// Work ids per `IN (...)` list in one [`ask_branches`] statement.
+const ASK_CHUNK: usize = 100;
 
 /// Rows read per [`pending_questions`] call, so works with no identifiers
 /// skipped along the way do not starve the batch.
@@ -223,18 +226,32 @@ pub async fn ask_branches(store: &LibraryStore, work_ids: &[String]) -> Result<A
     let now = Utc::now();
     let now_text = stamp(now);
     let stale = stamp(now - LOOKUP_ANSWER_TTL);
+    let works: Vec<&String> = works.into_iter().collect();
     for node_id in &branches {
-        let mut statements = Vec::with_capacity(works.len() * 2);
-        for work_id in &works {
+        let mut statements = Vec::new();
+        for part in works.chunks(ASK_CHUNK) {
+            let marks = vec!["?"; part.len()].join(", ");
+            let ids = part.iter().map(|id| text(id));
             statements.push(exec(
-                "UPDATE catalog_lookups SET asked_at = ?, sent_at = NULL, answered_at = NULL \
-                 WHERE node_id = ? AND work_id = ? AND answered_at IS NOT NULL AND answered_at < ?",
-                vec![text(&now_text), text(node_id), text(work_id), text(&stale)],
+                &format!(
+                    "UPDATE catalog_lookups SET asked_at = ?, sent_at = NULL, answered_at = NULL \
+                     WHERE node_id = ? AND answered_at IS NOT NULL AND answered_at < ? \
+                     AND work_id IN ({marks})"
+                ),
+                [text(&now_text), text(node_id), text(&stale)]
+                    .into_iter()
+                    .chain(ids.clone())
+                    .collect(),
             ));
             statements.push(exec(
-                "INSERT OR IGNORE INTO catalog_lookups (node_id, work_id, asked_at) \
-                 SELECT ?, id, ? FROM works WHERE id = ?",
-                vec![text(node_id), text(&now_text), text(work_id)],
+                &format!(
+                    "INSERT OR IGNORE INTO catalog_lookups (node_id, work_id, asked_at) \
+                     SELECT ?, id, ? FROM works WHERE id IN ({marks})"
+                ),
+                [text(node_id), text(&now_text)]
+                    .into_iter()
+                    .chain(ids)
+                    .collect(),
             ));
         }
         let asked = run_batches(store, "catalog question", statements).await?;
@@ -379,23 +396,21 @@ pub async fn pending_questions(
     }
     let now = Utc::now();
     let resend_before = now - LOOKUP_RESEND;
-    let rows = catalog_lookups::Entity::find()
+    let due: Vec<String> = catalog_lookups::Entity::find()
         .filter(catalog_lookups::Column::NodeId.eq(node_id))
         .filter(catalog_lookups::Column::AnsweredAt.is_null())
+        .filter(
+            Condition::any()
+                .add(catalog_lookups::Column::SentAt.is_null())
+                .add(catalog_lookups::Column::SentAt.lt(stamp(resend_before))),
+        )
         .order_by_asc(catalog_lookups::Column::AskedAt)
         .order_by_asc(catalog_lookups::Column::WorkId)
         .limit(PENDING_SCAN)
         .all(store.db())
         .await
-        .map_err(LibraryError::Orm)?;
-    let due: Vec<String> = rows
+        .map_err(LibraryError::Orm)?
         .into_iter()
-        .filter(|row| {
-            row.sent_at
-                .as_deref()
-                .and_then(parse)
-                .is_none_or(|sent| sent < resend_before)
-        })
         .map(|row| row.work_id)
         .collect();
     if due.is_empty() {
@@ -586,6 +601,7 @@ pub async fn record_answers(
         catalog_lookups::Entity::find()
             .filter(catalog_lookups::Column::NodeId.eq(node_id))
             .filter(catalog_lookups::Column::WorkId.is_in(part))
+            .filter(catalog_lookups::Column::SentAt.is_not_null())
             .filter(catalog_lookups::Column::AnsweredAt.is_null())
     })
     .await?
@@ -616,16 +632,27 @@ pub async fn record_answers(
     }
     let recorded = store.record_catalog_listings(&listings).await?;
     let mut kept: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // A work with an edition the pool could not place this time keeps its
+    // listings: the branch still named it, so none of them is expired.
+    let mut unsure: BTreeSet<&String> = BTreeSet::new();
     for (id, work) in recorded.ids.iter().zip(&listing_work) {
-        if let Some(id) = id {
-            report.listings += 1;
-            kept.entry(work.clone()).or_default().insert(id.clone());
+        match id {
+            Some(id) => {
+                report.listings += 1;
+                kept.entry(work.clone()).or_default().insert(id.clone());
+            }
+            None => {
+                unsure.insert(work);
+            }
         }
     }
     let settled: Vec<String> = waiting.iter().cloned().collect();
     let now_text = stamp(Utc::now());
     let mut statements = Vec::new();
     for listing in branch_listings_of_works(store, node_id, &settled).await? {
+        if unsure.contains(&listing.work_id) {
+            continue;
+        }
         let still = kept
             .get(&listing.work_id)
             .is_some_and(|ids| ids.contains(&listing.listing_id));
@@ -816,15 +843,18 @@ pub async fn branch_listings_for_works(
 }
 
 /// The works this library wants its branches asked about: those of open
-/// wishes and of Discover candidates, at most `limit`.
+/// wishes (most recently changed first), then those of Discover candidates
+/// (most recently fetched first), at most `limit`.
 ///
 /// # Errors
 ///
 /// Returns the read error.
 pub async fn works_of_interest(store: &LibraryStore, limit: u64) -> Result<Vec<String>> {
     use crate::entities::{discover_candidates, title_requests};
-    let mut works: BTreeSet<String> = title_requests::Entity::find()
+    let mut works: Vec<String> = title_requests::Entity::find()
         .filter(title_requests::Column::Status.eq("open"))
+        .order_by_desc(title_requests::Column::UpdatedAt)
+        .order_by_asc(title_requests::Column::Id)
         .limit(limit)
         .all(store.db())
         .await
@@ -833,29 +863,39 @@ pub async fn works_of_interest(store: &LibraryStore, limit: u64) -> Result<Vec<S
         .map(|r| r.work_id)
         .collect();
     let listing_ids: Vec<String> = discover_candidates::Entity::find()
+        .order_by_desc(discover_candidates::Column::FetchedAt)
+        .order_by_asc(discover_candidates::Column::Id)
         .limit(limit)
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?
         .into_iter()
         .map(|c| c.listing_id)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
         .collect();
-    let edition_ids: Vec<String> = read_chunked(store, &listing_ids, |part| {
+    let edition_of_listing: HashMap<String, String> = read_chunked(store, &listing_ids, |part| {
         store_listings::Entity::find().filter(store_listings::Column::Id.is_in(part))
     })
     .await?
     .into_iter()
-    .map(|l| l.edition_id)
-    .collect::<BTreeSet<_>>()
-    .into_iter()
+    .map(|l| (l.id, l.edition_id))
     .collect();
-    works.extend(works_of_editions(store, &edition_ids).await?.into_values());
-    Ok(works
+    let edition_ids: Vec<String> = edition_of_listing
+        .values()
+        .cloned()
+        .collect::<BTreeSet<_>>()
         .into_iter()
-        .take(usize::try_from(limit).unwrap_or(usize::MAX))
-        .collect())
+        .collect();
+    let work_of_edition = works_of_editions(store, &edition_ids).await?;
+    works.extend(listing_ids.iter().filter_map(|listing| {
+        edition_of_listing
+            .get(listing)
+            .and_then(|edition| work_of_edition.get(edition))
+            .cloned()
+    }));
+    let mut seen = BTreeSet::new();
+    works.retain(|work| seen.insert(work.clone()));
+    works.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+    Ok(works)
 }
 
 // ---------------------------------------------------------------------------

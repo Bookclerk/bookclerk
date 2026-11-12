@@ -33,9 +33,16 @@ fn ask_due(now: chrono::DateTime<Utc>) -> bool {
             .is_ok()
 }
 
+/// Gives the slot claimed by [`ask_due`] back after a failed ask, so the
+/// next fetch asks again instead of waiting out [`ASK_INTERVAL`].
+fn release_ask() {
+    LAST_ASK.store(0, Ordering::Relaxed);
+}
+
 /// Asks this library's branches about the works of open wishes and Discover
 /// candidates, when [`ASK_INTERVAL`] has passed since this daemon last did.
-/// A failure is logged; the next fetch asks again.
+/// A failure is logged and gives the slot back, so the next fetch asks
+/// again.
 pub async fn ask_branches_if_due(library: &LibraryStore) {
     if !ask_due(Utc::now()) {
         return;
@@ -43,6 +50,7 @@ pub async fn ask_branches_if_due(library: &LibraryStore) {
     let works = match works_of_interest(library, MAX_ASKED_WORKS).await {
         Ok(works) => works,
         Err(err) => {
+            release_ask();
             tracing::warn!(error = %err, "could not read the works to ask branches about");
             return;
         }
@@ -54,7 +62,10 @@ pub async fn ask_branches_if_due(library: &LibraryStore) {
             "asked branches about works"
         ),
         Ok(_) => {}
-        Err(err) => tracing::warn!(error = %err, "could not ask branches about works"),
+        Err(err) => {
+            release_ask();
+            tracing::warn!(error = %err, "could not ask branches about works");
+        }
     }
 }
 
@@ -68,5 +79,7 @@ mod tests {
         assert!(ask_due(now));
         assert!(!ask_due(now));
         assert!(ask_due(now + ASK_INTERVAL));
+        release_ask();
+        assert!(ask_due(now + ASK_INTERVAL), "a released slot is free again");
     }
 }
