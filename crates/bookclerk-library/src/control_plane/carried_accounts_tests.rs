@@ -337,6 +337,15 @@ async fn a_branch_imports_carried_accounts_for_its_person_once() {
             "{name}"
         );
         assert!(again.imported.is_empty(), "{name}");
+        // ...but records that the second library holds it too, so a
+        // disconnect everywhere reaches both.
+        assert_eq!(
+            account_share_peers(store, SHAREABLE, "ana@example.com")
+                .await
+                .unwrap(),
+            vec![link_peer("cluster-x"), link_peer("cluster-y")],
+            "{name}"
+        );
         assert_eq!(kit.refused_begins(), 0, "{name}");
     }
 }

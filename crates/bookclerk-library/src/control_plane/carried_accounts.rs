@@ -429,6 +429,42 @@ pub async fn record_accounts_sent_to(
     Ok(())
 }
 
+/// Records that `peer` also holds an account `user_id` already has here
+/// (`account_shares`, direction [`SHARE_RECEIVED`]), guarded on the link
+/// still being theirs; the account itself is left as it is.
+///
+/// # Errors
+///
+/// Returns the write error.
+async fn record_received_from(
+    store: &LibraryStore,
+    user_id: i64,
+    peer: &str,
+    account: &CarriedAccount,
+) -> Result<()> {
+    let statements = share_statements(
+        &account.plugin_key,
+        &account.account_id,
+        peer,
+        SHARE_RECEIVED,
+        &Utc::now().to_rfc3339(),
+        Some((
+            "EXISTS (SELECT 1 FROM account_links WHERE plugin_key = ? AND account_id = ? \
+             AND identity_id IN (SELECT id FROM portal_identities WHERE user_id = ?))",
+            vec![
+                text(&account.plugin_key),
+                text(&account.account_id),
+                int(user_id),
+            ],
+        )),
+    );
+    let operation_id = format!("account-received-{}", uuid::Uuid::new_v4());
+    store
+        .execute_host_batch(batch::request(&operation_id, statements.to_vec()))
+        .await?;
+    Ok(())
+}
+
 /// Every peer this install shared the store account with, in either
 /// direction (`account_shares`): [`node_peer`] and [`link_peer`] values,
 /// each once, sorted.
@@ -637,6 +673,15 @@ async fn import_from_peer(
     for (index, account) in accounts.iter().enumerate() {
         let key = (account.plugin_key.clone(), account.account_id.clone());
         if mine.contains(&key) {
+            // Left as it is, but `peer` holds it too now: recorded, so a
+            // disconnect everywhere reaches that library as well.
+            if let Err(err) = record_received_from(store, user_id, peer, account).await {
+                tracing::warn!(
+                    plugin_key = %account.plugin_key,
+                    error = %err,
+                    "could not record where an account already here came from too"
+                );
+            }
             report.already_here.push(key);
             continue;
         }
