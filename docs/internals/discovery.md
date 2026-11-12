@@ -103,6 +103,13 @@ operator, a household user, or a portal identity) has a **subject key**
    for the person's current seeds (their own, or the household's), and none
    when `discovery.storefront_candidates` is off.
 
+   Each job reads the library once: the taste and the set of titles the
+   library already holds (by ASIN, ISBN and store product id, used to keep
+   owned titles out of the candidates and the feed) come from the same
+   read. A per-person taste profile stored between jobs, so a job no
+   longer reads the whole library at all, is planned with the book model's
+   step that retires the `books` table.
+
    Both steps read through the database plugin's streamed result path
    ([SQL contract](../plugins/sql-contract/v1.md#streamed-results)), so a
    page of candidates or a stored feed larger than one inline 256 KiB
@@ -297,7 +304,9 @@ Per [Open Library API guidelines](https://openlibrary.org/developers/api):
 
 - The `openlibrary` plugin identifies itself with its `contact_email`
   setting ([integrations](../server/integrations.md#open-library-and-audnexus))
-- The host spaces rows about 400 ms apart and stops after 25 rows per run
+- The host spaces rows about 400 ms apart and stops after 25 rows per run.
+  It reads the library a page at a time and stops reading once the run's
+  requests are spent
 - A row with an ISBN is looked up by ISBN; one without is searched by title
   and author, and only a result with the same title (ignoring case and
   punctuation) is used. The first record that fills a gap wins, and the

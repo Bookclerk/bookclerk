@@ -393,7 +393,8 @@ pub async fn recommend(
     registry: &SourceRegistry,
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
-    let mut recs = recommend_all(library, registry, opts).await?;
+    let books = library.list_books(None).await?;
+    let mut recs = recommend_all(library, registry, &books, opts).await?;
     recs.truncate(opts.limit);
     Ok(recs)
 }
@@ -418,8 +419,9 @@ pub async fn recommend_feed(
     registry: &SourceRegistry,
     opts: &RecommendOptions,
 ) -> Result<crate::shelves::DiscoverFeed> {
-    let recs = recommend_all(library, registry, opts).await?;
+    // One library read serves both the candidates and the shelf taste.
     let books = library.list_books(None).await?;
+    let recs = recommend_all(library, registry, &books, opts).await?;
     let listening = load_listening(library, opts).await?;
     let taste = shelf_taste(&books, &TasteWeights::new(), &listening);
     Ok(feed_from_recommendations(&recs, &taste, opts))
@@ -539,17 +541,18 @@ async fn load_listening(
 }
 
 /// Full scored candidate pool (not truncated) used by flat list + shelves.
+///
+/// `books` is the library as the caller read it, so one call reads it once.
 async fn recommend_all(
     library: &LibraryStore,
     registry: &SourceRegistry,
+    books: &[BookRecord],
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
-    let books = library.list_books(None).await?;
-
-    let (owned_asins, owned_isbns, owned_product_keys) = owned_identity_sets(&books);
+    let (owned_asins, owned_isbns, owned_product_keys) = owned_identity_sets(books);
 
     let listening = load_listening(library, opts).await?;
-    let seeds = select_taste_seeds(&books, &engagement_by_book(&listening));
+    let seeds = select_taste_seeds(books, &engagement_by_book(&listening));
     let mut candidates = Vec::new();
     if opts.fetch_storefront_candidates && !seeds.is_empty() {
         let fetch_opts = CandidateFetchOptions {
@@ -573,7 +576,7 @@ async fn recommend_all(
     rank_candidates(
         library,
         registry,
-        &books,
+        books,
         &TasteWeights::new(),
         &listening,
         candidates,

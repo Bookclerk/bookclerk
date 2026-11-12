@@ -64,9 +64,9 @@ pub use metadata_enrich::{
 };
 pub use precompute::{
     fetch_subject_candidates, load_subject_taste, rank_subject_feed, stored_subject_feed,
-    stored_subject_feed_state, FetchReport, RankReport, StoredSubjectFeed, SubjectTaste,
-    HOUSEHOLD_BLEND_WEIGHT, OWN_TASTE_THRESHOLD, STARTER_GENRES, STARTER_GENRE_MIN_SEEDS,
-    STORE_CALL_MAX_AGE, STORE_CALL_TIMEOUT, STORE_FETCH_DEADLINE,
+    stored_subject_feed_state, FetchReport, OwnedIdentities, RankReport, StoredSubjectFeed,
+    SubjectTaste, HOUSEHOLD_BLEND_WEIGHT, OWN_TASTE_THRESHOLD, STARTER_GENRES,
+    STARTER_GENRE_MIN_SEEDS, STORE_CALL_MAX_AGE, STORE_CALL_TIMEOUT, STORE_FETCH_DEADLINE,
 };
 pub use purchase::{
     best_purchase_hint, best_purchase_hint_preferring, format_money_label,
