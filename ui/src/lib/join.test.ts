@@ -7,6 +7,7 @@ import {
   branchSharingSummary,
   broughtConnectionsSummary,
   canChangeBranchSharing,
+  connectionsAddedLine,
   branchTitlesNote,
   fingerprintGroups,
   formatCountdown,
@@ -323,5 +324,41 @@ describe("broughtConnectionsSummary", () => {
     );
     expect(broughtConnectionsSummary({ ...base, not_kept: "no_owner" })).toMatch(/no single owner/);
     expect(broughtConnectionsSummary({ ...base, not_kept: "failed" })).toMatch(/couldn't be added/);
+  });
+});
+
+describe("connectionsAddedLine", () => {
+  const report = {
+    added: 1,
+    already_here: 0,
+    taken: 0,
+    failed: 0,
+    not_sent: 0,
+    not_allowed: false,
+  };
+
+  it("says how many were added", () => {
+    expect(connectionsAddedLine("books.example.com", report)).toBe("1 added to books.example.com.");
+  });
+
+  it("names every other outcome", () => {
+    expect(
+      connectionsAddedLine("books.example.com", {
+        ...report,
+        added: 0,
+        already_here: 1,
+        taken: 2,
+        failed: 1,
+        not_sent: 1,
+      }),
+    ).toBe(
+      "0 added to books.example.com, 1 already there, 2 connected to someone else there, 2 not added.",
+    );
+  });
+
+  it("says when the library doesn't allow it", () => {
+    expect(connectionsAddedLine("books.example.com", { ...report, not_allowed: true })).toBe(
+      "books.example.com doesn't let you connect store accounts there; nothing was added.",
+    );
   });
 });

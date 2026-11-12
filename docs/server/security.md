@@ -77,7 +77,11 @@ joining branch's own box key, so the code, the browser and any proxy on
 the way never see them. The branch re-seals each secret with its own
 `master.key` before it writes it. Neither side logs the values, and the
 library audits what it sent, without them. Each operator can stop a
-member from connecting store accounts on their server. Details:
+member from connecting store accounts on their server. A branch's person
+can later add connections to a library over the branch's link; that bundle
+is sealed to the library's per-connection box key, so it opens only on
+that connection, and the library keeps it only for the user who let the
+branch join. Details:
 [Store connections that follow the person](cluster-hosts.md#store-connections-that-follow-the-person).
 
 ### Leave the web app's policy in place

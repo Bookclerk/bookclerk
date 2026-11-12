@@ -240,6 +240,43 @@ accounts and which of them would travel.
   is added in its own batch that checks the rule again, and the ones not
   yet added count as not kept.
 
+### Adding connections later, and disconnecting everywhere
+
+A branch's person can add store connections to a library the branch
+already joined, and take one back from every library at once. Both act
+only for the person the branch belongs to (the Owner the joins were run
+for); anyone else gets `403 not_branch_person`.
+
+- **Add to a library.** On the branch, **Accounts** shows **Add to
+  *library*** beside each connection
+  (`POST /api/config/join/connections` with `{cluster_id, accounts}`, at
+  most 64). The branch picks the person's own connected accounts of
+  shareable storefronts, records each as sent to `link:<cluster id>` in
+  `account_shares`, and sends them over the link's socket as
+  `accounts.add`: one bundle sealed to the connection's owner box key from
+  `welcome`, bound to the cluster and node ids under its own
+  associated-data domain, so a joining bundle never opens as an offer.
+- **On the library.** The library keeps the accounts for the user its node
+  row names as the branch's owner (the user who let the branch join),
+  under its own per-member rule, exactly as a branch keeps a joining
+  bundle: one guarded atomic batch per account, a `received` row against
+  `node:<node id>`, and an audit row `branch_connections_added`. Accounts
+  of storefronts that are not shareable there are not kept. The answer,
+  `accounts.added`, counts what was added, already there, taken, or not
+  kept, and whether the rule refused them all.
+- **Disconnect everywhere.** **Revoke everywhere** on the branch
+  (`POST /api/config/join/connections/disconnect` with
+  `everywhere: true`) sends `accounts.remove` up every active link the
+  account was shared with, in either direction, then disconnects it on the
+  branch. Each library removes the person's links to the account and, in
+  the same atomic batch, deletes its secrets and marks it revoked when no
+  other member's link holds it. A library that can't be reached is named
+  in the answer's `unreached`, and the account stays connected there.
+  **Revoke here** (or `everywhere: false`) disconnects it on the branch
+  only.
+
+Disconnecting on a library does not yet reach its branches.
+
 > [!NOTE]
 > A retry of the same exchange (a lost answer) replays the same node, and
 > two concurrent redeems still make one node. Anything else, such as a

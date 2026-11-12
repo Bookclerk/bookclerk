@@ -292,7 +292,6 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// State shared by the connection loop, job tasks, and handles.
 /// What the library kept of an [`HostClientHandle::offer_accounts`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OfferedAccounts {
@@ -308,6 +307,7 @@ pub struct OfferedAccounts {
     pub not_allowed: bool,
 }
 
+/// State shared by the connection loop, job tasks, and handles.
 pub(crate) struct Shared {
     /// Where the owner is.
     endpoint: OwnerEndpoint,

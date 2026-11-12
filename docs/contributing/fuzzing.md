@@ -43,7 +43,7 @@ boundary extends it.
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
-| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person | `bookclerk-node-proto::parse_account_bundle` |
+| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, and a branch offers its library (`accounts.add`) | `bookclerk-node-proto::parse_account_bundle` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
