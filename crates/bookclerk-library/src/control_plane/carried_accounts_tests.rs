@@ -13,6 +13,7 @@ use crate::secrets::{
 };
 use crate::store::LibraryStore;
 use crate::test_support::{sqlite, Profile};
+use bookclerk_node_proto::MAX_BUNDLE_ACCOUNTS;
 
 /// A storefront that declares `credentials = "shareable"`.
 const SHAREABLE: &str = "platform:bookclerk/bookclerk-plugin-source-libro#libro";
@@ -823,5 +824,45 @@ async fn an_offer_from_a_branch_is_recorded_against_that_node() {
             vec![link_peer("cluster-up"), node_peer("branch-node")],
             "{name}"
         );
+    }
+}
+
+#[tokio::test]
+async fn a_picked_account_travels_even_past_the_bundle_limit() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let ana = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        for n in 0..=MAX_BUNDLE_ACCOUNTS {
+            connect(
+                store,
+                ana.id,
+                SHAREABLE,
+                &format!("ana{n}@example.com"),
+                b"t",
+            )
+            .await;
+        }
+        // Unpicked, one account is left behind by the limit.
+        let all = accounts_to_carry(store, ana.id, &shareable).await.unwrap();
+        assert_eq!(all.len(), MAX_BUNDLE_ACCOUNTS, "{name}");
+        let left_behind = (0..=MAX_BUNDLE_ACCOUNTS)
+            .map(|n| format!("ana{n}@example.com"))
+            .find(|id| !all.iter().any(|account| &account.account_id == id))
+            .unwrap();
+        // Picked, it travels.
+        let keep =
+            |plugin_key: &str, account_id: &str| shareable(plugin_key) && account_id == left_behind;
+        let picked = accounts_to_carry_where(store, ana.id, &keep).await.unwrap();
+        assert_eq!(picked.len(), 1, "{name}");
+        assert_eq!(picked[0].account_id, left_behind, "{name}");
+        assert_eq!(kit.refused_begins(), 0, "{name}");
     }
 }

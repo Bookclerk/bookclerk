@@ -28,7 +28,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::control_plane::{
-    account_share_peers, accounts_to_carry, branch_person, link_peer, list_cluster_links,
+    account_share_peers, accounts_to_carry_where, branch_person, link_peer, list_cluster_links,
     load_cluster_link, record_accounts_sent_to, withdraw_person_account, Withdrawn,
 };
 use bookclerk_node_client::OwnerCallError;
@@ -194,19 +194,19 @@ pub async fn post_join_connections(
         Err(err) => return crate::config_authority::events_error(err),
     };
     let shareable = crate::node_api::branch::shareable_plugin_keys(&state, &store).await;
-    let is_shareable = move |key: &str| shareable.contains(key);
-    let mine = match accounts_to_carry(&store, person, &is_shareable).await {
-        Ok(mine) => mine,
+    let picked = &body.accounts;
+    let keep = move |plugin_key: &str, account_id: &str| {
+        shareable.contains(plugin_key)
+            && picked
+                .iter()
+                .any(|pick| pick.plugin_key == plugin_key && pick.account_id == account_id)
+    };
+    // The pick is applied before the bundle's limits, so the accounts
+    // named are the ones that fill it.
+    let wanted = match accounts_to_carry_where(&store, person, &keep).await {
+        Ok(wanted) => wanted,
         Err(err) => return crate::config_authority::events_error(err),
     };
-    let wanted: Vec<_> = mine
-        .into_iter()
-        .filter(|account| {
-            body.accounts.iter().any(|picked| {
-                picked.plugin_key == account.plugin_key && picked.account_id == account.account_id
-            })
-        })
-        .collect();
     let not_sent = count(body.accounts.len().saturating_sub(wanted.len()));
     if wanted.is_empty() {
         return Json(ConnectionsAdded {

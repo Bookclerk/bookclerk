@@ -224,12 +224,34 @@ pub async fn accounts_to_carry(
     user_id: i64,
     shareable: &(dyn Fn(&str) -> bool + Send + Sync),
 ) -> Result<Vec<CarriedAccount>> {
+    accounts_to_carry_where(store, user_id, &|plugin_key, _| shareable(plugin_key)).await
+}
+
+/// [`accounts_to_carry`] limited to the accounts `keep` accepts, by
+/// `(plugin_key, account_id)`, applied before the bundle's count and size
+/// limits so a picked account is never crowded out by unpicked ones.
+///
+/// # Arguments
+///
+/// * `store` - This library.
+/// * `user_id` - The member whose connections travel.
+/// * `keep` - Whether an account may travel (its storefront shareable,
+///   and picked when the person picks some).
+///
+/// # Errors
+///
+/// Returns a read error, or the unseal error of a secret.
+pub async fn accounts_to_carry_where(
+    store: &LibraryStore,
+    user_id: i64,
+    keep: &(dyn Fn(&str, &str) -> bool + Send + Sync),
+) -> Result<Vec<CarriedAccount>> {
     let mut carried = Vec::new();
     // Room for the bundle's own fields around the accounts.
     const BUNDLE_OVERHEAD: usize = 1024;
     let mut used = BUNDLE_OVERHEAD;
     for account in member_accounts(store, user_id).await? {
-        if !shareable(&account.plugin_key) {
+        if !keep(&account.plugin_key, &account.account_id) {
             continue;
         }
         if carried.len() >= MAX_BUNDLE_ACCOUNTS {
