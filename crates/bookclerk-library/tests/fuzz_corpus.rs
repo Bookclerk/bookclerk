@@ -266,3 +266,26 @@ fn fuzz_corpus_job_cap_request_replays() {
     assert!(accepted > 0, "no job_cap_request seed was accepted");
     assert!(refused > 0, "every job_cap_request seed was accepted");
 }
+
+/// The `sharing_request` oracle, shared with the fuzz target: a branch's
+/// sharing settings body is accepted exactly when it has the documented
+/// shape, and a setting it leaves out stays unset rather than `false`.
+#[path = "../../../fuzz/oracles/sharing_request.rs"]
+mod sharing_request_oracle;
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_sharing_request_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("sharing_request") {
+        if sharing_request_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(accepted > 0, "no sharing_request seed was accepted");
+    assert!(refused > 0, "every sharing_request seed was accepted");
+}

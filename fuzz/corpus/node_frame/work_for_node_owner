@@ -1,0 +1,1 @@
+{"v":1,"id":"c1","type":"work","item":"job","job":{"id":"acq-1","kind":"acquire","payload":{"account":"me@example.com"},"attempt":1,"for_node_owner":true},"fence":4,"lease_secs":120,"plugin_keys":["bookclerk:source-libro"],"source_plugin_key":"bookclerk:source-libro"}

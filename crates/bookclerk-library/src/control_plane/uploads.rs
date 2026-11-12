@@ -420,7 +420,9 @@ pub async fn job_titles(
 ) -> Result<Option<Vec<BookRecord>>> {
     let owned = match node_trust(store, node_id, Claimant::Remote).await? {
         NodeTrust::All => None,
-        NodeTrust::OwnedBy(user_id) => Some(accounts_owned_by(store, user_id).await?),
+        NodeTrust::OwnedBy(user_id) | NodeTrust::AllOfOwner(user_id) => {
+            Some(accounts_owned_by(store, user_id).await?)
+        }
         NodeTrust::Nothing => return Ok(None),
     };
     let keys = job_plugin_keys(store, job).await?.unwrap_or_default();
@@ -890,7 +892,7 @@ pub async fn grant_upload(
         }
         match node_trust(store, node_id, Claimant::Remote).await? {
             NodeTrust::All => {}
-            NodeTrust::OwnedBy(user_id) => {
+            NodeTrust::OwnedBy(user_id) | NodeTrust::AllOfOwner(user_id) => {
                 let owned = accounts_owned_by(store, user_id).await?;
                 if !owned.contains(&(book.plugin_key.clone(), book.account_id.clone())) {
                     return Ok(UploadGrant::Refused("not_your_account"));

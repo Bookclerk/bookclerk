@@ -22,6 +22,7 @@ import {
   setBranchJobCap,
   setBranchSharing,
   setMembersListing,
+  type BranchWorkSettings,
 } from "@/lib/join";
 import { backoffDelay, useLiveRefresh } from "@/lib/live";
 import { domainLabel } from "@/lib/networkGrant";
@@ -64,9 +65,10 @@ function libraryLabel(origin: string): string {
 }
 
 /**
- * The sharing settings of one library this server is a branch of
- * (branches of branches), and whether members' books are listed when it
- * asks what this branch can supply. All are on by default.
+ * The settings of one library this server is a branch of: the two sharing
+ * settings (branches of branches, both on by default), whether members'
+ * books are listed when it asks what this branch can supply (on by
+ * default) and whose work it takes (only its owner's by default).
  */
 function SharingSettings({ link, onSaved }: { link: ClusterLinkView; onSaved: () => void }) {
   const [busy, setBusy] = useState(false);
@@ -74,12 +76,16 @@ function SharingSettings({ link, onSaved }: { link: ClusterLinkView; onSaved: ()
   const share = link.share_books ?? true;
   const include = link.include_branches ?? true;
   const listMembers = link.list_members_books ?? true;
+  const workForMembers = link.work_for_members ?? false;
+  const keepMemberCopies = link.keep_member_copies ?? false;
 
-  async function save(nextShare: boolean, nextInclude: boolean) {
+  // Each save sends only the work settings the user changed, so a sharing
+  // change never writes back values another session has since changed.
+  async function save(nextShare: boolean, nextInclude: boolean, work?: BranchWorkSettings) {
     setBusy(true);
     setError(null);
     try {
-      await setBranchSharing(link.cluster_id, nextShare, nextInclude);
+      await setBranchSharing(link.cluster_id, nextShare, nextInclude, work);
       onSaved();
     } catch (err) {
       setError(joinErrorMessage(err, "Could not save."));
@@ -155,6 +161,47 @@ function SharingSettings({ link, onSaved }: { link: ClusterLinkView; onSaved: ()
             supply it if one of your members has it. Your own books are always listed, and each
             member can keep theirs out in their account settings. Turning this off can take up to
             two days to reach the library.
+          </span>
+        </span>
+      </label>
+      <label className="flex items-start gap-3 text-sm text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={workForMembers}
+          disabled={busy}
+          onChange={(e) =>
+            void save(share, include, {
+              workForMembers: e.target.checked,
+              // Copies follow the work: turning it off turns them off too.
+              ...(e.target.checked ? {} : { keepMemberCopies: false }),
+            })
+          }
+        />
+        <span>
+          <span className="block font-medium">
+            Download for other members of {libraryLabel(link.owner_origin)}
+          </span>
+          <span className="block text-xs text-ink/55">
+            When off, this server downloads only the books of the person who joined it to the
+            library. When on, it also takes downloads for the library&apos;s other members, where
+            the library trusts it to.
+          </span>
+        </span>
+      </label>
+      <label className="flex items-start gap-3 text-sm text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={keepMemberCopies}
+          disabled={busy || !workForMembers}
+          onChange={(e) => void save(share, include, { keepMemberCopies: e.target.checked })}
+        />
+        <span>
+          <span className="block font-medium">Keep copies of other members&apos; books</span>
+          <span className="block text-xs text-ink/55">
+            Books downloaded here for other members also go to this server&apos;s own outputs. When
+            off, they go only to the library.
           </span>
         </span>
       </label>

@@ -67,6 +67,10 @@ export interface BranchLinkView {
   include_branches?: boolean;
   /** "List my members' books" when the library asks (on by default). */
   list_members_books?: boolean;
+  /** "Download for other members of <library>" (off by default): take the library's work for its other members too. */
+  work_for_members?: boolean;
+  /** "Keep copies of other members' books" (off by default): also write their books to this server's own outputs. */
+  keep_member_copies?: boolean;
   /** The most jobs this server runs for the library at once; `null` is an equal share of the machine. */
   max_jobs?: number | null;
   /** Jobs the library may have running here now (its share of the machine); absent while its link is not running. */
@@ -449,7 +453,7 @@ export function canChangeBranchSharing(role: string | undefined, impersonating =
 
 /**
  * Settings → Library for the operator or an Owner: the libraries this
- * server is a branch of, with their two sharing settings.
+ * server is a branch of, with their sharing and work settings.
  *
  * @returns The libraries.
  */
@@ -458,22 +462,45 @@ export function fetchBranchSharing(): Promise<{ clusters: BranchLinkView[] }> {
 }
 
 /**
- * Settings → Library: the two sharing settings for one library this server
- * is a branch of (the operator or an Owner). The library hears them at once.
+ * Settings → Library's work settings for one library this server is a
+ * branch of; a setting left out keeps its stored value.
+ */
+export interface BranchWorkSettings {
+  /** "Download for other members of <library>". */
+  workForMembers?: boolean;
+  /** "Keep copies of other members' books". */
+  keepMemberCopies?: boolean;
+}
+
+/**
+ * Settings → Library: the sharing settings for one library this server is
+ * a branch of (the operator or an Owner), and optionally its work
+ * settings. The library hears the sharing settings at once; the work
+ * settings apply to the next job this server asks for.
  *
  * @param clusterId - The library.
  * @param shareBooks - "Share this branch's books with <library>".
  * @param includeBranches - "Include books from my own branches".
+ * @param work - The work settings to change; each one left out keeps its stored value.
  * @returns The link with the stored settings.
  */
 export function setBranchSharing(
   clusterId: string,
   shareBooks: boolean,
   includeBranches: boolean,
+  work?: BranchWorkSettings,
 ): Promise<{ cluster: BranchLinkView }> {
   return request("/api/config/join/sharing", {
     method: "POST",
-    body: { cluster_id: clusterId, share_books: shareBooks, include_branches: includeBranches },
+    body: {
+      cluster_id: clusterId,
+      share_books: shareBooks,
+      include_branches: includeBranches,
+      ...(work?.workForMembers === undefined ? {} : { work_for_members: work.workForMembers }),
+      ...(work?.keepMemberCopies === undefined
+        ? {}
+        : { keep_member_copies: work.keepMemberCopies }),
+    },
   });
 }
 

@@ -224,6 +224,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "sharing_request"
+path = "fuzz_targets/sharing_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "cache_settings"
 path = "fuzz_targets/cache_settings.rs"
 test = false

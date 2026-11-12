@@ -38,6 +38,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use bookclerk_node_proto::ClaimScope;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use uuid::Uuid;
 
@@ -49,8 +50,8 @@ use super::semaphore::{
     acquire_permits, release_permits, PermitAcquire, SemaphorePermit, SemaphoreRequest,
 };
 use super::trust::{
-    account_owned, accounts_named, claimant_may_run, job_trusted, node_trust, owned_job_account,
-    Claimant, NodeTrust,
+    account_owned, accounts_named, claimant_may_run, job_named_account, job_trusted,
+    node_trust_in_scope, owned_job_account, Claimant, NodeTrust,
 };
 use crate::entities::accounts;
 use crate::error::{LibraryError, Result};
@@ -113,6 +114,17 @@ pub struct JobClaimRequest<'a> {
     pub filter: Option<&'a JobClaimFilter>,
 }
 
+impl JobClaimRequest<'_> {
+    /// Whose work the claim takes: a Host's filter says
+    /// ([`JobClaimFilter::scope`]); a claim without one takes every job
+    /// the node is trusted with.
+    #[must_use]
+    pub fn scope(&self) -> ClaimScope {
+        self.filter
+            .map_or(ClaimScope::AllMembers, |filter| filter.scope)
+    }
+}
+
 /// What a Host is willing to claim: the job kinds it runs and the plugin
 /// keys its operator consented to. Both must admit a job.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -121,6 +133,9 @@ pub struct JobClaimFilter {
     pub kinds: BTreeSet<String>,
     /// Canonical plugin keys.
     pub plugin_keys: BTreeSet<String>,
+    /// Whose work the Host takes; it narrows what the node is trusted
+    /// with ([`super::node_trust_in_scope`]), never widens it.
+    pub scope: ClaimScope,
 }
 
 impl JobClaimFilter {
@@ -614,7 +629,8 @@ pub async fn claim_routed_job(
 ) -> Result<Option<RoutedJobClaim>> {
     let class = class_semaphore(request.resource_class);
     let ttl = Duration::from_secs(request.lease_secs);
-    let trust = node_trust(store, request.node_id, request.claimant).await?;
+    let trust =
+        node_trust_in_scope(store, request.node_id, request.claimant, request.scope()).await?;
     if trust == NodeTrust::Nothing {
         return Ok(None);
     }
@@ -645,17 +661,25 @@ pub async fn claim_routed_job(
             {
                 continue;
             }
-            let trusted = match (&trust, owned_job_account(&job)) {
-                (NodeTrust::OwnedBy(_), None) => false,
-                (NodeTrust::OwnedBy(user_id), Some(account)) => match owned_accounts.get(account) {
+            // Accounts are cached by name only for unpinned jobs; a pinned
+            // job's account is resolved within its plugin by `job_trusted`.
+            let named = match &trust {
+                NodeTrust::OwnedBy(user_id) => Some((*user_id, owned_job_account(&job))),
+                NodeTrust::AllOfOwner(_) if job.payload.plugin_instance_id.is_some() => None,
+                NodeTrust::AllOfOwner(user_id) => Some((*user_id, job_named_account(&job))),
+                NodeTrust::All | NodeTrust::Nothing => None,
+            };
+            let trusted = match named {
+                Some((_, None)) => false,
+                Some((user_id, Some(account))) => match owned_accounts.get(account) {
                     Some(known) => *known,
                     None => {
-                        let known = account_owned(store, *user_id, account).await?;
+                        let known = account_owned(store, user_id, account).await?;
                         owned_accounts.insert(account.to_owned(), known);
                         known
                     }
                 },
-                _ => job_trusted(store, &trust, &job).await?,
+                None => job_trusted(store, &trust, &job).await?,
             };
             if !trusted {
                 continue;

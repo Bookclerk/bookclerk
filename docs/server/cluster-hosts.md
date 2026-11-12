@@ -84,7 +84,10 @@ A branch's node appears among the nodes (`bookclerk nodes list`,
 
 - A Member's or Host's branch receives only jobs whose store accounts
   belong to that user.
-- An Administrator's or Owner's branch may receive any job.
+- An Administrator's or Owner's branch may receive any job, but takes
+  only that user's own work unless the branch's operator turns on
+  **Download for other members** for the library (see
+  [Work settings on the branch](#work-settings-on-the-branch)).
 
 Revoke a branch at any time from **Settings → Nodes** or with
 `bookclerk nodes revoke <node_id>`. Its socket closes with 4403 and it
@@ -509,8 +512,11 @@ A host never writes library SQL.
    come out exactly as a local acquire on the owner would name them.
 4. The host **uploads** the title, as described in [Uploads](#uploads).
 
-The host also keeps a best-effort copy of each title in its own deployed
-destinations.
+The host also keeps a copy of each of its owner's own titles in its own
+deployed destinations. A title acquired for another member is copied
+there only when **Keep copies of other members' books** is on (see
+[Work settings on the branch](#work-settings-on-the-branch)). The owner
+says which titles are whose with each job.
 
 ### Sharing this computer between libraries
 
@@ -683,7 +689,29 @@ refused (403).
 The routes are `GET /api/config/join/sharing` (→ `{clusters}`) and
 `POST /api/config/join/sharing`
 `{cluster_id, share_books, include_branches, list_members_books?}`
-(`list_members_books` is left as it is when absent).
+(`list_members_books` is left as it is when absent), which also takes
+the [work settings](#work-settings-on-the-branch).
+
+### Work settings on the branch
+
+**Settings → Library** on B also has two work settings for each library
+joined, both off by default:
+
+- **Download for other members of <library>.** Off: B asks A only for
+  work on the store accounts of the A user who owns B, its owner's own
+  books (including jobs pinned to one plugin instance). On: B also takes
+  work for A's other members, where A trusts B with it (an
+  Administrator's or Owner's branch). A still hands B only
+  work it is trusted with, so this setting never widens trust.
+- **Keep copies of other members' books.** Off: a book B acquires for
+  another member goes only to A's outputs. On: it is also written to B's
+  own outputs, as B's owner's books always are. It only matters while the
+  first setting is on.
+
+They apply to the next job B asks for; a job already running finishes.
+The same people may change them, through the same routes:
+`POST /api/config/join/sharing` takes `work_for_members` and
+`keep_member_copies` too, and a body that leaves one out keeps it as it is.
 
 ### Branch titles on the library
 
