@@ -196,6 +196,28 @@ its own process.
 - **Pull requests never retry**, so a flaky test still shows up red where
   it can be fixed.
 
+A whole-workspace run splits into three parts (`TEST_PARTS` in
+`scripts/ci_plan/execute.py`), one `test` job leg each:
+
+- The plan's `test_parts` output lists the parts, and each leg gets
+  `CI_TEST_PART=<part>/<parts>`. Every part restores the `debug` cache,
+  compiles every test binary and runs its share of the tests with
+  nextest's `--partition count:<part>/<parts>`. Only the first part also
+  runs the custom harnesses, the feature runs and the bench and example
+  builds.
+- Each part writes its coverage report, JUnit results and Web API
+  contract files under `part-<n>/` (`rust/part-2/lcov.info`), in an
+  artifact of its own (`coverage-rust-<n>`). The coverage gate reads the
+  parts together: a line counts as hit when any part ran it.
+- A selective run of a few packages and the build-only `main` push stay
+  in one leg: their tests are too few to repay two more compiles.
+
+On 12 November 2026 the nextest run took 21 of the job's 32 to 36
+minutes, with 4,148 tests on the runner's four cores. Split three ways,
+each part compiles in about 4.5 minutes and runs about 7, so the job takes
+about 14 minutes for about 8 more runner-minutes. The slowest single test
+takes about 2.5 minutes, so the parts stay even.
+
 A merge group only needs to know whether it can land, so it fails fast.
 nextest stops at the first test that fails its retry. The
 `merge-queue-fail-fast` job cancels the rest of the run as soon as any job
@@ -235,7 +257,7 @@ Rust dependency caches use three shared keys. Each is saved by one job on
 `main` and restored by the others:
 
 - **`lint`**: saved by `check`.
-- **`debug`**: saved by `test` on Linux, by `native-gateway` on Windows
+- **`debug`**: saved by `test` on Linux (its first part), by `native-gateway` on Windows
   and by the [macOS job](#macos-job) on macOS. Restored by `e2e`,
   `confinement`, `tray`, `postgres` and `windows-cluster`.
 - **`release`**: saved by `release` (the job that also runs the
@@ -945,8 +967,10 @@ How a run gets there:
 
 1. The workflow sets `CI_COVERAGE_DIR` on those steps. With it set,
    `scripts/ci-exec.py` runs each check with coverage and writes
-   `<dir>/<area>/lcov.info`. Unset (locally, by default), the checks run as
-   before.
+   `<dir>/<area>/lcov.info`, or `<dir>/<area>/part-<n>/lcov.info` for one
+   part of the split `test` job (see
+   [Test runner and retries](#test-runner-and-retries)). Unset (locally,
+   by default), the checks run as before.
 2. Each job uploads its reports as a `coverage-*` artifact. The plan job
    uploads the hunk headers of `git diff --unified=0 base...head` as
    `ci-patch`, because CI Gate checks out a single commit.
@@ -1025,8 +1049,8 @@ router matched, the method, the status and the media type must be
 declared, and a JSON body must validate against the declared schema,
 references followed and formats asserted. Each response is one JSON line
 in `target/contract-report/<pid>.jsonl` (one file per test process, since
-cargo-nextest runs each test in its own); the test job keeps the files
-beside its coverage report and CI Gate runs
+cargo-nextest runs each test in its own); each part of the test job keeps
+its files in `contract/part-<n>/` beside its coverage report, and CI Gate runs
 [`scripts/contract_coverage.py`](../../scripts/contract_coverage.py) over
 them.
 
@@ -1553,6 +1577,11 @@ coverage upload. Most finish within 10 minutes. The unit tests (about
 (about 16), the two long Windows jobs and `merge-queue fail-fast`, which
 holds a runner until the run ends, keep going. Uncontended, a group takes
 about 35 minutes and averages about 6 runners.
+
+Those figures predate splitting the unit tests into three parts (see
+[Test runner and retries](#test-runner-and-retries)). A group now asks for
+two more jobs, the tests take about 14 minutes, and the release build is
+the longest job.
 
 | Build concurrency | Merge-group runners (peak, typical) | Left for pull requests |
 | --- | --- | --- |
