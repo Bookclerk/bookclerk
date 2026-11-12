@@ -537,25 +537,27 @@ async fn sealed_connections(
             return None;
         }
     };
+    // Audited on every send, a retried redeem included, since a retry
+    // gathers the accounts again. Nothing is sent without its record.
+    let detail = json!({
+        "node_id": enrolled.node_id,
+        "accounts": bundle.accounts.len(),
+        "replayed": enrolled.replayed,
+    })
+    .to_string();
+    if let Err(err) = library
+        .insert_security_audit_event(
+            &format!("user:{}", enrolled.owner_user_id),
+            "branch_connections_sent",
+            Some(&detail),
+        )
+        .await
+    {
+        tracing::warn!(error = %err, "branch enrollment could not audit the connections; none sent");
+        return None;
+    }
     if let Err(err) = record_accounts_sent(library, &enrolled.node_id, &bundle.accounts).await {
         tracing::warn!(error = %err, "branch enrollment could not record the connections it sent");
-    }
-    // Audited on every send, a retried redeem included, since a retry
-    // gathers the accounts again.
-    {
-        let detail = json!({
-            "node_id": enrolled.node_id,
-            "accounts": bundle.accounts.len(),
-            "replayed": enrolled.replayed,
-        })
-        .to_string();
-        let _ = library
-            .insert_security_audit_event(
-                &format!("user:{}", enrolled.owner_user_id),
-                "branch_connections_sent",
-                Some(&detail),
-            )
-            .await;
     }
     tracing::info!(
         node_id = %enrolled.node_id,

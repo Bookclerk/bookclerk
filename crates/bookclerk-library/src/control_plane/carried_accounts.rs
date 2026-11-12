@@ -340,6 +340,9 @@ async fn account_secrets(
             continue;
         };
         let value = Zeroizing::new(unseal_secret(&record)?);
+        // This process now holds the plaintext to send it: register it so
+        // no log line or diagnostics report here can carry it.
+        bookclerk_config::register_secret_bytes(&value);
         secrets.push(CarriedSecret {
             kind: record.kind,
             name: record.name,
@@ -351,7 +354,7 @@ async fn account_secrets(
 
 /// Records that `accounts` were sent to the branch `node_id`
 /// (`account_shares`, direction [`SHARE_SENT`]), in atomic batches of at
-/// most 40 accounts; a repeat refreshes the time.
+/// most 20 accounts; a repeat refreshes the time.
 ///
 /// # Errors
 ///
@@ -364,9 +367,10 @@ pub async fn record_accounts_sent(
     if accounts.is_empty() {
         return Ok(());
     }
-    /// Accounts per batch: two statements each, under the smallest
-    /// statement cap a database profile negotiates.
-    const ACCOUNTS_PER_BATCH: usize = 40;
+    /// Accounts per batch: two statements each, so a batch stays within
+    /// the 40-statement minimum every database guest must accept
+    /// (`HOST_MIN_STATEMENTS`).
+    const ACCOUNTS_PER_BATCH: usize = 20;
     let now = Utc::now().to_rfc3339();
     let peer = node_peer(node_id);
     for chunk in accounts.chunks(ACCOUNTS_PER_BATCH) {
@@ -542,13 +546,26 @@ pub async fn import_carried_accounts(
             report.already_here.push(key);
             continue;
         }
-        if store
+        match store
             .count_account_links_for_account(&account.plugin_key, &account.account_id)
-            .await?
-            > 0
+            .await
         {
-            report.taken.push(key);
-            continue;
+            Ok(0) => {}
+            Ok(_) => {
+                report.taken.push(key);
+                continue;
+            }
+            // A read that fails counts against this account only; what
+            // was already kept stays in the report.
+            Err(err) => {
+                tracing::warn!(
+                    plugin_key = %account.plugin_key,
+                    error = %err,
+                    "a brought store account could not be checked; it was not kept"
+                );
+                report.failed.push(key);
+                continue;
+            }
         }
         if account.secrets.is_empty() {
             // Nothing to sign in with: never a connected account without

@@ -832,7 +832,9 @@ pub fn authorized_enrollment_link(
 ///
 /// `bring_accounts` keeps the user's "Bring my store connections to this
 /// branch" choice with the link, so a retried redeem of the same exchange
-/// answers with the same accounts ([`enrollment_link_brings_accounts`]).
+/// answers the same way ([`enrollment_link_brings_accounts`]): it gathers
+/// the user's shareable accounts again, while the user is still active
+/// and the branch is not revoked.
 ///
 /// A second call for the same link id leaves the first row as it is.
 ///

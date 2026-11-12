@@ -471,3 +471,94 @@ async fn an_account_brought_without_a_secret_is_not_connected() {
         );
     }
 }
+
+#[tokio::test]
+async fn an_account_whose_secret_does_not_open_stays_and_the_others_travel() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let ana = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        // A JSON token bundle, as a storefront stores it.
+        connect(
+            store,
+            ana.id,
+            SHAREABLE,
+            "ana@example.com",
+            br#"{"access_token":"carried-access-7f3a91"}"#,
+        )
+        .await;
+        connect(store, ana.id, SHAREABLE, "broken@example.com", b"broken").await;
+        // Damage the second account's sealed secret so it no longer opens.
+        let mut record = get_secret(
+            store.db(),
+            secret_kind::SOURCE_AUTH,
+            Some(SHAREABLE),
+            secret_account_type::INTEGRATION,
+            Some("broken@example.com"),
+            "auth",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        for byte in record.ciphertext.iter_mut().rev().take(4) {
+            *byte ^= 0xff;
+        }
+        upsert_secret(store.db(), &record).await.unwrap();
+
+        let carried = accounts_to_carry(store, ana.id, &shareable).await.unwrap();
+        let ids: Vec<&str> = carried.iter().map(|a| a.account_id.as_str()).collect();
+        assert_eq!(ids, vec!["ana@example.com"], "{name}");
+        // The plaintext this process now holds is scrubbed from its logs,
+        // the token inside the bundle included.
+        assert!(
+            bookclerk_config::contains_registered_secret("token=carried-access-7f3a91"),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sent_shares_are_recorded_in_batches_every_profile_accepts() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let ana = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        // More than two batches' worth.
+        for n in 0..45 {
+            connect(
+                store,
+                ana.id,
+                SHAREABLE,
+                &format!("ana{n}@example.com"),
+                b"token",
+            )
+            .await;
+        }
+        let carried = accounts_to_carry(store, ana.id, &shareable).await.unwrap();
+        assert_eq!(carried.len(), 45, "{name}");
+        record_accounts_sent(store, "node-1", &carried)
+            .await
+            .unwrap();
+        let shares = account_shares::Entity::find()
+            .filter(account_shares::Column::Direction.eq(SHARE_SENT))
+            .all(store.db())
+            .await
+            .unwrap();
+        assert_eq!(shares.len(), 45, "{name}");
+        assert_eq!(kit.refused_begins(), 0, "{name}");
+    }
+}
