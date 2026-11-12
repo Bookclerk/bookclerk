@@ -13493,7 +13493,7 @@
         "tags": [
           "Cluster"
         ],
-        "summary": "`POST /api/config/join/sharing`: Settings → Library's sharing settings\nfor one library this install is a branch of (the two book-sharing\nsettings, and optionally \"List my members' books\"). The operator or\nan Owner (verified from the stored role); anyone else gets 403.",
+        "summary": "`POST /api/config/join/sharing`: Settings → Library's sharing and work\nsettings for one library this install is a branch of (the two\nbook-sharing settings, the two work settings, and optionally \"List my\nmembers' books\"). The operator or\nan Owner (verified from the stored role); anyone else gets 403.",
         "operationId": "post_join_sharing",
         "requestBody": {
           "content": {
@@ -28035,6 +28035,8 @@
           "enrolled_at",
           "share_books",
           "include_branches",
+          "work_for_members",
+          "keep_member_copies",
           "list_members_books"
         ],
         "properties": {
@@ -28077,6 +28079,16 @@
             "type": "boolean",
             "description": "\"Include books from my own branches\".",
             "example": true
+          },
+          "work_for_members": {
+            "type": "boolean",
+            "description": "\"Download for other members of the library\": this install takes the library's work for its other members too, not only its owner's (off by default).",
+            "example": false
+          },
+          "keep_member_copies": {
+            "type": "boolean",
+            "description": "\"Keep copies of other members' books\": a book acquired here for another member is also written to this install's own destinations (off by default).",
+            "example": false
           },
           "max_jobs": {
             "type": [
@@ -37235,7 +37247,7 @@
       },
       "SharingBody": {
         "type": "object",
-        "description": "`POST /api/config/join/sharing` body.",
+        "description": "`POST /api/config/join/sharing` body: one library and the settings to\nchange for it.",
         "required": [
           "cluster_id",
           "share_books",
@@ -37262,8 +37274,24 @@
               "boolean",
               "null"
             ],
-            "description": "\"List my members' books to *library*\"; left as it is when absent.",
+            "description": "\"List my members' books to *library*\"; absent or `null` keeps the\nstored setting.",
             "example": true
+          },
+          "work_for_members": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "\"Download for other members of *library*\": take the library's work\nfor its other members too, not only this install owner's. Absent or\n`null` keeps the stored setting.",
+            "example": false
+          },
+          "keep_member_copies": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "\"Keep copies of other members' books\": also write a book acquired\nhere for another member to this install's own destinations. Absent\nor `null` keeps the stored setting.",
+            "example": false
           }
         },
         "additionalProperties": false
@@ -37293,7 +37321,7 @@
             "items": {
               "$ref": "#/components/schemas/ClusterLinkView"
             },
-            "description": "Every library this install is a branch of, with its two sharing settings."
+            "description": "Every library this install is a branch of, with its sharing and work settings."
           }
         }
       },

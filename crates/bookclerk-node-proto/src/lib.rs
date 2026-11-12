@@ -24,7 +24,8 @@
 //! [`Body::SecretUpdate`]. The owner forwards the host's `node.<id>` queue
 //! as [`Body::Wake`] frames, each answered with [`Body::Ack`].
 //!
-//! A claim may carry a [`ClaimFilter`] (the kinds the host runs and the
+//! A claim may carry a [`ClaimFilter`] (the kinds the host runs, whose work
+//! it takes ([`ClaimScope`]), and the
 //! plugins its operator consented to); a job handed back unrun goes with
 //! [`Body::Release`]. To act on wakes the host reads
 //! [`Body::DeploymentsList`] and [`Body::InstanceConfigGet`] (`SECRETS`
@@ -93,8 +94,8 @@ pub use clerk::{
 };
 pub use ed25519_dalek::SigningKey;
 pub use frames::{
-    is_destination_id, is_storage_key, AcquireTarget, Body, ClaimFilter, FileCopy, Frame,
-    FrameError, HeldFence, JobStatusEntry, LibraryId, PlanDestination, RemoteArtifact,
+    is_destination_id, is_storage_key, AcquireTarget, Body, ClaimFilter, ClaimScope, FileCopy,
+    Frame, FrameError, HeldFence, JobStatusEntry, LibraryId, PlanDestination, RemoteArtifact,
     RemoteDeployment, RemoteVersion, ScanImport, UploadAnswer, UploadCommitRequest, UploadFile,
     WorkJob, ITEM_JOB, MAX_DESTINATION_ID_BYTES, MAX_LIBRARY_ID_BYTES, MAX_SCAN_BATCH_ROWS,
     MAX_SCAN_ROW_BYTES, MAX_STATUS_JOBS, MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES,
