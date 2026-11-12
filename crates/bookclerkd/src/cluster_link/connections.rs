@@ -12,9 +12,12 @@
 //!   here, and with `everywhere` also in every linked library it was
 //!   shared with (`accounts.remove` up each link).
 //!
-//! Only the branch's person (the install's Owner the joins belong to,
-//! [`branch_person`]) may call them: the library attributes what arrives
-//! to the user its node row names as the branch's owner. Only accounts of
+//! Only the branch's person may call them: the install's single active
+//! Owner ([`branch_person`] with no preference). An install with several
+//! Owners refuses them, because the link does not record which Owner a
+//! join belonged to, and the library attributes what arrives to the user
+//! its node row names as the branch's owner. Each call to a library is
+//! bounded by [`LIBRARY_CALL_TIMEOUT`], inside the routes' API deadline. Only accounts of
 //! storefronts every installed copy declares `credentials = "shareable"`
 //! travel.
 
@@ -35,6 +38,11 @@ use serde_json::json;
 use super::join::join_error;
 use crate::api::AppState;
 use crate::auth::UserCaller;
+
+/// Longest one call to a library may take on these routes (the client
+/// otherwise waits up to its 30 s request timeout for a connection); the
+/// routes' API deadline in `api_timeout_for_path` leaves margin above it.
+pub const LIBRARY_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 
 /// Most accounts one "Add my connections" request names.
 const MAX_ADD_ACCOUNTS: usize = bookclerk_node_proto::MAX_BUNDLE_ACCOUNTS;
@@ -118,7 +126,8 @@ pub struct Disconnected {
     pub unreached: Vec<String>,
 }
 
-/// The branch's person, when `caller` is that user.
+/// The branch's person, when `caller` is that user and the install's only
+/// active Owner.
 async fn caller_person(state: &Arc<AppState>, caller: UserCaller) -> Result<i64, Response> {
     let UserCaller::User { user_id } = caller else {
         return Err(join_error(
@@ -128,7 +137,7 @@ async fn caller_person(state: &Arc<AppState>, caller: UserCaller) -> Result<i64,
         ));
     };
     let store = state.library_snapshot().await;
-    match branch_person(&store, Some(user_id)).await {
+    match branch_person(&store, None).await {
         Ok(Some(person)) if person == user_id => Ok(user_id),
         Ok(_) => Err(join_error(
             StatusCode::FORBIDDEN,
@@ -219,7 +228,10 @@ pub async fn post_join_connections(
         return crate::config_authority::events_error(err);
     }
     let sent = wanted.len();
-    match handle.offer_accounts(wanted).await {
+    let offered = tokio::time::timeout(LIBRARY_CALL_TIMEOUT, handle.offer_accounts(wanted))
+        .await
+        .unwrap_or(Err(OwnerCallError::Unavailable));
+    match offered {
         Ok(report) => {
             let detail = json!({
                 "cluster_id": cluster_id,
@@ -279,8 +291,9 @@ pub async fn post_join_connections_disconnect(
         Err(refused) => return refused,
     };
     let store = state.library_snapshot().await;
-    let mut libraries = Vec::new();
-    let mut unreached = Vec::new();
+    // Where it was shared is read before the local withdrawal, which may
+    // revoke the account and its share records with it.
+    let mut targets = Vec::new();
     if body.everywhere {
         let peers = match account_share_peers(&store, &body.plugin_key, &body.account_id).await {
             Ok(peers) => peers,
@@ -290,30 +303,47 @@ pub async fn post_join_connections_disconnect(
             Ok(links) => links,
             Err(err) => return crate::config_authority::events_error(err),
         };
-        for link in links.iter().filter(|link| link.is_active()) {
-            if !peers.contains(&link_peer(&link.owner_cluster_id)) {
-                continue;
-            }
-            let reached = match super::link_handle(&link.owner_cluster_id, &link.remote_node_id) {
-                Some(handle) => handle
-                    .withdraw_account(&body.plugin_key, &body.account_id)
-                    .await
-                    .is_ok(),
-                None => false,
-            };
-            if reached {
-                libraries.push(link.owner_cluster_id.clone());
-            } else {
-                unreached.push(link.owner_cluster_id.clone());
-            }
-        }
+        targets = links
+            .into_iter()
+            .filter(|link| link.is_active() && peers.contains(&link_peer(&link.owner_cluster_id)))
+            .collect();
     }
+    // Here first, so an unreachable library never keeps it connected here.
     let here =
         match withdraw_person_account(&store, person, &body.plugin_key, &body.account_id).await {
             Ok(Withdrawn::Unlinked) => true,
             Ok(Withdrawn::NotTheirs) => false,
             Err(err) => return crate::config_authority::events_error(err),
         };
+    // Every library at once, each bounded, so the whole fits the deadline.
+    let reached = futures::future::join_all(targets.iter().map(|link| {
+        let handle = super::link_handle(&link.owner_cluster_id, &link.remote_node_id);
+        let plugin_key = body.plugin_key.as_str();
+        let account_id = body.account_id.as_str();
+        async move {
+            let Some(handle) = handle else {
+                return false;
+            };
+            matches!(
+                tokio::time::timeout(
+                    LIBRARY_CALL_TIMEOUT,
+                    handle.withdraw_account(plugin_key, account_id),
+                )
+                .await,
+                Ok(Ok(()))
+            )
+        }
+    }))
+    .await;
+    let mut libraries = Vec::new();
+    let mut unreached = Vec::new();
+    for (link, reached) in targets.iter().zip(reached) {
+        if reached {
+            libraries.push(link.owner_cluster_id.clone());
+        } else {
+            unreached.push(link.owner_cluster_id.clone());
+        }
+    }
     let detail = json!({
         "plugin_key": body.plugin_key,
         "everywhere": body.everywhere,

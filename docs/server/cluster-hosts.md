@@ -244,8 +244,11 @@ accounts and which of them would travel.
 
 A branch's person can add store connections to a library the branch
 already joined, and take one back from every library at once. Both act
-only for the person the branch belongs to (the Owner the joins were run
-for); anyone else gets `403 not_branch_person`.
+only for the person the branch belongs to: the branch's single active
+Owner. Anyone else, and any caller on a branch with several Owners (the
+link doesn't record whose join it was), gets `403 not_branch_person`.
+Each call to a library is bounded at 12 seconds, inside the routes'
+20-second deadline.
 
 - **Add to a library.** On the branch, **Accounts** shows **Add to
   *library*** beside each connection
@@ -266,9 +269,9 @@ for); anyone else gets `403 not_branch_person`.
   kept, and whether the rule refused them all.
 - **Disconnect everywhere.** **Revoke everywhere** on the branch
   (`POST /api/config/join/connections/disconnect` with
-  `everywhere: true`) sends `accounts.remove` up every active link the
-  account was shared with, in either direction, then disconnects it on the
-  branch. Each library removes the person's links to the account and, in
+  `everywhere: true`) disconnects it on the branch first, then sends
+  `accounts.remove` up every active link the account was shared with, in
+  either direction, all at once. Each library removes the person's links to the account and, in
   the same atomic batch, deletes its secrets and marks it revoked when no
   other member's link holds it. A library that can't be reached is named
   in the answer's `unreached`, and the account stays connected there.
@@ -720,10 +723,10 @@ in the library, marked as from a branch that left (see
   `SECRETS` reach only a node trusted with every job.
 - Pebble (ACME) doesn't run in CI.
 - Store connections travel only with a sign-in join, not an invite, and
-  only shareable stores' accounts. Adding connections to a library you
-  already joined, disconnecting on every instance at once, and one
-  refresh keeper for single-keeper stores such as Audible are still to
-  come.
+  only shareable stores' accounts. One refresh keeper for single-keeper
+  stores such as Audible is still to come.
+- Adding connections later and disconnecting everywhere need a branch
+  with a single active Owner.
 
 ## Next steps
 

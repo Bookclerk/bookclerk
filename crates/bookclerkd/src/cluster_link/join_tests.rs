@@ -928,4 +928,20 @@ async fn a_branch_adds_a_connection_to_its_library_and_disconnects_it_everywhere
             .unwrap();
         assert_eq!(account.connection_status, "revoked");
     }
+
+    // With a second Owner the link cannot tell whose join it was: neither
+    // Owner may act for it.
+    host_store
+        .create_user(UserRole::Owner, Some("Sam"), None)
+        .await
+        .unwrap();
+    let (status, _, refused) = call(
+        &as_person,
+        "POST",
+        "/api/config/join/connections/disconnect",
+        Some(json!({ "plugin_key": plugin_key, "account_id": "den@example.com", "everywhere": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["error"], "not_branch_person");
 }

@@ -1643,6 +1643,13 @@ fn api_timeout_for_path(path: &str) -> Duration {
         // `bookclerk_node_client::endpoint`), so an unreachable one is
         // answered as `unreachable` rather than cut off.
         "/api/config/join/inspect" | "/api/config/join/start" => Duration::from_secs(45),
+        // Adding or disconnecting store connections calls each library
+        // once, concurrently, bounded by
+        // `cluster_link::connections::LIBRARY_CALL_TIMEOUT` (12 s); the
+        // rest is margin for the database round trips around it.
+        "/api/config/join/connections" | "/api/config/join/connections/disconnect" => {
+            Duration::from_secs(20)
+        }
         _ => Duration::from_secs(8),
     }
 }
