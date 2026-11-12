@@ -677,7 +677,7 @@ async fn resolve_named_account(
 /// Store accounts linked to `user_id` through any of the user's identities.
 ///
 /// Read in keyset pages no larger than the database plugin's
-/// `maxResultRows` ([`result_page`]).
+/// `maxResultRows`.
 ///
 /// # Errors
 ///
