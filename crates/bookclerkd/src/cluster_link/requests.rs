@@ -56,7 +56,7 @@ pub trait RequestAcquirer: Send + Sync + 'static {
 /// daemon's own authority (the request was accepted under the link's
 /// listing settings, which the branch's operator chose).
 pub struct DaemonAcquirer {
-    /// Daemon state.
+    /// The branch daemon whose job queue takes the acquire.
     pub state: Arc<AppState>,
 }
 
@@ -73,6 +73,13 @@ impl RequestAcquirer for DaemonAcquirer {
             JobTrigger::Scheduler,
         )
         .await?;
+        // An empty plan means nothing here can fetch the book now; the
+        // library retries the request rather than wait for a book that
+        // never comes.
+        anyhow::ensure!(
+            !admitted.is_empty(),
+            "no acquire could be planned for the book"
+        );
         anyhow::ensure!(
             !admitted
                 .iter()

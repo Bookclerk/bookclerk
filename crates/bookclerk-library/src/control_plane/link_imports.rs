@@ -288,12 +288,43 @@ pub async fn books_imported_from_link(
     }
 }
 
+/// The books the library `cluster_id` asked for that this branch still
+/// lists to it: none once the link is gone or "Share this branch's books"
+/// is off, and a member's only while "List my members' books" is on and
+/// they did not opt out (the rules a request was accepted under).
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+async fn still_listed_requests(
+    store: &LibraryStore,
+    cluster_id: &str,
+) -> Result<BTreeSet<HeldBookKey>> {
+    let Some(link) = super::load_cluster_link(store, cluster_id).await? else {
+        return Ok(BTreeSet::new());
+    };
+    if !link.share_books {
+        return Ok(BTreeSet::new());
+    }
+    let requested = super::books_requested_by_link(store, cluster_id).await?;
+    let accounts: BTreeSet<super::AccountKey> = requested
+        .iter()
+        .map(|(plugin, _, _, account)| (plugin.clone(), account.clone()))
+        .collect();
+    let listable =
+        super::catalog_lookup::listable_accounts(store, &accounts, link.list_members_books).await?;
+    Ok(requested
+        .into_iter()
+        .filter(|(plugin, _, _, account)| listable.contains(&(plugin.clone(), account.clone())))
+        .collect())
+}
+
 /// Which of this install's acquired books the catalog sync sends the
 /// library `cluster_id`: the branch owner's own books, those held by a
 /// store account connected here to the branch's person
 /// ([`super::branch_person`]), and the books that library asked for
-/// through an interlibrary request ([`super::books_requested_by_link`]),
-/// but never one imported from that library
+/// through an interlibrary request and this branch still lists to it
+/// ([`still_listed_requests`]), but never one imported from that library
 /// ([`books_imported_from_link`]). With no single person, only the
 /// requested books.
 #[derive(Debug, Clone, Default)]
@@ -319,7 +350,7 @@ impl OwnerShareFilter {
         };
         Ok(Self {
             accounts,
-            requested: super::books_requested_by_link(store, cluster_id).await?,
+            requested: still_listed_requests(store, cluster_id).await?,
             imported: books_imported_from_link(store, cluster_id).await?,
         })
     }

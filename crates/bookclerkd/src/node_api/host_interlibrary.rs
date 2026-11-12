@@ -4,7 +4,7 @@
 //! | Frame | Answer |
 //! |---|---|
 //! | `requests.claim` | `requests.claimed {requests}` or `error {code: "refused"}` |
-//! | `requests.finish` | `ok`, `lost` or `error {code: "refused"}` |
+//! | `requests.finish` | `ok`, `lost`, or `error {code: "refused" / "invalid"}` |
 //!
 //! The branch is this connection's authenticated node, and only requests
 //! pinned to it are claimed or settled.
@@ -13,7 +13,7 @@ use bookclerk_library::control_plane::{
     claim_branch_requests, finish_branch_request, RequestFinished,
 };
 use bookclerk_library::LibraryStore;
-use bookclerk_node_proto::{Body, Frame, RequestOutcome, ITEM_REQUEST};
+use bookclerk_node_proto::{finish_problem, Body, Frame, RequestOutcome, ITEM_REQUEST};
 
 use super::work::{error, HostContext};
 
@@ -47,6 +47,11 @@ pub(super) async fn finish(
     generation: i64,
     outcome: RequestOutcome,
 ) -> bookclerk_library::Result<Frame> {
+    // Only ids this library could have handed out reach the store or are
+    // echoed back.
+    if let Some(problem) = finish_problem(&job, generation) {
+        return Ok(error(id, "invalid", problem));
+    }
     match finish_branch_request(library, &host.node_id, &job, generation, outcome).await? {
         RequestFinished::Recorded => {
             tracing::info!(

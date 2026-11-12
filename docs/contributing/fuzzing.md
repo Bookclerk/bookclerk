@@ -217,7 +217,9 @@ only that. The others check:
   keys; its identifiers are plain ASCII with a marketplace exactly on an
   ASIN, and each answer lists 1 to 8 distinct editions with a title. A
   `requests.claimed` that passes its validator holds at most 16 requests,
-  each job once, with a valid work and a plain store and product id. The shared oracle is `fuzz/oracles/node_frame.rs`,
+  each job once, with a valid work and a plain store and product id, and
+  a `requests.finish` that passes its validator names a plain job id
+  and a positive generation. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
   has the bundle version and names the cluster and node it was opened

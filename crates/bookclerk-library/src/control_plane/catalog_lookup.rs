@@ -1310,7 +1310,12 @@ impl Listers {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let links = read_chunked(store, &account_ids, |part| {
+        Self::load_accounts(store, &account_ids).await
+    }
+
+    /// Reads who holds the store accounts `account_ids` (any plugin).
+    async fn load_accounts(store: &LibraryStore, account_ids: &[String]) -> Result<Self> {
+        let links = read_chunked(store, account_ids, |part| {
             account_links::Entity::find().filter(account_links::Column::AccountId.is_in(part))
         })
         .await?;
@@ -1383,9 +1388,15 @@ impl Listers {
     /// on an account linked to no one (a member disconnected it, or was
     /// removed, and the books stayed) is never listed: nobody consented.
     fn may_list(&self, book: &books::Model, members: bool) -> bool {
+        self.may_list_account(&book.plugin_key, &book.account_id, members)
+    }
+
+    /// [`Self::may_list`] for the books of the store account
+    /// `(plugin_key, account_id)`.
+    fn may_list_account(&self, plugin_key: &str, account_id: &str, members: bool) -> bool {
         let Some(users) = self
             .users_of
-            .get(&(book.plugin_key.clone(), book.account_id.clone()))
+            .get(&(plugin_key.to_string(), account_id.to_string()))
         else {
             return false;
         };
@@ -1395,6 +1406,33 @@ impl Listers {
                     .iter()
                     .any(|u| self.active.contains(u) && !self.opted_out.contains(u)))
     }
+}
+
+/// Of the store accounts `accounts` (`(plugin key, account id)`), those
+/// whose books this branch lists now under [`answer_questions`]'s rules:
+/// an Owner's always, an active member's with `list_members_books` on
+/// when they did not opt out, and none linked to no one.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub(super) async fn listable_accounts(
+    store: &LibraryStore,
+    accounts: &BTreeSet<super::AccountKey>,
+    list_members_books: bool,
+) -> Result<BTreeSet<super::AccountKey>> {
+    let account_ids: Vec<String> = accounts
+        .iter()
+        .map(|(_, account)| account.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let listers = Listers::load_accounts(store, &account_ids).await?;
+    Ok(accounts
+        .iter()
+        .filter(|(plugin, account)| listers.may_list_account(plugin, account, list_members_books))
+        .cloned()
+        .collect())
 }
 
 /// The answer edition for `book`, when its store, product id and title

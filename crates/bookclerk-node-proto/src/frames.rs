@@ -562,7 +562,7 @@ pub enum Body {
     /// [`crate::MAX_CLAIMED_REQUESTS`]; empty when none waits.
     #[serde(rename = "requests.claimed")]
     RequestsClaimed {
-        /// The requests.
+        /// The requests now leased to the asking branch, at most [`crate::MAX_CLAIMED_REQUESTS`].
         requests: Vec<crate::requests::BranchRequest>,
     },
     /// Branch → library: what it did with one claimed request. Answered

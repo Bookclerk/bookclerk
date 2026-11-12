@@ -27,13 +27,16 @@
 //!   meets the same identifier rules, a plain store id, a lowercase
 //!   marketplace and a product id with no control characters or outer
 //!   whitespace. Checked byte by byte here too, since the branch looks the
-//!   request up in its own library and records it.
+//!   request up in its own library and records it;
+//! - a `requests.finish` the library would accept (`finish_problem` finds
+//!   nothing) names a plain job id and a positive lease generation, since
+//!   the library looks the job up and may echo the id back.
 
 use std::collections::BTreeSet;
 
 use bookclerk_node_proto::{
-    claimed_problem, found_problem, questions_problem, Body, Frame, LookupScheme, LookupWork,
-    FRAME_VERSION, MAX_FRAME_BYTES, MAX_LIBRARY_ID_BYTES,
+    claimed_problem, finish_problem, found_problem, questions_problem, Body, Frame, LookupScheme,
+    LookupWork, FRAME_VERSION, MAX_FRAME_BYTES, MAX_LIBRARY_ID_BYTES,
 };
 use serde_json::Value;
 
@@ -119,8 +122,31 @@ fn check_question(work: &LookupWork) {
     }
 }
 
-/// The interlibrary request invariants on an accepted claimed list.
+/// The job id and lease generation invariants of a request.
+fn check_request_job(job: &str, generation: i64) {
+    assert!(
+        !job.is_empty()
+            && job.len() <= 96
+            && job
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+        "job id {job:?} accepted"
+    );
+    assert!(generation >= 1, "generation {generation} accepted");
+}
+
+/// The interlibrary request invariants on an accepted claimed list or
+/// finish.
 fn check_requests(body: &Body) {
+    if let Body::RequestFinish {
+        job, generation, ..
+    } = body
+    {
+        if finish_problem(job, *generation).is_none() {
+            check_request_job(job, *generation);
+        }
+        return;
+    }
     let Body::RequestsClaimed { requests } = body else {
         return;
     };
@@ -130,24 +156,10 @@ fn check_requests(body: &Body) {
     assert!(requests.len() <= 16, "too many requests accepted");
     let mut jobs = BTreeSet::new();
     for request in requests {
-        assert!(
-            !request.job.is_empty()
-                && request.job.len() <= 96
-                && request
-                    .job
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
-            "job id {:?} accepted",
-            request.job
-        );
+        check_request_job(&request.job, request.generation);
         assert!(
             jobs.insert(&request.job),
             "a job claimed twice was accepted"
-        );
-        assert!(
-            request.generation >= 1,
-            "generation {} accepted",
-            request.generation
         );
         check_question(&request.work);
         assert!(

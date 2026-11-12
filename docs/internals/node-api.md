@@ -50,7 +50,7 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `catalog.questions` | `catalog.ask {works}`: up to 100 questions `{work, identifiers}` waiting for this branch, or `error` `refused` |
 | `catalog.found {answers, missing}` | `ok`, or `error` `invalid` / `refused` (see [Shared catalog](../server/cluster-hosts.md#shared-catalog)) |
 | `requests.claim` | `requests.claimed {requests}`: up to 16 interlibrary requests `{job, generation, work, store, marketplace, product_id}` leased to this branch for 5 minutes, or `error` `refused` |
-| `requests.finish {job, generation, outcome}` | `ok`, or `lost` when the lease moved on; `outcome` is `accepted`, `not_listed` or `failed` (see [Requesting a book from a branch](../server/cluster-hosts.md#requesting-a-book-from-a-branch)) |
+| `requests.finish {job, generation, outcome}` | `ok`, `lost` when the lease moved on, or `error` `invalid` for a malformed job id or generation; `outcome` is `accepted`, `not_listed` or `failed` (see [Requesting a book from a branch](../server/cluster-hosts.md#requesting-a-book-from-a-branch)) |
 | `node.leaving` | `accepted`, then close 4403 (the node is revoked) |
 | `scan.request {account, plugin_instance_id}` | `scan.planned {created, duplicates, queue_full}`, or `error` `forbidden` / `invalid` |
 | `job.status {job_ids}` (at most 64) | `job.statuses {jobs}`: only jobs this node may claim |

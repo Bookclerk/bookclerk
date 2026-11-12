@@ -156,12 +156,6 @@ fn request_of(row: &jobs::Model) -> Option<(String, BranchRequestTarget)> {
     Some((payload.node_id?, payload.branch_request?))
 }
 
-/// True when a stored `run_after` is at or before `now`; an unreadable
-/// stamp counts as due, as the job store reads it.
-fn due(run_after: &str, now: chrono::DateTime<Utc>) -> bool {
-    chrono::DateTime::parse_from_rfc3339(run_after).map_or(true, |at| at.with_timezone(&Utc) <= now)
-}
-
 /// Claims the requests waiting for branch `node_id`, oldest first.
 ///
 /// A request is waiting while its job is pending, pinned to this branch,
@@ -185,10 +179,13 @@ pub async fn claim_branch_requests(
         return Ok(None);
     }
     let prefix = branch_request_dedup_key(node_id, "");
-    let now = Utc::now();
+    let now_s = Utc::now().to_rfc3339();
     let rows = jobs::Entity::find()
         .filter(jobs::Column::Kind.eq(JobKind::BranchRequest.as_str()))
         .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
+        // Due only, as the job store's own claims compare it, so requests
+        // waiting out a retry never crowd out the ones that are due.
+        .filter(jobs::Column::RunAfter.lte(now_s))
         .filter(jobs::Column::DedupKey.starts_with(prefix.as_str()))
         .order_by_desc(jobs::Column::Priority)
         .order_by_asc(jobs::Column::CreatedAt)
@@ -198,19 +195,22 @@ pub async fn claim_branch_requests(
         .await
         .map_err(LibraryError::Orm)?;
     let owner = remote_lease_owner(node_id);
+    let candidates: Vec<(jobs::Model, BranchRequestTarget)> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let (pinned, target) = request_of(&row)?;
+            (pinned == node_id).then_some((row, target))
+        })
+        .take(MAX_CLAIMED_REQUESTS)
+        .collect();
+    let works: Vec<String> = candidates
+        .iter()
+        .map(|(_, target)| target.work_id.clone())
+        .collect();
+    let mut identifiers_by_work = identifiers_of(store, &works).await?;
     let mut out = Vec::new();
-    for row in rows {
-        if out.len() >= MAX_CLAIMED_REQUESTS {
-            break;
-        }
-        let Some((pinned, target)) = request_of(&row) else {
-            continue;
-        };
-        if pinned != node_id || !due(&row.run_after, now) {
-            continue;
-        }
-        let identifiers = identifiers_of(store, std::slice::from_ref(&target.work_id))
-            .await?
+    for (row, target) in candidates {
+        let identifiers = identifiers_by_work
             .remove(&target.work_id)
             .unwrap_or_default();
         let request = BranchRequest {
@@ -361,15 +361,15 @@ pub async fn record_link_request(
 /// One narrow `link_requests` row as read; columns are matched by name.
 #[derive(Debug, FromQueryResult)]
 struct RequestRow {
-    /// Keyset position.
+    /// Row id, the keyset cursor for the next page.
     id: i64,
-    /// Plugin key.
+    /// The storefront plugin that holds the requested book.
     plugin_key: String,
-    /// Store account id.
+    /// The store account on this branch that holds it.
     account_id: String,
-    /// Stored marketplace.
+    /// The book's marketplace, normalized as stored (empty when none).
     marketplace: String,
-    /// Stored product id.
+    /// The book's product id, normalized as stored.
     product_id: String,
 }
 

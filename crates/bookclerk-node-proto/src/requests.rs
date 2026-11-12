@@ -24,16 +24,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::{is_product_id, is_store_id};
-use crate::lookup::LookupWork;
+use crate::lookup::{is_marketplace, LookupWork};
 
 /// Most requests one [`crate::Body::RequestsClaimed`] may carry.
 pub const MAX_CLAIMED_REQUESTS: usize = 16;
 
 /// Longest job id a request may carry.
 pub const MAX_REQUEST_JOB_BYTES: usize = 96;
-
-/// Longest marketplace a request may carry.
-const MAX_MARKETPLACE_BYTES: usize = 16;
 
 /// The work item name of a request in a [`crate::Body::Lost`] answer.
 pub const ITEM_REQUEST: &str = "request";
@@ -77,11 +74,8 @@ impl BranchRequest {
     /// a store id, marketplace and product id within the catalog rules.
     #[must_use]
     pub fn problem(&self) -> Option<&'static str> {
-        if !is_request_job(&self.job) {
-            return Some("invalid_job");
-        }
-        if self.generation < 1 {
-            return Some("invalid_generation");
+        if let Some(problem) = finish_problem(&self.job, self.generation) {
+            return Some(problem);
         }
         if let Some(problem) = self.work.problem() {
             return Some(problem);
@@ -99,13 +93,17 @@ impl BranchRequest {
     }
 }
 
-/// True for a marketplace: up to 16 lowercase ASCII letters and digits
-/// (empty when the store has none).
-fn is_marketplace(marketplace: &str) -> bool {
-    marketplace.len() <= MAX_MARKETPLACE_BYTES
-        && marketplace
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+/// The problem with a `requests.finish {job, generation}` a library
+/// received, or `None` when both are ones it could have handed out.
+#[must_use]
+pub fn finish_problem(job: &str, generation: i64) -> Option<&'static str> {
+    if !is_request_job(job) {
+        return Some("invalid_job");
+    }
+    if generation < 1 {
+        return Some("invalid_generation");
+    }
+    None
 }
 
 /// What a branch did with a claimed request.

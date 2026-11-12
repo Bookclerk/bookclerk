@@ -2,7 +2,8 @@
 //! work, only that branch claims it, once, by identifier; its answer is
 //! recorded under the lease it was claimed with; and on the branch a
 //! requested member's book is shared with the library that asked, and no
-//! other.
+//! other while it still lists it. A request waits for an offline branch
+//! and ends once the branch is revoked.
 
 use bookclerk_node_proto::{
     Availability, CatalogMetadata, LookupAnswer, LookupEdition, LookupIdentifier, LookupScheme,
@@ -455,6 +456,26 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
             .unwrap();
         hold(&store, owner.id, "owner-acct", "B0OWNBOOK1").await;
         let members = hold(&store, member.id, "riley-acct", "B0MEMBOOK1").await;
+        // The link to library-x, sharing and listing members' books (its
+        // keys don't matter here).
+        crate::entities::cluster_links::ActiveModel {
+            owner_cluster_id: Set("library-x".into()),
+            owner_origin: Set("https://x.example".into()),
+            remote_node_id: Set("node-x".into()),
+            spki_pin: Set(None),
+            state: Set("active".into()),
+            enrolled_at: Set(Utc::now().to_rfc3339()),
+            share_books: Set(1),
+            include_branches: Set(1),
+            ancestry_json: Set("[]".into()),
+            work_for_members: Set(0),
+            keep_member_copies: Set(0),
+            max_jobs: Set(None),
+            list_members_books: Set(1),
+        }
+        .insert(store.db())
+        .await
+        .unwrap();
         let request = BranchRequest {
             job: "branch_request-1".into(),
             generation: 1,
@@ -532,5 +553,71 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
             !other_library.admits(key),
             "{name}: not sent to another library"
         );
+
+        // The listing rules still apply after the request: an opt-out, or
+        // members' books turned off, stops the book being sent.
+        crate::control_plane::set_catalog_listing_opt_out(&store, member.id, true)
+            .await
+            .unwrap();
+        let opted_out = OwnerShareFilter::load(&store, "library-x").await.unwrap();
+        assert!(!opted_out.admits(key), "{name}: not sent after an opt-out");
+        crate::control_plane::set_catalog_listing_opt_out(&store, member.id, false)
+            .await
+            .unwrap();
+        assert!(
+            crate::control_plane::set_cluster_link_listing(&store, "library-x", false)
+                .await
+                .unwrap(),
+            "{name}"
+        );
+        let members_off = OwnerShareFilter::load(&store, "library-x").await.unwrap();
+        assert!(
+            !members_off.admits(key),
+            "{name}: not sent once members' books are off"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_request_waits_for_an_offline_branch_and_ends_once_it_is_revoked() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let (store, _member, work) = library_with_listing(profile, "B0SWEEP001").await;
+        let job = admit(
+            &store,
+            plan_branch_request(&store, &work, None, JobTrigger::Api)
+                .await
+                .unwrap(),
+        )
+        .await;
+        let sweep = |store: LibraryStore| async move {
+            crate::control_plane::sweep_job_requirements(
+                &store,
+                &std::collections::BTreeSet::new(),
+                std::time::Duration::from_secs(60),
+                Utc::now() + chrono::Duration::days(1),
+            )
+            .await
+            .unwrap()
+        };
+        // The branch has sent no heartbeat at all: the request still waits.
+        sweep(store.clone()).await;
+        let waiting = store.get_job(&job).await.unwrap().unwrap();
+        assert_eq!(waiting.state, JobState::Pending, "{name}");
+
+        // Revoked: the request ends.
+        let mut credential: node_credentials::ActiveModel =
+            node_credentials::Entity::find_by_id(BRANCH.to_string())
+                .one(store.db())
+                .await
+                .unwrap()
+                .unwrap()
+                .into();
+        credential.revoked_at = Set(Some(Utc::now().to_rfc3339()));
+        credential.update(store.db()).await.unwrap();
+        let report = sweep(store.clone()).await;
+        assert_eq!(report.failed, 1, "{name}");
+        let ended = store.get_job(&job).await.unwrap().unwrap();
+        assert_eq!(ended.state, JobState::Failed, "{name}");
     }
 }

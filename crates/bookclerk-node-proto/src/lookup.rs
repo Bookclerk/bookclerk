@@ -48,6 +48,15 @@ const MAX_IDENTIFIER_BYTES: usize = 64;
 /// Longest marketplace.
 const MAX_MARKETPLACE_BYTES: usize = 16;
 
+/// True for an edition's marketplace: up to [`MAX_MARKETPLACE_BYTES`]
+/// lowercase ASCII letters and digits (empty when the store has none).
+pub(crate) fn is_marketplace(marketplace: &str) -> bool {
+    marketplace.len() <= MAX_MARKETPLACE_BYTES
+        && marketplace
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+}
+
 /// Longest metadata text field in an answer.
 const MAX_TEXT_BYTES: usize = 2048;
 
@@ -243,12 +252,7 @@ impl LookupEdition {
         if !is_product_id(&self.product_id) {
             return Some("invalid_product_id");
         }
-        if self.marketplace.len() > MAX_MARKETPLACE_BYTES
-            || !self
-                .marketplace
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        {
+        if !is_marketplace(&self.marketplace) {
             return Some("invalid_marketplace");
         }
         let mut formats = self.formats.clone();
