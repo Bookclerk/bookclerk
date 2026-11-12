@@ -219,14 +219,22 @@ async fn run_duty(
     }
 }
 
+/// The maintenance loop's ticks: the first [`MAINTENANCE_STARTUP_DELAY`]
+/// from now, then every [`MAINTENANCE_TICK`], delayed rather than bunched
+/// when one runs late.
+fn maintenance_ticks() -> tokio::time::Interval {
+    let mut tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + MAINTENANCE_STARTUP_DELAY,
+        MAINTENANCE_TICK,
+    );
+    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    tick
+}
+
 /// Starts this daemon's maintenance loop.
 pub fn spawn_maintenance(state: Arc<AppState>) {
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval_at(
-            tokio::time::Instant::now() + MAINTENANCE_STARTUP_DELAY,
-            MAINTENANCE_TICK,
-        );
-        tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut tick = maintenance_ticks();
         let mut maintenance = None;
         loop {
             tick.tick().await;
@@ -267,7 +275,20 @@ mod tests {
     use bookclerk_config::Config;
     use bookclerk_library::control_plane::load_lease;
 
-    use super::{Duty, Maintenance};
+    use super::{
+        maintenance_ticks, Duty, Maintenance, MAINTENANCE_STARTUP_DELAY, MAINTENANCE_TICK,
+    };
+
+    #[tokio::test(start_paused = true)]
+    async fn the_first_tick_waits_out_the_startup_delay() {
+        let start = tokio::time::Instant::now();
+        let mut ticks = maintenance_ticks();
+        assert_eq!(ticks.tick().await - start, MAINTENANCE_STARTUP_DELAY);
+        assert_eq!(
+            ticks.tick().await - start,
+            MAINTENANCE_STARTUP_DELAY + MAINTENANCE_TICK
+        );
+    }
 
     async fn state_on(
         db_path: &std::path::Path,
