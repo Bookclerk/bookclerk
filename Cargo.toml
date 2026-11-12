@@ -76,7 +76,6 @@ rust-version = "1.94"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/Bookclerk/bookclerk"
 authors = ["fritz-fritz <contact@bookclerk.app>"]
-description = "Multi-storefront audiobook library manager with pluggable integrations"
 
 [workspace.dependencies]
 # Internal crates
@@ -85,24 +84,16 @@ bookclerk-config = { path = "crates/bookclerk-config" }
 bookclerk-db-exec = { path = "crates/bookclerk-db-exec" }
 bookclerk-db-guest = { path = "crates/bookclerk-db-guest" }
 bookclerk-db-testkit = { path = "crates/bookclerk-db-testkit" }
-# First-party plugins under bookclerk-plugins/{platform,optional}/.
-bookclerk-plugin-source-audible = { path = "crates/bookclerk-plugins/optional/source-audible" }
+# First-party plugins other members link: the SQLite adapter's host helpers
+# and the Libro.fm guest the demo seed tests drive. A plugin no member links
+# stays out of this table (Cargo warns on unused workspace dependencies).
 bookclerk-plugin-source-libro = { path = "crates/bookclerk-plugins/optional/source-libro" }
-bookclerk-plugin-source-chirp = { path = "crates/bookclerk-plugins/optional/source-chirp" }
-bookclerk-plugin-source-graphicaudio = { path = "crates/bookclerk-plugins/optional/source-graphicaudio" }
-bookclerk-plugin-integration-audiobookshelf = { path = "crates/bookclerk-plugins/optional/integration-audiobookshelf" }
-bookclerk-plugin-destination-s3 = { path = "crates/bookclerk-plugins/optional/destination-s3" }
-bookclerk-plugin-destination-local = { path = "crates/bookclerk-plugins/platform/destination-local" }
 bookclerk-plugin-database-sqlite = { path = "crates/bookclerk-plugins/platform/database-sqlite" }
-bookclerk-plugin-database-d1 = { path = "crates/bookclerk-plugins/optional/database-d1" }
-bookclerk-plugin-database-postgres = { path = "crates/bookclerk-plugins/optional/database-postgres" }
 bookclerk-enrich = { path = "crates/bookclerk-enrich" }
 bookclerk-sandbox = { path = "crates/bookclerk-sandbox" }
-bookclerk-jail = { path = "crates/bookclerk-jail" }
 bookclerk-mp4 = { path = "crates/bookclerk-mp4" }
 bookclerk-cover = { path = "crates/bookclerk-cover" }
 bookclerk-media = { path = "crates/bookclerk-media" }
-bookclerk-media-worker = { path = "crates/bookclerk-media-worker" }
 bookclerk-storage = { path = "crates/bookclerk-storage" }
 bookclerk-library = { path = "crates/bookclerk-library" }
 bookclerk-source = { path = "crates/bookclerk-source" }
@@ -214,7 +205,6 @@ aws-sdk-s3 = { version = "1", default-features = false, features = [
     "rt-tokio",
 ] }
 aws-config = "1"
-aws-credential-types = "1"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"

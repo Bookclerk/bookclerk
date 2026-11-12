@@ -400,7 +400,6 @@ dependencies = [
 name = "bookclerk-config"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bookclerk-tls",
  "directories",
  "getrandom 0.4.3",
@@ -649,6 +648,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "sha2 0.11.0",
  "thiserror",
  "tokio",
  "tokio-rustls",

@@ -602,6 +602,32 @@ $ node tools/lint/node_modules/prettier/bin/prettier.cjs --write .
 $ node tools/lint/node_modules/markdownlint-cli2/markdownlint-cli2-bin.mjs --fix
 ```
 
+### Clippy and Cargo warnings
+
+The workflow sets `RUSTFLAGS="-D warnings"`, which turns every rustc and
+Clippy warning into an error. It does not reach the warnings Cargo itself
+emits about the manifests, such as:
+
+- `unused_dependencies`: a crate lists a dependency its code never uses.
+- `unused_workspace_dependencies`: an entry in `[workspace.dependencies]`
+  that no member inherits.
+- `unused_workspace_package_fields`: a `[workspace.package]` field no
+  member inherits.
+
+The `clippy` check therefore also sets `CARGO_BUILD_WARNINGS=deny`
+(Cargo's `build.warnings`), so any Cargo warning fails it too. To see the
+same result locally:
+
+```console
+$ CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets -- -D warnings
+```
+
+The `clippy` check runs on Linux. Cargo builds a dependency declared under
+`[target.'cfg(windows)'.dependencies]` (or another platform's table) only
+for that platform, so the check cannot tell whether such an entry is used;
+review platform-only entries by hand. Fix a reported dependency by removing
+it from the manifest.
+
 ### Release build
 
 The release job runs at one of two scopes:
