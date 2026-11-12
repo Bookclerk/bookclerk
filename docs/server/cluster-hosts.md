@@ -637,7 +637,7 @@ An answer names no store account, user, or other library. A asks only
 branches it still trusts, and records answers only for questions it sent
 that branch.
 
-**What B lists.** B always lists its owner's books. It lists its members'
+**What B lists.** B always lists its owner's books. It never lists books on a store account linked to no one, such as one a member disconnected. It lists its members'
 books too while **List my members' books to <library>** is on (the
 default, set per library in the sharing settings below). A member can keep
 their own books out with `PUT /api/auth/profile/catalog-listing`

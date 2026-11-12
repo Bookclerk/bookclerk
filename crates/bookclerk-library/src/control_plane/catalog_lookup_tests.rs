@@ -383,6 +383,21 @@ async fn a_branch_lists_members_books_unless_turned_off_or_opted_out() {
     let text = serde_json::to_string(&answers).unwrap();
     assert!(!text.contains("acct") && !text.contains("Riley"), "{text}");
 
+    // A book on an account linked to no one (disconnected) is never listed.
+    store
+        .upsert_account(PLUGIN, "loose-acct", "us", None, true, "audible")
+        .await
+        .unwrap();
+    store
+        .upsert_book(&book("loose-acct", "B0LOOSE001", "Loose"))
+        .await
+        .unwrap();
+    let (answers, missing) = answer_questions(&store, &[question("x-loose", "B0LOOSE001")], true)
+        .await
+        .unwrap();
+    assert!(answers.is_empty());
+    assert_eq!(missing, ["x-loose"]);
+
     // The link setting off: only the owner's book is listed.
     let (answers, missing) = answer_questions(&store, &questions, false).await.unwrap();
     assert_eq!(answers.len(), 1);
@@ -421,6 +436,14 @@ async fn many_works_are_asked_and_answered_within_every_profiles_limits() {
         add_branch(&store, BRANCH, owner.id).await;
         store
             .upsert_account(PLUGIN, "owner-acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let identity = store
+            .ensure_local_portal_identity(owner.id, None)
+            .await
+            .unwrap();
+        store
+            .link_account(identity.id, PLUGIN, "owner-acct", "test")
             .await
             .unwrap();
         let mut works = Vec::new();

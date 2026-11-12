@@ -93,6 +93,59 @@ fn in_chunk(store: &LibraryStore, fixed: usize) -> usize {
         .unwrap_or(usize::MAX)
         .saturating_sub(fixed)
         .clamp(1, MAX_IN_LIST)
+        .min(result_page(store))
+}
+
+/// Rows per read on `store`'s database plugin: its advertised
+/// `maxResultRows` (at least 1; [`MAX_IN_LIST`] when it sets none).
+fn result_page(store: &LibraryStore) -> usize {
+    match store.db_capabilities().max_result_rows {
+        0 => MAX_IN_LIST,
+        rows => usize::try_from(rows).unwrap_or(MAX_IN_LIST).max(1),
+    }
+}
+
+/// Every row `select` reads (at most `cap`), in pages of
+/// [`result_page`] rows so no reply exceeds the plugin's `maxResultRows`.
+/// The primary key is appended to `select`'s order, so pages don't overlap.
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn read_paged<E>(
+    store: &LibraryStore,
+    select: sea_orm::Select<E>,
+    cap: Option<u64>,
+) -> Result<Vec<E::Model>>
+where
+    E: EntityTrait,
+{
+    use sea_orm::{Iterable as _, PrimaryKeyToColumn as _};
+    let mut select = select;
+    for key in E::PrimaryKey::iter() {
+        select = select.order_by_asc(key.into_column());
+    }
+    let page = u64::try_from(result_page(store)).unwrap_or(1);
+    let mut out = Vec::new();
+    loop {
+        let read = u64::try_from(out.len()).unwrap_or(u64::MAX);
+        let want = cap.map_or(page, |cap| page.min(cap.saturating_sub(read)));
+        if want == 0 {
+            return Ok(out);
+        }
+        let rows = select
+            .clone()
+            .offset(read)
+            .limit(want)
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        let got = rows.len();
+        out.extend(rows);
+        if u64::try_from(got).unwrap_or(0) < want {
+            return Ok(out);
+        }
+    }
 }
 
 /// Rows read per [`pending_questions`] call, so works with no identifiers
@@ -145,13 +198,15 @@ async fn is_trusted_branch(store: &LibraryStore, row: &nodes::Model) -> Result<b
 ///
 /// Returns the read error.
 pub async fn trusted_branches(store: &LibraryStore) -> Result<Vec<String>> {
-    let rows = nodes::Entity::find()
-        .filter(nodes::Column::Kind.eq("host"))
-        .filter(nodes::Column::OwnerUserId.is_not_null())
-        .order_by_asc(nodes::Column::NodeId)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    let rows = read_paged(
+        store,
+        nodes::Entity::find()
+            .filter(nodes::Column::Kind.eq("host"))
+            .filter(nodes::Column::OwnerUserId.is_not_null())
+            .order_by_asc(nodes::Column::NodeId),
+        None,
+    )
+    .await?;
     let mut out = Vec::new();
     for row in rows {
         if is_trusted_branch(store, &row).await? {
@@ -426,7 +481,7 @@ pub async fn pending_questions(
     }
     let now = Utc::now();
     let resend_before = now - LOOKUP_RESEND;
-    let due: Vec<String> = catalog_lookups::Entity::find()
+    let due = catalog_lookups::Entity::find()
         .filter(catalog_lookups::Column::NodeId.eq(node_id))
         .filter(catalog_lookups::Column::AnsweredAt.is_null())
         .filter(
@@ -435,11 +490,9 @@ pub async fn pending_questions(
                 .add(catalog_lookups::Column::SentAt.lt(stamp(resend_before))),
         )
         .order_by_asc(catalog_lookups::Column::AskedAt)
-        .order_by_asc(catalog_lookups::Column::WorkId)
-        .limit(PENDING_SCAN)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
+        .order_by_asc(catalog_lookups::Column::WorkId);
+    let due: Vec<String> = read_paged(store, due, Some(PENDING_SCAN))
+        .await?
         .into_iter()
         .map(|row| row.work_id)
         .collect();
@@ -881,27 +934,26 @@ pub async fn branch_listings_for_works(
 /// Returns the read error.
 pub async fn works_of_interest(store: &LibraryStore, limit: u64) -> Result<Vec<String>> {
     use crate::entities::{discover_candidates, title_requests};
-    let mut works: Vec<String> = title_requests::Entity::find()
-        .filter(title_requests::Column::Status.eq("open"))
-        .order_by_desc(title_requests::Column::UpdatedAt)
-        .order_by_asc(title_requests::Column::Id)
-        .limit(limit)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .into_iter()
-        .map(|r| r.work_id)
-        .collect();
-    let listing_ids: Vec<String> = discover_candidates::Entity::find()
-        .order_by_desc(discover_candidates::Column::FetchedAt)
-        .order_by_asc(discover_candidates::Column::Id)
-        .limit(limit)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .into_iter()
-        .map(|c| c.listing_id)
-        .collect();
+    let mut works: Vec<String> = read_paged(
+        store,
+        title_requests::Entity::find()
+            .filter(title_requests::Column::Status.eq("open"))
+            .order_by_desc(title_requests::Column::UpdatedAt),
+        Some(limit),
+    )
+    .await?
+    .into_iter()
+    .map(|r| r.work_id)
+    .collect();
+    let listing_ids: Vec<String> = read_paged(
+        store,
+        discover_candidates::Entity::find().order_by_desc(discover_candidates::Column::FetchedAt),
+        Some(limit),
+    )
+    .await?
+    .into_iter()
+    .map(|c| c.listing_id)
+    .collect();
     let edition_of_listing: HashMap<String, String> = read_chunked(store, &listing_ids, |part| {
         store_listings::Entity::find().filter(store_listings::Column::Id.is_in(part))
     })
@@ -993,13 +1045,17 @@ async fn work_for_question(store: &LibraryStore, question: &LookupWork) -> Resul
                 }
             }
             LookupScheme::Asin | LookupScheme::Isbn | LookupScheme::OpenlibraryEdition => {
-                let rows = edition_identifiers::Entity::find()
-                    .filter(edition_identifiers::Column::Scheme.eq(id.scheme.as_str()))
-                    .filter(edition_identifiers::Column::Value.eq(id.value.as_str()))
-                    .filter(edition_identifiers::Column::Marketplace.eq(id.marketplace.as_str()))
-                    .all(store.db())
-                    .await
-                    .map_err(LibraryError::Orm)?;
+                let rows = read_paged(
+                    store,
+                    edition_identifiers::Entity::find()
+                        .filter(edition_identifiers::Column::Scheme.eq(id.scheme.as_str()))
+                        .filter(edition_identifiers::Column::Value.eq(id.value.as_str()))
+                        .filter(
+                            edition_identifiers::Column::Marketplace.eq(id.marketplace.as_str()),
+                        ),
+                    None,
+                )
+                .await?;
                 for row in rows {
                     if row.strength == "strong" {
                         strong_editions.insert(row.edition_id);
@@ -1118,15 +1174,16 @@ impl Listers {
         })
     }
 
-    /// True when `book` may be listed: its account belongs to no user (the
-    /// install's own), to an Owner, or, with `members` on, to an active
-    /// member who has not opted out.
+    /// True when `book` may be listed: its account belongs to an Owner, or,
+    /// with `members` on, to an active member who has not opted out. A book
+    /// on an account linked to no one (a member disconnected it, or was
+    /// removed, and the books stayed) is never listed: nobody consented.
     fn may_list(&self, book: &books::Model, members: bool) -> bool {
         let Some(users) = self
             .users_of
             .get(&(book.plugin_key.clone(), book.account_id.clone()))
         else {
-            return true;
+            return false;
         };
         users.iter().any(|u| self.owners.contains(u))
             || (members
