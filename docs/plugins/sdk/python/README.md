@@ -107,8 +107,9 @@ session negotiated; a request or result over one of them raises a
 the cap. On a host that predates `limits()` the call raises
 `unsupported`. `all()` reads through the session's streamed budget when
 it advertises one, `prepare(sql).iterate()` yields rows one at a time
-from the same read, and `db.chunk(statements)` splits a long list into
-batches that each fit one request; see
+from the same read, `db.chunk(statements)` splits a long list into
+batches that each fit one request, and `db.write_chunks(...)` commits those
+batches resumably; see
 [Working within database limits](../../database-limits.md). Generate a
 typed `Env` protocol from `plugin.toml`:
 

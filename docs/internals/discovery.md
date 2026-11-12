@@ -186,7 +186,7 @@ changing on every attempt is skipped and stays stale, so the next answer
 resolves it again, and the answer that skipped it is not cached; any other
 read or write failure fails the whole call. A `discover_candidates` job also
 deletes listings that no store has reported for a week and that nothing
-refers to: no holding, candidate, cached call or resolution override (at
+refers to: no holding, candidate, cached call, wish or resolution override (at
 most once an hour on each daemon). The edition and work they made stay.
 A new catalog listing emits no library event; a scan that later holds it
 announces it with `holding_added`. A catalog answer that fills or relinks a
@@ -438,8 +438,11 @@ title is **not** in the household library.
   `requests` shelf (the first row) carries the same `wishers` / `wish_count` fields.
   The route only reads a stored ranking; see [Request queue](#request-queue).
 - Identity merge: a wish is resolved to a library work when it is created
-  (`LibraryStore::work_for`, the same resolution a scanned listing gets)
-  and stores the `work_id`; wishes with the same work are one queue entry,
+  and stores the `work_id`. A wish that names a store edition the server
+  could look up is for the work that edition's pooled listing resolved to
+  (see **Per-source snapshots**); otherwise its own title, authors and
+  identifiers find the work (`LibraryStore::work_for_wish`, the same
+  resolution a scanned listing gets); wishes with the same work are one queue entry,
   and Discover treats such an entry as owned when a library title resolves
   to that work. The entry (`GET /api/request-queue`) carries that `work_id`,
   and the Wishlist and Discover pages match the viewer's own wish on it
@@ -448,10 +451,20 @@ title is **not** in the household library.
   present, else ASIN, else soft title+author; ASIN-keyed and ISBN-keyed rows
   for the same work are merged (ISBN is **not** universal across Chirp / GA /
   Audible public search)
-- **Per-source snapshots:** `POST /api/wishlist` persists storefront editions,
-  HTML description, and purchase hints into `title_request_sources` (one row per
-  `source` + `product_id`), then soft-resolves live prices to fill additional
-  stores. `GET /api/wishlist` / request-queue merge those rows for the richest
+- **Per-source snapshots:** `POST /api/wishlist` first resolves live prices
+  and further stores (server-side purchase hints), then asks each store about
+  every edition the wish names (`catalog_detail`, at most eight editions at
+  once) and records the store's answer in the
+  [shared listing pool](#shared-listing-pool), with any member price a
+  purchase hint quoted. It then persists the editions, HTML description and
+  purchase hints into `title_request_sources` (one row per `source` +
+  `product_id`), each naming its pooled listing in `listing_id` when the store
+  answered. The pool holds only what stores reported: the text and prices the
+  browser sends stay on the wish's own rows, so one person's wish never
+  changes what anyone else's Discover shows. The hints and the edition
+  lookups share one 5 s deadline, well inside the route's 8 s budget, so the
+  wish is always saved; an edition whose store is not deployed, fails or does
+  not answer in time is saved without a listing. `GET /api/wishlist` / request-queue merge those rows for the richest
   blurb and multi-store Where-to-buy links (legacy thin rows still fall back to
   provider title-meta). Title detail loads Audible reviews via paginated
   `POST /api/discover/title-reviews` (`sort_by=MostHelpful|MostRecent`,
