@@ -99,6 +99,7 @@ fn host_routes_as(state: &Arc<AppState>, caller: UserCaller) -> axum::Router {
             "/api/config/join/connections/disconnect",
             post(crate::cluster_link::connections::post_join_connections_disconnect),
         )
+        .route("/api/config/join/capacity", post(super::post_join_capacity))
         .layer(axum::Extension(caller))
         .with_state(Arc::clone(state))
 }
@@ -281,6 +282,10 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
     .await;
     assert_eq!(status, StatusCode::OK, "{shared}");
     assert_eq!(shared["cluster"]["share_books"], false);
+    // Work for other members and copies of their books start off, and a
+    // body that leaves them out keeps them as they are.
+    assert_eq!(shared["cluster"]["work_for_members"], false);
+    assert_eq!(shared["cluster"]["keep_member_copies"], false);
     assert_eq!(
         shared["cluster"]["list_members_books"], true,
         "left as it is when absent"
@@ -303,11 +308,105 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
         load_node(&owner_store, &node_id).await.unwrap().share_books == Some(false)
     })
     .await;
+    let (status, _, worked) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({
+            "cluster_id": cluster_id,
+            "share_books": false,
+            "include_branches": true,
+            "work_for_members": true,
+            "keep_member_copies": true,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{worked}");
+    assert_eq!(worked["cluster"]["work_for_members"], true);
+    assert_eq!(worked["cluster"]["keep_member_copies"], true);
+    let (status, _, kept) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({
+            "cluster_id": cluster_id,
+            "share_books": false,
+            "include_branches": true,
+            "keep_member_copies": false,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    assert_eq!(kept["cluster"]["work_for_members"], true);
+    assert_eq!(kept["cluster"]["keep_member_copies"], false);
+    let link = load_cluster_link(&host_store, &cluster_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        link.claim_scope(),
+        bookclerk_node_proto::ClaimScope::AllMembers
+    );
+    assert!(!link.keep_member_copies);
     let (status, _, _) = call(
         &host,
         "POST",
         "/api/config/join/sharing",
         Some(json!({ "cluster_id": "no-such-cluster", "share_books": true, "include_branches": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Settings → Library's job cap: the running link's share follows it.
+    let (status, _, listed) = call(&host, "GET", "/api/config/join/sharing", None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["clusters"][0]["max_jobs"], Value::Null);
+    let machine = host_state.capacity.machine();
+    assert_eq!(listed["clusters"][0]["job_share"], machine);
+    let (status, _, capped) = call(
+        &host,
+        "POST",
+        "/api/config/join/capacity",
+        Some(json!({ "cluster_id": cluster_id, "max_jobs": 0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{capped}");
+    assert_eq!(capped["cluster"]["max_jobs"], 0);
+    assert_eq!(capped["cluster"]["job_share"], 0);
+    assert_eq!(host_state.capacity.share_of(&cluster_id), Some(0));
+    let (status, _, uncapped) = call(
+        &host,
+        "POST",
+        "/api/config/join/capacity",
+        Some(json!({ "cluster_id": cluster_id, "max_jobs": null })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{uncapped}");
+    assert_eq!(uncapped["cluster"]["max_jobs"], Value::Null);
+    assert_eq!(uncapped["cluster"]["job_share"], machine);
+    let (status, _, refused) = call(
+        &host,
+        "POST",
+        "/api/config/join/capacity",
+        Some(json!({ "cluster_id": cluster_id, "max_jobs": 17 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert_eq!(refused["error"], "invalid");
+    // Leaving `max_jobs` out is refused, not read as an equal share.
+    let (status, _, _) = call(
+        &host,
+        "POST",
+        "/api/config/join/capacity",
+        Some(json!({ "cluster_id": cluster_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _, _) = call(
+        &host,
+        "POST",
+        "/api/config/join/capacity",
+        Some(json!({ "cluster_id": "no-such-cluster", "max_jobs": 1 })),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -337,12 +436,21 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = call(
+            &app,
+            "POST",
+            "/api/config/join/capacity",
+            Some(json!({ "cluster_id": cluster_id, "max_jobs": 1 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
     let unchanged = load_cluster_link(&host_store, &cluster_id)
         .await
         .unwrap()
         .unwrap();
     assert!(!unchanged.share_books && unchanged.include_branches);
+    assert_eq!(unchanged.max_jobs, None);
     let as_owner = host_routes_as(
         &host_state,
         UserCaller::User {

@@ -1,8 +1,10 @@
 # ADR: Library catalog network
 
 - **Status:** Accepted (2026-11-11). Step 1, per-library plugin state on a
-  branch, is implemented. The other steps are planned and listed under
-  [Consequences](#consequences).
+  branch, and step 7, capacity shares, are implemented. Of step 2, the
+  branch-side work scope and copy settings are implemented; the import of
+  the owner's own books and sharing only the owner's books are next. The
+  other steps are planned and listed under [Consequences](#consequences).
 - **Date:** 2026-11-11
 - **Related:** [Control plane](control-plane.md) (H-4 branches, branches of
   branches), [Event delivery model](event-delivery-model.md),
@@ -124,6 +126,29 @@ explicitly for a copy.
   refresh lease, the person's branch when there is one, which pushes new
   tokens to the others over the person's links.
 
+### Capacity
+
+A branch of several libraries splits its machine so that no one library can
+take all of it.
+
+- The machine's job slots come from the branch's own heartbeat: its CPU
+  budget over one default guest (0.8 of a core) and its memory budget over
+  one default guest (512 MiB), whichever is smaller, from 1 to 16. A
+  drained branch has none.
+- The branch's own work comes first: each job its own workers run takes a
+  slot.
+- The slots left are dealt out one at a time, in cluster id order, to each
+  joined library still under its cap. Shares are equal; a capped library's
+  unused slots go to the others. The branch's operator or an Owner sets the
+  cap per library (0 to 16, or none).
+- The branch claims no more of a library's jobs than its share. A smaller
+  share cancels nothing; claims wait until enough jobs finish.
+- The branch's heartbeat to each library reports that library's share of
+  the machine's CPU and memory, and of that share only what is free now,
+  so a library's scheduler never counts on the whole machine. The totals
+  stay physical because the library applies its own budget for the node
+  on top; the branch's budget bounds the work through the slots.
+
 ### Kinds of install
 
 A **window** shows the libraries a person joined in one view and keeps no
@@ -142,7 +167,8 @@ decides whether the link takes work.
   5. Interlibrary requests, including the library operator's "acquire all
      of this branch's members' books" setting.
   6. Window mode.
-  7. Capacity shares between a branch's own work and each link.
+  7. Capacity shares between a branch's own work and each link
+     (implemented).
 - Steps 2 to 7 add node-socket frames. Each ships with a fuzz target, a
   seed corpus and a replay test. `plugin.capnp` does not change.
 - Books held through a branch become node holdings in the

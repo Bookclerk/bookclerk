@@ -39,10 +39,16 @@
 //! The in-process transport refuses host jobs outright, since it would run
 //! them against this install's own library.
 //!
+//! Every running link holds a share of this machine ([`capacity`]): the
+//! branch's own work first, then equal shares within each link's cap. The
+//! client claims no more than its share, and its heartbeat reports the
+//! owner only that part of the machine's CPU and memory.
+//!
 //! A close with 4403 (this node revoked) marks the link `revoked`, cancels
 //! held work, and stops that client; the link is not dialed again.
 
 pub mod api;
+pub mod capacity;
 pub mod catalog_lookup;
 pub mod catalog_sync;
 pub mod connections;
@@ -73,8 +79,9 @@ use crate::job_handler::{JobCommand, JobExecCtx, JobTransport};
 
 use self::remote_bindings::{host_job_bindings, RemoteCatalog};
 
-/// Jobs a host client holds at once.
-pub const HOST_MAX_JOBS: usize = 2;
+/// The most jobs one host client holds at once; its share of the machine
+/// ([`capacity`]) is usually smaller.
+pub const HOST_MAX_JOBS: usize = capacity::MAX_MACHINE_SLOTS;
 
 /// Job kinds a host claims: a scan returns its rows in fenced results
 /// batches, an acquire streams its files to the owner.
@@ -658,6 +665,12 @@ async fn start_clients(
         let cluster_id = link.owner_cluster_id.clone();
         let node_id = link.remote_node_id.clone();
         let failure = failure_key(&link);
+        let serial = NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The link's share of the machine: its claims stop there, and its
+        // heartbeat reports the library only that part.
+        let share = state.capacity.register(&cluster_id, serial, link.max_jobs);
+        let share_entry =
+            capacity::ShareEntry::new(Arc::clone(&state.capacity), &cluster_id, serial);
         let config = HostClientConfig {
             link,
             keys,
@@ -671,6 +684,7 @@ async fn start_clients(
             // The supervisor re-reads deployments on each connection first.
             claims_after_refresh: true,
             timing: ClientTiming::default(),
+            share: Some(share.clone()),
         };
         let catalog = Arc::new(RemoteCatalog::default());
         let runner = TransportRunner::new(
@@ -684,7 +698,11 @@ async fn start_clients(
         let (client, handle) = match HostClient::new(
             config,
             runner,
-            Box::new(NodeSampler::new(&files_dir)),
+            Box::new(capacity::ShareSampler::new(
+                NodeSampler::new(&files_dir),
+                share,
+                Arc::clone(&state.capacity),
+            )),
         ) {
             Ok(started) => started,
             Err(err) => {
@@ -736,7 +754,6 @@ async fn start_clients(
         // at once on Leave library ([`leave_link`]).
         let (client_stop, client_shutdown) = watch::channel(false);
         let client_stop = Arc::new(client_stop);
-        let serial = NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         running_insert(
             &cluster_id,
             RunningLink {
@@ -764,6 +781,7 @@ async fn start_clients(
         clients.push(tokio::spawn(async move {
             let exit = client.run(client_shutdown).await;
             drop(listed);
+            drop(share_entry);
             let _ = link_stop.send(true);
             // Both exit before a client for a new enrollment can start, so
             // one cluster never has two consent supervisors (or two catalog

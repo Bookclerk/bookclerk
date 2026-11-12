@@ -91,9 +91,13 @@ work from the library.
 ## What the library can see of your books
 
 A library can ask your branch whether it can supply a book its people are
-looking at. Your branch answers with the books in its own library: always
-yours, and your members' books unless you turn off **List my members'
-books** for that library. Each member can also keep their own books out.
+looking at. Its people then see **Available through** your branch on that
+book in [Discover and search](discover.md#available-through-a-branch).
+
+Your branch answers with the books in its own library: always yours, and
+your members' books unless you turn off **List my members' books** for that
+library in **Settings → Library**. Each member can also keep their own books
+out with **List my books to joined libraries** in **Settings → Account**.
 With **Share this branch's books** off, your branch lists nothing to that
 library.
 

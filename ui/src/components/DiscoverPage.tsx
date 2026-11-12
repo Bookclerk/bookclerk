@@ -66,7 +66,9 @@ import {
   searchCatalog,
   signOut,
   userFacingApiError,
+  availableThroughLabel,
   type AuthRole,
+  type BranchAvailability,
   type CatalogSearchHit,
   type CatalogSortDir,
   type DiscoverFeed,
@@ -1279,6 +1281,26 @@ export function DiscoverPage({
 const RESULT_GENRE_CAP_MOBILE = 1;
 const RESULT_GENRE_CAP = 3;
 
+/**
+ * "Available through Riley's branch": the branches of this library that
+ * currently list a title. Renders nothing when none does.
+ */
+function AvailableThrough({
+  through,
+  className,
+}: {
+  through: BranchAvailability[] | undefined;
+  className?: string;
+}) {
+  const label = availableThroughLabel(through);
+  if (!label) return null;
+  return (
+    <p className={cn("line-clamp-1 font-medium text-teal", className)} title={label}>
+      {label}
+    </p>
+  );
+}
+
 function ResultRow({
   title,
   busy,
@@ -1328,6 +1350,7 @@ function ResultRow({
             {secondaryFacts.join(" · ")}
           </p>
         ) : null}
+        <AvailableThrough through={title.available_through} className="mt-0.5 text-xs" />
         {uniqueSources.length > 0 || shownGenres.length > 0 ? (
           <div className="mt-1.5 flex items-center gap-1.5 overflow-hidden">
             {uniqueSources.map((source) => (
@@ -1562,6 +1585,7 @@ function ShelfCard({
               .join(" · ")}
           </p>
         ) : null}
+        <AvailableThrough through={title.available_through} className="mt-1 text-[11px]" />
         {!title.cover_path && (blurb || rec.reasons[0]) ? (
           <p className="mt-1.5 line-clamp-2 text-[11px] leading-snug text-ink/45">
             {blurb || rec.reasons[0]}

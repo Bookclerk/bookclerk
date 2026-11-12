@@ -64,6 +64,9 @@ pub struct AppState {
     pub database_registry: Arc<RwLock<DatabaseRegistry>>,
     /// Wakes the durable job worker when a new row is admitted.
     pub job_notify: Arc<Notify>,
+    /// How this node splits its machine between its own work and each
+    /// library it is a branch of ([`crate::cluster_link::capacity`]).
+    pub capacity: Arc<crate::cluster_link::capacity::CapacityShares>,
     /// Shared barrier covering admission, claim, and handler execution.
     ///
     /// Workers and admit hold a read permit. A database plugin swap takes the
@@ -1232,6 +1235,9 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(
             crate::cluster_link::connections::post_join_connections_disconnect
         ))
+        // Settings → Library's job cap on a branch (operator or Owner; the
+        // handler checks).
+        .routes(routes!(crate::cluster_link::join::post_join_capacity))
         // The library lets the operator or an Owner revoke any host and
         // anyone else only the hosts they own.
         .routes(routes!(crate::node_api::delete_node_credential))
@@ -5981,6 +5987,26 @@ async fn discover_catalog_search(
     })?
     .map_err(internal_err)?;
     let mut page = page;
+    // The PluginKey each hit's storefront pools its listings under, read
+    // before the registry lock is released.
+    let plugin_keys: std::collections::HashMap<String, String> = page
+        .items
+        .iter()
+        .flat_map(|hit| hit.store_editions.iter().map(|e| e.source.clone()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|id| {
+            let key = sources.get(&id)?.plugin_key().to_string();
+            Some((id, key))
+        })
+        .collect();
+    drop(sources);
+    let library = state.library_snapshot().await;
+    bookclerk_discover::join_search_branch_availability(&library, &mut page.items, |id| {
+        plugin_keys.get(id).cloned()
+    })
+    .await
+    .map_err(internal_err)?;
     for hit in &mut page.items {
         state
             .covers
@@ -7519,6 +7545,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -7947,6 +7974,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8049,6 +8077,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8209,6 +8238,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
@@ -8951,6 +8981,7 @@ tcp = {tcp}
             library: Arc::new(RwLock::new(store)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
             job_notify: Arc::new(Notify::new()),
+            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),

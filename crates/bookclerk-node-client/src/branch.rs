@@ -601,6 +601,7 @@ pub async fn announce_leaving(
             request_timeout: timeout,
             ..ClientTiming::default()
         },
+        share: None,
     };
     let Ok((client, handle)) = HostClient::new(config, NoJobs, sampler) else {
         return false;

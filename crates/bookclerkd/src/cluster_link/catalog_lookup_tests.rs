@@ -46,6 +46,7 @@ async fn start(host: &LibraryStore, link: &ClusterLink) -> (HostClientHandle, wa
             software_version: "1.0.0".into(),
             incarnation: uuid::Uuid::new_v4().to_string(),
             max_jobs: 1,
+            share: None,
             claim_kinds: Vec::new(),
             claims_after_refresh: false,
             timing: timing(Duration::from_millis(200)),
@@ -159,6 +160,28 @@ async fn a_branch_answers_its_librarys_question_over_the_socket() {
         ("audible", ASIN)
     );
 
+    // Search and Discover show the branch on the title, matched through
+    // the library's own listing and the card's work.
+    let mut hits = vec![search_hit()];
+    bookclerk_discover::join_search_branch_availability(&a, &mut hits, |id| {
+        (id == "audible").then(|| "path:file:///tmp/audible".to_string())
+    })
+    .await
+    .unwrap();
+    assert_eq!(hits[0].available_through.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].available_through[0].node_id, link.remote_node_id);
+    assert_eq!(hits[0].available_through[0].product_id, ASIN);
+    assert!(hits[0].available_through[0].owner_name.is_some());
+    let mut feed = feed_with(bookclerk_discover::Recommendation {
+        work_id: Some(work.clone()),
+        title: "Shared Title".into(),
+        ..Default::default()
+    });
+    bookclerk_discover::join_branch_availability(&a, &mut feed, None)
+        .await
+        .unwrap();
+    assert_eq!(feed.shelves[0].items[0].available_through.len(), 1);
+
     // Members' books off: B answers "missing" and A's listing expires.
     assert!(set_cluster_link_listing(&b, &link.owner_cluster_id, false)
         .await
@@ -179,6 +202,41 @@ async fn a_branch_answers_its_librarys_question_over_the_socket() {
         .await
         .unwrap()
         .is_empty());
+    let mut hits = vec![search_hit()];
+    bookclerk_discover::join_search_branch_availability(&a, &mut hits, |id| {
+        (id == "audible").then(|| "path:file:///tmp/audible".to_string())
+    })
+    .await
+    .unwrap();
+    assert!(hits[0].available_through.is_empty(), "expired: {hits:?}");
+}
+
+/// A catalog search hit for [`ASIN`] from the `audible` storefront.
+fn search_hit() -> bookclerk_discover::CatalogSearchHit {
+    serde_json::from_value(serde_json::json!({
+        "work_key": format!("asin:{ASIN}"),
+        "title": "Shared Title",
+        "authors": null,
+        "narrators": null,
+        "series": null,
+        "asin": ASIN,
+        "isbn": null,
+        "store_editions": [{"source": "audible", "product_id": ASIN}],
+        "sources": ["audible"],
+    }))
+    .unwrap()
+}
+
+/// A feed with one shelf holding `card`.
+fn feed_with(card: bookclerk_discover::Recommendation) -> bookclerk_discover::DiscoverFeed {
+    serde_json::from_value(serde_json::json!({
+        "shelves": [{
+            "id": "test",
+            "title": "Test",
+            "items": [serde_json::to_value(card).unwrap()],
+        }],
+    }))
+    .unwrap()
 }
 
 #[test]

@@ -443,10 +443,11 @@ fn local_binary() -> Option<PathBuf> {
     let name = "bookclerk-plugin-destination-local";
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join(name));
-            candidates.push(dir.join("..").join(name));
-        }
+        candidates.extend(
+            bookclerk_sandbox::helper_search_dirs(&exe)
+                .into_iter()
+                .map(|dir| dir.join(name)),
+        );
     }
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let target = std::env::var_os("CARGO_TARGET_DIR")

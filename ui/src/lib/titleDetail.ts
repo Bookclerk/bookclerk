@@ -1,6 +1,7 @@
 import type {
   AcquireStatus,
   BookRecord,
+  BranchAvailability,
   PurchaseHint,
   QueueWisher,
   StoreEdition,
@@ -46,6 +47,8 @@ export type TitleDetail = {
   work_key?: string | null;
   notes?: string | null;
   reasons?: string[];
+  /** Branches of this library that currently list this title. */
+  available_through?: BranchAvailability[];
   wishlist_uuid?: string | null;
   store_editions?: StoreEdition[];
   sources?: string[];
@@ -94,6 +97,7 @@ export function titleDetailFromCatalog(
     work_key: title.work_key,
     notes: title.notes,
     reasons: title.reasons,
+    available_through: title.available_through,
     wishlist_uuid: title.wishlist_uuid,
     store_editions: title.store_editions,
     sources: title.sources,

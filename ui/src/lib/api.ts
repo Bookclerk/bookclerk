@@ -2434,6 +2434,16 @@ export interface ClusterLinkView {
   share_books?: boolean;
   /** "Include books from my own branches" (on by default). */
   include_branches?: boolean;
+  /** "List my members' books" when the library asks (on by default). */
+  list_members_books?: boolean;
+  /** "Download for other members of <library>" (off by default). */
+  work_for_members?: boolean;
+  /** "Keep copies of other members' books" (off by default). */
+  keep_member_copies?: boolean;
+  /** The most jobs this host runs for the library at once; `null` is an equal share of the machine. */
+  max_jobs?: number | null;
+  /** Jobs the library may have running here now; absent while its link is not running. */
+  job_share?: number;
 }
 
 /**
@@ -3143,6 +3153,83 @@ export interface Recommendation {
   seed_title?: string | null;
   /** Starter genre this card was browsed from while the taste was thin. */
   starter_genre?: string | null;
+  /** Branches of this library that currently list this title. */
+  available_through?: BranchAvailability[];
+}
+
+/**
+ * One branch of this library that can supply a title (it answered a
+ * catalog lookup for the title's work).
+ */
+export interface BranchAvailability {
+  /** The branch node id. */
+  node_id: string;
+  /** The branch owner's display name, when the owner has one. */
+  owner_name?: string | null;
+  /** The store the branch has the book from (`audible`). */
+  store: string;
+  /** The store's product id of the branch's copy. */
+  product_id: string;
+}
+
+/**
+ * One line naming the branches a title is available through.
+ *
+ * @param through - The title's branch availability.
+ * @returns For example "Available through Riley's branch", or `null` when
+ *   no branch lists the title.
+ */
+export function availableThroughLabel(through: BranchAvailability[] | undefined): string | null {
+  const branches: string[] = [];
+  const seen = new Set<string>();
+  for (const b of through ?? []) {
+    if (seen.has(b.node_id)) continue;
+    seen.add(b.node_id);
+    const owner = b.owner_name?.trim();
+    branches.push(owner ? `${owner}'s branch` : "a branch");
+  }
+  if (branches.length === 0) return null;
+  if (branches.length === 1) return `Available through ${branches[0]}`;
+  if (branches.length === 2) return `Available through ${branches[0]} and ${branches[1]}`;
+  return `Available through ${branches[0]} and ${branches.length - 1} other branches`;
+}
+
+/** The signed-in user's catalog listing choice. */
+export interface CatalogListingView {
+  /** `true` (the default) unless the user keeps their books out of catalog answers. */
+  listed: boolean;
+  /** Libraries this server is currently a branch of; the choice matters only above zero. */
+  libraries: number;
+  /** `true` for an Owner, whose books are always listed; `listed` then has no effect. */
+  always_listed: boolean;
+}
+
+/**
+ * Whether the signed-in user's books are listed to the libraries this
+ * server is a branch of (`GET /api/auth/profile/catalog-listing`).
+ *
+ * @returns The choice, and how many libraries it applies to.
+ */
+export async function fetchCatalogListing(): Promise<CatalogListingView> {
+  const res = await fetch("/api/auth/profile/catalog-listing", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Sets whether the signed-in user's books are listed to the libraries this
+ * server is a branch of (`PUT /api/auth/profile/catalog-listing`).
+ *
+ * @param listed - `false` keeps the user's books out of catalog answers.
+ * @returns The stored choice.
+ */
+export async function setCatalogListing(listed: boolean): Promise<CatalogListingView> {
+  const res = await fetch("/api/auth/profile/catalog-listing", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ listed }),
+  });
+  return parseJson(res);
 }
 
 /**
@@ -3333,6 +3420,8 @@ export interface CatalogSearchHit {
   rating_count?: number | null;
   price_cents?: number | null;
   purchase_hints?: PurchaseHint[];
+  /** Branches of this library that currently list this title. */
+  available_through?: BranchAvailability[];
 }
 
 /**

@@ -53,13 +53,13 @@ async fn spawn_direct(
 /// Where cargo left the launcher for this test run.
 ///
 /// The host looks beside the current executable, which for an integration test
-/// is `target/<profile>/deps`. Locating it here too lets the test skip with a
+/// sits below `target/<profile>` (see `bookclerk_sandbox::helper_search_dirs`). Locating it here too lets the test skip with a
 /// reason rather than fail on a spawn error that explains nothing.
 fn launcher() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    [dir.join("bookclerk-jail"), dir.join("../bookclerk-jail")]
+    bookclerk_sandbox::helper_search_dirs(&exe)
         .into_iter()
+        .map(|dir| dir.join("bookclerk-jail"))
         .find(|candidate| candidate.is_file())
 }
 

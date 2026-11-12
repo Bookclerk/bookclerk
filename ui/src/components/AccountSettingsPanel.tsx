@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { SsoSignInButton } from "@/components/SsoProviderMark";
 import { AvatarPickerDialog } from "@/components/AvatarPickerDialog";
+import { CatalogListingSetting } from "@/components/CatalogListingSetting";
 import { SessionsPanel } from "@/components/SessionsPanel";
 import { TotpSetupHint } from "@/components/TotpSetupHint";
 import { UserAvatar, userDisplayLabel } from "@/components/UserAvatar";
@@ -979,6 +980,8 @@ export function AccountSettingsPanel({
           )}
         </section>
       ) : null}
+
+      {canEditProfile ? <CatalogListingSetting /> : null}
 
       <section className="space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-3">

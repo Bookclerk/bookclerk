@@ -124,8 +124,8 @@ pub enum Body {
         #[serde(default)]
         class: Option<String>,
         /// The host's own narrowing: only jobs of these kinds whose every
-        /// plugin its operator consented to. Absent claims everything the
-        /// node is trusted with.
+        /// plugin its operator consented to, and whose work ([`ClaimScope`]).
+        /// Absent claims everything the node is trusted with.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<ClaimFilter>,
     },
@@ -645,6 +645,33 @@ pub struct ClaimFilter {
     /// Plugin keys the host's operator consented to.
     #[serde(default)]
     pub plugins: Vec<String>,
+    /// Whose work the host takes. Absent means [`ClaimScope::Own`].
+    #[serde(default, skip_serializing_if = "ClaimScope::is_own")]
+    pub scope: ClaimScope,
+}
+
+/// Whose work a host takes from a library (`claim.filter.scope`), as the
+/// branch operator set it for that link.
+///
+/// The library still hands only work the node is trusted with: a scope
+/// can narrow that trust, never widen it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimScope {
+    /// Only work for the store accounts of the user who owns the node.
+    #[default]
+    Own,
+    /// Work for any member of the library the node is trusted with
+    /// ("Download for other members of *library*").
+    AllMembers,
+}
+
+impl ClaimScope {
+    /// True for [`ClaimScope::Own`], the default left off the wire.
+    #[must_use]
+    pub fn is_own(&self) -> bool {
+        *self == Self::Own
+    }
 }
 
 /// One deployment that targets a host (`deployments.items`).
@@ -726,6 +753,12 @@ pub struct WorkJob {
     /// owner's settings, never its own. Absent for other kinds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scan_import: Option<ScanImport>,
+    /// True when every store account the job touches belongs to the user
+    /// who owns the node: the branch's own books. A branch keeps its own
+    /// copy of another member's book only when its operator asked for
+    /// that. Absent means false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub for_node_owner: bool,
 }
 
 /// The owner's library import settings a host scan runs with.
@@ -1050,6 +1083,24 @@ impl Frame {
 mod tests {
     use super::*;
 
+    /// A claim scope is left off the wire when it is the default, parses
+    /// back to the default when absent, and an unknown scope is refused.
+    #[test]
+    fn a_claim_scope_defaults_to_own_and_refuses_unknown_text() {
+        let own = ClaimFilter {
+            kinds: vec!["scan".into()],
+            plugins: vec!["store".into()],
+            scope: ClaimScope::Own,
+        };
+        let text = serde_json::to_string(&own).unwrap();
+        assert!(!text.contains("scope"), "{text}");
+        let parsed: ClaimFilter = serde_json::from_str(r#"{"kinds":["scan"]}"#).unwrap();
+        assert_eq!(parsed.scope, ClaimScope::Own);
+        let all: ClaimFilter = serde_json::from_str(r#"{"scope":"all_members"}"#).unwrap();
+        assert_eq!(all.scope, ClaimScope::AllMembers);
+        assert!(serde_json::from_str::<ClaimFilter>(r#"{"scope":"everyone"}"#).is_err());
+    }
+
     #[test]
     fn a_library_id_is_short_ascii_alphanumeric_or_the_frame_is_refused() {
         let target = |id: &str| {
@@ -1292,6 +1343,7 @@ mod tests {
                             import_episodes: false,
                             import_plus_titles: true,
                         }),
+                        for_node_owner: true,
                     },
                     fence: 2,
                     lease_secs: 60,
@@ -1309,6 +1361,7 @@ mod tests {
                     filter: Some(ClaimFilter {
                         kinds: vec!["scan".into()],
                         plugins: vec!["store".into()],
+                        scope: ClaimScope::AllMembers,
                     }),
                 },
                 "claim",
