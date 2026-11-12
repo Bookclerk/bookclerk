@@ -1207,6 +1207,22 @@ pub async fn catalog_listing_opted_out(store: &LibraryStore, user_id: i64) -> Re
         .is_some())
 }
 
+/// True when `user_id` is an active Owner of this branch, whose books are
+/// always listed whatever their opt-out says.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn catalog_listing_always(store: &LibraryStore, user_id: i64) -> Result<bool> {
+    Ok(users::Entity::find_by_id(user_id)
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+        .is_some_and(|user| {
+            user.role == "owner" && UserStatus::parse(&user.status) == Some(UserStatus::Active)
+        }))
+}
+
 /// The work of this library a question names, by identifier: the one work
 /// its strong identifiers (ASIN, OpenLibrary edition or work id) reach,
 /// or, with none, the one work its ISBNs reach. `None` when no work, or

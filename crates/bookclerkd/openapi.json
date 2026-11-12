@@ -27394,7 +27394,8 @@
         "description": "The caller's listing choice and how many libraries it applies to.",
         "required": [
           "listed",
-          "libraries"
+          "libraries",
+          "always_listed"
         ],
         "properties": {
           "listed": {
@@ -27408,6 +27409,11 @@
             "description": "Libraries this install is currently a branch of (active links).\nWith none, the choice has no effect yet, and the app hides it.",
             "example": 1,
             "minimum": 0
+          },
+          "always_listed": {
+            "type": "boolean",
+            "description": "`true` for an active Owner: an Owner's books are always listed, so\n`listed` has no effect and the app shows that instead of the toggle.",
+            "example": false
           }
         }
       },

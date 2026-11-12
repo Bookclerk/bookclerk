@@ -3192,6 +3192,8 @@ export interface CatalogListingView {
   listed: boolean;
   /** Libraries this server is currently a branch of; the choice matters only above zero. */
   libraries: number;
+  /** `true` for an Owner, whose books are always listed; `listed` then has no effect. */
+  always_listed: boolean;
 }
 
 /**

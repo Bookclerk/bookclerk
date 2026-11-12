@@ -73,10 +73,10 @@ pub use carried_accounts::{
 };
 pub use catalog_lookup::{
     answer_questions, ask_branches, branch_listing_key, branch_listings_for_works,
-    branch_offers_for_works, catalog_listing_opted_out, pending_questions, record_answers,
-    set_catalog_listing_opt_out, trusted_branches, works_of_interest, works_of_listings,
-    AnswerReport, AnswersRecorded, AskReport, BranchListing, BranchOffer, BRANCH_LISTING_PREFIX,
-    BRANCH_LISTING_TTL, LOOKUP_ANSWER_TTL, LOOKUP_RESEND,
+    branch_offers_for_works, catalog_listing_always, catalog_listing_opted_out, pending_questions,
+    record_answers, set_catalog_listing_opt_out, trusted_branches, works_of_interest,
+    works_of_listings, AnswerReport, AnswersRecorded, AskReport, BranchListing, BranchOffer,
+    BRANCH_LISTING_PREFIX, BRANCH_LISTING_TTL, LOOKUP_ANSWER_TTL, LOOKUP_RESEND,
 };
 pub use clerks::{library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents};
 pub use cluster_links::{

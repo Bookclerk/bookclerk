@@ -708,7 +708,9 @@ default, set per library in the sharing settings below). A member can keep
 their own books out with **Settings → Account → List my books to joined
 libraries** (`PUT /api/auth/profile/catalog-listing` `{"listed": false}`;
 `GET` also returns `libraries`, the number of libraries B is currently a
-branch of, and the app shows the setting only when it is above zero). With **Share this branch's books with <library>**
+branch of, and the app shows the setting only when it is above zero, and
+`always_listed`, true for an Owner, whose books are always listed, so the
+app shows that instead of the toggle). With **Share this branch's books with <library>**
 off, B lists nothing to that library and answers every question as
 missing.
 
@@ -764,10 +766,8 @@ in the library, marked as from a branch that left (see
 
 - The sharing settings are set in **Settings → Library** (the operator or
   an Owner). There is no CLI command for them yet.
-- **List my members' books** and a member's own opt-out have API routes
-  only; the web app doesn't show them yet.
-- Search and Discover don't show branch listings yet, and a branch
-  answers only from its own library, not from other libraries it joined.
+- A branch answers only from its own library, not from other libraries it
+  joined.
 - The library's name is the host of its public origin. There is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the

@@ -448,6 +448,26 @@ pub struct CatalogListingView {
     /// With none, the choice has no effect yet, and the app hides it.
     #[schema(example = 1)]
     pub libraries: u32,
+    /// `true` for an active Owner: an Owner's books are always listed, so
+    /// `listed` has no effect and the app shows that instead of the toggle.
+    #[schema(example = false)]
+    pub always_listed: bool,
+}
+
+/// The listing view of `user_id`, whose stored choice is `listed`.
+async fn catalog_listing_view(
+    library: &bookclerk_library::LibraryStore,
+    user_id: i64,
+    listed: bool,
+) -> Result<CatalogListingView, StatusCode> {
+    let always_listed = bookclerk_library::control_plane::catalog_listing_always(library, user_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(CatalogListingView {
+        listed,
+        libraries: active_libraries(library).await?,
+        always_listed,
+    })
 }
 
 /// The number of libraries this install is currently a branch of.
@@ -479,10 +499,9 @@ pub async fn get_catalog_listing(
     let opted_out = bookclerk_library::control_plane::catalog_listing_opted_out(&library, user_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(CatalogListingView {
-        listed: !opted_out,
-        libraries: active_libraries(&library).await?,
-    }))
+    Ok(Json(
+        catalog_listing_view(&library, user_id, !opted_out).await?,
+    ))
 }
 
 /// Sets whether the caller's books are listed to the libraries this install
@@ -518,10 +537,9 @@ pub async fn put_catalog_listing(
             )),
         )
         .await;
-    Ok(Json(CatalogListingView {
-        listed: body.listed,
-        libraries: active_libraries(&library).await?,
-    }))
+    Ok(Json(
+        catalog_listing_view(&library, user_id, body.listed).await?,
+    ))
 }
 
 /// Accepts a JPEG/PNG/WebP upload and stores it under `files_dir/avatars`.
@@ -1229,7 +1247,7 @@ mod tests {
             catalog_listing(&app, "GET", Some(&cookie), "").await,
             (
                 StatusCode::OK,
-                r#"{"listed":true,"libraries":0}"#.to_string()
+                r#"{"listed":true,"libraries":0,"always_listed":false}"#.to_string()
             ),
             "listed by default"
         );
@@ -1237,26 +1255,43 @@ mod tests {
             catalog_listing(&app, "PUT", Some(&cookie), r#"{"listed":false}"#).await,
             (
                 StatusCode::OK,
-                r#"{"listed":false,"libraries":0}"#.to_string()
+                r#"{"listed":false,"libraries":0,"always_listed":false}"#.to_string()
             )
         );
         assert_eq!(
             catalog_listing(&app, "GET", Some(&cookie), "").await,
             (
                 StatusCode::OK,
-                r#"{"listed":false,"libraries":0}"#.to_string()
+                r#"{"listed":false,"libraries":0,"always_listed":false}"#.to_string()
             )
         );
         assert_eq!(
             catalog_listing(&app, "PUT", Some(&cookie), r#"{"listed":true}"#).await,
             (
                 StatusCode::OK,
-                r#"{"listed":true,"libraries":0}"#.to_string()
+                r#"{"listed":true,"libraries":0,"always_listed":false}"#.to_string()
             )
         );
         assert_eq!(
             catalog_listing(&app, "GET", Some(&cookie), "").await.1,
-            r#"{"listed":true,"libraries":0}"#
+            r#"{"listed":true,"libraries":0,"always_listed":false}"#
+        );
+
+        // An Owner's books are always listed, whatever the stored choice.
+        let user_id = library
+            .get_portal_identity("test", "member-ext")
+            .await
+            .unwrap()
+            .unwrap()
+            .user_id
+            .unwrap();
+        library
+            .set_user_role(user_id, bookclerk_library::UserRole::Owner)
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog_listing(&app, "GET", Some(&cookie), "").await.1,
+            r#"{"listed":true,"libraries":0,"always_listed":true}"#
         );
     }
 }

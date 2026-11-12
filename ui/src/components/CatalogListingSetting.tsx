@@ -10,6 +10,7 @@ import { fetchCatalogListing, isApiError, setCatalogListing } from "@/lib/api";
 export function CatalogListingSetting() {
   const [listed, setListed] = useState<boolean | null>(null);
   const [libraries, setLibraries] = useState(0);
+  const [always, setAlways] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,6 +21,7 @@ export function CatalogListingSetting() {
         if (cancelled) return;
         setListed(view.listed);
         setLibraries(view.libraries);
+        setAlways(view.always_listed);
       })
       .catch(() => {
         // No first-party user (operator token) or not signed in: nothing to show.
@@ -39,11 +41,27 @@ export function CatalogListingSetting() {
       const view = await setCatalogListing(next);
       setListed(view.listed);
       setLibraries(view.libraries);
+      setAlways(view.always_listed);
     } catch (err) {
       setError(isApiError(err) ? err.message : "Could not save.");
     } finally {
       setBusy(false);
     }
+  }
+
+  const joined = libraries === 1 ? "a library" : `${libraries} libraries`;
+
+  if (always) {
+    return (
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold text-ink">Joined libraries</h2>
+        <p className="text-sm text-ink/70">
+          This server is a branch of {joined}. As an Owner, your books are always listed: when one
+          asks about a title, it hears that this branch can supply it if you have it. Only which
+          book and store is sent, never your account.
+        </p>
+      </section>
+    );
   }
 
   return (
@@ -60,10 +78,10 @@ export function CatalogListingSetting() {
         <span>
           <span className="block font-medium">List my books to joined libraries</span>
           <span className="block text-xs text-ink/55">
-            This server is a branch of {libraries === 1 ? "a library" : `${libraries} libraries`}.
-            When one asks about a title, it hears that this branch can supply it if you have it.
-            Nothing is sent until it asks, and only which book and store, never your account.
-            Turning this off can take up to two days to reach the library.
+            This server is a branch of {joined}. When one asks about a title, it hears that this
+            branch can supply it if you have it. Nothing is sent until it asks, and only which book
+            and store, never your account. Turning this off can take up to two days to reach the
+            library.
           </span>
         </span>
       </label>
