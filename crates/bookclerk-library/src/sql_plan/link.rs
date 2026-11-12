@@ -461,8 +461,10 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
     }
     if let Some(h) = &p.holding {
         // The typed holder columns follow from the stored key; a holding is
-        // only written while its account or node exists, so a revoked or
-        // deleted holder never gains one (and the foreign key never aborts).
+        // only written while its node exists or its account exists and is
+        // not revoked, so a page still in flight when the account was
+        // revoked or deleted adds nothing back (and the foreign key never
+        // aborts).
         // A key the schema does not accept writes no holding at all.
         let typed = match bookclerk_resolve::Holder::parse(&h.holder) {
             Some(bookclerk_resolve::Holder::Account(account)) => Some((
@@ -470,7 +472,8 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
                 j_str(&p.plugin_key),
                 j_str(&account),
                 j_opt_str(None),
-                "EXISTS (SELECT 1 FROM accounts WHERE plugin_key = ? AND account_id = ?)",
+                "EXISTS (SELECT 1 FROM accounts WHERE plugin_key = ? AND account_id = ? \
+                 AND connection_status <> 'revoked')",
                 vec![j_str(&p.plugin_key), j_str(&account)],
             )),
             Some(bookclerk_resolve::Holder::Node(node)) => Some((

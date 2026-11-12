@@ -772,6 +772,20 @@ mod tests {
             assert_eq!(count(&store, HOLDING_REMOVED).await, 2, "{profile:?}");
             let state = store.scan_state(PLUGIN, "a1").await.unwrap().unwrap();
             assert_eq!(state.sync_token, "", "{profile:?}");
+
+            // A page still in flight when the account was revoked adds
+            // nothing back; reconnecting lets the next scan hold it again.
+            store
+                .record_listing(&listing("B1"), &held_by("a1"))
+                .await
+                .unwrap();
+            assert!(held(&store).await.is_empty(), "{profile:?}: revoked");
+            store.mark_connection_active(PLUGIN, "a1").await.unwrap();
+            store
+                .record_listing(&listing("B1"), &held_by("a1"))
+                .await
+                .unwrap();
+            assert_eq!(held(&store).await.len(), 1, "{profile:?}: reconnected");
         }
     }
 
