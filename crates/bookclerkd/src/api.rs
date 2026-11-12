@@ -1651,10 +1651,11 @@ fn api_timeout_for_path(path: &str) -> Duration {
         "/api/config/join/inspect" | "/api/config/join/start" => Duration::from_secs(45),
         // Adding or disconnecting store connections calls each library
         // once, concurrently, bounded by
-        // `cluster_link::connections::LIBRARY_CALL_TIMEOUT` (12 s); the
-        // rest is margin for the database round trips around it.
+        // `cluster_link::connections::LIBRARY_CALL_TIMEOUT` (12 s), and may
+        // first wait for one other such request (as long again); the rest
+        // is margin for the database round trips around them.
         "/api/config/join/connections" | "/api/config/join/connections/disconnect" => {
-            Duration::from_secs(20)
+            Duration::from_secs(30)
         }
         _ => Duration::from_secs(8),
     }

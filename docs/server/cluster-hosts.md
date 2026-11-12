@@ -248,7 +248,9 @@ only for the person the branch belongs to: the branch's single active
 Owner. Anyone else, and any caller on a branch with several Owners (the
 link doesn't record whose join it was), gets `403 not_branch_person`.
 Each call to a library is bounded at 12 seconds, inside the routes'
-20-second deadline.
+30-second deadline; the branch runs one such request at a time, so an
+offer never reaches a library after a disconnect reported the account
+gone.
 
 - **Add to a library.** On the branch, **Accounts** shows **Add to
   *library*** beside each connection
@@ -270,8 +272,9 @@ Each call to a library is bounded at 12 seconds, inside the routes'
 - **Disconnect everywhere.** **Revoke everywhere** on the branch
   (`POST /api/config/join/connections/disconnect` with
   `everywhere: true`) disconnects it on the branch first, then sends
-  `accounts.remove` up every active link the account was shared with, in
-  either direction, all at once. Each library removes the person's links to the account and, in
+  `accounts.remove` up every link the account was shared with, in either
+  direction, all at once. A link the branch left or lost is named in
+  `unreached`. Each library removes the person's links to the account and, in
   the same atomic batch, deletes its secrets and marks it revoked when no
   other member's link holds it. A revoked account then loses its holdings
   (each with a `holding_removed` event) and its scan checkpoints, as any

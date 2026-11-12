@@ -791,6 +791,9 @@ pub async fn withdraw_person_account(
         }
     }
     if !theirs {
+        // A retry after a lost batch reply lands here: purge any plaintext
+        // the first try left cached.
+        crate::secrets::cache_invalidate_account(account_id);
         return Ok(Withdrawn::NotTheirs);
     }
     let mut statements = vec![batch::exec(
@@ -800,10 +803,12 @@ pub async fn withdraw_person_account(
     )];
     statements.extend(revoke_unlinked_statements(plugin_key, account_id));
     let operation_id = format!("withdraw-account-{}", uuid::Uuid::new_v4());
-    store
+    let committed = store
         .execute_host_batch(batch::request(&operation_id, statements))
-        .await?;
+        .await;
+    // Purged even when the reply was lost: the batch may have committed.
     crate::secrets::cache_invalidate_account(account_id);
+    committed?;
     // Taken back (no other member's link held it): finish the revocation
     // as `LibraryStore::revoke_credentials` does, so its holdings go with
     // `holding_removed` events and a reconnect starts a full scan.

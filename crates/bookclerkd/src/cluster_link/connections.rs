@@ -41,8 +41,16 @@ use crate::auth::UserCaller;
 
 /// Longest one call to a library may take on these routes (the client
 /// otherwise waits up to its 30 s request timeout for a connection); the
-/// routes' API deadline in `api_timeout_for_path` leaves margin above it.
+/// routes' API deadline in `api_timeout_for_path` leaves room for one
+/// other connection request ahead of this one ([`CONNECTIONS_LOCK`]) and
+/// margin above both.
 pub const LIBRARY_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// Serializes "Add my connections" and "Disconnect" on this install, from
+/// reading the person's accounts to the libraries' answers, so an offer
+/// that read an account before a disconnect never reaches a library after
+/// the disconnect reported it gone. Both are rare, person-driven actions.
+static CONNECTIONS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Most accounts one "Add my connections" request names.
 const MAX_ADD_ACCOUNTS: usize = bookclerk_node_proto::MAX_BUNDLE_ACCOUNTS;
@@ -180,6 +188,7 @@ pub async fn post_join_connections(
         Ok(person) => person,
         Err(refused) => return refused,
     };
+    let _serialized = CONNECTIONS_LOCK.lock().await;
     let store = state.library_snapshot().await;
     let cluster_id = body.cluster_id.trim();
     let link = match load_cluster_link(&store, cluster_id).await {
@@ -290,6 +299,7 @@ pub async fn post_join_connections_disconnect(
         Ok(person) => person,
         Err(refused) => return refused,
     };
+    let _serialized = CONNECTIONS_LOCK.lock().await;
     let store = state.library_snapshot().await;
     // Where it was shared is read before the local withdrawal, which may
     // revoke the account and its share records with it.
@@ -305,7 +315,9 @@ pub async fn post_join_connections_disconnect(
         };
         targets = links
             .into_iter()
-            .filter(|link| link.is_active() && peers.contains(&link_peer(&link.owner_cluster_id)))
+            // A link this install left or lost still names a library that
+            // holds the account: it is tried, and reported unreached.
+            .filter(|link| peers.contains(&link_peer(&link.owner_cluster_id)))
             .collect();
     }
     // Here first, so an unreachable library never keeps it connected here.
