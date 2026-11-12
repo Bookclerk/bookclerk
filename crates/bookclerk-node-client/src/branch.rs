@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use bookclerk_library::control_plane::{
-    branch_person, import_carried_accounts, record_cluster_link, CarriedImport, ClusterLink,
-    ClusterLinkKeys, NewClusterLink,
+    branch_person, import_carried_accounts, record_cluster_link, set_cluster_link_person,
+    CarriedImport, ClusterLink, ClusterLinkKeys, NewClusterLink,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{
@@ -305,6 +305,56 @@ pub enum BroughtConnections {
     /// No one on this install could be named as their person (no Owner
     /// yet, or several); nothing was stored. Holds how many came.
     NoPerson(usize),
+}
+
+/// Binds the link a sign-in join recorded to the person on this install
+/// ([`branch_person`]): only they may add store connections to the library,
+/// or withdraw them from it, through that link. Every join path calls it
+/// after [`redeem_branch_code`].
+///
+/// The binding names the node this join's own enrollment minted
+/// ([`RedeemedBranch::node_id`]), so a join another one replaced meanwhile
+/// binds nothing. A failure, or no person to name, leaves the link unbound
+/// (as [`record_cluster_link`] stored it): nobody can use it until the
+/// branch joins again.
+///
+/// # Arguments
+///
+/// * `store` - This install's library.
+/// * `preferred` - The Owner who elevated into the operator session that
+///   ran the join, when one did.
+/// * `redeemed` - What the join recorded.
+///
+/// # Returns
+///
+/// The user the link is bound to, when one was.
+pub async fn bind_join_person(
+    store: &LibraryStore,
+    preferred: Option<i64>,
+    redeemed: &RedeemedBranch,
+) -> Option<i64> {
+    let person = match branch_person(store, preferred).await {
+        Ok(person) => person?,
+        Err(err) => {
+            tracing::warn!(error = %err, "could not name who joined the library");
+            return None;
+        }
+    };
+    match set_cluster_link_person(
+        store,
+        &redeemed.link.owner_cluster_id,
+        &redeemed.node_id,
+        Some(person),
+    )
+    .await
+    {
+        Ok(true) => Some(person),
+        Ok(false) => None,
+        Err(err) => {
+            tracing::warn!(error = %err, "could not record who joined the library");
+            None
+        }
+    }
 }
 
 /// Keeps the store connections a library sent with its person

@@ -932,7 +932,6 @@ pub async fn post_join_callback(
     };
     finish().await;
     drop(one_at_a_time);
-    let link = redeemed.link;
     // The person is the Owner who elevated into this operator session, or
     // else the install's only Owner. The link is bound to them: only they
     // add connections to the library, or withdraw them, through it. The
@@ -945,21 +944,8 @@ pub async fn post_join_callback(
     let elevated = crate::auth::resolve_operator_session(&state, &auth, &headers)
         .await
         .and_then(|session| session.elevated_from_user_id);
-    match bookclerk_library::control_plane::branch_person(&store, elevated).await {
-        Ok(person) => {
-            if let Err(err) = bookclerk_library::control_plane::set_cluster_link_person(
-                &store,
-                &link.owner_cluster_id,
-                &redeemed.node_id,
-                person,
-            )
-            .await
-            {
-                tracing::warn!(error = %err, "could not record who joined the library");
-            }
-        }
-        Err(err) => tracing::warn!(error = %err, "could not name who joined the library"),
-    }
+    bookclerk_node_client::bind_join_person(&store, elevated, &redeemed).await;
+    let link = redeemed.link;
     let connections = match &redeemed.accounts {
         Some(bundle) => {
             let kept =
