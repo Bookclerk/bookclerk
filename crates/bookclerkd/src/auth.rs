@@ -3067,6 +3067,11 @@ pub async fn patch_user(
     if !actor.can_manage_target(user.role, is_self) {
         return Err(StatusCode::FORBIDDEN);
     }
+    // The store-account rule is the operator's over a user: nobody changes
+    // their own, and the refusal comes before any other field is written.
+    if is_self && body.may_connect_accounts.is_some() {
+        return Err(StatusCode::FORBIDDEN);
+    }
 
     if let Some(role_raw) = body.role.as_deref() {
         let Some(role) = UserRole::parse(role_raw.trim()) else {
@@ -7049,6 +7054,7 @@ pub(crate) mod tests {
                 .unwrap()
         );
         let listed = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/api/users")
@@ -7072,6 +7078,37 @@ pub(crate) mod tests {
             .into_iter()
             .any(|event| event.action == "user_account_rule");
         assert!(audited);
+
+        // An administrator can't change their own rule, not even to lift it.
+        let me = library
+            .get_portal_identity("test", "admin-ext")
+            .await
+            .unwrap()
+            .and_then(|identity| identity.user_id)
+            .expect("the admin's user");
+        let own = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/users/{me}"))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"display_name":"Changed","may_connect_accounts":false}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(own.status(), StatusCode::FORBIDDEN);
+        let unchanged = library.get_user(me).await.unwrap().unwrap();
+        assert_ne!(unchanged.display_name.as_deref(), Some("Changed"));
+        assert!(
+            bookclerk_library::control_plane::member_may_connect_accounts(&library, me)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

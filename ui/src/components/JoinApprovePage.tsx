@@ -212,35 +212,42 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
             </li>
             <li>The branch keeps its own database; this library's database and keys stay here.</li>
           </ul>
-          {travelling.length > 0 ? (
+          {connections.length > 0 ? (
             <div className="space-y-1 pt-1">
-              <label className="flex items-start gap-2 text-ink">
-                <input
-                  type="checkbox"
-                  className="mt-0.5"
-                  checked={bringConnections}
-                  disabled={busy}
-                  onChange={(e) => setBringConnections(e.target.checked)}
-                />
-                <span>Bring my store connections to this branch</span>
-              </label>
-              <ul className="list-disc space-y-0.5 pl-11 text-xs text-ink/65">
-                {travelling.map((c) => (
-                  <li key={`${c.source}:${c.account_id}`}>
-                    {c.source}: {c.label?.trim() || c.account_id}
-                  </li>
-                ))}
-              </ul>
+              {travelling.length > 0 ? (
+                <>
+                  <label className="flex items-start gap-2 text-ink">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={bringConnections}
+                      disabled={busy}
+                      onChange={(e) => setBringConnections(e.target.checked)}
+                    />
+                    <span>Bring my store connections to this branch</span>
+                  </label>
+                  <ul className="list-disc space-y-0.5 pl-11 text-xs text-ink/65">
+                    {travelling.map((c) => (
+                      <li key={`${c.source}:${c.account_id}`}>
+                        {c.source}: {c.label?.trim() || c.account_id}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
               {staying.length > 0 ? (
-                <p className="pl-6 text-xs text-ink/55">
-                  Stays here: {staying.map((c) => c.source).join(", ")}. That store keeps one
-                  sign-in, so connect it on the branch yourself if you want it there.
+                <p className={`text-xs text-ink/55 ${travelling.length > 0 ? "pl-6" : ""}`}>
+                  Stays here: {staying.map((c) => c.source).join(", ")}. Connect{" "}
+                  {staying.length === 1 ? "it" : "them"} on the branch yourself if you want{" "}
+                  {staying.length === 1 ? "it" : "them"} there.
                 </p>
               ) : null}
-              <p className="pl-6 text-xs text-ink/55">
-                The branch's administrator can turn off store connections for you; then nothing is
-                added there.
-              </p>
+              {travelling.length > 0 ? (
+                <p className="pl-6 text-xs text-ink/55">
+                  The branch's administrator can turn off store connections for you; then nothing is
+                  added there.
+                </p>
+              ) : null}
             </div>
           ) : null}
         </div>

@@ -224,6 +224,10 @@ pub struct BroughtConnectionsView {
     /// How many are connected to someone else here (left as they are).
     #[schema(example = 0)]
     pub taken: usize,
+    /// How many could not be kept: no secret came with them, or their
+    /// write failed.
+    #[schema(example = 0)]
+    pub failed: usize,
     /// Why none were kept, when none were: `not_allowed` (this install's
     /// operator does not let the person connect store accounts),
     /// `no_owner` (no single Owner here to keep them for) or `failed`.
@@ -244,6 +248,7 @@ impl BroughtConnectionsView {
             added: 0,
             already_here: 0,
             taken: 0,
+            failed: 0,
             not_kept: Some(not_kept),
         };
         match kept {
@@ -253,6 +258,7 @@ impl BroughtConnectionsView {
                 added: report.imported.len(),
                 already_here: report.already_here.len(),
                 taken: report.taken.len(),
+                failed: report.failed.len(),
                 not_kept: None,
             },
             Ok(BroughtConnections::NoPerson(_)) => empty("no_owner"),

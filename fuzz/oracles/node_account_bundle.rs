@@ -122,9 +122,10 @@ pub fn check(data: &[u8]) {
     if text.len() > MAX_ACCOUNT_BUNDLE_BYTES {
         return;
     }
-    let again = parse_account_bundle(&text, CLUSTER_ID, NODE_ID);
-    let Ok(again) = again else {
-        panic!("an accepted bundle did not parse again: {again:?}");
+    // The error names only the rule; the bundle's secrets stay out of it.
+    let again = match parse_account_bundle(&text, CLUSTER_ID, NODE_ID) {
+        Ok(again) => again,
+        Err(err) => panic!("an accepted bundle did not parse again: {err}"),
     };
-    assert_eq!(again, bundle, "a bundle changed across a round trip");
+    assert!(again == bundle, "a bundle changed across a round trip");
 }

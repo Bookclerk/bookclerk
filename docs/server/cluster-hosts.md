@@ -225,12 +225,13 @@ accounts and which of them would travel.
   branch's single active Owner. Each account is one atomic batch: the
   account row, its secrets re-sealed with the branch's own key, the link
   to the person, and a `received` row in `account_shares`. An account
-  already linked to someone else on the branch is left as it is. The
-  join's answer counts what was added, already there, or taken.
+  already linked to someone else on the branch is left as it is, and one
+  that came without a secret is not added. The join's answer counts what
+  was added, already there, taken, or not kept.
 - **The branch operator's rule.** Each operator decides per member
   whether they may connect store accounts there (**Settings → User
   Management**, `PATCH /api/users/{id}` with `may_connect_accounts`). The
-  rule is on by default. A member it is off for adds nothing from a join,
+  rule is on by default, and nobody can change their own. A member it is off for adds nothing from a join,
   and the connect routes answer `403`.
 
 > [!NOTE]

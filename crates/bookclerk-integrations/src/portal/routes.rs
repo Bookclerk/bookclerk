@@ -586,6 +586,8 @@ async fn source_password_login(
         )
         .await
         .map_err(|e| PortalError::bad(e.to_string()))?;
+    // The operator may have stopped this member while the store answered.
+    require_may_connect(&state, identity.id).await?;
 
     scope
         .upsert_account(

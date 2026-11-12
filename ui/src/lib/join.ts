@@ -154,6 +154,8 @@ export interface BroughtConnectionsView {
   already_here: number;
   /** How many are connected to someone else here (left as they are). */
   taken: number;
+  /** How many could not be kept (no sign-in came with them, or writing them failed). */
+  failed?: number;
   /** Why none were kept: `not_allowed`, `no_owner` or `failed`. */
   not_kept: "not_allowed" | "no_owner" | "failed" | null;
 }
@@ -582,6 +584,8 @@ export function broughtConnectionsSummary(
   if (brought.taken > 0) {
     parts.push(`${brought.taken} already connected by someone else here, left as they are`);
   }
+  const failed = brought.failed ?? 0;
+  if (failed > 0) parts.push(`${failed} couldn't be added; connect them in Accounts`);
   return parts.length > 0 ? `${parts.join(", ")}.` : null;
 }
 

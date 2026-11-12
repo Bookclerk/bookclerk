@@ -530,10 +530,13 @@ async fn sealed_connections(
     if let Err(err) = record_accounts_sent(library, &enrolled.node_id, &bundle.accounts).await {
         tracing::warn!(error = %err, "branch enrollment could not record the connections it sent");
     }
-    if !enrolled.replayed {
+    // Audited on every send, a retried redeem included, since a retry
+    // gathers the accounts again.
+    {
         let detail = json!({
             "node_id": enrolled.node_id,
             "accounts": bundle.accounts.len(),
+            "replayed": enrolled.replayed,
         })
         .to_string();
         let _ = library
@@ -1339,11 +1342,23 @@ async fn consent_connections(state: &Arc<AppState>, user_id: i64) -> Vec<Consent
     if accounts.is_empty() {
         return Vec::new();
     }
+    // The same selection a redeem makes, so a listed connection travels
+    // exactly when it would be sent.
     let shareable = shareable_plugin_keys(state, &library).await;
+    let is_shareable = move |key: &str| shareable.contains(key);
+    let carried: BTreeSet<(String, String)> = accounts_to_carry(&library, user_id, &is_shareable)
+        .await
+        .map(|carried| {
+            carried
+                .into_iter()
+                .map(|account| (account.plugin_key, account.account_id))
+                .collect()
+        })
+        .unwrap_or_default();
     accounts
         .into_iter()
         .map(|account| ConsentConnection {
-            travels: shareable.contains(&account.plugin_key),
+            travels: carried.contains(&(account.plugin_key.clone(), account.account_id.clone())),
             source: account.source,
             account_id: account.account_id,
             label: account.label,

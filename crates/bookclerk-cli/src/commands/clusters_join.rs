@@ -483,10 +483,11 @@ fn brought_connections_line(kept: &bookclerk_library::Result<BroughtConnections>
         }
         Ok(BroughtConnections::Kept(report)) => format!(
             "Store connections brought from the library: {} added, {} already here, {} \
-             connected to someone else here (left as they are).",
+             connected to someone else here (left as they are), {} not kept.",
             report.imported.len(),
             report.already_here.len(),
-            report.taken.len()
+            report.taken.len(),
+            report.failed.len()
         ),
         Ok(BroughtConnections::NoPerson(count)) => format!(
             "{count} store connection(s) came with the join, but this install has no single \
@@ -576,12 +577,13 @@ mod tests {
             imported: vec![key(), key()],
             already_here: vec![key()],
             taken: Vec::new(),
+            failed: vec![key()],
             refused_by_rule: false,
         };
         assert_eq!(
             brought_connections_line(&Ok(BroughtConnections::Kept(kept))),
             "Store connections brought from the library: 2 added, 1 already here, 0 connected \
-             to someone else here (left as they are)."
+             to someone else here (left as they are), 1 not kept."
         );
         let refused = CarriedImport {
             refused_by_rule: true,

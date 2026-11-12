@@ -27138,7 +27138,8 @@
               "offered",
               "added",
               "already_here",
-              "taken"
+              "taken",
+              "failed"
             ],
             "properties": {
               "offered": {
@@ -27162,6 +27163,12 @@
               "taken": {
                 "type": "integer",
                 "description": "How many are connected to someone else here (left as they are).",
+                "example": 0,
+                "minimum": 0
+              },
+              "failed": {
+                "type": "integer",
+                "description": "How many could not be kept: no secret came with them, or their\nwrite failed.",
                 "example": 0,
                 "minimum": 0
               },
@@ -27389,7 +27396,8 @@
           "offered",
           "added",
           "already_here",
-          "taken"
+          "taken",
+          "failed"
         ],
         "properties": {
           "offered": {
@@ -27413,6 +27421,12 @@
           "taken": {
             "type": "integer",
             "description": "How many are connected to someone else here (left as they are).",
+            "example": 0,
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "description": "How many could not be kept: no secret came with them, or their\nwrite failed.",
             "example": 0,
             "minimum": 0
           },

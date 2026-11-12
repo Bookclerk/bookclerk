@@ -171,7 +171,7 @@ async fn only_the_members_own_shareable_connected_accounts_travel() {
         connect(store, ben.id, SHAREABLE, "ben@example.com", b"ben-token").await;
 
         let carried = accounts_to_carry(store, ana.id, &shareable).await.unwrap();
-        assert_eq!(carried.len(), 1, "{name}: {carried:?}");
+        assert_eq!(carried.len(), 1, "{name}");
         let account = &carried[0];
         assert_eq!(account.plugin_key, SHAREABLE, "{name}");
         assert_eq!(account.account_id, "ana@example.com", "{name}");
@@ -429,6 +429,44 @@ async fn an_account_the_bundle_refuses_stays_and_the_others_travel() {
                 ("ana@example.com", Some("Reader")),
                 ("long@example.com", None)
             ],
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_account_brought_without_a_secret_is_not_connected() {
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let me = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        let bare = bookclerk_node_proto::CarriedAccount {
+            plugin_key: SHAREABLE.to_string(),
+            account_id: "bare@example.com".to_string(),
+            source: "libro".to_string(),
+            marketplace: "us".to_string(),
+            label: None,
+            secrets: Vec::new(),
+        };
+        let report = import_carried_accounts(store, me.id, "cluster-x", &[bare])
+            .await
+            .unwrap();
+        assert_eq!(
+            report.failed,
+            vec![(SHAREABLE.to_string(), "bare@example.com".to_string())],
+            "{name}"
+        );
+        assert!(report.imported.is_empty(), "{name}");
+        assert!(
+            store
+                .get_account(SHAREABLE, "bare@example.com")
+                .await
+                .unwrap()
+                .is_none(),
             "{name}"
         );
     }

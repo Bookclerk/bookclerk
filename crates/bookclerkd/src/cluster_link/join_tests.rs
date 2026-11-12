@@ -746,7 +746,7 @@ async fn a_branch_join_brings_the_persons_store_connections_when_asked() {
     assert_eq!(status, StatusCode::OK, "{joined}");
     assert_eq!(
         joined["connections"],
-        json!({ "offered": 1, "added": 1, "already_here": 0, "taken": 0, "not_kept": null })
+        json!({ "offered": 1, "added": 1, "already_here": 0, "taken": 0, "failed": 0, "not_kept": null })
     );
 
     // The account is connected on the branch for its Owner, with its secret.

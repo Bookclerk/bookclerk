@@ -240,7 +240,20 @@ pub async fn accounts_to_carry(
             );
             break;
         }
-        let secrets = account_secrets(store, &account.plugin_key, &account.account_id).await?;
+        let secrets = match account_secrets(store, &account.plugin_key, &account.account_id).await {
+            Ok(secrets) => secrets,
+            // One account whose secrets can't be read stays here; the
+            // others still travel.
+            Err(err) => {
+                tracing::warn!(
+                    user_id,
+                    plugin_key = %account.plugin_key,
+                    error = %err,
+                    "a store account's secrets could not be read; it stays here"
+                );
+                continue;
+            }
+        };
         if secrets.is_empty() {
             continue;
         }
@@ -337,8 +350,8 @@ async fn account_secrets(
 }
 
 /// Records that `accounts` were sent to the branch `node_id`
-/// (`account_shares`, direction [`SHARE_SENT`]). One atomic batch; a
-/// repeat refreshes the time.
+/// (`account_shares`, direction [`SHARE_SENT`]), in atomic batches of at
+/// most 40 accounts; a repeat refreshes the time.
 ///
 /// # Errors
 ///
@@ -351,23 +364,28 @@ pub async fn record_accounts_sent(
     if accounts.is_empty() {
         return Ok(());
     }
+    /// Accounts per batch: two statements each, under the smallest
+    /// statement cap a database profile negotiates.
+    const ACCOUNTS_PER_BATCH: usize = 40;
     let now = Utc::now().to_rfc3339();
     let peer = node_peer(node_id);
-    let mut statements = Vec::new();
-    for account in accounts {
-        statements.extend(share_statements(
-            &account.plugin_key,
-            &account.account_id,
-            &peer,
-            SHARE_SENT,
-            &now,
-            None,
-        ));
+    for chunk in accounts.chunks(ACCOUNTS_PER_BATCH) {
+        let mut statements = Vec::new();
+        for account in chunk {
+            statements.extend(share_statements(
+                &account.plugin_key,
+                &account.account_id,
+                &peer,
+                SHARE_SENT,
+                &now,
+                None,
+            ));
+        }
+        let operation_id = format!("accounts-sent-{node_id}-{}", uuid::Uuid::new_v4());
+        store
+            .execute_host_batch(batch::request(&operation_id, statements))
+            .await?;
     }
-    let operation_id = format!("accounts-sent-{node_id}-{}", uuid::Uuid::new_v4());
-    store
-        .execute_host_batch(batch::request(&operation_id, statements))
-        .await?;
     Ok(())
 }
 
@@ -466,6 +484,9 @@ pub struct CarriedImport {
     pub already_here: Vec<(String, String)>,
     /// Accounts connected to someone else here; refused.
     pub taken: Vec<(String, String)>,
+    /// Accounts that came without a secret, or whose write failed (logged);
+    /// nothing of them was stored.
+    pub failed: Vec<(String, String)>,
     /// This instance's operator does not let the person connect store
     /// accounts here; nothing was stored.
     pub refused_by_rule: bool,
@@ -485,8 +506,8 @@ pub struct CarriedImport {
 ///
 /// # Errors
 ///
-/// Returns a read or write error, or the sealing error when this install's
-/// key is unavailable. Accounts imported before the error stay imported.
+/// Returns a read error from before any account is written. An account
+/// whose own write fails is reported in [`CarriedImport::failed`].
 pub async fn import_carried_accounts(
     store: &LibraryStore,
     user_id: i64,
@@ -529,10 +550,25 @@ pub async fn import_carried_accounts(
             report.taken.push(key);
             continue;
         }
-        if import_one(store, identity.id, &peer, account).await? {
-            report.imported.push(key);
-        } else {
-            report.taken.push(key);
+        if account.secrets.is_empty() {
+            // Nothing to sign in with: never a connected account without
+            // a credential.
+            report.failed.push(key);
+            continue;
+        }
+        match import_one(store, identity.id, &peer, account).await {
+            Ok(true) => report.imported.push(key),
+            Ok(false) => report.taken.push(key),
+            // One account that can't be written doesn't lose the others,
+            // nor the report of what was kept.
+            Err(err) => {
+                tracing::warn!(
+                    plugin_key = %account.plugin_key,
+                    error = %err,
+                    "a store account brought from the library could not be kept"
+                );
+                report.failed.push(key);
+            }
         }
     }
     Ok(report)

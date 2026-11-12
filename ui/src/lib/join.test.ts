@@ -312,6 +312,9 @@ describe("broughtConnectionsSummary", () => {
       "1 store connection added, 1 already here, 1 already connected by someone else here, left as they are.",
     );
     expect(broughtConnectionsSummary({ ...base, added: 2 })).toBe("2 store connections added.");
+    expect(broughtConnectionsSummary({ ...base, added: 1, failed: 1 })).toBe(
+      "1 store connection added, 1 couldn't be added; connect them in Accounts.",
+    );
   });
 
   it("explains why none were kept", () => {
