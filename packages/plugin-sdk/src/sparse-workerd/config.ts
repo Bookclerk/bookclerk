@@ -103,6 +103,7 @@ const SDK_PY_SIBLING_MODULES: ReadonlyArray<readonly [string, string, string]> =
   ["bookclerk_plugin_sdk/limits.py", "limits.py", "sdk-limits.py"],
   ["bookclerk_plugin_sdk/plugin_migration.py", "plugin_migration.py", "sdk-plugin-migration.py"],
   ["bookclerk_plugin_sdk/db_value.py", "db_value.py", "sdk-db-value.py"],
+  ["bookclerk_plugin_sdk/scan_page.py", "scan_page.py", "sdk-scan-page.py"],
 ];
 const PYODIDE_EGRESS_HOSTS = ["cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org"] as const;
 

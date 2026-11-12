@@ -4,18 +4,23 @@ A store page can hold more titles than one reply may carry
 (``MAX_SCAN_PAGE_BOOKS``). :func:`scan_page` fetches the store page the cursor
 names, returns the next slice of it, and writes a cursor that names both the
 store page and the slice, so the plugin pages once and stays stateless
-between calls. Cursors match the TypeScript SDK's ``scanPage``.
+between calls. Cursors match the TypeScript SDK's ``scanPage``. Inside a
+workerd isolate, import it as ``from bookclerk_plugin_sdk.scan_page import
+scan_page``.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 from ._abi import MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS
-from .abi import ScanBook, ScanPage, ScanParams
 from .workerd import PluginError
+
+if TYPE_CHECKING:
+    # Types only: a workerd isolate holds `_abi.py` and `workerd.py`, not `abi.py`.
+    from .abi import ScanBook, ScanPage, ScanParams
 
 __all__ = ["FetchStorePage", "StorePage", "scan_page"]
 
@@ -58,7 +63,7 @@ class StorePage(_StorePageRequired, total=False):
     storePages: int
 
 
-FetchStorePage = Callable[[str, ScanParams], Awaitable[StorePage]]
+FetchStorePage = Callable[[str, "ScanParams"], Awaitable[StorePage]]
 """Fetches the store page a storefront cursor names (empty for the first)."""
 
 
