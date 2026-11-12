@@ -15,8 +15,11 @@ import { JoinWizard } from "@/components/JoinWizard";
 import {
   fetchBranchSharing,
   fetchJoinStatus,
+  jobShareSummary,
   joinErrorMessage,
   leaveLibrary,
+  MAX_OFFERED_JOB_CAP,
+  setBranchJobCap,
   setBranchSharing,
 } from "@/lib/join";
 import { backoffDelay, useLiveRefresh } from "@/lib/live";
@@ -119,11 +122,79 @@ function SharingSettings({ link, onSaved }: { link: ClusterLinkView; onSaved: ()
           </span>
         </span>
       </label>
+      <JobCap link={link} busy={busy} onSaved={onSaved} />
       {error ? (
         <p className="text-xs font-medium text-brick" role="alert">
           {error}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * How much of this computer one library may use: an equal share after this
+ * server's own work (the default), a cap, or none.
+ */
+function JobCap({
+  link,
+  busy,
+  onSaved,
+}: {
+  link: ClusterLinkView;
+  busy: boolean;
+  onSaved: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const cap = link.max_jobs ?? null;
+  const options = Array.from({ length: MAX_OFFERED_JOB_CAP + 1 }, (_, n) => n);
+  if (cap !== null && !options.includes(cap)) options.push(cap);
+
+  async function save(raw: string) {
+    setSaving(true);
+    setError(null);
+    try {
+      await setBranchJobCap(link.cluster_id, raw === "" ? null : Number(raw));
+      onSaved();
+    } catch (err) {
+      setError(joinErrorMessage(err, "Could not save."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const id = `job-cap-${link.cluster_id}`;
+  return (
+    <div className="flex flex-wrap items-start gap-3 text-sm text-ink">
+      <span className="min-w-0 flex-1">
+        <label htmlFor={id} className="block font-medium">
+          Work for {libraryLabel(link.owner_origin)} on this computer
+        </label>
+        <span className="block text-xs text-ink/55">
+          This server&apos;s own work comes first; the libraries it is a branch of share the rest
+          equally. {jobShareSummary(cap, link.job_share)}.
+        </span>
+        {error ? (
+          <span className="block text-xs font-medium text-brick" role="alert">
+            {error}
+          </span>
+        ) : null}
+      </span>
+      <select
+        id={id}
+        className="h-8 rounded border border-ink/15 bg-paper px-2 text-sm"
+        value={cap === null ? "" : String(cap)}
+        disabled={busy || saving}
+        onChange={(e) => void save(e.target.value)}
+      >
+        <option value="">Equal share</option>
+        {options.map((n) => (
+          <option key={n} value={String(n)}>
+            {n === 0 ? "None" : n === 1 ? "Up to 1 job" : `Up to ${n} jobs`}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

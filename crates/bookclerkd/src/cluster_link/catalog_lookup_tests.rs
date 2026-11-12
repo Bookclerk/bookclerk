@@ -46,6 +46,7 @@ async fn start(host: &LibraryStore, link: &ClusterLink) -> (HostClientHandle, wa
             software_version: "1.0.0".into(),
             incarnation: uuid::Uuid::new_v4().to_string(),
             max_jobs: 1,
+            share: None,
             claim_kinds: Vec::new(),
             claims_after_refresh: false,
             timing: timing(Duration::from_millis(200)),

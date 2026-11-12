@@ -133,15 +133,16 @@ fn start_with<R: HostJobRunner>(
     watch::Sender<bool>,
     JoinHandle<ClientExit>,
 ) {
-    start_configured(port, max_jobs, false, runner)
+    start_configured(port, max_jobs, false, None, runner)
 }
 
 /// [`start_with`], with claims waiting for a deployments refresh when
-/// `claims_after_refresh` is set.
+/// `claims_after_refresh` is set, and held to `share` when one is given.
 fn start_configured<R: HostJobRunner>(
     port: u16,
     max_jobs: usize,
     claims_after_refresh: bool,
+    share: Option<watch::Receiver<usize>>,
     runner: R,
 ) -> (
     HostClientHandle,
@@ -159,6 +160,7 @@ fn start_configured<R: HostJobRunner>(
         include_branches: true,
         list_members_books: true,
         ancestry: Vec::new(),
+        max_jobs: None,
     };
     let (client, handle) = HostClient::new(
         HostClientConfig {
@@ -170,6 +172,7 @@ fn start_configured<R: HostJobRunner>(
             claim_kinds: vec!["scan".into()],
             claims_after_refresh,
             timing: timing(),
+            share,
         },
         runner,
         Box::new(FixedSampler),
@@ -932,7 +935,7 @@ async fn a_failed_report_is_scrubbed_of_secrets() {
 async fn claims_wait_for_the_connections_deployments_refresh() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let (handle, _stop, _exit) =
-        start_configured(listener.local_addr().unwrap().port(), 1, true, NoJobs);
+        start_configured(listener.local_addr().unwrap().port(), 1, true, None, NoJobs);
     let mut socket = accept(&listener).await;
     let answer = |frame: &Frame| match &frame.body {
         Body::Heartbeat { .. } => Some(Body::Accepted {}),
@@ -1008,4 +1011,112 @@ async fn a_revoke_while_the_report_waits_gives_the_job_back() {
         )),
         "the job was not given back after the revoke"
     );
+}
+
+/// Owner answers for the share tests: every claim gets a new job, which
+/// the runner holds until cancelled.
+fn hand_out_jobs(next: &mut i64) -> impl FnMut(&Frame) -> Option<Body> + '_ {
+    move |frame| match &frame.body {
+        Body::Heartbeat { .. } => Some(Body::Accepted {}),
+        Body::Claim { .. } => {
+            *next += 1;
+            Some(work(&format!("job-{next}"), *next, 60))
+        }
+        _ => None,
+    }
+}
+
+/// A client holds no more jobs than its share of the machine, claims again
+/// when the share grows, and cancels nothing when it shrinks.
+#[tokio::test]
+async fn claims_stop_at_the_links_share() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (share_tx, share_rx) = watch::channel(1usize);
+    let runner = UntilCancelled::default();
+    let (handle, _stop, _exit) = start_configured(
+        listener.local_addr().unwrap().port(),
+        4,
+        false,
+        Some(share_rx),
+        runner.clone(),
+    );
+    let mut socket = accept(&listener).await;
+    let mut next = 0;
+    let claims = |frames: &[Frame]| {
+        frames
+            .iter()
+            .filter(|frame| matches!(frame.body, Body::Claim { .. }))
+            .count()
+    };
+
+    let seen = read_for(
+        &mut socket,
+        Duration::from_millis(500),
+        hand_out_jobs(&mut next),
+    )
+    .await;
+    assert_eq!(claims(&seen), 1, "claimed past a share of one");
+    assert_eq!(handle.held_fences().len(), 1);
+
+    share_tx.send(3).unwrap();
+    let seen = read_for(
+        &mut socket,
+        Duration::from_millis(500),
+        hand_out_jobs(&mut next),
+    )
+    .await;
+    assert_eq!(claims(&seen), 2, "did not fill a share of three");
+    assert_eq!(handle.held_fences().len(), 3);
+
+    share_tx.send(0).unwrap();
+    let seen = read_for(
+        &mut socket,
+        Duration::from_millis(500),
+        hand_out_jobs(&mut next),
+    )
+    .await;
+    assert_eq!(claims(&seen), 0, "claimed with no share");
+    assert_eq!(
+        handle.held_fences().len(),
+        3,
+        "a smaller share cancelled held jobs"
+    );
+    assert!(!runner.cancelled.load(Ordering::SeqCst));
+}
+
+/// A client waiting at its share claims again once a held job gives its
+/// slot back.
+#[tokio::test]
+async fn a_finished_job_frees_room_in_the_share() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (_share_tx, share_rx) = watch::channel(1usize);
+    let (handle, _stop, _exit) = start_configured(
+        listener.local_addr().unwrap().port(),
+        4,
+        false,
+        Some(share_rx),
+        NoJobs,
+    );
+    let mut socket = accept(&listener).await;
+    let mut next = 0;
+    // `NoJobs` finishes each job at once, so the share of one never
+    // blocks for long: several jobs are claimed one after another.
+    let seen = read_for(
+        &mut socket,
+        Duration::from_millis(800),
+        |frame| match &frame.body {
+            Body::Complete { .. } | Body::Fail { .. } => Some(Body::Accepted {}),
+            _ => hand_out_jobs(&mut next)(frame),
+        },
+    )
+    .await;
+    let claims = seen
+        .iter()
+        .filter(|frame| matches!(frame.body, Body::Claim { .. }))
+        .count();
+    assert!(
+        claims >= 2,
+        "a finished job did not free its share: {claims} claims"
+    );
+    assert!(handle.held_fences().len() <= 1);
 }

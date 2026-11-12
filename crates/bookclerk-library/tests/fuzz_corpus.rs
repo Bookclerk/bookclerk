@@ -244,3 +244,25 @@ fn fuzz_corpus_plan_authz_replays() {
     assert!(planned > 0, "no plan_authz seed planned a job");
     assert!(refused > 0, "every plan_authz seed planned a job");
 }
+
+/// The `job_cap_request` oracle, shared with the fuzz target: a branch's job
+/// cap body is accepted exactly when it has the documented shape.
+#[path = "../../../fuzz/oracles/job_cap_request.rs"]
+mod job_cap_request_oracle;
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_job_cap_request_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("job_cap_request") {
+        if job_cap_request_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(accepted > 0, "no job_cap_request seed was accepted");
+    assert!(refused > 0, "every job_cap_request seed was accepted");
+}
