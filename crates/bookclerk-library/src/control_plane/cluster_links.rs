@@ -192,7 +192,8 @@ impl LinkJobCap {
 
 /// `POST /api/config/join/capacity` body: one library and the job cap to
 /// set for it.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, utoipa::ToSchema)]
+// Read by the schema only (no unknown fields); `CapacityFields` enforces it.
 #[serde(deny_unknown_fields)]
 pub struct CapacityBody {
     /// The library (owner cluster id).
@@ -201,9 +202,52 @@ pub struct CapacityBody {
     /// The most jobs to run for the library at once (0 runs none); `null`
     /// gives it an equal share of the machine. Required: a body without it
     /// is refused rather than read as `null`.
-    #[serde(default, deserialize_with = "present")]
     #[schema(value_type = Option<u32>, required = true, example = 1, minimum = 0, maximum = 16)]
     max_jobs: Option<Option<u32>>,
+}
+
+/// [`CapacityBody`]'s fields as JSON carries them; read only from a JSON
+/// object ([`CapacityBody`]'s `Deserialize`), never from an array.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapacityFields {
+    /// See [`CapacityBody`].
+    cluster_id: String,
+    /// See [`CapacityBody`]; `None` when absent, `Some(None)` for `null`.
+    #[serde(default, deserialize_with = "present")]
+    max_jobs: Option<Option<u32>>,
+}
+
+impl<'de> Deserialize<'de> for CapacityBody {
+    /// Reads the body from a JSON object only: a derived struct would also
+    /// take its fields positionally from an array.
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        /// Accepts a map and nothing else.
+        struct ObjectOnly;
+
+        impl<'de> serde::de::Visitor<'de> for ObjectOnly {
+            type Value = CapacityFields;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a JSON object with cluster_id and max_jobs")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> std::result::Result<CapacityFields, A::Error> {
+                CapacityFields::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+            }
+        }
+
+        let fields = deserializer.deserialize_map(ObjectOnly)?;
+        Ok(Self {
+            cluster_id: fields.cluster_id,
+            max_jobs: fields.max_jobs,
+        })
+    }
 }
 
 /// Reads a field that is present, `null` included, as `Some`; an absent

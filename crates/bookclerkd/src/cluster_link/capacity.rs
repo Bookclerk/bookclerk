@@ -67,6 +67,14 @@ pub struct MachineBudget {
 }
 
 impl MachineBudget {
+    /// The budget assumed before this node's first heartbeat is recorded:
+    /// what [`SLOTS_BEFORE_FIRST_HEARTBEAT`] guests need, so a link that
+    /// starts first never reports more than the slots it is counted.
+    pub const BEFORE_FIRST_HEARTBEAT: Self = Self {
+        cpu_millicores: 2 * DEFAULT_GUEST_CPU_MILLICORES,
+        memory_bytes: Some(2 * DEFAULT_GUEST_MEMORY_BYTES),
+    };
+
     /// The budget `status` records.
     #[must_use]
     pub fn of(status: &NodeStatus) -> Self {
@@ -318,6 +326,14 @@ impl CapacityShares {
         self.lock().budget
     }
 
+    /// The budget links' heartbeats are cut to: the recorded one, or
+    /// [`MachineBudget::BEFORE_FIRST_HEARTBEAT`] until there is one.
+    #[must_use]
+    pub fn reported_budget(&self) -> MachineBudget {
+        self.budget()
+            .unwrap_or(MachineBudget::BEFORE_FIRST_HEARTBEAT)
+    }
+
     /// Takes a slot for a job the branch's own workers run, until the
     /// returned guard drops.
     #[must_use]
@@ -440,7 +456,12 @@ impl HeartbeatSource for ShareSampler {
     fn sample(&mut self) -> NodeHeartbeat {
         let sample = self.inner.sample();
         let share = *self.share.borrow();
-        scale_heartbeat(sample, share, self.shares.machine(), self.shares.budget())
+        scale_heartbeat(
+            sample,
+            share,
+            self.shares.machine(),
+            Some(self.shares.reported_budget()),
+        )
     }
 }
 
@@ -688,10 +709,20 @@ mod tests {
     fn recording_a_status_sets_slots_and_budget() {
         let table = CapacityShares::new();
         assert_eq!(table.budget(), None);
+        // Until then links report what the assumed slots need, which is
+        // exactly those slots.
+        let assumed = table.reported_budget();
+        assert_eq!(assumed, MachineBudget::BEFORE_FIRST_HEARTBEAT);
+        assert_eq!(
+            machine_slots(&status(assumed.cpu_millicores, assumed.memory_bytes, true)),
+            SLOTS_BEFORE_FIRST_HEARTBEAT
+        );
+        assert_eq!(table.machine(), SLOTS_BEFORE_FIRST_HEARTBEAT);
         let gib = 1024 * 1024 * 1024;
         let recorded = status(3_200, Some(4 * gib), true);
         table.record_status(&recorded);
         assert_eq!(table.machine(), 4);
         assert_eq!(table.budget(), Some(MachineBudget::of(&recorded)));
+        assert_eq!(table.reported_budget(), MachineBudget::of(&recorded));
     }
 }
