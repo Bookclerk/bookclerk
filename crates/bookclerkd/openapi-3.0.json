@@ -38283,7 +38283,7 @@
       },
       "SharingBody": {
         "type": "object",
-        "description": "`POST /api/config/join/sharing` body.",
+        "description": "`POST /api/config/join/sharing` body: one library and the settings to\nchange for it.",
         "required": [
           "cluster_id",
           "share_books",
@@ -38307,19 +38307,19 @@
           },
           "list_members_books": {
             "type": "boolean",
-            "description": "\"List my members' books to *library*\"; left as it is when absent.",
+            "description": "\"List my members' books to *library*\"; absent or `null` keeps the\nstored setting.",
             "example": true,
             "nullable": true
           },
           "work_for_members": {
             "type": "boolean",
-            "description": "\"Download for other members of *library*\": take the library's work\nfor its other members too, not only this install owner's. Absent\nkeeps the current setting.",
+            "description": "\"Download for other members of *library*\": take the library's work\nfor its other members too, not only this install owner's. Absent or\n`null` keeps the stored setting.",
             "example": false,
             "nullable": true
           },
           "keep_member_copies": {
             "type": "boolean",
-            "description": "\"Keep copies of other members' books\": also write a book acquired\nhere for another member to this install's own destinations. Absent\nkeeps the current setting.",
+            "description": "\"Keep copies of other members' books\": also write a book acquired\nhere for another member to this install's own destinations. Absent\nor `null` keeps the stored setting.",
             "example": false,
             "nullable": true
           }

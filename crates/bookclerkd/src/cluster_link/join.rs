@@ -1427,37 +1427,6 @@ pub async fn post_join_capacity(
     }
 }
 
-/// `POST /api/config/join/sharing` body.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SharingBody {
-    /// The library (owner cluster id).
-    #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
-    cluster_id: String,
-    /// "Share this branch's books with *library*".
-    #[schema(example = true)]
-    share_books: bool,
-    /// "Include books from my own branches".
-    #[schema(example = false)]
-    include_branches: bool,
-    /// "List my members' books to *library*"; left as it is when absent.
-    #[serde(default)]
-    #[schema(example = true)]
-    list_members_books: Option<bool>,
-    /// "Download for other members of *library*": take the library's work
-    /// for its other members too, not only this install owner's. Absent
-    /// keeps the current setting.
-    #[serde(default)]
-    #[schema(example = false)]
-    work_for_members: Option<bool>,
-    /// "Keep copies of other members' books": also write a book acquired
-    /// here for another member to this install's own destinations. Absent
-    /// keeps the current setting.
-    #[serde(default)]
-    #[schema(example = false)]
-    keep_member_copies: Option<bool>,
-}
-
 /// `GET /api/config/join/sharing`: Settings → Library for the operator or
 /// an Owner: every library this install is a branch of, with its two
 /// sharing settings (`{clusters: [...]}`).
@@ -1503,7 +1472,7 @@ pub async fn get_join_sharing(
 #[utoipa::path(
     post,
     path = "/api/config/join/sharing",
-    request_body = SharingBody,
+    request_body = bookclerk_library::control_plane::SharingBody,
     responses(
         (status = 200, description = "The sharing settings after the change.", body = SharingChanged),
         (status = 401, description = "The caller is not signed in."),
@@ -1519,7 +1488,7 @@ pub async fn get_join_sharing(
 pub async fn post_join_sharing(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
-    Json(body): Json<SharingBody>,
+    Json(body): Json<bookclerk_library::control_plane::SharingBody>,
 ) -> Response {
     let actor = match require_branch_admin(&state, caller).await {
         Ok(actor) => actor,
@@ -1532,18 +1501,15 @@ pub async fn post_join_sharing(
         _ => "operator".to_string(),
     };
     let store = state.library_snapshot().await;
-    let cluster_id = body.cluster_id.trim();
+    let bookclerk_library::control_plane::SharingRequest {
+        cluster_id,
+        settings,
+    } = body.into_request();
+    let cluster_id = cluster_id.as_str();
     // Every setting goes in one statement, so a failed write changes none of
     // them and nothing changes unaudited. A setting the body leaves out is
     // not written at all, so it keeps whatever is stored when the statement
     // runs, including a concurrent change.
-    let settings = bookclerk_library::control_plane::ClusterLinkSettings {
-        share_books: body.share_books,
-        include_branches: body.include_branches,
-        list_members_books: body.list_members_books,
-        work_for_members: body.work_for_members,
-        keep_member_copies: body.keep_member_copies,
-    };
     match bookclerk_library::control_plane::set_cluster_link_settings(&store, cluster_id, settings)
         .await
     {
@@ -1560,20 +1526,20 @@ pub async fn post_join_sharing(
     tracing::info!(
         %cluster_id,
         %actor,
-        share_books = body.share_books,
-        include_branches = body.include_branches,
-        work_for_members = ?body.work_for_members,
-        keep_member_copies = ?body.keep_member_copies,
-        list_members_books = ?body.list_members_books,
+        share_books = settings.share_books,
+        include_branches = settings.include_branches,
+        work_for_members = ?settings.work_for_members,
+        keep_member_copies = ?settings.keep_member_copies,
+        list_members_books = ?settings.list_members_books,
         "branch sharing settings changed"
     );
     let detail = json!({
         "cluster_id": cluster_id,
-        "share_books": body.share_books,
-        "include_branches": body.include_branches,
-        "work_for_members": body.work_for_members,
-        "keep_member_copies": body.keep_member_copies,
-        "list_members_books": body.list_members_books,
+        "share_books": settings.share_books,
+        "include_branches": settings.include_branches,
+        "work_for_members": settings.work_for_members,
+        "keep_member_copies": settings.keep_member_copies,
+        "list_members_books": settings.list_members_books,
     })
     .to_string();
     if let Err(err) = store

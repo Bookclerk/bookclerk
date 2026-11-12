@@ -49,6 +49,7 @@ boundary extends it.
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
+| `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 
 Some boundaries need more than a cell:
 
@@ -241,6 +242,16 @@ only that. The others check:
   from 0 to 16), both present; the parser then returns the trimmed id and
   that cap, and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/job_cap_request.rs`, replayed from `bookclerk-library`.
+- **`sharing_request`**: reads the body as an untyped JSON value. It is
+  accepted exactly when it is one object with no repeated keys and no keys
+  besides `cluster_id`, `share_books`, `include_branches`,
+  `list_members_books`, `work_for_members` and `keep_member_copies`, with
+  a string `cluster_id` and booleans for `share_books` and
+  `include_branches`, and each of the other three absent, `null` or a
+  boolean. The parser then returns the trimmed id and those values, with
+  an absent or `null` setting left unset (kept as stored) rather than read
+  as `false`, and otherwise refuses it as `Invalid`. The shared oracle is
+  `fuzz/oracles/sharing_request.rs`, replayed from `bookclerk-library`.
 
 ## Boundaries outside the Rust workspace
 
