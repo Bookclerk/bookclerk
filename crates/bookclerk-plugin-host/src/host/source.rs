@@ -1033,6 +1033,12 @@ impl PassLedger<'_> {
             .await
             .map_err(pass_error)
     }
+
+    /// Gives the pass a new id: it starts over from its first page, and the
+    /// stamps of the pages it abandoned must not count as listed by it.
+    fn restart(&mut self) {
+        self.pass_id = uuid::Uuid::new_v4().to_string();
+    }
 }
 
 impl PassIo for LibraryPass<'_> {
@@ -1079,6 +1085,10 @@ impl PassIo for LibraryPass<'_> {
 
     async fn reset(&mut self) -> bookclerk_source::Result<()> {
         self.ledger.reset().await
+    }
+
+    fn restart(&mut self) {
+        self.ledger.restart();
     }
 
     fn cancelled(&self) -> bool {
@@ -1152,6 +1162,8 @@ impl PassIo for CollectPass<'_> {
     async fn reset(&mut self) -> bookclerk_source::Result<()> {
         Ok(())
     }
+
+    fn restart(&mut self) {}
 
     fn cancelled(&self) -> bool {
         self.opts.is_cancelled()
@@ -1356,6 +1368,15 @@ mod tests {
         assert_eq!(events(&store, "holding_removed").await, 2);
         let state = scope.scan_state("a1").await.unwrap().unwrap();
         assert_eq!(state.sync_token, "t2");
+
+        // A pass that restarts from its first page does not count what the
+        // abandoned pages listed: the restart listed nothing, so P1 goes.
+        let mut restarted = ledger("p5");
+        restarted.write(vec![scanned("P1")]).await.unwrap();
+        restarted.restart();
+        assert_ne!(restarted.pass_id, "p5");
+        restarted.finish("t3", true, true).await.unwrap();
+        assert_eq!(events(&store, "holding_removed").await, 3);
 
         full.reset().await.unwrap();
         let state = scope.scan_state("a1").await.unwrap();

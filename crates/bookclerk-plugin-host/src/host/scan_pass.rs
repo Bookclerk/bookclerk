@@ -40,6 +40,10 @@ pub(crate) trait PassIo {
     ) -> bookclerk_source::Result<()>;
     /// Forgets the stored token and cursor (the guest called one invalid).
     async fn reset(&mut self) -> bookclerk_source::Result<()>;
+    /// Starts the pass over from its first page under a new pass id, so
+    /// nothing the abandoned pages listed counts as listed by the restart.
+    /// Called before any checkpoint of the restarted pass.
+    fn restart(&mut self);
     /// True when the scan job asked to stop.
     fn cancelled(&self) -> bool;
 }
@@ -102,6 +106,7 @@ pub(crate) async fn run_pass(
                 tracing::warn!(account_id, error = %err, "scan cursor refused; restarting as a full pass");
                 restarted = true;
                 io.reset().await?;
+                io.restart();
                 cursor.clear();
                 token.clear();
                 resumed = false;
@@ -110,6 +115,7 @@ pub(crate) async fn run_pass(
             Err(err) if !restarted && resumed && !cursor.is_empty() => {
                 tracing::warn!(account_id, error = %err, "resumed scan page failed; restarting the pass");
                 restarted = true;
+                io.restart();
                 // Forget the stored cursor now, so a restart that fails too
                 // does not leave the next job resuming the same page.
                 io.checkpoint("", &token).await?;
@@ -124,6 +130,7 @@ pub(crate) async fn run_pass(
                 // the full pass finishes and replaces it.
                 tracing::warn!(account_id, error = %err, "delta scan failed; restarting as a full pass");
                 restarted = true;
+                io.restart();
                 token.clear();
                 resumed = false;
                 asked.clear();
@@ -198,6 +205,8 @@ mod tests {
         removed: Vec<String>,
         /// Resets recorded.
         resets: usize,
+        /// Restarts recorded.
+        restarts: usize,
         /// Cancel after this many guest calls.
         cancel_after: Option<usize>,
     }
@@ -237,6 +246,9 @@ mod tests {
         async fn reset(&mut self) -> bookclerk_source::Result<()> {
             self.resets += 1;
             Ok(())
+        }
+        fn restart(&mut self) {
+            self.restarts += 1;
         }
         fn cancelled(&self) -> bool {
             self.cancel_after.is_some_and(|n| self.calls.len() >= n)
@@ -338,6 +350,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(io.resets, 1);
+        assert_eq!(io.restarts, 1, "the restart gets a new pass id");
         assert_eq!(io.calls[1], ("".into(), "".into()));
         assert_eq!(
             io.finished,
@@ -373,6 +386,7 @@ mod tests {
             .unwrap();
         assert_eq!(io.calls[1], ("".into(), "t1".into()));
         assert_eq!(io.resets, 0);
+        assert_eq!(io.restarts, 1, "the restart gets a new pass id");
         assert_eq!(
             io.checkpoints[0],
             ("".into(), "t1".into()),
@@ -467,6 +481,7 @@ mod tests {
             io.resets, 0,
             "the stored token stays until the full pass ends"
         );
+        assert_eq!(io.restarts, 1);
         assert_eq!(io.finished, Some(("t2".into(), true, true)));
 
         let mut io = Script {

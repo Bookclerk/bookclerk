@@ -39,6 +39,18 @@ const HOLDING_ADDED: &str = "holding_added";
 /// Most holdings one keyset page of a removal reads.
 const REMOVAL_PAGE: u64 = 200;
 
+/// `product_ids` in the spelling `store_listings.product_id` keeps, so a
+/// guest's padded id meets its listing.
+fn stored_ids(product_ids: &[String]) -> Vec<String> {
+    let mut ids: Vec<String> = product_ids
+        .iter()
+        .map(|id| bookclerk_resolve::stored_product_id(id))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 /// Which holdings of one account a removal takes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HoldingSelection<'a> {
@@ -89,6 +101,7 @@ impl LibraryStore {
         if product_ids.is_empty() || pass_id.is_empty() {
             return Ok(());
         }
+        let product_ids = stored_ids(product_ids);
         let mut batches = WriteBatches::new(self.db_capabilities(), "holding stamp");
         for chunk in product_ids.chunks(self.lookup_chunk()) {
             let marks = vec!["?"; chunk.len()].join(", ");
@@ -144,6 +157,7 @@ impl LibraryStore {
         let mut total = 0;
         match selection {
             HoldingSelection::Products(ids) => {
+                let ids = stored_ids(ids);
                 for chunk in ids.chunks(self.lookup_chunk()) {
                     let listings = Query::select()
                         .column(store_listings::Column::Id)
@@ -624,7 +638,8 @@ mod tests {
     async fn removed_products_lose_their_holdings_once() {
         for profile in Profile::ALL {
             let store = library(profile, &["B1", "B2", "B3"]).await;
-            let gone = ids(&["B2", "B3", "never-held"]);
+            // A guest's padded spelling meets the stored listing.
+            let gone = ids(&[" B2 ", "B3", "B3", "never-held"]);
             let n = store
                 .remove_account_holdings(PLUGIN, "a1", HoldingSelection::Products(&gone))
                 .await
@@ -650,7 +665,7 @@ mod tests {
         for profile in Profile::ALL {
             let store = library(profile, &["B1", "B2", "B3", "B4"]).await;
             store
-                .mark_holdings_seen(PLUGIN, "a1", "pass-1", &ids(&["B1", "B3"]))
+                .mark_holdings_seen(PLUGIN, "a1", "pass-1", &ids(&[" B1", "B3 "]))
                 .await
                 .unwrap();
             // A concurrent pass listed B4 after this pass read it.

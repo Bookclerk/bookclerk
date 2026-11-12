@@ -279,6 +279,9 @@ Reserved classes (no worker in this release): `media`, `transcription`,
   back the titles that still sell it (and any older document of the same
   title), so a title that is gone leaves the index. A holding event whose
   listing is already gone removes the marker below, so the node rebuilds.
+  The index holds one document per `books` row, and a removed holding
+  leaves its row in place until the library model replaces `books`, so
+  until then `holding_removed` refreshes the title rather than dropping it.
 - **Rebuild job.** A finished rebuild leaves a marker for the current
   document layout in the index folder. When it is missing (a new node, a
   deleted folder, or an index of an older layout, which is discarded), the
