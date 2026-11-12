@@ -110,10 +110,13 @@ without leaving runners idle, heavy pull request jobs wait in shared
   pull requests may always hold 12 runners, so the merge queue keeps at
   least 8.
 - **Lent lanes** 9 to 16 are open only while no `merge_group` CI run is
-  active, and only when nothing runs or waits in them, so each holds at
-  most one job. When the queue is idle, pull requests can use all 20
+  active, and only when nothing runs or waits in them, so each normally
+  holds one job. When the queue is idle, pull requests can use all 20
   runners. When a group arrives, no new job enters a lent lane, and those
-  lanes are back to the queue within one pull request job. The queue
+  lanes are back to the queue within one pull request job. There is no
+  lock, so two plans that read the jobs API within the same few seconds,
+  before either run's jobs exist, can both use the same empty lane; that
+  lane then empties within two jobs. The queue
   itself never waits in a lane, so it uses every runner pull requests
   don't hold.
 - When the API can't be read, or a job's lane is missing, the jobs use the

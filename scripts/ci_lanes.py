@@ -13,9 +13,13 @@ a ``pull_request`` event to pick each of its jobs' lanes:
   8 whatever pull requests do.
 - Lanes ``BASE_LANES`` to ``BASE_LANES + BORROWED_LANES - 1`` are lent to
   pull requests only while no ``merge_group`` CI run is active, and only
-  when nothing runs or waits in them, so each holds at most one job. When a
-  merge group arrives, no new job enters them and they empty within one
-  pull request job, giving the queue its runners back.
+  when nothing runs or waits in them, so each normally holds one job. When
+  a merge group arrives, no new job enters them and they empty within one
+  pull request job, giving the queue its runners back. There is no lock:
+  plans that read the jobs API within the same few seconds, before either
+  run's jobs exist, can each place a job in the same empty lane, so a lent
+  lane holds at most one job per plan in that window and empties within
+  that many jobs.
 - Each job goes to the open lane with the fewest jobs running or waiting
   in it, counted from the jobs of every active pull request CI run. A run's
   own jobs count as they are placed, so they spread out. On a tie a base
