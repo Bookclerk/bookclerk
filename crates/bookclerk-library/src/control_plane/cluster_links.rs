@@ -530,11 +530,13 @@ pub async fn set_cluster_link_listing(
 /// # Arguments
 ///
 /// * `owner_cluster_id` - The library the link joined.
+/// * `remote_node_id` - The node id that join enrolled as: a join another
+///   one replaced since binds nothing.
 /// * `person_user_id` - The local user who joined (`None` unbinds it).
 ///
 /// # Returns
 ///
-/// Whether the link exists (`false` when there is no such link).
+/// Whether the link exists as that node (`false` otherwise).
 ///
 /// # Errors
 ///
@@ -542,6 +544,7 @@ pub async fn set_cluster_link_listing(
 pub async fn set_cluster_link_person(
     store: &LibraryStore,
     owner_cluster_id: &str,
+    remote_node_id: &str,
     person_user_id: Option<i64>,
 ) -> Result<bool> {
     let update = cluster_links::Entity::update_many()
@@ -549,7 +552,8 @@ pub async fn set_cluster_link_person(
             cluster_links::Column::PersonUserId,
             Expr::value(person_user_id),
         )
-        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id));
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(cluster_links::Column::RemoteNodeId.eq(remote_node_id));
     let updated = store
         .exec_bumped(update, LiveTopic::Clusters, Bump::Always)
         .await?;
@@ -898,9 +902,17 @@ mod tests {
 
         // Re-enrolling replaces the link and its keys and reactivates it,
         // and unbinds the person until the join names one again.
-        assert!(set_cluster_link_person(&store, "cluster-1", Some(7))
-            .await
-            .unwrap());
+        assert!(
+            set_cluster_link_person(&store, "cluster-1", "node-1", Some(7))
+                .await
+                .unwrap()
+        );
+        // A join that enrolled as another node binds nothing.
+        assert!(
+            !set_cluster_link_person(&store, "cluster-1", "node-0", Some(8))
+                .await
+                .unwrap()
+        );
         let fresh = ClusterLinkKeys::from_bytes(&[3; 32], &[4; 32]);
         let again = record_cluster_link(&store, &new_link(None), &fresh)
             .await

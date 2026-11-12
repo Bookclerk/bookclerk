@@ -938,6 +938,8 @@ pub async fn post_join_callback(
     // add connections to the library, or withdraw them, through it. The
     // enrollment left the link unbound, so a failure here fails closed:
     // nobody can add or withdraw through it until the branch joins again.
+    // The binding names the node this join enrolled as, so a join another
+    // one replaced meanwhile binds nothing.
     let auth = state.auth_snapshot().await;
     let elevated = crate::auth::resolve_operator_session(&state, &auth, &headers)
         .await
@@ -947,6 +949,7 @@ pub async fn post_join_callback(
             if let Err(err) = bookclerk_library::control_plane::set_cluster_link_person(
                 &store,
                 &link.owner_cluster_id,
+                &link.remote_node_id,
                 person,
             )
             .await
