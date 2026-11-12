@@ -48,7 +48,7 @@ jobs:
   pr:
     name: fuzz changed code (${{ matrix.sanitizer }})
     # Pull request runs take turns in one slot, so they leave runners for the
-    # merge queue (docs/contributing/ci.md#pull-request-slots).
+    # merge queue (docs/contributing/ci.md#pull-request-lanes).
     concurrency:
       group: ${{ github.event_name == 'pull_request' && 'cflite-pr-slot' || format('cflite-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.sanitizer) }}
       queue: max

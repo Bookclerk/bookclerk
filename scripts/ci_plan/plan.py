@@ -192,7 +192,8 @@ PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 # mutation-workers.yml and mutation-python.yml; the merge-queue re-enqueue
 # check only runs in merge-queue-requeue.yml; the ClusterFuzzLite artifact
 # lookup only runs inside the cflite-*.yml fuzzing jobs; the demo deploy's
-# registry and health readers only run in demo-deploy.yml).
+# registry and health readers only run in demo-deploy.yml; the pull request
+# lane picker runs in the plan job itself, after the plan is resolved).
 PLAN_JOB_SCRIPT_FILES = frozenset(
     {
         "scripts/cla_check.py",
@@ -210,6 +211,7 @@ PLAN_JOB_SCRIPT_FILES = frozenset(
         "scripts/codeql_languages.py",
         "scripts/codeql_reuse.py",
         "scripts/merge_queue_requeue.py",
+        "scripts/ci_lanes.py",
         "scripts/cflite_artifacts.py",
         "scripts/demo_image.py",
         ".cargo/mutants.toml",

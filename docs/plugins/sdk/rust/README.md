@@ -41,8 +41,9 @@ A `[[databases]]` binding is taken from the `open` bindings with
 (`prepare`, `bind`, `all`, `first`, `batch`). Its `limits()` returns the
 session's `DbCapabilities`; `all()` reads through the session's streamed
 budget when it advertises one, `iterate()` walks the same read one row at
-a time without holding the whole result, and `chunk()` splits a long statement list
-into batches that each fit one request. Any cap that is hit is a
+a time without holding the whole result, `chunk()` splits a long statement list
+into batches that each fit one request, and `write_chunks()` commits those
+batches resumably. Any cap that is hit is a
 `PluginError` with `PluginErrorCode::LimitExceeded` and a typed `limit()`;
 see [Working within database limits](../../database-limits.md). A guest's
 tests open the same binding with `bookclerk_db_testkit::BindingDatabase`

@@ -66,6 +66,10 @@ after every page, so a large library never has to arrive in one piece.
 - Audible scans after the first ask only for what changed since the last
   one. Every seven days a scan reads the whole library again.
 - Libro.fm, Chirp and GraphicAudio read the whole library on every scan.
+- Each page is saved in a few database writes sized to what your database
+  accepts, so the same scan fits Cloudflare D1's smaller limits. Books the
+  library already has, as the store still describes them, are checked
+  together for the whole page instead of one at a time.
 
 ### Matching to Audible's catalog
 
