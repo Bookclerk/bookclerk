@@ -48,7 +48,7 @@ async fn library_row(profile: Profile, account: &str, product: &str) -> BookReco
 
 /// The branch owner's book acquired for a library joins the branch's own
 /// library: the flat row (under the branch's own uuid) acquired at the
-/// copy's key, its file recorded, and its holding marked as imported from
+/// copy's key, its file recorded, and the book recorded as imported from
 /// that library. A book on an account the branch does not have for its
 /// Owner, or on a branch with no single Owner, stays out.
 #[tokio::test]
@@ -217,6 +217,159 @@ async fn only_the_owners_own_books_are_shared_upward() {
         assert_eq!(
             sent(&to_b),
             BTreeSet::from(["OWN".into(), "FROM-A".into()]),
+            "{name}"
+        );
+    }
+}
+
+/// A book imported from two libraries stays recorded for both, so neither
+/// gets it back; several imports from one library are all read back, in
+/// pages no larger than every profile's result cap; and a title whose
+/// product id the same account also has on another store is imported by
+/// the exact row written, not refused as ambiguous.
+#[tokio::test]
+async fn imports_are_kept_per_library_and_read_in_pages() {
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        let name = profile.name();
+        let owner = store
+            .create_user(UserRole::Owner, Some("Riley"), None)
+            .await
+            .unwrap()
+            .id;
+        connect(&store, "own-acct", Some(owner)).await;
+        // The same account and product id on another store, not the owner's
+        // book being imported.
+        store
+            .upsert_account("libro", "own-acct", "us", Some("own-acct"), true, "libro")
+            .await
+            .unwrap();
+        store
+            .upsert_book(&NewBook {
+                plugin_key: "libro".into(),
+                source: "libro".into(),
+                ..NewBook::minimal("P1", "own-acct", "us", "Other store")
+            })
+            .await
+            .unwrap();
+
+        let mut rows = Vec::new();
+        for product in ["P1", "P2", "P3"] {
+            rows.push(library_row(profile, "own-acct", product).await);
+        }
+        for (cluster_id, row) in rows
+            .iter()
+            .map(|row| ("lib-a", row))
+            .chain(std::iter::once(("lib-b", &rows[0])))
+        {
+            let LinkImportOutcome::Imported(book) = import_link_title(
+                &store,
+                LinkImport {
+                    cluster_id,
+                    book: row,
+                    primary_key: "k.m4b",
+                    pdf_key: Some("k.pdf"),
+                    files: &[],
+                },
+            )
+            .await
+            .unwrap() else {
+                panic!("{name}: {cluster_id} {} imported", row.product_id);
+            };
+            assert_eq!(book.plugin_key, PLUGIN, "{name}");
+            assert_eq!(book.acquire_status, AcquireStatus::Acquired, "{name}");
+        }
+
+        let key = |product: &str| {
+            (
+                PLUGIN.into(),
+                "us".into(),
+                product.into(),
+                "own-acct".into(),
+            )
+        };
+        assert_eq!(
+            books_imported_from_link(&store, "lib-a").await.unwrap(),
+            BTreeSet::from([key("P1"), key("P2"), key("P3")]),
+            "{name}"
+        );
+        assert_eq!(
+            books_imported_from_link(&store, "lib-b").await.unwrap(),
+            BTreeSet::from([key("P1")]),
+            "{name}: importing P1 from lib-b keeps lib-a's record"
+        );
+    }
+}
+
+/// A copy whose primary file key another live edition here already holds
+/// is not that title's: the title is left unacquired and not recorded as
+/// imported, and the other edition keeps its file.
+#[tokio::test]
+async fn a_primary_key_another_edition_holds_is_not_imported() {
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        let name = profile.name();
+        let owner = store
+            .create_user(UserRole::Owner, Some("Riley"), None)
+            .await
+            .unwrap()
+            .id;
+        connect(&store, "own-acct", Some(owner)).await;
+        let other = store
+            .upsert_book(&NewBook::minimal("OTHER", "own-acct", "us", "Other"))
+            .await
+            .unwrap();
+        let other_owner = store
+            .file_owner_of_book(&other.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            store
+                .record_edition_file("local", "shared.m4b", &other_owner, FileRole::Audio)
+                .await
+                .unwrap(),
+            "{name}"
+        );
+
+        let row = library_row(profile, "own-acct", "P9").await;
+        assert!(
+            matches!(
+                import_link_title(
+                    &store,
+                    LinkImport {
+                        cluster_id: "lib-a",
+                        book: &row,
+                        primary_key: "shared.m4b",
+                        pdf_key: None,
+                        files: &[("local", "shared.m4b")],
+                    },
+                )
+                .await
+                .unwrap(),
+                LinkImportOutcome::KeyHeldElsewhere
+            ),
+            "{name}"
+        );
+        let books = store.acquired_book_keys_page(None, 100).await.unwrap();
+        assert!(
+            books.iter().all(|key| key.product_id != "P9"),
+            "{name}: not acquired"
+        );
+        assert!(
+            books_imported_from_link(&store, "lib-a")
+                .await
+                .unwrap()
+                .is_empty(),
+            "{name}"
+        );
+        assert_eq!(
+            store
+                .edition_file("local", "shared.m4b")
+                .await
+                .unwrap()
+                .map(|file| file.owner),
+            Some(other_owner),
             "{name}"
         );
     }

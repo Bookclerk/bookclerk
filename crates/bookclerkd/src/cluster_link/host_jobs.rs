@@ -421,6 +421,11 @@ impl HostGuests for GuestHost {
                 owner_book_uuid = book_uuid,
                 "the owner's title stays out of this library: its store account is not connected here to this install's Owner"
             ),
+            Ok(LinkImportOutcome::KeyHeldElsewhere) => tracing::warn!(
+                cluster_id = %self.cluster_id,
+                owner_book_uuid = book_uuid,
+                "the owner's title stays unacquired in this library: another edition here holds its file key"
+            ),
             Ok(LinkImportOutcome::NoPerson) => tracing::info!(
                 cluster_id = %self.cluster_id,
                 owner_book_uuid = book_uuid,

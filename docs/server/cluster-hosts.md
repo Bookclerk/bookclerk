@@ -524,7 +524,8 @@ held by the store account that bought it. This happens only when that
 store account is connected on the host to its Owner (for example brought
 along when joining). Another member's title is never added, even when its
 copy is kept. A title added this way is marked as coming from that
-library, so it is never shared back to it.
+library, so it is never shared back to it. A title acquired for two
+libraries is marked for both and shared back to neither.
 
 ### Sharing this computer between libraries
 

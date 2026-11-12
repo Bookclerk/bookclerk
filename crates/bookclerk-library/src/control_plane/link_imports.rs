@@ -7,10 +7,10 @@
 //! committed the title, [`import_link_title`] records it here as an
 //! ordinary local change: the flat row and its listing, an account holding
 //! for the store account that bought it, the acquire status and the copy's
-//! files, with the book-acquired event that change publishes. The holding
-//! carries the provenance `link:<cluster_id>` ([`link_provenance`]), so the
-//! catalog sync never sends the library a book it acquired itself
-//! ([`books_imported_from_link`]).
+//! files, with the book-acquired event that change publishes. The import is
+//! also recorded for that library in `link_imports`, once per library a
+//! book came from, so the catalog sync never sends a library a book it
+//! acquired itself ([`books_imported_from_link`]).
 //!
 //! Only a store account connected on this install to the branch's person
 //! ([`super::branch_person`]) receives such a book: a book belongs to the
@@ -19,29 +19,25 @@
 
 use std::collections::BTreeSet;
 
-use sea_orm::sea_query::Expr;
+use chrono::Utc;
+use sea_orm::sea_query::OnConflict;
 use sea_orm::{
-    ColumnTrait as _, EntityTrait as _, FromQueryResult, QueryFilter as _, QuerySelect as _,
+    ActiveValue::{NotSet, Set},
+    ColumnTrait as _, EntityTrait as _, FromQueryResult, QueryFilter as _, QueryOrder as _,
+    QuerySelect as _,
 };
 
 use super::carried_accounts::branch_person;
 use super::trust::accounts_owned_by;
-use crate::entities::{holdings, store_listings};
+use crate::entities::link_imports;
 use crate::error::{LibraryError, Result};
 use crate::models::{AcquireStatus, BookRecord};
 use crate::store::AcquiredBookKey;
 use crate::store::{FileRole, LibraryStore, NewBook};
 
-/// Store listings looked up per `IN (...)` read of
-/// [`books_imported_from_link`]; well under every profile's bind limit.
-const LISTING_CHUNK: usize = 50;
-
-/// The holding provenance of a book imported from the library
-/// `cluster_id`: `link:<cluster_id>`.
-#[must_use]
-pub fn link_provenance(cluster_id: &str) -> String {
-    format!("link:{cluster_id}")
-}
+/// Rows per read of [`books_imported_from_link`] when the database plugin
+/// advertises no smaller `maxResultRows`.
+const IMPORT_PAGE: u64 = 256;
 
 /// One title the library committed, as the branch kept it.
 #[derive(Debug, Clone, Copy)]
@@ -72,13 +68,19 @@ pub enum LinkImportOutcome {
     /// This install has no single person a branch's books belong to (no
     /// active Owner, or several); nothing was written.
     NoPerson,
+    /// Another live edition here holds the copy's primary file key, so the
+    /// copy is not this title's: its row stays (not acquired) and nothing
+    /// else was recorded.
+    KeyHeldElsewhere,
 }
 
 /// Imports a title the library committed into this install's own library
 /// (see the module docs).
 ///
 /// A file whose key another live edition here already holds is left
-/// unrecorded (logged), as an acquire on this install would refuse it.
+/// unrecorded (logged), as an acquire on this install would refuse it; when
+/// that is the primary file, the title is not marked acquired
+/// ([`LinkImportOutcome::KeyHeldElsewhere`]).
 ///
 /// # Errors
 ///
@@ -96,9 +98,31 @@ pub async fn import_link_title(
         return Ok(LinkImportOutcome::AccountNotHere);
     }
     let record = store.upsert_book(&new_book(book)).await?;
+    // The files first: a primary file another live edition here holds is
+    // not this copy's, so the title is not marked acquired at it.
+    if let Some(owner) = store.file_owner_of_book(&record.uuid).await? {
+        for (destination, key) in import.files {
+            let role = FileRole::for_key(key, Some(import.primary_key));
+            if store
+                .record_edition_file(destination, key, &owner, role)
+                .await?
+            {
+                continue;
+            }
+            tracing::warn!(
+                book_uuid = %record.uuid,
+                %destination,
+                %key,
+                "another edition here holds this key; the imported copy leaves it unrecorded"
+            );
+            if *key == import.primary_key {
+                return Ok(LinkImportOutcome::KeyHeldElsewhere);
+            }
+        }
+    }
     store
         .set_acquire_status(
-            &record.product_id,
+            &record.uuid,
             &record.account_id,
             AcquireStatus::Acquired,
             Some(import.primary_key),
@@ -108,30 +132,14 @@ pub async fn import_link_title(
     if let Some(pdf_key) = import.pdf_key {
         store
             .set_pdf_status(
-                &record.product_id,
+                &record.uuid,
                 &record.account_id,
                 AcquireStatus::Acquired,
                 Some(pdf_key),
             )
             .await?;
     }
-    if let Some(owner) = store.file_owner_of_book(&record.uuid).await? {
-        for (destination, key) in import.files {
-            let role = FileRole::for_key(key, Some(import.primary_key));
-            if !store
-                .record_edition_file(destination, key, &owner, role)
-                .await?
-            {
-                tracing::warn!(
-                    book_uuid = %record.uuid,
-                    %destination,
-                    %key,
-                    "another edition here holds this key; the imported copy leaves it unrecorded"
-                );
-            }
-        }
-    }
-    mark_holding(store, &record, &link_provenance(import.cluster_id)).await?;
+    record_import(store, import.cluster_id, &record).await?;
     let stored = store
         .get_book_by_uuid(&record.uuid)
         .await?
@@ -168,56 +176,63 @@ fn new_book(book: &BookRecord) -> NewBook {
     }
 }
 
-/// Sets `provenance` on the account holding of `book`'s listing. A listing
-/// the library model did not resolve has no holding and is left as it is.
+/// Records that `book` was imported from the library `cluster_id`. A book
+/// already recorded for that library is left as it is; one imported from
+/// several libraries is recorded once for each.
 ///
 /// # Errors
 ///
-/// Returns an error when a read or write fails.
-async fn mark_holding(store: &LibraryStore, book: &BookRecord, provenance: &str) -> Result<()> {
-    let listing = store_listings::Entity::find()
-        .filter(store_listings::Column::PluginKey.eq(book.plugin_key.as_str()))
-        .filter(
-            store_listings::Column::Marketplace
-                .eq(bookclerk_resolve::stored_marketplace(&book.marketplace)),
-        )
-        .filter(
-            store_listings::Column::ProductId
-                .eq(bookclerk_resolve::stored_product_id(&book.product_id)),
-        )
-        .one(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    let Some(listing) = listing else {
-        return Ok(());
+/// Returns an error when the write fails.
+async fn record_import(store: &LibraryStore, cluster_id: &str, book: &BookRecord) -> Result<()> {
+    let row = link_imports::ActiveModel {
+        id: NotSet,
+        cluster_id: Set(cluster_id.to_string()),
+        plugin_key: Set(book.plugin_key.clone()),
+        account_id: Set(book.account_id.clone()),
+        marketplace: Set(bookclerk_resolve::stored_marketplace(&book.marketplace)),
+        product_id: Set(bookclerk_resolve::stored_product_id(&book.product_id)),
+        created_at: Set(Utc::now().to_rfc3339()),
     };
-    holdings::Entity::update_many()
-        .col_expr(holdings::Column::Provenance, Expr::value(provenance))
-        .filter(holdings::Column::ListingId.eq(listing.id))
-        .filter(holdings::Column::PluginKey.eq(book.plugin_key.as_str()))
-        .filter(holdings::Column::AccountId.eq(book.account_id.as_str()))
-        .exec(store.db())
+    link_imports::Entity::insert(row)
+        .on_conflict(
+            OnConflict::columns([
+                link_imports::Column::ClusterId,
+                link_imports::Column::PluginKey,
+                link_imports::Column::AccountId,
+                link_imports::Column::Marketplace,
+                link_imports::Column::ProductId,
+            ])
+            .do_nothing()
+            .to_owned(),
+        )
+        .exec_without_returning(store.db())
         .await
         .map_err(LibraryError::Orm)?;
     Ok(())
 }
 
-/// One narrow `holdings` row as read; columns are matched by name.
+/// One narrow `link_imports` row as read; columns are matched by name.
 #[derive(Debug, FromQueryResult)]
-struct HolderRow {
-    /// The listing held.
-    listing_id: String,
-    /// Holding store account; `None` for a branch node's holding.
-    account_id: Option<String>,
+struct ImportRow {
+    /// Keyset position.
+    id: i64,
+    /// Plugin key.
+    plugin_key: String,
+    /// Store account id.
+    account_id: String,
+    /// Stored marketplace.
+    marketplace: String,
+    /// Stored product id.
+    product_id: String,
 }
 
 /// A book this library holds, by store identity: `(plugin_key, stored
 /// marketplace, stored product id, account_id)`.
 pub type HeldBookKey = (String, String, String, String);
 
-/// Every account holding imported from the library `cluster_id`
-/// ([`link_provenance`]), by store identity: the books the catalog sync
-/// must not send back to it.
+/// Every book imported from the library `cluster_id`, by store identity:
+/// the books the catalog sync must not send back to it. Read in keyset
+/// pages no larger than the database plugin's `maxResultRows`.
 ///
 /// # Errors
 ///
@@ -226,41 +241,45 @@ pub async fn books_imported_from_link(
     store: &LibraryStore,
     cluster_id: &str,
 ) -> Result<BTreeSet<HeldBookKey>> {
-    let rows = holdings::Entity::find()
-        .select_only()
-        .column(holdings::Column::ListingId)
-        .column(holdings::Column::AccountId)
-        .filter(holdings::Column::Provenance.eq(link_provenance(cluster_id)))
-        .into_model::<HolderRow>()
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    let mut holders: Vec<(String, String)> = Vec::new();
-    for row in rows {
-        if let Some(account) = row.account_id {
-            holders.push((row.listing_id, account));
-        }
-    }
+    let page = match store.db_capabilities().max_result_rows {
+        0 => IMPORT_PAGE,
+        rows => u64::from(rows).clamp(1, IMPORT_PAGE),
+    };
     let mut out = BTreeSet::new();
-    for chunk in holders.chunks(LISTING_CHUNK) {
-        let ids: Vec<&str> = chunk.iter().map(|(id, _)| id.as_str()).collect();
-        let listings = store_listings::Entity::find()
-            .filter(store_listings::Column::Id.is_in(ids))
+    let mut after: Option<i64> = None;
+    loop {
+        let mut query = link_imports::Entity::find()
+            .select_only()
+            .column(link_imports::Column::Id)
+            .column(link_imports::Column::PluginKey)
+            .column(link_imports::Column::AccountId)
+            .column(link_imports::Column::Marketplace)
+            .column(link_imports::Column::ProductId)
+            .filter(link_imports::Column::ClusterId.eq(cluster_id))
+            .order_by_asc(link_imports::Column::Id);
+        if let Some(after) = after {
+            query = query.filter(link_imports::Column::Id.gt(after));
+        }
+        let rows = query
+            .limit(page)
+            .into_model::<ImportRow>()
             .all(store.db())
             .await
             .map_err(LibraryError::Orm)?;
-        for (listing_id, account) in chunk {
-            if let Some(listing) = listings.iter().find(|l| &l.id == listing_id) {
-                out.insert((
-                    listing.plugin_key.clone(),
-                    listing.marketplace.clone(),
-                    listing.product_id.clone(),
-                    account.clone(),
-                ));
-            }
+        let full = u64::try_from(rows.len()).unwrap_or(u64::MAX) >= page;
+        after = rows.last().map(|row| row.id);
+        for row in rows {
+            out.insert((
+                row.plugin_key,
+                row.marketplace,
+                row.product_id,
+                row.account_id,
+            ));
+        }
+        if !full {
+            return Ok(out);
         }
     }
-    Ok(out)
 }
 
 /// Which of this install's acquired books the catalog sync sends the

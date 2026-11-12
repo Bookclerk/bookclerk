@@ -1119,8 +1119,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // held again announces itself again (`holding_added:<id>`). `seen_pass`
     // is the scan pass that last listed it (`account_scan_state.pass_id`);
     // a complete full pass removes the account's holdings it did not list.
-    // `provenance` is `link:<cluster_id>` for a book this branch's owner
-    // acquired for the library it joined, imported here as well.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS holdings (
         id TEXT PRIMARY KEY NOT NULL,
@@ -1133,7 +1131,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         entitlement TEXT NOT NULL CHECK (entitlement IN ('purchase', 'plus', 'loan', 'free')),
         purchased_at TEXT,
         seen_pass TEXT,
-        provenance TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE (listing_id, holder),
@@ -1604,6 +1601,25 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE TABLE IF NOT EXISTS catalog_listing_optouts (
         user_id INTEGER PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         created_at TEXT NOT NULL
+    )",
+    ),
+    // On a branch: the branch owner's books acquired for a library it
+    // joined and imported into this library as well
+    // (`control_plane::link_imports`), one row per library and store
+    // identity, so the catalog sync never sends a library a book it
+    // acquired itself. `marketplace` and `product_id` are stored as
+    // `store_listings` stores them.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS link_imports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cluster_id TEXT NOT NULL,
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        marketplace TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (cluster_id, plugin_key, account_id, marketplace, product_id),
+        FOREIGN KEY (plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
     // Last claimed fire per plugin cron schedule (`control_plane::cron_fires`).
