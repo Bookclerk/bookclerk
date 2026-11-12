@@ -885,8 +885,12 @@ key the local server fails renders the docs-unavailable page.
 The 404 and docs-unavailable pages' SEO and best-practice misses, such as
 the status code and `noindex`, are intended.
 
-- **Retries.** A run that misses only on performance is repeated once, and
-  the better run kept, since lab scores vary on shared runners.
+- **Retries.** A run that misses only on performance or CLS is repeated, up
+  to three runs, and the run with the fewest misses kept. Lab scores vary on
+  shared runners, and Chrome sometimes records a load with no navigation
+  start (`NO_NAVSTART`), more often on pages whose
+  `Cross-Origin-Opener-Policy` moves the load to a new browsing context
+  group; that run has no performance score or CLS.
 - **Accessibility.** axe-core then checks every page in light and dark
   color schemes, at 1350 and 390 px, against WCAG 2.0 to 2.2 A/AA and its
   best-practice rules. Any violation fails the check.

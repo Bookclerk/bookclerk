@@ -270,6 +270,8 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   the shell's `<!--source-->` marker and publishes as `/security.md`, so the
   site and GitHub show the same policy. Edit `SECURITY.md`, not the page;
   links to it from the docs point at `/security`.
+- `cross-origin.ts` – the files other origins may embed and read, and the
+  `_headers` rules that open them (see [Cross-origin policy](#cross-origin-policy)).
 - `worker.ts` – the docs route, the sitemap and content negotiation (see below).
   `wrangler.toml` runs it only for page paths (`run_worker_first`). It
   compresses what it answers with (Brotli, else gzip) itself, because
@@ -307,6 +309,43 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   exception to the site's no-third-party-requests rule. `SECURITY_HEADERS` in `worker.ts`
   carries the same policy, and a test keeps the two equal.
 - Brand assets are copied from `assets/brand/` at build time.
+
+## Cross-origin policy
+
+Every response is closed to other origins by default, and says so with
+explicit headers rather than leaving browsers to assume:
+
+| Header | Value | Effect |
+| --- | --- | --- |
+| `Cross-Origin-Resource-Policy` | `same-origin` | No other site can load the file as an image, font, script or style. |
+| `Cross-Origin-Opener-Policy` | `same-origin` | A page that opens ours, or that ours opens, gets no window handle. |
+| `Cross-Origin-Embedder-Policy` | `require-corp` | Our pages load only resources that opt in; the analytics beacon's host sends `Cross-Origin-Resource-Policy: cross-origin`. |
+| `X-Frame-Options` | `DENY` | No framing, beside the CSP's `frame-ancestors 'none'`. |
+| `Origin-Agent-Cluster` | `?1` | Each origin gets its own agent cluster. |
+| `X-Permitted-Cross-Domain-Policies` | `none` | No legacy cross-domain policy files. |
+| `X-XSS-Protection` | `0` | Turns off old browsers' XSS filter, which could leak page content; the CSP is what stops injected script. |
+| `Access-Control-Allow-Origin` | never sent | Scripts on other sites cannot read our responses. |
+
+The favicons and the Open Graph image are the only exceptions, because other
+sites, browsers and link previews show them. `OPEN_ASSETS` in
+`cross-origin.ts` lists them, and `build.ts` appends a rule for each to
+`dist/_headers` that replaces the policy with
+`Cross-Origin-Resource-Policy: cross-origin` and adds
+`Access-Control-Allow-Origin: *` (never with credentials). `build.test.ts`
+checks that the list is exactly the icons the page head and the web manifest
+declare plus the `og:image`, and works out every published file's headers
+the way Cloudflare applies `_headers`, so a new icon stays closed until it is
+added to the list.
+
+These headers bind browsers only. Search engines, link-preview bots and
+agents that fetch from a server ignore them, so pages, Markdown copies,
+`llms.txt` and the sitemap stay readable to crawlers.
+
+> [!NOTE]
+> The zone's "Add security headers" managed transform overwrites
+> `Referrer-Policy`, `X-Frame-Options` and `X-XSS-Protection` on every
+> response, so it stays off;
+> the Workers own these headers.
 
 ## Docs
 
