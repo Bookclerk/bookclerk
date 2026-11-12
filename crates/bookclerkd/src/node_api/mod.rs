@@ -35,6 +35,7 @@ mod host_catalog;
 mod host_lookup;
 mod host_requests;
 mod host_results;
+mod host_window;
 pub mod tls;
 pub mod transport;
 pub(crate) mod uploads;

@@ -65,6 +65,12 @@ export interface BranchLinkView {
   share_books?: boolean;
   /** "Include books from my own branches" (on by default). */
   include_branches?: boolean;
+  /**
+   * "Use this computer to download" (on by default). Off makes this server
+   * a window of the library: it runs none of its work and shows the books
+   * the library holds for this server's person instead.
+   */
+  download?: boolean;
 }
 
 /** `GET /api/config/join`. */
@@ -469,6 +475,123 @@ export function setBranchSharing(
     method: "POST",
     body: { cluster_id: clusterId, share_books: shareBooks, include_branches: includeBranches },
   });
+}
+
+/**
+ * Settings → Library: "Use this computer to download" for one library this
+ * server is a branch of (the operator or an Owner). Off makes this server a
+ * window of that library: its plugins stop here and held jobs go back at
+ * once. The two sharing settings are sent as they are.
+ *
+ * @param link - The library's link as last read.
+ * @param download - The new setting.
+ * @returns The link with the stored settings.
+ */
+export function setLinkDownload(
+  link: BranchLinkView,
+  download: boolean,
+): Promise<{ cluster: BranchLinkView }> {
+  return request("/api/config/join/sharing", {
+    method: "POST",
+    body: {
+      cluster_id: link.cluster_id,
+      share_books: link.share_books ?? true,
+      include_branches: link.include_branches ?? true,
+      download,
+    },
+  });
+}
+
+/** One edition in the window view, and the library that holds it. */
+export interface WindowEditionView {
+  /** The library (cluster id) that holds it for this server's person. */
+  cluster_id: string;
+  /** The library's origin. */
+  owner_origin: string;
+  /** The store's plain id (`audible`, `libro`, ...). */
+  store: string;
+  /** Lower-cased store marketplace; empty when the store has none. */
+  marketplace: string;
+  /** The store's product id. */
+  product_id: string;
+  /** Formats that library has (`audio`, `pdf`). */
+  formats: string[];
+  /** The edition's title. */
+  title: string;
+  /** Subtitle, when known. */
+  subtitle?: string | null;
+  /** Authors, when known. */
+  authors?: string | null;
+  /** Narrators, when known. */
+  narrators?: string | null;
+  /** Series name, when known. */
+  series?: string | null;
+  /** Position in the series, when known. */
+  series_index?: string | null;
+  /** Length in minutes, when known. */
+  length_minutes?: number | null;
+}
+
+/** One work in the window view: every edition its libraries hold for the person. */
+export interface WindowEntryView {
+  /** Stable key for the entry. */
+  key: string;
+  /** The work of this server's own library it was placed on, if any. */
+  work_id?: string | null;
+  /** The editions, the first naming the entry. */
+  editions: WindowEditionView[];
+}
+
+/** `GET /api/config/join/window`. */
+export interface WindowBooks {
+  /** The libraries this server is a window of. */
+  clusters: BranchLinkView[];
+  /** Their books for this server's person, by title. */
+  books: WindowEntryView[];
+}
+
+/**
+ * The window view (the operator or an Owner): the books every library this
+ * server is a window of holds for its person, merged by work.
+ *
+ * @returns The libraries and their books.
+ */
+export function fetchWindowBooks(): Promise<WindowBooks> {
+  return request("/api/config/join/window");
+}
+
+/**
+ * The libraries an entry is held in, by host, each once, in order.
+ *
+ * @param entry - A window entry.
+ * @returns For example `["books.example.com", "other.example"]`.
+ */
+export function windowEntryLibraries(entry: WindowEntryView): string[] {
+  const hosts: string[] = [];
+  for (const edition of entry.editions) {
+    let host = edition.owner_origin;
+    try {
+      host = new URL(edition.owner_origin).host || edition.owner_origin;
+    } catch {
+      // Not a URL: show it as it is.
+    }
+    if (!hosts.includes(host)) hosts.push(host);
+  }
+  return hosts;
+}
+
+/**
+ * The formats any library has for an entry, each once.
+ *
+ * @param entry - A window entry.
+ * @returns For example `["audio", "pdf"]`.
+ */
+export function windowEntryFormats(entry: WindowEntryView): string[] {
+  const formats = new Set<string>();
+  for (const edition of entry.editions) {
+    for (const format of edition.formats) formats.add(format);
+  }
+  return [...formats].sort();
 }
 
 /**

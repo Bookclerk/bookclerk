@@ -39,6 +39,11 @@
 //! The in-process transport refuses host jobs outright, since it would run
 //! them against this install's own library.
 //!
+//! A link whose "Use this computer to download" setting is off makes this
+//! install a window of that library: its supervisor withdraws every plugin
+//! (no job is claimed), and its [`window::WindowReader`] reads the books the
+//! library holds for this install's person instead.
+//!
 //! A close with 4403 (this node revoked) marks the link `revoked`, cancels
 //! held work, and stops that client; the link is not dialed again.
 
@@ -49,6 +54,7 @@ pub mod consent;
 pub mod host_jobs;
 pub mod join;
 pub mod remote_bindings;
+pub mod window;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -728,6 +734,17 @@ async fn start_clients(
                 cluster_id: cluster_id.clone(),
                 handle: handle.clone(),
             }
+            .run(link_shutdown.clone()),
+        )));
+        // The link's window reader (the books the library holds for this
+        // install's person, while the link does not download) stops with
+        // its client the same way.
+        let window_reader = AbortOnDrop(Some(tokio::spawn(
+            window::WindowReader {
+                library: library.clone(),
+                cluster_id: cluster_id.clone(),
+                handle: handle.clone(),
+            }
             .run(link_shutdown),
         )));
         // The client stops on a swap (forwarded from `shutdown`), once its
@@ -764,12 +781,12 @@ async fn start_clients(
             let exit = client.run(client_shutdown).await;
             drop(listed);
             let _ = link_stop.send(true);
-            // Both exit before a client for a new enrollment can start, so
+            // All exit before a client for a new enrollment can start, so
             // one cluster never has two consent supervisors (or two catalog
-            // syncs or answerers). They wind down side by side, so the
+            // syncs, answerers or window readers). They wind down side by side, so the
             // client's exit waits for the slowest of them only.
-            let (mut supervisor, mut catalog_sync, mut catalog_answers) =
-                (supervisor, catalog_sync, catalog_answers);
+            let (mut supervisor, mut catalog_sync, mut catalog_answers, mut window_reader) =
+                (supervisor, catalog_sync, catalog_answers, window_reader);
             tokio::join!(
                 async {
                     if let Some(supervisor) = supervisor.0.take() {
@@ -784,6 +801,11 @@ async fn start_clients(
                 async {
                     if let Some(catalog_answers) = catalog_answers.0.take() {
                         join_or_abort(catalog_answers).await;
+                    }
+                },
+                async {
+                    if let Some(window_reader) = window_reader.0.take() {
+                        join_or_abort(window_reader).await;
                     }
                 },
             );

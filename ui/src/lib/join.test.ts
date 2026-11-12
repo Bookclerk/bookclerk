@@ -17,6 +17,8 @@ import {
   listClerks,
   looksLikeBranchInvite,
   parseJoinCallback,
+  windowEntryFormats,
+  windowEntryLibraries,
 } from "./join";
 import { isAppPath, joinPage } from "./routes";
 
@@ -323,5 +325,35 @@ describe("broughtConnectionsSummary", () => {
     );
     expect(broughtConnectionsSummary({ ...base, not_kept: "no_owner" })).toMatch(/no single owner/);
     expect(broughtConnectionsSummary({ ...base, not_kept: "failed" })).toMatch(/couldn't be added/);
+  });
+});
+
+describe("window view helpers", () => {
+  const edition = (origin: string, store: string, formats: string[]) => ({
+    cluster_id: origin,
+    owner_origin: origin,
+    store,
+    marketplace: "us",
+    product_id: "B0X",
+    formats,
+    title: "T",
+  });
+
+  it("names each library once, by host, in order", () => {
+    const entry = {
+      key: "work:1",
+      editions: [
+        edition("https://books.example.com", "audible", ["audio"]),
+        edition("https://books.example.com", "libro", []),
+        edition("https://other.example:8443", "audible", ["pdf", "audio"]),
+        edition("not a url", "audible", []),
+      ],
+    };
+    expect(windowEntryLibraries(entry)).toEqual([
+      "books.example.com",
+      "other.example:8443",
+      "not a url",
+    ]);
+    expect(windowEntryFormats(entry)).toEqual(["audio", "pdf"]);
   });
 });

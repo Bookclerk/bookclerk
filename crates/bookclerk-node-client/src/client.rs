@@ -65,12 +65,13 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_node_proto::{
     decode_nonce, open_instance_secrets, open_secrets, open_upload_token, questions_problem,
-    seal_secret_update, sign_artifact_request, sign_auth, validate_box_public_key, AcquireTarget,
-    ArtifactRequest, AuthContext, Body, CatalogRef, CatalogTitle, ClaimFilter, Frame, HeldFence,
-    LookupAnswer, LookupWork, PlanDestination, SealError, SecretEntry, SecretRef, SecretValue,
-    SigningKey, UploadAnswer, UploadCommitRequest, UploadFile, ARTIFACTS_PATH, CATALOG_ITEM,
-    CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB,
-    PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
+    seal_secret_update, sign_artifact_request, sign_auth, validate_box_public_key,
+    window_page_problem, AcquireTarget, ArtifactRequest, AuthContext, Body, CatalogRef,
+    CatalogTitle, ClaimFilter, Frame, HeldFence, LookupAnswer, LookupWork, PlanDestination,
+    SealError, SecretEntry, SecretRef, SecretValue, SigningKey, UploadAnswer, UploadCommitRequest,
+    UploadFile, WindowWork, ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED,
+    HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES,
+    UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -1103,6 +1104,33 @@ impl HostClientHandle {
             .await?
         {
             Body::Accepted {} => Ok(()),
+            _ => Err(OwnerCallError::Unavailable),
+        }
+    }
+
+    /// `window.books`: one page of the books the library holds for this
+    /// window's person, from cursor `after` (0 for the first page).
+    ///
+    /// # Returns
+    ///
+    /// The page's works and the cursor of the next page (`None` on the
+    /// last). A page that breaks the frame rules, or whose cursor does not
+    /// move past `after`, is refused as [`OwnerCallError::Unavailable`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`]; `Refused` when the library does not
+    /// count this node as a branch.
+    pub async fn window_books(
+        &self,
+        after: i64,
+    ) -> Result<(Vec<WindowWork>, Option<i64>), OwnerCallError> {
+        match self.catalog_call(Body::WindowBooks { after }).await? {
+            Body::WindowPage { works, next }
+                if window_page_problem(after, &works, next).is_none() =>
+            {
+                Ok((works, next))
+            }
             _ => Err(OwnerCallError::Unavailable),
         }
     }

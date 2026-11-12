@@ -1429,7 +1429,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         share_books INTEGER NOT NULL DEFAULT 1 CHECK (share_books IN (0, 1)),
         include_branches INTEGER NOT NULL DEFAULT 1 CHECK (include_branches IN (0, 1)),
         ancestry_json TEXT NOT NULL DEFAULT '[]',
-        list_members_books INTEGER NOT NULL DEFAULT 1 CHECK (list_members_books IN (0, 1))
+        list_members_books INTEGER NOT NULL DEFAULT 1 CHECK (list_members_books IN (0, 1)),
+        download INTEGER NOT NULL DEFAULT 1 CHECK (download IN (0, 1))
     )",
     ),
     MigrationOp::Schema(
@@ -1599,6 +1600,29 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         user_id INTEGER PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         created_at TEXT NOT NULL
     )",
+    ),
+    // On a window (a link with "Use this computer to download" off): the
+    // books each library holds for this install's person, one row per
+    // edition (`control_plane::window_books`). `work_ref` is the library's
+    // own grouping key, `local_work_id` the work of this library the
+    // identifiers reach (if any); `seen_at` is the stamp of the read that
+    // last named the row, and a finished read drops rows it did not name.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS window_books (
+        owner_cluster_id TEXT NOT NULL REFERENCES cluster_links(owner_cluster_id) ON DELETE CASCADE,
+        store TEXT NOT NULL,
+        marketplace TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        work_ref TEXT NOT NULL,
+        local_work_id TEXT,
+        identifiers_json TEXT NOT NULL DEFAULT '[]',
+        edition_json TEXT NOT NULL,
+        seen_at TEXT NOT NULL,
+        PRIMARY KEY (owner_cluster_id, store, marketplace, product_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_window_books_seen ON window_books(owner_cluster_id, seen_at)",
     ),
     // Last claimed fire per plugin cron schedule (`control_plane::cron_fires`).
     // `claim` is the token of the batch that last moved the cursor; the job

@@ -632,6 +632,9 @@ all on by default:
 - **List my members' books to <library>.** Off: B answers A's catalog
   questions with its owner's books only (see
   [Shared catalog](#shared-catalog)).
+- **Use this computer to download.** Off: B is a window of that library.
+  It takes none of A's work and shows the books A holds for B's person
+  instead (see [Window mode](#window-mode)).
 
 B's operator or an Owner of B may change them. An Owner sees only the
 libraries and these settings; joining, leaving and plugin approvals
@@ -639,8 +642,8 @@ stay the operator's. Anyone else is refused (403).
 
 The routes are `GET /api/config/join/sharing` (→ `{clusters}`) and
 `POST /api/config/join/sharing`
-`{cluster_id, share_books, include_branches, list_members_books?}`
-(`list_members_books` is left as it is when absent).
+`{cluster_id, share_books, include_branches, list_members_books?, download?}`
+(`list_members_books` and `download` are left as they are when absent).
 
 ### Branch titles on the library
 
@@ -706,6 +709,49 @@ missing.
 > stops counting two days after B last named it, so A can still show B as
 > a source for up to two days.
 
+### Window mode
+
+A window shows the books its person has in the libraries they joined,
+without downloading anything. It is the same install as a branch with one
+setting per library turned off: **Use this computer to download** in
+**Settings → Library**. A person can start as a window and turn the
+setting on later to keep copies.
+
+With the setting off for library A, B:
+
+- **Takes no work from A.** B claims no jobs from A and runs none of A's
+  plugins. Each deployment A made to B is reported to A as `error` with
+  the detail "this computer does not download for this library (window
+  mode)", and B records, fetches and configures nothing for it. Turning
+  the setting off hands back any job B holds for A at once.
+- **Reads its person's books from A.** On every connection, every 30
+  minutes, and at once when the setting changes, B sends `window.books`
+  page by page. A answers each page (`window.page`) with the books on the
+  store accounts linked to B's owner in A, at most 100 works per page,
+  grouped by A's works with each work's identifiers. A answers only a
+  branch it trusts, and the frame names no user, so B can read only its
+  own person's books.
+- **Keeps one copy of the list per library.** B stores each page as it
+  arrives. Once the last page is in, it drops the books A no longer
+  named. A read cut short keeps the list from the last complete read.
+  Turning the setting back on clears that library's list.
+
+B's **Library** page then shows **Your books in other libraries** to B's
+operator and Owners: every library B is a window of, merged into one list
+by work. Two books are the same work when their identifiers reach the
+same work in B's own library, when they share an identifier (an ASIN with
+its marketplace, an ISBN, or an OpenLibrary edition or work id), or when
+one library groups them under one work. Titles are never compared,
+because work ids differ between libraries. Each entry shows which
+libraries hold it, from which stores, and in which formats.
+
+The route is `GET /api/config/join/window` (→ `{clusters, books}`), for
+B's operator or an Owner of B.
+
+> [!NOTE]
+> Asking a library to send a book to a window isn't built yet. It arrives
+> with interlibrary requests.
+
 ### No loops
 
 `GET /api/node/v1/info` reports the library's ancestry: its own cluster id
@@ -756,6 +802,9 @@ in the library, marked as from a branch that left (see
   only; the web app doesn't show them yet.
 - Search and Discover don't show branch listings yet, and a branch
   answers only from its own library, not from other libraries it joined.
+- A window can't ask a library to send it a book yet, and the library's
+  scheduler can still place plugin replicas on a window (the window
+  reports them as errors and never runs them).
 - The library's name is the host of its public origin. There is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the

@@ -32,17 +32,24 @@
 //! - `GET /api/config/join/sharing`: the libraries this install is a
 //!   branch of, with their two sharing settings.
 //! - `POST /api/config/join/sharing` `{cluster_id, share_books,
-//!   include_branches, list_members_books?}`: Settings → Library's "Share
-//!   this branch's books with *library*" and "Include books from my own
-//!   branches" (the catalog sync reports them to the library at once), and
-//!   "List my members' books to *library*", which the next catalog lookup
-//!   answer follows.
+//!   include_branches, list_members_books?, download?}`: Settings →
+//!   Library's "Share this branch's books with *library*" and "Include
+//!   books from my own branches" (the catalog sync reports them to the
+//!   library at once), "List my members' books to *library*", which the
+//!   next catalog lookup answer follows, and "Use this computer to
+//!   download" (off makes this install a window of that library: the
+//!   link's plugins are withdrawn and its held jobs given back at once, and
+//!   the books the library holds for this install's person are read).
 //!
 //! Inspect and start refuse a library whose ancestry names this library's
 //! own cluster id (409 `join_cycle`), so a tree of libraries never loops;
 //! a branch's redeem checks it again before the code is spent.
 //!
-//! The sharing routes are for the operator or an Owner (the stored role is
+//! - `GET /api/config/join/window`: the libraries this install is a window
+//!   of (active links with "Use this computer to download" off) and the
+//!   books they hold for this install's person, merged by work.
+//!
+//! The sharing and window routes are for the operator or an Owner (the stored role is
 //! read on every call; anyone else gets 403); all the others are
 //! operator-only. Answers carrying a URL with `state` are
 //! `Cache-Control: no-store`; nothing secret is logged.
@@ -1345,6 +1352,11 @@ pub struct SharingBody {
     #[serde(default)]
     #[schema(example = true)]
     list_members_books: Option<bool>,
+    /// "Use this computer to download"; left as it is when absent. Off
+    /// makes this install a window of the library.
+    #[serde(default)]
+    #[schema(example = true)]
+    download: Option<bool>,
 }
 
 /// `GET /api/config/join/sharing`: Settings → Library for the operator or
@@ -1444,12 +1456,22 @@ pub async fn post_join_sharing(
             return crate::config_authority::events_error(err);
         }
     }
+    if let Some(download) = body.download {
+        if let Err(err) = bookclerk_library::control_plane::set_cluster_link_download(
+            &store, cluster_id, download,
+        )
+        .await
+        {
+            return crate::config_authority::events_error(err);
+        }
+    }
     tracing::info!(
         %cluster_id,
         %actor,
         share_books = body.share_books,
         include_branches = body.include_branches,
         list_members_books = ?body.list_members_books,
+        download = ?body.download,
         "branch sharing settings changed"
     );
     let detail = json!({
@@ -1457,6 +1479,7 @@ pub async fn post_join_sharing(
         "share_books": body.share_books,
         "include_branches": body.include_branches,
         "list_members_books": body.list_members_books,
+        "download": body.download,
     })
     .to_string();
     if let Err(err) = store
@@ -1471,6 +1494,10 @@ pub async fn post_join_sharing(
         );
     }
     super::catalog_sync::notify_sharing_changed();
+    if body.download.is_some() {
+        super::consent::notify_consent_changed();
+        super::window::notify_window_changed();
+    }
     match bookclerk_library::control_plane::load_cluster_link(&store, cluster_id).await {
         Ok(Some(link)) => Json(SharingChanged {
             cluster: link_json(&link),
@@ -1479,6 +1506,161 @@ pub async fn post_join_sharing(
         Ok(None) => join_error(StatusCode::NOT_FOUND, "not_found", "no such library"),
         Err(err) => crate::config_authority::events_error(err),
     }
+}
+
+/// One edition in [`WindowBooks`], and the library that holds it.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct WindowEditionView {
+    /// The library (owner cluster id) that holds it for this install's person.
+    #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
+    pub cluster_id: String,
+    /// The library's origin.
+    #[schema(example = "https://books.example.com")]
+    pub owner_origin: String,
+    /// The store's plain id.
+    #[schema(example = "audible")]
+    pub store: String,
+    /// Lower-cased store marketplace; empty when the store has none.
+    #[schema(example = "us")]
+    pub marketplace: String,
+    /// The store's product id.
+    #[schema(example = "B0EXAMPLE1")]
+    pub product_id: String,
+    /// Formats that library has (`audio`, `pdf`); empty when unknown.
+    #[schema(example = json!(["audio"]))]
+    pub formats: Vec<String>,
+    /// The edition's title.
+    #[schema(example = "A Title")]
+    pub title: String,
+    /// Subtitle, when known.
+    #[schema(example = "A Novel")]
+    pub subtitle: Option<String>,
+    /// Authors as one display string, when known.
+    #[schema(example = "Ann Author")]
+    pub authors: Option<String>,
+    /// Narrators as one display string, when known.
+    #[schema(example = "Ned Narrator")]
+    pub narrators: Option<String>,
+    /// Series name, when known.
+    #[schema(example = "The Series")]
+    pub series: Option<String>,
+    /// Position in the series, when known.
+    #[schema(example = "2")]
+    pub series_index: Option<String>,
+    /// Length in minutes, when known.
+    #[schema(example = 600)]
+    pub length_minutes: Option<i64>,
+}
+
+/// One work in [`WindowBooks`]: every edition its libraries hold for the person.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct WindowEntryView {
+    /// A key that stays the same while the entry's editions do.
+    #[schema(example = "work:0b8f2c1e-1a2b-4c3d-8e9f-0a1b2c3d4e5f")]
+    pub key: String,
+    /// The work of this install's own library the entry was placed on, by
+    /// identifier; absent when none was.
+    #[schema(example = "0b8f2c1e-1a2b-4c3d-8e9f-0a1b2c3d4e5f")]
+    pub work_id: Option<String>,
+    /// The editions, in library then store order; the first names the entry.
+    pub editions: Vec<WindowEditionView>,
+}
+
+/// JSON body for `GET /api/config/join/window`.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct WindowBooks {
+    /// The libraries this install is a window of (active links with "Use
+    /// this computer to download" off).
+    pub clusters: Vec<super::api::ClusterLinkView>,
+    /// Their books for this install's person, one entry per work, by title.
+    pub books: Vec<WindowEntryView>,
+}
+
+/// `GET /api/config/join/window`: the window view for the operator or an
+/// Owner: the books every library this install is a window of holds for
+/// this install's person, merged by work (`{clusters, books}`).
+#[utoipa::path(
+    get,
+    path = "/api/config/join/window",
+    responses(
+        (status = 200, description = "The libraries this install is a window of, and their books for its person.", body = WindowBooks),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
+            ("forbidden" = (summary = "The user is not an active Owner.", value = json!({"error": "forbidden"}))),
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 500, description = "The library database could not be read.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
+    ),
+)]
+pub async fn get_join_window(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+) -> Response {
+    if let Err(refused) = require_branch_admin(&state, caller).await {
+        return refused;
+    }
+    let store = state.library_snapshot().await;
+    let links = match list_cluster_links(&store).await {
+        Ok(links) => links,
+        Err(err) => return crate::config_authority::events_error(err),
+    };
+    let entries = match bookclerk_library::control_plane::window_view(&store).await {
+        Ok(entries) => entries,
+        Err(err) => return crate::config_authority::events_error(err),
+    };
+    let books = entries
+        .into_iter()
+        .map(|entry| WindowEntryView {
+            key: entry.key,
+            work_id: entry.work_id,
+            editions: entry
+                .editions
+                .into_iter()
+                .map(|held| {
+                    let edition = held.edition;
+                    let meta = edition.metadata;
+                    WindowEditionView {
+                        cluster_id: held.owner_cluster_id,
+                        owner_origin: held.owner_origin,
+                        store: edition.store,
+                        marketplace: edition.marketplace,
+                        product_id: edition.product_id,
+                        formats: edition
+                            .formats
+                            .iter()
+                            .map(|format| match format {
+                                bookclerk_node_proto::LookupFormat::Audio => "audio".to_string(),
+                                bookclerk_node_proto::LookupFormat::Pdf => "pdf".to_string(),
+                            })
+                            .collect(),
+                        title: meta.title,
+                        subtitle: meta.subtitle,
+                        authors: meta.authors,
+                        narrators: meta.narrators,
+                        series: meta.series,
+                        series_index: meta.series_index,
+                        length_minutes: meta.length_minutes,
+                    }
+                })
+                .collect(),
+        })
+        .collect();
+    let mut answer = Json(WindowBooks {
+        clusters: links
+            .iter()
+            .filter(|link| link.is_active() && !link.download)
+            .map(link_json)
+            .collect(),
+        books,
+    })
+    .into_response();
+    // The person's books: never kept by a shared cache.
+    answer.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    answer
 }
 
 #[cfg(test)]

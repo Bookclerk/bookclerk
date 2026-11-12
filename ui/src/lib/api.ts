@@ -2434,6 +2434,8 @@ export interface ClusterLinkView {
   share_books?: boolean;
   /** "Include books from my own branches" (on by default). */
   include_branches?: boolean;
+  /** "Use this computer to download" (on by default); off makes this server a window. */
+  download?: boolean;
 }
 
 /**

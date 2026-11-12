@@ -149,6 +149,11 @@ pub struct ClusterLink {
     /// lookups from that library are answered with the members' books
     /// (except those of members who opted out) as well as the owner's.
     pub list_members_books: bool,
+    /// "Use this computer to download" (on by default). Off makes this
+    /// install a window of that library: the link claims no jobs, runs none
+    /// of its plugins, and reads the books the library holds for this
+    /// install's person instead (`control_plane::window_books`).
+    pub download: bool,
 }
 
 impl ClusterLink {
@@ -176,6 +181,7 @@ impl From<cluster_links::Model> for ClusterLink {
                 .filter(|id| bookclerk_node_proto::is_cluster_id(id))
                 .collect(),
             list_members_books: row.list_members_books != 0,
+            download: row.download != 0,
         }
     }
 }
@@ -270,6 +276,7 @@ pub async fn record_cluster_link(
         include_branches: Set(1),
         ancestry_json: Set("[]".into()),
         list_members_books: Set(1),
+        download: Set(1),
     };
     let insert = cluster_links::Entity::insert(row).on_conflict(
         OnConflict::column(cluster_links::Column::OwnerClusterId)
@@ -507,6 +514,43 @@ pub async fn set_cluster_link_listing(
         .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
         .await?;
     Ok(updated == 1)
+}
+
+/// Sets the link's "Use this computer to download" setting.
+///
+/// # Arguments
+///
+/// * `owner_cluster_id` - The library the link joined.
+/// * `download` - The new setting; `false` makes this install a window of
+///   that library.
+///
+/// # Returns
+///
+/// Whether the link exists (`false` when there is no such link); setting
+/// the value it already has still returns `true`.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn set_cluster_link_download(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    download: bool,
+) -> Result<bool> {
+    let value = i64::from(download);
+    let update = cluster_links::Entity::update_many()
+        .col_expr(cluster_links::Column::Download, Expr::value(value))
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id));
+    let probe = cluster_links::Entity::find()
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(cluster_links::Column::Download.ne(value));
+    let updated = store
+        .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
+        .await?;
+    if updated == 0 {
+        return Ok(load_cluster_link(store, owner_cluster_id).await?.is_some());
+    }
+    Ok(true)
 }
 
 /// Records the owner library's ancestry as it reported it (`info` at join,

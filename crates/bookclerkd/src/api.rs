@@ -1224,6 +1224,9 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
             crate::cluster_link::join::get_join_sharing,
             crate::cluster_link::join::post_join_sharing
         ))
+        // The window view on a branch (operator or Owner; the handler
+        // checks).
+        .routes(routes!(crate::cluster_link::join::get_join_window))
         // The library lets the operator or an Owner revoke any host and
         // anyone else only the hosts they own.
         .routes(routes!(crate::node_api::delete_node_credential))

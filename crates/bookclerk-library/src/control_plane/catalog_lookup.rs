@@ -88,7 +88,7 @@ const MAX_IN_LIST: usize = 200;
 /// Ids per `IN (...)` list on `store`'s database plugin: its advertised
 /// bind limit less `fixed` binds the statement also carries, at least 1
 /// and at most [`MAX_IN_LIST`].
-fn in_chunk(store: &LibraryStore, fixed: usize) -> usize {
+pub(crate) fn in_chunk(store: &LibraryStore, fixed: usize) -> usize {
     usize::try_from(store.db_capabilities().max_binds)
         .unwrap_or(usize::MAX)
         .saturating_sub(fixed)
@@ -98,7 +98,7 @@ fn in_chunk(store: &LibraryStore, fixed: usize) -> usize {
 
 /// Rows per read on `store`'s database plugin: its advertised
 /// `maxResultRows` (at least 1; [`MAX_IN_LIST`] when it sets none).
-fn result_page(store: &LibraryStore) -> usize {
+pub(crate) fn result_page(store: &LibraryStore) -> usize {
     match store.db_capabilities().max_result_rows {
         0 => MAX_IN_LIST,
         rows => usize::try_from(rows).unwrap_or(MAX_IN_LIST).max(1),
@@ -112,7 +112,7 @@ fn result_page(store: &LibraryStore) -> usize {
 /// # Errors
 ///
 /// Returns the read error.
-async fn read_paged<E>(
+pub(crate) async fn read_paged<E>(
     store: &LibraryStore,
     select: sea_orm::Select<E>,
     cap: Option<u64>,
@@ -159,7 +159,7 @@ pub fn branch_listing_key(node_id: &str) -> String {
 }
 
 /// RFC 3339 now, with microseconds so stamps order as text.
-fn stamp(at: DateTime<Utc>) -> String {
+pub(crate) fn stamp(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
 }
 
@@ -172,7 +172,7 @@ fn parse(at: &str) -> Option<DateTime<Utc>> {
 
 /// True when `node_id` is a branch this library trusts: a `host` node with
 /// a live credential and an active owner user.
-async fn is_trusted_branch(store: &LibraryStore, row: &nodes::Model) -> Result<bool> {
+pub(crate) async fn is_trusted_branch(store: &LibraryStore, row: &nodes::Model) -> Result<bool> {
     if row.kind != "host" {
         return Ok(false);
     }
@@ -233,7 +233,7 @@ async fn trusts(store: &LibraryStore, node_id: &str) -> Result<bool> {
 /// # Returns
 ///
 /// The rows the statements changed, summed.
-async fn run_batches(
+pub(crate) async fn run_batches(
     store: &LibraryStore,
     what: &'static str,
     statements: Vec<TypedDbStatement>,
@@ -336,7 +336,11 @@ pub async fn ask_branches(store: &LibraryStore, work_ids: &[String]) -> Result<A
 /// Reads `ids` in chunks with `query`, each statement narrowed until it
 /// fits the database plugin's limits (`maxBinds`, `maxPayloadBytes`,
 /// `maxRequestBytes`); see [`crate::store::library_model::find_chunked`].
-async fn read_chunked<E, F>(store: &LibraryStore, ids: &[String], query: F) -> Result<Vec<E::Model>>
+pub(crate) async fn read_chunked<E, F>(
+    store: &LibraryStore,
+    ids: &[String],
+    query: F,
+) -> Result<Vec<E::Model>>
 where
     E: EntityTrait,
     F: Fn(Vec<String>) -> sea_orm::Select<E>,
@@ -369,7 +373,7 @@ where
 /// The identifiers each of `work_ids` is asked about by: its editions'
 /// ASINs, ISBNs and OpenLibrary edition ids and its OpenLibrary work id,
 /// strong ones first, at most [`MAX_LOOKUP_IDENTIFIERS`] per work.
-async fn identifiers_of(
+pub(crate) async fn identifiers_of(
     store: &LibraryStore,
     work_ids: &[String],
 ) -> Result<BTreeMap<String, Vec<LookupIdentifier>>> {
@@ -782,7 +786,7 @@ pub struct BranchListing {
 }
 
 /// The works of `edition_ids`, by edition.
-async fn works_of_editions(
+pub(crate) async fn works_of_editions(
     store: &LibraryStore,
     edition_ids: &[String],
 ) -> Result<HashMap<String, String>> {
@@ -1027,7 +1031,10 @@ pub async fn catalog_listing_opted_out(store: &LibraryStore, user_id: i64) -> Re
 /// its strong identifiers (ASIN, OpenLibrary edition or work id) reach,
 /// or, with none, the one work its ISBNs reach. `None` when no work, or
 /// more than one, is reached.
-async fn work_for_question(store: &LibraryStore, question: &LookupWork) -> Result<Option<String>> {
+pub(crate) async fn work_for_question(
+    store: &LibraryStore,
+    question: &LookupWork,
+) -> Result<Option<String>> {
     let mut strong_editions = BTreeSet::new();
     let mut weak_editions = BTreeSet::new();
     let mut strong_works = BTreeSet::new();
@@ -1195,7 +1202,7 @@ impl Listers {
 
 /// The answer edition for `book`, when its store, product id and title
 /// pass the frame rules.
-fn book_edition(book: &books::Model) -> Option<LookupEdition> {
+pub(crate) fn book_edition(book: &books::Model) -> Option<LookupEdition> {
     let mut formats = Vec::new();
     if AcquireStatus::parse(&book.acquire_status) == Some(AcquireStatus::Acquired) {
         formats.push(LookupFormat::Audio);
