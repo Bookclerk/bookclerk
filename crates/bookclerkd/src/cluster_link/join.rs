@@ -1434,31 +1434,16 @@ pub async fn post_join_sharing(
     };
     let store = state.library_snapshot().await;
     let cluster_id = body.cluster_id.trim();
-    // The work settings the body leaves out keep their stored values. Every
-    // setting then goes in one statement, so a failed read or write changes
-    // none of them and nothing changes unaudited.
-    let stored = match bookclerk_library::control_plane::load_cluster_link(&store, cluster_id).await
-    {
-        Ok(Some(link)) => link,
-        Ok(None) => {
-            return join_error(
-                StatusCode::NOT_FOUND,
-                "not_found",
-                "this install is not a branch of that library",
-            )
-        }
-        Err(err) => return crate::config_authority::events_error(err),
-    };
-    let work = (
-        body.work_for_members.unwrap_or(stored.work_for_members),
-        body.keep_member_copies.unwrap_or(stored.keep_member_copies),
-    );
+    // Every setting goes in one statement, so a failed write changes none of
+    // them and nothing changes unaudited. A setting the body leaves out is
+    // not written at all, so it keeps whatever is stored when the statement
+    // runs, including a concurrent change.
     let settings = bookclerk_library::control_plane::ClusterLinkSettings {
         share_books: body.share_books,
         include_branches: body.include_branches,
         list_members_books: body.list_members_books,
-        work_for_members: Some(work.0),
-        keep_member_copies: Some(work.1),
+        work_for_members: body.work_for_members,
+        keep_member_copies: body.keep_member_copies,
     };
     match bookclerk_library::control_plane::set_cluster_link_settings(&store, cluster_id, settings)
         .await
@@ -1478,8 +1463,8 @@ pub async fn post_join_sharing(
         %actor,
         share_books = body.share_books,
         include_branches = body.include_branches,
-        work_for_members = work.0,
-        keep_member_copies = work.1,
+        work_for_members = ?body.work_for_members,
+        keep_member_copies = ?body.keep_member_copies,
         list_members_books = ?body.list_members_books,
         "branch sharing settings changed"
     );
@@ -1487,8 +1472,8 @@ pub async fn post_join_sharing(
         "cluster_id": cluster_id,
         "share_books": body.share_books,
         "include_branches": body.include_branches,
-        "work_for_members": work.0,
-        "keep_member_copies": work.1,
+        "work_for_members": body.work_for_members,
+        "keep_member_copies": body.keep_member_copies,
         "list_members_books": body.list_members_books,
     })
     .to_string();
