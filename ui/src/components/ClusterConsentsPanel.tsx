@@ -76,11 +76,9 @@ function SharingSettings({ link, onSaved }: { link: ClusterLinkView; onSaved: ()
   const workForMembers = link.work_for_members ?? false;
   const keepMemberCopies = link.keep_member_copies ?? false;
 
-  async function save(
-    nextShare: boolean,
-    nextInclude: boolean,
-    work: BranchWorkSettings = { workForMembers, keepMemberCopies },
-  ) {
+  // Each save sends only the work settings the user changed, so a sharing
+  // change never writes back values another session has since changed.
+  async function save(nextShare: boolean, nextInclude: boolean, work?: BranchWorkSettings) {
     setBusy(true);
     setError(null);
     try {
@@ -140,7 +138,7 @@ function SharingSettings({ link, onSaved }: { link: ClusterLinkView; onSaved: ()
             void save(share, include, {
               workForMembers: e.target.checked,
               // Copies follow the work: turning it off turns them off too.
-              keepMemberCopies: e.target.checked && keepMemberCopies,
+              ...(e.target.checked ? {} : { keepMemberCopies: false }),
             })
           }
         />
@@ -161,12 +159,7 @@ function SharingSettings({ link, onSaved }: { link: ClusterLinkView; onSaved: ()
           className="mt-0.5"
           checked={keepMemberCopies}
           disabled={busy || !workForMembers}
-          onChange={(e) =>
-            void save(share, include, {
-              workForMembers,
-              keepMemberCopies: e.target.checked,
-            })
-          }
+          onChange={(e) => void save(share, include, { keepMemberCopies: e.target.checked })}
         />
         <span>
           <span className="block font-medium">Keep copies of other members&apos; books</span>

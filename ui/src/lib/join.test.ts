@@ -247,7 +247,7 @@ describe("answerBranchConsent", () => {
 describe("setBranchSharing", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("sends the work settings only when given", async () => {
+  it("sends only the work settings it is given", async () => {
     const fetchMock = vi.fn(
       async (_url: string, _init: RequestInit) =>
         new Response(JSON.stringify({ cluster: {} }), { status: 200 }),
@@ -255,6 +255,7 @@ describe("setBranchSharing", () => {
     vi.stubGlobal("fetch", fetchMock);
     await setBranchSharing("c1", true, false);
     await setBranchSharing("c1", true, false, { workForMembers: true, keepMemberCopies: false });
+    await setBranchSharing("c1", true, false, { keepMemberCopies: true });
     const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1].body)));
     expect(bodies[0]).toEqual({ cluster_id: "c1", share_books: true, include_branches: false });
     expect(bodies[1]).toEqual({
@@ -263,6 +264,12 @@ describe("setBranchSharing", () => {
       include_branches: false,
       work_for_members: true,
       keep_member_copies: false,
+    });
+    expect(bodies[2]).toEqual({
+      cluster_id: "c1",
+      share_books: true,
+      include_branches: false,
+      keep_member_copies: true,
     });
   });
 });

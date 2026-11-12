@@ -459,12 +459,15 @@ export function fetchBranchSharing(): Promise<{ clusters: BranchLinkView[] }> {
   return request("/api/config/join/sharing");
 }
 
-/** Settings → Library's work settings for one library this server is a branch of. */
+/**
+ * Settings → Library's work settings for one library this server is a
+ * branch of; a setting left out keeps its stored value.
+ */
 export interface BranchWorkSettings {
   /** "Download for other members of <library>". */
-  workForMembers: boolean;
+  workForMembers?: boolean;
   /** "Keep copies of other members' books". */
-  keepMemberCopies: boolean;
+  keepMemberCopies?: boolean;
 }
 
 /**
@@ -476,7 +479,7 @@ export interface BranchWorkSettings {
  * @param clusterId - The library.
  * @param shareBooks - "Share this branch's books with <library>".
  * @param includeBranches - "Include books from my own branches".
- * @param work - The work settings; left as they are when omitted.
+ * @param work - The work settings to change; each one left out keeps its stored value.
  * @returns The link with the stored settings.
  */
 export function setBranchSharing(
@@ -491,9 +494,10 @@ export function setBranchSharing(
       cluster_id: clusterId,
       share_books: shareBooks,
       include_branches: includeBranches,
-      ...(work
-        ? { work_for_members: work.workForMembers, keep_member_copies: work.keepMemberCopies }
-        : {}),
+      ...(work?.workForMembers === undefined ? {} : { work_for_members: work.workForMembers }),
+      ...(work?.keepMemberCopies === undefined
+        ? {}
+        : { keep_member_copies: work.keepMemberCopies }),
     },
   });
 }
