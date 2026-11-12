@@ -230,7 +230,10 @@ export {
   encodeExecuteResultReply,
   encodeExecuteRequest,
   executeReplyToD1Results,
+  MAX_WRITE_KEY_BYTES,
   statementResultToD1Result,
+  WriteChunksError,
+  writeChunksOperationId,
 } from "./db-execute.js";
 export { decodeDbValue, encodeDbValue, parseDbValue } from "./db-value.js";
 export type { DbType, DbValue } from "./db-value.js";
@@ -252,4 +255,6 @@ export type {
   RetryToken,
   StatementResult,
   TypedDbStatement,
+  WriteChunksOptions,
+  WriteProgress,
 } from "./db-execute.js";

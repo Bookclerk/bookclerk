@@ -134,7 +134,7 @@ pub use leases::{
     RECORD_RETENTION_LEASE, SESSION_EXPIRY_LEASE,
 };
 pub(crate) use live::{
-    bump, bump_if_any, bump_if_stamped, bump_on, exec_bumped_via, sea_probe, Bump,
+    bump, bump_if_any, bump_if_stamped, bump_on, exec_bumped_via, sea_exec, sea_probe, Bump,
 };
 pub use live::{changed_topics, live_revisions, LiveRevision, LiveRevisions, LiveTopic};
 pub use node_queue::{

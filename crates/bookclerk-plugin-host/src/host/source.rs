@@ -921,18 +921,16 @@ impl PassIo for LibraryPass<'_> {
         &mut self,
         books: Vec<bookclerk_plugin_sdk::ScanBook>,
     ) -> bookclerk_source::Result<usize> {
-        let mut upserted = 0usize;
-        for book in books {
-            let Some(title) = scanned_title(self.source.id(), book) else {
-                continue;
-            };
-            self.scope
-                .upsert_scanned_title(&title)
-                .await
-                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
-            upserted += 1;
-        }
-        Ok(upserted)
+        let titles: Vec<_> = books
+            .into_iter()
+            .filter_map(|book| scanned_title(self.source.id(), book))
+            .collect();
+        let stored = self
+            .scope
+            .upsert_scanned_titles(&titles)
+            .await
+            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        Ok(stored.len())
     }
 
     async fn checkpoint(&mut self, cursor: &str, sync_token: &str) -> bookclerk_source::Result<()> {
