@@ -141,6 +141,11 @@ pub async fn enrich_books_from_metadata(
     // run's request cap is spent.
     let mut offset = 0u64;
     'pages: loop {
+        // A spent budget reads no further page, even when the titles left
+        // would not have needed a request.
+        if requests >= opts.max_requests {
+            break;
+        }
         let page = library
             .list_books_filtered_page(None, None, ENRICH_PAGE, offset)
             .await?;
@@ -593,6 +598,28 @@ mod tests {
             .unwrap();
         assert_eq!(n, isbns.len(), "every title on every page was filled");
         assert_eq!(providers.asks.lock().unwrap().len(), isbns.len());
+    }
+
+    /// A run whose budget is spent reads no further page of the library.
+    #[tokio::test]
+    async fn a_spent_budget_reads_no_further_page() {
+        let (store, _) = store_with(&[
+            ("p1", "A", Some("9780441172719")),
+            ("p2", "B", Some("9780553293357")),
+            ("p3", "C", Some("9780141439518")),
+        ])
+        .await;
+        let providers = Fixed::default();
+        // Nothing is asked with no budget; with one request, only the first
+        // page's first title is.
+        enrich_books_from_metadata(&store, &providers, &opts(0))
+            .await
+            .unwrap();
+        assert!(providers.asks.lock().unwrap().is_empty());
+        enrich_books_from_metadata(&store, &providers, &opts(1))
+            .await
+            .unwrap();
+        assert_eq!(providers.asks.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
