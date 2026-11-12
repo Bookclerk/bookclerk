@@ -285,11 +285,7 @@ mod tests {
         tokio::sync::MutexGuard<'static, ()>,
         String,
     ) {
-        static DEK_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-        let dek = DEK_LOCK
-            .get_or_init(|| tokio::sync::Mutex::new(()))
-            .lock()
-            .await;
+        let dek = crate::master_key_test_lock().await;
         let dir = tempfile::tempdir().unwrap();
         bookclerk_library::configure_master_key(dir.path()).unwrap();
         let store = bookclerk_library::LibraryStore::from_connection(

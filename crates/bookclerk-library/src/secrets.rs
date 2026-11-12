@@ -227,7 +227,7 @@ fn cache_invalidate_key(key: &SecretCacheKey) {
 }
 
 /// Drops every cached plaintext belonging to an integration account id.
-fn cache_invalidate_account(account_id: &str) {
+pub(crate) fn cache_invalidate_account(account_id: &str) {
     if let Ok(mut guard) = plaintext_cache().lock() {
         guard.retain(|k, _| k.account_id != account_id);
     }

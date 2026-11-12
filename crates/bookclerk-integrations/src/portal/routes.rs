@@ -1051,8 +1051,9 @@ async fn known_account_ids(
 /// revoked with scans off, so nothing can use it.
 ///
 /// An account that was already here before the login (in `known`), or
-/// that someone's link now holds (another login of it finished while this
-/// one ran), is left as it is: it is a connection, not this login's leftover.
+/// that someone's link holds when the cleanup runs (another login of it
+/// finished meanwhile), is left as it is: the cleanup is one atomic batch
+/// guarded on the account having no link.
 async fn undo_refused_login(
     library: &bookclerk_library::LibraryStore,
     plugin_key: &str,
@@ -1062,23 +1063,11 @@ async fn undo_refused_login(
     if known.contains(account_id) {
         return;
     }
-    match library
-        .count_account_links_for_account(plugin_key, account_id)
-        .await
+    if let Err(err) =
+        bookclerk_library::control_plane::revoke_unlinked_account(library, plugin_key, account_id)
+            .await
     {
-        Ok(0) => {}
-        Ok(_) => return,
-        // Unsure whether it is someone's connection: leave it.
-        Err(err) => {
-            warn!(error = %err, plugin_key, "could not check a refused login's account; left as is");
-            return;
-        }
-    }
-    if let Err(err) = library.delete_account_secrets(plugin_key, account_id).await {
-        warn!(error = %err, plugin_key, "could not delete a refused login's secrets");
-    }
-    if let Err(err) = library.revoke_credentials(plugin_key, account_id).await {
-        warn!(error = %err, plugin_key, "could not revoke a refused login's account");
+        warn!(error = %err, plugin_key, "could not take back a refused login's account");
     }
 }
 

@@ -556,8 +556,10 @@ async fn sealed_connections(
         tracing::warn!(error = %err, "branch enrollment could not audit the connections; none sent");
         return None;
     }
+    // Nor without the record of where each account went.
     if let Err(err) = record_accounts_sent(library, &enrolled.node_id, &bundle.accounts).await {
-        tracing::warn!(error = %err, "branch enrollment could not record the connections it sent");
+        tracing::warn!(error = %err, "branch enrollment could not record the connections; none sent");
+        return None;
     }
     tracing::info!(
         node_id = %enrolled.node_id,

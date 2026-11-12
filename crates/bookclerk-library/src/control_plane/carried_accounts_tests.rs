@@ -564,3 +564,66 @@ async fn sent_shares_are_recorded_in_batches_every_profile_accepts() {
         assert_eq!(kit.refused_begins(), 0, "{name}");
     }
 }
+
+#[tokio::test]
+async fn a_refused_logins_account_is_taken_back_only_while_unlinked() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let ana = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        // Linked: another login connected it meanwhile.
+        connect(store, ana.id, SHAREABLE, "ana@example.com", b"ana-token").await;
+        // Unlinked: only the refused login stored it.
+        store
+            .upsert_account(SHAREABLE, "left@example.com", "us", None, true, "store")
+            .await
+            .unwrap();
+        let record = build_sealed_record(
+            b"left-token",
+            secret_kind::SOURCE_AUTH,
+            SHAREABLE,
+            secret_account_type::INTEGRATION,
+            "left@example.com",
+            "auth",
+        )
+        .unwrap();
+        upsert_secret(store.db(), &record).await.unwrap();
+
+        for id in ["ana@example.com", "left@example.com"] {
+            revoke_unlinked_account(store, SHAREABLE, id).await.unwrap();
+        }
+        let linked = store
+            .get_account(SHAREABLE, "ana@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(linked.connection_status, "active", "{name}");
+        assert!(
+            secret_of(store, SHAREABLE, "ana@example.com")
+                .await
+                .is_some(),
+            "{name}"
+        );
+        let left = store
+            .get_account(SHAREABLE, "left@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(left.connection_status, "revoked", "{name}");
+        assert!(!left.scan_enabled, "{name}");
+        assert!(
+            secret_of(store, SHAREABLE, "left@example.com")
+                .await
+                .is_none(),
+            "{name}"
+        );
+        assert_eq!(kit.refused_begins(), 0, "{name}");
+    }
+}

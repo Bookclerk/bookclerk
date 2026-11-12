@@ -83,6 +83,10 @@ impl ContentSource for StubSource {
                 .upsert_account(&account_id, &opts.marketplace, None, true)
                 .await
                 .unwrap();
+            scope
+                .save_source_auth(&account_id, "auth", b"stub-login-token")
+                .await
+                .unwrap();
             // `linked@…` stands for an account another login of the same
             // store account connected while this one ran.
             if account_id.starts_with("linked@") {
@@ -566,6 +570,9 @@ async fn a_member_the_operator_stopped_cannot_connect() {
 /// never linked.
 #[tokio::test]
 async fn a_login_the_operator_stopped_midway_is_taken_back() {
+    let _dek = crate::master_key_test_lock().await;
+    let keys = tempfile::tempdir().unwrap();
+    bookclerk_library::configure_master_key(keys.path()).unwrap();
     let stop = Arc::new(std::sync::OnceLock::new());
     let sources: Vec<Arc<dyn ContentSource>> = vec![Arc::new(StubSource {
         id: "libro",
@@ -591,6 +598,12 @@ async fn a_login_the_operator_stopped_midway_is_taken_back() {
     assert_eq!(accounts.len(), 1);
     assert_eq!(accounts[0].connection_status, "revoked");
     assert!(!accounts[0].scan_enabled);
+    let scope = bookclerk_library::SourceScope::new(library.clone(), "test:source-libro", "libro");
+    assert!(scope
+        .load_source_auth("reader@example.com", "auth")
+        .await
+        .unwrap()
+        .is_none());
     let identity = library
         .ensure_local_portal_identity(member, None)
         .await
@@ -606,6 +619,9 @@ async fn a_login_the_operator_stopped_midway_is_taken_back() {
 /// while it ran.
 #[tokio::test]
 async fn a_refused_login_keeps_an_account_another_login_connected() {
+    let _dek = crate::master_key_test_lock().await;
+    let keys = tempfile::tempdir().unwrap();
+    bookclerk_library::configure_master_key(keys.path()).unwrap();
     let stop = Arc::new(std::sync::OnceLock::new());
     let sources: Vec<Arc<dyn ContentSource>> = vec![Arc::new(StubSource {
         id: "libro",
@@ -634,4 +650,10 @@ async fn a_refused_login_keeps_an_account_another_login_connected() {
     let accounts = library.list_accounts().await.unwrap();
     assert_eq!(accounts.len(), 1);
     assert_ne!(accounts[0].connection_status, "revoked");
+    let scope = bookclerk_library::SourceScope::new(library.clone(), "test:source-libro", "libro");
+    assert!(scope
+        .load_source_auth("linked@example.com", "auth")
+        .await
+        .unwrap()
+        .is_some());
 }

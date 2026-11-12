@@ -67,8 +67,8 @@ pub use cache::{
 pub use carried_accounts::{
     accounts_to_carry, branch_person, identity_may_connect_accounts, import_carried_accounts,
     link_peer, member_account_rules, member_accounts, member_may_connect_accounts, node_peer,
-    record_accounts_sent, set_member_may_connect_accounts, CarriedImport, MemberAccount,
-    SHARE_RECEIVED, SHARE_SENT,
+    record_accounts_sent, revoke_unlinked_account, set_member_may_connect_accounts, CarriedImport,
+    MemberAccount, SHARE_RECEIVED, SHARE_SENT,
 };
 pub use clerks::{library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents};
 pub use cluster_links::{

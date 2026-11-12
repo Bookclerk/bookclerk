@@ -579,16 +579,86 @@ pub async fn import_carried_accounts(
             // One account that can't be written doesn't lose the others,
             // nor the report of what was kept.
             Err(err) => {
-                tracing::warn!(
-                    plugin_key = %account.plugin_key,
-                    error = %err,
-                    "a store account brought from the library could not be kept"
-                );
-                report.failed.push(key);
+                // A batch can commit and still answer an error (a lost
+                // reply): the link tells whether this account was kept.
+                let kept = store
+                    .list_account_links(identity.id)
+                    .await
+                    .is_ok_and(|links| {
+                        links.iter().any(|link| {
+                            link.plugin_key == account.plugin_key
+                                && link.account_id == account.account_id
+                        })
+                    });
+                if kept {
+                    report.imported.push(key);
+                } else {
+                    tracing::warn!(
+                        plugin_key = %account.plugin_key,
+                        error = %err,
+                        "a store account brought from the library could not be kept"
+                    );
+                    report.failed.push(key);
+                }
             }
         }
     }
     Ok(report)
+}
+
+/// Takes back a store account a refused login stored: deletes its secrets
+/// and marks it `revoked` with scans off, in one atomic batch whose every
+/// statement applies only while no link holds the account.
+///
+/// A link committed before the batch runs (another login of the same
+/// store account that finished meanwhile) keeps the account and its
+/// secrets as they are.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn revoke_unlinked_account(
+    store: &LibraryStore,
+    plugin_key: &str,
+    account_id: &str,
+) -> Result<()> {
+    const UNLINKED: &str = "NOT EXISTS (SELECT 1 FROM account_links \
+                            WHERE plugin_key = ? AND account_id = ?)";
+    let now = Utc::now().to_rfc3339();
+    let statements = vec![
+        batch::exec(
+            &format!(
+                "DELETE FROM encrypted_secrets \
+                 WHERE account_type = ? AND provider = ? AND account_id = ? AND {UNLINKED}"
+            ),
+            vec![
+                text(secret_account_type::INTEGRATION),
+                text(plugin_key),
+                text(account_id),
+                text(plugin_key),
+                text(account_id),
+            ],
+        ),
+        batch::exec(
+            &format!(
+                "UPDATE accounts SET scan_enabled = 0, connection_status = 'revoked', \
+                 updated_at = ? WHERE plugin_key = ? AND account_id = ? AND {UNLINKED}"
+            ),
+            vec![
+                text(&now),
+                text(plugin_key),
+                text(account_id),
+                text(plugin_key),
+                text(account_id),
+            ],
+        ),
+    ];
+    let operation_id = format!("refused-login-{}", uuid::Uuid::new_v4());
+    store
+        .execute_host_batch(batch::request(&operation_id, statements))
+        .await?;
+    crate::secrets::cache_invalidate_account(account_id);
+    Ok(())
 }
 
 /// One account's import batch; `false` when the account was linked by
