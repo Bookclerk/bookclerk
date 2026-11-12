@@ -495,6 +495,8 @@ async fn an_account_whose_secret_does_not_open_stays_and_the_others_travel() {
         )
         .await;
         connect(store, ana.id, SHAREABLE, "broken@example.com", b"broken").await;
+        // One that sorts after the broken account still travels.
+        connect(store, ana.id, SHAREABLE, "zoe@example.com", b"zoe-token").await;
         // Damage the second account's sealed secret so it no longer opens.
         let mut record = get_secret(
             store.db(),
@@ -514,7 +516,7 @@ async fn an_account_whose_secret_does_not_open_stays_and_the_others_travel() {
 
         let carried = accounts_to_carry(store, ana.id, &shareable).await.unwrap();
         let ids: Vec<&str> = carried.iter().map(|a| a.account_id.as_str()).collect();
-        assert_eq!(ids, vec!["ana@example.com"], "{name}");
+        assert_eq!(ids, vec!["ana@example.com", "zoe@example.com"], "{name}");
         // The plaintext this process now holds is scrubbed from its logs,
         // the token inside the bundle included.
         assert!(
