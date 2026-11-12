@@ -211,6 +211,8 @@ pub async fn run_discover_candidates(
     } else {
         0
     };
+    // Ask the branches what they can supply of what people here look at.
+    crate::catalog_lookup::ask_branches_if_due(&library).await;
     Ok(format!(
         "subject={} seeds={} stores={} candidates={} failed={} pruned_calls={pruned} \
          pruned_listings={pruned_listings}",

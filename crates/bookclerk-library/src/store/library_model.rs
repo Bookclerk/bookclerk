@@ -62,7 +62,7 @@ fn lookup_chunk(max_binds: u32) -> usize {
 /// # Errors
 ///
 /// Returns [`LibraryError::Orm`] when a read fails.
-pub(super) async fn find_chunked<E, F>(
+pub(crate) async fn find_chunked<E, F>(
     store: &LibraryStore,
     ids: &[String],
     query: F,
@@ -1090,6 +1090,25 @@ impl LibraryStore {
             return Ok(None);
         };
         let (plan, snapshot) = self.dry_run(&listing).await?;
+        Ok(planned_work_id(&plan, &snapshot))
+    }
+
+    /// The work of the stored edition `listing` would join, without
+    /// writing anything: `Some` only when the resolver places it on an
+    /// edition this library already has (through a shared identifier), so
+    /// no new work, expression or edition, and no title match, is involved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when a read fails.
+    pub async fn existing_edition_work(
+        &self,
+        listing: &resolve::Listing,
+    ) -> Result<Option<String>> {
+        let (plan, snapshot) = self.dry_run(listing).await?;
+        if plan.new_edition.is_some() || plan.new_expression.is_some() {
+            return Ok(None);
+        }
         Ok(planned_work_id(&plan, &snapshot))
     }
 

@@ -273,6 +273,24 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
     .await;
     assert_eq!(status, StatusCode::OK, "{shared}");
     assert_eq!(shared["cluster"]["share_books"], false);
+    assert_eq!(
+        shared["cluster"]["list_members_books"], true,
+        "left as it is when absent"
+    );
+    let (status, _, listing) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({
+            "cluster_id": cluster_id,
+            "share_books": false,
+            "include_branches": true,
+            "list_members_books": false,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{listing}");
+    assert_eq!(listing["cluster"]["list_members_books"], false);
     eventually("the library to see sharing off", || async {
         load_node(&owner_store, &node_id).await.unwrap().share_books == Some(false)
     })

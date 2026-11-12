@@ -32,9 +32,11 @@
 //! - `GET /api/config/join/sharing`: the libraries this install is a
 //!   branch of, with their two sharing settings.
 //! - `POST /api/config/join/sharing` `{cluster_id, share_books,
-//!   include_branches}`: Settings → Library's "Share this branch's books
-//!   with *library*" and "Include books from my own branches"; the
-//!   catalog sync reports them to the library at once.
+//!   include_branches, list_members_books?}`: Settings → Library's "Share
+//!   this branch's books with *library*" and "Include books from my own
+//!   branches" (the catalog sync reports them to the library at once), and
+//!   "List my members' books to *library*", which the next catalog lookup
+//!   answer follows.
 //!
 //! Inspect and start refuse a library whose ancestry names this library's
 //! own cluster id (409 `join_cycle`), so a tree of libraries never loops;
@@ -1339,6 +1341,10 @@ pub struct SharingBody {
     /// "Include books from my own branches".
     #[schema(example = false)]
     include_branches: bool,
+    /// "List my members' books to *library*"; left as it is when absent.
+    #[serde(default)]
+    #[schema(example = true)]
+    list_members_books: Option<bool>,
 }
 
 /// `GET /api/config/join/sharing`: Settings → Library for the operator or
@@ -1375,8 +1381,9 @@ pub async fn get_join_sharing(
     }
 }
 
-/// `POST /api/config/join/sharing`: Settings → Library's two sharing
-/// settings for one library this install is a branch of. The operator or
+/// `POST /api/config/join/sharing`: Settings → Library's sharing settings
+/// for one library this install is a branch of (the two book-sharing
+/// settings, and optionally "List my members' books"). The operator or
 /// an Owner (verified from the stored role); anyone else gets 403.
 #[utoipa::path(
     post,
@@ -1429,17 +1436,27 @@ pub async fn post_join_sharing(
         }
         Err(err) => return crate::config_authority::events_error(err),
     }
+    if let Some(list) = body.list_members_books {
+        if let Err(err) =
+            bookclerk_library::control_plane::set_cluster_link_listing(&store, cluster_id, list)
+                .await
+        {
+            return crate::config_authority::events_error(err);
+        }
+    }
     tracing::info!(
         %cluster_id,
         %actor,
         share_books = body.share_books,
         include_branches = body.include_branches,
+        list_members_books = ?body.list_members_books,
         "branch sharing settings changed"
     );
     let detail = json!({
         "cluster_id": cluster_id,
         "share_books": body.share_books,
         "include_branches": body.include_branches,
+        "list_members_books": body.list_members_books,
     })
     .to_string();
     if let Err(err) = store

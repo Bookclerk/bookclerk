@@ -89,6 +89,7 @@ pub(crate) fn link_json(link: &ClusterLink) -> ClusterLinkView {
         enrolled_at: link.enrolled_at.clone(),
         share_books: link.share_books,
         include_branches: link.include_branches,
+        list_members_books: link.list_members_books,
         running: None,
     }
 }
@@ -120,6 +121,11 @@ pub struct ClusterLinkView {
     /// "Include books from my own branches".
     #[schema(example = true)]
     pub include_branches: bool,
+    /// "List my members' books to the library": the library's catalog
+    /// lookups are answered with members' books (except those who opted
+    /// out) as well as the owner's.
+    #[schema(example = true)]
+    pub list_members_books: bool,
     /// Whether this install's client for the link is running now; only the join routes report it.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = true)]

@@ -14,6 +14,7 @@ mod api;
 mod auth;
 mod cache_jobs;
 mod cache_policy;
+mod catalog_lookup;
 mod cluster_link;
 mod config_authority;
 mod covers;

@@ -27,6 +27,10 @@ pub struct Model {
     /// The owner library's ancestry (JSON list of cluster ids, the owner's
     /// own first), as it last reported it.
     pub ancestry_json: String,
+    /// "List my members' books to *library*" (1 = on, the default): the
+    /// branch answers that library's catalog lookups with its members'
+    /// books as well as its owner's.
+    pub list_members_books: i64,
 }
 
 /// Declared SeaORM relations (none).
