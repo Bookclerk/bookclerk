@@ -399,6 +399,9 @@ pub async fn join_with_sign_in(
             })
             .await
             .map_err(join_failed)?;
+            // The CLI runs as the operator: the person is the install's only
+            // Owner, as for the connections brought along.
+            bookclerk_node_client::bind_join_person(store, None, &redeemed).await;
             if let Some(bundle) = &redeemed.accounts {
                 report_brought_connections(keep_brought_connections(store, None, bundle).await);
             }
@@ -576,6 +579,7 @@ mod tests {
         let kept = CarriedImport {
             imported: vec![key(), key()],
             already_here: vec![key()],
+            unrecorded: Vec::new(),
             taken: Vec::new(),
             failed: vec![key()],
             refused_by_rule: false,

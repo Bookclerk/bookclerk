@@ -50,9 +50,9 @@ mod enroll;
 mod jobs;
 
 pub use branch::{
-    announce_leaving, authorize_branch, authorize_join, inspect_library, keep_brought_connections,
-    library_origin, redeem_branch_code, BranchAuthorization, BranchRedeem, BroughtConnections,
-    InspectedLibrary, RedeemedBranch,
+    announce_leaving, authorize_branch, authorize_join, bind_join_person, inspect_library,
+    keep_brought_connections, library_origin, redeem_branch_code, BranchAuthorization,
+    BranchRedeem, BroughtConnections, InspectedLibrary, RedeemedBranch,
 };
 pub use clerk::{
     apply_clerk_bootstrap, bootstrap_database_kind, checked_d1_api_base, database_guest_installed,
@@ -61,7 +61,7 @@ pub use clerk::{
 };
 pub use client::{
     CatalogBatchAccepted, CatalogSession, ClientExit, ClientTiming, HeartbeatSource, HostClient,
-    HostClientConfig, HostClientHandle, AWAITING_HOST_CONSENT, KIND_NOT_RUN_HERE,
+    HostClientConfig, HostClientHandle, OfferedAccounts, AWAITING_HOST_CONSENT, KIND_NOT_RUN_HERE,
     MAX_ARTIFACT_BYTES, MAX_LEASE, SECRETS_UNOPENABLE,
 };
 pub use endpoint::{

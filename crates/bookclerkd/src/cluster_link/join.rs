@@ -101,7 +101,7 @@ fn callback_origin(cfg: &bookclerk_config::Config, headers: &HeaderMap) -> Strin
 }
 
 /// A JSON error answer.
-fn join_error(status: StatusCode, error: &str, detail: &str) -> Response {
+pub(super) fn join_error(status: StatusCode, error: &str, detail: &str) -> Response {
     (
         status,
         Json(crate::http_error::ErrorDetail::new(error, detail)),
@@ -935,15 +935,22 @@ pub async fn post_join_callback(
     };
     finish().await;
     drop(one_at_a_time);
+    // The person is the Owner who elevated into this operator session, or
+    // else the install's only Owner. The link is bound to them: only they
+    // add connections to the library, or withdraw them, through it. The
+    // enrollment left the link unbound, so a failure here fails closed:
+    // nobody can add or withdraw through it until the branch joins again.
+    // The binding names the node this join's own enrollment minted (not
+    // the stored row, which an invite join may have replaced meanwhile),
+    // so a join another one replaced binds nothing.
+    let auth = state.auth_snapshot().await;
+    let elevated = crate::auth::resolve_operator_session(&state, &auth, &headers)
+        .await
+        .and_then(|session| session.elevated_from_user_id);
+    bookclerk_node_client::bind_join_person(&store, elevated, &redeemed).await;
     let link = redeemed.link;
     let connections = match &redeemed.accounts {
         Some(bundle) => {
-            // The person is the Owner who elevated into this operator
-            // session, or else the install's only Owner.
-            let auth = state.auth_snapshot().await;
-            let elevated = crate::auth::resolve_operator_session(&state, &auth, &headers)
-                .await
-                .and_then(|session| session.elevated_from_user_id);
             let kept =
                 bookclerk_node_client::keep_brought_connections(&store, elevated, bundle).await;
             if let Err(err) = &kept {

@@ -224,12 +224,34 @@ pub async fn accounts_to_carry(
     user_id: i64,
     shareable: &(dyn Fn(&str) -> bool + Send + Sync),
 ) -> Result<Vec<CarriedAccount>> {
+    accounts_to_carry_where(store, user_id, &|plugin_key, _| shareable(plugin_key)).await
+}
+
+/// [`accounts_to_carry`] limited to the accounts `keep` accepts, by
+/// `(plugin_key, account_id)`, applied before the bundle's count and size
+/// limits so a picked account is never crowded out by unpicked ones.
+///
+/// # Arguments
+///
+/// * `store` - This library.
+/// * `user_id` - The member whose connections travel.
+/// * `keep` - Whether an account may travel (its storefront shareable,
+///   and picked when the person picks some).
+///
+/// # Errors
+///
+/// Returns a read error, or the unseal error of a secret.
+pub async fn accounts_to_carry_where(
+    store: &LibraryStore,
+    user_id: i64,
+    keep: &(dyn Fn(&str, &str) -> bool + Send + Sync),
+) -> Result<Vec<CarriedAccount>> {
     let mut carried = Vec::new();
     // Room for the bundle's own fields around the accounts.
     const BUNDLE_OVERHEAD: usize = 1024;
     let mut used = BUNDLE_OVERHEAD;
     for account in member_accounts(store, user_id).await? {
-        if !shareable(&account.plugin_key) {
+        if !keep(&account.plugin_key, &account.account_id) {
             continue;
         }
         if carried.len() >= MAX_BUNDLE_ACCOUNTS {
@@ -364,6 +386,21 @@ pub async fn record_accounts_sent(
     node_id: &str,
     accounts: &[CarriedAccount],
 ) -> Result<()> {
+    record_accounts_sent_to(store, &node_peer(node_id), accounts).await
+}
+
+/// Records that `accounts` were sent to `peer` ([`node_peer`] for a
+/// branch, [`link_peer`] for a library this install offered them to), as
+/// [`record_accounts_sent`] does.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn record_accounts_sent_to(
+    store: &LibraryStore,
+    peer: &str,
+    accounts: &[CarriedAccount],
+) -> Result<()> {
     if accounts.is_empty() {
         return Ok(());
     }
@@ -372,25 +409,85 @@ pub async fn record_accounts_sent(
     /// (`HOST_MIN_STATEMENTS`).
     const ACCOUNTS_PER_BATCH: usize = 20;
     let now = Utc::now().to_rfc3339();
-    let peer = node_peer(node_id);
     for chunk in accounts.chunks(ACCOUNTS_PER_BATCH) {
         let mut statements = Vec::new();
         for account in chunk {
             statements.extend(share_statements(
                 &account.plugin_key,
                 &account.account_id,
-                &peer,
+                peer,
                 SHARE_SENT,
                 &now,
                 None,
             ));
         }
-        let operation_id = format!("accounts-sent-{node_id}-{}", uuid::Uuid::new_v4());
+        let operation_id = format!("accounts-sent-{}", uuid::Uuid::new_v4());
         store
             .execute_host_batch(batch::request(&operation_id, statements))
             .await?;
     }
     Ok(())
+}
+
+/// Records that `peer` also holds an account `user_id` already has here
+/// (`account_shares`, direction [`SHARE_RECEIVED`]), guarded on the link
+/// still being theirs; the account itself is left as it is.
+///
+/// # Errors
+///
+/// Returns the write error.
+async fn record_received_from(
+    store: &LibraryStore,
+    user_id: i64,
+    peer: &str,
+    account: &CarriedAccount,
+) -> Result<()> {
+    let statements = share_statements(
+        &account.plugin_key,
+        &account.account_id,
+        peer,
+        SHARE_RECEIVED,
+        &Utc::now().to_rfc3339(),
+        Some((
+            "EXISTS (SELECT 1 FROM account_links WHERE plugin_key = ? AND account_id = ? \
+             AND identity_id IN (SELECT id FROM portal_identities WHERE user_id = ?))",
+            vec![
+                text(&account.plugin_key),
+                text(&account.account_id),
+                int(user_id),
+            ],
+        )),
+    );
+    let operation_id = format!("account-received-{}", uuid::Uuid::new_v4());
+    store
+        .execute_host_batch(batch::request(&operation_id, statements.to_vec()))
+        .await?;
+    Ok(())
+}
+
+/// Every peer this install shared the store account with, in either
+/// direction (`account_shares`): [`node_peer`] and [`link_peer`] values,
+/// each once, sorted.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn account_share_peers(
+    store: &LibraryStore,
+    plugin_key: &str,
+    account_id: &str,
+) -> Result<Vec<String>> {
+    use crate::entities::account_shares;
+    let peers: BTreeSet<String> = account_shares::Entity::find()
+        .filter(account_shares::Column::PluginKey.eq(plugin_key))
+        .filter(account_shares::Column::AccountId.eq(account_id))
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+        .into_iter()
+        .map(|row| row.peer)
+        .collect();
+    Ok(peers.into_iter().collect())
 }
 
 /// The two statements that record one share (refresh, then insert),
@@ -504,6 +601,11 @@ pub struct CarriedImport {
     pub imported: Vec<(String, String)>,
     /// Accounts the person had already connected here; left as they are.
     pub already_here: Vec<(String, String)>,
+    /// Of [`Self::already_here`], the accounts whose record that this peer
+    /// holds them too could not be written (logged): they stay connected
+    /// here, but a disconnect everywhere from here would not reach that
+    /// peer until the same offer arrives again and records it.
+    pub unrecorded: Vec<(String, String)>,
     /// Accounts connected to someone else here; refused.
     pub taken: Vec<(String, String)>,
     /// Accounts that came without a secret, or whose write failed (logged);
@@ -540,6 +642,36 @@ pub async fn import_carried_accounts(
     cluster_id: &str,
     accounts: &[CarriedAccount],
 ) -> Result<CarriedImport> {
+    import_from_peer(store, user_id, &link_peer(cluster_id), accounts).await
+}
+
+/// Imports the accounts a branch offered up its link ("Add my connections
+/// to *library*") for `user_id`, the branch's owner, recording that they
+/// came from the node `node_id`.
+///
+/// The same rules as [`import_carried_accounts`] apply: refused whole
+/// under this library's rule, each account in its own guarded batch, and
+/// an account connected here before is never overwritten.
+///
+/// # Errors
+///
+/// As [`import_carried_accounts`].
+pub async fn import_offered_accounts(
+    store: &LibraryStore,
+    user_id: i64,
+    node_id: &str,
+    accounts: &[CarriedAccount],
+) -> Result<CarriedImport> {
+    import_from_peer(store, user_id, &node_peer(node_id), accounts).await
+}
+
+/// [`import_carried_accounts`] for the share peer `peer`.
+async fn import_from_peer(
+    store: &LibraryStore,
+    user_id: i64,
+    peer: &str,
+    accounts: &[CarriedAccount],
+) -> Result<CarriedImport> {
     let mut report = CarriedImport::default();
     if accounts.is_empty() {
         return Ok(report);
@@ -561,10 +693,19 @@ pub async fn import_carried_accounts(
             mine.insert((link.plugin_key, link.account_id));
         }
     }
-    let peer = link_peer(cluster_id);
     for (index, account) in accounts.iter().enumerate() {
         let key = (account.plugin_key.clone(), account.account_id.clone());
         if mine.contains(&key) {
+            // Left as it is, but `peer` holds it too now: recorded, so a
+            // disconnect everywhere reaches that library as well.
+            if let Err(err) = record_received_from(store, user_id, peer, account).await {
+                tracing::warn!(
+                    plugin_key = %account.plugin_key,
+                    error = %err,
+                    "could not record where an account already here came from too"
+                );
+                report.unrecorded.push(key.clone());
+            }
             report.already_here.push(key);
             continue;
         }
@@ -595,7 +736,7 @@ pub async fn import_carried_accounts(
             report.failed.push(key);
             continue;
         }
-        match import_one(store, user_id, identity.id, &peer, account).await {
+        match import_one(store, user_id, identity.id, peer, account).await {
             Ok(true) => report.imported.push(key),
             // The batch stored nothing: either someone linked the account
             // meanwhile, or the operator turned the person's rule off (or
@@ -668,10 +809,120 @@ pub async fn revoke_unlinked_account(
     plugin_key: &str,
     account_id: &str,
 ) -> Result<()> {
+    let statements = revoke_unlinked_statements(plugin_key, account_id);
+    let operation_id = format!("refused-login-{}", uuid::Uuid::new_v4());
+    store
+        .execute_host_batch(batch::request(&operation_id, statements))
+        .await?;
+    crate::secrets::cache_invalidate_account(account_id);
+    Ok(())
+}
+
+/// What [`withdraw_person_account`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Withdrawn {
+    /// The person's links to the account were removed (and the account
+    /// taken back when no other link held it).
+    Unlinked,
+    /// The person had no link to the account here; nothing changed.
+    NotTheirs,
+}
+
+/// Disconnects a store account "everywhere" on this library for the
+/// person `user_id`: removes every link from their identities to the
+/// account and, in the same atomic batch, deletes its secrets and marks it
+/// `revoked` with scans off when no other link holds it. A revoked account
+/// then loses its holdings (each with a `holding_removed` event) and its
+/// scan checkpoints, as [`LibraryStore::revoke_credentials`] does.
+///
+/// An account another member is linked to keeps that member's link,
+/// secrets and status.
+///
+/// # Errors
+///
+/// Returns a read or write error.
+pub async fn withdraw_person_account(
+    store: &LibraryStore,
+    user_id: i64,
+    plugin_key: &str,
+    account_id: &str,
+) -> Result<Withdrawn> {
+    let mut theirs = 0_u64;
+    for identity in store.list_portal_identities_for_user(user_id).await? {
+        let held = store
+            .list_account_links(identity.id)
+            .await?
+            .iter()
+            .filter(|link| link.plugin_key == plugin_key && link.account_id == account_id)
+            .count();
+        theirs = theirs.saturating_add(u64::try_from(held).unwrap_or(u64::MAX));
+    }
+    if theirs == 0 {
+        // A retry after a lost batch reply lands here: purge any plaintext
+        // the first try left cached.
+        crate::secrets::cache_invalidate_account(account_id);
+        return Ok(Withdrawn::NotTheirs);
+    }
+    // Taken back when only the person's links hold it: finish what a
+    // revocation does (`LibraryStore::revoke_credentials`) before the links
+    // go, while a failed step can still be retried from this person's
+    // link. The account is marked revoked first, so a scan page still in
+    // flight can neither add holdings back nor save a checkpoint after the
+    // cleanup (the holding and checkpoint writes are fenced on it). The
+    // holdings go with `holding_removed` events and a reconnect starts a
+    // full scan. Should another member link it meanwhile, their next scan
+    // brings the holdings back.
+    let all = store
+        .count_account_links_for_account(plugin_key, account_id)
+        .await?;
+    if all <= theirs {
+        let fence = vec![batch::exec(
+            "UPDATE accounts SET scan_enabled = 0, connection_status = 'revoked', \
+             updated_at = ? WHERE plugin_key = ? AND account_id = ? \
+             AND NOT EXISTS (SELECT 1 FROM account_links WHERE plugin_key = ? \
+             AND account_id = ? AND identity_id NOT IN \
+             (SELECT id FROM portal_identities WHERE user_id = ?))",
+            vec![
+                text(&Utc::now().to_rfc3339()),
+                text(plugin_key),
+                text(account_id),
+                text(plugin_key),
+                text(account_id),
+                int(user_id),
+            ],
+        )];
+        let operation_id = format!("withdraw-fence-{}", uuid::Uuid::new_v4());
+        store
+            .execute_host_batch(batch::request(&operation_id, fence))
+            .await?;
+        store
+            .remove_account_holdings(plugin_key, account_id, crate::HoldingSelection::All)
+            .await?;
+        store.reset_scan_state(plugin_key, account_id).await?;
+    }
+    let mut statements = vec![batch::exec(
+        "DELETE FROM account_links WHERE plugin_key = ? AND account_id = ? \
+         AND identity_id IN (SELECT id FROM portal_identities WHERE user_id = ?)",
+        vec![text(plugin_key), text(account_id), int(user_id)],
+    )];
+    statements.extend(revoke_unlinked_statements(plugin_key, account_id));
+    let operation_id = format!("withdraw-account-{}", uuid::Uuid::new_v4());
+    let committed = store
+        .execute_host_batch(batch::request(&operation_id, statements))
+        .await;
+    // Purged even when the reply was lost: the batch may have committed.
+    crate::secrets::cache_invalidate_account(account_id);
+    committed?;
+    Ok(Withdrawn::Unlinked)
+}
+
+/// Deletes the account's secrets and marks it `revoked` with scans off,
+/// each statement guarded on no link holding the account.
+fn revoke_unlinked_statements(plugin_key: &str, account_id: &str) -> Vec<TypedDbStatement> {
     const UNLINKED: &str = "NOT EXISTS (SELECT 1 FROM account_links \
                             WHERE plugin_key = ? AND account_id = ?)";
     let now = Utc::now().to_rfc3339();
-    let statements = vec![
+    vec![
         batch::exec(
             &format!(
                 "DELETE FROM encrypted_secrets \
@@ -698,13 +949,7 @@ pub async fn revoke_unlinked_account(
                 text(account_id),
             ],
         ),
-    ];
-    let operation_id = format!("refused-login-{}", uuid::Uuid::new_v4());
-    store
-        .execute_host_batch(batch::request(&operation_id, statements))
-        .await?;
-    crate::secrets::cache_invalidate_account(account_id);
-    Ok(())
+    ]
 }
 
 /// One account's import batch; `false` when, by the time the batch ran,
