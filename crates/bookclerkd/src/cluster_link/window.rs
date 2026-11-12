@@ -25,8 +25,11 @@ use tokio::sync::watch;
 /// Between reads while connected.
 pub const WINDOW_POLL: Duration = Duration::from_secs(1800);
 
-/// Most pages one read takes, so a read always ends.
-const MAX_PAGES_PER_READ: usize = 1000;
+/// Most pages one read takes, so a read always ends. The library's cursor
+/// must move forward on every page, so this only stops a library that
+/// keeps paging; it is far above what a person's books need even when the
+/// library's database answers one row per page.
+const MAX_PAGES_PER_READ: usize = 1_000_000;
 
 /// Bumped when a link's "Use this computer to download" setting changes.
 static WINDOW_CHANGED: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0).0);

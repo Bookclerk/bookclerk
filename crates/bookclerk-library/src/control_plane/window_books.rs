@@ -141,7 +141,8 @@ fn encoded_len<T: serde::Serialize>(value: &T) -> usize {
 /// Each is grouped under its work here (its key is the work id, or
 /// `book-<id>` when it has no work), with the work's identifiers; a work
 /// lists at most [`MAX_LOOKUP_EDITIONS`] editions (where two of the
-/// person's accounts hold the same edition, the copy with more formats).
+/// person's accounts hold the same edition, one entry with every format
+/// either copy has).
 /// The page stops early once it would pass the frame budget or
 /// [`MAX_WINDOW_WORKS`] works; the books after that come on the next page.
 ///
@@ -301,8 +302,14 @@ pub async fn window_books_page(
                 && e.product_id == edition.product_id
         });
         match same {
-            Some(i) if editions[i].formats.len() < edition.formats.len() => editions[i] = edition,
-            Some(_) => {}
+            // Two of the person's accounts hold it: the library has every
+            // format either copy has.
+            Some(i) => {
+                let held = &mut editions[i].formats;
+                held.extend(edition.formats);
+                held.sort_unstable();
+                held.dedup();
+            }
             None => editions.push(edition),
         }
     }

@@ -16,7 +16,7 @@ use crate::control_plane::{
 };
 use crate::entities::node_credentials;
 use crate::master_key::master_key_test_lock_async;
-use crate::models::UserRole;
+use crate::models::{AcquireStatus, UserRole};
 use crate::store::NewBook;
 
 const PLUGIN: &str = "path:file:///tmp/store#audible";
@@ -153,6 +153,23 @@ async fn the_library_lists_only_its_persons_books_to_a_trusted_branch() {
         .id;
     let works = hold(&store, riley, "riley-acct", &["B0RILEY001".into()]).await;
     hold(&store, sam, "sam-acct", &["B0SAM00001".into()]).await;
+    // Riley's second account holds the same edition: audio on one copy, the
+    // PDF on the other, so the library has both.
+    hold(&store, riley, "riley-acct-2", &["B0RILEY001".into()]).await;
+    store
+        .set_acquire_status(
+            "B0RILEY001",
+            "riley-acct",
+            AcquireStatus::Acquired,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .set_pdf_status("B0RILEY001", "riley-acct-2", AcquireStatus::Acquired, None)
+        .await
+        .unwrap();
 
     assert_eq!(window_books_page(&store, BRANCH, 0).await.unwrap(), None);
     add_branch(&store, BRANCH, riley).await;
@@ -162,6 +179,11 @@ async fn the_library_lists_only_its_persons_books_to_a_trusted_branch() {
     assert_eq!(listed[0].work, works[0]);
     assert_eq!(listed[0].editions[0].product_id, "B0RILEY001");
     assert_eq!(listed[0].editions[0].availability, Availability::Owned);
+    assert_eq!(listed[0].editions.len(), 1, "one entry per edition");
+    assert_eq!(
+        listed[0].editions[0].formats,
+        vec![LookupFormat::Audio, LookupFormat::Pdf]
+    );
     assert!(listed[0].identifiers.iter().any(|id| {
         id.scheme == LookupScheme::Asin && id.value == "B0RILEY001" && id.marketplace == "us"
     }));
