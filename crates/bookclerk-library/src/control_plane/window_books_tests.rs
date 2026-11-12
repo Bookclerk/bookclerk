@@ -256,6 +256,24 @@ async fn many_books_page_out_within_every_profiles_limits() {
         .insert(store.db())
         .await
         .unwrap();
+        // A second link, which downloads: listing the links pages too.
+        crate::entities::cluster_links::ActiveModel {
+            owner_cluster_id: Set("other".into()),
+            owner_origin: Set("https://other.example".into()),
+            remote_node_id: Set("node-other".into()),
+            spki_pin: Set(None),
+            state: Set("active".into()),
+            enrolled_at: Set(Utc::now().to_rfc3339()),
+            share_books: Set(1),
+            include_branches: Set(1),
+            ancestry_json: Set("[]".into()),
+            list_members_books: Set(1),
+            download: Set(1),
+            max_jobs: Set(None),
+        }
+        .insert(store.db())
+        .await
+        .unwrap();
         let seen = window_read_stamp();
         for page in listed.chunks(MAX_WINDOW_WORKS) {
             record_window_page(&store, "lib", &seen, page)
@@ -475,12 +493,12 @@ async fn the_window_merges_its_libraries_by_work_and_drops_what_they_stop_holdin
         .collect();
     assert_eq!(titles, vec!["No identifiers", "Shared"]);
 
-    // Turning download back on hides beta; clearing drops its rows.
+    // Turning download back on hides beta and drops its rows.
     set_cluster_link_download(&store, "beta", true)
         .await
         .unwrap();
     assert_eq!(window_view(&store).await.unwrap().len(), 1);
-    assert_eq!(clear_window_books(&store, "beta").await.unwrap(), 2);
+    assert_eq!(clear_window_books(&store, "beta").await.unwrap(), 0);
 }
 
 /// Two accounts holding one edition with their books on different pages of
@@ -612,5 +630,28 @@ async fn a_product_in_several_marketplaces_is_read_under_every_profile() {
             listed.iter().all(|w| !w.identifiers.is_empty()),
             "{name}: every work keeps its identifiers"
         );
+
+        // Two work-level identifiers on the one work are both read.
+        let work = listed[0].work.clone();
+        for raw in ["OL1W", "OL2W"] {
+            store
+                .add_work_identifier(
+                    &work,
+                    bookclerk_resolve::IdentifierScheme::OpenLibraryWork,
+                    raw,
+                )
+                .await
+                .unwrap();
+        }
+        let listed = read_all(&store, BRANCH).await;
+        let mut works: Vec<&str> = listed
+            .iter()
+            .flat_map(|w| w.identifiers.iter())
+            .filter(|i| i.scheme == LookupScheme::OpenlibraryWork)
+            .map(|i| i.value.as_str())
+            .collect();
+        works.sort_unstable();
+        works.dedup();
+        assert_eq!(works, ["OL1W", "OL2W"], "{name}: {listed:?}");
     }
 }

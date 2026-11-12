@@ -150,6 +150,21 @@ async fn a_window_reads_the_books_its_library_holds_for_its_person() {
         .unwrap();
     assert!(window_view(&w).await.unwrap().is_empty(), "cleared");
 
+    // Downloading turned on and off again before the reader looks: the
+    // setting itself clears the list, so the old one does not come back.
+    reader.read_once().await.unwrap();
+    assert_eq!(window_view(&w).await.unwrap().len(), 1);
+    set_cluster_link_download(&w, &link.owner_cluster_id, true)
+        .await
+        .unwrap();
+    set_cluster_link_download(&w, &link.owner_cluster_id, false)
+        .await
+        .unwrap();
+    assert!(
+        window_view(&w).await.unwrap().is_empty(),
+        "cleared without the reader"
+    );
+
     // With the library unreachable, turning downloading on still clears
     // the list (no request is sent).
     reader.read_once().await.unwrap();

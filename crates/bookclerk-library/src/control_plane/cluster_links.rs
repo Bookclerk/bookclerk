@@ -492,14 +492,16 @@ pub async fn record_cluster_link(
 ///
 /// Returns the read error.
 pub async fn list_cluster_links(store: &LibraryStore) -> Result<Vec<ClusterLink>> {
-    Ok(cluster_links::Entity::find()
-        .order_by_asc(cluster_links::Column::EnrolledAt)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .into_iter()
-        .map(ClusterLink::from)
-        .collect())
+    // Paged, so a database that returns few rows per read still lists
+    // every link.
+    let select = cluster_links::Entity::find().order_by_asc(cluster_links::Column::EnrolledAt);
+    Ok(
+        crate::control_plane::catalog_lookup::read_paged(store, select, None)
+            .await?
+            .into_iter()
+            .map(ClusterLink::from)
+            .collect(),
+    )
 }
 
 /// One cluster link.
@@ -727,6 +729,11 @@ pub async fn set_cluster_link_listing(
 /// Whether the link exists (`false` when there is no such link); setting
 /// the value it already has still returns `true`.
 ///
+/// Turning downloading on also clears the window's copy of the library's
+/// list here, rather than leaving it to the window reader: the reader may
+/// not run before the setting is turned off again, and the old list would
+/// then show as the window's current one.
+///
 /// # Errors
 ///
 /// Returns the write error.
@@ -745,6 +752,9 @@ pub async fn set_cluster_link_download(
     let updated = store
         .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
         .await?;
+    if download {
+        crate::control_plane::window_books::clear_window_books(store, owner_cluster_id).await?;
+    }
     if updated == 0 {
         return Ok(load_cluster_link(store, owner_cluster_id).await?.is_some());
     }

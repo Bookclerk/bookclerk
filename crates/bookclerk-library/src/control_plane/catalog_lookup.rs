@@ -465,7 +465,7 @@ pub(crate) async fn identifiers_of(
             .or_default()
             .insert((rank, identifier));
     }
-    for row in read_chunked(store, work_ids, |part| {
+    for row in read_chunked_all(store, work_ids, |part| {
         work_identifiers::Entity::find().filter(work_identifiers::Column::WorkId.is_in(part))
     })
     .await?
