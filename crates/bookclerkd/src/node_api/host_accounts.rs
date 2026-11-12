@@ -106,6 +106,9 @@ pub(super) async fn add(
         "node_id": host.node_id,
         "offered": keep.len() + refused.len(),
         "added": report.imported.len(),
+        // Accounts already here whose share with this branch went
+        // unrecorded: a disconnect everywhere here would miss the branch.
+        "unrecorded": report.unrecorded.len(),
         "not_allowed": report.refused_by_rule,
     })
     .to_string();

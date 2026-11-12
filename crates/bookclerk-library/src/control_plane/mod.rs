@@ -15,6 +15,7 @@ mod carried_accounts;
 mod catalog_lookup;
 mod clerks;
 mod cluster_links;
+mod connections_request;
 mod cron_fires;
 mod deployments;
 mod documents;
@@ -90,6 +91,10 @@ pub use cluster_links::{
     set_cluster_link_work, CapacityBody, ClusterLink, ClusterLinkKeys, ClusterLinkSettings,
     JobCapRequest, LinkJobCap, NewClusterLink, SharingBody, SharingRequest, CLUSTER_LINK_ACTIVE,
     CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
+};
+pub use connections_request::{
+    parse_add_connections_request, parse_disconnect_request, AccountRef, AddConnectionsBody,
+    AddConnectionsRequest, DisconnectBody, DisconnectRequest, MAX_ADD_CONNECTIONS,
 };
 pub use cron_fires::{
     claim_cron_fire, ensure_cron_cursor, load_cron_cursor, CronCursor, CronFireClaim,

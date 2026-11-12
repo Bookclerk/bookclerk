@@ -31,10 +31,11 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::control_plane::{
     account_share_peers, accounts_to_carry_where, link_peer, list_cluster_links, load_cluster_link,
-    record_accounts_sent_to, withdraw_person_account, Withdrawn,
+    record_accounts_sent_to, withdraw_person_account, AddConnectionsBody, AddConnectionsRequest,
+    DisconnectBody, DisconnectRequest, Withdrawn,
 };
 use bookclerk_node_client::OwnerCallError;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
 
 use super::join::join_error;
@@ -53,32 +54,6 @@ pub const LIBRARY_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// that read an account before a disconnect never reaches a library after
 /// the disconnect reported it gone. Both are rare, person-driven actions.
 static CONNECTIONS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// Most accounts one "Add my connections" request names.
-const MAX_ADD_ACCOUNTS: usize = bookclerk_node_proto::MAX_BUNDLE_ACCOUNTS;
-
-/// One store account, by storefront plugin key and store account id.
-#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct AccountRef {
-    /// Provenance-qualified plugin key of the storefront.
-    #[schema(example = "platform:bookclerk/bookclerk-plugin-source-libro#libro")]
-    plugin_key: String,
-    /// Store account id.
-    #[schema(example = "reader@example.com")]
-    account_id: String,
-}
-
-/// `POST /api/config/join/connections` body.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct AddConnectionsBody {
-    /// The library (owner cluster id) to add the connections to.
-    #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
-    cluster_id: String,
-    /// The person's accounts to add; at most 64.
-    accounts: Vec<AccountRef>,
-}
 
 /// JSON body after `POST /api/config/join/connections`.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -103,22 +78,6 @@ pub struct ConnectionsAdded {
     /// accounts there; nothing was kept.
     #[schema(example = false)]
     pub not_allowed: bool,
-}
-
-/// `POST /api/config/join/connections/disconnect` body.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct DisconnectBody {
-    /// Provenance-qualified plugin key of the storefront.
-    #[schema(example = "platform:bookclerk/bookclerk-plugin-source-libro#libro")]
-    plugin_key: String,
-    /// Store account id.
-    #[schema(example = "reader@example.com")]
-    account_id: String,
-    /// Also disconnect it in every linked library it was shared with.
-    #[serde(default)]
-    #[schema(example = true)]
-    everywhere: bool,
 }
 
 /// JSON body after `POST /api/config/join/connections/disconnect`.
@@ -187,20 +146,27 @@ pub async fn post_join_connections(
     Extension(caller): Extension<UserCaller>,
     Json(body): Json<AddConnectionsBody>,
 ) -> Response {
-    if body.accounts.is_empty() || body.accounts.len() > MAX_ADD_ACCOUNTS {
-        return join_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "name between 1 and 64 accounts",
-        );
-    }
+    // The same sans-IO check the `connections_request` fuzz target drives.
+    let AddConnectionsRequest {
+        cluster_id,
+        accounts: picked,
+    } = match body.validate() {
+        Ok(request) => request,
+        Err(_) => {
+            return join_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "name between 1 and 64 accounts",
+            )
+        }
+    };
     let person = match caller_person(&state, caller).await {
         Ok(person) => person,
         Err(refused) => return refused,
     };
     let _serialized = CONNECTIONS_LOCK.lock().await;
     let store = state.library_snapshot().await;
-    let cluster_id = body.cluster_id.trim();
+    let cluster_id = cluster_id.as_str();
     let link = match load_cluster_link(&store, cluster_id).await {
         Ok(Some(link)) if link.is_active() => link,
         Ok(_) => {
@@ -218,7 +184,8 @@ pub async fn post_join_connections(
         return not_branch_person();
     }
     let shareable = crate::node_api::branch::shareable_plugin_keys(&state, &store).await;
-    let picked = &body.accounts;
+    let named = picked.len();
+    let picked = &picked;
     let keep = move |plugin_key: &str, account_id: &str| {
         shareable.contains(plugin_key)
             && picked
@@ -231,7 +198,7 @@ pub async fn post_join_connections(
         Ok(wanted) => wanted,
         Err(err) => return crate::config_authority::events_error(err),
     };
-    let not_sent = count(body.accounts.len().saturating_sub(wanted.len()));
+    let not_sent = count(named.saturating_sub(wanted.len()));
     if wanted.is_empty() {
         return Json(ConnectionsAdded {
             added: 0,
@@ -310,6 +277,10 @@ pub async fn post_join_connections_disconnect(
     Extension(caller): Extension<UserCaller>,
     Json(body): Json<DisconnectBody>,
 ) -> Response {
+    let DisconnectRequest {
+        account,
+        everywhere,
+    } = body.into_request();
     let person = match caller_person(&state, caller).await {
         Ok(person) => person,
         Err(refused) => return refused,
@@ -319,11 +290,12 @@ pub async fn post_join_connections_disconnect(
     // Where it was shared is read before the local withdrawal, which may
     // revoke the account and its share records with it.
     let mut targets = Vec::new();
-    if body.everywhere {
-        let peers = match account_share_peers(&store, &body.plugin_key, &body.account_id).await {
-            Ok(peers) => peers,
-            Err(err) => return crate::config_authority::events_error(err),
-        };
+    if everywhere {
+        let peers =
+            match account_share_peers(&store, &account.plugin_key, &account.account_id).await {
+                Ok(peers) => peers,
+                Err(err) => return crate::config_authority::events_error(err),
+            };
         let links = match list_cluster_links(&store).await {
             Ok(links) => links,
             Err(err) => return crate::config_authority::events_error(err),
@@ -340,7 +312,9 @@ pub async fn post_join_connections_disconnect(
     }
     // Here first, so an unreachable library never keeps it connected here.
     let here =
-        match withdraw_person_account(&store, person, &body.plugin_key, &body.account_id).await {
+        match withdraw_person_account(&store, person, &account.plugin_key, &account.account_id)
+            .await
+        {
             Ok(Withdrawn::Unlinked) => true,
             Ok(Withdrawn::NotTheirs) => false,
             Err(err) => return crate::config_authority::events_error(err),
@@ -348,8 +322,8 @@ pub async fn post_join_connections_disconnect(
     // Every library at once, each bounded, so the whole fits the deadline.
     let reached = futures::future::join_all(targets.iter().map(|link| {
         let handle = super::link_handle(&link.owner_cluster_id, &link.remote_node_id);
-        let plugin_key = body.plugin_key.as_str();
-        let account_id = body.account_id.as_str();
+        let plugin_key = account.plugin_key.as_str();
+        let account_id = account.account_id.as_str();
         async move {
             let Some(handle) = handle else {
                 return false;
@@ -375,8 +349,8 @@ pub async fn post_join_connections_disconnect(
         }
     }
     let detail = json!({
-        "plugin_key": body.plugin_key,
-        "everywhere": body.everywhere,
+        "plugin_key": account.plugin_key,
+        "everywhere": everywhere,
         "here": here,
         "libraries": libraries,
         "unreached": unreached,

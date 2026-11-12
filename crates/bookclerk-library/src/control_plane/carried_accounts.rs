@@ -583,6 +583,11 @@ pub struct CarriedImport {
     pub imported: Vec<(String, String)>,
     /// Accounts the person had already connected here; left as they are.
     pub already_here: Vec<(String, String)>,
+    /// Of [`Self::already_here`], the accounts whose record that this peer
+    /// holds them too could not be written (logged): they stay connected
+    /// here, but a disconnect everywhere from here would not reach that
+    /// peer until the same offer arrives again and records it.
+    pub unrecorded: Vec<(String, String)>,
     /// Accounts connected to someone else here; refused.
     pub taken: Vec<(String, String)>,
     /// Accounts that came without a secret, or whose write failed (logged);
@@ -681,6 +686,7 @@ async fn import_from_peer(
                     error = %err,
                     "could not record where an account already here came from too"
                 );
+                report.unrecorded.push(key.clone());
             }
             report.already_here.push(key);
             continue;

@@ -50,6 +50,7 @@ boundary extends it.
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
+| `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
 
 Some boundaries need more than a cell:
 
@@ -252,6 +253,17 @@ only that. The others check:
   an absent or `null` setting left unset (kept as stored) rather than read
   as `false`, and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/sharing_request.rs`, replayed from `bookclerk-library`.
+- **`connections_request`**: feeds each input to both parsers and reads it
+  as an untyped JSON value. An add body is accepted exactly when it is one
+  object with no repeated keys anywhere and only `cluster_id` (a string)
+  and `accounts`, an array of 1 to 64 objects that each hold exactly a
+  string `plugin_key` and a string `account_id`; the parser then returns
+  the trimmed id and the accounts as sent. A disconnect body is accepted
+  exactly when it is one object with no repeated keys, string
+  `plugin_key` and `account_id`, and `everywhere` absent (read as `false`)
+  or a boolean, and nothing else. Anything else is refused as `Invalid`.
+  The shared oracle is `fuzz/oracles/connections_request.rs`, replayed
+  from `bookclerk-library`.
 
 ## Boundaries outside the Rust workspace
 

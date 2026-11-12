@@ -392,6 +392,7 @@ pub async fn keep_brought_connections(
     tracing::info!(
         imported = report.imported.len(),
         already_here = report.already_here.len(),
+        unrecorded = report.unrecorded.len(),
         taken = report.taken.len(),
         refused_by_rule = report.refused_by_rule,
         "kept the store connections brought from the library"

@@ -26756,12 +26756,12 @@
         "properties": {
           "plugin_key": {
             "type": "string",
-            "description": "Provenance-qualified plugin key of the storefront.",
+            "description": "Provenance-qualified plugin key of the storefront, as sent.",
             "example": "platform:bookclerk/bookclerk-plugin-source-libro#libro"
           },
           "account_id": {
             "type": "string",
-            "description": "Store account id.",
+            "description": "Store account id, as sent.",
             "example": "reader@example.com"
           }
         },
@@ -26917,7 +26917,7 @@
             "items": {
               "$ref": "#/components/schemas/AccountRef"
             },
-            "description": "The person's accounts to add; at most 64."
+            "description": "The person's accounts to add; 1 to 64."
           }
         },
         "additionalProperties": false
@@ -29819,7 +29819,7 @@
           },
           "everywhere": {
             "type": "boolean",
-            "description": "Also disconnect it in every linked library it was shared with.",
+            "description": "Also disconnect it in every linked library it was shared with;\nabsent means `false`.",
             "example": true
           }
         },

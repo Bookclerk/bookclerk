@@ -579,6 +579,7 @@ mod tests {
         let kept = CarriedImport {
             imported: vec![key(), key()],
             already_here: vec![key()],
+            unrecorded: Vec::new(),
             taken: Vec::new(),
             failed: vec![key()],
             refused_by_rule: false,

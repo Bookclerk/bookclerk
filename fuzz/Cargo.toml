@@ -231,6 +231,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "connections_request"
+path = "fuzz_targets/connections_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "cache_settings"
 path = "fuzz_targets/cache_settings.rs"
 test = false
