@@ -4146,13 +4146,36 @@ async fn an_administrators_branch_takes_other_members_work_only_when_asked() {
 
     // The owner's pinned job, or one with requirements, is still the
     // owner's work: an Own claim keeps it, where a Member's Host could not.
+    // It is judged within the pinned plugin: Sam's account of the same
+    // name on another store does not make it Sam's, though it does for an
+    // unpinned job, and a pin this library does not know is no one's.
+    let actor = ConfigActor::Operator { id: "test".into() };
+    let instance = create_plugin_instance(&store, &actor, PLUGIN, "Pinned")
+        .await
+        .unwrap();
+    store
+        .upsert_account("other-store", "alex-acct", "us", None, true, "test")
+        .await
+        .unwrap();
+    let sams_identity = store.ensure_local_portal_identity(sam, None).await.unwrap();
+    store
+        .link_account(sams_identity.id, "other-store", "alex-acct", "test")
+        .await
+        .unwrap();
     let mut pinned = claimed.job.clone();
     pinned.payload.account = Some("alex-acct".into());
-    pinned.payload.requires = vec!["some-instance".into()];
-    pinned.payload.plugin_instance_id = Some("some-instance".into());
+    pinned.payload.requires = vec![instance.id.to_string()];
+    pinned.payload.plugin_instance_id = Some(instance.id.to_string());
+    let mut unpinned = pinned.clone();
+    unpinned.payload.requires.clear();
+    unpinned.payload.plugin_instance_id = None;
+    let mut unknown_pin = pinned.clone();
+    unknown_pin.payload.plugin_instance_id = Some("no-such-instance".into());
     for (scope, job, expected) in [
         (ClaimScope::Own, &pinned, true),
         (ClaimScope::AllMembers, &pinned, true),
+        (ClaimScope::Own, &unpinned, false),
+        (ClaimScope::Own, &unknown_pin, false),
         (ClaimScope::Own, &claimed.job, false),
     ] {
         let may = crate::control_plane::node_may_claim_job_in_scope(
@@ -4164,7 +4187,8 @@ async fn an_administrators_branch_takes_other_members_work_only_when_asked() {
         )
         .await
         .unwrap();
-        assert_eq!(may, expected, "{scope:?}");
+        assert_eq!(may, expected, "{scope:?} {:?}", job.payload);
     }
     assert!(job_for_node_owner(&store, HOST, &pinned).await.unwrap());
+    assert!(!job_for_node_owner(&store, HOST, &unpinned).await.unwrap());
 }

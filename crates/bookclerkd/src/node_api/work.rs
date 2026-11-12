@@ -525,6 +525,7 @@ async fn claim(
         plugin_keys,
         source_plugin_key,
         resumed,
+        for_node_owner,
     }) = claim_remote_job(library, &host.node_id, class, host.settings, filter).await?
     else {
         return Ok(none());
@@ -560,12 +561,6 @@ async fn claim(
     };
     drop(secrets);
     let scan_import = scan_import(host, job.kind).await;
-    // A read failure only loses the hint: the branch then treats the job
-    // as another member's and keeps no copy unless asked to.
-    let for_node_owner =
-        bookclerk_library::control_plane::job_for_node_owner(library, &host.node_id, &job)
-            .await
-            .unwrap_or(false);
     let work = sealed.ok().map(|sealed_secrets| {
         Frame::new(
             id.clone(),

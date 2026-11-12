@@ -146,6 +146,10 @@ pub struct RemoteJobClaim {
     /// The claim resumed a suspended job ([`RoutedJobClaim::resumed`]).
     /// Pass it back to [`release_remote_job`] if the claim is given back.
     pub resumed: bool,
+    /// Every store account the job touches belongs to the user who owns
+    /// the node ([`super::job_for_node_owner`]): the branch owner's own
+    /// work.
+    pub for_node_owner: bool,
 }
 
 /// Outcome of [`renew_remote_job`].
@@ -276,6 +280,15 @@ pub async fn claim_remote_job(
             return Err(err);
         }
     };
+    // Whose work it is decides whether the branch keeps a copy, so an
+    // unreadable answer gives the claim back rather than guess.
+    let for_node_owner = match super::job_for_node_owner(store, node_id, &job).await {
+        Ok(mine) => mine,
+        Err(err) => {
+            give_back_claim(store, &fence, &permits, resumed).await;
+            return Err(err);
+        }
+    };
     match unseal_job_secrets(store, &job).await {
         Ok(secrets) => {
             // Trust can change while the secrets are read: check it once
@@ -300,6 +313,7 @@ pub async fn claim_remote_job(
                     plugin_keys,
                     source_plugin_key,
                     resumed,
+                    for_node_owner,
                 })),
                 Ok(false) => {
                     // The lease ran out or was lost while the secrets were

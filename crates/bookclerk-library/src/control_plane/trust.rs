@@ -173,10 +173,19 @@ pub async fn job_trusted(store: &LibraryStore, trust: &NodeTrust, job: &JobRecor
             Some(account) => account_owned(store, *user_id, account).await,
             None => Ok(false),
         },
-        NodeTrust::AllOfOwner(user_id) => match job_named_account(job) {
-            Some(account) => account_owned(store, *user_id, account).await,
-            None => Ok(false),
-        },
+        NodeTrust::AllOfOwner(user_id) => {
+            let Some(account) = job_named_account(job) else {
+                return Ok(false);
+            };
+            // Within the pinned instance's plugin, as the job will run; a
+            // pin this database does not know is no one's.
+            match job_pin_plugin(store, job).await? {
+                Some(plugin_key) => {
+                    account_owned_in(store, *user_id, account, plugin_key.as_deref()).await
+                }
+                None => Ok(false),
+            }
+        }
     }
 }
 
@@ -214,12 +223,46 @@ pub(super) async fn account_owned(
     user_id: i64,
     account: &str,
 ) -> Result<bool> {
-    let touched = accounts_named(store, account, None).await?;
+    account_owned_in(store, user_id, account, None).await
+}
+
+/// [`account_owned`] within one plugin when `plugin_key` names one: the
+/// accounts of that name on other plugins are not touched.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+async fn account_owned_in(
+    store: &LibraryStore,
+    user_id: i64,
+    account: &str,
+    plugin_key: Option<&str>,
+) -> Result<bool> {
+    let touched = accounts_named(store, account, plugin_key).await?;
     if touched.is_empty() {
         return Ok(false);
     }
     let owned = accounts_owned_by(store, user_id).await?;
     Ok(touched.iter().all(|key| owned.contains(key)))
+}
+
+/// The plugin `job` is pinned to: `Some(None)` for a job with no instance
+/// pin, `Some(Some(key))` for a pin this database knows, and `None` for a
+/// pin it does not (unparsable, or no such instance).
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+async fn job_pin_plugin(store: &LibraryStore, job: &JobRecord) -> Result<Option<Option<String>>> {
+    let Some(raw) = job.payload.plugin_instance_id.as_deref() else {
+        return Ok(Some(None));
+    };
+    let Ok(id) = PluginInstanceId::parse(raw) else {
+        return Ok(None);
+    };
+    Ok(load_plugin_instance(store, &id)
+        .await?
+        .map(|instance| Some(instance.plugin_key)))
 }
 
 /// True when a `claimant` may run `job` at all, whatever it is trusted
@@ -250,17 +293,8 @@ pub async fn job_item_accounts(
     store: &LibraryStore,
     job: &JobRecord,
 ) -> Result<Option<BTreeSet<AccountKey>>> {
-    let plugin_key = match job.payload.plugin_instance_id.as_deref() {
-        Some(raw) => {
-            let Ok(id) = PluginInstanceId::parse(raw) else {
-                return Ok(None);
-            };
-            match load_plugin_instance(store, &id).await? {
-                Some(instance) => Some(instance.plugin_key),
-                None => return Ok(None),
-            }
-        }
-        None => None,
+    let Some(plugin_key) = job_pin_plugin(store, job).await? else {
+        return Ok(None);
     };
     let account = job.payload.account.as_deref().filter(|a| !a.is_empty());
     let mut items = BTreeSet::new();

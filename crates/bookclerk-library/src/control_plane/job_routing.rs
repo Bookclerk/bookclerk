@@ -661,8 +661,11 @@ pub async fn claim_routed_job(
             {
                 continue;
             }
+            // Accounts are cached by name only for unpinned jobs; a pinned
+            // job's account is resolved within its plugin by `job_trusted`.
             let named = match &trust {
                 NodeTrust::OwnedBy(user_id) => Some((*user_id, owned_job_account(&job))),
+                NodeTrust::AllOfOwner(_) if job.payload.plugin_instance_id.is_some() => None,
                 NodeTrust::AllOfOwner(user_id) => Some((*user_id, job_named_account(&job))),
                 NodeTrust::All | NodeTrust::Nothing => None,
             };
