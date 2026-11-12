@@ -489,3 +489,121 @@ async fn many_works_are_asked_and_answered_within_every_profiles_limits() {
         );
     }
 }
+
+#[tokio::test]
+async fn offers_name_the_branch_owner_and_listings_find_their_work_under_every_profile() {
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let store = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        let member = store
+            .create_user(UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap()
+            .id;
+        add_branch(&store, BRANCH, member).await;
+        let work = hold(&store, member, "riley-acct", "B0OFFER001").await;
+        let other = hold(&store, member, "riley-acct", "B0OFFER002").await;
+
+        assert!(
+            branch_offers_for_works(&store, std::slice::from_ref(&work))
+                .await
+                .unwrap()
+                .is_empty(),
+            "{name}: nothing answered yet"
+        );
+        ask_branches(&store, std::slice::from_ref(&work))
+            .await
+            .unwrap();
+        pending_questions(&store, BRANCH).await.unwrap().unwrap();
+        recorded(
+            &store,
+            &[LookupAnswer {
+                work: work.clone(),
+                editions: vec![edition("B0OFFER001")],
+            }],
+            &[],
+        )
+        .await;
+
+        let offers = branch_offers_for_works(&store, &[work.clone(), other.clone()])
+            .await
+            .unwrap();
+        assert_eq!(offers.len(), 1, "{name}: only the answered work");
+        assert_eq!(
+            offers.get(&work).cloned().unwrap_or_default(),
+            vec![BranchOffer {
+                node_id: BRANCH.into(),
+                owner_name: Some("Riley".into()),
+                store: "audible".into(),
+                product_id: "B0OFFER001".into(),
+            }],
+            "{name}"
+        );
+
+        let works = works_of_listings(
+            &store,
+            &[
+                (PLUGIN.into(), " B0OFFER001".into()),
+                (PLUGIN.into(), "B0OFFER002".into()),
+                (PLUGIN.into(), "B0NOTPOOLED".into()),
+                ("other-store".into(), "B0OFFER001".into()),
+                (branch_listing_key(BRANCH), "audible:B0OFFER001".into()),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(works.len(), 2, "{name}: {works:?}");
+        assert_eq!(
+            works.get(&(PLUGIN.to_string(), " B0OFFER001".to_string())),
+            Some(&work),
+            "{name}: matched in stored spelling, keyed as asked"
+        );
+        assert_eq!(
+            works.get(&(PLUGIN.to_string(), "B0OFFER002".to_string())),
+            Some(&other),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn offers_leave_out_branches_no_longer_trusted() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, member) = library(dir.path()).await;
+    let work = hold(&store, member, "riley-acct", "B0OFFER003").await;
+    ask_branches(&store, std::slice::from_ref(&work))
+        .await
+        .unwrap();
+    pending_questions(&store, BRANCH).await.unwrap().unwrap();
+    recorded(
+        &store,
+        &[LookupAnswer {
+            work: work.clone(),
+            editions: vec![edition("B0OFFER003")],
+        }],
+        &[],
+    )
+    .await;
+    assert_eq!(
+        branch_offers_for_works(&store, std::slice::from_ref(&work))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let credential = node_credentials::Entity::find_by_id(BRANCH.to_string())
+        .one(store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut revoked: node_credentials::ActiveModel = credential.into();
+    revoked.revoked_at = Set(Some(Utc::now().to_rfc3339()));
+    revoked.update(store.db()).await.unwrap();
+    assert!(branch_offers_for_works(&store, std::slice::from_ref(&work))
+        .await
+        .unwrap()
+        .is_empty());
+}

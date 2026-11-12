@@ -152,6 +152,11 @@ pub struct CatalogSearchHit {
     /// Buy / open-in-store links with optional member vs list pricing.
     #[serde(default)]
     pub purchase_hints: Vec<crate::purchase::PurchaseHint>,
+    /// Branches of this library that currently list this title, matched
+    /// through a store listing the library already holds. Filled by the
+    /// daemon after the search.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_through: Vec<crate::availability::BranchAvailability>,
 }
 
 /// Paged catalog-search response.
@@ -871,6 +876,7 @@ fn candidate_to_hit(work_key: String, c: StorefrontCandidate, region: &str) -> C
         rating_count: c.rating_count,
         price_cents: c.price_cents,
         purchase_hints,
+        available_through: Vec::new(),
     }
 }
 

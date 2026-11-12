@@ -675,6 +675,13 @@ through B", and nothing is fetched until someone asks for it.
    A's shared listing pool, from source `branch:<B's node id>`. A listing
    counts for two days after B last named it. A later answer that no
    longer names it expires it.
+5. **Discover and search show them.** When a Discover feed or a catalog
+   search page is read, each card or hit is matched to its work (the
+   card's own work, or the work of a store listing A's pool holds for one
+   of its store editions) and gets `available_through`: one entry per
+   current listing from a trusted branch, with the branch's node id, its
+   owner's display name, and the store and product id. The field is never
+   stored with the ranked feed, so it is current on every read.
 
 Questions name works by identifier only, because work ids differ between
 libraries:
@@ -687,6 +694,9 @@ libraries:
   missing.
 - A keeps an answered edition only when it lands on an edition A already
   has of the asked work. An answer can't add works or editions to A.
+  An edition B names by ISBN only is dropped for now: the resolver places a
+  weak identifier only on an expression with a known language and
+  abridgement, which most store-scanned editions lack.
 
 An answer names no store account, user, or other library. A asks only
 branches it still trusts, and records answers only for questions it sent
@@ -695,8 +705,10 @@ that branch.
 **What B lists.** B always lists its owner's books. It never lists books on a store account linked to no one, such as one a member disconnected. It lists its members'
 books too while **List my members' books to <library>** is on (the
 default, set per library in the sharing settings below). A member can keep
-their own books out with `PUT /api/auth/profile/catalog-listing`
-`{"listed": false}`. With **Share this branch's books with <library>**
+their own books out with **Settings → Account → List my books to joined
+libraries** (`PUT /api/auth/profile/catalog-listing` `{"listed": false}`;
+`GET` also returns `libraries`, the number of libraries B is currently a
+branch of, and the app shows the setting only when it is above zero). With **Share this branch's books with <library>**
 off, B lists nothing to that library and answers every question as
 missing.
 

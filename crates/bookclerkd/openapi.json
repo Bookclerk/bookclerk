@@ -17847,7 +17847,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CatalogListing"
+                  "$ref": "#/components/schemas/CatalogListingView"
                 }
               }
             }
@@ -17969,7 +17969,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CatalogListing"
+                  "$ref": "#/components/schemas/CatalogListingView"
                 }
               }
             }
@@ -26858,6 +26858,40 @@
           }
         }
       },
+      "BranchAvailability": {
+        "type": "object",
+        "description": "One branch a title is available through.",
+        "required": [
+          "node_id",
+          "store",
+          "product_id"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "The branch node id.",
+            "example": "node-7f3a"
+          },
+          "owner_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The branch owner's display name, for \"available through Riley's\nbranch\"; absent when the owner has none.",
+            "example": "Riley"
+          },
+          "store": {
+            "type": "string",
+            "description": "The store the branch has the book from.",
+            "example": "audible"
+          },
+          "product_id": {
+            "type": "string",
+            "description": "The store's product id of the branch's copy.",
+            "example": "B002V0QK4C"
+          }
+        }
+      },
       "BranchConsentBody": {
         "allOf": [
           {
@@ -27355,6 +27389,28 @@
         },
         "additionalProperties": false
       },
+      "CatalogListingView": {
+        "type": "object",
+        "description": "The caller's listing choice and how many libraries it applies to.",
+        "required": [
+          "listed",
+          "libraries"
+        ],
+        "properties": {
+          "listed": {
+            "type": "boolean",
+            "description": "The caller's choice; see [`CatalogListing::listed`].",
+            "example": true
+          },
+          "libraries": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Libraries this install is currently a branch of (active links).\nWith none, the choice has no effect yet, and the app hides it.",
+            "example": 1,
+            "minimum": 0
+          }
+        }
+      },
       "CatalogSearchHit": {
         "type": "object",
         "description": "One autocomplete / results-page hit (possibly spanning multiple storefronts).",
@@ -27555,6 +27611,13 @@
               "$ref": "#/components/schemas/PurchaseHint"
             },
             "description": "Buy / open-in-store links with optional member vs list pricing."
+          },
+          "available_through": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BranchAvailability"
+            },
+            "description": "Branches of this library that currently list this title, matched\nthrough a store listing the library already holds. Filled by the\ndaemon after the search."
           }
         }
       },
@@ -36221,6 +36284,13 @@
             ],
             "description": "Starter genre this card was browsed from while the taste was thin.",
             "example": "Science Fiction"
+          },
+          "available_through": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BranchAvailability"
+            },
+            "description": "Branches of this library that currently list this title (they\nanswered a catalog lookup for its work). Filled when the feed is\nread, never stored with it."
           }
         }
       },

@@ -925,6 +925,190 @@ pub async fn branch_listings_for_works(
     )
 }
 
+/// One branch a work is available through, as Discover and search show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchOffer {
+    /// The branch node.
+    pub node_id: String,
+    /// The branch owner's display name (or login name), for "available
+    /// through Riley's branch"; `None` when the owner has neither.
+    pub owner_name: Option<String>,
+    /// The store the branch has the book from (`audible`).
+    pub store: String,
+    /// The store's product id.
+    pub product_id: String,
+}
+
+/// The branches each of `work_ids` is currently available through.
+///
+/// Built from [`branch_listings_for_works`]: only answers a trusted branch
+/// gave within [`BRANCH_LISTING_TTL`] count. A work with no current branch
+/// listing is left out of the map. Each work's offers are ordered by node,
+/// then store and product id, with duplicates removed.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn branch_offers_for_works(
+    store: &LibraryStore,
+    work_ids: &[String],
+) -> Result<HashMap<String, Vec<BranchOffer>>> {
+    if work_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let listings = branch_listings_for_works(store, work_ids).await?;
+    if listings.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let node_ids: Vec<String> = listings
+        .iter()
+        .map(|l| l.node_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let owner_of_node: HashMap<String, i64> = read_chunked(store, &node_ids, |part| {
+        nodes::Entity::find().filter(nodes::Column::NodeId.is_in(part))
+    })
+    .await?
+    .into_iter()
+    .filter_map(|n| n.owner_user_id.map(|owner| (n.node_id, owner)))
+    .collect();
+    let owner_ids: Vec<i64> = owner_of_node
+        .values()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut name_of_owner: HashMap<i64, String> = HashMap::new();
+    for part in owner_ids.chunks(in_chunk(store, READ_FIXED_BINDS)) {
+        let rows = users::Entity::find()
+            .filter(users::Column::Id.is_in(part.to_vec()))
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        for user in rows {
+            if let Some(name) = user
+                .display_name
+                .filter(|n| !n.trim().is_empty())
+                .or(user.login_name.filter(|n| !n.trim().is_empty()))
+            {
+                name_of_owner.insert(user.id, name);
+            }
+        }
+    }
+    let mut out: HashMap<String, BTreeSet<(String, String, String)>> = HashMap::new();
+    for listing in listings {
+        out.entry(listing.work_id).or_default().insert((
+            listing.node_id,
+            listing.store,
+            listing.product_id,
+        ));
+    }
+    Ok(out
+        .into_iter()
+        .map(|(work_id, offers)| {
+            let offers = offers
+                .into_iter()
+                .map(|(node_id, store_id, product_id)| BranchOffer {
+                    owner_name: owner_of_node
+                        .get(&node_id)
+                        .and_then(|owner| name_of_owner.get(owner))
+                        .cloned(),
+                    node_id,
+                    store: store_id,
+                    product_id,
+                })
+                .collect();
+            (work_id, offers)
+        })
+        .collect())
+}
+
+/// The work of each store listing in `listings`, by `(plugin key, product
+/// id)`, for listings the shared pool already holds.
+///
+/// Product ids are compared in their stored spelling
+/// ([`resolve::stored_product_id`]); the marketplace is not compared, so a
+/// product sold in two marketplaces maps to the work of either listing.
+/// Branch listings (`branch:<node>`) are never matched. A listing the pool
+/// does not hold, or whose edition has no work, is left out.
+///
+/// # Arguments
+///
+/// * `store` - The library.
+/// * `listings` - `(plugin key, product id)` pairs as the storefront
+///   reports them.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn works_of_listings(
+    store: &LibraryStore,
+    listings: &[(String, String)],
+) -> Result<HashMap<(String, String), String>> {
+    let mut wanted: HashMap<(String, String), Vec<(String, String)>> = HashMap::new();
+    for (plugin_key, product_id) in listings {
+        if plugin_key.starts_with(BRANCH_LISTING_PREFIX) {
+            continue;
+        }
+        let stored = resolve::stored_product_id(product_id);
+        if stored.is_empty() {
+            continue;
+        }
+        wanted
+            .entry((plugin_key.clone(), stored))
+            .or_default()
+            .push((plugin_key.clone(), product_id.clone()));
+    }
+    if wanted.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let product_ids: Vec<String> = wanted
+        .keys()
+        .map(|(_, product)| product.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let rows = read_chunked(store, &product_ids, |part| {
+        store_listings::Entity::find().filter(store_listings::Column::ProductId.is_in(part))
+    })
+    .await?;
+    let mut edition_of: BTreeMap<(String, String), String> = BTreeMap::new();
+    for row in rows {
+        let key = (row.plugin_key, row.product_id);
+        if wanted.contains_key(&key) {
+            // The same product in two marketplaces is two rows; keep the
+            // smallest edition id so the answer does not depend on read
+            // order.
+            edition_of
+                .entry(key)
+                .and_modify(|e| {
+                    if row.edition_id < *e {
+                        e.clone_from(&row.edition_id);
+                    }
+                })
+                .or_insert(row.edition_id);
+        }
+    }
+    let edition_ids: Vec<String> = edition_of
+        .values()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let work_of_edition = works_of_editions(store, &edition_ids).await?;
+    let mut out = HashMap::new();
+    for (key, edition_id) in edition_of {
+        let Some(work_id) = work_of_edition.get(&edition_id) else {
+            continue;
+        };
+        for asked in wanted.remove(&key).unwrap_or_default() {
+            out.insert(asked, work_id.clone());
+        }
+    }
+    Ok(out)
+}
+
 /// The works this library wants its branches asked about: those of open
 /// wishes (most recently changed first), then those of Discover candidates
 /// (most recently fetched first), at most `limit`.

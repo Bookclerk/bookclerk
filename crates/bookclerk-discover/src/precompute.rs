@@ -1121,10 +1121,15 @@ pub async fn stored_subject_feed(
         .feed
         .shelves
         .retain(|shelf| !shelf_is_disabled(&shelf.id, disabled_shelves));
-    if feed_needs_pool(&stored.feed) {
+    let pool = if feed_needs_pool(&stored.feed) {
         let rows = library.list_discover_candidates(subject).await?;
-        join_feed(&mut stored.feed, &CandidatePool::from_rows(&rows));
-    }
+        let pool = CandidatePool::from_rows(&rows);
+        join_feed(&mut stored.feed, &pool);
+        Some(pool)
+    } else {
+        None
+    };
+    crate::availability::join_branch_availability(library, &mut stored.feed, pool.as_ref()).await?;
     Ok(Some(stored))
 }
 

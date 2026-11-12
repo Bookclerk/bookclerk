@@ -5965,6 +5965,26 @@ async fn discover_catalog_search(
     })?
     .map_err(internal_err)?;
     let mut page = page;
+    // The PluginKey each hit's storefront pools its listings under, read
+    // before the registry lock is released.
+    let plugin_keys: std::collections::HashMap<String, String> = page
+        .items
+        .iter()
+        .flat_map(|hit| hit.store_editions.iter().map(|e| e.source.clone()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|id| {
+            let key = sources.get(&id)?.plugin_key().to_string();
+            Some((id, key))
+        })
+        .collect();
+    drop(sources);
+    let library = state.library_snapshot().await;
+    bookclerk_discover::join_search_branch_availability(&library, &mut page.items, |id| {
+        plugin_keys.get(id).cloned()
+    })
+    .await
+    .map_err(internal_err)?;
     for hit in &mut page.items {
         state
             .covers

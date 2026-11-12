@@ -438,13 +438,33 @@ pub struct CatalogListing {
     pub listed: bool,
 }
 
+/// The caller's listing choice and how many libraries it applies to.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct CatalogListingView {
+    /// The caller's choice; see [`CatalogListing::listed`].
+    #[schema(example = true)]
+    pub listed: bool,
+    /// Libraries this install is currently a branch of (active links).
+    /// With none, the choice has no effect yet, and the app hides it.
+    #[schema(example = 1)]
+    pub libraries: u32,
+}
+
+/// The number of libraries this install is currently a branch of.
+async fn active_libraries(library: &bookclerk_library::LibraryStore) -> Result<u32, StatusCode> {
+    let links = bookclerk_library::control_plane::list_cluster_links(library)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(u32::try_from(links.iter().filter(|l| l.state == "active").count()).unwrap_or(u32::MAX))
+}
+
 /// Reads whether the caller's books are listed to the libraries this
 /// install is a branch of.
 #[utoipa::path(
     get,
     path = "/api/auth/profile/catalog-listing",
     responses(
-        (status = 200, description = "The caller's listing choice.", body = CatalogListing),
+        (status = 200, description = "The caller's listing choice.", body = CatalogListingView),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The session is impersonating a user, is a plain operator session, or has no first-party user."),
         (status = 500, description = "The library could not be read."),
@@ -453,13 +473,16 @@ pub struct CatalogListing {
 pub async fn get_catalog_listing(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<CatalogListing>, StatusCode> {
+) -> Result<Json<CatalogListingView>, StatusCode> {
     let user_id = require_self_user_id(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let opted_out = bookclerk_library::control_plane::catalog_listing_opted_out(&library, user_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(CatalogListing { listed: !opted_out }))
+    Ok(Json(CatalogListingView {
+        listed: !opted_out,
+        libraries: active_libraries(&library).await?,
+    }))
 }
 
 /// Sets whether the caller's books are listed to the libraries this install
@@ -469,7 +492,7 @@ pub async fn get_catalog_listing(
     path = "/api/auth/profile/catalog-listing",
     request_body = CatalogListing,
     responses(
-        (status = 200, description = "The caller's listing choice after the change.", body = CatalogListing),
+        (status = 200, description = "The caller's listing choice after the change.", body = CatalogListingView),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The session is impersonating a user, is a plain operator session, or has no first-party user."),
         (status = 500, description = "The library could not be written."),
@@ -479,7 +502,7 @@ pub async fn put_catalog_listing(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<CatalogListing>,
-) -> Result<Json<CatalogListing>, StatusCode> {
+) -> Result<Json<CatalogListingView>, StatusCode> {
     let user_id = require_self_user_id(&state, &headers).await?;
     let library = state.library_snapshot().await;
     bookclerk_library::control_plane::set_catalog_listing_opt_out(&library, user_id, !body.listed)
@@ -495,8 +518,9 @@ pub async fn put_catalog_listing(
             )),
         )
         .await;
-    Ok(Json(CatalogListing {
+    Ok(Json(CatalogListingView {
         listed: body.listed,
+        libraries: active_libraries(&library).await?,
     }))
 }
 
@@ -1203,24 +1227,36 @@ mod tests {
         );
         assert_eq!(
             catalog_listing(&app, "GET", Some(&cookie), "").await,
-            (StatusCode::OK, r#"{"listed":true}"#.to_string()),
+            (
+                StatusCode::OK,
+                r#"{"listed":true,"libraries":0}"#.to_string()
+            ),
             "listed by default"
         );
         assert_eq!(
             catalog_listing(&app, "PUT", Some(&cookie), r#"{"listed":false}"#).await,
-            (StatusCode::OK, r#"{"listed":false}"#.to_string())
+            (
+                StatusCode::OK,
+                r#"{"listed":false,"libraries":0}"#.to_string()
+            )
         );
         assert_eq!(
             catalog_listing(&app, "GET", Some(&cookie), "").await,
-            (StatusCode::OK, r#"{"listed":false}"#.to_string())
+            (
+                StatusCode::OK,
+                r#"{"listed":false,"libraries":0}"#.to_string()
+            )
         );
         assert_eq!(
             catalog_listing(&app, "PUT", Some(&cookie), r#"{"listed":true}"#).await,
-            (StatusCode::OK, r#"{"listed":true}"#.to_string())
+            (
+                StatusCode::OK,
+                r#"{"listed":true,"libraries":0}"#.to_string()
+            )
         );
         assert_eq!(
             catalog_listing(&app, "GET", Some(&cookie), "").await.1,
-            r#"{"listed":true}"#
+            r#"{"listed":true,"libraries":0}"#
         );
     }
 }

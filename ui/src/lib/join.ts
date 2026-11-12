@@ -65,6 +65,8 @@ export interface BranchLinkView {
   share_books?: boolean;
   /** "Include books from my own branches" (on by default). */
   include_branches?: boolean;
+  /** "List my members' books" when the library asks (on by default). */
+  list_members_books?: boolean;
 }
 
 /** `GET /api/config/join`. */
@@ -468,6 +470,31 @@ export function setBranchSharing(
   return request("/api/config/join/sharing", {
     method: "POST",
     body: { cluster_id: clusterId, share_books: shareBooks, include_branches: includeBranches },
+  });
+}
+
+/**
+ * Settings → Library: "List my members' books" for one library this server
+ * is a branch of (the operator or an Owner). The two book-sharing settings
+ * are sent as they are, since the route takes them on every change.
+ *
+ * @param link - The library, with its current sharing settings.
+ * @param listMembersBooks - Whether members' books are listed when the
+ *   library asks (the owner's books always are).
+ * @returns The link with the stored settings.
+ */
+export function setMembersListing(
+  link: Pick<BranchLinkView, "cluster_id" | "share_books" | "include_branches">,
+  listMembersBooks: boolean,
+): Promise<{ cluster: BranchLinkView }> {
+  return request("/api/config/join/sharing", {
+    method: "POST",
+    body: {
+      cluster_id: link.cluster_id,
+      share_books: link.share_books ?? true,
+      include_branches: link.include_branches ?? true,
+      list_members_books: listMembersBooks,
+    },
   });
 }
 
