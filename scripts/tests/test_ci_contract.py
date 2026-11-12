@@ -467,7 +467,11 @@ class WorkflowContractTests(unittest.TestCase):
         """Each `test` leg runs one part and keeps its reports apart from the others'."""
         job = self.jobs["test"]
         self.assertEqual(job["strategy"], {"fail-fast": False, "matrix": {"part": "${{ fromJSON(needs.plan.outputs.test_parts) }}"}})
-        self.assertEqual(job["env"]["CI_TEST_PART"], "${{ format('{0}/{1}', matrix.part, strategy.job-total) }}")
+        # On the step, not the job: the job env matches mutation.yml's.
+        test = [s for s in job["steps"] if s.get("name") == "Test"]
+        self.assertEqual(len(test), 1)
+        self.assertEqual(test[0]["env"]["CI_TEST_PART"], "${{ format('{0}/{1}', matrix.part, strategy.job-total) }}")
+        self.assertNotIn("CI_TEST_PART", job["env"])
         keep = {s["name"]: s for s in job["steps"] if s.get("name", "").startswith("Keep the ")}
         self.assertIn('"$CI_COVERAGE_DIR/rust/part-$PART/junit.xml"', keep["Keep the Rust test results"]["run"])
         self.assertIn('"$CI_COVERAGE_DIR/contract/part-$PART/"', keep["Keep the Web API contract report"]["run"])

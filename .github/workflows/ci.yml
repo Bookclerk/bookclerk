@@ -506,7 +506,6 @@ jobs:
     env:
       BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: "1"
       BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
-      CI_TEST_PART: ${{ format('{0}/{1}', matrix.part, strategy.job-total) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -611,7 +610,10 @@ jobs:
         if: env.CI_BUILD_ONLY != 'true'
         run: rm -rf target/contract-report
 
+      # The job-level env matches mutation.yml's, so the part goes on the step.
       - name: Test
+        env:
+          CI_TEST_PART: ${{ format('{0}/{1}', matrix.part, strategy.job-total) }}
         run: python3 scripts/ci-exec.py run rust_test
 
       # nextest writes the JUnit report Codecov Test Analytics reads into the
