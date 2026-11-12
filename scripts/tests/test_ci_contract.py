@@ -33,6 +33,8 @@ from ci_plan.plan import CHECK_JOB, JOB_CHECKS, OS_LEG_JOBS, STEP_GATED_JOBS  # 
 WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
 OUTPUT_REF = re.compile(r"needs\.plan\.outputs\.([A-Za-z0-9_]+)")
 RUN_CHECK = re.compile(r"ci-exec\.py run ([a-z0-9_]+)\b")
+# The plan output that maps each pull request job leg to its lane.
+LANES_OUTPUT = "lanes"
 # Watches a merge-group run and cancels it on the first failed job.
 FAIL_FAST_JOB = "merge-queue-fail-fast"
 # Checks out the OSV remediation workflow's sealed lockfile bump.
@@ -130,7 +132,8 @@ class WorkflowContractTests(unittest.TestCase):
         art = {"mode": "selective", "execution": plan_to_dict(plan)}
         self.assertEqual(set(job_outputs(art)), _emitted_keys())
 
-        declared = self.jobs["plan"]["outputs"]
+        # `lanes` comes from the lane step, not from ci-exec resolve.
+        declared = {k: v for k, v in self.jobs["plan"]["outputs"].items() if k != LANES_OUTPUT}
         self.assertEqual(set(declared), _emitted_keys(), "plan job outputs != ci-exec resolve outputs")
         for key, expr in declared.items():
             self.assertEqual(expr, "${{ steps.resolve.outputs.%s }}" % key)
@@ -142,9 +145,10 @@ class WorkflowContractTests(unittest.TestCase):
                 continue
             for s in _strings(job):
                 used |= set(OUTPUT_REF.findall(s))
-        self.assertLessEqual(used, _emitted_keys(), f"unknown outputs: {used - _emitted_keys()}")
+        known = _emitted_keys() | {LANES_OUTPUT}
+        self.assertLessEqual(used, known, f"unknown outputs: {used - known}")
         # `mode` is for humans (summary / logs); everything else gates work.
-        self.assertEqual(_emitted_keys() - used, {"mode"})
+        self.assertEqual(known - used, {"mode"})
 
     def test_jobs_match_planner(self) -> None:
         gated = [j for j in self.jobs if j not in ("plan", "ci-gate", FAIL_FAST_JOB, *OS_LEG_JOBS)]
@@ -440,6 +444,9 @@ class WorkflowContractTests(unittest.TestCase):
                     other["permissions"],
                     {"contents": "read", "actions": "read", "checks": "read", "issues": "read"},
                 )
+            elif name == "plan":
+                # Read-only, for the lane step.
+                self.assertEqual(other["permissions"], {"contents": "read", "actions": "read"})
             elif name != FAIL_FAST_JOB:
                 self.assertNotIn("permissions", other, name)
         self.assertEqual(self.wf["permissions"], {"contents": "read"})
@@ -668,14 +675,74 @@ class DraftDeferredWorkflowTests(unittest.TestCase):
 
     # Jobs that never run on a pull request, or hold a runner only briefly.
     UNSLOTTED_CI_JOBS = {"plan", "macos", "windows-cluster", "merge-queue-fail-fast", "ci-gate"}
-    # Pull request jobs may hold at most this many runners at once (of the 20 the plan allows).
+    # Pull request jobs may always hold at most this many runners at once, so
+    # the merge queue keeps the rest of the organization's runners.
     PR_SLOT_BUDGET = 12
+    # The organization's concurrent hosted runners (GitHub Free).
+    RUNNER_CAP = 20
 
-    def test_pull_request_jobs_take_turns_in_slots(self) -> None:
-        """Heavy pull request jobs wait in shared slots and never drop a waiting run."""
+    @staticmethod
+    def _lanes() -> object:
+        spec = importlib.util.spec_from_file_location("ci_lanes", SCRIPTS / "ci_lanes.py")
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_pull_request_ci_jobs_wait_in_lanes(self) -> None:
+        """Heavy pull request CI jobs wait in the lane the plan picked, never in a group of their own."""
+        lanes = self._lanes()
+        wf = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        laned = set()
+        for job, body in wf["jobs"].items():
+            if job in self.UNSLOTTED_CI_JOBS:
+                continue
+            laned.add(job)
+            with self.subTest(job=job):
+                key = f"fromJSON(needs.plan.outputs.lanes || '{{}}')[format('{job}-{{0}}', strategy.job-index)]"
+                conc = body.get("concurrency")
+                self.assertIsInstance(conc, dict, "pull request job without a lane")
+                # `queue: max` keeps up to 100 waiting jobs; the default keeps one
+                # and cancels the rest. It can't be combined with cancel-in-progress.
+                self.assertEqual(conc.get("queue"), "max")
+                self.assertNotIn("cancel-in-progress", conc)
+                group = conc["group"]
+                # A missing lane falls back to lane 0, never to an unthrottled group.
+                self.assertTrue(
+                    group.startswith(f"${{{{ github.event_name == 'pull_request' && ({key}.group || 'ci-pr-lane-0') || "),
+                    group,
+                )
+                # Every other event gets a group of its own, so it never waits.
+                self.assertIn("github.run_id", group)
+                self.assertIn("github.run_attempt", group)
+                # The lane shows in the job name, which is how other plans count it.
+                self.assertTrue(body["name"].endswith(f"${{{{ {key}.label }}}}"), body["name"])
+                # The plan knows how many legs the job has on a pull request.
+                matrix = body.get("strategy", {}).get("matrix", {})
+                if job in lanes.OS_MATRIX_JOBS:
+                    self.assertEqual(matrix.get("os"), "${{ fromJSON(needs.plan.outputs.os_matrix) }}")
+                elif job in lanes.FIXED_LEGS:
+                    legs = [v for k, v in matrix.items() if k not in ("include", "exclude")]
+                    self.assertEqual(len(legs), 1, job)
+                    self.assertEqual(len(legs[0]), lanes.FIXED_LEGS[job], job)
+                elif job == "release":
+                    self.assertIn("github.event_name == 'pull_request' && !inputs.private-head && '[\"thin\"]'", matrix["lto"])
+                else:
+                    self.assertEqual(matrix, {}, job)
+        self.assertEqual(laned, set(lanes.LANE_JOBS))
+        plan = wf["jobs"]["plan"]
+        self.assertEqual(plan["outputs"]["lanes"], "${{ steps.lanes.outputs.lanes || '{}' }}")
+        self.assertEqual(plan["permissions"], {"contents": "read", "actions": "read"})
+        step = next(s for s in plan["steps"] if s.get("id") == "lanes")
+        self.assertIn("scripts/ci_lanes.py", step["run"])
+        self.assertEqual(step["if"], "github.event_name == 'pull_request' && !inputs.private-head")
+
+    def test_other_pull_request_jobs_take_turns_in_slots(self) -> None:
+        """CodeQL and ClusterFuzzLite wait in fixed slots; with the base lanes they fit the budget."""
+        lanes = self._lanes()
         wf_dir = REPO / ".github" / "workflows"
         slots: set[str] = set()
-        for name, extra in (("ci.yml", self.UNSLOTTED_CI_JOBS), ("codeql.yml", {"languages"}), ("cflite-pr.yml", set())):
+        for name, extra in (("codeql.yml", {"languages"}), ("cflite-pr.yml", set())):
             wf = yaml.safe_load((wf_dir / name).read_text(encoding="utf-8"))
             for job, body in wf["jobs"].items():
                 if job in extra:
@@ -683,22 +750,22 @@ class DraftDeferredWorkflowTests(unittest.TestCase):
                 with self.subTest(workflow=name, job=job):
                     conc = body.get("concurrency")
                     self.assertIsInstance(conc, dict, "pull request job without a slot")
-                    # `queue: max` keeps up to 100 waiting jobs; the default keeps one
-                    # and cancels the rest. It can't be combined with cancel-in-progress.
                     self.assertEqual(conc.get("queue"), "max")
                     self.assertNotIn("cancel-in-progress", conc)
                     group = conc["group"]
                     self.assertTrue(group.startswith("${{ github.event_name == 'pull_request' && "), group)
-                    # Every other event gets a group of its own, so it never waits.
                     self.assertIn("github.run_id", group)
                     self.assertIn("github.run_attempt", group)
-                    found = re.findall(r"'((?:ci|cflite)-pr-slot[a-z0-9-]*)'", group)
+                    found = re.findall(r"'(cflite-pr-slot[a-z0-9-]*)'", group)
                     found += [
                         f"codeql-pr-slot-{lang}" for lang in re.findall(r"'(rust|other)'", group)
                     ]
                     self.assertTrue(found, group)
                     slots.update(found)
-        self.assertLessEqual(len(slots), self.PR_SLOT_BUDGET, sorted(slots))
+        # Base lanes plus these slots are what pull requests may always hold;
+        # lent lanes take them to every runner, and only while the queue is idle.
+        self.assertEqual(lanes.BASE_LANES + len(slots), self.PR_SLOT_BUDGET, sorted(slots))
+        self.assertEqual(lanes.ALL_LANES + len(slots), self.RUNNER_CAP, sorted(slots))
 
 
 class OsvRemediationWorkflowTest(unittest.TestCase):

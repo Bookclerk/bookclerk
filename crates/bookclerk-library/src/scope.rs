@@ -172,6 +172,25 @@ impl SourceScope {
         self.store.upsert_scanned_title(&title).await
     }
 
+    /// Upsert a page of scanned titles as this plugin's, and resolve their
+    /// listings as one page (see [`LibraryStore::upsert_scanned_titles`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a flat row cannot be read or written.
+    pub async fn upsert_scanned_titles(&self, titles: &[ScannedTitle]) -> Result<Vec<BookRecord>> {
+        let titles: Vec<ScannedTitle> = titles
+            .iter()
+            .map(|title| {
+                let mut title = title.clone();
+                title.book.plugin_key = self.plugin_key.clone();
+                title.book.source = self.source_id.clone();
+                title
+            })
+            .collect();
+        self.store.upsert_scanned_titles(&titles).await
+    }
+
     /// Where one of this plugin's accounts' scan stands.
     ///
     /// # Errors
