@@ -14,22 +14,25 @@ use sea_orm::{
 };
 use uuid::Uuid;
 
+use super::books_page::is_result_too_large;
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
 use crate::column_read::SelectColumnExt;
 use crate::control_plane::{bump_if_stamped, bump_on, exec_bumped_via, sea_probe, Bump, LiveTopic};
 use crate::entities::{
     books, domain_events, event_deliveries, event_outbox_stats, event_subscriber_nodes,
+    plugin_instances,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{
     catalog_subscribers_for_event, collapse_live_subscriber_nodes, event_matches_wake_grants,
     is_valid_queue_name, job_backoff_run_after, queue_name_or_bus, subscription_matches_event,
     AcquireStatus, DomainEventRecord, EventCatalogSubscription, EventDeliveryFence,
-    EventDeliveryMetrics, EventDeliveryRecord, EventSubscriber, EventSubscriberCatalogRecord,
-    EventSubscriberNodeRecord, PendingWakeProgress, PublishDomainEventOutcome,
-    PublishDomainEventSpec, CORE_EVENTS_QUEUE, EVENT_DELIVERY_DEFAULT_RETENTION_SECS,
-    EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, HOST_CONSUMER_PREFIX,
-    QUEUE_CONTENT_TYPE_BYTES, QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT,
+    EventDeliveryMetrics, EventDeliveryRecord, EventStreamPage, EventStreamRead, EventStreamStart,
+    EventSubscriber, EventSubscriberCatalogRecord, EventSubscriberNodeRecord, PendingWakeProgress,
+    PublishDomainEventOutcome, PublishDomainEventSpec, CORE_EVENTS_QUEUE,
+    EVENT_DELIVERY_DEFAULT_RETENTION_SECS, EVENT_RESOURCE_CLASS_NETWORK,
+    EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, HOST_CONSUMER_PREFIX, QUEUE_CONTENT_TYPE_BYTES,
+    QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT,
 };
 
 const STATE_PENDING: &str = "pending";
@@ -82,6 +85,19 @@ fn claim_keyset_after(created_at: &str, id: &str) -> Condition {
                 .add(event_deliveries::Column::Id.gt(id.to_string())),
         )
 }
+/// Rows one [`LibraryStore::read_event_stream`] call may examine per event
+/// it may return.
+pub const EVENT_STREAM_SCAN_FACTOR: usize = 8;
+/// Binds an event stream page query uses besides its type list: the queue,
+/// the lower and upper time bounds, the account, the three keyset values and
+/// the limit.
+const EVENT_STREAM_FIXED_BINDS: u32 = 9;
+/// Seconds an outbox row must age before [`LibraryStore::read_event_stream`]
+/// returns it. `created_at` is stamped before the insert commits, so a
+/// publication can commit after a newer one; a read that stops short of the
+/// last few seconds never moves its cursor past a row that has yet to
+/// appear. Newer events still reach subscribers through delivery.
+pub const EVENT_STREAM_SETTLE_SECS: u64 = 30;
 /// SET `run_after` / `updated_at` plus EXISTS `event_id` / `wake_lease_owner`.
 const WAKE_UPDATE_FIXED_BINDS: usize = 4;
 const EVENT_OUTBOX_STATS_ID: i64 = 1;
@@ -2451,6 +2467,216 @@ impl LibraryStore {
         Ok(expired)
     }
 
+    /// Reads one page of past domain events for `EventPublisher.read`.
+    ///
+    /// Scans the outbox in `(created_at, id)` order from `read.start`, never
+    /// before `read.retention_days`, and returns the events any of
+    /// `read.subscriptions` matches (type, schema version and filter, as
+    /// delivery does), limited to `read.account_id` when set. Queue messages
+    /// are never returned. One call examines at most
+    /// [`EVENT_STREAM_SCAN_FACTOR`] times `read.limit` rows, in pages that fit
+    /// the adapter's bind and result-row limits; when the budget runs out
+    /// first the page says `more` and its `last_scanned` resumes the scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn read_event_stream(&self, read: &EventStreamRead) -> Result<EventStreamPage> {
+        let limit = read.limit.max(1);
+        let budget = limit.saturating_mul(EVENT_STREAM_SCAN_FACTOR);
+        let window = i64::try_from(read.retention_days.saturating_mul(86_400)).unwrap_or(i64::MAX);
+        let cutoff = read
+            .now
+            .checked_sub_signed(Duration::seconds(window))
+            .unwrap_or(chrono::DateTime::<Utc>::MIN_UTC);
+        let cutoff_s = cutoff.to_rfc3339();
+        let settle = i64::try_from(read.settle_secs).unwrap_or(i64::MAX);
+        let watermark = read
+            .now
+            .checked_sub_signed(Duration::seconds(settle))
+            .unwrap_or(chrono::DateTime::<Utc>::MIN_UTC)
+            .to_rfc3339();
+        let (lower, mut after, truncated) = match &read.start {
+            EventStreamStart::Oldest => (cutoff_s, None, false),
+            EventStreamStart::Since(since) => {
+                let truncated = *since < cutoff;
+                (since.max(&cutoff).to_rfc3339(), None, truncated)
+            }
+            EventStreamStart::After { created_at, id } => {
+                let truncated = parse_dt(created_at) < cutoff;
+                (cutoff_s, Some((created_at.clone(), id.clone())), truncated)
+            }
+        };
+        let mut types: Vec<String> = read
+            .subscriptions
+            .iter()
+            .filter(|sub| !sub.is_queue())
+            .map(|sub| sub.event_type.clone())
+            .collect();
+        types.sort();
+        types.dedup();
+        let mut page = EventStreamPage {
+            truncated,
+            ..EventStreamPage::default()
+        };
+        if types.is_empty() {
+            return Ok(page);
+        }
+        // A type list that does not fit the bind budget is matched in Rust.
+        let fixed = EVENT_STREAM_FIXED_BINDS;
+        let types_in_sql = u32::try_from(types.len())
+            .ok()
+            .filter(|n| fixed.saturating_add(*n) < self.max_binds);
+        let bind_room = self
+            .max_binds
+            .saturating_sub(fixed)
+            .saturating_sub(types_in_sql.unwrap_or(0));
+        // Shrinks for good when a batch overruns the adapter's result-byte
+        // budget, so large payloads cost smaller batches, not a failed read.
+        let mut chunk = u64::from(bind_room.min(self.max_result_rows).min(64))
+            .min(u64::try_from(limit).unwrap_or(u64::MAX))
+            .max(1);
+        let mut scanned = 0usize;
+        loop {
+            let mut query = domain_events::Entity::find()
+                .filter(domain_events::Column::QueueName.eq(CORE_EVENTS_QUEUE))
+                .filter(domain_events::Column::CreatedAt.gte(lower.clone()))
+                .filter(domain_events::Column::CreatedAt.lte(watermark.clone()));
+            if types_in_sql.is_some() {
+                query = query.filter(domain_events::Column::EventType.is_in(types.clone()));
+            }
+            if let Some(account) = &read.account_id {
+                query = query.filter(domain_events::Column::AccountId.eq(account.clone()));
+            }
+            if let Some((created_at, id)) = &after {
+                query = query.filter(
+                    Condition::any()
+                        .add(domain_events::Column::CreatedAt.gt(created_at.clone()))
+                        .add(
+                            Condition::all()
+                                .add(domain_events::Column::CreatedAt.eq(created_at.clone()))
+                                .add(domain_events::Column::Id.gt(id.clone())),
+                        ),
+                );
+            }
+            let query = query
+                .order_by_asc(domain_events::Column::CreatedAt)
+                .order_by_asc(domain_events::Column::Id);
+            let (rows, take) = shrink_on_large_result(chunk, |take| {
+                let query = query.clone().limit(take);
+                async move { query.all(&self.db).await.map_err(LibraryError::from_db_err) }
+            })
+            .await?;
+            chunk = take;
+            let fetched = rows.len();
+            for row in rows {
+                let position = (row.created_at.clone(), row.id.clone());
+                let event = map_event(row)?;
+                scanned += 1;
+                after = Some(position);
+                if read
+                    .subscriptions
+                    .iter()
+                    .any(|sub| subscription_matches_event(sub, &event))
+                {
+                    page.events.push(event);
+                }
+                if page.events.len() >= limit || scanned >= budget {
+                    page.more = true;
+                    break;
+                }
+            }
+            if page.more || u64::try_from(fetched).unwrap_or(u64::MAX) < chunk {
+                break;
+            }
+        }
+        page.last_scanned = after;
+        page.expired_event_ids = self
+            .expired_event_ids(&read.plugin_key, &page.events)
+            .await?;
+        Ok(page)
+    }
+
+    /// Ids of `events` whose delivery to `plugin_key` or any of its
+    /// instances expired.
+    ///
+    /// Every read is bounded: instance ids come in keyset pages of
+    /// `maxResultRows`, and each delivery query selects distinct event ids
+    /// from at most `maxResultRows` events, so several expired subscribers
+    /// of one event still count as one row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    async fn expired_event_ids(
+        &self,
+        plugin_key: &str,
+        events: &[DomainEventRecord],
+    ) -> Result<Vec<String>> {
+        if plugin_key.is_empty() || events.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut subscriber_ids = vec![plugin_key.to_string()];
+        subscriber_ids.extend(self.plugin_instance_ids(plugin_key).await?);
+        let ids: Vec<String> = events.iter().map(|event| event.id.clone()).collect();
+        // One bind for the state; the rest split between the two id lists.
+        let room = usize::try_from(self.max_binds.saturating_sub(1))
+            .unwrap_or(usize::MAX)
+            .max(2);
+        let subscribers_per = subscriber_ids.len().min(room / 2).max(1);
+        let events_per = room
+            .saturating_sub(subscribers_per)
+            .min(usize::try_from(self.max_result_rows).unwrap_or(usize::MAX))
+            .max(1);
+        let mut expired = std::collections::BTreeSet::new();
+        for subscribers in subscriber_ids.chunks(subscribers_per) {
+            for event_chunk in ids.chunks(events_per) {
+                let rows: Vec<String> = event_deliveries::Entity::find()
+                    .filter(event_deliveries::Column::State.eq(STATE_EXPIRED))
+                    .filter(event_deliveries::Column::PluginId.is_in(subscribers.to_vec()))
+                    .filter(event_deliveries::Column::EventId.is_in(event_chunk.to_vec()))
+                    .distinct()
+                    .into_column(event_deliveries::Column::EventId)
+                    .all(&self.db)
+                    .await
+                    .map_err(LibraryError::from_db_err)?;
+                expired.extend(rows);
+            }
+        }
+        Ok(ids.into_iter().filter(|id| expired.contains(id)).collect())
+    }
+
+    /// Instance ids of `plugin_key`, read in keyset pages of
+    /// `maxResultRows` so a plugin with many instances stays within the
+    /// adapter's result cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    async fn plugin_instance_ids(&self, plugin_key: &str) -> Result<Vec<String>> {
+        let page = u64::from(self.max_result_rows.max(1));
+        let mut out: Vec<String> = Vec::new();
+        loop {
+            let mut query = plugin_instances::Entity::find()
+                .filter(plugin_instances::Column::PluginKey.eq(plugin_key));
+            if let Some(last) = out.last() {
+                query = query.filter(plugin_instances::Column::PluginInstanceId.gt(last.clone()));
+            }
+            let rows: Vec<String> = query
+                .order_by_asc(plugin_instances::Column::PluginInstanceId)
+                .limit(page)
+                .into_column(plugin_instances::Column::PluginInstanceId)
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            let full = u64::try_from(rows.len()).unwrap_or(u64::MAX) >= page;
+            out.extend(rows);
+            if !full {
+                return Ok(out);
+            }
+        }
+    }
+
     /// Delete terminal deliveries past their retention windows, then empty events.
     ///
     /// Acked, rejected and expired rows use `retention_days`. Dead letters use
@@ -2768,6 +2994,14 @@ pub fn prepare_publish_domain_event(
         spec.id = Uuid::new_v4().to_string();
     } else {
         spec.id = spec.id.trim().to_string();
+        // `EVENTS.read` cursors name rows by id; an id a cursor cannot
+        // carry would stop every read at that row.
+        if !bookclerk_plugin_abi::is_cursor_event_id(&spec.id) {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "event id must be at most {} bytes with no whitespace or control characters",
+                bookclerk_plugin_abi::MAX_CURSOR_EVENT_ID_BYTES
+            )));
+        }
     }
     Ok(spec)
 }
@@ -3502,6 +3736,37 @@ pub fn deliver_after_for(spec: &PublishDomainEventSpec, now: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Runs `query` with `take` rows, halving `take` while the adapter reports
+/// the result too large ([`is_result_too_large`]), down to one row.
+///
+/// # Arguments
+///
+/// * `take` - Rows to ask for first (at least one).
+/// * `query` - Runs the read for a row count.
+///
+/// # Returns
+///
+/// The rows and the row count that fit, which later batches should reuse.
+///
+/// # Errors
+///
+/// Returns the read's error when it is not a result-size refusal, or when
+/// even one row does not fit.
+async fn shrink_on_large_result<T, F, Fut>(mut take: u64, mut query: F) -> Result<(Vec<T>, u64)>
+where
+    F: FnMut(u64) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<T>>>,
+{
+    take = take.max(1);
+    loop {
+        match query(take).await {
+            Ok(rows) => return Ok((rows, take)),
+            Err(err) if is_result_too_large(&err) && take > 1 => take /= 2,
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 fn map_delivery(m: event_deliveries::Model) -> Result<EventDeliveryRecord> {
     Ok(EventDeliveryRecord {
         id: m.id,
@@ -3720,6 +3985,48 @@ async fn sanitize_unknown_event_resource_class_on<C: ConnectionTrait>(
 #[cfg(test)]
 mod placeholder_tests {
     use super::*;
+
+    /// A batch the adapter refuses as too large is retried at half the rows
+    /// until it fits; any other error, or a refusal at one row, is returned.
+    #[tokio::test]
+    async fn event_scan_batches_shrink_until_the_result_fits() {
+        let too_large = || {
+            LibraryError::LimitExceeded(bookclerk_plugin_abi::LimitExceeded::new(
+                "maxResultBytes",
+                262_144,
+                300_000,
+            ))
+        };
+        let mut asked = Vec::new();
+        let (rows, take) = shrink_on_large_result(64, |take| {
+            asked.push(take);
+            let outcome = if take > 10 {
+                Err(too_large())
+            } else {
+                Ok(vec![take; 1])
+            };
+            async move { outcome }
+        })
+        .await
+        .expect("a batch that fits");
+        assert_eq!(asked, vec![64, 32, 16, 8]);
+        assert_eq!((rows, take), (vec![8], 8));
+
+        let err = shrink_on_large_result::<u64, _, _>(4, |_| async { Err(too_large()) })
+            .await
+            .expect_err("one row still too large");
+        assert!(is_result_too_large(&err));
+
+        let mut calls = 0;
+        let err = shrink_on_large_result::<u64, _, _>(4, |_| {
+            calls += 1;
+            async { Err(LibraryError::NotFound("gone".into())) }
+        })
+        .await
+        .expect_err("other errors pass through");
+        assert!(matches!(err, LibraryError::NotFound(_)));
+        assert_eq!(calls, 1);
+    }
 
     #[test]
     fn host_wake_sql_stays_canonical_question_marks() {

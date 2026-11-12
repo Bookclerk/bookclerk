@@ -905,6 +905,75 @@ _event_batch_reply_codec = _Codec(1, 1, _write_event_batch_reply, _read_event_ba
 """Wire codec for ``EventBatchReply`` (1 data words, 1 pointers)."""
 
 
+def _write_event_read_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["after"])
+    s.set_u64(0, v["sinceUnixMs"])
+    s.set_text_list(1, v["types"])
+    s.set_u32(2, v["limit"])
+
+
+def _read_event_read_request(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "after": s.get_text(0),
+        "sinceUnixMs": s.get_u64(0),
+        "types": s.get_text_list(1),
+        "limit": s.get_u32(2),
+    }
+
+
+_event_read_request_codec = _Codec(2, 2, _write_event_read_request, _read_event_read_request)
+"""Wire codec for ``EventReadRequest`` (2 data words, 2 pointers)."""
+
+
+def _write_event_read_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["events"]), 4, 9)
+    for item, elem in zip(items, v["events"], strict=True):
+        _domain_event_codec.write(item, elem, caps)
+    s.set_text(1, v["cursor"])
+    s.set_bool(0, v["more"])
+    s.set_text_list(2, v["expiredEventIds"])
+    s.set_bool(1, v["truncated"])
+
+
+def _read_event_read_page(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "events": [_domain_event_codec.read(item, caps) for item in s.get_struct_list(0, 4, 9)],
+        "cursor": s.get_text(1),
+        "more": s.get_bool(0),
+        "expiredEventIds": s.get_text_list(2),
+        "truncated": s.get_bool(1),
+    }
+
+
+_event_read_page_codec = _Codec(1, 3, _write_event_read_page, _read_event_read_page)
+"""Wire codec for ``EventReadPage`` (1 data words, 3 pointers)."""
+
+
+def _write_event_read_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _event_read_page_codec.write(s.init_struct(0, 1, 3), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown EventReadReply union member: {kind}")
+
+
+def _read_event_read_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _event_read_page_codec.read(s.get_struct(0, 1, 3), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown EventReadReply union member: {disc}")
+
+
+_event_read_reply_codec = _Codec(1, 1, _write_event_read_reply, _read_event_read_reply)
+"""Wire codec for ``EventReadReply`` (1 data words, 1 pointers)."""
+
+
 def _write_job_controller(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _job_invocation_codec.write(s.init_struct(0, 3, 8), v["invocation"], caps)
     if v.get("input") is not None:
@@ -5601,6 +5670,34 @@ def _read_event_publisher_publish_results(s: _StructReader, caps: _CapTable) -> 
 
 _event_publisher_publish_results_codec = _Codec(0, 1, _write_event_publisher_publish_results, _read_event_publisher_publish_results)
 """Wire codec for ``EventPublisherPublishResults`` (0 data words, 1 pointers)."""
+
+
+def _write_event_publisher_read_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _event_read_request_codec.write(s.init_struct(0, 2, 2), v["request"], caps)
+
+
+def _read_event_publisher_read_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "request": _event_read_request_codec.read(s.get_struct(0, 2, 2), caps),
+    }
+
+
+_event_publisher_read_params_codec = _Codec(0, 1, _write_event_publisher_read_params, _read_event_publisher_read_params)
+"""Wire codec for ``EventPublisherReadParams`` (0 data words, 1 pointers)."""
+
+
+def _write_event_publisher_read_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _event_read_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_event_publisher_read_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _event_read_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_event_publisher_read_results_codec = _Codec(0, 1, _write_event_publisher_read_results, _read_event_publisher_read_results)
+"""Wire codec for ``EventPublisherReadResults`` (0 data words, 1 pointers)."""
 
 
 def _write_scheduled_handler_scheduled_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

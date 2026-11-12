@@ -138,6 +138,7 @@ export type {
 export type {
   BookclerkEnv,
   EventPublisherBinding,
+  EventReadOptions,
   JsonObject,
   KvListKeyBinding,
   KvListOptionsBinding,

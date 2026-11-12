@@ -145,7 +145,10 @@ pub use enrollment::{
     enroll_local_plugins, enroll_one, has_covering_grant, is_bootstrap_only, EnrolledPlugin,
 };
 pub use error::{PluginError, Result};
-pub use event_publisher::{EventOutbox, OutboxEventPublisher};
+pub use event_publisher::{
+    granted_event_subscriptions, manifest_event_subscriptions, EventOutbox, EventReaders,
+    OutboxEventPublisher,
+};
 pub use host::{
     backup_adapter_id, database_connect_bindings, export_registered_plugin_units,
     load_external_database, migrate_database_plugin, migrate_library_schema, open_library_store,

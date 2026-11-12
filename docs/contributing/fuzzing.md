@@ -38,6 +38,7 @@ boundary extends it.
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back and the account it names | `bookclerk-plugin-abi::validate_scan_page` |
+| `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
@@ -166,6 +167,18 @@ only that. The others check:
   page round-trips through the codec and is accepted again. The shared
   oracle is `fuzz/oracles/scan_page.rs`, replayed from
   `bookclerk-plugin-abi`.
+- **`event_read`**: byte 0 modulo 4 picks a `/events/read` JSON body (0),
+  a bare cursor (1), or a Cap'n Proto `EventReadRequest` (2) or
+  `EventReadPage` (3). The body parser accepts exactly the JSON objects whose
+  keys are request fields, and an accepted request round-trips through
+  JSON. Validation against a fixed consent agrees with an independent
+  restatement of every rule: the error code, or the resolved start, types
+  and limit. The cursor decoder accepts exactly the canonical cursors a
+  hand-written decoder accepts, and an accepted cursor re-encodes to the
+  same text. A Cap'n Proto request or page that the RPC codec accepts
+  survives `write` then `read` unchanged and stays inside the cursor and
+  list bounds. The shared oracle is `fuzz/oracles/event_read.rs`, replayed
+  from `bookclerk-plugin-abi`.
 - **`guest_sql_authz`**: every table, column, function and schema action
   that SQLite's own authorizer reports for an admitted statement is inside
   the policy. The shared oracle is `fuzz/oracles/guest_sql_authz.rs`,

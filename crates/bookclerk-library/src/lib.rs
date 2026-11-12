@@ -116,20 +116,20 @@ pub use models::{
     wake_grants_from_subscriptions, AccountLinkRecord, AccountRecord, AcquireStatus,
     AcquireStatusCounts, BookRecord, ClaimTicketRecord, DomainEventRecord, EmbeddingRecord,
     EnqueueJobSpec, EnqueueOutcome, EventCatalogSubscription, EventDeliveryFence,
-    EventDeliveryMetrics, EventDeliveryRecord, EventSubscriber, EventSubscriberCatalogRecord,
-    EventSubscriberNodeRecord, EventWakeGrant, GlobalQueueEntry, JobClaimCursor, JobClaimPage,
-    JobFence, JobKind, JobPayload, JobRecord, JobResourceClass, JobState, JobTempPath, JobTrigger,
-    ListeningProgressRecord, OidcClientRecord, OperatorSessionRecord, PendingWakeProgress,
-    PortalIdentity, PortalSessionRecord, PublishDomainEventOutcome, PublishDomainEventSpec,
-    QueueWisher, RequestStatus, SecurityAuditEvent, StoredPasskey, TitleRequestRecord,
-    TitleRequestSourceRecord, UserIntegrationHint, UserInviteRecord, UserListeningHint,
-    UserPreferences, UserPresenceExtras, UserRecord, UserRole, UserSsoPicture, UserStatus,
-    UserTitleState, WishlistPurchaseHint, WishlistStoreEdition, WorkRecord, CORE_EVENTS_QUEUE,
-    EVENT_DELIVERY_DEFAULT_RETENTION_SECS, EVENT_DELIVERY_MAX_ATTEMPTS,
-    EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, HOST_CONSUMER_PREFIX,
-    JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN, MAX_QUEUE_WISHERS,
-    NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES, QUEUE_CONTENT_TYPE_JSON,
-    QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
+    EventDeliveryMetrics, EventDeliveryRecord, EventStreamPage, EventStreamRead, EventStreamStart,
+    EventSubscriber, EventSubscriberCatalogRecord, EventSubscriberNodeRecord, EventWakeGrant,
+    GlobalQueueEntry, JobClaimCursor, JobClaimPage, JobFence, JobKind, JobPayload, JobRecord,
+    JobResourceClass, JobState, JobTempPath, JobTrigger, ListeningProgressRecord, OidcClientRecord,
+    OperatorSessionRecord, PendingWakeProgress, PortalIdentity, PortalSessionRecord,
+    PublishDomainEventOutcome, PublishDomainEventSpec, QueueWisher, RequestStatus,
+    SecurityAuditEvent, StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord,
+    UserIntegrationHint, UserInviteRecord, UserListeningHint, UserPreferences, UserPresenceExtras,
+    UserRecord, UserRole, UserSsoPicture, UserStatus, UserTitleState, WishlistPurchaseHint,
+    WishlistStoreEdition, WorkRecord, CORE_EVENTS_QUEUE, EVENT_DELIVERY_DEFAULT_RETENTION_SECS,
+    EVENT_DELIVERY_MAX_ATTEMPTS, EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS,
+    HOST_CONSUMER_PREFIX, JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN,
+    MAX_QUEUE_WISHERS, NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES,
+    QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
 };
 pub use named_atomic::{NamedAtomicBackend, NamedAtomicRunner};
 pub use operator_token::{
@@ -160,6 +160,7 @@ pub use sql_plan::{
     validate_plan, validate_streamed_execute_reply, wake_page_for_max_binds, AtomicSession,
     CompiledAtomic,
 };
+pub use store::event_outbox::{EVENT_STREAM_SCAN_FACTOR, EVENT_STREAM_SETTLE_SECS};
 pub use store::{
     catalog_listings::{
         CatalogListing, CatalogListingRecord, ListingDetail, ListingOffer, OfferAudience,
