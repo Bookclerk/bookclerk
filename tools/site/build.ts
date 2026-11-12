@@ -41,6 +41,7 @@
 
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -64,6 +65,7 @@ import {
 import { ORIGIN_RE, parseKey } from "./indexnow.ts";
 import { sitemapXml } from "./sitemap.ts";
 import { catalogCards } from "./catalog.ts";
+import { openAssetHeaders } from "./cross-origin.ts";
 import type { DocsShell, DocsVersion } from "./render.ts";
 import type { RenderedDocs } from "./docs.ts";
 
@@ -1131,6 +1133,9 @@ export function build(
   if (facts === null) throw new Error("PAGES has no home page");
   writeLlmsTxt(context, rendered, facts, outDir);
   for (const file of STATIC_FILES) cpSync(join(src, file), join(outDir, file));
+  // The favicons and the Open Graph image are the only files other origins
+  // may embed and read; their rules follow the closed `/*` defaults.
+  appendFileSync(join(outDir, "_headers"), `\n${openAssetHeaders()}`);
   mkdirSync(join(outDir, "assets"));
   for (const file of HASHED_ASSETS) cpSync(join(src, file), join(outDir, assetUrl(file).slice(1)));
   mkdirSync(join(outDir, "fonts"));

@@ -406,7 +406,7 @@ class ScenarioTests(unittest.TestCase):
         e2e_cmd = [c for key, c in planned_commands(artifact(p), "e2e", CTX) if not key][0]
         self.assertEqual(
             e2e_cmd.argv,
-            ["cargo", "test", "-p", E2E_PACKAGE, "--lib", "--test", "staged_plugins", "--test", "installed_plugin_path"],
+            ["cargo", "test", "-p", E2E_PACKAGE, "--lib", "--test", "staged_plugins", "--test", "installed_plugin_path", "--test", "cold_start"],
         )
         self.assertEqual(e2e_cmd.env["BOOKCLERK_STAGED_PLUGINS"], "libro")
         self.assertEqual(e2e_cmd.env["BOOKCLERK_REQUIRE_STAGED_PLUGINS"], "1")

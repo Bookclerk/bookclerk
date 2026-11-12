@@ -30,6 +30,10 @@ pub struct Model {
     /// The most jobs this install runs for the library at once, set by its
     /// operator; `NULL` leaves it to the equal share of the machine.
     pub max_jobs: Option<i64>,
+    /// "List my members' books to *library*" (1 = on, the default): the
+    /// branch answers that library's catalog lookups with its members'
+    /// books as well as its owner's.
+    pub list_members_books: i64,
 }
 
 /// Declared SeaORM relations (none).

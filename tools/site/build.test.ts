@@ -24,6 +24,7 @@ import {
 import type { BuildEnv } from "./build.ts";
 import { SHELL_MARKERS } from "./render.ts";
 import { catalogRecords } from "./catalog.ts";
+import { OPEN_ASSET_HEADERS, OPEN_ASSETS } from "./cross-origin.ts";
 import type { DocsShell } from "./render.ts";
 
 /** One node of the home page's JSON-LD `@graph`, as these tests read it. */
@@ -794,6 +795,104 @@ test("the build ships a four-card fallback stack and never the catalog or its so
       for (const record of catalogRecords)
         assert.ok(!text.includes(record.sourceUrl), `${file} leaks ${record.sourceUrl}`);
     }
+  } finally {
+    site.done();
+  }
+});
+
+/**
+ * The headers Cloudflare's `_headers` rules give one path, as the platform
+ * applies them: every rule whose pattern matches, in file order; `! Name`
+ * detaches a header an earlier rule set, and a header two rules set is
+ * joined with a comma.
+ *
+ * @param file - The `_headers` text.
+ * @param path - A request path such as `/favicon.ico`.
+ * @returns The headers, by lower-case name.
+ */
+function headersFor(file: string, path: string): Map<string, string> {
+  const out = new Map<string, string>();
+  let matches = false;
+  for (const raw of file.split("\n")) {
+    const line = raw.trimEnd();
+    if (line === "" || line.trimStart().startsWith("#")) continue;
+    if (!line.startsWith(" ")) {
+      const pattern = line.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*");
+      matches = new RegExp(`^${pattern}$`).test(path);
+      continue;
+    }
+    if (!matches) continue;
+    const entry = line.trim();
+    if (entry.startsWith("!")) {
+      out.delete(entry.slice(1).trim().toLowerCase());
+      continue;
+    }
+    const name = entry.slice(0, entry.indexOf(":")).toLowerCase();
+    const value = entry.slice(entry.indexOf(":") + 1).trim();
+    const prior = out.get(name);
+    out.set(name, prior === undefined ? value : `${prior}, ${value}`);
+  }
+  return out;
+}
+
+test("headersFor applies rules in order, detaches and joins like the platform", () => {
+  const file = "/*\n  A: 1\n  B: x\n\n/a.png\n  ! A\n  A: 2\n  B: y\n";
+  assert.deepEqual(
+    [...headersFor(file, "/a.png")],
+    [
+      ["b", "x, y"],
+      ["a", "2"],
+    ],
+  );
+  assert.deepEqual(
+    [...headersFor(file, "/b.png")],
+    [
+      ["a", "1"],
+      ["b", "x"],
+    ],
+  );
+});
+
+test("only the favicons and the Open Graph image are open to other origins", () => {
+  const site = built(PRE);
+  try {
+    // The open list is exactly what the pages declare: the head's icons, the
+    // manifest's icons and the og:image.
+    const declared = new Set<string>();
+    const head = site.page("index.html");
+    for (const [, href] of head.matchAll(
+      /<link rel="(?:icon|apple-touch-icon)"[^>]*href="(\/[^"]+)"/g,
+    ))
+      declared.add(href ?? "");
+    const manifest: { icons: { src: string }[] } = JSON.parse(site.page("site.webmanifest"));
+    for (const icon of manifest.icons) declared.add(`/${icon.src.replace(/^\//, "")}`);
+    const og = /<meta property="og:image" content="https?:\/\/[^/"]+(\/[^"]+)">/.exec(head);
+    declared.add(og?.[1] ?? "no og:image");
+    assert.deepEqual([...declared].sort(), [...OPEN_ASSETS].sort());
+
+    const rules = site.page("_headers");
+    const crossOrigin = Object.entries(OPEN_ASSET_HEADERS).map(([n, v]) => [n.toLowerCase(), v]);
+    for (const file of site.files) {
+      const path = `/${file}`;
+      const headers = headersFor(rules, path);
+      const open = OPEN_ASSETS.includes(path);
+      assert.equal(
+        headers.get("cross-origin-resource-policy"),
+        open ? "cross-origin" : "same-origin",
+        path,
+      );
+      assert.equal(headers.get("access-control-allow-origin"), open ? "*" : undefined, path);
+      assert.equal(headers.get("access-control-allow-credentials"), undefined, path);
+      assert.equal(headers.get("cross-origin-opener-policy"), "same-origin", path);
+      assert.equal(headers.get("cross-origin-embedder-policy"), "require-corp", path);
+      if (open)
+        for (const [name, value] of crossOrigin) assert.equal(headers.get(name ?? ""), value);
+    }
+    // Paths the build does not publish fall back to the closed defaults too.
+    assert.equal(
+      headersFor(rules, "/no-such-file.png").get("access-control-allow-origin"),
+      undefined,
+    );
   } finally {
     site.done();
   }

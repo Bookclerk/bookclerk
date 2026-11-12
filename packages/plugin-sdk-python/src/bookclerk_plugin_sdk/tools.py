@@ -282,6 +282,7 @@ HOST_EVENT_TYPES = frozenset(
         "edition_linked",
         "edition_updated",
         "holding_added",
+        "holding_removed",
         "wishlist_changed",
         "listening_synced",
     }

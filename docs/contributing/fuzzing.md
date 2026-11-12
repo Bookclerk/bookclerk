@@ -211,7 +211,10 @@ only that. The others check:
   frame version, and serializes and parses back to an equal frame (unless
   its serialized text grows past the limit, as `1e9` written out does). Every
   library id in `acquire.targets` is 1 to 16 ASCII letters and digits,
-  checked byte by byte. The shared oracle is `fuzz/oracles/node_frame.rs`,
+  checked byte by byte. A `catalog.ask` or `catalog.found` that passes
+  its validator names at most 100 works, each once, by plain correlation
+  keys; its identifiers are plain ASCII with a marketplace exactly on an
+  ASIN, and each answer lists 1 to 8 distinct editions with a title. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
   has the bundle version and names the cluster and node it was opened

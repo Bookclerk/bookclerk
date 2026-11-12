@@ -1265,6 +1265,10 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(auth::revoke_session))
         .routes(routes!(crate::profile::patch_profile))
         .routes(routes!(
+            crate::profile::get_catalog_listing,
+            crate::profile::put_catalog_listing
+        ))
+        .routes(routes!(
             crate::profile::put_avatar,
             crate::profile::delete_avatar
         ))
@@ -1489,11 +1493,13 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     // Timeout wraps API handlers. Brand empty 4xx/5xx bodies (auth, missing
     // routes, handler StatusCode). Cache-Control by response class, outside
     // the branding so rewritten error pages get one too. Normalize trailing
-    // slashes before matching. Trace outermost.
+    // slashes before matching. Every response, branded errors included, is
+    // closed to other origins (`cross_origin`). Trace outermost.
     let app = app
         .layer(middleware::from_fn(api_timeout_middleware))
         .layer(middleware::from_fn(http_error::brand_error_responses))
-        .layer(middleware::from_fn(crate::cache_policy::apply));
+        .layer(middleware::from_fn(crate::cache_policy::apply))
+        .layer(middleware::from_fn(crate::cross_origin::apply));
     // Test builds compare every response with the OpenAPI document, after
     // the branding so the body compared is the one a client receives.
     #[cfg(test)]

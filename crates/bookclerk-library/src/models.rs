@@ -135,7 +135,7 @@ pub struct AccountRecord {
     pub label: Option<String>,
     /// When nonzero/true, scheduled scans include this account.
     pub scan_enabled: bool,
-    /// `active` or `revoked` (credentials removed; books retained).
+    /// `active` or `revoked` (credentials and holdings removed; books retained).
     #[serde(default = "default_connection_status")]
     pub connection_status: String,
     /// RFC 3339 timestamp when the row was inserted.

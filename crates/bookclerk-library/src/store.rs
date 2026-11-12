@@ -442,10 +442,13 @@ impl LibraryStore {
         Ok(map_account(model))
     }
 
-    /// Remap `from` → `to` account ids within one plugin (books + account row).
+    /// Remap `from` → `to` account ids within one plugin (books, holdings
+    /// and the account row).
     ///
     /// Used when classic Libation stored an email `AccountId` and a later
-    /// login/scan discovers Audible `customer_id`.
+    /// login/scan discovers Audible `customer_id`. Holdings move to `to`
+    /// with `holding_removed` / `holding_added` events before the old
+    /// account row, whose foreign key would otherwise drop them, is deleted.
     ///
     /// # Errors
     ///
@@ -526,6 +529,8 @@ impl LibraryStore {
             am.updated_at = Set(now.clone());
             self.update_book_bumped(am).await?;
         }
+
+        self.move_account_holdings(plugin_key, from, to).await?;
 
         // Drop duplicate product rows left on the old id, then the account.
         let probe = books::Entity::find()
@@ -813,7 +818,13 @@ impl LibraryStore {
         crate::secrets::delete_secrets_for_account(&self.db, plugin_key, account_id).await
     }
 
-    /// Mark bookstore credentials revoked without deleting the account or books.
+    /// Mark bookstore credentials revoked, remove the account's holdings
+    /// (with `holding_removed` for each) and forget its sync token, without
+    /// deleting the account, its flat library rows or acquired files.
+    ///
+    /// The account no longer reaches the store, so the library no longer
+    /// holds its titles through it. A later reconnect starts a full scan
+    /// pass (no sync token), which adds the holdings back.
     ///
     /// # Errors
     ///
@@ -831,6 +842,9 @@ impl LibraryStore {
         am.connection_status = Set(String::from("revoked"));
         am.updated_at = Set(now_str());
         am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        self.remove_account_holdings(plugin_key, account_id, HoldingSelection::All)
+            .await?;
+        self.reset_scan_state(plugin_key, account_id).await?;
         Ok(())
     }
 
@@ -4098,10 +4112,34 @@ impl LibraryStore {
     ///
     /// Returns an error when the flat row cannot be read or written.
     pub async fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
+        self.upsert_book_with(book, Some(&holding_from_book(book)))
+            .await
+    }
+
+    /// Updates a title's metadata: the flat row, and its listing, without
+    /// asserting that its account holds it.
+    ///
+    /// For metadata from elsewhere (enrichment), which must not bring back
+    /// a holding a scan or a revoke removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the flat row cannot be read or written; a
+    /// listing that cannot be resolved is logged, not returned.
+    pub async fn update_book_metadata(&self, book: &NewBook) -> Result<BookRecord> {
+        self.upsert_book_with(book, None).await
+    }
+
+    /// [`Self::upsert_book`], recording `holding` when one is given.
+    async fn upsert_book_with(
+        &self,
+        book: &NewBook,
+        holding: Option<&bookclerk_resolve::HoldingDraft>,
+    ) -> Result<BookRecord> {
         let record = self.upsert_book_row(book).await?;
         match listing_from_book(book) {
             Ok(listing) => {
-                self.record_listing_after_row(&listing, &holding_from_book(book), &record)
+                self.record_listing_after_row(&listing, holding, &record)
                     .await;
             }
             Err(err) => tracing::warn!(
@@ -4132,7 +4170,7 @@ impl LibraryStore {
         let record = self.upsert_book_row(&title.book).await?;
         let mut listing = listing.clone();
         listing.key.plugin_key.clone_from(&title.book.plugin_key);
-        self.record_listing_after_row(&listing, &holding_from_book(&title.book), &record)
+        self.record_listing_after_row(&listing, Some(&holding_from_book(&title.book)), &record)
             .await;
         Ok(record)
     }
@@ -4199,14 +4237,20 @@ impl LibraryStore {
     /// resolves the listing again.
     ///
     /// The work the listing reaches also takes the row's description,
-    /// subjects, categories and cover where it has none yet.
+    /// subjects, categories and cover where it has none yet. `holding` is
+    /// recorded when given; without one the listing is linked as a catalog
+    /// listing and no holding is added.
     async fn record_listing_after_row(
         &self,
         listing: &bookclerk_resolve::Listing,
-        holding: &bookclerk_resolve::HoldingDraft,
+        holding: Option<&bookclerk_resolve::HoldingDraft>,
         record: &BookRecord,
     ) {
-        let result = match self.record_listing(listing, holding).await {
+        let linked = match holding {
+            Some(holding) => self.record_listing(listing, holding).await,
+            None => self.record_catalog_listing(listing).await,
+        };
+        let result = match linked {
             Ok(plan) => {
                 self.fill_work_from_book(&plan.listing.edition_id, &WorkEnrichment::of_book(record))
                     .await
@@ -7657,6 +7701,7 @@ pub(crate) mod catalog_listings;
 pub(crate) mod discover;
 pub(crate) mod edition_files;
 pub(crate) mod event_outbox;
+pub(crate) mod holdings;
 pub(crate) mod library_model;
 pub(crate) mod listening;
 pub(crate) mod listing_reads;
@@ -7674,6 +7719,7 @@ pub use discover::{
 };
 pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
+pub use holdings::{HoldingSelection, HOLDING_REMOVED};
 pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};
 pub(crate) mod job_queue;
 

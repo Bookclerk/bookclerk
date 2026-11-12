@@ -148,6 +148,10 @@ pub struct ClusterLink {
     /// The operator's cap on jobs run for this library at once; `None`
     /// leaves the link its equal share of the machine.
     pub max_jobs: Option<LinkJobCap>,
+    /// "List my members' books to *library*" (on by default): catalog
+    /// lookups from that library are answered with the members' books
+    /// (except those of members who opted out) as well as the owner's.
+    pub list_members_books: bool,
 }
 
 /// The most jobs a branch runs for one library at once, as its operator
@@ -336,6 +340,7 @@ impl From<cluster_links::Model> for ClusterLink {
                 .filter(|id| bookclerk_node_proto::is_cluster_id(id))
                 .collect(),
             max_jobs: LinkJobCap::from_column(row.max_jobs),
+            list_members_books: row.list_members_books != 0,
         }
     }
 }
@@ -430,6 +435,7 @@ pub async fn record_cluster_link(
         include_branches: Set(1),
         ancestry_json: Set("[]".into()),
         max_jobs: Set(None),
+        list_members_books: Set(1),
     };
     let insert = cluster_links::Entity::insert(row).on_conflict(
         OnConflict::column(cluster_links::Column::OwnerClusterId)
@@ -662,6 +668,39 @@ pub async fn set_cluster_link_job_cap(
     let probe = cluster_links::Entity::find()
         .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
         .filter(changed);
+    let updated = store
+        .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
+        .await?;
+    Ok(updated == 1)
+}
+
+/// Sets the link's "List my members' books to *library*" setting.
+///
+/// # Arguments
+///
+/// * `owner_cluster_id` - The library the link joined.
+/// * `list_members_books` - The new setting.
+///
+/// # Returns
+///
+/// Whether the link exists (`false` when there is no such link); setting
+/// the value it already has still returns `true`.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn set_cluster_link_listing(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    list_members_books: bool,
+) -> Result<bool> {
+    let value = i64::from(list_members_books);
+    let update = cluster_links::Entity::update_many()
+        .col_expr(cluster_links::Column::ListMembersBooks, Expr::value(value))
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id));
+    let probe = cluster_links::Entity::find()
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(cluster_links::Column::ListMembersBooks.ne(value));
     let updated = store
         .exec_bumped(update, LiveTopic::Clusters, Bump::IfAny(sea_probe(&probe)?))
         .await?;

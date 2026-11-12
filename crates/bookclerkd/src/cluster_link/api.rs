@@ -91,6 +91,7 @@ pub(crate) fn link_json(link: &ClusterLink) -> ClusterLinkView {
         include_branches: link.include_branches,
         max_jobs: link.max_jobs.map(|cap| cap.jobs()),
         job_share: None,
+        list_members_books: link.list_members_books,
         running: None,
     }
 }
@@ -136,6 +137,11 @@ pub struct ClusterLinkView {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = 2)]
     pub job_share: Option<usize>,
+    /// "List my members' books to the library": the library's catalog
+    /// lookups are answered with members' books (except those who opted
+    /// out) as well as the owner's.
+    #[schema(example = true)]
+    pub list_members_books: bool,
     /// Whether this install's client for the link is running now; only the join routes report it.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = true)]

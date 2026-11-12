@@ -446,6 +446,28 @@ test("the Worker sends the same security headers as src/_headers", () => {
   assert.deepEqual(fromFile, SECURITY_HEADERS);
 });
 
+test("every Worker answer is closed to other origins", async () => {
+  for (const [path, accept] of [
+    ["/", "text/html"],
+    ["/", "text/markdown"],
+    ["/docs", "text/html"],
+    ["/docs/guide/getting-started", "text/markdown"],
+    ["/sitemap.xml", "*/*"],
+    ["/docs/no-such-page", "text/html"],
+  ] as const) {
+    const res = await get(path, accept);
+    for (const [name, value] of [
+      ["Cross-Origin-Resource-Policy", "same-origin"],
+      ["Cross-Origin-Opener-Policy", "same-origin"],
+      ["Cross-Origin-Embedder-Policy", "require-corp"],
+      ["X-Frame-Options", "DENY"],
+    ] as const)
+      assert.equal(res.headers.get(name), value, `${path} ${accept} ${name}`);
+    assert.equal(res.headers.get("Access-Control-Allow-Origin"), null, path);
+    await res.body?.cancel();
+  }
+});
+
 test("the CSP lets only the site's own scripts and Cloudflare's analytics beacon run", () => {
   const directives: Record<string, string[]> = Object.fromEntries(
     (SECURITY_HEADERS["Content-Security-Policy"] ?? "").split(";").map((d) => {

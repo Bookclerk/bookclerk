@@ -15,6 +15,7 @@ import {
   PAGES,
   UNAVAILABLE_KEY,
   docsFile,
+  isLabMeasurementMiss,
   isTransientStartFailure,
   launchChrome,
   lighthouseMisses,
@@ -64,6 +65,16 @@ test("a missing score or CLS is a miss, not a pass", () => {
   ]);
   const noCls = { categories: lhr(PERFECT).categories, audits: {} };
   assert.deepEqual(lighthouseMisses(noCls, PAGE), ["CLS missing > 0.05"]);
+});
+
+test("a run is retried only while trace measurements alone miss", () => {
+  const noTrace = { categories: lhr({ ...PERFECT, performance: null }).categories, audits: {} };
+  assert.equal(isLabMeasurementMiss(lighthouseMisses(noTrace, PAGE)), true, "NO_NAVSTART run");
+  assert.equal(isLabMeasurementMiss(["performance 89 < 90"]), true);
+  assert.equal(isLabMeasurementMiss(["CLS 0.06 > 0.05"]), true);
+  assert.equal(isLabMeasurementMiss([]), false, "a pass is kept");
+  assert.equal(isLabMeasurementMiss(["performance 89 < 90", "accessibility 98 < 100"]), false);
+  assert.equal(isLabMeasurementMiss(["seo 90 < 100"]), false);
 });
 
 test("error pages are held to accessibility only", () => {

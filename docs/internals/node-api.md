@@ -47,12 +47,15 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `catalog.begin {share_books, include_branches}` | `catalog.session {fence, cursor, ancestry, destinations, wanted}` |
 | `catalog.sync {fence, batch, cursor, done, titles}` | `catalog.accepted {batch, upserted, skipped, wanted}`, or `lost` |
 | `catalog.upload {fence, store, product_id, files}` | `upload.granted` (then the upload routes above, job id `catalog`) |
+| `catalog.questions` | `catalog.ask {works}`: up to 100 questions `{work, identifiers}` waiting for this branch, or `error` `refused` |
+| `catalog.found {answers, missing}` | `ok`, or `error` `invalid` / `refused` (see [Shared catalog](../server/cluster-hosts.md#shared-catalog)) |
 | `node.leaving` | `accepted`, then close 4403 (the node is revoked) |
 | `scan.request {account, plugin_instance_id}` | `scan.planned {created, duplicates, queue_full}`, or `error` `forbidden` / `invalid` |
 | `job.status {job_ids}` (at most 64) | `job.statuses {jobs}`: only jobs this node may claim |
 
 The owner also sends `wake` frames (deployment, install, placement,
-configuration and revocation changes), which the host acks. Secrets are
+configuration and revocation changes, and `catalog.asked` when catalog
+questions wait for a branch), which the host acks. Secrets are
 never frame text: job secrets, instance secrets and upload tokens are sealed
 to the node's box key and bound to the node and the job or instance they
 belong to; a write-back is sealed to the owner's box key.

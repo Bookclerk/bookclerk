@@ -17,6 +17,8 @@
 //! | `BOOKCLERK_STAGED_PLUGINS=a,b` | Check only these ids (plus platform guests); unset checks all |
 //! | `BOOKCLERK_REQUIRE_STAGED_PLUGINS=1` | Missing roots or ledgers fail instead of skipping (CI) |
 
+pub mod startup;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
