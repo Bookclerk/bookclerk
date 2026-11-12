@@ -348,7 +348,9 @@ async fn a_primary_key_another_edition_holds_is_not_imported() {
                         book: &row,
                         primary_key: "shared.m4b",
                         pdf_key: None,
-                        files: &[("local", "shared.m4b")],
+                        // The primary is checked first: the cover listed
+                        // before it is not claimed.
+                        files: &[("local", "P9/cover.jpg"), ("local", "shared.m4b")],
                     },
                 )
                 .await
@@ -375,8 +377,43 @@ async fn a_primary_key_another_edition_holds_is_not_imported() {
                 .await
                 .unwrap()
                 .map(|file| file.owner),
-            Some(other_owner),
+            Some(other_owner.clone()),
             "{name}"
         );
+        assert!(
+            store
+                .edition_file("local", "P9/cover.jpg")
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}: nothing else claimed"
+        );
+
+        // A PDF key another edition holds is not marked acquired, while the
+        // title itself is.
+        assert!(
+            store
+                .record_edition_file("local", "shared.pdf", &other_owner, FileRole::Pdf)
+                .await
+                .unwrap(),
+            "{name}"
+        );
+        let LinkImportOutcome::Imported(book) = import_link_title(
+            &store,
+            LinkImport {
+                cluster_id: "lib-a",
+                book: &row,
+                primary_key: "P9/P9.m4b",
+                pdf_key: Some("shared.pdf"),
+                files: &[("local", "P9/P9.m4b"), ("local", "shared.pdf")],
+            },
+        )
+        .await
+        .unwrap() else {
+            panic!("{name}: imported");
+        };
+        assert_eq!(book.acquire_status, AcquireStatus::Acquired, "{name}");
+        assert_ne!(book.pdf_status, AcquireStatus::Acquired, "{name}");
+        assert_eq!(book.pdf_storage_key, None, "{name}");
     }
 }

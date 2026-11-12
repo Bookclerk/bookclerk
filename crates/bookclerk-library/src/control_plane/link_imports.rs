@@ -80,7 +80,8 @@ pub enum LinkImportOutcome {
 /// A file whose key another live edition here already holds is left
 /// unrecorded (logged), as an acquire on this install would refuse it; when
 /// that is the primary file, the title is not marked acquired
-/// ([`LinkImportOutcome::KeyHeldElsewhere`]).
+/// ([`LinkImportOutcome::KeyHeldElsewhere`]); when it is the PDF, the PDF
+/// is not marked acquired.
 ///
 /// # Errors
 ///
@@ -98,10 +99,14 @@ pub async fn import_link_title(
         return Ok(LinkImportOutcome::AccountNotHere);
     }
     let record = store.upsert_book(&new_book(book)).await?;
-    // The files first: a primary file another live edition here holds is
-    // not this copy's, so the title is not marked acquired at it.
+    // The files first, the primary one before the rest: a primary file
+    // another live edition here holds is not this copy's, so the title is
+    // not marked acquired at it and no other file is claimed for it.
+    let mut pdf_refused = false;
     if let Some(owner) = store.file_owner_of_book(&record.uuid).await? {
-        for (destination, key) in import.files {
+        let mut files = import.files.to_vec();
+        files.sort_by_key(|(_, key)| *key != import.primary_key);
+        for (destination, key) in files {
             let role = FileRole::for_key(key, Some(import.primary_key));
             if store
                 .record_edition_file(destination, key, &owner, role)
@@ -115,9 +120,10 @@ pub async fn import_link_title(
                 %key,
                 "another edition here holds this key; the imported copy leaves it unrecorded"
             );
-            if *key == import.primary_key {
+            if key == import.primary_key {
                 return Ok(LinkImportOutcome::KeyHeldElsewhere);
             }
+            pdf_refused |= import.pdf_key == Some(key);
         }
     }
     store
@@ -129,7 +135,7 @@ pub async fn import_link_title(
             None,
         )
         .await?;
-    if let Some(pdf_key) = import.pdf_key {
+    if let Some(pdf_key) = import.pdf_key.filter(|_| !pdf_refused) {
         store
             .set_pdf_status(
                 &record.uuid,
