@@ -2436,6 +2436,10 @@ export interface ClusterLinkView {
   include_branches?: boolean;
   /** "Use this computer to download" (on by default); off makes this server a window. */
   download?: boolean;
+  /** The most jobs this host runs for the library at once; `null` is an equal share of the machine. */
+  max_jobs?: number | null;
+  /** Jobs the library may have running here now; absent while its link is not running. */
+  job_share?: number;
 }
 
 /**

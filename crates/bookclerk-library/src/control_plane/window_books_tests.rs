@@ -208,6 +208,7 @@ async fn many_books_page_out_within_every_profiles_limits() {
             ancestry_json: Set("[]".into()),
             list_members_books: Set(1),
             download: Set(0),
+            max_jobs: Set(None),
         }
         .insert(store.db())
         .await

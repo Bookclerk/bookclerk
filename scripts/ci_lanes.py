@@ -85,13 +85,14 @@ LABEL_RE = re.compile(re.escape(LABEL_PREFIX) + r"(0|[1-9][0-9]?)\Z")
 # longest jobs get the emptiest lanes.
 LANE_JOBS = ("test", "release", "check", "e2e", "postgres", "confinement", "native-gateway", "tray", "site")
 
-# Jobs whose matrix has a fixed number of legs on a pull request. The
-# confinement, native-gateway and tray jobs have one leg per runner label
-# in the plan's ``os_matrix``; every other job has one.
+# Jobs whose matrix has a fixed number of legs on a pull request. Jobs in
+# ``MATRIX_OUTPUTS`` take theirs from a plan output; every other job has one.
 FIXED_LEGS = {"postgres": 3}
 
-# Jobs with one leg per runner label in ``os_matrix``.
-OS_MATRIX_JOBS = frozenset({"confinement", "native-gateway", "tray"})
+# Jobs whose matrix is a JSON list in a plan output, one leg per entry: the
+# confinement, native-gateway and tray jobs have one leg per runner label
+# in ``os_matrix``, and the test job one per part in ``test_parts``.
+MATRIX_OUTPUTS = {"confinement": "os_matrix", "native-gateway": "os_matrix", "tray": "os_matrix", "test": "test_parts"}
 
 # Run statuses of a run that hasn't finished. A run whose jobs wait in a
 # concurrency group is ``pending``.
@@ -219,22 +220,24 @@ def planned_legs(outputs: Mapping[str, object]) -> list[str]:
 
     Args:
         outputs: The resolve step's outputs (``job_<job>`` is ``"true"``
-            for a planned job; ``os_matrix`` is a JSON list of runner labels).
+            for a planned job; each output in ``MATRIX_OUTPUTS`` is a JSON
+            list with one entry per leg).
 
     Returns:
-        The keys, in ``LANE_JOBS`` order and then by leg.
+        The keys, in ``LANE_JOBS`` order and then by leg. A matrix output
+        that is missing, not a list or empty counts as one leg.
     """
-    os_legs = 1
-    raw_matrix = outputs.get("os_matrix")
-    if isinstance(raw_matrix, str):
-        matrix = _load(raw_matrix.encode())
-        if isinstance(matrix, list) and matrix:
-            os_legs = len(matrix)
     keys: list[str] = []
     for job in LANE_JOBS:
         if outputs.get(f"job_{job.replace('-', '_')}") != "true":
             continue
-        legs = os_legs if job in OS_MATRIX_JOBS else FIXED_LEGS.get(job, 1)
+        legs = FIXED_LEGS.get(job, 1)
+        if job in MATRIX_OUTPUTS:
+            legs = 1
+            raw = outputs.get(MATRIX_OUTPUTS[job])
+            matrix = _load(raw.encode()) if isinstance(raw, str) else None
+            if isinstance(matrix, list) and matrix:
+                legs = len(matrix)
         keys.extend(f"{job}-{leg}" for leg in range(legs))
     return keys
 

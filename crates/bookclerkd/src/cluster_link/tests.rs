@@ -362,6 +362,7 @@ async fn start_host_client<T: JobTransport + 'static>(
             claim_kinds: kinds.iter().map(|kind| (*kind).to_string()).collect(),
             claims_after_refresh: true,
             timing: timing(backoff_min),
+            share: None,
         },
         TransportRunner::new(transport, Arc::clone(&catalog)),
         Box::new(FixedSampler),

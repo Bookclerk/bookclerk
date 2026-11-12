@@ -89,10 +89,19 @@ pub(crate) fn link_json(link: &ClusterLink) -> ClusterLinkView {
         enrolled_at: link.enrolled_at.clone(),
         share_books: link.share_books,
         include_branches: link.include_branches,
+        max_jobs: link.max_jobs.map(|cap| cap.jobs()),
+        job_share: None,
         list_members_books: link.list_members_books,
         download: link.download,
         running: None,
     }
+}
+
+/// [`link_json`] with the link's current share of this machine.
+pub(crate) fn shared_link_json(state: &AppState, link: &ClusterLink) -> ClusterLinkView {
+    let mut view = link_json(link);
+    view.job_share = state.capacity.share_of(&link.owner_cluster_id);
+    view
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -122,6 +131,13 @@ pub struct ClusterLinkView {
     /// "Include books from my own branches".
     #[schema(example = true)]
     pub include_branches: bool,
+    /// The most jobs this install runs for the library at once, as its operator set it; `null` gives the library an equal share of the machine.
+    #[schema(example = 2, minimum = 0, maximum = 16)]
+    pub max_jobs: Option<usize>,
+    /// How many jobs the library may have running here now: its share of the machine after this install's own work, within `max_jobs`. Only the listing and sharing routes report it, and only while the link's client runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 2)]
+    pub job_share: Option<usize>,
     /// "List my members' books to the library": the library's catalog
     /// lookups are answered with members' books (except those who opted
     /// out) as well as the owner's.
@@ -296,7 +312,10 @@ pub async fn get_cluster_consents(
         .await
         .map_err(events_error)?;
     Ok(Json(ClusterConsentsResponse {
-        clusters: links.iter().map(link_json).collect(),
+        clusters: links
+            .iter()
+            .map(|link| shared_link_json(&state, link))
+            .collect(),
         consents: rows.iter().map(consent_json).collect(),
     }))
 }
