@@ -190,7 +190,10 @@ The client app then sends `Authorization: Bookclerk-Client <token>`:
   profile and sessions, and sign-out. Every other route, administration
   included, sees no credential and refuses it, whatever the person's
   role.
-- It needs TLS, except on loopback, like the node API.
+- It needs TLS, except on loopback, like the node API. Otherwise the
+  route answers `403 transport_insecure`, or `403
+  client_sign_in_unavailable` where this daemon doesn't serve remote
+  installs.
 - It is never a cookie, and a browser's session token is never a library
   card.
 - Each use keeps it signed in for another 90 days. Sign-out

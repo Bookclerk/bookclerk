@@ -143,7 +143,7 @@ impl Access {
             }
             Access::OperatorOrUser => "The operator, or any signed-in user.",
             Access::OperatorOrPortal => {
-                "The operator, or any library session, including a client sign-in's token."
+                "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
             }
         }
     }

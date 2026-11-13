@@ -112,7 +112,7 @@ pub(crate) async fn admit_client_token(
     let (mut parts, body) = req.into_parts();
     if let Err(refused) = crate::node_api::check_transport(&state, &mut parts, "client_token").await
     {
-        return refused;
+        return transport_refusal(refused.status());
     }
     let value = format!("{CLIENT_AUTH_SCHEME} {}", held.0.as_str());
     match HeaderValue::from_str(&value) {
@@ -125,6 +125,36 @@ pub(crate) async fn admit_client_token(
         Err(_) => tracing::warn!("a held client token could not be put back"),
     }
     next.run(Request::from_parts(parts, body)).await
+}
+
+/// The refusal of a client token that failed the transport policy, in the
+/// standard error body the routes it reaches already declare (`ErrorJson`),
+/// rather than the node API's own shape.
+///
+/// # Arguments
+///
+/// * `status` - The status the node API check answered: 404 when the node
+///   API is not mounted here, otherwise 403.
+///
+/// # Returns
+///
+/// A 403 `transport_insecure` when the connection is not TLS (or loopback),
+/// or a 403 `client_sign_in_unavailable` when this daemon does not serve
+/// remote installs.
+fn transport_refusal(status: axum::http::StatusCode) -> Response {
+    use axum::http::StatusCode;
+    if status == StatusCode::NOT_FOUND {
+        return crate::auth::json_auth_error(
+            StatusCode::FORBIDDEN,
+            "client_sign_in_unavailable",
+            "This library does not accept client apps on this address.",
+        );
+    }
+    crate::auth::json_auth_error(
+        StatusCode::FORBIDDEN,
+        "transport_insecure",
+        "A library card is only accepted over HTTPS, or on this machine.",
+    )
 }
 
 /// The client session token in `headers`, when an admitted request carries

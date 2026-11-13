@@ -15493,7 +15493,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/library/books/{uuid}": {
@@ -15641,7 +15641,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/library/books/{uuid}/cover": {
@@ -15775,7 +15775,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/covers/{token}/{size}": {
@@ -15927,7 +15927,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/images/{token}": {
@@ -16070,7 +16070,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/avatars/gravatar/{hash}": {
@@ -16213,7 +16213,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/stores/{id}/icon": {
@@ -16356,7 +16356,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/status": {
@@ -16471,7 +16471,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/refresh": {
@@ -16604,7 +16604,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/recommendations": {
@@ -16719,7 +16719,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/purchase-hints": {
@@ -16886,7 +16886,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/purchase-hints/batch": {
@@ -17064,7 +17064,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/search": {
@@ -17378,7 +17378,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/title-meta": {
@@ -17552,7 +17552,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/title-meta/batch": {
@@ -17719,7 +17719,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/title-reviews": {
@@ -17886,7 +17886,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/wishlist": {
@@ -18007,7 +18007,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       },
       "post": {
         "tags": [
@@ -18183,7 +18183,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/wishlist/{uuid}": {
@@ -18348,7 +18348,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/request-queue": {
@@ -18470,7 +18470,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/branch-requests": {
@@ -18646,7 +18646,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/auth/logout": {
@@ -18748,7 +18748,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/auth/sessions": {
@@ -18865,7 +18865,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/auth/sessions/{id}": {
@@ -19009,7 +19009,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/auth/profile": {
@@ -19238,7 +19238,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/auth/profile/catalog-listing": {
@@ -19355,7 +19355,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       },
       "put": {
         "tags": [
@@ -19513,7 +19513,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/auth/profile/avatar": {
@@ -19670,7 +19670,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       },
       "delete": {
         "tags": [
@@ -19789,7 +19789,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/users/{id}/avatar": {
@@ -19948,7 +19948,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/preferences": {
@@ -20042,7 +20042,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       },
       "patch": {
         "tags": [
@@ -20192,7 +20192,7 @@
             "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/.well-known/openid-configuration": {

@@ -528,6 +528,9 @@ async fn a_client_token_opens_the_library_routes_and_nothing_else() {
     let (status, body) = with_header(&lan, "GET", "/api/library/books", card.clone()).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["error"], "transport_insecure");
+    // In the standard error body the library routes declare.
+    assert_eq!(body["status"], 403);
+    assert!(body["message"].is_string(), "{body}");
 
     // Signing out ends the session.
     let (status, _) = with_header(&app, "POST", "/api/auth/logout", card.clone()).await;
