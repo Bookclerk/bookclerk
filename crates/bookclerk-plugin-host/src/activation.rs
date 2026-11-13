@@ -277,7 +277,8 @@ impl<G: ?Sized + Guest + 'static> Activation<G> {
         let Some(guest) = slot.take() else {
             return false;
         };
-        drop(slot);
+        // The slot stays locked until the old guest has stopped, so a wake
+        // cannot start a second guest beside one that is still shutting down.
         if let Err(err) = guest.stop_guest().await {
             tracing::warn!(
                 plugin_instance_id = %self.instance,
@@ -285,6 +286,8 @@ impl<G: ?Sized + Guest + 'static> Activation<G> {
                 "idle plugin stop failed"
             );
         }
+        drop(guest);
+        drop(slot);
         tracing::debug!(plugin_instance_id = %self.instance, "idle plugin stopped");
         true
     }
@@ -297,8 +300,9 @@ impl<G: ?Sized + Guest + 'static> Activation<G> {
     /// Returns the running guest's stop failure as text.
     pub(crate) async fn retire(&self) -> std::result::Result<(), String> {
         self.retired.store(true, Ordering::SeqCst);
-        let guest = self.guest.lock().await.take();
-        match guest {
+        // Held until the guest has stopped, like the idle sweep.
+        let mut slot = self.guest.lock().await;
+        match slot.take() {
             Some(guest) => guest.stop_guest().await,
             None => Ok(()),
         }

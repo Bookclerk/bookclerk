@@ -262,7 +262,19 @@ impl ContentSource for OnDemandSource {
         scope: &SourceScope,
         account_id: &str,
     ) -> bookclerk_source::Result<()> {
-        let (guest, _busy) = self.awake().await?;
+        // Revoking must remove the stored credentials even when no guest can
+        // start, as the resident source does after a failed sign-out.
+        let (guest, _busy) = match self.awake().await {
+            Ok(awake) => awake,
+            Err(err) => {
+                tracing::warn!(
+                    account = %account_id,
+                    error = %err,
+                    "storefront unavailable for sign-out; deleting stored credentials anyway"
+                );
+                return bookclerk_source::revoke_credentials_default(scope, account_id).await;
+            }
+        };
         guest.revoke_credentials(scope, account_id).await
     }
 

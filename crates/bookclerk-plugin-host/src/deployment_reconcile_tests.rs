@@ -1612,10 +1612,26 @@ async fn a_killed_storefront_guest_is_replaced_on_its_next_call() {
     assert!(proxy.is_retired());
     assert!(!proxy.is_awake());
     let err = source
-        .revoke_credentials(&scope, "no-such-account")
+        .list_deals(1)
         .await
         .expect_err("a retired storefront refuses calls");
     assert!(err.to_string().contains("stopped"), "{err}");
+    // Revoking still deletes the stored credentials without a guest.
+    scope
+        .save_credentials_json("held-account", &serde_json::json!({ "token": "t" }))
+        .await
+        .expect("seal credentials");
+    source
+        .revoke_credentials(&scope, "held-account")
+        .await
+        .expect("revoke without a guest");
+    assert_eq!(
+        scope
+            .load_credentials_json("held-account")
+            .await
+            .expect("load credentials"),
+        None
+    );
     assert_eq!(proxy.wakes(), 1);
 }
 
