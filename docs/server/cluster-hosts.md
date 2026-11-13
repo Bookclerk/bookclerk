@@ -339,7 +339,9 @@ account itself.
   a second branch, and a second branch's offer of it is not kept.
 - **A new keeper.** When the account is disconnected everywhere on the
   library (no member's link holds it), the library forgets its keeper, so
-  the branch the person adds it from next keeps it. A push the library
+  the branch the person adds it from next keeps it. Adding it again
+  from a branch makes that branch push its current sign-in again, even
+  an unchanged one, so the library takes it as keeper anew. A push the library
   doesn't take from the branch yet (`not_shared`, as when it overtook the
   branch's offer) is sent again on the next pass.
 
