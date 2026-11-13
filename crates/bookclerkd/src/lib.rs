@@ -55,6 +55,8 @@ mod requirements_sweep;
 mod restart;
 mod scheduler;
 mod search_index;
+#[cfg(test)]
+mod startup_tests;
 mod totp;
 mod tray_companion;
 
@@ -336,6 +338,27 @@ async fn start_host(config: Config, mode: HostMode) -> anyhow::Result<HostParts>
             }
         }
     };
+    assemble_host(opened, mode).await
+}
+
+/// Starts every background runtime (deployment reconcile, jobs, events,
+/// heartbeat, cluster links, scheduler) on an opened control plane, then
+/// builds the router. Binds nothing.
+///
+/// # Arguments
+///
+/// * `opened` - The control plane [`start_host`] opened (or a test's, on an
+///   in-process database).
+/// * `mode` - Whether `daemon.listen` will be bound (and so must be valid).
+///
+/// # Errors
+///
+/// Returns an error when `daemon.listen` is invalid in
+/// [`HostMode::Listening`] or operator auth cannot be built.
+async fn assemble_host(
+    opened: bookclerk_plugin_host::HostControlPlane,
+    mode: HostMode,
+) -> anyhow::Result<HostParts> {
     let bookclerk_plugin_host::HostControlPlane {
         config,
         database_registry,
@@ -345,6 +368,7 @@ async fn start_host(config: Config, mode: HostMode) -> anyhow::Result<HostParts>
         present,
         ..
     } = opened;
+    let paths = config.paths().clone();
     tracing::info!(
         node_id = %control_plane.node.node_id,
         cluster_id = %control_plane.cluster_id,
