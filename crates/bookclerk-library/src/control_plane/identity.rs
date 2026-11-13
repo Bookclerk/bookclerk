@@ -106,6 +106,9 @@ pub struct NodeRecord {
     pub share_books: Option<bool>,
     /// For a branch: "Include books from my own branches", as reported.
     pub include_branches: Option<bool>,
+    /// For a branch: this library's "Acquire all of this branch's members'
+    /// books" ([`super::set_branch_members_books`]).
+    pub acquire_members_books: bool,
 }
 
 /// How a node joined the cluster.
@@ -606,6 +609,7 @@ fn record_from_model(row: nodes::Model) -> NodeRecord {
         owner_user_id: row.owner_user_id,
         share_books: row.share_books.map(|on| on != 0),
         include_branches: row.include_branches.map(|on| on != 0),
+        acquire_members_books: row.acquire_members_books != 0,
     }
 }
 

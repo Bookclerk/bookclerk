@@ -29,7 +29,7 @@ use sea_orm::{
 
 use super::carried_accounts::branch_person;
 use super::trust::accounts_owned_by;
-use crate::entities::link_imports;
+use crate::entities::{account_links, link_imports};
 use crate::error::{LibraryError, Result};
 use crate::models::{AcquireStatus, BookRecord};
 use crate::store::AcquiredBookKey;
@@ -321,18 +321,77 @@ async fn still_listed_requests(
         .collect())
 }
 
+/// The store accounts this branch lists to the library `cluster_id` now,
+/// under the catalog answers' rules (`super::catalog_lookup::listable_accounts`):
+/// none once the link is gone or "Share this branch's books" is off.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+async fn listed_accounts(
+    store: &LibraryStore,
+    cluster_id: &str,
+) -> Result<BTreeSet<super::AccountKey>> {
+    let Some(link) = super::load_cluster_link(store, cluster_id).await? else {
+        return Ok(BTreeSet::new());
+    };
+    if !link.share_books {
+        return Ok(BTreeSet::new());
+    }
+    let linked = linked_accounts(store).await?;
+    super::catalog_lookup::listable_accounts(store, &linked, link.list_members_books).await
+}
+
+/// Every store account linked to someone on this install, in keyset pages
+/// no larger than the database plugin's `maxResultRows`.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+async fn linked_accounts(store: &LibraryStore) -> Result<BTreeSet<super::AccountKey>> {
+    let page = super::trust::result_page(store);
+    let mut out = BTreeSet::new();
+    let mut after: Option<i64> = None;
+    loop {
+        let mut query = account_links::Entity::find().order_by_asc(account_links::Column::Id);
+        if let Some(after) = after {
+            query = query.filter(account_links::Column::Id.gt(after));
+        }
+        let links = query
+            .limit(page)
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        let full = u64::try_from(links.len()).unwrap_or(u64::MAX) >= page;
+        after = links.last().map(|link| link.id);
+        out.extend(
+            links
+                .into_iter()
+                .map(|link| (link.plugin_key, link.account_id)),
+        );
+        if !full {
+            return Ok(out);
+        }
+    }
+}
+
 /// Which of this install's acquired books the catalog sync sends the
 /// library `cluster_id`: the branch owner's own books, those held by a
 /// store account connected here to the branch's person
-/// ([`super::branch_person`]), and the books that library asked for
-/// through an interlibrary request and this branch still lists to it
-/// (`still_listed_requests`), but never one imported from that library
-/// ([`books_imported_from_link`]). With no single person, only the
-/// requested books.
+/// ([`super::branch_person`]); the books that library asked for through an
+/// interlibrary request and this branch still lists to it
+/// (`still_listed_requests`); and, while that library acquires all of this
+/// branch's members' books, the books of every store account this branch
+/// lists to it (`listed_accounts`). Never one imported from that library
+/// ([`books_imported_from_link`]). With no single person, the owner's
+/// books are not among them.
 #[derive(Debug, Clone, Default)]
 pub struct OwnerShareFilter {
     /// The person's store accounts: `(plugin_key, account_id)`.
     accounts: BTreeSet<super::AccountKey>,
+    /// With the library's "Acquire all of this branch's members' books"
+    /// on, the store accounts this branch lists to it; otherwise empty.
+    listed: BTreeSet<super::AccountKey>,
     /// Books the library asked for, by store identity, with when it last
     /// asked.
     requested: BTreeMap<HeldBookKey, DateTime<Utc>>,
@@ -343,16 +402,27 @@ pub struct OwnerShareFilter {
 impl OwnerShareFilter {
     /// Reads the filter for the library `cluster_id` now.
     ///
+    /// # Arguments
+    ///
+    /// * `members_books` - That library's "Acquire all of this branch's
+    ///   members' books", from its catalog session.
+    ///
     /// # Errors
     ///
     /// Returns an error when a read fails.
-    pub async fn load(store: &LibraryStore, cluster_id: &str) -> Result<Self> {
+    pub async fn load(store: &LibraryStore, cluster_id: &str, members_books: bool) -> Result<Self> {
         let accounts = match branch_person(store, None).await? {
             Some(person) => accounts_owned_by(store, person).await?,
             None => BTreeSet::new(),
         };
+        let listed = if members_books {
+            listed_accounts(store, cluster_id).await?
+        } else {
+            BTreeSet::new()
+        };
         Ok(Self {
             accounts,
+            listed,
             requested: still_listed_requests(store, cluster_id).await?,
             imported: books_imported_from_link(store, cluster_id).await?,
         })
@@ -362,10 +432,9 @@ impl OwnerShareFilter {
     #[must_use]
     pub fn admits(&self, key: &AcquiredBookKey) -> bool {
         let held = held_key(key);
-        let owners = self
-            .accounts
-            .contains(&(key.plugin_key.clone(), key.account_id.clone()));
-        (owners || self.requested.contains_key(&held)) && !self.imported.contains(&held)
+        let account = (key.plugin_key.clone(), key.account_id.clone());
+        let sent = self.accounts.contains(&account) || self.listed.contains(&account);
+        (sent || self.requested.contains_key(&held)) && !self.imported.contains(&held)
     }
 
     /// When the library last asked for the book `key` names, if it asked

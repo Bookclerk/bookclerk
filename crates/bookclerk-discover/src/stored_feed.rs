@@ -538,6 +538,7 @@ mod tests {
         assert_eq!(pool.work_for(&card), Some("w-libro"));
 
         card.available_through = vec![crate::availability::BranchAvailability {
+            work_id: "w-libro".into(),
             node_id: "node-b".into(),
             owner_name: Some("Riley".into()),
             store: "audible".into(),

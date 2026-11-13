@@ -12,14 +12,9 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "discover_request_queue")]
 pub struct Model {
-    /// Surrogate primary key assigned by the database.
-    #[sea_orm(primary_key)]
-    pub id: i64,
-    /// The queue entry the row ranks: the library work id its wishes are for.
-    #[sea_orm(unique)]
-    pub entry_key: String,
-    /// Library work (`works.id`) the entry's wishes resolved to, when any.
-    pub work_id: Option<String>,
+    /// The work (`works.id`) the entry's wishes are for; one row per work.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub work_id: String,
     /// 1 when the library already holds the entry's work, so the queue hides it.
     pub owned: i64,
     /// Household taste score of the entry before the wish-count boost

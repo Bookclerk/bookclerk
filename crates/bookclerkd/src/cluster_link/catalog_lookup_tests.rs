@@ -172,6 +172,8 @@ async fn a_branch_answers_its_librarys_question_over_the_socket() {
     assert_eq!(hits[0].available_through[0].node_id, link.remote_node_id);
     assert_eq!(hits[0].available_through[0].product_id, ASIN);
     assert!(hits[0].available_through[0].owner_name.is_some());
+    // The work to request it by is this library's own.
+    assert_eq!(hits[0].available_through[0].work_id, work);
     let mut feed = feed_with(bookclerk_discover::Recommendation {
         work_id: Some(work.clone()),
         title: "Shared Title".into(),
@@ -181,6 +183,7 @@ async fn a_branch_answers_its_librarys_question_over_the_socket() {
         .await
         .unwrap();
     assert_eq!(feed.shelves[0].items[0].available_through.len(), 1);
+    assert_eq!(feed.shelves[0].items[0].available_through[0].work_id, work);
 
     // Members' books off: B answers "missing" and A's listing expires.
     assert!(set_cluster_link_listing(&b, &link.owner_cluster_id, false)

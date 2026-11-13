@@ -13359,6 +13359,190 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
+    "/api/config/branches/members-books": {
+      "put": {
+        "tags": [
+          "Cluster"
+        ],
+        "summary": "`PUT /api/config/branches/members-books`: turn this library's \"Acquire\nall of this branch's members' books\" on or off for one branch.",
+        "description": "While on, the branch's catalog sync also sends the books its members\nacquired that it lists to this library (its \"List my members' books\"\nsetting and each member's opt-out still decide), not only its owner's.\nA change restarts the branch's catalog pass, so books it no longer sends\nare withdrawn when that pass ends; files already delivered stay.",
+        "operationId": "put_branch_members_books",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MembersBooksBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The setting after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BranchMembersBooks"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The node id is malformed. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid node_id"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorAnswer"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The user is not an active Owner.",
+                    "value": {
+                      "error": "forbidden"
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "no_user": {
+                    "summary": "The session has no user account.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No branch of this library has that node id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "not_a_branch"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `node_id` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The library database could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The branch's catalog sync kept changing under the write; retry. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "service unavailable: the branch's catalog fence kept changing"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
     "/api/config/join/sharing": {
       "get": {
         "tags": [
@@ -27781,11 +27965,17 @@
         "type": "object",
         "description": "One branch a title is available through.",
         "required": [
+          "work_id",
           "node_id",
           "store",
           "product_id"
         ],
         "properties": {
+          "work_id": {
+            "type": "string",
+            "description": "This library's work the branch supplies: the `work_id` to send\n`POST /api/branch-requests` to ask the branch for it.",
+            "example": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b"
+          },
           "node_id": {
             "type": "string",
             "description": "The branch node id.",
@@ -27959,6 +28149,26 @@
           }
         }
       },
+      "BranchMembersBooks": {
+        "type": "object",
+        "description": "JSON body after `PUT /api/config/branches/members-books`.",
+        "required": [
+          "node_id",
+          "acquire_members_books"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "The branch.",
+            "example": "2b7e1c4d-9f3a-4e8b-a6c5-0d1e2f3a4b5c"
+          },
+          "acquire_members_books": {
+            "type": "boolean",
+            "description": "\"Acquire all of this branch's members' books\", as stored.",
+            "example": true
+          }
+        }
+      },
       "BranchOnlyChoice": {
         "type": "object",
         "description": "The consent page's connection block when only a branch is offered.",
@@ -28083,6 +28293,7 @@
           "node_id",
           "created_at",
           "joined",
+          "acquire_members_books",
           "titles"
         ],
         "properties": {
@@ -28133,6 +28344,11 @@
             ],
             "description": "\"Include books from my own branches\" as it last reported it; `null` until its first catalog sync.",
             "example": true
+          },
+          "acquire_members_books": {
+            "type": "boolean",
+            "description": "This library's \"Acquire all of this branch's members' books\": the\nbranch also sends the books its members acquired that it lists here,\nnot only its owner's.",
+            "example": false
           },
           "titles": {
             "$ref": "#/components/schemas/BranchTitleCounts",
@@ -31687,6 +31903,27 @@
             "example": "Dana Reader"
           }
         }
+      },
+      "MembersBooksBody": {
+        "type": "object",
+        "description": "`PUT /api/config/branches/members-books` body: a branch, and whether\nthis library acquires all of its members' books.",
+        "required": [
+          "node_id",
+          "acquire"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "The branch's node id, as Settings → Branches lists it.",
+            "example": "2b7e1c4d-9f3a-4e8b-a6c5-0d1e2f3a4b5c"
+          },
+          "acquire": {
+            "type": "boolean",
+            "description": "\"Acquire all of this branch's members' books\".",
+            "example": true
+          }
+        },
+        "additionalProperties": false
       },
       "MfaPolicy": {
         "type": "object",

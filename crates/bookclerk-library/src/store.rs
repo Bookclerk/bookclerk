@@ -7712,6 +7712,7 @@ pub(crate) mod retention;
 pub(crate) mod scan_state;
 pub(crate) mod search_feed;
 pub(crate) mod storage_scan;
+pub(crate) mod taste_titles;
 pub(crate) mod user_title_state;
 pub(crate) mod write_batches;
 pub use discover::{
@@ -7721,6 +7722,7 @@ pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};
 pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};
+pub use taste_titles::apply_user_states;
 pub(crate) mod job_queue;
 
 mod book_lookup;

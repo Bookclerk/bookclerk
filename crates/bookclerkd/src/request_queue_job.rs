@@ -181,7 +181,7 @@ mod tests {
         assert_eq!(summary, "entries=1 owned=0");
         let stored = library.list_request_queue_ranks().await.expect("ranks");
         assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].rank.entry_key, first.work_id);
+        assert_eq!(stored[0].rank.work_id, first.work_id);
         let queue = bookclerk_discover::read_request_queue(&library)
             .await
             .expect("read");
