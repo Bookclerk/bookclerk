@@ -27,6 +27,7 @@ mod language;
 pub mod listing;
 mod media;
 pub mod records;
+pub mod scan_delta;
 pub mod text;
 mod types;
 

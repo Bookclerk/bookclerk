@@ -946,7 +946,12 @@ table:
 
 A store with no change feed returns full passes with an empty `syncToken`;
 a page number makes a fine cursor. A plugin that needs more state than one
-token can keep it in its own [KV namespace](#kv-namespaces).
+token can keep it in its own [KV namespace](#kv-namespaces). The
+first-party Libro.fm, Chirp and GraphicAudio plugins do: they keep a
+fingerprint of each title the last pass listed in a `SCAN_STATE`
+namespace, and a delta pass sends only new or changed titles plus the
+product ids that disappeared. Without the namespace they return full
+passes.
 
 The host keeps the account's holdings in step with the pass:
 

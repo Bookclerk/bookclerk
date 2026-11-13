@@ -7,11 +7,13 @@ use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
     serve, Bindings, Brand, CatalogCapabilities, CatalogDetailParams, CatalogHit,
     ContentSource as ContentSourceRole, Entrypoints, ExpandCandidatesParams, FetchTitleParams,
-    HealthOk, Invocation, ListDealsParams, LoginParams, LoginResult, PlainFetch, PluginDescribe,
-    PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams, ScalarLimits,
-    ScanPage, ScanParams, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    HealthOk, Invocation, KvNamespace, ListDealsParams, LoginParams, LoginResult, PlainFetch,
+    PluginDescribe, PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams,
+    ScalarLimits, ScanPage, ScanParams, SearchCatalogParams, FEATURE_SCALAR_LIMITS,
+    PRODUCT_API_VERSION,
 };
 use bookclerk_storefront::abi::expand_seed_from_params;
+use bookclerk_storefront::scan_delta::SCAN_STATE_BINDING;
 use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
 use serde_json::Value;
 
@@ -51,16 +53,22 @@ impl PluginWorker for LibroRoot {
     async fn open(
         &self,
         _invocation: Invocation,
-        _bindings: Bindings,
+        mut bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
+        let scan_state = bindings
+            .take_named_kv(SCAN_STATE_BINDING)
+            .map(|binding| binding.kv);
         Ok(Entrypoints {
-            storefront: Some(Box::new(LibroContentSource)),
+            storefront: Some(Box::new(LibroContentSource { scan_state })),
             ..Entrypoints::default()
         })
     }
 }
 
-struct LibroContentSource;
+struct LibroContentSource {
+    /// `SCAN_STATE`, once the operator approved it: scan delta state.
+    scan_state: Option<Box<dyn KvNamespace>>,
+}
 
 fn internal(err: impl std::fmt::Display) -> PluginError {
     PluginError::internal(err.to_string())
@@ -92,7 +100,8 @@ impl ContentSourceRole for LibroContentSource {
 
     async fn scan(&self, params: ScanParams) -> Result<ScanPage, PluginError> {
         let base = bookclerk_plugin_source_libro::resolve_base_url(&Value::Null);
-        bookclerk_plugin_source_libro::guest_scan_page(&base, &params).await
+        bookclerk_plugin_source_libro::guest_scan_page(&base, &params, self.scan_state.as_deref())
+            .await
     }
 
     async fn fetch_title(&self, params: FetchTitleParams) -> Result<PlainFetch, PluginError> {

@@ -65,14 +65,21 @@ after every page, so a large library never has to arrive in one piece.
   from the last saved page the next time, if that was within a day.
 - Audible scans after the first ask only for what changed since the last
   one. Every seven days a scan reads the whole library again.
-- Libro.fm, Chirp and GraphicAudio read the whole library on every scan.
+- Libro.fm, Chirp and GraphicAudio have no way to ask for changes, so
+  every scan reads the whole library from the store. The plugin remembers
+  a fingerprint of each book the last scan saw and passes on only the
+  books that are new or changed, and the ones that left. Every seven days
+  a scan passes on the whole library again.
+- That memory is the plugin's `SCAN_STATE` storage. Until you approve it
+  in the plugin's consent, these stores pass on the whole library on every
+  scan, as before.
 - Each page is saved in a few database writes sized to what your database
   accepts, so the same scan fits Cloudflare D1's smaller limits. Books the
   library already has, as the store still describes them, are checked
   together for the whole page instead of one at a time.
 - A book that leaves an account (a returned loan, a refund) stops counting
-  as held by that account: Audible reports it in the next scan, and the
-  other stores' full scans no longer list it. Its downloaded files stay.
+  as held by that account: the next scan reports it. Its downloaded files
+  stay.
 
 ### Matching to Audible's catalog
 

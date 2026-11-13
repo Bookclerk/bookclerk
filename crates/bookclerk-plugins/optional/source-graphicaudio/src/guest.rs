@@ -7,10 +7,12 @@
 use std::path::Path;
 
 use bookclerk_plugin_sdk::{
-    scan_page, FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch,
-    PluginError, ScanBook, ScanPage, ScanParams, SourceAccount, StorePage,
+    scan_page, FetchTitleParams, KvNamespace, LoginParams, LoginResult,
+    PlainFetch as AbiPlainFetch, PluginError, ScanBook, ScanPage, ScanParams, SourceAccount,
+    StorePage,
 };
 use bookclerk_storefront::abi::{credentials_from_bytes, credentials_to_bytes, scan_credential};
+use bookclerk_storefront::scan_delta::ScanDelta;
 use bookclerk_storefront::{LoginOptions, PlainFetch};
 use serde_json::Value;
 
@@ -121,8 +123,10 @@ pub async fn guest_login_rpc(
 /// RPC scan: one page of one account's full pass (the host upserts books).
 ///
 /// GraphicAudio lists a library in one response with no paging or delta API,
-/// so every pass is full and ends `complete`. The whole listing is one store
-/// page to the SDK's [`scan_page`] helper: a library larger than
+/// so every pass fetches the whole library. With the `SCAN_STATE` namespace,
+/// [`ScanDelta`] sends the host only titles that are new or changed since the
+/// last pass, and the product ids that disappeared; without it every pass is
+/// full and ends `complete`. The whole listing is one store page to the SDK's [`scan_page`] helper: a library larger than
 /// `maxScanPageBooks` goes back in slices of that size, and each later slice
 /// lists the library again.
 ///
@@ -135,11 +139,14 @@ pub async fn guest_login_rpc(
 /// * `store_base_url` - Magento store base URL.
 /// * `access` - Which listing to use.
 /// * `magento_password` - The account password for the Magento listing.
-/// * `params` - The pass's account, credential, options and cursor.
+/// * `params` - The pass's account, credential, options, cursor and sync
+///   token.
+/// * `scan_state` - The `SCAN_STATE` namespace, when granted.
 ///
 /// # Errors
 ///
-/// Returns `invalid_cursor` for a cursor this plugin did not write, and
+/// Returns `invalid_cursor` for a cursor or sync token this plugin cannot
+/// use, the namespace's error when scan state cannot be kept, and
 /// `internal` when the credential is missing or invalid or the listing
 /// fails.
 pub async fn guest_scan_page(
@@ -148,8 +155,10 @@ pub async fn guest_scan_page(
     access: GraphicAudioAccess,
     magento_password: Option<&str>,
     params: &ScanParams,
+    scan_state: Option<&dyn KvNamespace>,
 ) -> std::result::Result<ScanPage, PluginError> {
-    scan_page(params, |_store_cursor, _| async move {
+    let delta = &ScanDelta::open(scan_state, params).await?;
+    scan_page(params, |store_cursor, _| async move {
         let (books, store_pages) = list_account(
             access_base_url,
             store_base_url,
@@ -159,11 +168,14 @@ pub async fn guest_scan_page(
         )
         .await
         .map_err(|err| PluginError::internal(err.to_string()))?;
+        let page = delta.page(&store_cursor, books, true).await?;
         Ok(StorePage {
-            books,
-            complete: true,
+            books: page.books,
+            removed: page.removed,
+            next: String::new(),
+            sync_token: page.sync_token,
+            complete: page.complete,
             store_pages: Some(store_pages),
-            ..StorePage::default()
         })
     })
     .await
