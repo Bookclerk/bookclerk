@@ -254,6 +254,13 @@ svg-hush = "0.9.7"
 [profile.dev.package."*"]
 opt-level = 1
 
+# libfdk-aac's C sources force-inline FFT helpers called through function
+# pointers, which GCC refuses at -O1 ("inlining failed in call to
+# always_inline"). Keep it at the old setting; release builds use -O3, which
+# compiles.
+[profile.dev.package.fdk-aac-sys]
+opt-level = 0
+
 [profile.release]
 lto = true
 codegen-units = 1
