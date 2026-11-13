@@ -6,16 +6,19 @@
 //! Each link runs one [`SignInPusher`]. A pass reads the accounts this
 //! install shares with that library (`account_shares`, peer
 //! `link:<cluster>`), keeps those whose storefront is not shareable, and
-//! for each whose sign-in here is newer than the revision last pushed
-//! there sends it up the link (`accounts.update`). The library applies it
+//! for each whose sign-in here differs from the one last pushed there
+//! sends it up the link (`accounts.update`) with a revision above the last
+//! one sent ([`bookclerk_library::control_plane::KeptShare::next_revision`]). The library applies it
 //! only when it is newer than the last one it applied, so a push that is
 //! retried, or overtaken by a newer one, changes nothing there. A push the
 //! library does not take from this branch yet (`not_shared`, such as one
 //! that overtook its offer) is sent again on the next pass.
 //!
-//! The revision is the time of the account's newest secret write here: a
-//! sign-in in Accounts, a refresh a storefront handed back, or a sign-in
-//! that arrived from the library at join all raise it.
+//! A sign-in is told apart by the time of the account's newest secret
+//! write here: a sign-in in Accounts, a refresh a storefront handed back,
+//! or a sign-in that arrived from the library at join all change it. Any
+//! change counts, an earlier time included, so a clock that went back
+//! can't hide a sign-in.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -136,14 +139,14 @@ impl SignInPusher {
             if shareable.contains(&share.plugin_key) {
                 continue;
             }
-            let Some(revision) =
+            let Some(sign_in) =
                 sign_in_revision(&self.library, &share.plugin_key, &share.account_id).await?
             else {
                 continue;
             };
-            if revision <= share.pushed {
+            let Some(revision) = share.next_revision(sign_in) else {
                 continue;
-            }
+            };
             let (plugin_key, account_id) = (share.plugin_key.as_str(), share.account_id.as_str());
             let keep = |key: &str, id: &str| key == plugin_key && id == account_id;
             let Some(account) = accounts_to_carry_where(&self.library, person, &keep)
@@ -167,6 +170,7 @@ impl SignInPusher {
                         account_id,
                         &self.cluster_id,
                         revision,
+                        sign_in,
                     )
                     .await?;
                     if outcome == KeeperOutcome::Applied {

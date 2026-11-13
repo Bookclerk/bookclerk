@@ -18,9 +18,15 @@ pub struct Model {
     /// `link:<cluster_id>` for a library this keeper pushed to.
     #[sea_orm(primary_key, auto_increment = false)]
     pub peer: String,
-    /// The keeper's revision of the account's sign-in: milliseconds since
-    /// the Unix epoch of its newest secret write on the keeper.
+    /// The revision that crossed this share: on a library, the newest one
+    /// it applied from its keeper; on a keeper, the newest one it sent.
+    /// Each push a keeper sends carries a higher one than the last.
     pub revision: i64,
+    /// On a keeper's `link:` row, the account's sign-in time here
+    /// ([`crate::control_plane::sign_in_revision`], milliseconds) when it
+    /// last pushed; a different time means a new sign-in to send. 0 on a
+    /// library's rows.
+    pub observed: i64,
     /// RFC 3339 time this row was last written.
     pub updated_at: String,
 }

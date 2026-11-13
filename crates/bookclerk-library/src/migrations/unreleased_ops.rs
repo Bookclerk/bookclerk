@@ -1661,6 +1661,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         account_id TEXT NOT NULL,
         peer TEXT NOT NULL,
         revision INTEGER NOT NULL,
+        observed INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (plugin_key, account_id, peer),
         FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE

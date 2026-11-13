@@ -125,8 +125,23 @@ pub struct KeptShare {
     pub account_id: String,
     /// The library's cluster id.
     pub cluster_id: String,
-    /// The revision last pushed to that library; 0 before the first push.
+    /// The revision last sent to that library; 0 before the first push.
     pub pushed: i64,
+    /// The account's sign-in time here when it was last sent; 0 before the
+    /// first push.
+    pub observed: i64,
+}
+
+impl KeptShare {
+    /// The revision to send for a sign-in whose time here is `sign_in`, or
+    /// `None` when that sign-in was already sent. A sign-in counts as new
+    /// whenever its time differs from the one last sent, even an earlier
+    /// time (the clock went back), and each push carries a revision above
+    /// the last one sent, so the library takes it.
+    #[must_use]
+    pub fn next_revision(&self, sign_in: i64) -> Option<i64> {
+        (sign_in != self.observed).then(|| sign_in.max(self.pushed.saturating_add(1)))
+    }
 }
 
 /// Every account this install shares with a library it joined, each library
@@ -141,14 +156,19 @@ pub async fn kept_shares(store: &LibraryStore) -> Result<Vec<KeptShare>> {
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?;
-    let pushed: BTreeMap<(String, String, String), i64> =
+    let pushed: BTreeMap<(String, String, String), (i64, i64)> =
         account_credential_revisions::Entity::find()
             .filter(account_credential_revisions::Column::Peer.starts_with(LINK_PEER))
             .all(store.db())
             .await
             .map_err(LibraryError::Orm)?
             .into_iter()
-            .map(|row| ((row.plugin_key, row.account_id, row.peer), row.revision))
+            .map(|row| {
+                (
+                    (row.plugin_key, row.account_id, row.peer),
+                    (row.revision, row.observed),
+                )
+            })
             .collect();
     let mut kept: BTreeMap<(String, String, String), KeptShare> = BTreeMap::new();
     for share in shares {
@@ -156,20 +176,21 @@ pub async fn kept_shares(store: &LibraryStore) -> Result<Vec<KeptShare>> {
             continue;
         };
         let key = (share.plugin_key, share.account_id, share.peer.clone());
-        let revision = pushed.get(&key).copied().unwrap_or(0);
+        let (revision, observed) = pushed.get(&key).copied().unwrap_or((0, 0));
         kept.entry(key.clone()).or_insert_with(|| KeptShare {
             plugin_key: key.0,
             account_id: key.1,
             cluster_id: cluster_id.to_owned(),
             pushed: revision,
+            observed,
         });
     }
     Ok(kept.into_values().collect())
 }
 
-/// Records that the keeper pushed `revision` of the account to the library
-/// `cluster_id` (whether it applied it or already had it). Never lowers the
-/// recorded revision.
+/// Records that the keeper sent `revision` of the account to the library
+/// `cluster_id` (whether it applied it or already had it), for the sign-in
+/// whose time here is `observed`. Never lowers the recorded revision.
 ///
 /// # Errors
 ///
@@ -180,10 +201,18 @@ pub async fn record_pushed_revision(
     account_id: &str,
     cluster_id: &str,
     revision: i64,
+    observed: i64,
 ) -> Result<()> {
     let peer = format!("{LINK_PEER}{cluster_id}");
     let now = Utc::now().to_rfc3339();
-    let statements = revision_statements(plugin_key, account_id, &peer, revision, &now, None);
+    let statements = revision_statements(
+        plugin_key,
+        account_id,
+        &peer,
+        (revision, observed),
+        &now,
+        None,
+    );
     let operation_id = format!("keeper-pushed-{}", uuid::Uuid::new_v4());
     store
         .execute_host_batch(batch::request(&operation_id, statements.to_vec()))
@@ -191,14 +220,14 @@ pub async fn record_pushed_revision(
     Ok(())
 }
 
-/// The two statements that raise one share's revision to `revision`
-/// (update, then insert), each applied only while `guard` holds and the
-/// stored revision is lower.
+/// The two statements that raise one share's revision to `revision`, with
+/// its `observed` sign-in time (update, then insert), each applied only
+/// while `guard` holds and the stored revision is lower.
 fn revision_statements(
     plugin_key: &str,
     account_id: &str,
     peer: &str,
-    revision: i64,
+    (revision, observed): (i64, i64),
     now: &str,
     guard: Option<(&str, Vec<DbValue>)>,
 ) -> [bookclerk_plugin_abi::TypedDbStatement; 2] {
@@ -207,6 +236,7 @@ fn revision_statements(
     });
     let mut update = vec![
         int(revision),
+        int(observed),
         text(now),
         text(plugin_key),
         text(account_id),
@@ -219,6 +249,7 @@ fn revision_statements(
         text(account_id),
         text(peer),
         int(revision),
+        int(observed),
         text(now),
         text(plugin_key),
         text(account_id),
@@ -227,7 +258,7 @@ fn revision_statements(
     [
         batch::exec(
             &format!(
-                "UPDATE account_credential_revisions SET revision = ?, updated_at = ? \
+                "UPDATE account_credential_revisions SET revision = ?, observed = ?, updated_at = ? \
                  WHERE plugin_key = ? AND account_id = ? AND peer = ? AND revision < ?{guard_sql}"
             ),
             update,
@@ -235,8 +266,8 @@ fn revision_statements(
         batch::exec(
             &format!(
                 "INSERT OR IGNORE INTO account_credential_revisions \
-                 (plugin_key, account_id, peer, revision, updated_at) \
-                 SELECT ?, ?, ?, ?, ? WHERE EXISTS ( \
+                 (plugin_key, account_id, peer, revision, observed, updated_at) \
+                 SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS ( \
                     SELECT 1 FROM accounts WHERE plugin_key = ? AND account_id = ?){guard_sql}"
             ),
             insert,
@@ -373,7 +404,7 @@ pub async fn apply_keeper_update(
         &account.plugin_key,
         &account.account_id,
         &peer,
-        revision,
+        (revision, 0),
         &now,
         Some((&held, guard_binds())),
     ));

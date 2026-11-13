@@ -225,16 +225,27 @@ async fn a_keeper_tracks_what_it_pushed_to_each_library() {
                 account_id: "ana".into(),
                 cluster_id: "c1".into(),
                 pushed: 0,
+                observed: 0,
             }],
             "{name}"
         );
-        record_pushed_revision(store, KEEPER, "ana", "c1", 20)
+        assert_eq!(
+            kept_shares(store).await.unwrap()[0].next_revision(20),
+            Some(20)
+        );
+        record_pushed_revision(store, KEEPER, "ana", "c1", 20, 20)
             .await
             .unwrap();
         // Never lowered.
-        record_pushed_revision(store, KEEPER, "ana", "c1", 5)
+        record_pushed_revision(store, KEEPER, "ana", "c1", 5, 5)
             .await
             .unwrap();
-        assert_eq!(kept_shares(store).await.unwrap()[0].pushed, 20, "{name}");
+        let share = kept_shares(store).await.unwrap().remove(0);
+        assert_eq!((share.pushed, share.observed), (20, 20), "{name}");
+        // The same sign-in is not sent again; a new one is, even one whose
+        // time went back, above the last revision sent.
+        assert_eq!(share.next_revision(20), None, "{name}");
+        assert_eq!(share.next_revision(30), Some(30), "{name}");
+        assert_eq!(share.next_revision(12), Some(21), "{name}");
     }
 }
