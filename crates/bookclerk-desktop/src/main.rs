@@ -9,7 +9,8 @@
 //! The window shows only pages from that scheme, except while joining a
 //! library, when it shows the library's own sign-in pages until the library
 //! sends it back (the host decides: `bookclerkd::embedded::Navigation`).
-//! No page gets Tauri commands (the capability set is empty).
+//! The page may call one Tauri command, `live`, for its live updates; the
+//! capability in `capabilities/main.json` allows it on the app's own pages only.
 //!
 //! The window needs the `window` feature, which needs the platform webview's
 //! development files to build; without it this binary only says so.

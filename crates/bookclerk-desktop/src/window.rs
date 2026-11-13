@@ -1,9 +1,12 @@
 //! The Tauri window and the `bookclerk` custom scheme that feeds it.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use bookclerkd::embedded::{EmbeddedHost, EmbeddedOptions, Navigation};
-use tauri::{Manager as _, RunEvent, Url, WebviewUrl, WebviewWindowBuilder};
+use tauri::ipc::Channel;
+use tauri::{Manager as _, RunEvent, State, Url, Webview, WebviewUrl, WebviewWindowBuilder};
+use tokio::runtime::Handle;
+use tokio::task::AbortHandle;
 
 /// The custom scheme the web app is served on.
 const SCHEME: &str = "bookclerk";
@@ -22,6 +25,62 @@ const APP_ORIGIN: &str = "bookclerk://localhost";
 
 /// The window's label.
 const WINDOW_LABEL: &str = "main";
+
+/// What the `live` command needs: the host, the runtime its feed runs on,
+/// and the feed running now, which the next call replaces.
+struct LiveFeed {
+    /// The in-process host whose live frames are fed.
+    host: Arc<EmbeddedHost>,
+    /// The runtime the host runs on.
+    runtime: Handle,
+    /// The feed for the page that called last; a page that reloads or
+    /// reconnects calls again, and the old feed stops.
+    current: Mutex<Option<AbortHandle>>,
+}
+
+/// The page's live updates: starts feeding `on_frame` the frames the
+/// `/api/live` socket would carry (see [`EmbeddedHost::live`]), replacing
+/// any feed an earlier call started.
+///
+/// The only command the window allows (`capabilities/main.json`), and only
+/// on the app's own pages: the library's sign-in pages the window shows
+/// during a join are remote, so Tauri refuses them. The page passes
+/// nothing but the channel.
+///
+/// # Arguments
+///
+/// * `webview` - The calling webview; anything but the main window is
+///   refused.
+/// * `feed` - The host and the current feed.
+/// * `on_frame` - The page's channel; each frame is its JSON text.
+///
+/// # Errors
+///
+/// Returns an error when another webview calls it.
+#[tauri::command]
+fn live(
+    webview: Webview,
+    feed: State<'_, LiveFeed>,
+    on_frame: Channel<String>,
+) -> Result<(), String> {
+    if webview.label() != WINDOW_LABEL {
+        return Err("live updates are for the main window".into());
+    }
+    let host = Arc::clone(&feed.host);
+    let task = feed.runtime.spawn(async move {
+        host.live(move |text| on_frame.send(text).is_ok()).await;
+    });
+    let previous = match feed.current.lock() {
+        Ok(mut current) => current.replace(task.abort_handle()),
+        Err(poisoned) => poisoned.into_inner().replace(task.abort_handle()),
+    };
+    let replaced = previous.is_some();
+    if let Some(previous) = previous {
+        previous.abort();
+    }
+    tracing::debug!(replaced, "window live updates started");
+    Ok(())
+}
 
 /// Starts the host, opens the window and runs until it closes.
 ///
@@ -43,7 +102,14 @@ pub fn run() -> anyhow::Result<()> {
     let scheme_host = host.clone();
     let navigation_host = host.clone();
     let spawner = runtime.handle().clone();
+    let live_feed = LiveFeed {
+        host: host.clone(),
+        runtime: runtime.handle().clone(),
+        current: Mutex::new(None),
+    };
     let app = tauri::Builder::default()
+        .manage(live_feed)
+        .invoke_handler(tauri::generate_handler![live])
         .register_asynchronous_uri_scheme_protocol(SCHEME, move |_ctx, request, responder| {
             let host = scheme_host.clone();
             spawner.spawn(async move {
