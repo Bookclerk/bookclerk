@@ -466,7 +466,7 @@ fn secret_patterns() -> &'static [Regex] {
             r"(?i)\bAtna\|[A-Za-z0-9._\-+/=]+",
             r"(?i)\bAtnr\|[A-Za-z0-9._\-+/=]+",
             r"(?i)\bBearer\s+[A-Za-z0-9._\-+/=]+",
-            // A client app's library card (`Authorization: Bookclerk-Client`).
+            // A clerk's library card (`Authorization: Bookclerk-Client`).
             r"(?i)\bBookclerk-Client\s+[A-Za-z0-9_\-]+",
             r"\bAKIA[0-9A-Z]{16}\b",
             r"(?i)(aws_secret_access_key\s*[=:]\s*)\S+",

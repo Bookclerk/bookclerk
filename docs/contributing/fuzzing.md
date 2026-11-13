@@ -49,8 +49,8 @@ boundary extends it.
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
-| `client_authorization` | A client app's library card, the `Authorization: Bookclerk-Client <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_client_authorization` |
-| `client_authorize` | A client app's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_client_query`, `client_request_problem` |
+| `client_authorization` | A clerk's library card, the `Authorization: Bookclerk-Client <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_client_authorization` |
+| `client_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_client_query`, `client_request_problem` |
 | `client_token_request` | A library card's token exchange, the body of `POST /api/client/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_client_token_request`, `client_exchange_matches` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
@@ -283,11 +283,11 @@ only that. The others check:
   characters. The shared oracle is `fuzz/oracles/client_authorize.rs`,
   replayed from `bookclerk-node-proto`.
 - **`client_token_request`**: the first byte picks the stored code (the
-  client app's, the branch client's, or one with the `plain` method) and
+  clerk's, the branch client's, or one with the `plain` method) and
   the rest is the body. The body parses exactly when it is one JSON
   object with no repeated keys and exactly the string keys `code`,
   `code_verifier` and `redirect_uri`, and each field is the value sent.
-  The exchange matches exactly when the code is the client app's, the
+  The exchange matches exactly when the code is the clerk's, the
   method is S256, the redirect URI is the stored one, and the trimmed
   verifier is not empty and hashes to the stored challenge (checked
   against RFC 7636's example pair). The shared oracle is

@@ -158,32 +158,39 @@ than the OS hint alone:
 | Sign-in link | Tray **Copy sign-in link** or `bookclerk login`: a loopback `?code=` URL, valid 180 seconds by default; the tray then removes that URL if it is still on the clipboard |
 | Operator cookie | `bookclerk_operator_session` (`Path=/`), also used by elevated Owners |
 | Portal cookie | `bookclerk_portal_session` (`Path=/`), the session of a first-party user |
-| Library card | A client app's session, sent as `Authorization: Bookclerk-Client <token>`, never as a cookie (see [Library cards](#library-cards)) |
+| Library card | A clerk's session, sent as `Authorization: Bookclerk-Client <token>`, never as a cookie (see [Library cards](#library-cards)) |
 | Config | `[daemon.auth]` |
 | Preferences | Stored in the database (`user_preferences`), not `config.toml` |
 
 ### Library cards
 
-A client app can show a person's books from a library without joining it
+A clerk can show a person's books from a library without joining it
 as a branch. It signs in as the person and holds a **library card**: a
 session token in the person's session list, not a node.
 
-1. The client app sends the browser to the library's `/oidc/authorize`
+> [!NOTE]
+> A clerk is another Bookclerk install that a
+> person uses to reach a library. The protocol and the code call it a
+> *client*: the OAuth client `bookclerk-client`, the
+> `Authorization: Bookclerk-Client` scheme, the `/api/client/` routes and
+> the `client` session kind.
+
+1. The clerk sends the browser to the library's `/oidc/authorize`
    with the built-in public client `bookclerk-client`, the scope
    `library:member`, an S256 code challenge, a `state`, a loopback or
    `https://` redirect URI, and a `client_name`.
 2. The library sends the request to `/client/approve`, which signs the
-   person in and asks "Give *client* a library card for *library*?".
+   person in and asks "Give *name* a library card for *library*?", where *name* is the name the clerk gave itself.
    Approving needs an active user and the node API transport policy (TLS,
    except on loopback). It does not need "Let new branches join".
 3. The library sends the browser back with a single-use code that lives
    60 seconds.
-4. The client app redeems the code with its verifier at
+4. The clerk redeems the code with its verifier at
    `POST /api/client/v1/token` and gets
    `{ token, cluster_id, user, idle_secs }`. The token is shown once; the
    library keeps only its hash. Any failed redeem spends the code.
 
-The client app then sends `Authorization: Bookclerk-Client <token>`:
+The clerk then sends `Authorization: Bookclerk-Client <token>`:
 
 - It works only on the routes any library session may use: the library,
   Discover, the wishlist, the request queue, preferences, the person's
@@ -225,7 +232,7 @@ The client app then sends `Authorization: Bookclerk-Client <token>`:
 | Second-factor policy | `GET`/`PUT /api/auth/mfa-policy` `{ require_second_factor }` (Owner or operator) |
 | Preferences | `GET`/`PATCH /api/preferences`: `default_view`, `disabled_shelves`, `theme` (subject `user:{id}`, `portal:{identity_id}` or `operator`) |
 | Portal | `/api/portal/*` (Accounts, invite claims) |
-| Library cards | `GET`/`POST /api/auth/client-consent` (the consent page, any signed-in user), `POST /api/client/v1/token` (the client app redeems its code) |
+| Library cards | `GET`/`POST /api/auth/client-consent` (the consent page, any signed-in user), `POST /api/client/v1/token` (the clerk redeems its code) |
 
 `GET /api/auth/me` returns
 `{ authenticated, role, default_view, can_acquire, elevated, impersonating?, portal?, user?, second_factor? }`:
@@ -258,7 +265,7 @@ The web app keeps the address bar in step with the screen:
 | `/accounts` | Accounts |
 | `/settings` | Settings |
 | `/invite` | Claim an invite (`?ticket=`) |
-| `/client/approve` | Give a client app a library card (see [Library cards](#library-cards)) |
+| `/client/approve` | Give a clerk a library card (see [Library cards](#library-cards)) |
 
 `bookclerkd` serves `index.html` for these paths, so a hard refresh on
 `/library` loads the app instead of a 404. Assets still come from
@@ -351,7 +358,7 @@ again.
 - **Security**: password, named passkeys, authenticator app, linked
   identity providers, and Owner elevation.
 - **Sessions**: browsers and library cards, each with **Revoke**. A
-  library card shows the name its client app gave itself.
+  library card shows the name its clerk gave itself.
 
 Profile edits are self-service. Security and profile edits are hidden or
 disabled while impersonating.

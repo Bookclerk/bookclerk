@@ -9,7 +9,7 @@
 //! page `/join/approve`, and its codes are redeemed only at
 //! `POST /api/node/v1/enroll/oauth` (`crate::node_api::branch`), never at
 //! the token endpoint. A second, `bookclerk-client` (scope
-//! `library:member`), is how a client install signs in as a person: its
+//! `library:member`), is how a clerk signs in as a person: its
 //! requests go to `/client/approve` and its codes are redeemed only at
 //! `POST /api/client/v1/token` (`crate::node_api::client`).
 
@@ -1285,7 +1285,7 @@ fn oidc_client_error(status: StatusCode, message: impl Into<String>) -> Response
 }
 
 /// True for the ids of the built-in public clients (a joining branch and a
-/// client app's library card), which are never stored as registered clients.
+/// clerk's library card), which are never stored as registered clients.
 fn is_built_in_client_id(id: &str) -> bool {
     let id = id.trim();
     id == bookclerk_node_proto::BRANCH_CLIENT_ID || id == bookclerk_node_proto::CLIENT_CLIENT_ID

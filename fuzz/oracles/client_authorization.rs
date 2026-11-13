@@ -2,7 +2,7 @@
 //! `bookclerk-node-proto` corpus replay test
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 //!
-//! The boundary is the `Authorization` header value a client app sends with
+//! The boundary is the `Authorization` header value a clerk sends with
 //! its library card (`bookclerk-node-proto::parse_client_authorization`):
 //! bytes from another machine that decide whether a request is signed in.
 //! The invariant, checked against this file's own byte-by-byte reading

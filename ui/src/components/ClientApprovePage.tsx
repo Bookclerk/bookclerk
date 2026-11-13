@@ -18,10 +18,10 @@ export interface ClientApprovePageProps {
 /**
  * `/client/approve` on the library: "Give <client> a library card for <library>?"
  *
- * `/oidc/authorize` sends a client app's sign-in here once its request is
- * well formed. A client app shows a person's books from this library without
+ * `/oidc/authorize` sends a clerk's sign-in here once its request is
+ * well formed. A clerk shows a person's books from this library without
  * joining it as a branch. The signed-in user allows or denies; the daemon
- * then answers where to send the browser (the client app's callback with a
+ * then answers where to send the browser (the clerk's callback with a
  * single-use code, or `error=access_denied`), and this page goes there only
  * when it is the request's own redirect URI.
  */
@@ -42,7 +42,7 @@ export function ClientApprovePage({ onSignOut }: ClientApprovePageProps) {
           setError(
             joinErrorMessage(
               err,
-              "This sign-in request is not valid. Start again from the app that asked.",
+              "This sign-in request is not valid. Start again from the clerk that asked.",
             ),
           );
         }
@@ -107,7 +107,7 @@ export function ClientApprovePage({ onSignOut }: ClientApprovePageProps) {
       }
     >
       <div className="space-y-2 text-sm text-ink/75">
-        <p>With a library card, that app can, as you:</p>
+        <p>With a library card, that clerk can, as you:</p>
         <ul className="list-disc space-y-1 pl-5">
           <li>Show your books, Discover and your wishlist from this library.</li>
           <li>Change your own preferences and profile here.</li>

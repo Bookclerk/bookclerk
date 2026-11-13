@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::is_branch_redirect_uri;
 
-/// The built-in public OAuth client a client install signs in through. It
+/// The built-in public OAuth client a clerk signs in through. It
 /// is never stored in the library's clients table.
 pub const CLIENT_CLIENT_ID: &str = "bookclerk-client";
 
@@ -143,7 +143,7 @@ pub struct ClientAuthorizeParams {
     #[serde(default)]
     #[schema(example = "S256")]
     pub code_challenge_method: Option<String>,
-    /// The name the client install gives itself, shown on the consent page
+    /// The name the clerk gives itself, shown on the consent page
     /// and in the user's session list.
     #[serde(default)]
     #[schema(example = "Riley's laptop")]

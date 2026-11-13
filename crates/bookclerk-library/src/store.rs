@@ -2409,7 +2409,7 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Creates a client sign-in session: a token a client install presents
+    /// Creates a client sign-in session: a token a clerk presents
     /// as `Authorization: Bookclerk-Client`, never as a cookie.
     ///
     /// # Arguments
@@ -2418,7 +2418,7 @@ impl LibraryStore {
     /// * `identity_id` - The user's portal identity.
     /// * `expires_at` - First expiry; each use moves it forward
     ///   ([`Self::get_client_session_identity`]).
-    /// * `label` - The name the client install gave itself, shown in the
+    /// * `label` - The name the clerk gave itself, shown in the
     ///   user's session list.
     ///
     /// # Returns

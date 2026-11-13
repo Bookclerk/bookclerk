@@ -6,7 +6,7 @@
 //! library card code from another machine
 //! (`bookclerk-node-proto::parse_client_token_request`), and the check
 //! that the request matches the stored code (`client_exchange_matches`).
-//! The first input byte picks the stored code: the client app's own (any
+//! The first input byte picks the stored code: the clerk's own (any
 //! value but 1 or 2), the branch client's (1), or one sent with the
 //! `plain` method (2). The rest is the body.
 //!
@@ -14,7 +14,7 @@
 //! an untyped JSON value: the body parses exactly when it is one object
 //! with no repeated keys and exactly the string keys `code`,
 //! `code_verifier` and `redirect_uri`, each field is the value sent, and
-//! the exchange matches exactly when the stored code is the client app's,
+//! the exchange matches exactly when the stored code is the clerk's,
 //! the redirect URI is the stored one byte for byte, and the trimmed
 //! verifier is not empty and its SHA-256, base64url without padding, is
 //! the stored challenge.
@@ -36,7 +36,7 @@ pub const REDIRECT: &str = "http://127.0.0.1:41923/client/callback";
 /// rather than computed by the code under test.
 const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
-/// The client app's built-in id, written out.
+/// The clerk's built-in id, written out.
 const CLIENT: &str = "bookclerk-client";
 
 /// Checks one input against the invariant.

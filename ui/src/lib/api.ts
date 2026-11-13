@@ -1279,7 +1279,7 @@ export interface ListedSession {
   client_label?: string | null;
   device_type?: string | null;
   user_agent?: string | null;
-  /** For a portal session: `browser`, or `client` for a client app's library card. */
+  /** For a portal session: `browser`, or `client` for a clerk's library card. */
   channel?: "browser" | "client" | null;
 }
 

@@ -1,4 +1,4 @@
-//! Coverage-guided checks of a client app's authorization request
+//! Coverage-guided checks of a clerk's authorization request
 //! (`bookclerk-node-proto::parse_client_query` and
 //! `client_request_problem`): the query `/oidc/authorize` turns into the
 //! consent page for a library card. The oracle in

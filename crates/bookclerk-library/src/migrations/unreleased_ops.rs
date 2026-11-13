@@ -202,7 +202,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_claim_tickets_identity ON claim_tickets(identity_id)",
     ),
     // A user's sessions. `kind` is `browser` for a cookie session and
-    // `client` for a client sign-in (a library card a client install holds
+    // `client` for a client sign-in (a library card a clerk holds
     // and sends as `Authorization: Bookclerk-Client`). A token only works in
     // the place its kind belongs, so a client token is never a cookie.
     MigrationOp::Schema(

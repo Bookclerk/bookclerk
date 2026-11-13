@@ -1,6 +1,6 @@
-//! Coverage-guided checks of a client app's `Authorization` header
+//! Coverage-guided checks of a clerk's `Authorization` header
 //! (`bookclerk-node-proto::parse_client_authorization`): the library card a
-//! client app signs in with. The oracle in
+//! clerk signs in with. The oracle in
 //! `fuzz/oracles/client_authorization.rs` is shared with the replay test.
 
 #![no_main]
