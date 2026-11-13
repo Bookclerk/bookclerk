@@ -247,5 +247,36 @@ async fn a_keeper_tracks_what_it_pushed_to_each_library() {
         assert_eq!(share.next_revision(20), None, "{name}");
         assert_eq!(share.next_revision(30), Some(30), "{name}");
         assert_eq!(share.next_revision(12), Some(21), "{name}");
+
+        // Several shares and several secrets read in pages within the
+        // profile's result limit (one row on the minimum profile).
+        assert_eq!(kept_shares(store).await.unwrap().len(), 1, "{name}");
+        record_accounts_sent_to(store, &link_peer("c2"), &[pushed("ana", b"")])
+            .await
+            .unwrap();
+        record_accounts_sent_to(store, &node_peer("b7"), &[pushed("ana", b"")])
+            .await
+            .unwrap();
+        let clusters: Vec<String> = kept_shares(store)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|share| share.cluster_id)
+            .collect();
+        assert_eq!(clusters, ["c1", "c2"], "{name}");
+        let before = sign_in_revision(store, KEEPER, "ana").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let second = build_sealed_record(
+            b"other",
+            secret_kind::SOURCE_AUTH,
+            KEEPER,
+            secret_account_type::INTEGRATION,
+            "ana",
+            "other",
+        )
+        .unwrap();
+        upsert_secret(store.db(), &second).await.unwrap();
+        let after = sign_in_revision(store, KEEPER, "ana").await.unwrap();
+        assert!(after > before, "{name}: {before:?} -> {after:?}");
     }
 }

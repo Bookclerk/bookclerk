@@ -17,12 +17,12 @@
 //! daemon's to decide from the plugins' manifests; these functions take the
 //! account as given.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use bookclerk_node_proto::CarriedAccount;
 use bookclerk_plugin_abi::DbValue;
 use chrono::Utc;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
 use super::batch::{self, int, text};
 use super::carried_accounts::node_peer;
@@ -38,6 +38,18 @@ const NODE_PEER: &str = "node:";
 /// joined.
 const LINK_PEER: &str = "link:";
 
+/// Largest read page these functions ask for; smaller when the database
+/// plugin's `maxResultRows` is.
+const READ_PAGE: u64 = 256;
+
+/// Rows per read page under the database plugin's result limit.
+fn read_page(store: &LibraryStore) -> u64 {
+    match store.db_capabilities().max_result_rows {
+        0 => READ_PAGE,
+        rows => u64::from(rows).clamp(1, READ_PAGE),
+    }
+}
+
 /// The keeper's revision of an account's sign-in: milliseconds since the
 /// Unix epoch of its newest secret write here, or `None` when it has no
 /// secret.
@@ -51,19 +63,33 @@ pub async fn sign_in_revision(
     plugin_key: &str,
     account_id: &str,
 ) -> Result<Option<i64>> {
-    let rows = encrypted_secrets::Entity::find()
-        .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
-        .filter(encrypted_secrets::Column::Provider.eq(plugin_key))
-        .filter(encrypted_secrets::Column::AccountId.eq(account_id))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    let page = read_page(store);
     let mut newest = None;
-    for row in rows {
-        let at = chrono::DateTime::parse_from_rfc3339(&row.updated_at)
-            .map_err(|err| LibraryError::Invalid(format!("secret updated_at: {err}")))?
-            .timestamp_millis();
-        newest = Some(newest.map_or(at, |seen: i64| seen.max(at)));
+    let mut offset = 0_u64;
+    loop {
+        // Ordered by the rest of the primary key, so pages don't overlap.
+        let rows = encrypted_secrets::Entity::find()
+            .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
+            .filter(encrypted_secrets::Column::Provider.eq(plugin_key))
+            .filter(encrypted_secrets::Column::AccountId.eq(account_id))
+            .order_by_asc(encrypted_secrets::Column::Kind)
+            .order_by_asc(encrypted_secrets::Column::Name)
+            .offset(offset)
+            .limit(page)
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        let full = u64::try_from(rows.len()).unwrap_or(u64::MAX) >= page;
+        for row in rows {
+            let at = chrono::DateTime::parse_from_rfc3339(&row.updated_at)
+                .map_err(|err| LibraryError::Invalid(format!("secret updated_at: {err}")))?
+                .timestamp_millis();
+            newest = Some(newest.map_or(at, |seen: i64| seen.max(at)));
+        }
+        if !full {
+            break;
+        }
+        offset = offset.saturating_add(page);
     }
     Ok(newest)
 }
@@ -80,16 +106,16 @@ pub async fn keeping_branch(
     plugin_key: &str,
     account_id: &str,
 ) -> Result<Option<String>> {
-    let mut shares = account_shares::Entity::find()
+    let first = account_shares::Entity::find()
         .filter(account_shares::Column::PluginKey.eq(plugin_key))
         .filter(account_shares::Column::AccountId.eq(account_id))
-        .all(store.db())
+        .filter(account_shares::Column::Peer.starts_with(NODE_PEER))
+        .order_by_asc(account_shares::Column::SharedAt)
+        .order_by_asc(account_shares::Column::Peer)
+        .one(store.db())
         .await
         .map_err(LibraryError::Orm)?;
-    shares.sort_by(|a, b| (&a.shared_at, &a.peer).cmp(&(&b.shared_at, &b.peer)));
-    Ok(shares
-        .into_iter()
-        .find_map(|share| share.peer.strip_prefix(NODE_PEER).map(str::to_owned)))
+    Ok(first.and_then(|share| share.peer.strip_prefix(NODE_PEER).map(str::to_owned)))
 }
 
 /// True when this install keeps the account for the library it joined as
@@ -151,41 +177,55 @@ impl KeptShare {
 ///
 /// Returns the read error.
 pub async fn kept_shares(store: &LibraryStore) -> Result<Vec<KeptShare>> {
-    let shares = account_shares::Entity::find()
-        .filter(account_shares::Column::Peer.starts_with(LINK_PEER))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    let pushed: BTreeMap<(String, String, String), (i64, i64)> =
-        account_credential_revisions::Entity::find()
-            .filter(account_credential_revisions::Column::Peer.starts_with(LINK_PEER))
+    let page = read_page(store);
+    let mut keys = BTreeSet::new();
+    let mut offset = 0_u64;
+    loop {
+        // Ordered by the primary key, so pages don't overlap.
+        let rows = account_shares::Entity::find()
+            .filter(account_shares::Column::Peer.starts_with(LINK_PEER))
+            .order_by_asc(account_shares::Column::PluginKey)
+            .order_by_asc(account_shares::Column::AccountId)
+            .order_by_asc(account_shares::Column::Peer)
+            .offset(offset)
+            .limit(page)
             .all(store.db())
             .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|row| {
-                (
-                    (row.plugin_key, row.account_id, row.peer),
-                    (row.revision, row.observed),
-                )
-            })
-            .collect();
-    let mut kept: BTreeMap<(String, String, String), KeptShare> = BTreeMap::new();
-    for share in shares {
-        let Some(cluster_id) = share.peer.strip_prefix(LINK_PEER) else {
+            .map_err(LibraryError::Orm)?;
+        let full = u64::try_from(rows.len()).unwrap_or(u64::MAX) >= page;
+        keys.extend(
+            rows.into_iter()
+                .map(|share| (share.plugin_key, share.account_id, share.peer)),
+        );
+        if !full {
+            break;
+        }
+        offset = offset.saturating_add(page);
+    }
+    let mut kept = Vec::with_capacity(keys.len());
+    for (plugin_key, account_id, peer) in keys {
+        let Some(cluster_id) = peer.strip_prefix(LINK_PEER) else {
             continue;
         };
-        let key = (share.plugin_key, share.account_id, share.peer.clone());
-        let (revision, observed) = pushed.get(&key).copied().unwrap_or((0, 0));
-        kept.entry(key.clone()).or_insert_with(|| KeptShare {
-            plugin_key: key.0,
-            account_id: key.1,
+        // One row by its primary key.
+        let (pushed, observed) = account_credential_revisions::Entity::find_by_id((
+            plugin_key.clone(),
+            account_id.clone(),
+            peer.clone(),
+        ))
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+        .map_or((0, 0), |row| (row.revision, row.observed));
+        kept.push(KeptShare {
             cluster_id: cluster_id.to_owned(),
-            pushed: revision,
+            plugin_key,
+            account_id,
+            pushed,
             observed,
         });
     }
-    Ok(kept.into_values().collect())
+    Ok(kept)
 }
 
 /// Records that the keeper sent `revision` of the account to the library
