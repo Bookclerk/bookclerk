@@ -163,6 +163,12 @@ a guest sets this only when a credit departs from it.
 Ordinal-ordered ``CreditLevel`` wire names (index = Cap'n Proto ordinal).
 """
 
+FETCHED_FILE_ROLES: tuple[str, ...] = ("unspecified", "part", "whole", "cover")
+"""What one fetched file is to the edition it belongs to.
+
+Ordinal-ordered ``FetchedFileRole`` wire names (index = Cap'n Proto ordinal).
+"""
+
 CATALOG_SORTS: tuple[str, ...] = ("relevance", "popularity", "rating", "title", "author")
 """Catalog search ordering.
 
@@ -254,6 +260,7 @@ __all__ = [
     "IDENTIFIER_SCHEMES",
     "CREDIT_ROLES",
     "CREDIT_LEVELS",
+    "FETCHED_FILE_ROLES",
     "CATALOG_SORTS",
     "CATALOG_FIELDS",
     "ABRIDGEMENTS",

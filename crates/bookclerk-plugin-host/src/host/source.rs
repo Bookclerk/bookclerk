@@ -788,6 +788,8 @@ impl ContentSource for ExternalSource {
         let mut plain = self
             .cs_call(move |src| async move { src.fetch_title(params).await })
             .await?;
+        bookclerk_plugin_abi::validate_plain_fetch(&plain, &self.session.describe_snapshot().media)
+            .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
         if let Some(refreshed) = plain.refreshed_credentials.take() {
             // The title is already fetched: credentials that cannot be kept
             // are logged, not the fetch's failure.
@@ -805,7 +807,8 @@ impl ContentSource for ExternalSource {
                 }
             }
         }
-        Ok(plain.into())
+        SourceFetch::try_from(plain)
+            .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))
     }
 
     /// Asks the guest to sign the account out at the store, then deletes the
@@ -1035,12 +1038,6 @@ impl ContentSource for ExternalSource {
 }
 
 impl ExternalSource {
-    /// Calls the guest's `catalogDetail`, soft-failing to `None` so one slow
-    /// or broken store never fails a search or a detail dialog.
-    ///
-    /// # Errors
-    ///
-    /// Never returns an error today; the `Result` matches the trait methods.
     /// Whether a guest catalog hit's kinds are inside this storefront's
     /// declared media; a hit outside it is logged and dropped.
     fn declared_hit(&self, hit: &bookclerk_plugin_sdk::CatalogHit) -> bool {
@@ -1052,6 +1049,12 @@ impl ExternalSource {
         )
     }
 
+    /// Calls the guest's `catalogDetail`, soft-failing to `None` so one slow
+    /// or broken store never fails a search or a detail dialog.
+    ///
+    /// # Errors
+    ///
+    /// Never returns an error today; the `Result` matches the trait methods.
     async fn catalog_detail_call(
         &self,
         params: CatalogDetailParams,
@@ -1552,6 +1555,8 @@ mod tests {
             product_id: product.into(),
             title: format!("Title {product}"),
             marketplace: Some("us".into()),
+            work_kind: bookclerk_plugin_sdk::WorkKind::Book,
+            expression_kind: bookclerk_plugin_sdk::ExpressionKind::Narration,
             media_kind: bookclerk_plugin_sdk::MediaKind::Audio,
             ..bookclerk_plugin_sdk::ScanBook::default()
         }

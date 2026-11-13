@@ -4384,6 +4384,7 @@ id = "demo"
 runtime = "native"
 command = "./guest"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 
 [capabilities.network]
 mode = "deny"
@@ -4406,6 +4407,7 @@ id = "demo"
 runtime = "native"
 command = "./guest"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 
 [capabilities.network]
 mode = "deny"
@@ -4441,6 +4443,7 @@ api_version = 3
 id = "demo"
 runtime = "workerd"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 
 [workerd]
 compatibility_date = "2026-08-01"
@@ -4664,6 +4667,7 @@ id = "agent_demo"
 runtime = "native"
 command = "./guest"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 [capabilities.network]
 mode = "outbound"
 tcp = [{ host = "*.libro.fm", ports = [443] }]
@@ -5341,6 +5345,7 @@ id = "demo"
 runtime = "native"
 command = "./guest"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 
 [capabilities.network]
 mode = "deny"
@@ -5366,6 +5371,7 @@ id = "demo"
 runtime = "native"
 command = "./guest"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 
 [capabilities.network]
 mode = "deny"
@@ -5462,6 +5468,7 @@ id = "demo"
 runtime = "native"
 command = "./demo"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 
 [capabilities.network]
 mode = "deny"
@@ -6091,6 +6098,7 @@ id = "demo"
 runtime = "native"
 command = "./demo"
 entrypoints = ["cli", "storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 
 [capabilities.network]
 mode = "deny"
@@ -6178,6 +6186,7 @@ id = "demo"
 runtime = "native"
 command = "./demo"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 
 [vars]
 

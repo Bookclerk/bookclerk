@@ -83,8 +83,8 @@ mod host_rpc;
 mod jobs;
 pub mod json_bytes;
 pub mod kind;
-pub mod media;
 mod limits;
+pub mod media;
 pub mod methods;
 pub mod package_version;
 mod plugin_migration;
@@ -254,6 +254,10 @@ pub use limits::{
     MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
     MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
+pub use media::{
+    check_record_kinds, decode_plain_fetch_bytes, encode_plain_fetch_bytes, media_support_is_empty,
+    same_media_support, validate_media_support, validate_plain_fetch, FetchError, MediaError,
+};
 pub use roles::{
     AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
     CoverFetcher, Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
@@ -277,10 +281,6 @@ pub use rpc_types::{
     JobInvocationLease, JobOutcome, ListOptions, ListPage, ObjectInfo, ObjectMetadata,
     OidcClientTemplate, PluginDescribe, PutResult, QueryPage, ScalarLimitsDto, WriteOptions,
     JSON_MEDIA_TYPE, MAX_CHECKPOINT_BYTES,
-};
-pub use media::{
-    check_record_kinds, media_support_is_empty, same_media_support, validate_media_support,
-    MediaError,
 };
 pub use scan_page::{
     decode_scan_page_bytes, encode_scan_page_bytes, validate_refreshed_credentials,

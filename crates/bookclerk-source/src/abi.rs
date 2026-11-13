@@ -263,6 +263,7 @@ mod tests {
                 store_series_id: Some("B0SERIES".into()),
             }],
             work_kind: WorkKind::Podcast,
+            parent_product_id: Some("B0SHOW".into()),
             abridgement: abi::Abridgement::Abridged,
             published_at: Some("2020-01-02T00:00:00Z".into()),
             purchased_at: Some("not a date".into()),

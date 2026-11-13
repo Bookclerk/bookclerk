@@ -729,6 +729,9 @@ fn parse_libro_book(v: &Value) -> Option<CatalogHit> {
         categories,
         language,
         is_abridged,
+        work_kind: bookclerk_storefront::records::WorkKind::Book,
+        expression_kind: bookclerk_storefront::records::ExpressionKind::Narration,
+        media_kind: bookclerk_storefront::records::MediaKind::Audio,
         ..Default::default()
     })
 }

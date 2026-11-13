@@ -5,10 +5,11 @@
 //! `plugin.toml` (`[media]`) and in `describe()`. The declaration is
 //! required, never defaulted: a plugin with those entrypoints and an empty
 //! or `unspecified` declaration is refused at spawn, and every record it
-//! returns must name kinds inside it. Both checks are sans-IO so the
-//! fuzz targets and the host run the same code.
+//! returns must name kinds inside it. A `fetchTitle` reply must name a
+//! carrier the plugin declared it fetches and list its files by role. The
+//! checks are sans-IO so the fuzz targets and the host run the same code.
 
-use crate::{ExpressionKind, MediaKind, MediaSupport, WorkKind};
+use crate::{ExpressionKind, FetchedFileRole, MediaKind, MediaSupport, PlainFetch, WorkKind};
 
 /// Why a `MediaSupport` declaration, or a record against it, was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,9 +38,9 @@ impl std::fmt::Display for MediaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Missing(field) => write!(f, "media declaration `{field}` is empty"),
-            Self::NotAllowed => f.write_str(
-                "media declaration needs the `storefront` or `metadata` entrypoint",
-            ),
+            Self::NotAllowed => {
+                f.write_str("media declaration needs the `storefront` or `metadata` entrypoint")
+            }
             Self::UnspecifiedInDeclaration(field) => {
                 write!(f, "media declaration `{field}` names `unspecified`")
             }
@@ -51,10 +52,16 @@ impl std::fmt::Display for MediaError {
             }
             Self::UnspecifiedKind(field) => write!(f, "record leaves `{field}` unspecified"),
             Self::WorkKindNotDeclared(kind) => {
-                write!(f, "record work kind {kind:?} is outside the plugin's declaration")
+                write!(
+                    f,
+                    "record work kind {kind:?} is outside the plugin's declaration"
+                )
             }
             Self::MediaKindNotDeclared(kind) => {
-                write!(f, "record carrier {kind:?} is outside the plugin's declaration")
+                write!(
+                    f,
+                    "record carrier {kind:?} is outside the plugin's declaration"
+                )
             }
         }
     }
@@ -166,9 +173,157 @@ pub fn check_record_kinds(
     Ok(())
 }
 
+/// Why a `fetchTitle` reply ([`PlainFetch`]) was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchError {
+    /// `mediaKind` was left `unspecified`.
+    UnspecifiedCarrier,
+    /// `mediaKind` is not in the plugin's declared `fetches`.
+    CarrierNotFetched(MediaKind),
+    /// A file left its role `unspecified`.
+    UnspecifiedRole {
+        /// Index of the file in `files`.
+        index: usize,
+    },
+    /// A file had an empty path.
+    EmptyPath {
+        /// Index of the file in `files`.
+        index: usize,
+    },
+    /// The reply listed neither a `part` nor a `whole` file.
+    NoContent,
+    /// The reply listed both `part`s and a `whole` file.
+    PartsAndWhole,
+    /// The reply listed more than one `whole` file.
+    SecondWhole,
+    /// The reply listed more than one `cover`.
+    SecondCover,
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnspecifiedCarrier => f.write_str("fetch leaves `mediaKind` unspecified"),
+            Self::CarrierNotFetched(kind) => {
+                write!(
+                    f,
+                    "fetch carrier {kind:?} is outside the plugin's declared `fetches`"
+                )
+            }
+            Self::UnspecifiedRole { index } => {
+                write!(f, "fetched file {index} leaves its role unspecified")
+            }
+            Self::EmptyPath { index } => write!(f, "fetched file {index} has an empty path"),
+            Self::NoContent => f.write_str("fetch lists no `part` or `whole` file"),
+            Self::PartsAndWhole => f.write_str("fetch lists both `part` files and a `whole` file"),
+            Self::SecondWhole => f.write_str("fetch lists more than one `whole` file"),
+            Self::SecondCover => f.write_str("fetch lists more than one `cover`"),
+        }
+    }
+}
+
+impl std::error::Error for FetchError {}
+
+/// Checks a `fetchTitle` reply against the plugin's declaration.
+///
+/// The carrier must be one the plugin declared in `fetches`, and the files
+/// must describe one edition: ordered `part`s or a single `whole` file, plus
+/// at most one `cover`, each with a role and a path.
+///
+/// # Arguments
+///
+/// * `fetch` - The guest's reply (untrusted).
+/// * `media` - The plugin's declaration.
+///
+/// # Errors
+///
+/// Returns the first [`FetchError`] the reply breaks, checking the carrier
+/// before the files.
+pub fn validate_plain_fetch(fetch: &PlainFetch, media: &MediaSupport) -> Result<(), FetchError> {
+    if fetch.media_kind == MediaKind::Unspecified {
+        return Err(FetchError::UnspecifiedCarrier);
+    }
+    if !media.fetches.contains(&fetch.media_kind) {
+        return Err(FetchError::CarrierNotFetched(fetch.media_kind));
+    }
+    let (mut parts, mut wholes, mut covers) = (0usize, 0usize, 0usize);
+    for (index, file) in fetch.files.iter().enumerate() {
+        if file.path.trim().is_empty() {
+            return Err(FetchError::EmptyPath { index });
+        }
+        match file.role {
+            FetchedFileRole::Unspecified => return Err(FetchError::UnspecifiedRole { index }),
+            FetchedFileRole::Part => parts += 1,
+            FetchedFileRole::Whole => wholes += 1,
+            FetchedFileRole::Cover => covers += 1,
+        }
+    }
+    if wholes > 1 {
+        return Err(FetchError::SecondWhole);
+    }
+    if covers > 1 {
+        return Err(FetchError::SecondCover);
+    }
+    match (parts, wholes) {
+        (0, 0) => Err(FetchError::NoContent),
+        (0, _) | (_, 0) => Ok(()),
+        _ => Err(FetchError::PartsAndWhole),
+    }
+}
+
+/// Decodes an unpacked single-segment Cap'n Proto message whose root is a
+/// `PlainFetch`, with a traversal budget derived from the input size.
+///
+/// The host decodes replies through the RPC layer; this byte entry point
+/// lets the `plain_fetch` fuzz target drive the same reader and validator.
+///
+/// # Arguments
+///
+/// * `bytes` - The message bytes (untrusted).
+///
+/// # Returns
+///
+/// The decoded reply.
+///
+/// # Errors
+///
+/// Returns the Cap'n Proto error the framing or the codec reports.
+pub fn decode_plain_fetch_bytes(bytes: &[u8]) -> capnp::Result<PlainFetch> {
+    let words = (bytes.len() / 8).saturating_add(16);
+    let mut opts = capnp::message::ReaderOptions::new();
+    opts.traversal_limit_in_words(Some(words));
+    opts.nesting_limit(32);
+    let reader = capnp::serialize::read_message(&mut std::io::Cursor::new(bytes), opts)?;
+    crate::read_plain_fetch(reader.get_root::<crate::plugin_capnp::plain_fetch::Reader<'_>>()?)
+}
+
+/// Encodes `fetch` as an unpacked single-segment Cap'n Proto message, the
+/// inverse of [`decode_plain_fetch_bytes`].
+///
+/// # Arguments
+///
+/// * `fetch` - The reply to encode.
+///
+/// # Returns
+///
+/// The message bytes.
+///
+/// # Errors
+///
+/// Returns the Cap'n Proto error the builder reports.
+pub fn encode_plain_fetch_bytes(fetch: &PlainFetch) -> capnp::Result<Vec<u8>> {
+    let mut message = capnp::message::Builder::new_default();
+    crate::write_plain_fetch(
+        message.init_root::<crate::plugin_capnp::plain_fetch::Builder<'_>>(),
+        fetch,
+    )?;
+    Ok(capnp::serialize::write_message_to_words(&message))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FetchedFile;
 
     fn audio_store() -> MediaSupport {
         MediaSupport {
@@ -256,5 +411,64 @@ mod tests {
         assert!(same_media_support(&audio_store(), &b));
         b.fetches.clear();
         assert!(!same_media_support(&audio_store(), &b));
+    }
+
+    fn file(path: &str, role: FetchedFileRole) -> FetchedFile {
+        FetchedFile {
+            path: path.into(),
+            role,
+            ..FetchedFile::default()
+        }
+    }
+
+    #[test]
+    fn fetches_name_a_declared_carrier_and_one_edition() {
+        let m = audio_store();
+        let mut fetch = PlainFetch {
+            media_kind: MediaKind::Audio,
+            files: vec![
+                file("/c/1.mp3", FetchedFileRole::Part),
+                file("/c/2.mp3", FetchedFileRole::Part),
+                file("/c/cover.jpg", FetchedFileRole::Cover),
+            ],
+            ..PlainFetch::default()
+        };
+        assert_eq!(validate_plain_fetch(&fetch, &m), Ok(()));
+        fetch
+            .files
+            .push(file("/c/book.m4b", FetchedFileRole::Whole));
+        assert_eq!(
+            validate_plain_fetch(&fetch, &m),
+            Err(FetchError::PartsAndWhole)
+        );
+        fetch.files.retain(|f| f.role != FetchedFileRole::Part);
+        assert_eq!(validate_plain_fetch(&fetch, &m), Ok(()));
+        fetch.files.push(file("/c/b.jpg", FetchedFileRole::Cover));
+        assert_eq!(
+            validate_plain_fetch(&fetch, &m),
+            Err(FetchError::SecondCover)
+        );
+        fetch.files = vec![file("/c/cover.jpg", FetchedFileRole::Cover)];
+        assert_eq!(validate_plain_fetch(&fetch, &m), Err(FetchError::NoContent));
+        fetch.files = vec![file("", FetchedFileRole::Whole)];
+        assert_eq!(
+            validate_plain_fetch(&fetch, &m),
+            Err(FetchError::EmptyPath { index: 0 })
+        );
+        fetch.files = vec![file("/c/x", FetchedFileRole::Unspecified)];
+        assert_eq!(
+            validate_plain_fetch(&fetch, &m),
+            Err(FetchError::UnspecifiedRole { index: 0 })
+        );
+        fetch.media_kind = MediaKind::Ebook;
+        assert_eq!(
+            validate_plain_fetch(&fetch, &m),
+            Err(FetchError::CarrierNotFetched(MediaKind::Ebook))
+        );
+        fetch.media_kind = MediaKind::Unspecified;
+        assert_eq!(
+            validate_plain_fetch(&fetch, &m),
+            Err(FetchError::UnspecifiedCarrier)
+        );
     }
 }

@@ -394,6 +394,7 @@ version = "0.1.0"
 runtime = "native"
 command = "./echo"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 
 [capabilities.network]
 mode = "deny"

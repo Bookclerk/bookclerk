@@ -659,7 +659,10 @@ pub fn listing_from_book(
     let episode = crate::models::is_episode(&book.content_kind);
     let show = crate::models::is_podcast_parent(&book.content_kind);
     let (work_kind, expression_kind) = if episode || show {
-        (resolve::WorkKind::Podcast, resolve::ExpressionKind::OriginalAudio)
+        (
+            resolve::WorkKind::Podcast,
+            resolve::ExpressionKind::OriginalAudio,
+        )
     } else {
         (resolve::WorkKind::Book, resolve::ExpressionKind::Narration)
     };

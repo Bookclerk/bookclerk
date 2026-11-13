@@ -27,8 +27,8 @@ use bookclerk_mp4::{
     runtime_length_ms_from_chapter_info, track_duration_ms, TrimRange,
 };
 use bookclerk_plugin_sdk::{
-    FetchOptions, LoginParams, LoginResult, PlainFetch, PlainPart, PluginError, ScanPage,
-    ScanParams, SourceAccount, MAX_SCAN_CURSOR_BYTES,
+    FetchOptions, FetchedFile, FetchedFileRole, LoginParams, LoginResult, PlainFetch, PluginError,
+    ScanPage, ScanParams, SourceAccount, MAX_SCAN_CURSOR_BYTES,
 };
 use bookclerk_storefront::abi::{credentials_to_bytes, scan_credential};
 use serde_json::{json, Value};
@@ -564,14 +564,22 @@ pub async fn guest_fetch_title(
         .map(flatten_chapters)
         .unwrap_or_default();
 
+    let mut files = vec![FetchedFile {
+        path: plain_path.display().to_string(),
+        role: FetchedFileRole::Whole,
+        content_type: Some("audio/mp4".into()),
+        ..FetchedFile::default()
+    }];
+    if let Some(cover) = cover_path {
+        files.push(FetchedFile {
+            path: cover.display().to_string(),
+            role: FetchedFileRole::Cover,
+            ..FetchedFile::default()
+        });
+    }
     Ok(PlainFetch {
-        parts: vec![PlainPart {
-            path: plain_path.display().to_string(),
-            title: None,
-            duration_ms: None,
-        }],
-        m4b_path: Some(plain_path.display().to_string()),
-        cover_path: cover_path.map(|p| p.display().to_string()),
+        media_kind: bookclerk_plugin_sdk::MediaKind::Audio,
+        files,
         chapters: chapters
             .into_iter()
             .map(|(title, start_ms)| bookclerk_plugin_sdk::ChapterMarker { title, start_ms })

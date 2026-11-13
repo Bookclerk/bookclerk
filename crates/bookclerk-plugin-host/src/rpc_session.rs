@@ -4503,6 +4503,18 @@ fn meta_to_probe(meta: ObjectMetadata) -> bookclerk_storage::Result<ObjectProbe>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `media` line a test manifest with `entrypoints` needs: storefronts
+    /// and metadata providers must declare their media; other plugins must not.
+    fn media_line(entrypoints: &str) -> &'static str {
+        if entrypoints.contains("storefront") {
+            "media = { works = [\"book\"], lists = [\"audio\"], fetches = [\"audio\"] }"
+        } else if entrypoints.contains("metadata") {
+            "media = { works = [\"book\"], lists = [\"audio\"] }"
+        } else {
+            ""
+        }
+    }
     use bookclerk_plugin_sdk::{
         PluginDescribe, ProgressSink, ScalarLimits, FEATURE_SCALAR_LIMITS, FEATURE_STREAMS,
         PRODUCT_API_VERSION,
@@ -4628,10 +4640,12 @@ id = "local"
 runtime = "native"
 command = "./guest"
 entrypoints = ["{entrypoint}"]
+{media}
 
 [capabilities.network]
 mode = "deny"
-"#
+"#,
+            media = media_line(entrypoint)
         ))
         .expect("manifest")
     }

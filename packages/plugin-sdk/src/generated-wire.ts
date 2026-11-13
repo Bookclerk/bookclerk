@@ -4753,33 +4753,42 @@ export const FetchTitleParamsCodec: StructCodec<T.FetchTitleParams> = {
 };
 
 /**
- * Wire codec for `PlainPart` (1 data words, 2 pointers).
+ * Wire codec for `FetchedFile` (2 data words, 3 pointers).
  *
  * @internal
  */
-export const PlainPartCodec: StructCodec<T.PlainPart> = {
-  dataWords: 1,
-  pointerCount: 2,
+export const FetchedFileCodec: StructCodec<T.FetchedFile> = {
+  dataWords: 2,
+  pointerCount: 3,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.path ?? "");
+    s.setUint16(0, ord(A.FETCHED_FILE_ROLES, v.role ?? A.FETCHED_FILE_ROLES[0]!, "FetchedFileRole"));
+    if (v.contentType !== undefined) {
+      s.setText(1, v.contentType ?? "");
+    }
     if (v.title !== undefined) {
-      s.setText(1, v.title ?? "");
+      s.setText(2, v.title ?? "");
     }
     if (v.durationMs !== undefined) {
-      s.setUint64(0, BigInt(v.durationMs ?? 0));
+      s.setUint64(1, BigInt(v.durationMs ?? 0));
     }
   },
   read(s, caps) {
     void caps;
-    const out: T.PlainPart = {
+    const out: T.FetchedFile = {
       path: s.getText(0),
+      role: fromOrd(A.FETCHED_FILE_ROLES, s.getUint16(0), "FetchedFileRole"),
     };
-    const titleValue = s.getText(1);
+    const contentTypeValue = s.getText(1);
+    if (!(contentTypeValue === "")) {
+      out.contentType = contentTypeValue;
+    }
+    const titleValue = s.getText(2);
     if (!(titleValue === "")) {
       out.title = titleValue;
     }
-    const durationMsValue = Number(s.getUint64(0));
+    const durationMsValue = Number(s.getUint64(1));
     if (!(durationMsValue === 0)) {
       out.durationMs = durationMsValue;
     }
@@ -4810,59 +4819,47 @@ export const ChapterMarkerCodec: StructCodec<T.ChapterMarker> = {
 };
 
 /**
- * Wire codec for `PlainFetch` (0 data words, 6 pointers).
+ * Wire codec for `PlainFetch` (1 data words, 4 pointers).
  *
  * @internal
  */
 export const PlainFetchCodec: StructCodec<T.PlainFetch> = {
-  dataWords: 0,
-  pointerCount: 6,
+  dataWords: 1,
+  pointerCount: 4,
   write(s, v, caps) {
+    s.setUint16(0, ord(A.MEDIA_KINDS, v.mediaKind ?? A.MEDIA_KINDS[0]!, "MediaKind"));
     {
-      const list = v.parts ?? [];
-      const items = s.initStructList(0, list.length, 1, 2);
+      const list = v.files ?? [];
+      const items = s.initStructList(0, list.length, 2, 3);
       for (let i = 0; i < items.length; i++) {
-        PlainPartCodec.write(items[i]!, list[i]!, caps);
+        FetchedFileCodec.write(items[i]!, list[i]!, caps);
       }
-    }
-    if (v.m4bPath !== undefined) {
-      s.setText(1, v.m4bPath ?? "");
-    }
-    if (v.coverPath !== undefined) {
-      s.setText(2, v.coverPath ?? "");
     }
     {
       const list = v.chapters ?? [];
-      const items = s.initStructList(3, list.length, 1, 1);
+      const items = s.initStructList(1, list.length, 1, 1);
       for (let i = 0; i < items.length; i++) {
         ChapterMarkerCodec.write(items[i]!, list[i]!, caps);
       }
     }
     if (v.pdfUrl !== undefined) {
-      s.setText(4, v.pdfUrl ?? "");
+      s.setText(2, v.pdfUrl ?? "");
     }
     if (v.refreshedCredentials !== undefined) {
-      s.setData(5, v.refreshedCredentials ?? EMPTY_BYTES);
+      s.setData(3, v.refreshedCredentials ?? EMPTY_BYTES);
     }
   },
   read(s, caps) {
     const out: T.PlainFetch = {
-      parts: s.getStructList(0, 1, 2).map((item) => PlainPartCodec.read(item, caps)),
-      chapters: s.getStructList(3, 1, 1).map((item) => ChapterMarkerCodec.read(item, caps)),
+      mediaKind: fromOrd(A.MEDIA_KINDS, s.getUint16(0), "MediaKind"),
+      files: s.getStructList(0, 2, 3).map((item) => FetchedFileCodec.read(item, caps)),
+      chapters: s.getStructList(1, 1, 1).map((item) => ChapterMarkerCodec.read(item, caps)),
     };
-    const m4bPathValue = s.getText(1);
-    if (!(m4bPathValue === "")) {
-      out.m4bPath = m4bPathValue;
-    }
-    const coverPathValue = s.getText(2);
-    if (!(coverPathValue === "")) {
-      out.coverPath = coverPathValue;
-    }
-    const pdfUrlValue = s.getText(4);
+    const pdfUrlValue = s.getText(2);
     if (!(pdfUrlValue === "")) {
       out.pdfUrl = pdfUrlValue;
     }
-    const refreshedCredentialsValue = s.getData(5);
+    const refreshedCredentialsValue = s.getData(3);
     if (!(refreshedCredentialsValue.length === 0)) {
       out.refreshedCredentials = refreshedCredentialsValue;
     }
@@ -4883,7 +4880,7 @@ export const FetchTitleReplyCodec: StructCodec<T.FetchTitleReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          PlainFetchCodec.write(s.initStruct(0, 0, 6), v.value, caps);
+          PlainFetchCodec.write(s.initStruct(0, 1, 4), v.value, caps);
         }
         break;
       case "err":
@@ -4900,7 +4897,7 @@ export const FetchTitleReplyCodec: StructCodec<T.FetchTitleReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: PlainFetchCodec.read(s.getStruct(0, 0, 6), caps) };
+        return { kind: "ok", value: PlainFetchCodec.read(s.getStruct(0, 1, 4), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:

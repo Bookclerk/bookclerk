@@ -79,6 +79,8 @@ paths = [
     "fuzz/oracles/db_stream.rs",
     "fuzz/corpus/scan_page/**",
     "fuzz/oracles/scan_page.rs",
+    "fuzz/corpus/plain_fetch/**",
+    "fuzz/oracles/plain_fetch.rs",
     "fuzz/corpus/event_read/**",
     "fuzz/oracles/event_read.rs",
 ]

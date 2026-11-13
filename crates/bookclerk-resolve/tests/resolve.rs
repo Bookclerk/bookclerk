@@ -585,16 +585,8 @@ fn an_episode_takes_only_a_show_as_its_parent() {
 #[test]
 fn a_shared_isbn_does_not_join_episodes_of_two_shows() {
     let mut c = MemoryCatalog::default();
-    record(
-        &mut c,
-        &podcast("S1", "One", WorkKind::Podcast, None),
-        "a1",
-    );
-    record(
-        &mut c,
-        &podcast("S2", "Two", WorkKind::Podcast, None),
-        "a1",
-    );
+    record(&mut c, &podcast("S1", "One", WorkKind::Podcast, None), "a1");
+    record(&mut c, &podcast("S2", "Two", WorkKind::Podcast, None), "a1");
     let first = record(
         &mut c,
         &with_id(
@@ -718,7 +710,11 @@ fn a_show_never_matches_an_episode_waiting_for_its_show() {
         "a1",
     );
     assert!(first.new_work.as_ref().unwrap().match_key.is_empty());
-    let show = record(&mut c, &podcast("S1", "Show", WorkKind::Podcast, None), "a1");
+    let show = record(
+        &mut c,
+        &podcast("S1", "Show", WorkKind::Podcast, None),
+        "a1",
+    );
     assert_eq!(show.work_reason, Some(WorkReason::New));
     // Linked to its show on the next sight, the episode gains its key.
     let linked = record(

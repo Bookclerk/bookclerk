@@ -36,6 +36,18 @@ export type Manifest = {
    * default entrypoint live under `[triggers]` / `[[events.consumers]]`.
    */
   entrypoints?: string[];
+  /**
+   * `[media]` — the work kinds and edition carriers a storefront or metadata
+   * provider works with. Required for those plugins, forbidden for others.
+   */
+  media?: {
+    /** Work kinds the plugin reports (`book`, `podcast`). */
+    works?: string[];
+    /** Carriers it reports in scans, catalog search and metadata (`audio`, `ebook`, `print`). */
+    lists?: string[];
+    /** Carriers `fetchTitle` can deliver; a subset of `lists`, storefronts only. */
+    fetches?: string[];
+  };
   /** Workerd isolate settings (required when `runtime = "workerd"`). */
   workerd?: {
     /** Cloudflare Workers compatibility date (`YYYY-MM-DD`) for the isolate. */
@@ -595,6 +607,7 @@ export function validateManifest(m: Manifest): void {
   if (m.logo != null) {
     validateLogo(String(m.logo));
   }
+  validateMedia(m);
   validateSurface(m);
   validateSettings(m);
   validateOwnUserAgent(m);
@@ -633,6 +646,78 @@ export function validateManifest(m: Manifest): void {
     }
   } else {
     throw new Error(`plugin.toml: unknown runtime ${runtime}`);
+  }
+}
+
+/** Work kinds a `[media].works` entry may name. */
+const MEDIA_WORK_KINDS = ["unspecified", "book", "podcast"];
+
+/** Carriers a `[media].lists` / `[media].fetches` entry may name. */
+const MEDIA_CARRIERS = ["unspecified", "audio", "ebook", "print"];
+
+/**
+ * Checks `[media]` against the entrypoints, with the host's rules and
+ * messages (`manifest-cases.json`).
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} When a storefront or metadata provider has no table or an
+ *   empty `works` / `lists`, another plugin has one, a list names an unknown
+ *   kind or `unspecified`, or `fetches` is declared by a metadata provider or
+ *   names a carrier `lists` does not.
+ */
+function validateMedia(m: Manifest): void {
+  const entrypoints = (m.entrypoints ?? []) as readonly string[];
+  const storefront = entrypoints.includes("storefront");
+  const metadata = entrypoints.includes("metadata");
+  const media = m.media;
+  if (media == null) {
+    if (storefront || metadata) {
+      throw new Error(
+        "plugin.toml: `[media]` is required for a plugin with the `storefront` or `metadata` entrypoint (declare `works` and `lists`)",
+      );
+    }
+    return;
+  }
+  if (!storefront && !metadata) {
+    throw new Error("plugin.toml: `[media]` needs the `storefront` or `metadata` entrypoint");
+  }
+  const works = media.works ?? [];
+  const lists = media.lists ?? [];
+  const fetches = media.fetches ?? [];
+  for (const [field, values, known] of [
+    ["works", works, MEDIA_WORK_KINDS],
+    ["lists", lists, MEDIA_CARRIERS],
+    ["fetches", fetches, MEDIA_CARRIERS],
+  ] as const) {
+    for (const value of values) {
+      if (!known.includes(value)) {
+        throw new Error(`plugin.toml: \`[media].${field}\` names unknown kind \`${value}\``);
+      }
+    }
+  }
+  if (works.length === 0) {
+    throw new Error("plugin.toml: `[media].works` is empty");
+  }
+  if (lists.length === 0) {
+    throw new Error("plugin.toml: `[media].lists` is empty");
+  }
+  for (const [field, values] of [
+    ["works", works],
+    ["lists", lists],
+    ["fetches", fetches],
+  ] as const) {
+    if (values.includes("unspecified")) {
+      throw new Error(`plugin.toml: \`[media].${field}\` names \`unspecified\``);
+    }
+  }
+  if (!storefront && fetches.length > 0) {
+    throw new Error("plugin.toml: `[media].fetches` needs the `storefront` entrypoint");
+  }
+  const unlisted = fetches.find((kind) => !lists.includes(kind));
+  if (unlisted !== undefined) {
+    throw new Error(
+      `plugin.toml: \`[media].fetches\` names \`${unlisted}\`, which \`lists\` does not`,
+    );
   }
 }
 

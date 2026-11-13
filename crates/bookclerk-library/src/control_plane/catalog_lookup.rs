@@ -594,7 +594,10 @@ fn edition_listing(node_id: &str, edition: &LookupEdition) -> CatalogListing {
     // podcast without one; the answer is only kept when it lands on the
     // asked work.
     let (work_kind, expression_kind) = if episode {
-        (resolve::WorkKind::Podcast, resolve::ExpressionKind::OriginalAudio)
+        (
+            resolve::WorkKind::Podcast,
+            resolve::ExpressionKind::OriginalAudio,
+        )
     } else {
         (resolve::WorkKind::Book, resolve::ExpressionKind::Narration)
     };

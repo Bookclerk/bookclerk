@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::generated::{
-    Brand, CatalogCapabilities, CliSchema, ConfigOption, Entrypoint, MediaSupport, PluginCapabilities,
-    PortalAuthMode,
+    Brand, CatalogCapabilities, CliSchema, ConfigOption, Entrypoint, MediaSupport,
+    PluginCapabilities, PortalAuthMode,
 };
 use crate::limits::{ScalarLimits, PRODUCT_API_VERSION};
 

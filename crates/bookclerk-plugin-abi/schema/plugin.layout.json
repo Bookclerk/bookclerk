@@ -6016,6 +6016,62 @@
         }
       ]
     },
+    "FetchedFile": {
+      "name": "FetchedFile",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "path",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "role",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "FetchedFileRole"
+          },
+          "offset": 0
+        },
+        {
+          "name": "contentType",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "title",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        },
+        {
+          "name": "durationMs",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        }
+      ]
+    },
     "ForeignKeyConstraint": {
       "name": "ForeignKeyConstraint",
       "file": "plugin.capnp",
@@ -9301,45 +9357,37 @@
     "PlainFetch": {
       "name": "PlainFetch",
       "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 6,
+      "dataWords": 1,
+      "pointerCount": 4,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
         {
-          "name": "parts",
+          "name": "mediaKind",
           "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "MediaKind"
+          },
+          "offset": 0
+        },
+        {
+          "name": "files",
+          "codeOrder": 1,
           "discriminantValue": null,
           "type": {
             "kind": "list",
             "element": {
               "kind": "struct",
-              "name": "PlainPart"
+              "name": "FetchedFile"
             }
           },
           "offset": 0
         },
         {
-          "name": "m4bPath",
-          "codeOrder": 1,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 1
-        },
-        {
-          "name": "coverPath",
-          "codeOrder": 2,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 2
-        },
-        {
           "name": "chapters",
-          "codeOrder": 3,
+          "codeOrder": 2,
           "discriminantValue": null,
           "type": {
             "kind": "list",
@@ -9348,62 +9396,25 @@
               "name": "ChapterMarker"
             }
           },
-          "offset": 3
+          "offset": 1
         },
         {
           "name": "pdfUrl",
-          "codeOrder": 4,
+          "codeOrder": 3,
           "discriminantValue": null,
           "type": {
             "kind": "text"
           },
-          "offset": 4
+          "offset": 2
         },
         {
           "name": "refreshedCredentials",
-          "codeOrder": 5,
+          "codeOrder": 4,
           "discriminantValue": null,
           "type": {
             "kind": "data"
           },
-          "offset": 5
-        }
-      ]
-    },
-    "PlainPart": {
-      "name": "PlainPart",
-      "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 2,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "path",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 0
-        },
-        {
-          "name": "title",
-          "codeOrder": 1,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 1
-        },
-        {
-          "name": "durationMs",
-          "codeOrder": 2,
-          "discriminantValue": null,
-          "type": {
-            "kind": "uint64"
-          },
-          "offset": 0
+          "offset": 3
         }
       ]
     },
@@ -12887,6 +12898,16 @@
         "dramatisation",
         "graphic",
         "originalAudio"
+      ]
+    },
+    "FetchedFileRole": {
+      "name": "FetchedFileRole",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "unspecified",
+        "part",
+        "whole",
+        "cover"
       ]
     },
     "IdentifierScheme": {

@@ -105,6 +105,9 @@ CreditLevel = Literal["roleDefault", "work", "expression", "edition"]
 a guest sets this only when a credit departs from it.
 """
 
+FetchedFileRole = Literal["unspecified", "part", "whole", "cover"]
+"""What one fetched file is to the edition it belongs to."""
+
 CatalogSort = Literal["relevance", "popularity", "rating", "title", "author"]
 """Catalog search ordering."""
 
@@ -3156,17 +3159,24 @@ class FetchTitleParams(TypedDict):
     fetch: FetchOptions
 
 
-class PlainPart(TypedDict):
-    """One plain audio part written under the cache directory.
+class FetchedFile(TypedDict):
+    """One file `fetchTitle` wrote under the cache directory.
 
     Attributes:
-        path: Absolute path to the part file under `cacheDir`.
-        title: Part title (disc / chapter label). Omitted when absent (wire zero value).
-        durationMs: Duration of this part in milliseconds when known. Omitted when
-            absent (wire zero value).
+        path: Absolute path to the file under `cacheDir`.
+        role: What the file is to the edition.
+        contentType: MIME type when the guest knows it (`audio/mp4`,
+            `application/epub+zip`, `image/jpeg`); the host sniffs the file either way.
+            Omitted when absent (wire zero value).
+        title: Part title (disc or chapter label), for a `part`. Omitted when absent
+            (wire zero value).
+        durationMs: Playing time of the file in milliseconds, for audio, when known.
+            Omitted when absent (wire zero value).
     """
 
     path: str
+    role: FetchedFileRole
+    contentType: NotRequired[str]
     title: NotRequired[str]
     durationMs: NotRequired[int]
 
@@ -3188,22 +3198,20 @@ class PlainFetch(TypedDict):
     guests decrypt before responding.
 
     Attributes:
-        parts: Ordered audio part files written under the cache directory.
-        m4bPath: Single M4B path when the guest assembled one. Omitted when absent (wire
-            zero value).
-        coverPath: Cover image path under the cache directory. Omitted when absent (wire
-            zero value).
+        mediaKind: Carrier of what was fetched. Must be one of the storefront's declared
+            `MediaSupport.fetches`; `unspecified` is refused.
+        files: The files the guest wrote under the cache directory: the edition's
+            ordered `part`s or one `whole` file, plus an optional `cover`.
         chapters: Chapter markers; empty when unknown.
-        pdfUrl: Companion PDF download URL when the store exposes one. Omitted when
-            absent (wire zero value).
+        pdfUrl: Companion PDF download URL when the store exposes one; the host
+            downloads it itself. Omitted when absent (wire zero value).
         refreshedCredentials: The account's credentials as the guest holds them after
             refreshing them during the fetch, as in `ScanPage.refreshedCredentials`.
             Empty when nothing changed. Omitted when absent (wire zero value).
     """
 
-    parts: list[PlainPart]
-    m4bPath: NotRequired[str]
-    coverPath: NotRequired[str]
+    mediaKind: MediaKind
+    files: list[FetchedFile]
     chapters: list[ChapterMarker]
     pdfUrl: NotRequired[str]
     refreshedCredentials: NotRequired[bytes]
@@ -6150,6 +6158,7 @@ __all__ = [
     "IdentifierScheme",
     "CreditRole",
     "CreditLevel",
+    "FetchedFileRole",
     "CatalogSort",
     "CatalogField",
     "Abridgement",
@@ -6328,7 +6337,7 @@ __all__ = [
     "ScanReply",
     "FetchOptions",
     "FetchTitleParams",
-    "PlainPart",
+    "FetchedFile",
     "ChapterMarker",
     "PlainFetch",
     "FetchTitleReplyOk",

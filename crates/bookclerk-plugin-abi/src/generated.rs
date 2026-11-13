@@ -696,6 +696,69 @@ impl From<plugin_capnp::CreditLevel> for CreditLevel {
     }
 }
 
+/// What one fetched file is to the edition it belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FetchedFileRole {
+    /// Not set; the host refuses a file without a role.
+    #[default]
+    Unspecified,
+    /// One ordered piece of the edition (an audio part or chapter file, one
+    /// volume of a set). The host joins parts in list order.
+    Part,
+    /// The whole edition in one file (an assembled M4B, an EPUB, a PDF).
+    Whole,
+    /// The edition's cover image.
+    Cover,
+}
+
+impl FetchedFileRole {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Part => "part",
+            Self::Whole => "whole",
+            Self::Cover => "cover",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "part" => Some(Self::Part),
+            "whole" => Some(Self::Whole),
+            "cover" => Some(Self::Cover),
+            _ => None,
+        }
+    }
+}
+
+impl From<FetchedFileRole> for plugin_capnp::FetchedFileRole {
+    fn from(value: FetchedFileRole) -> Self {
+        match value {
+            FetchedFileRole::Unspecified => Self::Unspecified,
+            FetchedFileRole::Part => Self::Part,
+            FetchedFileRole::Whole => Self::Whole,
+            FetchedFileRole::Cover => Self::Cover,
+        }
+    }
+}
+
+impl From<plugin_capnp::FetchedFileRole> for FetchedFileRole {
+    fn from(value: plugin_capnp::FetchedFileRole) -> Self {
+        match value {
+            plugin_capnp::FetchedFileRole::Unspecified => Self::Unspecified,
+            plugin_capnp::FetchedFileRole::Part => Self::Part,
+            plugin_capnp::FetchedFileRole::Whole => Self::Whole,
+            plugin_capnp::FetchedFileRole::Cover => Self::Cover,
+        }
+    }
+}
+
 /// Catalog search ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1599,18 +1662,26 @@ pub struct FetchTitleParams {
     pub fetch: FetchOptions,
 }
 
-/// One plain audio part written under the cache directory.
+/// One file `fetchTitle` wrote under the cache directory.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PlainPart {
-    /// Absolute path to the part file under `cacheDir`.
+pub struct FetchedFile {
+    /// Absolute path to the file under `cacheDir`.
     #[serde(default)]
     pub path: String,
-    /// Part title (disc / chapter label).
+    /// What the file is to the edition.
+    #[serde(default)]
+    pub role: FetchedFileRole,
+    /// MIME type when the guest knows it (`audio/mp4`, `application/epub+zip`,
+    /// `image/jpeg`); the host sniffs the file either way.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    /// Part title (disc or chapter label), for a `part`.
     /// `None` when absent (wire zero value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// Duration of this part in milliseconds when known.
+    /// Playing time of the file in milliseconds, for audio, when known.
     /// `None` when absent (wire zero value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
@@ -1633,21 +1704,19 @@ pub struct ChapterMarker {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlainFetch {
-    /// Ordered audio part files written under the cache directory.
+    /// Carrier of what was fetched. Must be one of the storefront's declared
+    /// `MediaSupport.fetches`; `unspecified` is refused.
     #[serde(default)]
-    pub parts: Vec<PlainPart>,
-    /// Single M4B path when the guest assembled one.
-    /// `None` when absent (wire zero value).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub m4b_path: Option<String>,
-    /// Cover image path under the cache directory.
-    /// `None` when absent (wire zero value).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cover_path: Option<String>,
+    pub media_kind: MediaKind,
+    /// The files the guest wrote under the cache directory: the edition's
+    /// ordered `part`s or one `whole` file, plus an optional `cover`.
+    #[serde(default)]
+    pub files: Vec<FetchedFile>,
     /// Chapter markers; empty when unknown.
     #[serde(default)]
     pub chapters: Vec<ChapterMarker>,
-    /// Companion PDF download URL when the store exposes one.
+    /// Companion PDF download URL when the store exposes one; the host
+    /// downloads it itself.
     /// `None` when absent (wire zero value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pdf_url: Option<String>,
@@ -4089,16 +4158,20 @@ pub fn read_fetch_title_params(
     })
 }
 
-/// Encode a [`PlainPart`] onto a Cap'n Proto builder.
+/// Encode a [`FetchedFile`] onto a Cap'n Proto builder.
 ///
 /// # Errors
 ///
 /// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
-pub fn write_plain_part(
-    mut b: plugin_capnp::plain_part::Builder<'_>,
-    v: &PlainPart,
+pub fn write_fetched_file(
+    mut b: plugin_capnp::fetched_file::Builder<'_>,
+    v: &FetchedFile,
 ) -> capnp::Result<()> {
     b.set_path(&v.path);
+    b.set_role(v.role.into());
+    if let Some(value) = &v.content_type {
+        b.set_content_type(value);
+    }
     if let Some(value) = &v.title {
         b.set_title(value);
     }
@@ -4108,14 +4181,16 @@ pub fn write_plain_part(
     Ok(())
 }
 
-/// Decode a [`PlainPart`] from a Cap'n Proto reader.
+/// Decode a [`FetchedFile`] from a Cap'n Proto reader.
 ///
 /// # Errors
 ///
 /// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
-pub fn read_plain_part(r: plugin_capnp::plain_part::Reader<'_>) -> capnp::Result<PlainPart> {
-    Ok(PlainPart {
+pub fn read_fetched_file(r: plugin_capnp::fetched_file::Reader<'_>) -> capnp::Result<FetchedFile> {
+    Ok(FetchedFile {
         path: r.get_path()?.to_string()?,
+        role: r.get_role()?.into(),
+        content_type: opt_text(r.get_content_type()?)?,
         title: opt_text(r.get_title()?)?,
         duration_ms: opt_num(r.get_duration_ms()),
     })
@@ -4158,17 +4233,12 @@ pub fn write_plain_fetch(
     mut b: plugin_capnp::plain_fetch::Builder<'_>,
     v: &PlainFetch,
 ) -> capnp::Result<()> {
+    b.set_media_kind(v.media_kind.into());
     {
-        let mut items = b.reborrow().init_parts(list_len(v.parts.len())?);
-        for (i, item) in v.parts.iter().enumerate() {
-            write_plain_part(items.reborrow().get(list_len(i)?), item)?;
+        let mut items = b.reborrow().init_files(list_len(v.files.len())?);
+        for (i, item) in v.files.iter().enumerate() {
+            write_fetched_file(items.reborrow().get(list_len(i)?), item)?;
         }
-    }
-    if let Some(value) = &v.m4b_path {
-        b.set_m4b_path(value);
-    }
-    if let Some(value) = &v.cover_path {
-        b.set_cover_path(value);
     }
     {
         let mut items = b.reborrow().init_chapters(list_len(v.chapters.len())?);
@@ -4192,13 +4262,12 @@ pub fn write_plain_fetch(
 /// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
 pub fn read_plain_fetch(r: plugin_capnp::plain_fetch::Reader<'_>) -> capnp::Result<PlainFetch> {
     Ok(PlainFetch {
-        parts: r
-            .get_parts()?
+        media_kind: r.get_media_kind()?.into(),
+        files: r
+            .get_files()?
             .iter()
-            .map(|item| read_plain_part(item))
+            .map(|item| read_fetched_file(item))
             .collect::<capnp::Result<Vec<_>>>()?,
-        m4b_path: opt_text(r.get_m4b_path()?)?,
-        cover_path: opt_text(r.get_cover_path()?)?,
         chapters: r
             .get_chapters()?
             .iter()
@@ -6931,7 +7000,8 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
             )?;
         }
         35 => {
-            let _ = read_plain_part(reader.get_root::<plugin_capnp::plain_part::Reader<'_>>()?)?;
+            let _ =
+                read_fetched_file(reader.get_root::<plugin_capnp::fetched_file::Reader<'_>>()?)?;
         }
         36 => {
             let _ = read_chapter_marker(
@@ -8775,10 +8845,10 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
         }
         35 => {
             let first =
-                read_plain_part(reader.get_root::<plugin_capnp::plain_part::Reader<'_>>()?)?;
+                read_fetched_file(reader.get_root::<plugin_capnp::fetched_file::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
-            write_plain_part(
-                message.init_root::<plugin_capnp::plain_part::Builder<'_>>(),
+            write_fetched_file(
+                message.init_root::<plugin_capnp::fetched_file::Builder<'_>>(),
                 &first,
             )
             .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
@@ -8788,7 +8858,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 capnp::message::ReaderOptions::new(),
             )
             .and_then(|again| {
-                read_plain_part(again.get_root::<plugin_capnp::plain_part::Reader<'_>>()?)
+                read_fetched_file(again.get_root::<plugin_capnp::fetched_file::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again {
@@ -8797,8 +8867,8 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 // byte check also covers fields whose `Debug` redacts (credential
                 // DTOs), which the rendering alone would hide.
                 let mut message = capnp::message::Builder::new_default();
-                write_plain_part(
-                    message.init_root::<plugin_capnp::plain_part::Builder<'_>>(),
+                write_fetched_file(
+                    message.init_root::<plugin_capnp::fetched_file::Builder<'_>>(),
                     &again,
                 )
                 .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
@@ -8809,7 +8879,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // credential fields, and the failing input is what a harness
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
-                        "round trip changed the decoded PlainPart value".to_string(),
+                        "round trip changed the decoded FetchedFile value".to_string(),
                     ));
                 }
             }

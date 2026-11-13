@@ -129,6 +129,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "plain_fetch"
+path = "fuzz_targets/plain_fetch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "event_read"
 path = "fuzz_targets/event_read.rs"
 test = false

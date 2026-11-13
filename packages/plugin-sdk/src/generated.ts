@@ -24,6 +24,7 @@ import type {
   IdentifierScheme,
   CreditRole,
   CreditLevel,
+  FetchedFileRole,
   CatalogSort,
   CatalogField,
   Abridgement,
@@ -46,6 +47,7 @@ export type {
   IdentifierScheme,
   CreditRole,
   CreditLevel,
+  FetchedFileRole,
   CatalogSort,
   CatalogField,
   Abridgement,
@@ -2008,17 +2010,25 @@ export interface FetchTitleParams {
   fetch: FetchOptions;
 }
 
-/** One plain audio part written under the cache directory. */
-export interface PlainPart {
-  /** Absolute path to the part file under `cacheDir`. */
+/** One file `fetchTitle` wrote under the cache directory. */
+export interface FetchedFile {
+  /** Absolute path to the file under `cacheDir`. */
   path: string;
+  /** What the file is to the edition. */
+  role: FetchedFileRole;
   /**
-   * Part title (disc / chapter label).
+   * MIME type when the guest knows it (`audio/mp4`, `application/epub+zip`,
+   * `image/jpeg`); the host sniffs the file either way.
+   * Omitted when absent (wire zero value).
+   */
+  contentType?: string;
+  /**
+   * Part title (disc or chapter label), for a `part`.
    * Omitted when absent (wire zero value).
    */
   title?: string;
   /**
-   * Duration of this part in milliseconds when known.
+   * Playing time of the file in milliseconds, for audio, when known.
    * Omitted when absent (wire zero value).
    */
   durationMs?: number;
@@ -2037,22 +2047,21 @@ export interface ChapterMarker {
  * guests decrypt before responding.
  */
 export interface PlainFetch {
-  /** Ordered audio part files written under the cache directory. */
-  parts: PlainPart[];
   /**
-   * Single M4B path when the guest assembled one.
-   * Omitted when absent (wire zero value).
+   * Carrier of what was fetched. Must be one of the storefront's declared
+   * `MediaSupport.fetches`; `unspecified` is refused.
    */
-  m4bPath?: string;
+  mediaKind: MediaKind;
   /**
-   * Cover image path under the cache directory.
-   * Omitted when absent (wire zero value).
+   * The files the guest wrote under the cache directory: the edition's
+   * ordered `part`s or one `whole` file, plus an optional `cover`.
    */
-  coverPath?: string;
+  files: FetchedFile[];
   /** Chapter markers; empty when unknown. */
   chapters: ChapterMarker[];
   /**
-   * Companion PDF download URL when the store exposes one.
+   * Companion PDF download URL when the store exposes one; the host
+   * downloads it itself.
    * Omitted when absent (wire zero value).
    */
   pdfUrl?: string;

@@ -924,6 +924,18 @@ fn database_settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `media` line a test manifest with `entrypoints` needs: storefronts
+    /// and metadata providers must declare their media; other plugins must not.
+    fn media_line(entrypoints: &str) -> &'static str {
+        if entrypoints.contains("storefront") {
+            "media = { works = [\"book\"], lists = [\"audio\"], fetches = [\"audio\"] }"
+        } else if entrypoints.contains("metadata") {
+            "media = { works = [\"book\"], lists = [\"audio\"] }"
+        } else {
+            ""
+        }
+    }
     use std::fs;
     use std::path::Path;
 
@@ -997,10 +1009,12 @@ id = "{id}"
 runtime = "native"
 command = "./bin"
 entrypoints = ["{entrypoint}"]
+{media}
 
 [capabilities.network]
 mode = "deny"
-"#
+"#,
+                media = media_line(entrypoint)
             ),
         )
         .unwrap();

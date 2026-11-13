@@ -577,13 +577,19 @@ mod tests {
     #[test]
     fn drafts_without_a_kind_are_refused() {
         for (field, clear) in [
-            ("work_kind", (|d: &mut ListingDraft| d.work_kind = None) as fn(&mut ListingDraft)),
+            (
+                "work_kind",
+                (|d: &mut ListingDraft| d.work_kind = None) as fn(&mut ListingDraft),
+            ),
             ("expression_kind", |d| d.expression_kind = None),
             ("media_kind", |d| d.media_kind = None),
         ] {
             let mut d = draft();
             clear(&mut d);
-            assert_eq!(Listing::from_draft(&d), Err(ListingError::MissingKind(field)));
+            assert_eq!(
+                Listing::from_draft(&d),
+                Err(ListingError::MissingKind(field))
+            );
         }
     }
 

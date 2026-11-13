@@ -328,7 +328,9 @@ mod tests {
             pages: [Ok(page(&["1", "2"], "c2")), Ok(last(&["3"], "t1", true))].into(),
             ..Script::default()
         };
-        let outcome = run_pass(&mut io, "a", start("", "", false), &audio()).await.unwrap();
+        let outcome = run_pass(&mut io, "a", start("", "", false), &audio())
+            .await
+            .unwrap();
         assert_eq!(
             outcome,
             PassOutcome {
@@ -368,7 +370,9 @@ mod tests {
             .into(),
             ..Script::default()
         };
-        run_pass(&mut io, "a", start("", "", false), &audio()).await.unwrap();
+        run_pass(&mut io, "a", start("", "", false), &audio())
+            .await
+            .unwrap();
         assert_eq!(
             io.refreshed,
             [(br#"{"token":"new"}"#.to_vec(), 1)],
@@ -379,7 +383,9 @@ mod tests {
             pages: [Ok(refreshed(b"[1]"))].into(),
             ..Script::default()
         };
-        assert!(run_pass(&mut io, "a", start("", "", false), &audio()).await.is_err());
+        assert!(run_pass(&mut io, "a", start("", "", false), &audio())
+            .await
+            .is_err());
         assert!(io.refreshed.is_empty() && io.written.is_empty());
     }
 
@@ -464,7 +470,9 @@ mod tests {
             pages: [Err(PluginError::unavailable("down"))].into(),
             ..Script::default()
         };
-        assert!(run_pass(&mut io, "a", start("", "", false), &audio()).await.is_err());
+        assert!(run_pass(&mut io, "a", start("", "", false), &audio())
+            .await
+            .is_err());
         // Nor does a resumed pass after its first page landed.
         let mut io = Script {
             pages: [
@@ -488,7 +496,9 @@ mod tests {
             pages: [Ok(foreign)].into(),
             ..Script::default()
         };
-        assert!(run_pass(&mut io, "a", start("", "", false), &audio()).await.is_err());
+        assert!(run_pass(&mut io, "a", start("", "", false), &audio())
+            .await
+            .is_err());
         assert!(io.written.is_empty());
         assert!(io.finished.is_none());
 
@@ -496,7 +506,9 @@ mod tests {
             pages: [Ok(page(&["1"], "c1")), Ok(page(&["2"], "c1"))].into(),
             ..Script::default()
         };
-        assert!(run_pass(&mut io, "a", start("", "", false), &audio()).await.is_err());
+        assert!(run_pass(&mut io, "a", start("", "", false), &audio())
+            .await
+            .is_err());
         assert_eq!(io.written, ["1"], "the repeating page is not written");
     }
 
@@ -507,7 +519,9 @@ mod tests {
             cancel_after: Some(1),
             ..Script::default()
         };
-        assert!(run_pass(&mut io, "a", start("", "", false), &audio()).await.is_err());
+        assert!(run_pass(&mut io, "a", start("", "", false), &audio())
+            .await
+            .is_err());
         assert_eq!(io.checkpoints, [("c2".into(), "".into())]);
         assert!(io.finished.is_none());
     }

@@ -20,9 +20,9 @@
 //! - an accepted page re-encodes, decodes back equal, and is accepted again.
 
 use bookclerk_plugin_abi::{
-    decode_scan_page_bytes, encode_scan_page_bytes, validate_scan_page, ExpressionKind,
-    MediaKind, MediaSupport, ScanPage, WorkKind, MAX_REFRESHED_CREDENTIAL_BYTES,
-    MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
+    decode_scan_page_bytes, encode_scan_page_bytes, validate_scan_page, ExpressionKind, MediaKind,
+    MediaSupport, ScanPage, WorkKind, MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCAN_CURSOR_BYTES,
+    MAX_SCAN_PAGE_BOOKS,
 };
 
 /// Largest input worth decoding; real pages at every cap are far smaller.

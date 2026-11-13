@@ -397,7 +397,10 @@ mod tests {
         );
         assert_eq!(validate_scan_page(&page, "p1", "a", &audio_books()), Ok(()));
         // An empty cursor ends the pass whatever was sent.
-        assert_eq!(validate_scan_page(&ScanPage::default(), "", "a", &audio_books()), Ok(()));
+        assert_eq!(
+            validate_scan_page(&ScanPage::default(), "", "a", &audio_books()),
+            Ok(())
+        );
     }
 
     #[test]

@@ -765,6 +765,9 @@ mod tests {
                 position: Some("1".into()),
                 store_series_id: Some("B00SER0001".into()),
             }],
+            work_kind: bookclerk_plugin_sdk::WorkKind::Book,
+            expression_kind: bookclerk_plugin_sdk::ExpressionKind::Narration,
+            media_kind: MediaKind::Audio,
             ..MetadataRecord::default()
         }
     }

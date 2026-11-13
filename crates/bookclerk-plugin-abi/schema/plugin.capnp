@@ -1887,14 +1887,32 @@ struct FetchTitleParams {
   fetch @6 :FetchOptions;
 }
 
-# One plain audio part written under the cache directory.
-struct PlainPart {
-  # Absolute path to the part file under `cacheDir`.
+# What one fetched file is to the edition it belongs to.
+enum FetchedFileRole {
+  # Not set; the host refuses a file without a role.
+  unspecified @0;
+  # One ordered piece of the edition (an audio part or chapter file, one
+  # volume of a set). The host joins parts in list order.
+  part @1;
+  # The whole edition in one file (an assembled M4B, an EPUB, a PDF).
+  whole @2;
+  # The edition's cover image.
+  cover @3;
+}
+
+# One file `fetchTitle` wrote under the cache directory.
+struct FetchedFile {
+  # Absolute path to the file under `cacheDir`.
   path @0 :Text;
-  # Part title (disc / chapter label).
-  title @1 :Text $optional;
-  # Duration of this part in milliseconds when known.
-  durationMs @2 :UInt64 $optional;
+  # What the file is to the edition.
+  role @1 :FetchedFileRole;
+  # MIME type when the guest knows it (`audio/mp4`, `application/epub+zip`,
+  # `image/jpeg`); the host sniffs the file either way.
+  contentType @2 :Text $optional;
+  # Part title (disc or chapter label), for a `part`.
+  title @3 :Text $optional;
+  # Playing time of the file in milliseconds, for audio, when known.
+  durationMs @4 :UInt64 $optional;
 }
 
 # One chapter marker of a fetched title.
@@ -1908,20 +1926,21 @@ struct ChapterMarker {
 # Plain (DRM-free) fetch result. Sources always return decrypted media; DRM
 # guests decrypt before responding.
 struct PlainFetch {
-  # Ordered audio part files written under the cache directory.
-  parts @0 :List(PlainPart);
-  # Single M4B path when the guest assembled one.
-  m4bPath @1 :Text $optional;
-  # Cover image path under the cache directory.
-  coverPath @2 :Text $optional;
+  # Carrier of what was fetched. Must be one of the storefront's declared
+  # `MediaSupport.fetches`; `unspecified` is refused.
+  mediaKind @0 :MediaKind;
+  # The files the guest wrote under the cache directory: the edition's
+  # ordered `part`s or one `whole` file, plus an optional `cover`.
+  files @1 :List(FetchedFile);
   # Chapter markers; empty when unknown.
-  chapters @3 :List(ChapterMarker);
-  # Companion PDF download URL when the store exposes one.
-  pdfUrl @4 :Text $optional;
+  chapters @2 :List(ChapterMarker);
+  # Companion PDF download URL when the store exposes one; the host
+  # downloads it itself.
+  pdfUrl @3 :Text $optional;
   # The account's credentials as the guest holds them after refreshing them
   # during the fetch, as in `ScanPage.refreshedCredentials`. Empty when
   # nothing changed.
-  refreshedCredentials @5 :Data $optional;
+  refreshedCredentials @4 :Data $optional;
 }
 
 # Result union of `ContentSource.fetchTitle`.

@@ -1376,6 +1376,18 @@ fn local_storage_write_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `media` line a test manifest with `entrypoints` needs: storefronts
+    /// and metadata providers must declare their media; other plugins must not.
+    fn media_line(entrypoints: &str) -> &'static str {
+        if entrypoints.contains("storefront") {
+            "media = { works = [\"book\"], lists = [\"audio\"], fetches = [\"audio\"] }"
+        } else if entrypoints.contains("metadata") {
+            "media = { works = [\"book\"], lists = [\"audio\"] }"
+        } else {
+            ""
+        }
+    }
     use bookclerk_config::Paths;
 
     #[test]
@@ -1429,12 +1441,14 @@ version = "0.0.0"
 runtime = "native"
 command = "./guest"
 entrypoints = ["{entrypoint}"]
+{media}
 
 [capabilities.network]
 {network_toml}
 
 {oauth_toml}
-"#
+"#,
+            media = media_line(entrypoint)
         );
         std::fs::write(root.join("plugin.toml"), &toml).expect("write plugin.toml");
         let manifest = crate::PluginManifest::parse(&toml).expect("test manifest");

@@ -208,6 +208,16 @@ export const CREDIT_LEVELS = ["roleDefault", "work", "expression", "edition"] as
 export type CreditLevel = (typeof CREDIT_LEVELS)[number];
 
 /**
+ * What one fetched file is to the edition it belongs to.
+ *
+ * Ordinal-ordered `FetchedFileRole` wire names (index = Cap'n Proto ordinal).
+ */
+export const FETCHED_FILE_ROLES = ["unspecified", "part", "whole", "cover"] as const;
+
+/** Union of `FETCHED_FILE_ROLES` wire names. */
+export type FetchedFileRole = (typeof FETCHED_FILE_ROLES)[number];
+
+/**
  * Catalog search ordering.
  *
  * Ordinal-ordered `CatalogSort` wire names (index = Cap'n Proto ordinal).

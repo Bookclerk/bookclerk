@@ -59,32 +59,40 @@ impl From<abi::SourceAccount> for SourceAccount {
     }
 }
 
-impl From<PlainAudioPart> for abi::PlainPart {
-    fn from(part: PlainAudioPart) -> Self {
-        Self {
-            path: part.path.display().to_string(),
-            title: part.title,
-            duration_ms: part.duration_ms,
-        }
-    }
-}
-
-impl From<abi::PlainPart> for PlainAudioPart {
-    fn from(part: abi::PlainPart) -> Self {
-        Self {
-            path: PathBuf::from(part.path),
-            title: part.title,
-            duration_ms: part.duration_ms,
-        }
+/// One fetched file on the wire.
+fn fetched_file(path: &std::path::Path, role: abi::FetchedFileRole) -> abi::FetchedFile {
+    abi::FetchedFile {
+        path: path.display().to_string(),
+        role,
+        ..abi::FetchedFile::default()
     }
 }
 
 impl From<PlainFetch> for abi::PlainFetch {
+    /// Lists the host fetch's files by role. An assembled M4B is the whole
+    /// edition, so when one is set the parts it was built from are left out.
     fn from(plain: PlainFetch) -> Self {
+        let mut files: Vec<abi::FetchedFile> = match plain.m4b_path {
+            Some(m4b) => vec![abi::FetchedFile {
+                content_type: Some("audio/mp4".into()),
+                ..fetched_file(&m4b, abi::FetchedFileRole::Whole)
+            }],
+            None => plain
+                .parts
+                .into_iter()
+                .map(|part| abi::FetchedFile {
+                    title: part.title,
+                    duration_ms: part.duration_ms,
+                    ..fetched_file(&part.path, abi::FetchedFileRole::Part)
+                })
+                .collect(),
+        };
+        if let Some(cover) = plain.cover_path {
+            files.push(fetched_file(&cover, abi::FetchedFileRole::Cover));
+        }
         Self {
-            parts: plain.parts.into_iter().map(Into::into).collect(),
-            m4b_path: plain.m4b_path.map(|p| p.display().to_string()),
-            cover_path: plain.cover_path.map(|p| p.display().to_string()),
+            media_kind: abi::MediaKind::Audio,
+            files,
             chapters: plain
                 .chapters
                 .into_iter()
@@ -98,19 +106,62 @@ impl From<PlainFetch> for abi::PlainFetch {
     }
 }
 
-impl From<abi::PlainFetch> for PlainFetch {
-    fn from(plain: abi::PlainFetch) -> Self {
-        Self {
-            parts: plain.parts.into_iter().map(Into::into).collect(),
-            m4b_path: plain.m4b_path.map(PathBuf::from),
-            cover_path: plain.cover_path.map(PathBuf::from),
+/// Why a fetch the guest answered cannot become a host [`PlainFetch`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchConversionError {
+    /// The host acquires audio editions only today; the fetch carried
+    /// another carrier.
+    CarrierNotAcquired(abi::MediaKind),
+}
+
+impl std::fmt::Display for FetchConversionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CarrierNotAcquired(kind) => {
+                write!(f, "the host does not acquire {kind:?} editions yet")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FetchConversionError {}
+
+impl TryFrom<abi::PlainFetch> for PlainFetch {
+    type Error = FetchConversionError;
+
+    /// Maps a validated wire fetch ([`abi::validate_plain_fetch`]) onto the
+    /// host's audio fetch: `part`s in order, the `whole` file as the M4B and
+    /// the `cover`.
+    fn try_from(plain: abi::PlainFetch) -> Result<Self, Self::Error> {
+        if plain.media_kind != abi::MediaKind::Audio {
+            return Err(FetchConversionError::CarrierNotAcquired(plain.media_kind));
+        }
+        let mut parts = Vec::new();
+        let mut m4b_path = None;
+        let mut cover_path = None;
+        for file in plain.files {
+            match file.role {
+                abi::FetchedFileRole::Part => parts.push(PlainAudioPart {
+                    path: PathBuf::from(file.path),
+                    title: file.title,
+                    duration_ms: file.duration_ms,
+                }),
+                abi::FetchedFileRole::Whole => m4b_path = Some(PathBuf::from(file.path)),
+                abi::FetchedFileRole::Cover => cover_path = Some(PathBuf::from(file.path)),
+                abi::FetchedFileRole::Unspecified => {}
+            }
+        }
+        Ok(Self {
+            parts,
+            m4b_path,
+            cover_path,
             chapters: plain
                 .chapters
                 .into_iter()
                 .map(|marker| (marker.title, marker.start_ms))
                 .collect(),
             pdf_url: plain.pdf_url,
-        }
+        })
     }
 }
 
@@ -632,18 +683,60 @@ mod tests {
                 title: Some("Part 1".into()),
                 duration_ms: Some(1234),
             }],
-            m4b_path: Some(PathBuf::from("/tmp/book.m4b")),
-            cover_path: None,
+            m4b_path: None,
+            cover_path: Some(PathBuf::from("/tmp/cover.jpg")),
             chapters: vec![("Ch 1".into(), 0), ("Ch 2".into(), 5000)],
             pdf_url: Some("https://cdn.example/book.pdf".into()),
         };
         let wire: abi::PlainFetch = plain.clone().into();
         assert_eq!(wire.chapters[1].start_ms, 5000);
-        let back: PlainFetch = wire.into();
+        assert_eq!(wire.media_kind, abi::MediaKind::Audio);
+        let media = abi::MediaSupport {
+            work_kinds: vec![abi::WorkKind::Book],
+            lists: vec![abi::MediaKind::Audio],
+            fetches: vec![abi::MediaKind::Audio],
+        };
+        assert_eq!(abi::validate_plain_fetch(&wire, &media), Ok(()));
+        let back = PlainFetch::try_from(wire).unwrap();
         assert_eq!(back.chapters, plain.chapters);
-        assert_eq!(back.m4b_path, plain.m4b_path);
+        assert_eq!(back.m4b_path, None);
+        assert_eq!(back.cover_path, plain.cover_path);
         assert_eq!(back.parts[0].path, plain.parts[0].path);
+        assert_eq!(back.parts[0].title, plain.parts[0].title);
         assert_eq!(back.pdf_url, plain.pdf_url);
+    }
+
+    #[test]
+    fn an_assembled_m4b_is_the_whole_edition() {
+        let plain = PlainFetch {
+            parts: vec![PlainAudioPart {
+                path: PathBuf::from("/tmp/a.m4a"),
+                title: None,
+                duration_ms: None,
+            }],
+            m4b_path: Some(PathBuf::from("/tmp/book.m4b")),
+            cover_path: None,
+            chapters: Vec::new(),
+            pdf_url: None,
+        };
+        let wire: abi::PlainFetch = plain.into();
+        assert_eq!(wire.files.len(), 1);
+        assert_eq!(wire.files[0].role, abi::FetchedFileRole::Whole);
+        let back = PlainFetch::try_from(wire).unwrap();
+        assert_eq!(back.m4b_path, Some(PathBuf::from("/tmp/book.m4b")));
+        assert!(back.parts.is_empty());
+    }
+
+    #[test]
+    fn only_audio_fetches_reach_the_host() {
+        let wire = abi::PlainFetch {
+            media_kind: abi::MediaKind::Ebook,
+            ..abi::PlainFetch::default()
+        };
+        assert_eq!(
+            PlainFetch::try_from(wire).unwrap_err(),
+            FetchConversionError::CarrierNotAcquired(abi::MediaKind::Ebook)
+        );
     }
 
     #[test]

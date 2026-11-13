@@ -37,6 +37,7 @@ var MEDIA_KINDS = ["unspecified", "audio", "ebook", "print"];
 var IDENTIFIER_SCHEMES = ["isbn", "asin", "openLibraryEdition", "openLibraryWork"];
 var CREDIT_ROLES = ["author", "narrator", "translator", "editor", "illustrator", "publisher", "host", "cast", "adaptor"];
 var CREDIT_LEVELS = ["roleDefault", "work", "expression", "edition"];
+var FETCHED_FILE_ROLES = ["unspecified", "part", "whole", "cover"];
 var CATALOG_SORTS = ["relevance", "popularity", "rating", "title", "author"];
 var CATALOG_FIELDS = ["any", "author", "narrator", "series", "genre"];
 var ABRIDGEMENTS = ["unknown", "unabridged", "abridged"];
@@ -2714,29 +2715,38 @@ var FetchTitleParamsCodec = {
     return out;
   }
 };
-var PlainPartCodec = {
-  dataWords: 1,
-  pointerCount: 2,
+var FetchedFileCodec = {
+  dataWords: 2,
+  pointerCount: 3,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.path ?? "");
+    s.setUint16(0, ord(FETCHED_FILE_ROLES, v.role ?? FETCHED_FILE_ROLES[0], "FetchedFileRole"));
+    if (v.contentType !== void 0) {
+      s.setText(1, v.contentType ?? "");
+    }
     if (v.title !== void 0) {
-      s.setText(1, v.title ?? "");
+      s.setText(2, v.title ?? "");
     }
     if (v.durationMs !== void 0) {
-      s.setUint64(0, BigInt(v.durationMs ?? 0));
+      s.setUint64(1, BigInt(v.durationMs ?? 0));
     }
   },
   read(s, caps) {
     void caps;
     const out = {
-      path: s.getText(0)
+      path: s.getText(0),
+      role: fromOrd(FETCHED_FILE_ROLES, s.getUint16(0), "FetchedFileRole")
     };
-    const titleValue = s.getText(1);
+    const contentTypeValue = s.getText(1);
+    if (!(contentTypeValue === "")) {
+      out.contentType = contentTypeValue;
+    }
+    const titleValue = s.getText(2);
     if (!(titleValue === "")) {
       out.title = titleValue;
     }
-    const durationMsValue = Number(s.getUint64(0));
+    const durationMsValue = Number(s.getUint64(1));
     if (!(durationMsValue === 0)) {
       out.durationMs = durationMsValue;
     }
@@ -2760,54 +2770,42 @@ var ChapterMarkerCodec = {
   }
 };
 var PlainFetchCodec = {
-  dataWords: 0,
-  pointerCount: 6,
+  dataWords: 1,
+  pointerCount: 4,
   write(s, v, caps) {
+    s.setUint16(0, ord(MEDIA_KINDS, v.mediaKind ?? MEDIA_KINDS[0], "MediaKind"));
     {
-      const list = v.parts ?? [];
-      const items = s.initStructList(0, list.length, 1, 2);
+      const list = v.files ?? [];
+      const items = s.initStructList(0, list.length, 2, 3);
       for (let i = 0; i < items.length; i++) {
-        PlainPartCodec.write(items[i], list[i], caps);
+        FetchedFileCodec.write(items[i], list[i], caps);
       }
-    }
-    if (v.m4bPath !== void 0) {
-      s.setText(1, v.m4bPath ?? "");
-    }
-    if (v.coverPath !== void 0) {
-      s.setText(2, v.coverPath ?? "");
     }
     {
       const list = v.chapters ?? [];
-      const items = s.initStructList(3, list.length, 1, 1);
+      const items = s.initStructList(1, list.length, 1, 1);
       for (let i = 0; i < items.length; i++) {
         ChapterMarkerCodec.write(items[i], list[i], caps);
       }
     }
     if (v.pdfUrl !== void 0) {
-      s.setText(4, v.pdfUrl ?? "");
+      s.setText(2, v.pdfUrl ?? "");
     }
     if (v.refreshedCredentials !== void 0) {
-      s.setData(5, v.refreshedCredentials ?? EMPTY_BYTES);
+      s.setData(3, v.refreshedCredentials ?? EMPTY_BYTES);
     }
   },
   read(s, caps) {
     const out = {
-      parts: s.getStructList(0, 1, 2).map((item) => PlainPartCodec.read(item, caps)),
-      chapters: s.getStructList(3, 1, 1).map((item) => ChapterMarkerCodec.read(item, caps))
+      mediaKind: fromOrd(MEDIA_KINDS, s.getUint16(0), "MediaKind"),
+      files: s.getStructList(0, 2, 3).map((item) => FetchedFileCodec.read(item, caps)),
+      chapters: s.getStructList(1, 1, 1).map((item) => ChapterMarkerCodec.read(item, caps))
     };
-    const m4bPathValue = s.getText(1);
-    if (!(m4bPathValue === "")) {
-      out.m4bPath = m4bPathValue;
-    }
-    const coverPathValue = s.getText(2);
-    if (!(coverPathValue === "")) {
-      out.coverPath = coverPathValue;
-    }
-    const pdfUrlValue = s.getText(4);
+    const pdfUrlValue = s.getText(2);
     if (!(pdfUrlValue === "")) {
       out.pdfUrl = pdfUrlValue;
     }
-    const refreshedCredentialsValue = s.getData(5);
+    const refreshedCredentialsValue = s.getData(3);
     if (!(refreshedCredentialsValue.length === 0)) {
       out.refreshedCredentials = refreshedCredentialsValue;
     }
@@ -2822,7 +2820,7 @@ var FetchTitleReplyCodec = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          PlainFetchCodec.write(s.initStruct(0, 0, 6), v.value, caps);
+          PlainFetchCodec.write(s.initStruct(0, 1, 4), v.value, caps);
         }
         break;
       case "err":
@@ -2839,7 +2837,7 @@ var FetchTitleReplyCodec = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: PlainFetchCodec.read(s.getStruct(0, 0, 6), caps) };
+        return { kind: "ok", value: PlainFetchCodec.read(s.getStruct(0, 1, 4), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -11645,6 +11643,8 @@ function mergeDescribe(base, guest) {
     apiVersion: base.apiVersion ?? guest.apiVersion ?? 3,
     id: base.id ?? guest.id,
     capabilities: base.capabilities ?? guest.capabilities,
+    // `[media]` is the authority for the declared media, like capabilities.
+    media: base.media ?? guest.media,
     ...cli === void 0 ? {} : { cli },
     ...configOptions === void 0 ? {} : { configOptions }
   };

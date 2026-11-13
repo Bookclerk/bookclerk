@@ -52,7 +52,11 @@ mod tests {
         assert!(declared("p", &media, "metadata record", print));
         let audio = (WorkKind::Book, ExpressionKind::Narration, MediaKind::Audio);
         assert!(!declared("p", &media, "metadata record", audio));
-        let unknown = (WorkKind::Book, ExpressionKind::Unspecified, MediaKind::Print);
+        let unknown = (
+            WorkKind::Book,
+            ExpressionKind::Unspecified,
+            MediaKind::Print,
+        );
         assert!(!declared("p", &media, "metadata record", unknown));
     }
 }
