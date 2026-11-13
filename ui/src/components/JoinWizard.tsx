@@ -10,6 +10,7 @@ import {
   joinWithInvite,
   looksLikeBranchInvite,
   startJoin,
+  type BranchLinkView,
   type LibraryInfoView,
 } from "@/lib/join";
 import { cn } from "@/lib/utils";
@@ -20,8 +21,11 @@ type Tab = "signin" | "invite";
 export interface JoinWizardProps {
   /** Suggested branch name (this machine's name). */
   defaultBranchName?: string;
-  /** Called after an invite joined (the sign-in path leaves the page). */
-  onJoined?: (libraryOrigin: string) => void;
+  /**
+   * Called after an invite joined (the sign-in path leaves the page), with
+   * the library's origin and the link the join recorded.
+   */
+  onJoined?: (libraryOrigin: string, link: BranchLinkView) => void;
   /** Shows a Back button that calls this. */
   onCancel?: () => void;
 }
@@ -120,7 +124,7 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
     try {
       const joined = await joinWithInvite(invite);
       setInvite("");
-      onJoined?.(joined.cluster.owner_origin);
+      onJoined?.(joined.cluster.owner_origin, joined.cluster);
     } catch (err) {
       setError(joinErrorMessage(err, "Could not join with that invite."));
     } finally {

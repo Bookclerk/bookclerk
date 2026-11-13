@@ -3,6 +3,7 @@ import { JoinShell } from "@/components/JoinShell";
 import { JoinWizard } from "@/components/JoinWizard";
 import { Button } from "@/components/ui/button";
 import { isDesktopWindow } from "@/lib/desktop";
+import { makeWindowOf } from "@/lib/join";
 
 /** Props for {@link WelcomeScreen}. */
 export interface WelcomeScreenProps {
@@ -22,7 +23,9 @@ export interface WelcomeScreenProps {
  *
  * In the desktop window joining comes first: the window opens on the join
  * form (the library's address, then signing in as a member), and hosting a
- * library on this computer is the alternative below it.
+ * library on this computer is the alternative below it. A join there makes
+ * this computer a window of the library (downloading off); the sign-in path
+ * does that on `/join/callback`, an invite does it here.
  */
 export function WelcomeScreen({
   defaultBranchName,
@@ -32,6 +35,35 @@ export function WelcomeScreen({
 }: WelcomeScreenProps) {
   const [joining, setJoining] = useState(desktop);
   const [joinedTo, setJoinedTo] = useState<string | null>(null);
+  // Desktop window only: whether the invite join became a window.
+  const [asWindow, setAsWindow] = useState<boolean | null>(null);
+
+  if (joinedTo && asWindow != null) {
+    return (
+      <JoinShell
+        title="Connected"
+        lead={
+          asWindow ? (
+            <>
+              This computer is now a window of <strong>{joinedTo}</strong>: it shows your books
+              there and downloads nothing. To keep copies here too, turn on "Use this computer to
+              download" in Settings → Library.
+            </>
+          ) : (
+            <>
+              This computer joined <strong>{joinedTo}</strong>, but downloading could not be turned
+              off, so it is a branch that downloads. Turn off "Use this computer to download" in
+              Settings → Library to make it a window.
+            </>
+          )
+        }
+      >
+        <Button type="button" onClick={onJoined}>
+          Open Settings → Library
+        </Button>
+      </JoinShell>
+    );
+  }
 
   if (joinedTo) {
     return (
@@ -55,11 +87,16 @@ export function WelcomeScreen({
     return (
       <JoinShell
         title="Join your library"
-        lead="Enter your library's address, with its port if it has one, then sign in as a member. This computer becomes a branch of that library, and nothing the library sends runs here until you approve it."
+        lead="Enter your library's address, with its port if it has one, then sign in as a member. This computer becomes a window of that library: it shows your books there and downloads nothing until you turn downloading on."
       >
         <JoinWizard
           defaultBranchName={defaultBranchName}
-          onJoined={(origin) => setJoinedTo(origin)}
+          onJoined={(origin, link) => {
+            void makeWindowOf(link).then((ok) => {
+              setAsWindow(ok);
+              setJoinedTo(origin);
+            });
+          }}
         />
         <div className="mt-6 border-t border-ink/10 pt-4">
           <Button type="button" variant="secondary" onClick={onStartNew}>

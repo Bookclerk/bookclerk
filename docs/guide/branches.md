@@ -127,6 +127,10 @@ it:
 Turn the setting back on to download again. The list for that library is
 then cleared, even while the library can't be reached.
 
+The desktop app starts this way: a library you join from it has the
+setting off from the start, so the computer is a window of that library
+until you turn downloading on.
+
 > [!NOTE]
 > Asking a library to send you one of these books isn't possible yet.
 
