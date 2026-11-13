@@ -812,7 +812,7 @@ pub(crate) fn stage_storefront(
         dir.join("plugin.toml"),
         format!(
             "api_version = 3\nid = \"libro\"\nname = \"Libro.fm\"\nversion = \"0.1.0\"\n\
-             runtime = \"native\"\ncommand = \"./guest\"\nentrypoints = [\"storefront\"]\n\
+             runtime = \"native\"\ncommand = \"./guest\"\nentrypoints = [\"storefront\"]\nmedia = {{ works = [\"book\"], lists = [\"audio\"], fetches = [\"audio\"] }}\n\
              credentials = \"{credentials}\"\n\n[capabilities.network]\nmode = \"deny\"\n"
         ),
     )

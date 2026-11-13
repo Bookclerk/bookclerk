@@ -160,6 +160,9 @@ fn hit(product_id: &str, title: &str, authors: &str) -> CatalogHit {
         product_id: product_id.into(),
         title: title.into(),
         credits: records::credits_from_names([authors], CreditRole::Author),
+        work_kind: bookclerk_source::records::WorkKind::Book,
+        expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+        media_kind: bookclerk_source::records::MediaKind::Audio,
         ..CatalogHit::default()
     }
 }
@@ -216,6 +219,9 @@ fn matches_the_store_record_of_the_title_and_author() {
     let authorless = |id: &str, title: &str| CatalogHit {
         product_id: id.into(),
         title: title.into(),
+        work_kind: bookclerk_source::records::WorkKind::Book,
+        expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+        media_kind: bookclerk_source::records::MediaKind::Audio,
         ..CatalogHit::default()
     };
     let ga = [

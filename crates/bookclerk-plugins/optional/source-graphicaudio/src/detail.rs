@@ -90,6 +90,8 @@ pub fn parse_product_detail(html: &str) -> Option<CatalogHit> {
         identifiers,
         credits,
         series_entries: records::series_entries(series.as_deref(), series_index.as_deref()),
+        work_kind: bookclerk_storefront::records::WorkKind::Book,
+        media_kind: bookclerk_storefront::records::MediaKind::Audio,
         ..Default::default()
     })
 }

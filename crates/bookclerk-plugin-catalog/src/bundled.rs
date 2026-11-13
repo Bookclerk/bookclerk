@@ -518,6 +518,18 @@ fn copy_tree(src: &Path, dest: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `media` line a test manifest with `entrypoints` needs: storefronts
+    /// and metadata providers must declare their media; other plugins must not.
+    fn media_line(entrypoints: &str) -> &'static str {
+        if entrypoints.contains("storefront") {
+            "media = { works = [\"book\"], lists = [\"audio\"], fetches = [\"audio\"] }"
+        } else if entrypoints.contains("metadata") {
+            "media = { works = [\"book\"], lists = [\"audio\"] }"
+        } else {
+            ""
+        }
+    }
     use crate::extract::write_file;
     use crate::identity::PluginKey;
 
@@ -548,10 +560,12 @@ version = "{version}"
 runtime = "native"
 command = "./guest"
 entrypoints = ["{entrypoint}"]
+{media}
 
 [capabilities.network]
 mode = "deny"
-"#
+"#,
+                media = media_line(entrypoint)
             )
             .as_bytes(),
         )

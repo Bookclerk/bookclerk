@@ -283,6 +283,8 @@ fn ga_catalog_hit(p: &MagentoCatalogProduct, origin: String) -> CatalogHit {
         url: p.url.clone(),
         cover_url: p.cover_url.clone(),
         origin,
+        work_kind: bookclerk_storefront::records::WorkKind::Book,
+        media_kind: bookclerk_storefront::records::MediaKind::Audio,
         ..Default::default()
     }
 }

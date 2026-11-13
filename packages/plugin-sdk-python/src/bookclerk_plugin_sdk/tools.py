@@ -751,6 +751,65 @@ def _validate_own_user_agent(net: dict[str, Any]) -> None:
         )
 
 
+_MEDIA_WORK_KINDS = ("unspecified", "book", "podcast")
+"""Work kinds a ``[media].works`` entry may name."""
+
+_MEDIA_CARRIERS = ("unspecified", "audio", "ebook", "print")
+"""Carriers a ``[media].lists`` / ``[media].fetches`` entry may name."""
+
+
+def _validate_media(m: dict[str, Any]) -> None:
+    """Check ``[media]`` against the entrypoints with the host's rules and messages.
+
+    Args:
+        m: Manifest dictionary.
+
+    Raises:
+        ValueError: If a storefront or metadata provider has no table or an
+            empty ``works`` / ``lists``, another plugin has one, a list names an
+            unknown kind or ``unspecified``, or ``fetches`` is declared by a
+            metadata provider or names a carrier ``lists`` does not.
+    """
+    entrypoints = m.get("entrypoints") or []
+    storefront = "storefront" in entrypoints
+    metadata = "metadata" in entrypoints
+    media = m.get("media")
+    if media is None:
+        if storefront or metadata:
+            raise ValueError(
+                "plugin.toml: `[media]` is required for a plugin with the `storefront` or "
+                "`metadata` entrypoint (declare `works` and `lists`)"
+            )
+        return
+    if not storefront and not metadata:
+        raise ValueError("plugin.toml: `[media]` needs the `storefront` or `metadata` entrypoint")
+    works = list(media.get("works") or [])
+    lists = list(media.get("lists") or [])
+    fetches = list(media.get("fetches") or [])
+    for field, values, known in (
+        ("works", works, _MEDIA_WORK_KINDS),
+        ("lists", lists, _MEDIA_CARRIERS),
+        ("fetches", fetches, _MEDIA_CARRIERS),
+    ):
+        for value in values:
+            if value not in known:
+                raise ValueError(f"plugin.toml: `[media].{field}` names unknown kind `{value}`")
+    if not works:
+        raise ValueError("plugin.toml: `[media].works` is empty")
+    if not lists:
+        raise ValueError("plugin.toml: `[media].lists` is empty")
+    for field, values in (("works", works), ("lists", lists), ("fetches", fetches)):
+        if "unspecified" in values:
+            raise ValueError(f"plugin.toml: `[media].{field}` names `unspecified`")
+    if not storefront and fetches:
+        raise ValueError("plugin.toml: `[media].fetches` needs the `storefront` entrypoint")
+    for kind in fetches:
+        if kind not in lists:
+            raise ValueError(
+                f"plugin.toml: `[media].fetches` names `{kind}`, which `lists` does not"
+            )
+
+
 def validate_manifest(m: dict[str, Any]) -> None:
     """Validate a parsed ``plugin.toml`` mapping.
 
@@ -772,6 +831,7 @@ def validate_manifest(m: dict[str, Any]) -> None:
         raise ValueError("plugin.toml: `api_version` must be 3")
     if m.get("logo") is not None:
         validate_logo(str(m["logo"]))
+    _validate_media(m)
     _validate_surface(m)
     runtime = m.get("runtime") or "native"
     net = (m.get("capabilities") or {}).get("network") or {}

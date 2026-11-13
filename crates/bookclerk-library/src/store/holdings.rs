@@ -874,7 +874,7 @@ mod tests {
             product_id: product.into(),
             work_kind: Some(resolve::WorkKind::Book),
             expression_kind: Some(resolve::ExpressionKind::Narration),
-            media_kind: Some(resolve::MediaKind::Audiobook),
+            media_kind: Some(resolve::MediaKind::Audio),
             title: format!("Title {product}"),
             identifiers: vec![(resolve::IdentifierScheme::Asin, product.into(), None)],
             ..resolve::ListingDraft::default()

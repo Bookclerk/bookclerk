@@ -197,6 +197,31 @@ says `shareable`.
 
 The key is refused on a plugin without the `storefront` entrypoint.
 
+### `[media]` (storefronts and metadata providers)
+
+A storefront or metadata provider says which kinds of work and which
+edition carriers it works with. The table is required for those plugins
+and has no default: one without it, or with an empty `works` or `lists`,
+is refused at install and at spawn. Every other plugin must leave it out.
+
+```toml
+entrypoints = ["storefront"]
+
+[media]
+works = ["book", "podcast"]   # book | podcast
+lists = ["audio"]             # audio | ebook | print
+fetches = ["audio"]           # what fetchTitle can deliver
+```
+
+- `works`: the work kinds the plugin reports.
+- `lists`: the carriers its scans, catalog search and metadata records
+  report.
+- `fetches`: the carriers it can download, a subset of `lists`.
+  Storefronts only; a metadata provider leaves it out.
+
+`describe()` returns the same declaration, and the host refuses records
+outside it. See [Declaring media](abi.md#declaring-media) for the rules.
+
 ### `command` (native)
 
 `command` may be absolute, or relative to the manifest folder. An absolute

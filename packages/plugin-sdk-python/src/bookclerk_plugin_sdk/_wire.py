@@ -272,6 +272,7 @@ def _write_plugin_describe(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _config_option_codec.write(item, elem, caps)
     _cli_schema_codec.write(s.init_struct(9, 0, 1), v["cli"], caps)
     _catalog_capabilities_codec.write(s.init_struct(10, 1, 0), v["catalog"], caps)
+    _media_support_codec.write(s.init_struct(11, 0, 3), v["media"], caps)
 
 
 def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
@@ -289,6 +290,7 @@ def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
         "configOptions": [_config_option_codec.read(item, caps) for item in s.get_struct_list(8, 0, 3)],
         "cli": _cli_schema_codec.read(s.get_struct(9, 0, 1), caps),
         "catalog": _catalog_capabilities_codec.read(s.get_struct(10, 1, 0), caps),
+        "media": _media_support_codec.read(s.get_struct(11, 0, 3), caps),
     }
     password_env_var = s.get_text(5)
     if not (password_env_var == ""):
@@ -296,8 +298,8 @@ def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
     return out
 
 
-_plugin_describe_codec = _Codec(2, 11, _write_plugin_describe, _read_plugin_describe)
-"""Wire codec for ``PluginDescribe`` (2 data words, 11 pointers)."""
+_plugin_describe_codec = _Codec(2, 12, _write_plugin_describe, _read_plugin_describe)
+"""Wire codec for ``PluginDescribe`` (2 data words, 12 pointers)."""
 
 
 def _write_oidc_client_template(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -1290,7 +1292,7 @@ def _write_describe_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _plugin_describe_codec.write(s.init_struct(0, 2, 11), v["value"], caps)
+        _plugin_describe_codec.write(s.init_struct(0, 2, 12), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -1301,7 +1303,7 @@ def _write_describe_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_describe_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _plugin_describe_codec.read(s.get_struct(0, 2, 11), caps)}
+        return {"kind": "ok", "value": _plugin_describe_codec.read(s.get_struct(0, 2, 12), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown DescribeReply union member: {disc}")
@@ -2112,6 +2114,24 @@ _scan_params_codec = _Codec(1, 5, _write_scan_params, _read_scan_params)
 """Wire codec for ``ScanParams`` (1 data words, 5 pointers)."""
 
 
+def _write_media_support(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u16_list(0, [_ord(A.WORK_KINDS, v, "WorkKind") for v in v["workKinds"]])
+    s.set_u16_list(1, [_ord(A.MEDIA_KINDS, v, "MediaKind") for v in v["lists"]])
+    s.set_u16_list(2, [_ord(A.MEDIA_KINDS, v, "MediaKind") for v in v["fetches"]])
+
+
+def _read_media_support(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "workKinds": [_from_ord(A.WORK_KINDS, v, "WorkKind") for v in s.get_u16_list(0)],
+        "lists": [_from_ord(A.MEDIA_KINDS, v, "MediaKind") for v in s.get_u16_list(1)],
+        "fetches": [_from_ord(A.MEDIA_KINDS, v, "MediaKind") for v in s.get_u16_list(2)],
+    }
+
+
+_media_support_codec = _Codec(0, 3, _write_media_support, _read_media_support)
+"""Wire codec for ``MediaSupport`` (0 data words, 3 pointers)."""
+
+
 def _write_identifier(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_u16(0, _ord(A.IDENTIFIER_SCHEMES, v["scheme"], "IdentifierScheme"))
     s.set_text(0, v["value"])
@@ -2393,29 +2413,36 @@ _fetch_title_params_codec = _Codec(0, 7, _write_fetch_title_params, _read_fetch_
 """Wire codec for ``FetchTitleParams`` (0 data words, 7 pointers)."""
 
 
-def _write_plain_part(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_fetched_file(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["path"])
+    s.set_u16(0, _ord(A.FETCHED_FILE_ROLES, v["role"], "FetchedFileRole"))
+    if v.get("contentType") is not None:
+        s.set_text(1, v["contentType"])
     if v.get("title") is not None:
-        s.set_text(1, v["title"])
+        s.set_text(2, v["title"])
     if v.get("durationMs") is not None:
-        s.set_u64(0, v["durationMs"])
+        s.set_u64(1, v["durationMs"])
 
 
-def _read_plain_part(s: _StructReader, caps: _CapTable) -> Any:
+def _read_fetched_file(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
         "path": s.get_text(0),
+        "role": _from_ord(A.FETCHED_FILE_ROLES, s.get_u16(0), "FetchedFileRole"),
     }
-    title = s.get_text(1)
+    content_type = s.get_text(1)
+    if not (content_type == ""):
+        out["contentType"] = content_type
+    title = s.get_text(2)
     if not (title == ""):
         out["title"] = title
-    duration_ms = s.get_u64(0)
+    duration_ms = s.get_u64(1)
     if not (duration_ms == 0):
         out["durationMs"] = duration_ms
     return out
 
 
-_plain_part_codec = _Codec(1, 2, _write_plain_part, _read_plain_part)
-"""Wire codec for ``PlainPart`` (1 data words, 2 pointers)."""
+_fetched_file_codec = _Codec(2, 3, _write_fetched_file, _read_fetched_file)
+"""Wire codec for ``FetchedFile`` (2 data words, 3 pointers)."""
 
 
 def _write_chapter_marker(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -2435,51 +2462,43 @@ _chapter_marker_codec = _Codec(1, 1, _write_chapter_marker, _read_chapter_marker
 
 
 def _write_plain_fetch(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    items = s.init_struct_list(0, len(v["parts"]), 1, 2)
-    for item, elem in zip(items, v["parts"], strict=True):
-        _plain_part_codec.write(item, elem, caps)
-    if v.get("m4bPath") is not None:
-        s.set_text(1, v["m4bPath"])
-    if v.get("coverPath") is not None:
-        s.set_text(2, v["coverPath"])
-    items = s.init_struct_list(3, len(v["chapters"]), 1, 1)
+    s.set_u16(0, _ord(A.MEDIA_KINDS, v["mediaKind"], "MediaKind"))
+    items = s.init_struct_list(0, len(v["files"]), 2, 3)
+    for item, elem in zip(items, v["files"], strict=True):
+        _fetched_file_codec.write(item, elem, caps)
+    items = s.init_struct_list(1, len(v["chapters"]), 1, 1)
     for item, elem in zip(items, v["chapters"], strict=True):
         _chapter_marker_codec.write(item, elem, caps)
     if v.get("pdfUrl") is not None:
-        s.set_text(4, v["pdfUrl"])
+        s.set_text(2, v["pdfUrl"])
     if v.get("refreshedCredentials") is not None:
-        s.set_data(5, v["refreshedCredentials"])
+        s.set_data(3, v["refreshedCredentials"])
 
 
 def _read_plain_fetch(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
-        "parts": [_plain_part_codec.read(item, caps) for item in s.get_struct_list(0, 1, 2)],
-        "chapters": [_chapter_marker_codec.read(item, caps) for item in s.get_struct_list(3, 1, 1)],
+        "mediaKind": _from_ord(A.MEDIA_KINDS, s.get_u16(0), "MediaKind"),
+        "files": [_fetched_file_codec.read(item, caps) for item in s.get_struct_list(0, 2, 3)],
+        "chapters": [_chapter_marker_codec.read(item, caps) for item in s.get_struct_list(1, 1, 1)],
     }
-    m4b_path = s.get_text(1)
-    if not (m4b_path == ""):
-        out["m4bPath"] = m4b_path
-    cover_path = s.get_text(2)
-    if not (cover_path == ""):
-        out["coverPath"] = cover_path
-    pdf_url = s.get_text(4)
+    pdf_url = s.get_text(2)
     if not (pdf_url == ""):
         out["pdfUrl"] = pdf_url
-    refreshed_credentials = s.get_data(5)
+    refreshed_credentials = s.get_data(3)
     if not (len(refreshed_credentials) == 0):
         out["refreshedCredentials"] = refreshed_credentials
     return out
 
 
-_plain_fetch_codec = _Codec(0, 6, _write_plain_fetch, _read_plain_fetch)
-"""Wire codec for ``PlainFetch`` (0 data words, 6 pointers)."""
+_plain_fetch_codec = _Codec(1, 4, _write_plain_fetch, _read_plain_fetch)
+"""Wire codec for ``PlainFetch`` (1 data words, 4 pointers)."""
 
 
 def _write_fetch_title_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _plain_fetch_codec.write(s.init_struct(0, 0, 6), v["value"], caps)
+        _plain_fetch_codec.write(s.init_struct(0, 1, 4), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -2490,7 +2509,7 @@ def _write_fetch_title_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_fetch_title_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _plain_fetch_codec.read(s.get_struct(0, 0, 6), caps)}
+        return {"kind": "ok", "value": _plain_fetch_codec.read(s.get_struct(0, 1, 4), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown FetchTitleReply union member: {disc}")

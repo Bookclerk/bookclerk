@@ -417,7 +417,13 @@ impl ExternalSource {
                 credential,
                 rows: Vec::new(),
             };
-            run_pass(&mut io, &account_id, full_pass()).await?;
+            run_pass(
+                &mut io,
+                &account_id,
+                full_pass(),
+                &self.session.describe_snapshot().media,
+            )
+            .await?;
             rows.append(&mut io.rows);
         }
         Ok(rows)
@@ -764,7 +770,13 @@ impl ContentSource for ExternalSource {
                     pass_id: start.pass_id.clone(),
                 },
             };
-            let pass = run_pass(&mut io, &account_id, start).await?;
+            let pass = run_pass(
+                &mut io,
+                &account_id,
+                start,
+                &self.session.describe_snapshot().media,
+            )
+            .await?;
             summary.accounts += 1;
             summary.books_upserted += pass.upserted;
             summary.pages = summary.pages.saturating_add(pass.store_pages);
@@ -819,7 +831,12 @@ impl ContentSource for ExternalSource {
                 }
             }
         }
-        Ok(plain.into())
+        // Checked after the refreshed credentials are kept: a store that
+        // rotated its token during the fetch must not lose it to a bad reply.
+        bookclerk_plugin_abi::validate_plain_fetch(&plain, &self.session.describe_snapshot().media)
+            .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
+        SourceFetch::try_from(plain)
+            .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))
     }
 
     /// Asks the guest to sign the account out at the store, then deletes the
@@ -888,7 +905,11 @@ impl ContentSource for ExternalSource {
             .cs_call(move |src| async move { src.search_catalog(params).await })
             .await
         {
-            Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_abi).collect()),
+            Ok(hits) => Ok(hits
+                .into_iter()
+                .filter(|hit| self.declared_hit(hit))
+                .map(catalog_hit_from_abi)
+                .collect()),
             Err(err) => {
                 tracing::warn!(
                     plugin = %self.id(),
@@ -936,7 +957,11 @@ impl ContentSource for ExternalSource {
             .cs_call(move |src| async move { src.expand_candidates(params).await })
             .await
         {
-            Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_abi).collect()),
+            Ok(hits) => Ok(hits
+                .into_iter()
+                .filter(|hit| self.declared_hit(hit))
+                .map(catalog_hit_from_abi)
+                .collect()),
             Err(err) => {
                 tracing::debug!(
                     plugin = %self.id(),
@@ -1023,7 +1048,11 @@ impl ContentSource for ExternalSource {
             .cs_call(move |src| async move { src.list_deals(params).await })
             .await
         {
-            Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_abi).collect()),
+            Ok(hits) => Ok(hits
+                .into_iter()
+                .filter(|hit| self.declared_hit(hit))
+                .map(catalog_hit_from_abi)
+                .collect()),
             Err(err) => {
                 tracing::debug!(
                     plugin = %self.id(),
@@ -1037,6 +1066,17 @@ impl ContentSource for ExternalSource {
 }
 
 impl ExternalSource {
+    /// Whether a guest catalog hit's kinds are inside this storefront's
+    /// declared media; a hit outside it is logged and dropped.
+    fn declared_hit(&self, hit: &bookclerk_plugin_sdk::CatalogHit) -> bool {
+        super::declared_media::declared(
+            self.id(),
+            &self.session.describe_snapshot().media,
+            "catalog hit",
+            (hit.work_kind, hit.expression_kind, hit.media_kind),
+        )
+    }
+
     /// Calls the guest's `catalogDetail`, soft-failing to `None` so one slow
     /// or broken store never fails a search or a detail dialog.
     ///
@@ -1051,7 +1091,9 @@ impl ExternalSource {
             .cs_call(move |src| async move { src.catalog_detail(params).await })
             .await
         {
-            Ok(hit) => Ok(hit.map(catalog_hit_from_abi)),
+            Ok(hit) => Ok(hit
+                .filter(|hit| self.declared_hit(hit))
+                .map(catalog_hit_from_abi)),
             Err(err) => {
                 tracing::debug!(
                     plugin = %self.id(),
@@ -1541,7 +1583,9 @@ mod tests {
             product_id: product.into(),
             title: format!("Title {product}"),
             marketplace: Some("us".into()),
-            media_kind: bookclerk_plugin_sdk::MediaKind::Audiobook,
+            work_kind: bookclerk_plugin_sdk::WorkKind::Book,
+            expression_kind: bookclerk_plugin_sdk::ExpressionKind::Narration,
+            media_kind: bookclerk_plugin_sdk::MediaKind::Audio,
             ..bookclerk_plugin_sdk::ScanBook::default()
         }
     }

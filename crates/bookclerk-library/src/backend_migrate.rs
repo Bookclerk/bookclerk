@@ -294,14 +294,8 @@ mod tests {
             .unwrap();
         // The episode's row comes first in storage order, then gains its
         // parent once the show exists.
-        work("w_episode", "podcast_episode")
-            .insert(&source)
-            .await
-            .unwrap();
-        work("w_show", "podcast_show")
-            .insert(&source)
-            .await
-            .unwrap();
+        work("w_episode", "podcast").insert(&source).await.unwrap();
+        work("w_show", "podcast").insert(&source).await.unwrap();
         let mut episode = works::Entity::find_by_id("w_episode")
             .one(&source)
             .await

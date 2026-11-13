@@ -1295,10 +1295,16 @@ def test_validate_accepts_and_rejects_cron_triggers():
         validate_manifest({**base, "triggers": {"crons": ["@daily * * * *"]}})
     with pytest.raises(ValueError, match="is duplicated"):
         validate_manifest({**base, "triggers": {"crons": ["0 * * * *", "0  *  * * *"]}})
+    media = {"works": ["book"], "lists": ["audio"]}
     for registry in ("storefront", "storage", "databaseAdapter"):
         with pytest.raises(ValueError, match="cannot be combined"):
             validate_manifest(
-                {**base, "entrypoints": [registry], "triggers": {"crons": ["0 0 * * *"]}}
+                {
+                    **base,
+                    "entrypoints": [registry],
+                    "triggers": {"crons": ["0 0 * * *"]},
+                    **({"media": media} if registry == "storefront" else {}),
+                }
             )
 
 

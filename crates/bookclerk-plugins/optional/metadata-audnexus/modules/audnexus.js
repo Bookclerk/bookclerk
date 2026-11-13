@@ -311,7 +311,7 @@ export function recordFromBook(body, request) {
         abridgement: abridgement(b.formatType),
         workKind: "book",
         expressionKind: "narration",
-        mediaKind: "audiobook",
+        mediaKind: "audio",
         identifiers,
         credits,
         seriesEntries,

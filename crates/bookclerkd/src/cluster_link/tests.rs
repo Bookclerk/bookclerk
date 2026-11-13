@@ -394,6 +394,7 @@ version = "0.1.0"
 runtime = "native"
 command = "./echo"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 
 [capabilities.network]
 mode = "deny"
@@ -1639,6 +1640,9 @@ mod results_and_uploads {
             account_id: account_id.into(),
             product_id: product_id.into(),
             title: format!("Title {product_id}"),
+            work_kind: bookclerk_plugin_abi::WorkKind::Book,
+            expression_kind: bookclerk_plugin_abi::ExpressionKind::Narration,
+            media_kind: bookclerk_plugin_abi::MediaKind::Audio,
             ..ScanBook::default()
         }
     }

@@ -46,7 +46,8 @@ through `ContentSource` /
 `purchaseHints` / `listDeals` for Discover). Sources always return `PlainFetch` (`SourceFetch` is
 an alias) —
 DRM (Adrm/CENC) is decrypted inside the Audible plugin before the host sees
-media. Guest `fetchTitle` carries optional `pdfUrl`; catalog methods are on the
+media. Guest `fetchTitle` lists its files by role (`part`, `whole`,
+`cover`) and carries an optional `pdfUrl`; catalog methods are on the
 Workers RPC wire for external guests. When an account is removed (Accounts
 page or `bookclerk library revoke-account`), the host first calls the guest's
 `revokeAccount` with the account's stored credentials so it can sign out at

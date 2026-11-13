@@ -1322,6 +1322,9 @@ mod tests {
                     origin: String::from("deals"),
                     cover_url: Some(format!("https://covers.example/{id}.jpg")),
                     description: Some(format!("The long blurb of deal {id}. ").repeat(20)),
+                    work_kind: bookclerk_source::records::WorkKind::Book,
+                    expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+                    media_kind: bookclerk_source::records::MediaKind::Audio,
                     ..CatalogHit::default()
                 })
                 .collect())
@@ -1340,6 +1343,9 @@ mod tests {
                 product_id: format!("near-{}", seed.product_id),
                 title: format!("Near {}", seed.title),
                 origin: String::from("related"),
+                work_kind: bookclerk_source::records::WorkKind::Book,
+                expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+                media_kind: bookclerk_source::records::MediaKind::Audio,
                 ..CatalogHit::default()
             }])
         }
@@ -1848,6 +1854,9 @@ mod tests {
                 let hit = CatalogHit {
                     product_id: (*p).to_string(),
                     title: format!("Title {p}"),
+                    work_kind: bookclerk_source::records::WorkKind::Book,
+                    expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+                    media_kind: bookclerk_source::records::MediaKind::Audio,
                     ..CatalogHit::default()
                 };
                 catalog_listing(store, "us", &hit, now)

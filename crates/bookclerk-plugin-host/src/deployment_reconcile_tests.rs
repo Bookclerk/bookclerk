@@ -187,7 +187,7 @@ fn mode_body(mode: &str) -> PluginInstanceConfigV1 {
 fn fixture_manifest(id: &str, network_mode: &str, secrets: bool) -> String {
     let mut text = format!(
         "api_version = 3\nid = \"{id}\"\nversion = \"0.1.0\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
-         entrypoints = [\"storefront\"]\n\n[capabilities.network]\nmode = \"{network_mode}\"\n\n\
+         entrypoints = [\"storefront\"]\nmedia = {{ works = [\"book\"], lists = [\"audio\"], fetches = [\"audio\"] }}\n\n[capabilities.network]\nmode = \"{network_mode}\"\n\n\
          [vars]\n\n[[settings]]\nkey = \"mode\"\nlabel = \"Mode\"\ntype = \"enum\"\n\
          values = [{{ id = \"device\", label = \"Device\" }}, {{ id = \"zip\", label = \"ZIP\" }}, \
          {{ id = \"web\", label = \"Web\" }}]\ndefault = \"web\"\n"

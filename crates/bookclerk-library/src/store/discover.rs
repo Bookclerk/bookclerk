@@ -886,6 +886,9 @@ mod tests {
                         bookclerk_resolve::CreditRole::Author,
                         None,
                     )],
+                    work_kind: Some(bookclerk_resolve::WorkKind::Book),
+                    expression_kind: Some(bookclerk_resolve::ExpressionKind::Narration),
+                    media_kind: Some(bookclerk_resolve::MediaKind::Audio),
                     ..bookclerk_resolve::ListingDraft::default()
                 },
                 detail: crate::ListingDetail::default(),

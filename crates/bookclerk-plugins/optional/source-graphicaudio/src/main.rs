@@ -3,7 +3,7 @@
 #![allow(clippy::missing_docs_in_private_items)]
 
 use async_trait::async_trait;
-use bookclerk_plugin_sdk::manifest_capabilities;
+use bookclerk_plugin_sdk::{manifest_capabilities, manifest_media};
 use bookclerk_plugin_sdk::{
     serve, Bindings, Brand, CatalogCapabilities, CatalogDetailParams, CatalogHit,
     ContentSource as ContentSourceRole, Entrypoints, ExpandCandidatesParams, FetchTitleParams,
@@ -33,6 +33,7 @@ impl PluginWorker for GraphicAudioRoot {
             rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
             scalar_limits: ScalarLimits::default().into(),
             capabilities: manifest_capabilities(include_str!("../plugin.toml"))?,
+            media: manifest_media(include_str!("../plugin.toml"))?,
             portal_auth_mode: PortalAuthMode::Password,
             aliases: vec!["ga".into(), "graphic-audio".into()],
             sort_key: 2,

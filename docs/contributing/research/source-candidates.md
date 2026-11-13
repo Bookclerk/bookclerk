@@ -351,7 +351,7 @@ device-slot language in FAQ). Magento ZIP links live under
 2. **Magento ZIP (opt-in: `access = "zip"`)** — **implemented**  
    Magento customer session → My Downloadable Products → follow download
    link (307 → signed CloudFront ZIP) → extract M4B/MP3/FLAC →
-   `PlainFetch` (`m4b_path` when M4B). No Access App device slot.
+   `PlainFetch` (one `whole` file when M4B). No Access App device slot.
    Each Magento link hit consumes one of ≤3 download attempts — transfer
    must complete after resolve. Same stored password as Browser Player.
 

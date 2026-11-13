@@ -219,6 +219,21 @@ impl MemoryCatalog {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
+        let works_with_episodes = if listing.is_episode() {
+            work_ids
+                .iter()
+                .filter(|id| {
+                    self.works
+                        .values()
+                        .any(|w| w.parent_work_id.as_deref() == Some(id.as_str()))
+                })
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        };
         Snapshot {
             listing: stored,
             parent_listing: parent,
@@ -231,6 +246,7 @@ impl MemoryCatalog {
             holding,
             credited,
             works_with_series,
+            works_with_episodes,
         }
     }
 
@@ -260,6 +276,14 @@ impl MemoryCatalog {
         if let Some(link) = &plan.work_parent {
             if !self.works.contains_key(&link.parent_work_id) {
                 return fail(format!("parent work {} missing", link.parent_work_id));
+            }
+            // A work with episodes of its own is a show and keeps its place.
+            if self
+                .works
+                .values()
+                .any(|w| w.parent_work_id.as_deref() == Some(link.work_id.as_str()))
+            {
+                return fail(format!("work {} has episodes", link.work_id));
             }
             match self.works.get_mut(&link.work_id) {
                 Some(work) if work.parent_work_id.is_none() => {

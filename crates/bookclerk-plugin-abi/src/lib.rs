@@ -84,6 +84,7 @@ mod jobs;
 pub mod json_bytes;
 pub mod kind;
 mod limits;
+pub mod media;
 pub mod methods;
 pub mod package_version;
 mod plugin_migration;
@@ -252,6 +253,10 @@ pub use limits::{
     MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS,
     MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
     MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+};
+pub use media::{
+    check_record_kinds, decode_plain_fetch_bytes, encode_plain_fetch_bytes, media_support_is_empty,
+    same_media_support, validate_media_support, validate_plain_fetch, FetchError, MediaError,
 };
 pub use roles::{
     AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,

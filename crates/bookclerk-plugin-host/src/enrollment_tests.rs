@@ -21,7 +21,7 @@ use crate::PROCESS_DEK_TEST_LOCK as TEST_LOCK;
 fn storefront_manifest(id: &str) -> String {
     format!(
         "api_version = 3\nid = \"{id}\"\nversion = \"0.1.0\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
-         entrypoints = [\"storefront\"]\n\n[capabilities.network]\nmode = \"deny\"\n\n\
+         entrypoints = [\"storefront\"]\nmedia = {{ works = [\"book\"], lists = [\"audio\"], fetches = [\"audio\"] }}\n\n[capabilities.network]\nmode = \"deny\"\n\n\
          [vars]\n\n[[settings]]\nkey = \"mode\"\nlabel = \"Mode\"\ntype = \"enum\"\n\
          values = [{{ id = \"zip\", label = \"ZIP\" }}, {{ id = \"web\", label = \"Web\" }}]\n\
          default = \"web\"\n"
@@ -296,7 +296,7 @@ fn library_host_target_matches_the_catalog_target() {
 fn versioned_manifest(id: &str, version: &str, keys: &[&str]) -> String {
     let mut text = format!(
         "api_version = 3\nid = \"{id}\"\nversion = \"{version}\"\nruntime = \"native\"\n\
-         command = \"./echo\"\nentrypoints = [\"storefront\"]\n\n[capabilities.network]\n\
+         command = \"./echo\"\nentrypoints = [\"storefront\"]\nmedia = {{ works = [\"book\"], lists = [\"audio\"], fetches = [\"audio\"] }}\n\n[capabilities.network]\n\
          mode = \"deny\"\n\n[vars]\n"
     );
     for key in keys {

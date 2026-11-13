@@ -295,7 +295,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS works (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN ('book', 'podcast_show', 'podcast_episode', 'drama')),
+        kind TEXT NOT NULL CHECK (kind IN ('book', 'podcast')),
         title TEXT NOT NULL,
         match_key TEXT NOT NULL DEFAULT '',
         parent_work_id TEXT REFERENCES works(id) ON DELETE SET NULL,
@@ -326,7 +326,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE TABLE IF NOT EXISTS expressions (
         id TEXT PRIMARY KEY,
         work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
-        kind TEXT NOT NULL CHECK (kind IN ('narration', 'text', 'translation', 'dramatisation', 'podcast_audio')),
+        kind TEXT NOT NULL CHECK (kind IN ('text', 'narration', 'dramatisation', 'graphic', 'original_audio')),
         language TEXT,
         abridgement TEXT NOT NULL CHECK (abridgement IN ('unknown', 'unabridged', 'abridged')),
         credit_key TEXT NOT NULL DEFAULT '',
@@ -339,7 +339,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE TABLE IF NOT EXISTS editions (
         id TEXT PRIMARY KEY,
         expression_id TEXT NOT NULL REFERENCES expressions(id) ON DELETE CASCADE,
-        media_kind TEXT NOT NULL CHECK (media_kind IN ('audiobook', 'ebook', 'print', 'podcast_audio')),
+        media_kind TEXT NOT NULL CHECK (media_kind IN ('audio', 'ebook', 'print')),
         title TEXT NOT NULL,
         subtitle TEXT,
         published_at TEXT,

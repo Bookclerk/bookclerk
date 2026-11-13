@@ -2,6 +2,7 @@
 
 mod cover_sink;
 mod database;
+mod declared_media;
 mod destination;
 mod destination_local;
 mod integration;
