@@ -393,17 +393,20 @@ fn manifest(runtime: &str, entrypoints: &str, extra: &str) -> crate::PluginManif
     bookclerk_plugin_manifest::parse(&text).expect("manifest")
 }
 
+/// `[media]` for a storefront or metadata plugin.
+const MEDIA: &str = "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\n";
+
 #[test]
 fn only_plain_storefronts_sleep() {
     assert!(storefront_activates_on_demand(&manifest(
         "native",
         "\"storefront\"",
-        ""
+        MEDIA
     )));
     assert!(!storefront_activates_on_demand(&manifest(
         "native",
         "\"storefront\", \"metadata\"",
-        ""
+        MEDIA
     )));
     assert!(!storefront_activates_on_demand(&manifest(
         "native",
