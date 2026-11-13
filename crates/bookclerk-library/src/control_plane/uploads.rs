@@ -1704,13 +1704,20 @@ pub async fn commit_upload(
                 text(&session.book_uuid),
                 text(&now),
                 text(edition),
+                text(&session.book_uuid),
             ];
             binds.extend(gate());
+            // Another live title that acquired this edition keeps it, as in
+            // `plan_set_acquire_status`.
             statements.push(exec(
                 &format!(
                     "UPDATE edition_acquisitions SET status = 'acquired', storage_key = ?, \
                        error_message = NULL, title_uuid = ?, updated_at = ? \
-                      WHERE edition_id = ? AND {gate_sql}"
+                      WHERE edition_id = ? \
+                        AND (status != 'acquired' OR title_uuid = ? \
+                             OR NOT EXISTS (SELECT 1 FROM books \
+                                            WHERE uuid = edition_acquisitions.title_uuid)) \
+                        AND {gate_sql}"
                 ),
                 binds,
             ));
