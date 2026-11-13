@@ -4829,6 +4829,12 @@ impl LibraryStore {
 
     /// Updates acquire status, storage key, and optional error message.
     ///
+    /// The title's edition records the write too (`edition_acquisitions`,
+    /// read with [`Self::edition_acquisition`]) in the same batch, and an
+    /// acquired title's `book_acquired` event names that edition. An
+    /// edition another title acquired keeps its state whatever this title
+    /// writes, while that title stays in the library.
+    ///
     /// # Arguments
     ///
     /// * `title_id` - Product id / ASIN / ISBN used as the title key.
@@ -4853,16 +4859,24 @@ impl LibraryStore {
         error_message: Option<&str>,
     ) -> Result<()> {
         let model = self.resolve_book(title_id, account_id).await?;
+        let edition = self.edition_of_book(&model.uuid).await?;
         if let Some(atomic) = &self.atomic {
             let event = if status == AcquireStatus::Acquired {
                 Some(event_outbox::prepare_publish_domain_event(
-                    event_outbox::book_acquired_spec(&model, storage_key),
+                    event_outbox::book_acquired_spec(&model, storage_key, edition.as_deref()),
                 )?)
             } else {
                 None
             };
             return atomic
-                .set_acquire_status(&model.uuid, status, storage_key, error_message, event)
+                .set_acquire_status(
+                    &model.uuid,
+                    edition.as_deref(),
+                    status,
+                    storage_key,
+                    error_message,
+                    event,
+                )
                 .await;
         }
         // In-process fallback for a store opened without an atomic backend
@@ -4870,8 +4884,15 @@ impl LibraryStore {
         // atomic operation above; an external adapter refuses this `begin()`.
         #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        match event_outbox::set_acquire_status_on(&txn, model, status, storage_key, error_message)
-            .await
+        match event_outbox::set_acquire_status_on(
+            &txn,
+            model,
+            edition.as_deref(),
+            status,
+            storage_key,
+            error_message,
+        )
+        .await
         {
             Ok(()) => {
                 txn.commit().await.map_err(LibraryError::Orm)?;
@@ -5391,7 +5412,7 @@ impl LibraryStore {
             notes: Set(req.notes.clone()),
             status: Set(req.status.as_str().to_string()),
             preferred_source: NotSet,
-            resolved_book_uuid: Set(req.resolved_book_uuid.clone()),
+            resolved_edition_id: Set(req.resolved_edition_id.clone()),
             cover_url: Set(req.cover_url.clone()),
             created_at: Set(now.clone()),
             updated_at: Set(now),
@@ -6034,7 +6055,7 @@ impl LibraryStore {
     ///
     /// * `uuid` - Book UUID.
     /// * `status` - Acquire or request status value.
-    /// * `resolved_book_uuid` - `resolved_book_uuid` argument for this call.
+    /// * `resolved_edition_id` - Edition that fulfilled the request, when it is now held.
     ///
     /// # Returns
     ///
@@ -6047,7 +6068,7 @@ impl LibraryStore {
         &self,
         uuid: &str,
         status: RequestStatus,
-        resolved_book_uuid: Option<&str>,
+        resolved_edition_id: Option<&str>,
     ) -> Result<()> {
         let model = title_requests::Entity::find()
             .filter(title_requests::Column::Uuid.eq(uuid))
@@ -6057,8 +6078,8 @@ impl LibraryStore {
             .ok_or_else(|| LibraryError::NotFound(uuid.into()))?;
         let mut am: title_requests::ActiveModel = model.into();
         am.status = Set(status.as_str().to_string());
-        if let Some(v) = resolved_book_uuid {
-            am.resolved_book_uuid = Set(Some(v.to_string()));
+        if let Some(v) = resolved_edition_id {
+            am.resolved_edition_id = Set(Some(v.to_string()));
         }
         am.updated_at = Set(now_str());
         let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
@@ -6619,8 +6640,8 @@ pub struct NewTitleRequest {
     pub notes: Option<String>,
     /// Lifecycle status for the row (user, request, …).
     pub status: RequestStatus,
-    /// Library `books.uuid` once the wishlist item is fulfilled.
-    pub resolved_book_uuid: Option<String>,
+    /// Edition (`editions.id`) the library holds once the wishlist item is fulfilled.
+    pub resolved_edition_id: Option<String>,
     /// HTTPS URL for cover art when known.
     pub cover_url: Option<String>,
 }
@@ -7187,7 +7208,7 @@ fn map_request(m: title_requests::Model) -> TitleRequestRecord {
         work_key: String::new(),
         work_id: m.work_id,
         edition_id: m.edition_id,
-        resolved_book_uuid: m.resolved_book_uuid,
+        resolved_edition_id: m.resolved_edition_id,
         cover_url: m.cover_url,
         sources: Vec::new(),
         description: None,
@@ -7719,7 +7740,7 @@ pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
     StoredFeed,
 };
-pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
+pub use edition_files::{EditionAcquisition, EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};
 pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};

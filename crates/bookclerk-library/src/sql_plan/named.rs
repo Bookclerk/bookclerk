@@ -510,6 +510,7 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
         }
         DbAtomicParams::SetAcquireStatus {
             book_uuid,
+            edition_id,
             status,
             storage_key,
             error_message,
@@ -531,6 +532,7 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
             };
             plan_set_acquire_status(
                 book_uuid,
+                edition_id.as_deref(),
                 status,
                 storage_key.as_deref(),
                 error_message.as_deref(),
@@ -2449,6 +2451,7 @@ fn plan_publish_domain_event(row: &PublishRow<'_>, now: &str) -> AtomicPlan {
 #[allow(clippy::too_many_arguments)]
 fn plan_set_acquire_status(
     book_uuid: &str,
+    edition_id: Option<&str>,
     status: &str,
     storage_key: Option<&str>,
     error_message: Option<&str>,
@@ -2464,6 +2467,7 @@ fn plan_set_acquire_status(
     ordering_key: &str,
     now: &str,
 ) -> AtomicPlan {
+    let edition = edition_id.unwrap_or_default();
     AtomicPlan {
         statements: vec![
             sql(
@@ -2509,13 +2513,52 @@ fn plan_set_acquire_status(
                     j_str(book_uuid),
                 ],
             ),
+            // The edition's row: created when missing, then set unless
+            // another title still in the library acquired it (that title's
+            // writes alone change an acquired edition).
+            sql(
+                "INSERT OR IGNORE INTO edition_acquisitions (\
+                    edition_id, status, storage_key, error_message, title_uuid, updated_at\
+                 ) SELECT ?, ?, ?, ?, ?, ? \
+                 WHERE ? != '' AND EXISTS (SELECT 1 FROM books WHERE uuid = ?) \
+                   AND EXISTS (SELECT 1 FROM editions WHERE id = ?)",
+                vec![
+                    j_str(edition),
+                    j_str(status),
+                    j_opt_str(storage_key),
+                    j_opt_str(error_message),
+                    j_str(book_uuid),
+                    j_str(now),
+                    j_str(edition),
+                    j_str(book_uuid),
+                    j_str(edition),
+                ],
+            ),
+            sql(
+                "UPDATE edition_acquisitions SET status = ?, storage_key = ?, error_message = ?, \
+                    title_uuid = ?, updated_at = ? \
+                 WHERE edition_id = ? \
+                   AND (status != 'acquired' OR title_uuid = ? \
+                        OR NOT EXISTS (SELECT 1 FROM books WHERE uuid = edition_acquisitions.title_uuid)) \
+                   AND EXISTS (SELECT 1 FROM books WHERE uuid = ?)",
+                vec![
+                    j_str(status),
+                    j_opt_str(storage_key),
+                    j_opt_str(error_message),
+                    j_str(book_uuid),
+                    j_str(now),
+                    j_str(edition),
+                    j_str(book_uuid),
+                    j_str(book_uuid),
+                ],
+            ),
             sql(
                 "SELECT CASE WHEN EXISTS (SELECT 1 FROM books WHERE uuid = ?) \
                     THEN 'ok' ELSE 'notFound' END AS status",
                 vec![j_str(book_uuid)],
             ),
         ],
-        outcome_index: 2,
+        outcome_index: 4,
         payload_index: None,
         consume_once: None,
         receipt_select_index: None,
@@ -4992,6 +5035,104 @@ mod tests {
         assert_eq!(blocked.status, atomic_status::EMPTY);
     }
 
+    /// One `SetAcquireStatus` request for title `book` of edition `ed1`;
+    /// `step` keeps each request's operation id distinct.
+    fn edition_status_req(step: u32, book: &str, status: &str, key: Option<&str>) -> NamedReq {
+        test_req(
+            DbAtomicParams::SetAcquireStatus {
+                book_uuid: book.into(),
+                edition_id: Some("ed1".into()),
+                status: status.into(),
+                storage_key: key.map(str::to_string),
+                error_message: None,
+                event_id: String::new(),
+                event_type: String::new(),
+                schema_version: 1,
+                event_account_id: String::new(),
+                source: String::new(),
+                correlation_id: String::new(),
+                causation_id: String::new(),
+                dedup_key: String::new(),
+                payload: String::new(),
+                ordering_key: String::new(),
+            },
+            &format!("acq-{step}"),
+        )
+    }
+
+    /// The `(status, storage_key, title_uuid)` of edition `ed1`.
+    fn edition_row(conn: &Connection) -> (String, Option<String>, String) {
+        conn.query_row(
+            "SELECT status, storage_key, title_uuid FROM edition_acquisitions WHERE edition_id = 'ed1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn set_acquire_status_keeps_an_edition_another_title_acquired() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let now = "2024-06-01T00:00:00Z";
+        for sql in [
+            "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+             VALUES ('audible', 'user-1', 'us', 'audible', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO books (uuid, plugin_key, source, account_id, product_id, marketplace, title, created_at, updated_at) \
+             VALUES ('b1', 'audible', 'audible', 'user-1', 'B00X', 'us', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO books (uuid, plugin_key, source, account_id, product_id, marketplace, title, created_at, updated_at) \
+             VALUES ('b2', 'audible', 'audible', 'user-1', 'B00Y', 'uk', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO works (id, kind, title, created_at, updated_at) \
+             VALUES ('w1', 'book', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO expressions (id, work_id, kind, abridgement, created_at, updated_at) \
+             VALUES ('x1', 'w1', 'narration', 'unknown', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO editions (id, expression_id, media_kind, title, created_at, updated_at) \
+             VALUES ('ed1', 'x1', 'audio', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+        ] {
+            conn.execute(sql, []).unwrap();
+        }
+        let step = std::cell::Cell::new(0u32);
+        let run = |book: &str, status: &str, key: Option<&str>| {
+            step.set(step.get() + 1);
+            let req = edition_status_req(step.get(), book, status, key);
+            assert_eq!(
+                run_plan(&conn, &plan_req(&req, now).unwrap()).status,
+                atomic_status::OK
+            );
+        };
+
+        run("b1", "acquired", Some("a.m4b"));
+        assert_eq!(
+            edition_row(&conn),
+            ("acquired".into(), Some("a.m4b".into()), "b1".into())
+        );
+        // A sibling title's writes never change the acquired edition, not
+        // even when it shares the copy.
+        run("b2", "error", None);
+        run("b2", "queued", None);
+        run("b2", "acquired", Some("a.m4b"));
+        assert_eq!(
+            edition_row(&conn),
+            ("acquired".into(), Some("a.m4b".into()), "b1".into())
+        );
+        // The title that acquired it can.
+        run("b1", "not_acquired", None);
+        assert_eq!(
+            edition_row(&conn),
+            ("not_acquired".into(), None, "b1".into())
+        );
+        run("b2", "acquired", Some("b.m4b"));
+        assert_eq!(
+            edition_row(&conn),
+            ("acquired".into(), Some("b.m4b".into()), "b2".into())
+        );
+        // Once that title leaves the library, a sibling's write applies.
+        conn.execute("DELETE FROM books WHERE uuid = 'b2'", [])
+            .unwrap();
+        run("b1", "queued", None);
+        assert_eq!(edition_row(&conn), ("queued".into(), None, "b1".into()));
+    }
+
     #[test]
     fn set_acquire_status_publishes_outbox_in_same_batch() {
         let conn = Connection::open_in_memory().unwrap();
@@ -5012,6 +5153,7 @@ mod tests {
         let req = test_req(
             DbAtomicParams::SetAcquireStatus {
                 book_uuid: "b1".into(),
+                edition_id: None,
                 status: "acquired".into(),
                 storage_key: Some("Author/T/book.m4b".into()),
                 error_message: None,
@@ -5050,6 +5192,7 @@ mod tests {
         let missing = test_req(
             DbAtomicParams::SetAcquireStatus {
                 book_uuid: "missing".into(),
+                edition_id: None,
                 status: "acquired".into(),
                 storage_key: None,
                 error_message: None,
@@ -5507,6 +5650,7 @@ mod tests {
             },
             DbAtomicParams::SetAcquireStatus {
                 book_uuid: "book-1".into(),
+                edition_id: None,
                 status: "done".into(),
                 storage_key: Some("key".into()),
                 error_message: None,

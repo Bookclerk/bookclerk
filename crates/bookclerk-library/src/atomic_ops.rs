@@ -226,6 +226,10 @@ pub enum DbAtomicParams {
     SetAcquireStatus {
         /// Book UUID to update.
         book_uuid: String,
+        /// The title's edition, whose `edition_acquisitions` row is written
+        /// in the same batch; `None` when the title has no edition yet.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edition_id: Option<String>,
         /// Acquire status string (`acquired`, `downloading`, …).
         status: String,
         /// Object-storage key for the primary audio artifact.

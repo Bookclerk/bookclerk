@@ -3352,7 +3352,7 @@ export type DiscoverFeedState = "ready" | "refreshing" | "preparing";
  * Wishlist / title-request row from `/api/wishlist`.
  *
  * Represents a user ask for a work (and optional acquire queue linkage via
- * `resolved_book_uuid`).
+ * `resolved_edition_id`, the edition that fulfilled it).
  */
 export interface TitleRequest {
   id: number;
@@ -3370,7 +3370,7 @@ export interface TitleRequest {
   work_id: string;
   /** Edition the wish named, when its identifiers reached exactly one. */
   edition_id?: string | null;
-  resolved_book_uuid: string | null;
+  resolved_edition_id: string | null;
   cover_url?: string | null;
   /** Same-origin path of this cover's processed images; see {@link coverSrc}. */
   cover_path?: string | null;

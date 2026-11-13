@@ -39,6 +39,16 @@ pub struct AcquireStatusCounts {
 }
 
 impl AcquireStatus {
+    /// Every status, in pipeline order (the `edition_acquisitions.status`
+    /// CHECK lists the same strings).
+    pub const ALL: [Self; 5] = [
+        Self::NotAcquired,
+        Self::Queued,
+        Self::Downloading,
+        Self::Acquired,
+        Self::Error,
+    ];
+
     /// Returns the canonical snake_case / lowercase wire string.
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -1098,9 +1108,9 @@ pub struct TitleRequestRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(example = "0b8e3f2a-5c1d-5e7f-9a2b-4c6d8e0f1a3b")]
     pub edition_id: Option<String>,
-    /// Library `books.uuid` once the wishlist item is fulfilled.
+    /// Edition (`editions.id`) the library holds once the wishlist item is fulfilled.
     #[schema(example = "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31")]
-    pub resolved_book_uuid: Option<String>,
+    pub resolved_edition_id: Option<String>,
     /// HTTPS URL for cover art when known.
     #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,

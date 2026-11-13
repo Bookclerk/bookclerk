@@ -40463,9 +40463,9 @@
             "example": "0b8e3f2a-5c1d-5e7f-9a2b-4c6d8e0f1a3b",
             "nullable": true
           },
-          "resolved_book_uuid": {
+          "resolved_edition_id": {
             "type": "string",
-            "description": "Library `books.uuid` once the wishlist item is fulfilled.",
+            "description": "Edition (`editions.id`) the library holds once the wishlist item is fulfilled.",
             "example": "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31",
             "nullable": true
           },

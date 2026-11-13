@@ -2771,7 +2771,7 @@ mod store_tests {
                     isbn: isbn.map(str::to_string),
                     notes: None,
                     status: crate::RequestStatus::Open,
-                    resolved_book_uuid: None,
+                    resolved_edition_id: None,
                     cover_url: None,
                 })
                 .await
@@ -2873,7 +2873,7 @@ mod store_tests {
             isbn: isbn.map(str::to_string),
             notes: None,
             status: crate::RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         };
         let by_isbn = store

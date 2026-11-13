@@ -6337,7 +6337,7 @@ async fn create_request_inner(
                 isbn: body.isbn.clone(),
                 notes: body.notes.clone(),
                 status: RequestStatus::Open,
-                resolved_book_uuid: None,
+                resolved_edition_id: None,
                 cover_url: body.cover_url.clone(),
             },
             work.as_ref(),

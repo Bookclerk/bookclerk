@@ -1078,7 +1078,7 @@ mod tests {
                 isbn: None,
                 notes: None,
                 status: crate::RequestStatus::Open,
-                resolved_book_uuid: None,
+                resolved_edition_id: None,
                 cover_url: None,
             };
             let row = store

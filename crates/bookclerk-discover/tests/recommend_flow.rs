@@ -56,7 +56,7 @@ mod integration {
                 isbn: None,
                 notes: None,
                 status: RequestStatus::Open,
-                resolved_book_uuid: None,
+                resolved_edition_id: None,
                 cover_url: Some("https://img.example/book-3.jpg".into()),
             })
             .await

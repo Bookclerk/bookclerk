@@ -2743,6 +2743,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
     async fn set_acquire_status(
         &self,
         book_uuid: &str,
+        edition_id: Option<&str>,
         status: bookclerk_library::AcquireStatus,
         storage_key: Option<&str>,
         error_message: Option<&str>,
@@ -2755,6 +2756,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
         let result = self
             .call(DbAtomicParams::SetAcquireStatus {
                 book_uuid: book_uuid.to_string(),
+                edition_id: edition_id.map(str::to_string),
                 status: status.as_str().to_string(),
                 storage_key: storage_key.map(str::to_string),
                 error_message: error_message.map(str::to_string),
