@@ -387,7 +387,12 @@ impl LocalKeeper for DaemonKeeper {
         };
         let scope = bookclerk_library::SourceScope::new(library, plugin_key, "");
         match scope
-            .replace_refreshed_credentials(account_id, &sent, refreshed)
+            .replace_refreshed_credentials(
+                account_id,
+                &sent,
+                refreshed,
+                bookclerk_library::RefreshKeeping::SingleKeeper,
+            )
             .await
         {
             Ok(true) => Some(KeptHere::Saved),

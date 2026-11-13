@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bookclerk_config::Config;
-use bookclerk_library::SourceScope;
+use bookclerk_library::{RefreshKeeping, SourceScope};
 use bookclerk_plugin_sdk::{ExtensibleConfig, PRODUCT_API_VERSION};
 use bookclerk_source::abi::{
     self as source_abi, credentials_from_bytes, credentials_to_bytes, expand_candidates_params,
@@ -160,7 +160,7 @@ async fn keep_refreshed_credentials(
     // Registered before anything else, whether the refresh is stored,
     // handed back or discarded: the guest's process held it either way.
     bookclerk_config::register_secret_bytes(&refreshed);
-    let scope = match target {
+    let (scope, keeping) = match target {
         RefreshTarget::Handed(Some(sink)) => {
             sink.refreshed(account_id, refreshed).await;
             return Ok(());
@@ -181,7 +181,7 @@ async fn keep_refreshed_credentials(
             );
             return Ok(());
         }
-        RefreshTarget::Local(Some(scope)) => scope,
+        RefreshTarget::Local(Some(scope)) => (scope, RefreshKeeping::Shared),
         RefreshTarget::SingleKeeper(scope) => {
             let keeper = scope
                 .keeping_branch(account_id)
@@ -196,12 +196,12 @@ async fn keep_refreshed_credentials(
                 );
                 return Ok(());
             }
-            scope
+            (scope, RefreshKeeping::SingleKeeper)
         }
     };
     let sent = credentials_from_bytes(sent)?;
     let stored = scope
-        .replace_refreshed_credentials(account_id, &sent, &refreshed)
+        .replace_refreshed_credentials(account_id, &sent, &refreshed, keeping)
         .await
         .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
     if !stored {
@@ -1776,10 +1776,28 @@ mod tests {
         // ran before that first push landed.
         let sent = serde_json::json!({"token": "v5"});
         assert!(!scope
-            .replace_refreshed_credentials("a1", &sent, br#"{"token":"v7"}"#)
+            .replace_refreshed_credentials(
+                "a1",
+                &sent,
+                br#"{"token":"v7"}"#,
+                RefreshKeeping::SingleKeeper
+            )
             .await
             .unwrap());
         assert_eq!(stored(&scope).await, serde_json::json!({"token": "v5"}));
+        // A storefront that shares sign-ins (one whose manifest stopped
+        // declaring a single keeper) saves its refreshes despite the row
+        // left from before.
+        keep_refreshed_credentials(
+            "echo",
+            RefreshTarget::Local(Some(&scope)),
+            "a1",
+            &v5,
+            br#"{"token":"v8"}"#.to_vec(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stored(&scope).await, serde_json::json!({"token": "v8"}));
     }
 
     #[tokio::test]

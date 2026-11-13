@@ -147,7 +147,7 @@ pub use proxy_txn::{
 };
 pub use schema_state::{SchemaState, SCHEMA_STATE_FROZEN, SCHEMA_STATE_UNRELEASED};
 pub use schema_walk::{plan_schema_walk, plan_schema_walk_from_state, SchemaWalk};
-pub use scope::SourceScope;
+pub use scope::{RefreshKeeping, SourceScope};
 pub use secrets::{
     b64_string_to_bytes, build_sealed_record, bytes_to_b64_string, delete_secret,
     delete_secrets_for_account, get_secret, list_secrets, secret_account_type, secret_kind,
