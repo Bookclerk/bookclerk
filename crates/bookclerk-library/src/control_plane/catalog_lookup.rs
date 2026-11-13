@@ -127,9 +127,13 @@ where
 /// wide enough that [`result_page`] of them could pass the plugin's byte
 /// limits.
 ///
+/// A page the plugin refuses for its result bytes is read again at half
+/// the rows (see [`read_shrinking`]), so a page of rows wider than the
+/// caller estimated still reads.
+///
 /// # Errors
 ///
-/// Returns the read error.
+/// Returns the read error, including a byte-limit refusal of a single row.
 pub(crate) async fn read_paged_by<E>(
     store: &LibraryStore,
     select: sea_orm::Select<E>,
@@ -145,6 +149,51 @@ where
         select = select.order_by_asc(key.into_column());
     }
     let page = u64::try_from(page.max(1)).unwrap_or(1);
+    read_shrinking(page, cap, |offset, limit| {
+        let select = select.clone();
+        async move {
+            select
+                .offset(offset)
+                .limit(limit)
+                .all(store.db())
+                .await
+                .map_err(LibraryError::Orm)
+        }
+    })
+    .await
+}
+
+/// Whether `err` is the plugin refusing a reply for its size in bytes, which
+/// fewer rows can fix.
+fn is_result_bytes_limit(err: &LibraryError) -> bool {
+    err.limit().is_some_and(|limit| {
+        matches!(
+            limit.limit.as_str(),
+            "maxResultBytes" | "maxAtomicResultBytes" | "maxPayloadBytes"
+        )
+    })
+}
+
+/// Every row `fetch(offset, limit)` returns (at most `cap`), in pages of at
+/// most `page` rows.
+///
+/// A page refused for its result bytes is asked again at half the rows; the
+/// smaller page then holds for the rest of the read. A single row refused
+/// for its bytes is returned as the error.
+///
+/// # Errors
+///
+/// Returns the first error `fetch` returns that fewer rows cannot fix.
+pub(crate) async fn read_shrinking<T, F, Fut>(
+    page: u64,
+    cap: Option<u64>,
+    mut fetch: F,
+) -> Result<Vec<T>>
+where
+    F: FnMut(u64, u64) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<T>>>,
+{
+    let mut page = page.max(1);
     let mut out = Vec::new();
     loop {
         let read = u64::try_from(out.len()).unwrap_or(u64::MAX);
@@ -152,17 +201,16 @@ where
         if want == 0 {
             return Ok(out);
         }
-        let rows = select
-            .clone()
-            .offset(read)
-            .limit(want)
-            .all(store.db())
-            .await
-            .map_err(LibraryError::Orm)?;
-        let got = rows.len();
-        out.extend(rows);
-        if u64::try_from(got).unwrap_or(0) < want {
-            return Ok(out);
+        match fetch(read, want).await {
+            Ok(rows) => {
+                let got = rows.len();
+                out.extend(rows);
+                if u64::try_from(got).unwrap_or(0) < want {
+                    return Ok(out);
+                }
+            }
+            Err(err) if want > 1 && is_result_bytes_limit(&err) => page = want / 2,
+            Err(err) => return Err(err),
         }
     }
 }

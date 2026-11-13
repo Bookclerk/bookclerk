@@ -607,3 +607,62 @@ async fn offers_leave_out_branches_no_longer_trusted() {
         .unwrap()
         .is_empty());
 }
+
+/// A page the plugin refuses for its result bytes is read again at fewer
+/// rows (three rows of about 1,500 bytes against a 4,096-byte cap read two
+/// at a time), and a row too wide alone, or another error, is returned.
+#[tokio::test]
+async fn a_page_refused_for_its_bytes_is_read_again_smaller() {
+    use bookclerk_plugin_abi::LimitExceeded;
+    let rows: Vec<u64> = (0..7).collect();
+    let asked = std::sync::Mutex::new(Vec::new());
+    let fetch = |width: u64| {
+        let rows = &rows;
+        let asked = &asked;
+        move |offset: u64, limit: u64| {
+            asked.lock().unwrap().push(limit);
+            let start = usize::try_from(offset).unwrap().min(rows.len());
+            let end = usize::try_from(offset + limit).unwrap().min(rows.len());
+            let page = rows[start..end].to_vec();
+            let used = width * u64::try_from(page.len()).unwrap();
+            async move {
+                if used > 4096 {
+                    Err(LibraryError::LimitExceeded(LimitExceeded::new(
+                        "maxResultBytes",
+                        4096,
+                        used,
+                    )))
+                } else {
+                    Ok(page)
+                }
+            }
+        }
+    };
+
+    let got = read_shrinking(3, None, fetch(1500)).await.unwrap();
+    assert_eq!(got, rows);
+    assert_eq!(*asked.lock().unwrap(), vec![3, 1, 1, 1, 1, 1, 1, 1, 1]);
+
+    asked.lock().unwrap().clear();
+    let got = read_shrinking(3, Some(5), fetch(1500)).await.unwrap();
+    assert_eq!(got, rows[..5]);
+
+    asked.lock().unwrap().clear();
+    let got = read_shrinking(8, None, fetch(1000)).await.unwrap();
+    assert_eq!(got, rows);
+    assert_eq!(*asked.lock().unwrap(), vec![8, 4, 4]);
+
+    let err = read_shrinking(3, None, fetch(5000)).await.unwrap_err();
+    assert!(err.limit().is_some(), "{err}");
+
+    let err = read_shrinking::<u64, _, _>(3, None, |_, _| async {
+        Err(LibraryError::LimitExceeded(LimitExceeded::new(
+            "maxResultRows",
+            1,
+            3,
+        )))
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(err.limit().unwrap().limit, "maxResultRows");
+}
