@@ -357,6 +357,9 @@ fn manifest(runtime: &str, entrypoints: &str, extra: &str) -> crate::PluginManif
     bookclerk_plugin_manifest::parse(&text).expect("manifest")
 }
 
+/// `[media]` for a storefront or metadata plugin.
+const MEDIA: &str = "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\n";
+
 /// `[[events.consumers]]` for one event type.
 const EVENTS: &str = "[[events.consumers]]\ntype = \"book_acquired\"\nschema_versions = [1]\n";
 
@@ -364,7 +367,11 @@ const EVENTS: &str = "[[events.consumers]]\ntype = \"book_acquired\"\nschema_ver
 fn trigger_and_lookup_plugins_activate_on_demand() {
     assert!(activates_on_demand(&manifest("native", "", EVENTS)));
     assert!(activates_on_demand(&manifest("native", "\"cli\"", EVENTS)));
-    assert!(activates_on_demand(&manifest("native", "\"metadata\"", "")));
+    assert!(activates_on_demand(&manifest(
+        "native",
+        "\"metadata\"",
+        MEDIA
+    )));
     assert!(activates_on_demand(&manifest("native", "\"covers\"", "")));
 }
 
@@ -379,7 +386,7 @@ fn stateful_sign_in_and_registry_plugins_stay_resident() {
     assert!(!activates_on_demand(&manifest(
         "native",
         "\"storefront\"",
-        EVENTS
+        &format!("{MEDIA}\n{EVENTS}")
     )));
     assert!(!activates_on_demand(&manifest("native", "\"storage\"", "")));
 }
