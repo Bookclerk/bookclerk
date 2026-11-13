@@ -1889,6 +1889,9 @@ mod tests {
                 bookclerk_source::CatalogHit {
                     product_id: product.into(),
                     title: title.into(),
+                    work_kind: bookclerk_source::records::WorkKind::Book,
+                    expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+                    media_kind: bookclerk_source::records::MediaKind::Audio,
                     ..bookclerk_source::CatalogHit::default()
                 },
             );

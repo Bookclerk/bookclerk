@@ -34,6 +34,9 @@ fn lean(isbn: &str) -> CatalogHit {
     CatalogHit {
         product_id: isbn.into(),
         title: "Circe".into(),
+        work_kind: bookclerk_source::records::WorkKind::Book,
+        expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+        media_kind: bookclerk_source::records::MediaKind::Audio,
         ..CatalogHit::default()
     }
 }
