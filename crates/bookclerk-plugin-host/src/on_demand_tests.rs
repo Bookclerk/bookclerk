@@ -454,8 +454,10 @@ async fn every_guest_call_wakes_a_sleeping_proxy_and_reaches_the_guest() {
         .await
         .expect_err("no covers");
     assert!(covers.to_string().contains("does not fetch covers"));
+    // A per-run value, not a literal: the double rejects every login.
+    let password = format!("probe-{}", std::process::id());
     let login = proxy
-        .authenticate_user("reader", "pw")
+        .authenticate_user("reader", &password)
         .await
         .expect_err("no login");
     assert!(login.to_string().contains("credential login"));
