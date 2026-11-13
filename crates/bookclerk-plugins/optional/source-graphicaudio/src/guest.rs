@@ -7,12 +7,10 @@
 use std::path::Path;
 
 use bookclerk_plugin_sdk::{
-    FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch, ScanBook, ScanPage,
-    ScanParams, SourceAccount, MAX_SCAN_PAGE_BOOKS,
+    scan_page, FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch,
+    PluginError, ScanBook, ScanPage, ScanParams, SourceAccount, StorePage,
 };
-use bookclerk_storefront::abi::{
-    credentials_from_bytes, credentials_to_bytes, full_pass_page, page_cursor, scan_credential,
-};
+use bookclerk_storefront::abi::{credentials_from_bytes, credentials_to_bytes, scan_credential};
 use bookclerk_storefront::{LoginOptions, PlainFetch};
 use serde_json::Value;
 
@@ -123,9 +121,10 @@ pub async fn guest_login_rpc(
 /// RPC scan: one page of one account's full pass (the host upserts books).
 ///
 /// GraphicAudio lists a library in one response with no paging or delta API,
-/// so every pass is full and ends `complete`. A library larger than
-/// `maxScanPageBooks` is split into pages of that size, and each later page
-/// lists the library again and takes its slice.
+/// so every pass is full and ends `complete`. The whole listing is one store
+/// page to the SDK's [`scan_page`] helper: a library larger than
+/// `maxScanPageBooks` goes back in slices of that size, and each later slice
+/// lists the library again.
 ///
 /// `magento_password` is required for Magento web/zip listing unless a device
 /// token is present on the credentials (legacy Access App fallback).
@@ -136,22 +135,57 @@ pub async fn guest_login_rpc(
 /// * `store_base_url` - Magento store base URL.
 /// * `access` - Which listing to use.
 /// * `magento_password` - The account password for the Magento listing.
-/// * `params` - The pass's account, credential and options.
-/// * `page` - The page the cursor names
-///   ([`bookclerk_storefront::abi::page_from_cursor`]).
+/// * `params` - The pass's account, credential, options and cursor.
 ///
 /// # Errors
 ///
-/// Returns an error when the credential is missing or invalid, or the
-/// listing fails.
+/// Returns `invalid_cursor` for a cursor this plugin did not write, and
+/// `internal` when the credential is missing or invalid or the listing
+/// fails.
 pub async fn guest_scan_page(
     access_base_url: &str,
     store_base_url: &str,
     access: GraphicAudioAccess,
     magento_password: Option<&str>,
     params: &ScanParams,
-    page: u32,
-) -> Result<ScanPage> {
+) -> std::result::Result<ScanPage, PluginError> {
+    scan_page(params, |_store_cursor, _| async move {
+        let (books, store_pages) = list_account(
+            access_base_url,
+            store_base_url,
+            access,
+            magento_password,
+            params,
+        )
+        .await
+        .map_err(|err| PluginError::internal(err.to_string()))?;
+        Ok(StorePage {
+            books,
+            complete: true,
+            store_pages: Some(store_pages),
+            ..StorePage::default()
+        })
+    })
+    .await
+}
+
+/// Lists the pass's whole library with its credential.
+///
+/// # Returns
+///
+/// The titles and the number of store requests the listing took.
+///
+/// # Errors
+///
+/// Returns an error when the credential is missing or invalid, or the
+/// listing fails.
+async fn list_account(
+    access_base_url: &str,
+    store_base_url: &str,
+    access: GraphicAudioAccess,
+    magento_password: Option<&str>,
+    params: &ScanParams,
+) -> Result<(Vec<ScanBook>, u32)> {
     let creds = scan_credential(params).map_err(|e| GraphicAudioError::auth(e.to_string()))?;
     let auth: GraphicAudioAuthFile = serde_json::from_value(creds).map_err(|e| {
         GraphicAudioError::auth(format!(
@@ -159,7 +193,7 @@ pub async fn guest_scan_page(
             params.account_id
         ))
     })?;
-    let (books, store_pages) = collect_account_books(
+    collect_account_books(
         &auth,
         access_base_url,
         store_base_url,
@@ -169,24 +203,7 @@ pub async fn guest_scan_page(
         &params.account_id,
         &auth.marketplace,
     )
-    .await?;
-    let (slice, next) = page_slice(books, page);
-    // Every page reads the one store listing again; count its store pages
-    // once per pass, on the first page.
-    let store_pages = if page <= 1 { store_pages } else { 0 };
-    Ok(full_pass_page(slice, next.map(page_cursor), store_pages))
-}
-
-/// Titles of 1-based `page` when `books` is split into pages of
-/// `maxScanPageBooks`, and the next page number when more titles follow.
-fn page_slice(books: Vec<ScanBook>, page: u32) -> (Vec<ScanBook>, Option<u32>) {
-    let size = usize::try_from(MAX_SCAN_PAGE_BOOKS).unwrap_or(usize::MAX);
-    let index = usize::try_from(page.saturating_sub(1)).unwrap_or(usize::MAX);
-    let start = index.saturating_mul(size).min(books.len());
-    let end = start.saturating_add(size).min(books.len());
-    let next = (end < books.len()).then(|| page.saturating_add(1));
-    let slice = books.into_iter().skip(start).take(end - start).collect();
-    (slice, next)
+    .await
 }
 
 /// Download one title into `cache_dir` using host-injected credentials.
@@ -342,32 +359,4 @@ pub fn resolve_container(source_config: &Value) -> GraphicAudioContainer {
 #[must_use]
 pub fn source_id() -> &'static str {
     ID
-}
-
-#[cfg(test)]
-mod page_tests {
-    use super::*;
-
-    fn books(n: usize) -> Vec<ScanBook> {
-        (0..n)
-            .map(|i| ScanBook {
-                product_id: i.to_string(),
-                ..ScanBook::default()
-            })
-            .collect()
-    }
-
-    #[test]
-    fn libraries_split_into_pages_of_the_abi_cap() {
-        let size = usize::try_from(MAX_SCAN_PAGE_BOOKS).unwrap();
-        let (one, next) = page_slice(books(3), 1);
-        assert_eq!((one.len(), next), (3, None));
-        let (first, next) = page_slice(books(size + 1), 1);
-        assert_eq!((first.len(), next), (size, Some(2)));
-        let (last, next) = page_slice(books(size + 1), 2);
-        assert_eq!((last.len(), next), (1, None));
-        assert_eq!(last[0].product_id, size.to_string());
-        let (past, next) = page_slice(books(2), 9);
-        assert_eq!((past.len(), next), (0, None));
-    }
 }

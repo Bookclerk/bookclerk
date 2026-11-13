@@ -27,8 +27,8 @@ use bookclerk_mp4::{
     runtime_length_ms_from_chapter_info, track_duration_ms, TrimRange,
 };
 use bookclerk_plugin_sdk::{
-    FetchOptions, LoginParams, LoginResult, PlainFetch, PlainPart, PluginError, ScanPage,
-    ScanParams, SourceAccount, MAX_SCAN_CURSOR_BYTES,
+    scan_page, FetchOptions, LoginParams, LoginResult, PlainFetch, PlainPart, PluginError,
+    ScanPage, ScanParams, SourceAccount, StorePage, MAX_SCAN_CURSOR_BYTES,
 };
 use bookclerk_storefront::abi::{credentials_to_bytes, scan_credential};
 use serde_json::{json, Value};
@@ -213,6 +213,9 @@ pub async fn guest_login_complete(session_id: &str) -> Result<LoginResult> {
 /// continuation token and the delta state token the pass's first page
 /// returned (Audible sends it only there, so the pass carries it to the last
 /// page, which hands it to the host).
+///
+/// It is the plugin's own store cursor: the SDK's [`scan_page`] helper wraps
+/// it in the scan cursor the host sees.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AudibleScanCursor {
     /// Continuation token of the next library page.
@@ -224,7 +227,7 @@ pub struct AudibleScanCursor {
 }
 
 impl AudibleScanCursor {
-    /// Reads the cursor the host sent; the empty cursor starts a pass.
+    /// Reads a store cursor this plugin wrote; the empty cursor starts a pass.
     ///
     /// # Errors
     ///
@@ -249,64 +252,92 @@ impl AudibleScanCursor {
 /// `removed`, and the pass ends with `complete = false`. Without one the pass
 /// lists the whole active library and ends `complete`. Either way the last
 /// page returns the state token Audible issued for the pass, so the next
-/// pass can be a delta.
+/// pass can be a delta. The SDK's [`scan_page`] helper pages Audible's
+/// library pages into scan replies.
 ///
 /// # Arguments
 ///
-/// * `params` - The pass's account, credential, options and sync token.
-/// * `cursor` - Where the pass stands ([`AudibleScanCursor::parse`]);
-///   `None` on the first page.
+/// * `params` - The pass's account, credential, options, cursor and sync
+///   token.
 ///
 /// # Errors
 ///
-/// Returns an error when the credential is missing or invalid, the page
-/// request fails, or the next cursor would exceed `maxScanCursorBytes`.
-pub async fn guest_scan_page(
-    params: &ScanParams,
-    cursor: Option<AudibleScanCursor>,
-) -> Result<ScanPage> {
-    let creds = scan_credential(params).map_err(|e| AudibleError::Auth(e.to_string()))?;
-    let (auth, refreshed) = capturing_authenticator(&creds)?;
+/// Returns `invalid_cursor` for a cursor this plugin did not write, and
+/// `internal` when the credential is missing or invalid, the page request
+/// fails, or the next cursor would exceed `maxScanCursorBytes`.
+pub async fn guest_scan_page(params: &ScanParams) -> std::result::Result<ScanPage, PluginError> {
+    let creds = scan_credential(params).map_err(|e| internal(AudibleError::Auth(e.to_string())))?;
+    let (auth, refreshed) = capturing_authenticator(&creds).map_err(internal)?;
     let marketplace = auth.locale().country_code.to_string();
-    let client = Client::new(auth).map_err(AudibleError::from)?;
-    let request_token = Some(params.sync_token.clone()).filter(|t| !t.is_empty());
-    let (continuation, seen) = match cursor {
-        Some(c) => (Some(c.continuation), c.state_token),
-        None => (None, None),
-    };
-    let request = LibraryPageRequest {
-        continuation,
-        state_token: request_token.clone(),
-        page_size: params.page_size,
-        import_episodes: params.import_episodes,
-        import_plus_titles: params.import_plus_titles,
-    };
-    let rows = fetch_library_page(&client, &params.account_id, &marketplace, &request).await?;
-    let mut page = scan_page_from_rows(rows, seen, request_token)?;
+    let client = Client::new(auth).map_err(|e| internal(AudibleError::from(e)))?;
+    let (client, marketplace) = (&client, marketplace.as_str());
+    let mut page = scan_library_pages(params, |request| async move {
+        fetch_library_page(client, &params.account_id, marketplace, &request).await
+    })
+    .await?;
     page.refreshed_credentials = refreshed.hand_back(&creds);
     Ok(page)
 }
 
-/// Turns one library page into a scan page: a middle page carries the
+/// Answers one scan call from Audible's library pages, fetched by `fetch`.
+///
+/// # Errors
+///
+/// Returns `invalid_cursor` for a cursor this plugin did not write, and
+/// `internal` when `fetch` fails or the next cursor is too long.
+async fn scan_library_pages<F, Fut>(
+    params: &ScanParams,
+    fetch: F,
+) -> std::result::Result<ScanPage, PluginError>
+where
+    F: FnOnce(LibraryPageRequest) -> Fut,
+    Fut: std::future::Future<Output = Result<LibraryPageRows>>,
+{
+    scan_page(params, |store_cursor, _| async move {
+        let cursor = AudibleScanCursor::parse(&store_cursor)?;
+        let request_token = Some(params.sync_token.clone()).filter(|t| !t.is_empty());
+        let (continuation, seen) = match cursor {
+            Some(c) => (Some(c.continuation), c.state_token),
+            None => (None, None),
+        };
+        let request = LibraryPageRequest {
+            continuation,
+            state_token: request_token.clone(),
+            page_size: params.page_size,
+            import_episodes: params.import_episodes,
+            import_plus_titles: params.import_plus_titles,
+        };
+        let rows = fetch(request).await.map_err(internal)?;
+        store_page_from_rows(rows, seen, request_token).map_err(internal)
+    })
+    .await
+}
+
+/// A plugin error for an Audible failure, as the host reports it.
+fn internal(err: AudibleError) -> PluginError {
+    PluginError::internal(err.to_string())
+}
+
+/// Turns one library page into a store page: a middle page carries the
 /// continuation and the state token seen so far in its cursor; the last page
 /// hands that token (or, when Audible sent none, the token the pass started
 /// from) to the host and is `complete` only for a full pass.
 ///
 /// # Errors
 ///
-/// Returns an error when the next cursor would exceed `maxScanCursorBytes`.
-fn scan_page_from_rows(
+/// Returns an error when the cursor cannot be encoded.
+fn store_page_from_rows(
     rows: LibraryPageRows,
     seen: Option<String>,
     request_token: Option<String>,
-) -> Result<ScanPage> {
+) -> Result<StorePage> {
     let cap = usize::try_from(MAX_SCAN_CURSOR_BYTES).unwrap_or(usize::MAX);
     let seen = seen.or(rows.state_token);
-    let mut page = ScanPage {
+    let mut page = StorePage {
         books: rows.books,
         removed: rows.removed,
-        store_pages: 1,
-        ..ScanPage::default()
+        store_pages: Some(1),
+        ..StorePage::default()
     };
     match rows.next_continuation {
         Some(next) => {
@@ -314,13 +345,8 @@ fn scan_page_from_rows(
                 continuation: next,
                 state_token: seen,
             };
-            page.next_cursor =
+            page.next =
                 serde_json::to_string(&next).map_err(|e| AudibleError::Sync(e.to_string()))?;
-            if page.next_cursor.len() > cap {
-                return Err(AudibleError::Sync(
-                    "Audible continuation token too long for a scan cursor".into(),
-                ));
-            }
         }
         None => {
             page.sync_token = seen.or(request_token.clone()).unwrap_or_default();
@@ -366,34 +392,93 @@ mod scan_page_tests {
 
     #[test]
     fn a_full_pass_carries_the_first_page_token_to_the_last_page() {
-        let first = scan_page_from_rows(rows(Some("c1"), Some("s1")), None, None).unwrap();
+        let first = store_page_from_rows(rows(Some("c1"), Some("s1")), None, None).unwrap();
         assert!(!first.complete);
         assert!(first.sync_token.is_empty());
-        let cursor = AudibleScanCursor::parse(&first.next_cursor)
-            .unwrap()
-            .unwrap();
+        let cursor = AudibleScanCursor::parse(&first.next).unwrap().unwrap();
         assert_eq!(cursor.state_token.as_deref(), Some("s1"));
-        let last = scan_page_from_rows(rows(None, None), cursor.state_token, None).unwrap();
+        let last = store_page_from_rows(rows(None, None), cursor.state_token, None).unwrap();
         assert!(last.complete);
-        assert!(last.next_cursor.is_empty());
+        assert!(last.next.is_empty());
         assert_eq!(last.sync_token, "s1");
         assert_eq!(last.removed, ["B0GONE"]);
     }
 
     #[test]
     fn a_delta_pass_is_not_complete_and_keeps_its_token_without_a_new_one() {
-        let last = scan_page_from_rows(rows(None, None), None, Some("old".into())).unwrap();
+        let last = store_page_from_rows(rows(None, None), None, Some("old".into())).unwrap();
         assert!(!last.complete);
         assert_eq!(last.sync_token, "old");
-        let fresh = scan_page_from_rows(rows(None, Some("new")), None, Some("old".into())).unwrap();
+        let fresh =
+            store_page_from_rows(rows(None, Some("new")), None, Some("old".into())).unwrap();
         assert_eq!(fresh.sync_token, "new");
+    }
+
+    #[tokio::test]
+    async fn a_pass_walks_audible_pages_through_the_helper() {
+        let params = |cursor: &str, token: &str| ScanParams {
+            cursor: cursor.into(),
+            sync_token: token.into(),
+            page_size: 7,
+            ..ScanParams::default()
+        };
+        let first = scan_library_pages(&params("", ""), |request| async move {
+            assert_eq!(request.continuation, None);
+            assert_eq!(request.state_token, None);
+            assert_eq!(request.page_size, 7);
+            Ok(rows(Some("c1"), Some("s1")))
+        })
+        .await
+        .unwrap();
+        assert!(!first.complete && first.sync_token.is_empty());
+        assert!(first.next_cursor.starts_with("sp1.0."));
+        let last = scan_library_pages(&params(&first.next_cursor, ""), |request| async move {
+            assert_eq!(request.continuation.as_deref(), Some("c1"));
+            Ok(rows(None, None))
+        })
+        .await
+        .unwrap();
+        assert!(last.complete && last.next_cursor.is_empty());
+        assert_eq!(last.sync_token, "s1");
+        assert_eq!(last.removed, ["B0GONE"]);
+
+        // A delta pass sends its token to Audible and is never complete.
+        let delta = scan_library_pages(&params("", "old"), |request| async move {
+            assert_eq!(request.state_token.as_deref(), Some("old"));
+            Ok(rows(None, None))
+        })
+        .await
+        .unwrap();
+        assert!(!delta.complete);
+        assert_eq!(delta.sync_token, "old");
+
+        // A store failure is internal; a foreign cursor restarts the pass.
+        let err = scan_library_pages(&params("", ""), |_| async {
+            Err(AudibleError::Sync("down".into()))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, bookclerk_plugin_sdk::PluginErrorCode::Internal);
+        let err = scan_library_pages(&params("page:2", ""), |_| async { Ok(rows(None, None)) })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code,
+            bookclerk_plugin_sdk::PluginErrorCode::InvalidCursor
+        );
+        let err = scan_library_pages(&params("sp1.0.{}", ""), |_| async { Ok(rows(None, None)) })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code,
+            bookclerk_plugin_sdk::PluginErrorCode::InvalidCursor
+        );
     }
 
     #[test]
     fn oversized_tokens_never_reach_the_host() {
         let long = "x".repeat(usize::try_from(MAX_SCAN_CURSOR_BYTES).unwrap() + 1);
-        assert!(scan_page_from_rows(rows(Some(&long), None), None, None).is_err());
-        let last = scan_page_from_rows(rows(None, Some(&long)), None, None).unwrap();
+        let last = store_page_from_rows(rows(None, Some(&long)), None, None).unwrap();
         assert!(last.sync_token.is_empty());
     }
 }
