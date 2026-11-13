@@ -30544,7 +30544,7 @@
       },
       "ClientTokenRequest": {
         "type": "object",
-        "description": "`POST /api/client/v1/token` body.",
+        "description": "`POST /api/client/v1/token` body: exactly these three strings, each\nonce, and nothing else.",
         "required": [
           "code",
           "code_verifier",
@@ -30566,7 +30566,8 @@
             "description": "The redirect URI the authorize request named.",
             "example": "http://127.0.0.1:41923/client/callback"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "ClientUser": {
         "type": "object",

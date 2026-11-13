@@ -60,8 +60,10 @@ pub const MAX_CLIENT_STATE_BYTES: usize = 512;
 /// Length of an S256 code challenge: base64url (no padding) of a SHA-256.
 const S256_CHALLENGE_LEN: usize = 43;
 
-/// `POST /api/client/v1/token` body.
+/// `POST /api/client/v1/token` body: exactly these three strings, each
+/// once, and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ClientTokenRequest {
     /// The single-use code from the redirect.
     #[schema(example = "q8Zl0m3VnS2xR7bW4cYd1eTf6gUh9iJk5LoNpQrStUv")]
@@ -312,4 +314,69 @@ mod tests {
         assert!(!is_client_name(&"x".repeat(MAX_CLIENT_NAME_BYTES + 1)));
         assert!(is_client_name(&"x".repeat(MAX_CLIENT_NAME_BYTES)));
     }
+}
+
+/// Reads a `POST /api/client/v1/token` body.
+///
+/// # Arguments
+///
+/// * `body` - The request body bytes, from another machine.
+///
+/// # Returns
+///
+/// The request when the body is one JSON object with exactly `code`,
+/// `code_verifier` and `redirect_uri`, each a string written once, or
+/// `None`.
+#[must_use]
+pub fn parse_client_token_request(body: &[u8]) -> Option<ClientTokenRequest> {
+    serde_json::from_slice(body).ok()
+}
+
+/// What the library stored with an approved code, as the token exchange
+/// checks it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoredClientCode<'a> {
+    /// The client the code was approved for.
+    pub client_id: &'a str,
+    /// The redirect URI the authorize request named.
+    pub redirect_uri: &'a str,
+    /// The PKCE method the authorize request named.
+    pub method: &'a str,
+    /// The PKCE challenge the authorize request sent.
+    pub challenge: &'a str,
+}
+
+/// True when `request` redeems `stored`: the code belongs to
+/// [`CLIENT_CLIENT_ID`], the redirect URI is the same, the method is S256
+/// and the trimmed verifier hashes to the challenge (compared in constant
+/// time).
+///
+/// # Arguments
+///
+/// * `stored` - The approved code's record.
+/// * `request` - The token request.
+///
+/// # Returns
+///
+/// Whether the exchange may mint a library card.
+#[must_use]
+pub fn client_exchange_matches(
+    stored: &StoredClientCode<'_>,
+    request: &ClientTokenRequest,
+) -> bool {
+    let verifier = request.code_verifier.trim();
+    let expected = crate::pkce_challenge(verifier);
+    let challenge = stored.challenge.as_bytes();
+    let same_challenge = expected.len() == challenge.len()
+        && expected
+            .as_bytes()
+            .iter()
+            .zip(challenge)
+            .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+            == 0;
+    !verifier.is_empty()
+        && stored.client_id == CLIENT_CLIENT_ID
+        && stored.redirect_uri == request.redirect_uri
+        && stored.method == "S256"
+        && same_challenge
 }

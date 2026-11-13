@@ -697,15 +697,19 @@ export async function fetchSigninMethods(): Promise<{
 /**
  * Clears the operator cookie session via `POST /api/auth/logout`.
  *
- * @returns Resolves when the logout request finishes.
+ * @returns Resolves when the library answered that the sign-out is done.
+ * @throws {ApiError} When the library answers anything else.
  */
 export async function logout(): Promise<void> {
-  await fetch("/api/auth/logout", {
+  const res = await fetch("/api/auth/logout", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: "{}",
   });
+  if (!res.ok) {
+    throw new ApiError(res.status, `Sign-out failed (${res.status})`);
+  }
 }
 
 /**

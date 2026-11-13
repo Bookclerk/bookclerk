@@ -210,6 +210,13 @@ input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.client_token_request]
+crate = "bookclerk-node-proto"
+boundary = "A library card's token exchange, the POST /api/client/v1/token body and its match against the stored code"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.job_cap_request]
 crate = "bookclerk-library"
 boundary = "A branch's job cap for one library, from POST /api/config/join/capacity"

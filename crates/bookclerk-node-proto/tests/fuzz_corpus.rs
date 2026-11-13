@@ -1,5 +1,5 @@
 //! Replays the checked-in `node_frame`, `node_account_bundle`,
-//! `client_authorization` and `client_authorize` fuzz
+//! `client_authorization`, `client_authorize` and `client_token_request` fuzz
 //! corpora in PR CI (no libFuzzer required), through the same oracles the
 //! targets use, so an input that once broke a parsing invariant stays fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
@@ -24,6 +24,10 @@ mod client_authorization_oracle;
 /// The `client_authorize` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/client_authorize.rs"]
 mod client_authorize_oracle;
+
+/// The `client_token_request` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/client_token_request.rs"]
+mod client_token_oracle;
 
 /// Regular files directly under `fuzz/corpus/<target>/`, canonicalized
 /// and confined to that directory.
@@ -124,4 +128,25 @@ fn fuzz_corpus_client_authorize_replays() {
     }
     assert!(accepted > 0, "no client_authorize seed was accepted");
     assert!(refused > 0, "every client_authorize seed was accepted");
+}
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_client_token_request_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("client_token_request") {
+        let data = std::fs::read(&path).expect("read");
+        let ok = client_token_oracle::check(&data);
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // Seeds say which side they are on in their name.
+        assert_eq!(ok, name.starts_with("accepted"), "seed {name}");
+        if ok {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    assert!(accepted > 0, "no client_token_request seed was accepted");
+    assert!(refused > 0, "every client_token_request seed was accepted");
 }

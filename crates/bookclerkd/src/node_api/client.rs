@@ -34,9 +34,8 @@ use axum::{Extension, Json};
 use base64::Engine as _;
 use bookclerk_library::hash_token;
 use bookclerk_node_proto::{
-    canonical_origin, is_client_name, pkce_challenge, ClientAuthorizeParams, ClientTokenAnswer,
-    ClientTokenRequest, ClientUser, CLIENT_CLIENT_ID, CLIENT_CODE_TTL_SECS, CLIENT_IDLE_DAYS,
-    CLIENT_SCOPE,
+    canonical_origin, is_client_name, ClientAuthorizeParams, ClientTokenAnswer, ClientTokenRequest,
+    ClientUser, CLIENT_CLIENT_ID, CLIENT_CODE_TTL_SECS, CLIENT_IDLE_DAYS, CLIENT_SCOPE,
 };
 pub(crate) use bookclerk_node_proto::{client_request_problem, parse_client_query};
 use rand::RngCore as _;
@@ -50,7 +49,7 @@ use super::branch::{
 };
 use super::check_transport;
 use crate::api::AppState;
-use crate::auth::{constant_time_eq, UserCaller};
+use crate::auth::UserCaller;
 
 /// Largest `POST /api/auth/client-consent` body.
 const MAX_CONSENT_BODY_BYTES: usize = 8 * 1024;
@@ -406,7 +405,7 @@ pub async fn post_client_token(State(state): State<Arc<AppState>>, request: Requ
         Ok(body) => body,
         Err(refused) => return refused,
     };
-    let Ok(body) = serde_json::from_slice::<ClientTokenRequest>(&body) else {
+    let Some(body) = bookclerk_node_proto::parse_client_token_request(&body) else {
         return token_error(StatusCode::BAD_REQUEST, "invalid_request");
     };
     let code = body.code.trim();
@@ -426,11 +425,14 @@ pub async fn post_client_token(State(state): State<Arc<AppState>>, request: Requ
         return token_error(StatusCode::FORBIDDEN, "sign_in_refused");
     };
     let consent = consented(&scope);
-    let matches = client_id == CLIENT_CLIENT_ID
-        && redirect_uri == body.redirect_uri
-        && method == "S256"
-        && consent.is_some()
-        && constant_time_eq(pkce_challenge(verifier).as_bytes(), challenge.as_bytes());
+    let stored = bookclerk_node_proto::StoredClientCode {
+        client_id: &client_id,
+        redirect_uri: &redirect_uri,
+        method: &method,
+        challenge: &challenge,
+    };
+    let matches =
+        consent.is_some() && bookclerk_node_proto::client_exchange_matches(&stored, &body);
     let Some(Consent { name, identity_id }) = consent.filter(|_| matches) else {
         // Another client's code is spent too, as any failed exchange is: the
         // branch client's codes are redeemed only at enroll/oauth, and a

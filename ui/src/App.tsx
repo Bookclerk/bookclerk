@@ -350,7 +350,8 @@ export default function App() {
       <PageSuspense>
         <ClientApprovePage
           onSignOut={async () => {
-            await logout().catch(() => undefined);
+            // A failure reaches the page, which says so and stays signed in.
+            await logout();
             onLogout();
           }}
         />
