@@ -819,7 +819,9 @@ With the setting off for library A, B:
   plugins. Each deployment A made to B is reported to A as `error` with
   the detail "this computer does not download for this library (window
   mode)", and B records, fetches and configures nothing for it. Turning
-  the setting off hands back any job B holds for A at once.
+  the setting off hands back any job B holds for A at once. A's share of
+  B's job slots goes to the libraries B downloads for, and A's job cap
+  applies again when the setting is turned back on.
 - **Reads its person's books from A.** On every connection, every 30
   minutes, and at once when the setting changes, B sends `window.books`
   page by page. A answers each page (`window.page`) with the books on the

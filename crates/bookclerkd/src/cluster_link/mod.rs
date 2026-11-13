@@ -686,8 +686,11 @@ async fn start_clients(
         let failure = failure_key(&link);
         let serial = NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // The link's share of the machine: its claims stop there, and its
-        // heartbeat reports the library only that part.
-        let share = state.capacity.register(&cluster_id, serial, link.max_jobs);
+        // heartbeat reports the library only that part. A window link
+        // (download off) takes none.
+        let share = state
+            .capacity
+            .register(&cluster_id, serial, link.max_jobs, !link.download);
         let share_entry =
             capacity::ShareEntry::new(Arc::clone(&state.capacity), &cluster_id, serial);
         let config = HostClientConfig {

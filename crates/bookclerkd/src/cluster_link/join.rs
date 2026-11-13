@@ -1518,6 +1518,12 @@ pub async fn post_join_sharing(
         // write's clear then sees the change and discards what it wrote.
         super::window::notify_window_changed(cluster_id);
     }
+    // A download change is stored and applied to the share table under one
+    // guard, so racing changes reach it in the order they were stored.
+    let window_write = match settings.download {
+        Some(_) => Some(state.capacity.lock_cap_writes().await),
+        None => None,
+    };
     // Every setting goes in one statement, so a failed write changes none of
     // them and nothing changes unaudited. A setting the body leaves out is
     // not written at all, so it keeps whatever is stored when the statement
@@ -1535,6 +1541,11 @@ pub async fn post_join_sharing(
         }
         Err(err) => return crate::config_authority::events_error(err),
     }
+    if let Some(download) = settings.download {
+        // A window's share of the machine goes to the downloading links.
+        state.capacity.set_window(cluster_id, !download);
+    }
+    drop(window_write);
     tracing::info!(
         %cluster_id,
         %actor,
