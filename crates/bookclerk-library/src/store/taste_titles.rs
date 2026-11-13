@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bookclerk_resolve as resolve;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
-use super::library_model::find_chunked;
+use super::library_model::{find_chunked, find_chunked_paged};
 use super::{parse_dt, LibraryStore};
 use crate::entities::{
     accounts, books, credits, edition_files, edition_identifiers, editions, expressions, holdings,
@@ -411,10 +411,12 @@ impl LibraryStore {
     /// The editions among `edition_ids` that have at least one recorded
     /// file.
     async fn editions_with_files(&self, edition_ids: &[String]) -> Result<BTreeSet<String>> {
-        Ok(find_chunked(self, edition_ids, |part| {
+        Ok(find_chunked_paged(self, edition_ids, |part| {
             edition_files::Entity::find()
                 .filter(edition_files::Column::OwnerKind.eq("edition"))
                 .filter(edition_files::Column::OwnerId.is_in(part.iter().cloned()))
+                .order_by_asc(edition_files::Column::Destination)
+                .order_by_asc(edition_files::Column::StorageKey)
         })
         .await?
         .into_iter()
@@ -428,8 +430,10 @@ impl LibraryStore {
         &self,
         account_ids: &[String],
     ) -> Result<BTreeMap<(String, String), String>> {
-        Ok(find_chunked(self, account_ids, |part| {
-            accounts::Entity::find().filter(accounts::Column::AccountId.is_in(part.iter().cloned()))
+        Ok(find_chunked_paged(self, account_ids, |part| {
+            accounts::Entity::find()
+                .filter(accounts::Column::AccountId.is_in(part.iter().cloned()))
+                .order_by_asc(accounts::Column::Id)
         })
         .await?
         .into_iter()
@@ -446,9 +450,11 @@ impl LibraryStore {
         &self,
         work_ids: &[String],
     ) -> Result<BTreeMap<String, (String, Option<String>)>> {
-        let mut entries = find_chunked(self, work_ids, |part| {
+        let mut entries = find_chunked_paged(self, work_ids, |part| {
             series_entries::Entity::find()
                 .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
+                .order_by_asc(series_entries::Column::SeriesId)
+                .order_by_asc(series_entries::Column::WorkId)
         })
         .await?;
         entries.sort_by(|a, b| {
@@ -494,13 +500,17 @@ impl LibraryStore {
         &self,
         edition_ids: &[String],
     ) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
-        let mut rows = find_chunked(self, edition_ids, |part| {
+        let mut rows = find_chunked_paged(self, edition_ids, |part| {
             edition_identifiers::Entity::find()
                 .filter(edition_identifiers::Column::EditionId.is_in(part.iter().cloned()))
                 .filter(edition_identifiers::Column::Scheme.is_in([
                     resolve::IdentifierScheme::Asin.as_str(),
                     resolve::IdentifierScheme::Isbn.as_str(),
                 ]))
+                .order_by_asc(edition_identifiers::Column::EditionId)
+                .order_by_asc(edition_identifiers::Column::Scheme)
+                .order_by_asc(edition_identifiers::Column::Value)
+                .order_by_asc(edition_identifiers::Column::Marketplace)
         })
         .await?;
         rows.sort_by(|a, b| a.value.cmp(&b.value));
@@ -517,11 +527,13 @@ impl LibraryStore {
     /// Each edition's first credited publisher.
     async fn edition_publishers(&self, edition_ids: &[String]) -> Result<BTreeMap<String, String>> {
         use crate::entities::contributors;
-        let mut rows = find_chunked(self, edition_ids, |part| {
+        let mut rows = find_chunked_paged(self, edition_ids, |part| {
             credits::Entity::find()
                 .filter(credits::Column::TargetKind.eq(resolve::Level::Edition.as_str()))
                 .filter(credits::Column::Role.eq(resolve::CreditRole::Publisher.as_str()))
                 .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
+                .order_by_asc(credits::Column::TargetId)
+                .order_by_asc(credits::Column::ContributorId)
         })
         .await?;
         rows.sort_by_key(|c| c.position);
@@ -567,10 +579,11 @@ impl LibraryStore {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let rows = find_chunked(self, &products, |part| {
+        let rows = find_chunked_paged(self, &products, |part| {
             books::Entity::find()
                 .filter(books::Column::ProductId.is_in(part.iter().cloned()))
                 .filter(books::Column::SeriesAsin.is_not_null())
+                .order_by_asc(books::Column::Id)
         })
         .await?;
         let mut out = BTreeMap::new();
@@ -682,9 +695,10 @@ impl LibraryStore {
         if ids.is_empty() {
             return Ok(BTreeSet::new());
         }
-        let work_of_expression: BTreeMap<String, String> = find_chunked(self, &ids, |part| {
+        let work_of_expression: BTreeMap<String, String> = find_chunked_paged(self, &ids, |part| {
             expressions::Entity::find()
                 .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
+                .order_by_asc(expressions::Column::Id)
         })
         .await?
         .into_iter()
@@ -692,27 +706,31 @@ impl LibraryStore {
         .collect();
         let expression_ids: Vec<String> = work_of_expression.keys().cloned().collect();
         let work_of_edition: BTreeMap<String, String> =
-            find_chunked(self, &expression_ids, |part| {
+            find_chunked_paged(self, &expression_ids, |part| {
                 editions::Entity::find()
                     .filter(editions::Column::ExpressionId.is_in(part.iter().cloned()))
+                    .order_by_asc(editions::Column::Id)
             })
             .await?
             .into_iter()
             .filter_map(|e| Some((e.id, work_of_expression.get(&e.expression_id)?.clone())))
             .collect();
         let edition_ids: Vec<String> = work_of_edition.keys().cloned().collect();
-        let work_of_listing: BTreeMap<String, String> = find_chunked(self, &edition_ids, |part| {
-            store_listings::Entity::find()
-                .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
-        })
-        .await?
-        .into_iter()
-        .filter_map(|l| Some((l.id, work_of_edition.get(&l.edition_id)?.clone())))
-        .collect();
+        let work_of_listing: BTreeMap<String, String> =
+            find_chunked_paged(self, &edition_ids, |part| {
+                store_listings::Entity::find()
+                    .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
+                    .order_by_asc(store_listings::Column::Id)
+            })
+            .await?
+            .into_iter()
+            .filter_map(|l| Some((l.id, work_of_edition.get(&l.edition_id)?.clone())))
+            .collect();
         let listing_ids: Vec<String> = work_of_listing.keys().cloned().collect();
-        Ok(find_chunked(self, &listing_ids, |part| {
+        Ok(find_chunked_paged(self, &listing_ids, |part| {
             super::holdings::find_holdings()
                 .filter(holdings::Column::ListingId.is_in(part.iter().cloned()))
+                .order_by_asc(holdings::Column::Id)
         })
         .await?
         .into_iter()
@@ -904,6 +922,29 @@ mod tests {
                 "{name}"
             );
             assert_eq!(titles[0].series_index.as_deref(), Some("1"), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_edition_with_several_identifiers_reads_them_all_under_every_cap() {
+        for profile in Profile::ALL {
+            let kit = sqlite::memory(profile).await;
+            let store = kit.store();
+            let name = profile.name();
+            store
+                .upsert_account("audible", "a1", "us", None, true, "audible")
+                .await
+                .unwrap();
+            // An ASIN and an ISBN on one edition are two rows for one key,
+            // more than a one-row result holds.
+            let mut book = NewBook::minimal("B0JUSTICE", "a1", "us", "Ancillary Justice");
+            book.asin = Some("B0JUSTICE".into());
+            book.isbn = Some("9780316246620".into());
+            store.upsert_book(&book).await.unwrap();
+            let titles = store.taste_titles().await.unwrap();
+            assert_eq!(titles.len(), 1, "{name}");
+            assert_eq!(titles[0].asin.as_deref(), Some("B0JUSTICE"), "{name}");
+            assert_eq!(titles[0].isbn.as_deref(), Some("9780316246620"), "{name}");
         }
     }
 }

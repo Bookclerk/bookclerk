@@ -107,6 +107,83 @@ where
     read_in_chunks(keys, width, fits, |part| query(part).all(&store.db)).await
 }
 
+/// Most rows read per page by [`find_chunked_paged`] when the backend sets
+/// no row cap.
+const PAGED_LOOKUP_PAGE: u64 = 500;
+
+/// Rows of `E` that `query` selects for `ids`, for a lookup that can return
+/// several rows per id (credits or series entries of a work, identifiers or
+/// files of an edition, listings of an edition, holdings of a listing).
+///
+/// Ids are chunked as [`find_chunked`] chunks them, so each statement fits
+/// the backend's bind and size caps, and each chunk's rows are then read in
+/// pages of at most the backend's `maxResultRows` with `LIMIT` / `OFFSET`;
+/// a page refused as over a negotiated limit is read again at half the
+/// size. One id with more rows than one result holds is therefore still
+/// read whole, where [`find_chunked`] would fail.
+///
+/// `query` must order its rows by a unique key, so consecutive pages
+/// neither skip nor repeat a row.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Orm`] when a read fails for another reason, or a
+/// single row is still over a limit.
+pub(crate) async fn find_chunked_paged<E, F>(
+    store: &LibraryStore,
+    ids: &[String],
+    query: F,
+) -> Result<Vec<E::Model>>
+where
+    E: EntityTrait,
+    F: Fn(&[String]) -> sea_orm::Select<E>,
+{
+    let fits = |part: &[String]| {
+        crate::control_plane::sea_exec(&query(part))
+            .map(|stmt| store.admits_read(&stmt))
+            .unwrap_or(true)
+    };
+    let caps = store.db_capabilities();
+    let mut page = if caps.max_result_rows > 0 {
+        PAGED_LOOKUP_PAGE.min(u64::from(caps.max_result_rows))
+    } else {
+        PAGED_LOOKUP_PAGE
+    };
+    let width = store.lookup_chunk().max(1);
+    let mut out = Vec::new();
+    let mut rest = ids;
+    while !rest.is_empty() {
+        let mut n = width.min(rest.len());
+        while n > 1 && !fits(&rest[..n]) {
+            n /= 2;
+        }
+        let (part, tail) = rest.split_at(n);
+        let mut offset: u64 = 0;
+        loop {
+            match query(part).limit(page).offset(offset).all(&store.db).await {
+                Ok(rows) => {
+                    let len = u64::try_from(rows.len()).unwrap_or(u64::MAX);
+                    out.extend(rows);
+                    if len < page {
+                        break;
+                    }
+                    offset = offset.saturating_add(len);
+                }
+                Err(err)
+                    if page > 1
+                        && bookclerk_plugin_abi::LimitExceeded::from_message(&err.to_string())
+                            .is_some() =>
+                {
+                    page /= 2;
+                }
+                Err(err) => return Err(LibraryError::Orm(err)),
+            }
+        }
+        rest = tail;
+    }
+    Ok(out)
+}
+
 /// Reads `keys` in chunks of at most `width`, halving a chunk until `fits`
 /// accepts it and again when its read is refused as over a negotiated limit
 /// (a reply too large for `maxResultRows` / `maxResultBytes`). Later chunks
