@@ -6,11 +6,13 @@ use async_trait::async_trait;
 use bookclerk_plugin_sdk::{manifest_capabilities, manifest_media};
 use bookclerk_plugin_sdk::{
     serve, Bindings, Brand, CatalogCapabilities, CatalogHit, ContentSource as ContentSourceRole,
-    Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
-    LoginParams, LoginResult, PlainFetch, PluginDescribe, PluginError, PluginWorker,
-    PortalAuthMode, PurchaseHint, PurchaseHintParams, PurchaseHintsParams, ScalarLimits, ScanPage,
-    ScanParams, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    DatabaseBinding, Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation,
+    ListDealsParams, LoginParams, LoginResult, PlainFetch, PluginDescribe, PluginError,
+    PluginMigration, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams,
+    PurchaseHintsParams, ScalarLimits, ScanPage, ScanParams, SearchCatalogParams,
+    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
+use bookclerk_scan_delta::SCAN_STATE_BINDING;
 use bookclerk_storefront::abi::{expand_seed_from_params, DEFAULT_LIST_DEALS_LIMIT};
 use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
 use serde_json::Value;
@@ -52,16 +54,29 @@ impl PluginWorker for ChirpRoot {
     async fn open(
         &self,
         _invocation: Invocation,
-        _bindings: Bindings,
+        mut bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
+        let scan_state =
+            DatabaseBinding::take_named_from_bindings(&mut bindings, SCAN_STATE_BINDING);
         Ok(Entrypoints {
-            storefront: Some(Box::new(ChirpContentSource)),
+            storefront: Some(Box::new(ChirpContentSource { scan_state })),
             ..Entrypoints::default()
         })
     }
+
+    async fn database_migrations(
+        &self,
+        binding: &str,
+    ) -> Result<Vec<PluginMigration>, PluginError> {
+        Ok(bookclerk_scan_delta::migrations_for(binding))
+    }
 }
 
-struct ChirpContentSource;
+struct ChirpContentSource {
+    /// The `SCAN_STATE` database, once the operator approved it: scan delta
+    /// state.
+    scan_state: Option<DatabaseBinding>,
+}
 
 fn internal(err: impl std::fmt::Display) -> PluginError {
     PluginError::internal(err.to_string())
@@ -93,7 +108,8 @@ impl ContentSourceRole for ChirpContentSource {
 
     async fn scan(&self, params: ScanParams) -> Result<ScanPage, PluginError> {
         let gql = bookclerk_plugin_source_chirp::resolve_graphql_url(&Value::Null);
-        bookclerk_plugin_source_chirp::guest_scan_page(&gql, &params).await
+        bookclerk_plugin_source_chirp::guest_scan_page(&gql, &params, self.scan_state.as_ref())
+            .await
     }
 
     async fn fetch_title(&self, params: FetchTitleParams) -> Result<PlainFetch, PluginError> {

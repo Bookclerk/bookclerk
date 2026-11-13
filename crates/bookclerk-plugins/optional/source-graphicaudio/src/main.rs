@@ -6,11 +6,13 @@ use async_trait::async_trait;
 use bookclerk_plugin_sdk::{manifest_capabilities, manifest_media};
 use bookclerk_plugin_sdk::{
     serve, Bindings, Brand, CatalogCapabilities, CatalogDetailParams, CatalogHit,
-    ContentSource as ContentSourceRole, Entrypoints, ExpandCandidatesParams, FetchTitleParams,
-    HealthOk, Invocation, ListDealsParams, LoginParams, LoginResult, PlainFetch, PluginDescribe,
-    PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams, ScalarLimits,
-    ScanPage, ScanParams, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    ContentSource as ContentSourceRole, DatabaseBinding, Entrypoints, ExpandCandidatesParams,
+    FetchTitleParams, HealthOk, Invocation, ListDealsParams, LoginParams, LoginResult, PlainFetch,
+    PluginDescribe, PluginError, PluginMigration, PluginWorker, PortalAuthMode, PurchaseHint,
+    PurchaseHintParams, ScalarLimits, ScanPage, ScanParams, SearchCatalogParams,
+    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
+use bookclerk_scan_delta::SCAN_STATE_BINDING;
 use bookclerk_storefront::abi::expand_seed_from_params;
 use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
 use serde_json::Value;
@@ -20,7 +22,11 @@ struct GraphicAudioRoot;
 
 /// Granted `CONFIG` captured at `open` for login and scan.
 struct GraphicAudioContentSource {
+    /// Granted plugin settings (`CONFIG`).
     config: Value,
+    /// The `SCAN_STATE` database, once the operator approved it: scan delta
+    /// state.
+    scan_state: Option<DatabaseBinding>,
 }
 
 #[async_trait(?Send)]
@@ -58,13 +64,22 @@ impl PluginWorker for GraphicAudioRoot {
     async fn open(
         &self,
         _invocation: Invocation,
-        bindings: Bindings,
+        mut bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
         let config = bindings.config.json_value().unwrap_or(Value::Null);
+        let scan_state =
+            DatabaseBinding::take_named_from_bindings(&mut bindings, SCAN_STATE_BINDING);
         Ok(Entrypoints {
-            storefront: Some(Box::new(GraphicAudioContentSource { config })),
+            storefront: Some(Box::new(GraphicAudioContentSource { config, scan_state })),
             ..Entrypoints::default()
         })
+    }
+
+    async fn database_migrations(
+        &self,
+        binding: &str,
+    ) -> Result<Vec<PluginMigration>, PluginError> {
+        Ok(bookclerk_scan_delta::migrations_for(binding))
     }
 }
 
@@ -115,6 +130,7 @@ impl ContentSourceRole for GraphicAudioContentSource {
             access,
             None,
             &params,
+            self.scan_state.as_ref(),
         )
         .await
     }

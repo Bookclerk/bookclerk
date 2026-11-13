@@ -18,7 +18,8 @@ Third-party plugins depend on the SDK only, never on
 First-party native storefront guests add their private store crates and
 `bookclerk-storefront`, the slim crate of storefront types they share with
 the host (the Audible guest also links `bookclerk-audible-catalog` and
-`bookclerk-mp4`). It has no database, ORM, configuration or OpenAPI dependencies,
+`bookclerk-mp4`, and the Libro.fm, Chirp and GraphicAudio guests link
+`bookclerk-scan-delta` for their scan deltas). It has no database, ORM, configuration or OpenAPI dependencies,
 so a guest build stays small.
 
 ## Runtimes

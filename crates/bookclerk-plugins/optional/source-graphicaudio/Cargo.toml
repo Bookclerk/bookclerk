@@ -31,6 +31,7 @@ async-trait.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 bookclerk-plugin-sdk = { workspace = true, features = ["http"] }
+bookclerk-scan-delta.workspace = true
 bookclerk-storefront.workspace = true
 scraper.workspace = true
 html-escape.workspace = true

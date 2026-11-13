@@ -67,3 +67,8 @@ description = "Override the GraphicAudio store origin (testing only)."
 [secrets]
 
 [work_fs]
+
+# Fingerprints of the titles the last scan listed, so a scan sends the host
+# only what changed (see the `bookclerk-scan-delta` crate).
+[[databases]]
+binding = "SCAN_STATE"
