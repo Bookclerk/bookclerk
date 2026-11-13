@@ -182,7 +182,9 @@ pub async fn run_discover_candidates(
         let sources = state.sources.read().await.clone();
         bookclerk_discover::fetch_subject_candidates(&library, &sources, &subject, &opts).await?
     } else {
-        // Nothing to fetch, but the fetch counts as done for the day.
+        // Nothing to fetch, but the fetch counts as done for the day, and
+        // the event that queued it still refreshes the stored taste.
+        bookclerk_discover::refresh_subject_taste(&library, &subject, &opts).await?;
         library.mark_discover_fetch(&subject, Utc::now()).await?;
         bookclerk_discover::FetchReport::default()
     };

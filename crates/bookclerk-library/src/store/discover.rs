@@ -30,7 +30,7 @@ use crate::column_read::SelectColumnExt;
 use crate::control_plane::{batch, sea_probe, Bump, LiveTopic};
 use crate::entities::{
     discover_candidates, discover_feeds, discover_fetches, discover_store_call_hits,
-    discover_store_calls, portal_identities, users,
+    discover_store_calls, discover_tastes, portal_identities, users,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{portal_prefs_key, user_prefs_key, OPERATOR_PREFS_KEY};
@@ -316,6 +316,17 @@ pub struct StoredFeed {
     pub computed_at: DateTime<Utc>,
 }
 
+/// One subject's stored Discover taste.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredDiscoverTaste {
+    /// The taste as JSON (`bookclerk_discover::StoredTaste`).
+    pub taste_json: String,
+    /// Seeds the taste comes from.
+    pub seed_scope: SeedScope,
+    /// When the taste was computed.
+    pub computed_at: DateTime<Utc>,
+}
+
 impl LibraryStore {
     /// Replaces every candidate one store returned for one subject.
     ///
@@ -495,8 +506,8 @@ impl LibraryStore {
         Ok(found.is_some())
     }
 
-    /// Deletes every stored Discover row of one subject (candidates, feed
-    /// and fetch marker).
+    /// Deletes every stored Discover row of one subject (candidates, feed,
+    /// taste and fetch marker).
     ///
     /// # Errors
     ///
@@ -517,12 +528,79 @@ impl LibraryStore {
             Bump::IfAny(sea_probe(&probe)?),
         )
         .await?;
+        discover_tastes::Entity::delete_many()
+            .filter(discover_tastes::Column::SubjectKey.eq(key.clone()))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
         discover_fetches::Entity::delete_many()
             .filter(discover_fetches::Column::SubjectKey.eq(key))
             .exec(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
         Ok(())
+    }
+
+    /// Stores one subject's taste, replacing the previous one.
+    ///
+    /// # Arguments
+    ///
+    /// * `subject` - Whose taste it is.
+    /// * `taste_json` - The taste, as the Discover crate encodes it.
+    /// * `scope` - Seeds it comes from.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    pub async fn put_discover_taste(
+        &self,
+        subject: &DiscoverSubject,
+        taste_json: &str,
+        scope: SeedScope,
+    ) -> Result<()> {
+        let row = discover_tastes::ActiveModel {
+            subject_key: Set(subject.key()),
+            taste_json: Set(taste_json.to_string()),
+            seed_scope: Set(scope.as_str().to_string()),
+            computed_at: Set(now_str()),
+        };
+        discover_tastes::Entity::insert(row)
+            .on_conflict(
+                OnConflict::column(discover_tastes::Column::SubjectKey)
+                    .update_columns([
+                        discover_tastes::Column::TasteJson,
+                        discover_tastes::Column::SeedScope,
+                        discover_tastes::Column::ComputedAt,
+                    ])
+                    .to_owned(),
+            )
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// Returns one subject's stored taste, when it has one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    pub async fn get_discover_taste(
+        &self,
+        subject: &DiscoverSubject,
+    ) -> Result<Option<StoredDiscoverTaste>> {
+        let row = discover_tastes::Entity::find()
+            .filter(discover_tastes::Column::SubjectKey.eq(subject.key()))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(row.and_then(|m| {
+            Some(StoredDiscoverTaste {
+                seed_scope: SeedScope::parse(&m.seed_scope)?,
+                computed_at: parse_dt(&m.computed_at),
+                taste_json: m.taste_json,
+            })
+        }))
     }
 
     /// Records that one subject's candidate fetch finished at `at`.
@@ -1519,5 +1597,49 @@ mod tests {
             .collect();
         subjects.sort();
         assert_eq!(subjects, vec!["operator", "portal:4"]);
+    }
+
+    #[tokio::test]
+    async fn a_stored_taste_is_replaced_and_forgotten_with_its_subject() {
+        use crate::test_support::{sqlite, Profile};
+        for profile in Profile::ALL {
+            let kit = sqlite::memory(profile).await;
+            let store = kit.store();
+            let name = profile.name();
+            let alice = DiscoverSubject::User(1);
+            let bob = DiscoverSubject::User(2);
+            assert_eq!(
+                store.get_discover_taste(&alice).await.unwrap(),
+                None,
+                "{name}"
+            );
+            store
+                .put_discover_taste(&alice, "{\"v\":1}", SeedScope::Household)
+                .await
+                .unwrap();
+            store
+                .put_discover_taste(&alice, "{\"v\":2}", SeedScope::Own)
+                .await
+                .unwrap();
+            store
+                .put_discover_taste(&bob, "{}", SeedScope::Household)
+                .await
+                .unwrap();
+            let got = store.get_discover_taste(&alice).await.unwrap().unwrap();
+            assert_eq!(got.taste_json, "{\"v\":2}", "{name}");
+            assert_eq!(got.seed_scope, SeedScope::Own, "{name}");
+            assert!(got.computed_at <= Utc::now(), "{name}");
+
+            store.forget_discover_subject(&alice).await.unwrap();
+            assert_eq!(
+                store.get_discover_taste(&alice).await.unwrap(),
+                None,
+                "{name}"
+            );
+            assert!(
+                store.get_discover_taste(&bob).await.unwrap().is_some(),
+                "{name}"
+            );
+        }
     }
 }

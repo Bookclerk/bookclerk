@@ -671,7 +671,7 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `operator_sessions`, `account_links`, `member_account_rules`,
 `account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `discover_candidates`, `discover_store_calls`,
-`discover_store_call_hits`, `discover_feeds`, `discover_fetches`,
+`discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
 `user_preferences`, `encrypted_secrets`, `jobs`,
 `job_temp_paths`, `domain_events`, `event_deliveries`,

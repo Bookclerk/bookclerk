@@ -66,7 +66,7 @@ pub enum FeedState {
 }
 
 /// Taste context used to title and fill personalized shelves.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ShelfTaste {
     /// Lowercase author → (display name, weight).
     pub authors: HashMap<String, (String, f64)>,
