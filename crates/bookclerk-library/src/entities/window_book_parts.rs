@@ -19,14 +19,16 @@ pub struct Model {
     /// The store's product id.
     #[sea_orm(primary_key, auto_increment = false)]
     pub product_id: String,
+    /// The write that added it (random); the book row names the version
+    /// to read.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub version: String,
     /// The piece's place, from 0; the pieces joined in this order are the
     /// whole JSON.
     #[sea_orm(primary_key, auto_increment = false)]
     pub seq: i64,
     /// This piece of the JSON text.
     pub body: String,
-    /// RFC 3339 stamp of the read that wrote it (its book row's stamp).
-    pub seen_at: String,
 }
 
 /// Declared SeaORM relations (none).

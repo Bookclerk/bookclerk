@@ -38,7 +38,7 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use super::batch::{exec, int, text, text_opt};
 use super::catalog_lookup::{
     book_edition, identifiers_of, in_chunk, is_trusted_branch, read_chunked_all, read_paged,
-    result_page, run_batches, stamp, work_for_question, works_of_editions,
+    read_paged_by, result_page, run_batches, stamp, work_for_question, works_of_editions,
 };
 use super::cluster_links::list_cluster_links;
 use crate::entities::{
@@ -357,8 +357,10 @@ pub fn window_read_stamp() -> String {
 /// `seen_at` ([`window_read_stamp`]).
 ///
 /// Each edition becomes (or refreshes) one `window_books` row. Each work is
-/// placed on a work of this install's library when its identifiers reach
-/// exactly one (a strong identifier first, then an ISBN); none otherwise.
+/// placed on a work of this install's library when its strong identifiers
+/// reach exactly one; none otherwise. An ISBN never places a work: one can
+/// sit on editions of different works, and the local work joins rows from
+/// every library in the view.
 ///
 /// # Arguments
 ///
@@ -379,17 +381,23 @@ pub async fn record_window_page(
 ) -> Result<usize> {
     let earlier = earlier_in_read(store, owner_cluster_id, seen_at, works).await?;
     let width = super::artifacts::chunk_bytes(store.db_capabilities());
-    let mut statements = Vec::new();
+    let mut groups = Vec::new();
     let mut stored = 0;
     for work in works {
-        let local = if work.identifiers.is_empty() {
+        let strong: Vec<LookupIdentifier> = work
+            .identifiers
+            .iter()
+            .filter(|id| id.scheme != LookupScheme::Isbn)
+            .cloned()
+            .collect();
+        let local = if strong.is_empty() {
             None
         } else {
             work_for_question(
                 store,
                 &LookupWork {
                     work: work.work.clone(),
-                    identifiers: work.identifiers.clone(),
+                    identifiers: strong,
                 },
             )
             .await?
@@ -421,63 +429,135 @@ pub async fn record_window_page(
                 edition: edition.clone(),
             })
             .map_err(|err| LibraryError::Invalid(err.to_string()))?;
-            statements.push(exec(
-                "UPDATE window_books SET work_ref = ?, local_work_id = ?, seen_at = ? \
-                 WHERE owner_cluster_id = ? AND store = ? AND marketplace = ? \
-                 AND product_id = ?",
-                vec![
-                    text(grouping_key(&work.work)),
-                    text_opt(local.as_deref()),
-                    text(seen_at),
-                    text(owner_cluster_id),
-                    text(&edition.store),
-                    text(&edition.marketplace),
-                    text(&edition.product_id),
-                ],
-            ));
-            statements.push(exec(
-                "INSERT OR IGNORE INTO window_books (owner_cluster_id, store, marketplace, \
-                 product_id, work_ref, local_work_id, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                vec![
-                    text(owner_cluster_id),
-                    text(&edition.store),
-                    text(&edition.marketplace),
-                    text(&edition.product_id),
-                    text(grouping_key(&work.work)),
-                    text_opt(local.as_deref()),
-                    text(seen_at),
-                ],
-            ));
-            statements.push(exec(
-                "DELETE FROM window_book_parts WHERE owner_cluster_id = ? AND store = ? \
-                 AND marketplace = ? AND product_id = ?",
-                vec![
-                    text(owner_cluster_id),
-                    text(&edition.store),
-                    text(&edition.marketplace),
-                    text(&edition.product_id),
-                ],
-            ));
+            // The pieces go in first under a new version, then the row
+            // names that version: statements commit in order, so a row
+            // never names a version whose pieces are not all in, and a
+            // write cut short leaves the row on its previous version.
+            let version = uuid::Uuid::new_v4().simple().to_string();
             for (seq, body) in (0_i64..).zip(cut(&json, width)) {
-                statements.push(exec(
+                groups.push(vec![exec(
                     "INSERT INTO window_book_parts (owner_cluster_id, store, marketplace, \
-                     product_id, seq, body, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     product_id, version, seq, body) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     vec![
                         text(owner_cluster_id),
                         text(&edition.store),
                         text(&edition.marketplace),
                         text(&edition.product_id),
+                        text(&version),
                         int(seq),
                         text(body),
+                    ],
+                )]);
+            }
+            groups.push(vec![
+                exec(
+                    "UPDATE window_books SET work_ref = ?, local_work_id = ?, \
+                     parts_version = ?, seen_at = ? WHERE owner_cluster_id = ? AND store = ? \
+                     AND marketplace = ? AND product_id = ?",
+                    vec![
+                        text(grouping_key(&work.work)),
+                        text_opt(local.as_deref()),
+                        text(&version),
+                        text(seen_at),
+                        text(owner_cluster_id),
+                        text(&edition.store),
+                        text(&edition.marketplace),
+                        text(&edition.product_id),
+                    ],
+                ),
+                exec(
+                    "INSERT OR IGNORE INTO window_books (owner_cluster_id, store, \
+                     marketplace, product_id, work_ref, local_work_id, parts_version, \
+                     seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    vec![
+                        text(owner_cluster_id),
+                        text(&edition.store),
+                        text(&edition.marketplace),
+                        text(&edition.product_id),
+                        text(grouping_key(&work.work)),
+                        text_opt(local.as_deref()),
+                        text(&version),
                         text(seen_at),
                     ],
-                ));
-            }
+                ),
+            ]);
             stored += 1;
         }
     }
-    run_batches(store, "window book", statements).await?;
+    run_groups(store, groups).await?;
     Ok(stored)
+}
+
+/// Runs `groups` in order as atomic batches sized to the database plugin,
+/// each group whole within one batch.
+///
+/// # Errors
+///
+/// Returns the write error, or an error when one group cannot fit a batch.
+async fn run_groups(
+    store: &LibraryStore,
+    groups: Vec<Vec<bookclerk_plugin_abi::TypedDbStatement>>,
+) -> Result<()> {
+    let mut batches =
+        crate::store::write_batches::WriteBatches::new(store.db_capabilities(), "window book");
+    let mut full = Vec::new();
+    for group in groups {
+        if let Some(batch) = batches.push_group(group)? {
+            full.push(batch);
+        }
+    }
+    full.extend(batches.finish());
+    for batch in full {
+        let operation_id = format!("window-books-{}", uuid::Uuid::new_v4());
+        store
+            .execute_host_batch(super::batch::request(&operation_id, batch))
+            .await?;
+    }
+    Ok(())
+}
+
+/// Room a piece's row takes in a reply beside its body: its key columns
+/// and the reply's framing.
+const PART_ROW_OVERHEAD: usize = 512;
+
+/// Every piece `select` reads, in pages small enough that a page of
+/// full-width pieces stays within the plugin's `maxResultBytes` as well
+/// as its `maxResultRows`.
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn read_parts(
+    store: &LibraryStore,
+    select: sea_orm::Select<window_book_parts::Entity>,
+) -> Result<Vec<window_book_parts::Model>> {
+    let caps = store.db_capabilities();
+    let width = super::artifacts::chunk_bytes(caps).saturating_add(PART_ROW_OVERHEAD);
+    let by_bytes = match caps.max_result_bytes {
+        0 => usize::MAX,
+        bytes => usize::try_from(bytes).unwrap_or(usize::MAX) / width,
+    };
+    read_paged_by(store, select, None, result_page(store).min(by_bytes)).await
+}
+
+/// Drops library `owner_cluster_id`'s pieces no row names (left by a
+/// newer write, a dropped row, or a write cut short).
+///
+/// # Errors
+///
+/// Returns the write error.
+async fn drop_unnamed_parts(store: &LibraryStore, owner_cluster_id: &str) -> Result<()> {
+    run_batches(
+        store,
+        "window book",
+        vec![exec(
+            "DELETE FROM window_book_parts WHERE owner_cluster_id = ? AND version NOT IN \
+             (SELECT parts_version FROM window_books WHERE owner_cluster_id = ?)",
+            vec![text(owner_cluster_id), text(owner_cluster_id)],
+        )],
+    )
+    .await?;
+    Ok(())
 }
 
 /// The formats already stored by this same read (stamped `seen_at`) for the
@@ -506,17 +586,43 @@ async fn earlier_in_read(
         .collect();
     let owner = owner_cluster_id.to_string();
     let stamp_now = seen_at.to_string();
-    let parts = read_chunked_all(store, &products, move |part| {
-        window_book_parts::Entity::find()
-            .filter(window_book_parts::Column::OwnerClusterId.eq(owner.clone()))
-            .filter(window_book_parts::Column::SeenAt.eq(stamp_now.clone()))
-            .filter(window_book_parts::Column::ProductId.is_in(part))
+    let rows = read_chunked_all(store, &products, move |part| {
+        window_books::Entity::find()
+            .filter(window_books::Column::OwnerClusterId.eq(owner.clone()))
+            .filter(window_books::Column::SeenAt.eq(stamp_now.clone()))
+            .filter(window_books::Column::ProductId.is_in(part))
     })
     .await?;
+    let named: BTreeSet<PartsKey> = rows
+        .into_iter()
+        .map(|row| {
+            (
+                (row.store, row.marketplace, row.product_id),
+                row.parts_version,
+            )
+        })
+        .filter(|(key, _)| wanted.contains(key))
+        .collect();
+    if named.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let versions: Vec<String> = named.iter().map(|(_, version)| version.clone()).collect();
+    let mut parts = Vec::new();
+    for chunk in versions.chunks(in_chunk(store, 1)) {
+        parts.extend(
+            read_parts(
+                store,
+                window_book_parts::Entity::find()
+                    .filter(window_book_parts::Column::OwnerClusterId.eq(owner_cluster_id))
+                    .filter(window_book_parts::Column::Version.is_in(chunk.to_vec())),
+            )
+            .await?,
+        );
+    }
     Ok(join_parts(parts)
         .into_iter()
-        .filter(|(key, _)| wanted.contains(key))
-        .map(|(key, book)| (key, book.edition.formats))
+        .filter(|(key, _)| named.contains(key))
+        .map(|((key, _), book)| (key, book.edition.formats))
         .collect())
 }
 
@@ -546,15 +652,7 @@ pub async fn finish_window_read(
         )],
     )
     .await?;
-    run_batches(
-        store,
-        "window book",
-        vec![exec(
-            "DELETE FROM window_book_parts WHERE owner_cluster_id = ? AND seen_at <> ?",
-            vec![text(owner_cluster_id), text(seen_at)],
-        )],
-    )
-    .await?;
+    drop_unnamed_parts(store, owner_cluster_id).await?;
     Ok(dropped)
 }
 
@@ -583,15 +681,7 @@ pub async fn discard_window_read(
         )],
     )
     .await?;
-    run_batches(
-        store,
-        "window book",
-        vec![exec(
-            "DELETE FROM window_book_parts WHERE owner_cluster_id = ? AND seen_at = ?",
-            vec![text(owner_cluster_id), text(seen_at)],
-        )],
-    )
-    .await?;
+    drop_unnamed_parts(store, owner_cluster_id).await?;
     Ok(dropped)
 }
 
@@ -654,6 +744,9 @@ struct StoredBook {
 /// A window book's `(store, marketplace, product id)`.
 type BookKey = (String, String, String);
 
+/// One written version of a window book's pieces: its key and version.
+type PartsKey = (BookKey, String);
+
 /// Cuts `json` into pieces of at most `width` bytes (never below 4, the
 /// widest character), each ending on a character boundary.
 fn cut(json: &str, width: usize) -> Vec<&str> {
@@ -672,22 +765,26 @@ fn cut(json: &str, width: usize) -> Vec<&str> {
     pieces
 }
 
-/// Joins `parts` into stored books by key. A book whose pieces are not a
-/// gapless run from 0, or do not parse, is left out.
-fn join_parts(mut parts: Vec<window_book_parts::Model>) -> HashMap<BookKey, StoredBook> {
+/// Joins `parts` into stored books by key and version. A version whose
+/// pieces are not a gapless run from 0, or do not parse, is left out.
+fn join_parts(mut parts: Vec<window_book_parts::Model>) -> HashMap<PartsKey, StoredBook> {
     parts.sort_by(|a, b| {
-        (&a.store, &a.marketplace, &a.product_id, a.seq).cmp(&(
+        (&a.store, &a.marketplace, &a.product_id, &a.version, a.seq).cmp(&(
             &b.store,
             &b.marketplace,
             &b.product_id,
+            &b.version,
             b.seq,
         ))
     });
     // Each book's text so far and the next piece expected; `None` once a
     // piece is out of place (a gap, or a run not starting at 0).
-    let mut texts: BTreeMap<BookKey, Option<(String, i64)>> = BTreeMap::new();
+    let mut texts: BTreeMap<PartsKey, Option<(String, i64)>> = BTreeMap::new();
     for part in parts {
-        let key = (part.store, part.marketplace, part.product_id);
+        let key = (
+            (part.store, part.marketplace, part.product_id),
+            part.version,
+        );
         let entry = texts.entry(key).or_insert_with(|| Some((String::new(), 0)));
         *entry = entry.take().and_then(|(mut text, next)| {
             (part.seq == next).then(|| {
@@ -845,19 +942,21 @@ pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
         )
         .await?;
         let mut books = join_parts(
-            read_paged(
+            read_parts(
                 store,
                 window_book_parts::Entity::find()
                     .filter(window_book_parts::Column::OwnerClusterId.eq(cluster.as_str())),
-                None,
             )
             .await?,
         );
         for row in rows {
             let key = (
-                row.store.clone(),
-                row.marketplace.clone(),
-                row.product_id.clone(),
+                (
+                    row.store.clone(),
+                    row.marketplace.clone(),
+                    row.product_id.clone(),
+                ),
+                row.parts_version.clone(),
             );
             let Some(book) = books.remove(&key) else {
                 continue;

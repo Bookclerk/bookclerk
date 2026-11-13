@@ -708,6 +708,23 @@ async fn an_edition_wider_than_a_cell_is_kept_whole_under_every_profile() {
         assert_eq!(view.len(), 1, "{name}");
         assert_eq!(view[0].editions[0].edition, wide, "{name}");
 
+        // A write cut short (pieces in, its row never pointed at them)
+        // leaves the row on its previous version.
+        window_book_parts::ActiveModel {
+            owner_cluster_id: Set("lib".into()),
+            store: Set("audible".into()),
+            marketplace: Set("us".into()),
+            product_id: Set("B0WIDE0001".into()),
+            version: Set("cut-short".into()),
+            seq: Set(0),
+            body: Set("{\"identifiers\":[".into()),
+        }
+        .insert(store.db())
+        .await
+        .unwrap();
+        let view = window_view(&store).await.unwrap();
+        assert_eq!(view[0].editions[0].edition, wide, "{name}: still whole");
+
         // A later read with a shorter title replaces every piece.
         let mut short = wide.clone();
         short.metadata.title = "Short".into();
@@ -722,6 +739,14 @@ async fn an_edition_wider_than_a_cell_is_kept_whole_under_every_profile() {
         finish_window_read(&store, "lib", &later).await.unwrap();
         let view = window_view(&store).await.unwrap();
         assert_eq!(view[0].editions[0].edition, short, "{name}");
+        let versions: BTreeSet<String> = window_book_parts::Entity::find()
+            .all(store.db())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|part| part.version)
+            .collect();
+        assert_eq!(versions.len(), 1, "{name}: only the named version stays");
         assert_eq!(
             clear_window_books(&store, "lib").await.unwrap(),
             1,
@@ -742,9 +767,9 @@ fn json_is_cut_on_character_boundaries_and_joined_in_order() {
         store: "audible".into(),
         marketplace: "us".into(),
         product_id: "B0X".into(),
+        version: "v1".into(),
         seq,
         body: body.into(),
-        seen_at: "t".into(),
     };
     let stored = serde_json::to_string(&StoredBook {
         identifiers: vec![],
@@ -756,4 +781,45 @@ fn json_is_cut_on_character_boundaries_and_joined_in_order() {
     assert_eq!(join_parts(vec![part(1, b), part(0, a)]).len(), 1);
     // A gap spoils the book.
     assert!(join_parts(vec![part(0, a), part(2, b)]).is_empty());
+}
+
+/// An ISBN alone never places a window book on a work of this library, so
+/// it cannot join another library's book through that work.
+#[tokio::test]
+async fn an_isbn_alone_does_not_place_a_window_book() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    let me = store
+        .create_user(UserRole::Owner, Some("Me"), None)
+        .await
+        .unwrap()
+        .id;
+    hold(&store, me, "my-acct", &[]).await;
+    let mut local = book("my-acct", "B0LOCAL001");
+    local.isbn = Some("9780306406157".into());
+    store.upsert_book(&local).await.unwrap();
+    link(&store, "alpha", false).await;
+    let isbn = LookupIdentifier {
+        scheme: LookupScheme::Isbn,
+        value: "9780306406157".into(),
+        marketplace: String::new(),
+    };
+    assert!(isbn.is_well_formed());
+    let seen = window_read_stamp();
+    record_window_page(
+        &store,
+        "alpha",
+        &seen,
+        &[WindowWork {
+            work: "remote".into(),
+            identifiers: vec![isbn],
+            editions: vec![edition("B0REMOTE01", "Remote")],
+        }],
+    )
+    .await
+    .unwrap();
+    let view = window_view(&store).await.unwrap();
+    assert_eq!(view.len(), 1);
+    assert_eq!(view[0].work_id, None, "not placed by the ISBN");
 }

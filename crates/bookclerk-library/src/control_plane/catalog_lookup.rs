@@ -120,12 +120,31 @@ pub(crate) async fn read_paged<E>(
 where
     E: EntityTrait,
 {
+    read_paged_by(store, select, cap, result_page(store)).await
+}
+
+/// [`read_paged`] in pages of at most `page` rows (at least 1), for rows
+/// wide enough that [`result_page`] of them could pass the plugin's byte
+/// limits.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub(crate) async fn read_paged_by<E>(
+    store: &LibraryStore,
+    select: sea_orm::Select<E>,
+    cap: Option<u64>,
+    page: usize,
+) -> Result<Vec<E::Model>>
+where
+    E: EntityTrait,
+{
     use sea_orm::{Iterable as _, PrimaryKeyToColumn as _};
     let mut select = select;
     for key in E::PrimaryKey::iter() {
         select = select.order_by_asc(key.into_column());
     }
-    let page = u64::try_from(result_page(store)).unwrap_or(1);
+    let page = u64::try_from(page.max(1)).unwrap_or(1);
     let mut out = Vec::new();
     loop {
         let read = u64::try_from(out.len()).unwrap_or(u64::MAX);

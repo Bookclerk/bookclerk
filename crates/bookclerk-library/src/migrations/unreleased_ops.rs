@@ -1618,6 +1618,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         product_id TEXT NOT NULL,
         work_ref TEXT NOT NULL,
         local_work_id TEXT,
+        parts_version TEXT NOT NULL,
         seen_at TEXT NOT NULL,
         PRIMARY KEY (owner_cluster_id, store, marketplace, product_id)
     )",
@@ -1627,22 +1628,23 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     // Each window book's edition and identifiers as the library sent them
     // (JSON), cut into pieces no wider than the database's cell limit and
-    // joined again in `seq` order. Written, kept and dropped with their
-    // `window_books` row by the same read stamp.
+    // joined again in `seq` order. Every write adds a new `version`; its
+    // row names the version to read only once all of its pieces are in,
+    // and pieces no row names are dropped when a read finishes.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS window_book_parts (
         owner_cluster_id TEXT NOT NULL REFERENCES cluster_links(owner_cluster_id) ON DELETE CASCADE,
         store TEXT NOT NULL,
         marketplace TEXT NOT NULL,
         product_id TEXT NOT NULL,
+        version TEXT NOT NULL,
         seq INTEGER NOT NULL,
         body TEXT NOT NULL,
-        seen_at TEXT NOT NULL,
-        PRIMARY KEY (owner_cluster_id, store, marketplace, product_id, seq)
+        PRIMARY KEY (owner_cluster_id, store, marketplace, product_id, version, seq)
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_window_book_parts_seen ON window_book_parts(owner_cluster_id, seen_at)",
+        r"CREATE INDEX IF NOT EXISTS idx_window_book_parts_version ON window_book_parts(owner_cluster_id, version)",
     ),
     // On a branch: the branch owner's books acquired for a library it
     // joined and imported into this library as well

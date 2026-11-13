@@ -26,6 +26,8 @@ pub struct Model {
     /// The work of this install's library the identifiers reach, when
     /// exactly one does.
     pub local_work_id: Option<String>,
+    /// The `window_book_parts` version holding this edition's details.
+    pub parts_version: String,
     /// RFC 3339 stamp of the read that last named this edition.
     pub seen_at: String,
 }
