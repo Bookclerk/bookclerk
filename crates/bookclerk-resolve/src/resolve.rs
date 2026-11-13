@@ -684,7 +684,13 @@ fn resolve_with(
         let show = parent_show(snapshot, listing);
         snapshot
             .work(&work_id)
-            .filter(|w| w.kind == WorkKind::Podcast && w.parent_work_id.is_none())
+            // A work with episodes of its own is a show the listing reached by
+            // identifier; it never moves under another show.
+            .filter(|w| {
+                w.kind == WorkKind::Podcast
+                    && w.parent_work_id.is_none()
+                    && !snapshot.works_with_episodes.contains(&w.id)
+            })
             .zip(show)
             .filter(|(episode, show)| episode.id != show.id)
             .map(|(episode, show)| WorkParent {

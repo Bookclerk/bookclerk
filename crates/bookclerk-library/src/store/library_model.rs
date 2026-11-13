@@ -1691,6 +1691,17 @@ impl LibraryStore {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
+        let works_with_episodes: Vec<String> = if listing.is_episode() {
+            reads
+                .works_with_episodes(&work_list)
+                .await?
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         // Both readers can return rows in any order; sort the lists so a
         // snapshot does not depend on which one answered.
@@ -1713,6 +1724,7 @@ impl LibraryStore {
             holding,
             credited: credited.into_iter().collect(),
             works_with_series,
+            works_with_episodes,
         };
         Ok((snapshot, stored_row))
     }

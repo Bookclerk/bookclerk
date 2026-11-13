@@ -590,9 +590,10 @@ fn edition_listing(node_id: &str, edition: &LookupEdition) -> CatalogListing {
         .content_kind
         .as_deref()
         .is_some_and(crate::models::is_episode);
-    // Branch answers name no parent show, so an episode is stored as a
-    // podcast without one; the answer is only kept when it lands on the
-    // asked work.
+    // Branch answers name no parent show, so an episode reads as a podcast
+    // without one. Its ASIN still finds the asked episode's edition (a
+    // strong identifier links whatever the level), and an answer that lands
+    // anywhere else is dropped.
     let (work_kind, expression_kind) = if episode {
         (
             resolve::WorkKind::Podcast,

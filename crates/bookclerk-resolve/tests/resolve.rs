@@ -725,3 +725,45 @@ fn a_show_never_matches_an_episode_waiting_for_its_show() {
     assert!(linked.work_parent.is_some());
     assert!(linked.work_match_key.is_some());
 }
+
+#[test]
+fn an_episode_never_moves_a_show_with_episodes_under_another_show() {
+    let mut c = MemoryCatalog::default();
+    // Show S2 already has an episode; its edition carries the ASIN a
+    // mislabelled episode of show S1 shares.
+    let other_show = record(
+        &mut c,
+        &with_id(
+            podcast("S2", "Other Show", WorkKind::Podcast, None),
+            IdentifierScheme::Asin,
+            "B0SHARED00",
+        ),
+        "a1",
+    );
+    record(
+        &mut c,
+        &podcast("E2", "Other Episode", WorkKind::Podcast, Some("S2")),
+        "a1",
+    );
+    record(
+        &mut c,
+        &podcast("S1", "Show", WorkKind::Podcast, None),
+        "a1",
+    );
+    let episode = record(
+        &mut c,
+        &with_id(
+            podcast("E1", "Episode", WorkKind::Podcast, Some("S1")),
+            IdentifierScheme::Asin,
+            "B0SHARED00",
+        ),
+        "a1",
+    );
+    let other_show_work = other_show.new_work.unwrap().id;
+    assert_eq!(
+        c.work_of_edition(&episode.listing.edition_id).unwrap().id,
+        other_show_work
+    );
+    assert!(episode.work_parent.is_none());
+    assert!(c.works[&other_show_work].parent_work_id.is_none());
+}

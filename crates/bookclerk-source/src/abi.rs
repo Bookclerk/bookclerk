@@ -144,7 +144,11 @@ pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> Option<NewBook>
     if book.expression_kind == abi::ExpressionKind::Unspecified {
         return None;
     }
-    let content_kind = records::content_kind(book.work_kind, book.parent_product_id.is_some())?;
+    let has_parent = book
+        .parent_product_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty());
+    let content_kind = records::content_kind(book.work_kind, has_parent)?;
     if book.product_id.trim().is_empty() {
         return None;
     }

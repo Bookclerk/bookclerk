@@ -322,14 +322,19 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             j_str(&link.work_id),
             j_str(&link.parent_work_id),
             j_str(&link.parent_work_id),
+            j_str(&link.work_id),
         ];
         binds.extend(unchanged_binds.clone());
+        // A work with episodes of its own is a show, not an episode: an
+        // episode listing that matched it by identifier never moves it
+        // under another show.
         out.push(sql(
             &format!(
                 "UPDATE works SET parent_work_id = ?, updated_at = ? \
                  WHERE id = ? AND kind = 'podcast' AND parent_work_id IS NULL AND id <> ? \
                    AND EXISTS (SELECT 1 FROM works p WHERE p.id = ? AND p.kind = 'podcast' \
                    AND p.parent_work_id IS NULL) \
+                   AND NOT EXISTS (SELECT 1 FROM works c WHERE c.parent_work_id = ?) \
                    AND {unchanged}"
             ),
             binds,

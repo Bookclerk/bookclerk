@@ -788,8 +788,6 @@ impl ContentSource for ExternalSource {
         let mut plain = self
             .cs_call(move |src| async move { src.fetch_title(params).await })
             .await?;
-        bookclerk_plugin_abi::validate_plain_fetch(&plain, &self.session.describe_snapshot().media)
-            .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
         if let Some(refreshed) = plain.refreshed_credentials.take() {
             // The title is already fetched: credentials that cannot be kept
             // are logged, not the fetch's failure.
@@ -807,6 +805,10 @@ impl ContentSource for ExternalSource {
                 }
             }
         }
+        // Checked after the refreshed credentials are kept: a store that
+        // rotated its token during the fetch must not lose it to a bad reply.
+        bookclerk_plugin_abi::validate_plain_fetch(&plain, &self.session.describe_snapshot().media)
+            .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
         SourceFetch::try_from(plain)
             .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))
     }
