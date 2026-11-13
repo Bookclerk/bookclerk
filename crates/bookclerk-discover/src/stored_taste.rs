@@ -80,19 +80,26 @@ impl StoredTaste {
     }
 
     /// Encodes the taste as JSON no larger than `max_bytes` once escaped as
-    /// a JSON string, cutting every map and set to its heaviest entries,
-    /// halving the count kept until it fits.
+    /// a JSON string, cutting every map and set to its heaviest entries
+    /// (and the wish titles to the first ones), halving the count kept
+    /// until it fits.
     ///
     /// # Errors
     ///
-    /// Returns the encoder's error.
+    /// Returns the encoder's error, or an error when even the uncut parts
+    /// (languages and store accounts) pass `max_bytes`.
     pub(crate) fn encode(&mut self, max_bytes: usize) -> serde_json::Result<String> {
         loop {
             let json = serde_json::to_string(self)?;
             let escaped = serde_json::to_string(&json)?.len();
             let largest = self.largest_part();
-            if escaped <= max_bytes || largest == 0 {
+            if escaped <= max_bytes {
                 return Ok(json);
+            }
+            if largest == 0 {
+                return Err(<serde_json::Error as serde::ser::Error>::custom(
+                    "the stored taste passes its byte budget with every part cut",
+                ));
             }
             self.keep_heaviest(largest / 2);
         }
@@ -118,6 +125,7 @@ impl StoredTaste {
             self.shelf.narrators.len(),
             self.shelf.categories.len(),
             self.shelf.seed_authors_by_title.len(),
+            self.shelf.wish_titles.len(),
         ]
         .into_iter()
         .max()
@@ -126,7 +134,7 @@ impl StoredTaste {
 
     /// Keeps at most `keep` entries of every cuttable map and set: the
     /// heaviest by weight (series by owned and listened titles), ties and
-    /// unweighted entries by key.
+    /// unweighted entries by key; and the first `keep` wish titles.
     fn keep_heaviest(&mut self, keep: usize) {
         keep_top(&mut self.scores.liked_authors, keep, |w| *w);
         keep_top(&mut self.scores.liked_narrators, keep, |w| *w);
@@ -138,6 +146,7 @@ impl StoredTaste {
         keep_top(&mut self.shelf.narrators, keep, |(_, w)| *w);
         keep_top(&mut self.shelf.categories, keep, |(_, w)| *w);
         keep_top(&mut self.shelf.seed_authors_by_title, keep, |_| 0.0);
+        self.shelf.wish_titles.truncate(keep);
         self.scores.seed_work_ids = std::mem::take(&mut self.scores.seed_work_ids)
             .into_iter()
             .take(keep)
@@ -182,6 +191,26 @@ mod tests {
         }
         taste.languages.insert("en".into());
         taste
+    }
+
+    #[test]
+    fn long_wish_titles_are_cut_to_fit() {
+        let mut taste = wide(2);
+        taste.shelf.wish_titles = (0..64)
+            .map(|i| format!("{i:02}{}", "w".repeat(8 * 1024)))
+            .collect();
+        let json = taste.encode(STORED_TASTE_MAX_BYTES).unwrap();
+        assert!(serde_json::to_string(&json).unwrap().len() <= STORED_TASTE_MAX_BYTES);
+        let back = StoredTaste::decode(&json).unwrap();
+        assert!(!back.shelf.wish_titles.is_empty());
+        assert!(back.shelf.wish_titles[0].starts_with("00"));
+    }
+
+    #[test]
+    fn a_taste_that_cannot_fit_is_refused() {
+        let mut taste = wide(2);
+        taste.languages.insert("l".repeat(4 * 1024));
+        assert!(taste.encode(1024).is_err());
     }
 
     #[test]

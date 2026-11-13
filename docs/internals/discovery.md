@@ -127,7 +127,7 @@ operator, a household user, or a portal identity) has a **subject key**
    the library. It checks the candidates it ranks against the library by
    their ASINs, ISBNs and product ids only. Like a stored feed, the row is
    one cell: a taste whose JSON would pass 128 KiB keeps only its heaviest
-   entries, which move a score the most. A ranking with no stored taste,
+   entries, which move a score the most, and its first wish titles. A ranking with no stored taste,
    or one more than a day old, loads the taste from the library and stores
    it again. Every [taste event](#taste-events) queues a fetch, which
    stores a fresh taste (also with `discovery.storefront_candidates`
