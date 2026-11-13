@@ -733,10 +733,15 @@ async fn apply_catalog_batch(
     // the pass stays under way and the branch's next sync, which ends
     // with another `done` batch, ends it again.
     if let Some(pass) = prepared.ends_pass {
-        // Each removal is guarded on this pass still being the node's, so a
-        // pass started over meanwhile keeps what it stamps.
+        // Each removal is guarded on this pass still being the node's under
+        // this batch's fence: a pass started over keeps what it stamps, and
+        // a newer connection resuming the pass keeps what it links (its own
+        // `done` batch ends the pass).
         let selected = store
-            .remove_node_holdings(node_id, NodeHoldingSelection::UnseenBy(&pass))
+            .remove_node_holdings(
+                node_id,
+                NodeHoldingSelection::UnseenBy { pass: &pass, fence },
+            )
             .await?;
         if selected > 0 {
             tracing::info!(

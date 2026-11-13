@@ -95,8 +95,14 @@ pub enum HoldingSelection<'a> {
 pub enum NodeHoldingSelection<'a> {
     /// The node's holdings its catalog pass `pass` (the node's
     /// `catalog_pass_started_at`) did not name, while that pass is still
-    /// the node's.
-    UnseenBy(&'a str),
+    /// the node's and `fence` still its catalog fence: a connection that
+    /// resumes the pass keeps what it links, and ends the pass itself.
+    UnseenBy {
+        /// The catalog pass id.
+        pass: &'a str,
+        /// The catalog fence of the batch that ended the pass.
+        fence: i64,
+    },
     /// Every holding of the node (it left or was revoked).
     All,
     /// Every holding of the node while `fence` is still the node's catalog
@@ -125,8 +131,16 @@ pub enum NodeHoldingSelection<'a> {
 enum DeleteGuard<'a> {
     /// Only the holding's id.
     Id,
-    /// The holding is still unseen by this scan or catalog pass.
+    /// The holding is still unseen by this account scan.
     UnseenBy(&'a str),
+    /// The holding is still unseen by this catalog pass, which is still
+    /// the node's, under this catalog fence.
+    UnseenUnder {
+        /// The catalog pass id.
+        pass: &'a str,
+        /// The node's expected catalog fence.
+        fence: i64,
+    },
     /// The holding still carries no share state.
     Unshared,
     /// The node's catalog fence is still this one.
@@ -415,12 +429,16 @@ impl LibraryStore {
         selection: NodeHoldingSelection<'_>,
     ) -> Result<usize> {
         match selection {
-            NodeHoldingSelection::UnseenBy(pass) => {
+            NodeHoldingSelection::UnseenBy { pass, fence } => {
                 let cond = Condition::any()
                     .add(holdings::Column::SeenPass.is_null())
                     .add(holdings::Column::SeenPass.ne(pass));
-                self.remove_selected(Scope::Node(node_id), cond, DeleteGuard::UnseenBy(pass))
-                    .await
+                self.remove_selected(
+                    Scope::Node(node_id),
+                    cond,
+                    DeleteGuard::UnseenUnder { pass, fence },
+                )
+                .await
             }
             NodeHoldingSelection::All => {
                 self.remove_selected(Scope::Node(node_id), Condition::all(), DeleteGuard::Id)
@@ -577,18 +595,24 @@ impl LibraryStore {
             .with_trailer(crate::control_plane::bump(LiveTopic::Library))?;
         for holding in doomed {
             let (guard, guard_binds) = match (guard, scope) {
-                (DeleteGuard::UnseenBy(pass), Scope::Account { .. }) => (
+                (
+                    DeleteGuard::UnseenBy(pass) | DeleteGuard::UnseenUnder { pass, .. },
+                    Scope::Account { .. },
+                )
+                | (DeleteGuard::UnseenBy(pass), Scope::Node(_)) => (
                     "id = ? AND (seen_pass IS NULL OR seen_pass <> ?)",
                     vec![batch::text(&holding.id), batch::text(pass)],
                 ),
-                (DeleteGuard::UnseenBy(pass), Scope::Node(node_id)) => (
+                (DeleteGuard::UnseenUnder { pass, fence }, Scope::Node(node_id)) => (
                     "id = ? AND (seen_pass IS NULL OR seen_pass <> ?) AND EXISTS \
-                     (SELECT 1 FROM nodes WHERE node_id = ? AND catalog_pass_started_at = ?)",
+                     (SELECT 1 FROM nodes WHERE node_id = ? AND catalog_pass_started_at = ? \
+                       AND catalog_fence = ?)",
                     vec![
                         batch::text(&holding.id),
                         batch::text(pass),
                         batch::text(node_id),
                         batch::text(pass),
+                        bookclerk_plugin_abi::DbValue::Int64(fence),
                     ],
                 ),
                 (DeleteGuard::Unshared, _) => (
@@ -1009,7 +1033,13 @@ mod tests {
             // A pass that is no longer the node's removes nothing.
             assert_eq!(
                 store
-                    .remove_node_holdings("n1", NodeHoldingSelection::UnseenBy("p1"))
+                    .remove_node_holdings(
+                        "n1",
+                        NodeHoldingSelection::UnseenBy {
+                            pass: "p1",
+                            fence: 0
+                        }
+                    )
                     .await
                     .unwrap(),
                 1
@@ -1022,10 +1052,28 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            // Under a catalog fence that is no longer the node's, nothing.
+            store
+                .remove_node_holdings(
+                    "n1",
+                    NodeHoldingSelection::UnseenBy {
+                        pass: "p1",
+                        fence: 1,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(count(&store, HOLDING_REMOVED).await, 0, "{profile:?}");
             // A node holding goes with its own event naming no account.
             assert_eq!(
                 store
-                    .remove_node_holdings("n1", NodeHoldingSelection::UnseenBy("p1"))
+                    .remove_node_holdings(
+                        "n1",
+                        NodeHoldingSelection::UnseenBy {
+                            pass: "p1",
+                            fence: 0
+                        }
+                    )
                     .await
                     .unwrap(),
                 1
@@ -1049,7 +1097,13 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 store
-                    .remove_node_holdings("n1", NodeHoldingSelection::UnseenBy("p2"))
+                    .remove_node_holdings(
+                        "n1",
+                        NodeHoldingSelection::UnseenBy {
+                            pass: "p2",
+                            fence: 0
+                        }
+                    )
                     .await
                     .unwrap(),
                 0,
