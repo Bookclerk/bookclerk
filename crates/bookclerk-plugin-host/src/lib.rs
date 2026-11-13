@@ -74,6 +74,7 @@ mod instance_bindings;
 mod jail;
 mod kv_binding;
 mod manifest;
+mod on_demand;
 mod queue_producer;
 mod registry;
 mod remote_consent;
@@ -185,6 +186,7 @@ pub use manifest::{
     PluginRuntimeKind, TriggersManifest, WorkerdLimits, WorkerdRuntimeManifest, ALL_ENTRYPOINTS,
     MAX_EMBEDDED_LOGO_BYTES,
 };
+pub use on_demand::{activates_on_demand, OnDemandIntegration, TRIGGER_IDLE_TIMEOUT};
 pub use queue_producer::{OutboxQueueProducer, QueueOutbox};
 pub use registry::{
     family_keyword, host_target_triple, validate_plugin_id, BookclerkPackageMetadata,

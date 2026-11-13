@@ -787,8 +787,8 @@ fn library_err(err: LibraryError) -> crate::PluginError {
 /// Guest this process spawned for one instance, kept alive across registry
 /// replacement when two instances share a plugin key.
 struct TrackedGuest {
-    /// Session whose process liveness is the skip check.
-    session: Arc<crate::PluginSession>,
+    /// Process this deployment runs; its liveness is the skip check.
+    process: GuestProcess,
     /// Tree the guest was spawned from.
     root: Option<PathBuf>,
     /// `CONFIG` passed to `open`.
@@ -797,6 +797,34 @@ struct TrackedGuest {
     /// beside the session that was opened with it.
     #[cfg_attr(not(test), allow(dead_code))]
     secrets: ExtensibleConfig,
+}
+
+/// How a tracked deployment's guest process is held.
+enum GuestProcess {
+    /// One session started by the reconciler that runs until retired.
+    Resident(Arc<crate::PluginSession>),
+    /// A proxy that starts the guest on demand and stops it when idle.
+    OnDemand(Arc<crate::OnDemandIntegration>),
+}
+
+impl GuestProcess {
+    /// True while the deployment needs no respawn: a resident guest is
+    /// still running, or an on-demand proxy has not been retired (it starts
+    /// its own guest on the next call).
+    fn deployed(&self) -> bool {
+        match self {
+            Self::Resident(session) => session.guest_running(),
+            Self::OnDemand(proxy) => !proxy.is_retired(),
+        }
+    }
+
+    /// Native guest pid, when a guest is running.
+    fn guest_pid(&self) -> Option<u32> {
+        match self {
+            Self::Resident(session) => session.guest_pid(),
+            Self::OnDemand(proxy) => proxy.guest_pid(),
+        }
+    }
 }
 
 /// Production runtime: spawn through the existing host adapters and register
@@ -820,6 +848,8 @@ pub struct LiveDeploymentRuntime {
     /// after a config reload must not install or spawn the same deployment
     /// twice.
     reconcile_lock: tokio::sync::Mutex<()>,
+    /// Idle time after which an on-demand integration's guest is stopped.
+    on_demand_idle: std::time::Duration,
 }
 
 impl LiveDeploymentRuntime {
@@ -843,6 +873,34 @@ impl LiveDeploymentRuntime {
                 bookclerk_integrations::IntegrationContext::default(),
             ),
             reconcile_lock: tokio::sync::Mutex::new(()),
+            on_demand_idle: crate::TRIGGER_IDLE_TIMEOUT,
+        }
+    }
+
+    /// Shortens the on-demand idle timeout so tests see a guest sleep.
+    #[cfg(test)]
+    pub(crate) fn set_on_demand_idle_timeout(&mut self, idle: std::time::Duration) {
+        self.on_demand_idle = idle;
+    }
+
+    /// The on-demand integration registered for `plugin_instance_id`, if
+    /// this process tracks one.
+    ///
+    /// Only reads the map, so a poisoned lock still yields it.
+    #[must_use]
+    pub fn on_demand_integration(
+        &self,
+        plugin_instance_id: &str,
+    ) -> Option<Arc<crate::OnDemandIntegration>> {
+        match &self
+            .guests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(plugin_instance_id)?
+            .process
+        {
+            GuestProcess::OnDemand(proxy) => Some(Arc::clone(proxy)),
+            GuestProcess::Resident(_) => None,
         }
     }
 
@@ -963,7 +1021,7 @@ impl LiveDeploymentRuntime {
             .lock()
             .expect("deployment guests")
             .get(plugin_instance_id)
-            .and_then(|guest| guest.session.guest_pid())
+            .and_then(|guest| guest.process.guest_pid())
     }
 
     /// Replaces the tracked session for one instance.
@@ -1183,7 +1241,7 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
             .lock()
             .expect("deployment guests")
             .get(plugin_instance_id)
-            .is_some_and(|guest| guest.session.guest_running())
+            .is_some_and(|guest| guest.process.deployed())
     }
 
     async fn guest_root(&self, plugin_instance_id: &str) -> Option<PathBuf> {
@@ -1249,7 +1307,7 @@ async fn spawn_storefront(
         };
     source.bind_plugin_instance(&request.plugin_instance_id);
     let tracked = TrackedGuest {
-        session: Arc::clone(source.session()),
+        process: GuestProcess::Resident(Arc::clone(source.session())),
         root: request.plugin_root.clone(),
         config: source.opened_config().clone(),
         secrets: source.opened_secrets().clone(),
@@ -1289,6 +1347,14 @@ async fn spawn_integration(
 ) -> SpawnHealth {
     let allow_credential_login =
         crate::host_control_plane::allow_credential_login(&prepared.granted_config);
+    let starter = crate::activates_on_demand(&plugin.manifest).then(|| ExternalStarter {
+        plugin: plugin.clone(),
+        config: config.clone(),
+        services: services.clone(),
+        prepared: prepared.clone(),
+        allow_credential_login,
+        plugin_instance_id: request.plugin_instance_id.clone(),
+    });
     let mut integration = match crate::ExternalIntegration::spawn_prepared(
         plugin,
         config,
@@ -1306,12 +1372,10 @@ async fn spawn_integration(
         }
     };
     integration.bind_plugin_instance(&request.plugin_instance_id);
-    let tracked = TrackedGuest {
-        session: Arc::clone(integration.session()),
-        root: request.plugin_root.clone(),
-        config: integration.opened_config().clone(),
-        secrets: integration.opened_secrets().clone(),
-    };
+    let root = request.plugin_root.clone();
+    let opened_config = integration.opened_config().clone();
+    let opened_secrets = integration.opened_secrets().clone();
+    let resident_session = Arc::clone(integration.session());
     match integration.check_health().await {
         Ok(()) => {
             let context = runtime.integration_context();
@@ -1330,9 +1394,28 @@ async fn spawn_integration(
                     );
                 }
             }
-            if let Err(err) =
-                bookclerk_integrations::Integration::start(&integration, context.clone()).await
-            {
+            // A trigger-driven plugin is registered behind a proxy that
+            // keeps its place in the registry while the guest sleeps.
+            let (registered, process): (
+                Arc<dyn bookclerk_integrations::Integration>,
+                GuestProcess,
+            ) = match starter {
+                Some(starter) => {
+                    let proxy = crate::OnDemandIntegration::wrap(
+                        Arc::new(integration),
+                        &request.plugin_instance_id,
+                        Box::new(starter),
+                        context.clone(),
+                        runtime.on_demand_idle,
+                    );
+                    (proxy.clone(), GuestProcess::OnDemand(proxy))
+                }
+                None => (
+                    Arc::new(integration),
+                    GuestProcess::Resident(resident_session),
+                ),
+            };
+            if let Err(err) = registered.start(context.clone()).await {
                 for previous in retired {
                     if let Err(restart) = bookclerk_integrations::Integration::start(
                         previous.as_ref(),
@@ -1352,17 +1435,66 @@ async fn spawn_integration(
                     detail: err.to_string(),
                 };
             }
-            runtime
-                .integrations
-                .write()
-                .await
-                .register(Arc::new(integration));
-            runtime.remember(&request.plugin_instance_id, tracked);
+            runtime.integrations.write().await.register(registered);
+            runtime.remember(
+                &request.plugin_instance_id,
+                TrackedGuest {
+                    process,
+                    root,
+                    config: opened_config,
+                    secrets: opened_secrets,
+                },
+            );
             SpawnHealth::Healthy
         }
         Err(err) => SpawnHealth::HealthFailed {
             detail: err.to_string(),
         },
+    }
+}
+
+/// Everything a woken on-demand integration needs to start again exactly as
+/// the deployment first started it.
+struct ExternalStarter {
+    /// Discovered plugin the deployment spawned.
+    plugin: crate::DiscoveredPlugin,
+    /// Host config at the deployment spawn; a config reload respawns the
+    /// deployment, replacing this starter.
+    config: Config,
+    /// Session services for the guest.
+    services: crate::SessionServices,
+    /// Resolved `open` bindings for the instance's applied revision.
+    prepared: crate::PreparedOpen,
+    /// Whether the guest may run credential login.
+    allow_credential_login: bool,
+    /// Deployment instance the guest serves.
+    plugin_instance_id: String,
+}
+
+#[async_trait]
+impl crate::on_demand::GuestStarter for ExternalStarter {
+    async fn start_guest(
+        &self,
+        ctx: bookclerk_integrations::IntegrationContext,
+    ) -> std::result::Result<Arc<dyn crate::on_demand::AwakeGuest>, String> {
+        let mut integration = crate::ExternalIntegration::spawn_prepared(
+            &self.plugin,
+            &self.config,
+            self.services.clone(),
+            self.prepared.clone(),
+            self.allow_credential_login,
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+        integration.bind_plugin_instance(&self.plugin_instance_id);
+        integration
+            .check_health()
+            .await
+            .map_err(|err| err.to_string())?;
+        bookclerk_integrations::Integration::start(&integration, ctx)
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(Arc::new(integration))
     }
 }
 
@@ -1396,7 +1528,7 @@ async fn spawn_storage(
     runtime.remember(
         &request.plugin_instance_id,
         TrackedGuest {
-            session,
+            process: GuestProcess::Resident(session),
             root: request.plugin_root.clone(),
             config: tracked_config,
             secrets: tracked_secrets,
