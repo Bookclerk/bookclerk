@@ -131,6 +131,16 @@ pub async fn sweep_job_requirements(
             .list_pending_jobs_page(after.as_deref(), SWEEP_PAGE)
             .await?;
         for job in jobs {
+            if job.kind == JobKind::BranchRequest {
+                // An interlibrary request waits for its branch to connect,
+                // however long that takes; it ends only when the branch is
+                // no longer trusted.
+                if let Some(node_id) = job.payload.node_id.as_deref() {
+                    report.examined += 1;
+                    sweep_request(store, &job, node_id, &mut report).await?;
+                }
+                continue;
+            }
             if let Some(node_id) = job.payload.node_id.as_deref() {
                 report.examined += 1;
                 if sweep_pinned(store, &job, node_id, now_ms, grace_ms, &mut report).await? {
@@ -362,6 +372,38 @@ async fn sweep_pinned(
         report.lost += 1;
     }
     Ok(true)
+}
+
+/// Fails an interlibrary request whose branch `node_id` this library no
+/// longer trusts (revoked, removed, or its owner no longer active); a request
+/// to a trusted branch keeps waiting, even while the branch is offline.
+///
+/// # Errors
+///
+/// Returns an error when the read or the write fails.
+async fn sweep_request(
+    store: &LibraryStore,
+    job: &JobRecord,
+    node_id: &str,
+    report: &mut RequirementsSweepReport,
+) -> Result<()> {
+    if super::catalog_lookup::trusts(store, node_id).await? {
+        return Ok(());
+    }
+    if store
+        .fail_pending_job(
+            &job.id,
+            job.lease_generation,
+            UNROUTABLE_ERROR_KIND,
+            &format!("branch {node_id} is no longer trusted by this library"),
+        )
+        .await?
+    {
+        report.failed += 1;
+    } else {
+        report.lost += 1;
+    }
+    Ok(())
 }
 
 /// CAS-writes `payload` onto `job`, counting a lost race.

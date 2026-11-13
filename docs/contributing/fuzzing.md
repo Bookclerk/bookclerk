@@ -50,6 +50,7 @@ boundary extends it.
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
+| `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, and the URLs the window is asked to open | `bookclerk-window-policy` |
 
@@ -221,6 +222,10 @@ only that. The others check:
   its validator names at most 100 works, each once, by plain correlation
   keys; its identifiers are plain ASCII with a marketplace exactly on an
   ASIN, and each answer lists 1 to 8 distinct editions with a title. A
+  `requests.claimed` that passes its validator holds at most 16 requests,
+  each job once, with a valid work and a plain store and product id, and
+  a `requests.finish` that passes its validator names a plain job id
+  and a positive generation. A
   `window.page` that passes its validator carries at most 100 works, each
   once, with plain identifiers, 1 to 8 distinct owned editions with a
   title, and a next cursor past the one asked with. The shared oracle is `fuzz/oracles/node_frame.rs`,
@@ -250,6 +255,14 @@ only that. The others check:
   from 0 to 16), both present; the parser then returns the trimmed id and
   that cap, and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/job_cap_request.rs`, replayed from `bookclerk-library`.
+- **`branch_request`**: reads the body as an untyped JSON value. It is
+  accepted exactly when it is one object with no repeated keys and no keys
+  besides `work_id` (a string, required) and `node_id` (absent, `null` or
+  a string), where the trimmed `work_id` is 1 to 64 ASCII letters, digits
+  and `-`, and a trimmed `node_id` is 1 to 58 lowercase ASCII letters,
+  digits, `.`, `_` and `-`. The parser then returns those trimmed ids,
+  and otherwise refuses it as `Invalid`. The shared oracle is
+  `fuzz/oracles/branch_request.rs`, replayed from `bookclerk-library`.
 - **`sharing_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
   besides `cluster_id`, `share_books`, `include_branches`,

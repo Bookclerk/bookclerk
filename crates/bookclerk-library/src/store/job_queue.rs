@@ -717,6 +717,36 @@ impl LibraryStore {
         error_kind: &str,
         error_message: &str,
     ) -> Result<bool> {
+        self.fail_job_with(fence, error_kind, error_message, true)
+            .await
+    }
+
+    /// Fail a running job for good when `fence` still owns the generation:
+    /// like [`Self::fail_job`], but the job does not go back to `pending`
+    /// whatever attempts it has left. For an outcome another try cannot
+    /// change (an interlibrary request its branch no longer lists).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the update fails.
+    pub async fn fail_job_without_retry(
+        &self,
+        fence: &JobFence,
+        error_kind: &str,
+        error_message: &str,
+    ) -> Result<bool> {
+        self.fail_job_with(fence, error_kind, error_message, false)
+            .await
+    }
+
+    /// [`Self::fail_job`], retrying only when `retryable` is set.
+    async fn fail_job_with(
+        &self,
+        fence: &JobFence,
+        error_kind: &str,
+        error_message: &str,
+        retryable: bool,
+    ) -> Result<bool> {
         let Some(model) = jobs::Entity::find_by_id(&fence.job_id)
             .one(&self.db)
             .await
@@ -743,7 +773,7 @@ impl LibraryStore {
                 .map(|_| true);
         }
         let now = Utc::now();
-        let retry = model.attempt_count < model.max_attempts;
+        let retry = retryable && model.attempt_count < model.max_attempts;
         let attempt_count = model.attempt_count;
         let next_state = if retry {
             JobState::Pending.as_str()

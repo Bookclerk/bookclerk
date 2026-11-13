@@ -1,0 +1,1 @@
+{"v":1,"id":"9","type":"requests.claimed","requests":[{"job":"branch_request-1","generation":1,"work":{"work":"w1","identifiers":[{"scheme":"isbn","value":"9780000000001"}]},"store":"libro","product_id":"9780000000001","account_id":"riley@example.com"}]}

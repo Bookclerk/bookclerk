@@ -1645,6 +1645,25 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY (plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
+    // On a branch: books a library it joined asked for through an
+    // interlibrary request (`control_plane::branch_requests`), one row per
+    // library and store identity, so the catalog sync sends that library
+    // the book although it is a member's and not the owner's.
+    // `marketplace` and `product_id` are stored as `store_listings` stores
+    // them.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS link_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cluster_id TEXT NOT NULL,
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        marketplace TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (cluster_id, plugin_key, account_id, marketplace, product_id),
+        FOREIGN KEY (plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
+    )",
+    ),
     // Last claimed fire per plugin cron schedule (`control_plane::cron_fires`).
     // `claim` is the token of the batch that last moved the cursor; the job
     // insert in that batch selects only while the token is still there.

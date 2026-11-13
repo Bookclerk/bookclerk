@@ -871,6 +871,54 @@ missing.
 > stops counting two days after B last named it, so A can still show B as
 > a source for up to two days.
 
+### Requesting a book from a branch
+
+When a work is available through a branch, any signed-in user of A can ask
+for it with `POST /api/branch-requests` `{"work_id": "...", "node_id": "..."}`.
+`node_id` is one of the work's `available_through` entries; leave it out
+to ask the first branch that lists the work.
+
+1. **A queues the request.** It becomes a `branch_request` job on A,
+   pinned to B and naming the edition B listed (store, marketplace and
+   product id) and the work's strong identifiers. A work no trusted branch
+   currently lists is refused (404). Asking again while a request for the
+   same work and branch waits returns that request (`already_queued`).
+   A wakes B.
+2. **B claims it.** On the wake, when it connects, and every 15 minutes,
+   B sends `requests.claim` and gets up to 16 requests, each leased to B
+   for 5 minutes. No other node, and no ordinary job claim, ever takes a
+   request.
+3. **B decides, automatically.** B accepts a request only for a book it
+   still lists to A, under the same rules as its catalog answers (see
+   **What B lists** above): its owner's books always, a member's while
+   **List my members' books to <library>** is on and the member has not
+   opted out, and nothing while **Share this branch's books with
+   <library>** is off or B is a window of A (see
+   [Window mode](#window-mode)). B's listing settings are where B's
+   operator draws the line; there is no per-request approval.
+4. **B fetches and sends the book.** An accepted book not yet downloaded
+   is queued as an ordinary acquire in B's own library, on the store
+   account on B that holds it. B records the book as requested by A, so
+   its catalog sync sends it to A although it is a member's book. The book
+   goes up with the sync's next pass after it is downloaded, and A holds
+   it through B like B's other titles.
+5. **A records the answer.** B answers each request with
+   `requests.finish`: accepted (the job succeeds), not listed (the job
+   fails as `not_listed` and isn't retried), or failed on B (the job fails
+   as `branch_failed` and is retried up to the job's attempt limit). A
+   request whose work has lost every strong identifier fails as
+   `work_gone`.
+
+A request names no store account, user, or other library, and A never
+learns whose copy B sent. Requests made before B stopped listing a book
+are answered "not listed".
+
+> [!NOTE]
+> A book B sends because of a request keeps going to A only while B
+> still lists it: turning off **Share this branch's books** or **List my
+> members' books**, or the member opting out, stops it at the next sync
+> pass. Files A already received stay there.
+
 ### Window mode
 
 A window shows the books its person has in the libraries they joined,
@@ -888,6 +936,10 @@ With the setting off for library A, B:
   the setting off hands back any job B holds for A at once. A's share of
   B's job slots goes to the libraries B downloads for, and A's job cap
   applies again when the setting is turned back on.
+- **Lists nothing to A and takes none of its requests.** A window is a
+  client of A, not one of its nodes. It answers A's catalog questions as
+  "missing" and every interlibrary request from A as "not listed", so A
+  shows no title as available through B.
 - **Reads its person's books from A.** On every connection, every 30
   minutes, and at once when the setting changes, B sends `window.books`
   page by page. A answers each page (`window.page`) with the books on the
@@ -916,7 +968,7 @@ B's operator or an Owner of B.
 
 > [!NOTE]
 > Asking a library to send a book to a window isn't built yet. It arrives
-> with interlibrary requests.
+> with window-mode requests, after interlibrary requests to branches.
 
 ### No loops
 

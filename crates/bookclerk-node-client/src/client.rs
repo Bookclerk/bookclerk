@@ -68,15 +68,15 @@ use bookclerk_library::control_plane::{
     ClusterLink, ClusterLinkKeys, NodeHeartbeat, NodeSampler, NODE_HEARTBEAT_INTERVAL,
 };
 use bookclerk_node_proto::{
-    decode_nonce, open_instance_secrets, open_secrets, open_upload_token, questions_problem,
-    seal_account_offer, seal_secret_update, sign_artifact_request, sign_auth,
+    claimed_problem, decode_nonce, open_instance_secrets, open_secrets, open_upload_token,
+    questions_problem, seal_account_offer, seal_secret_update, sign_artifact_request, sign_auth,
     validate_box_public_key, window_page_problem, AccountBundle, AcquireTarget, ArtifactRequest,
-    AuthContext, Body, CarriedAccount, CatalogRef, CatalogTitle, ClaimFilter, ClaimScope, Frame,
-    HeldFence, LookupAnswer, LookupWork, PlanDestination, SealError, SecretEntry, SecretRef,
-    SecretValue, SigningKey, UploadAnswer, UploadCommitRequest, UploadFile, WindowWork,
-    ACCOUNT_BUNDLE_VERSION, ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED,
-    HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES,
-    UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
+    AuthContext, Body, BranchRequest, CarriedAccount, CatalogRef, CatalogTitle, ClaimFilter,
+    ClaimScope, Frame, HeldFence, LookupAnswer, LookupWork, PlanDestination, RequestOutcome,
+    SealError, SecretEntry, SecretRef, SecretValue, SigningKey, UploadAnswer, UploadCommitRequest,
+    UploadFile, WindowWork, ACCOUNT_BUNDLE_VERSION, ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL,
+    CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS,
+    SEND_QUEUE_FRAMES, UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -1237,6 +1237,51 @@ impl HostClientHandle {
     ) -> Result<(), OwnerCallError> {
         match self
             .catalog_call(Body::CatalogFound { answers, missing })
+            .await?
+        {
+            Body::Accepted {} => Ok(()),
+            _ => Err(OwnerCallError::Unavailable),
+        }
+    }
+
+    /// `requests.claim`: claims the interlibrary requests the library has
+    /// for this branch, at most [`bookclerk_node_proto::MAX_CLAIMED_REQUESTS`]
+    /// (empty when none waits). A list that breaks the frame rules is
+    /// refused as [`OwnerCallError::Unavailable`]; its leases then expire
+    /// and the requests go back to pending.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`]; `Refused` when the library does not
+    /// count this node as a branch.
+    pub async fn requests_claim(&self) -> Result<Vec<BranchRequest>, OwnerCallError> {
+        match self.catalog_call(Body::RequestsClaim {}).await? {
+            Body::RequestsClaimed { requests } if claimed_problem(&requests).is_none() => {
+                Ok(requests)
+            }
+            _ => Err(OwnerCallError::Unavailable),
+        }
+    }
+
+    /// `requests.finish`: reports what this branch did with one claimed
+    /// request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`]; `Lost` when the lease is no longer this
+    /// branch's.
+    pub async fn request_finish(
+        &self,
+        job: &str,
+        generation: i64,
+        outcome: RequestOutcome,
+    ) -> Result<(), OwnerCallError> {
+        match self
+            .catalog_call(Body::RequestFinish {
+                job: job.to_string(),
+                generation,
+                outcome,
+            })
             .await?
         {
             Body::Accepted {} => Ok(()),
