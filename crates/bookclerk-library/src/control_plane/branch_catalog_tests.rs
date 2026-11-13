@@ -1714,3 +1714,91 @@ async fn forwardable_keys_page_by_id_and_bind_columns_by_name() {
         }
     }
 }
+
+/// A title a branch shares again after a pause is held under a new id; its
+/// earlier delivery stays its own, so it is asked for and delivered again.
+/// The files it left behind are kept while another holder here still
+/// holds their edition.
+#[tokio::test]
+async fn a_title_shared_again_is_delivered_again_and_its_files_kept_while_held() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    // An account of the store the branch names, so its book of `p1` is
+    // the same listing as the shared title.
+    store
+        .upsert_account(PLUGIN, "same-store", "us", None, true, "audible")
+        .await
+        .unwrap();
+    let key = "Author/p1/p1.m4b";
+    let fence = open_branch(&store, BRANCH, &[title_with("p1", key, &[])]).await;
+    deliver_local(&store, BRANCH, fence, "p1", &[key]).await;
+    let first = list_branch_titles(&store, None, 1).await.unwrap()[0]
+        .uuid
+        .clone();
+
+    open(&store, false, true).await;
+    assert_eq!(
+        branch_title_counts(&store, BRANCH).await.unwrap().detached,
+        1
+    );
+
+    let resumed = open(&store, true, true).await;
+    let (_, _, wanted) = accepted(
+        &store,
+        resumed.fence,
+        "c",
+        false,
+        &[title_with("p1", key, &[])],
+    )
+    .await;
+    assert_eq!(
+        wanted,
+        vec![reference("p1")],
+        "its own delivery is no other's"
+    );
+    let rows = list_branch_titles(&store, None, 10).await.unwrap();
+    assert_ne!(rows[0].uuid, first, "held again under a new id");
+    deliver_local(&store, BRANCH, resumed.fence, "p1", &[key]).await;
+    assert!(list_branch_titles(&store, None, 10).await.unwrap()[0].delivered);
+
+    // An account here holds the same edition: when the branch stops
+    // sharing again, the delivered files stay that edition's.
+    store
+        .scope(PLUGIN, "audible")
+        .upsert_book(&NewBook {
+            plugin_key: PLUGIN.into(),
+            ..NewBook::minimal("p1", "same-store", "us", "Title p1")
+        })
+        .await
+        .unwrap();
+    open(&store, false, true).await;
+    assert_eq!(
+        branch_title_counts(&store, BRANCH).await.unwrap().detached,
+        0
+    );
+    assert_eq!(
+        remove_detached_branch_titles(&store, None).await.unwrap(),
+        0
+    );
+    assert!(store.edition_file("local", key).await.unwrap().is_some());
+}
+
+/// A title that resolves to another listing (here its marketplace
+/// changed) replaces the branch's earlier holding of it.
+#[tokio::test]
+async fn a_title_on_a_new_listing_replaces_its_earlier_holding() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let session = open(&store, true, true).await;
+    accepted(&store, session.fence, "c", false, &[title("p1", 1)]).await;
+    let moved = CatalogTitle {
+        marketplace: "uk".into(),
+        ..title("p1", 1)
+    };
+    accepted(&store, session.fence, "d", false, &[moved]).await;
+    let rows = list_branch_titles(&store, None, 10).await.unwrap();
+    assert_eq!(rows.len(), 1, "one holding per shared title");
+    assert_eq!(removed_events(&store).await, 1);
+}

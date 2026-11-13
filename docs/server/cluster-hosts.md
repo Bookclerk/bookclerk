@@ -792,10 +792,13 @@ shares (read-only, because B's operator or an Owner of B sets it), and
 counts of its titles.
 
 When a branch stops sharing, withdraws a title or leaves, A no longer
-counts it as holding those titles. Files it already delivered are kept,
-marked as from a branch that left, until the owner removes the entries
-with **Remove** (or `POST /api/config/branches/titles/remove {node_id?}`).
-The files themselves stay in A's outputs.
+counts it as holding those titles. Files it already delivered are kept.
+When nothing else in A holds that book either, its files are marked as
+from a branch that left, until the owner removes the entries with
+**Remove** (or `POST /api/config/branches/titles/remove {node_id?}`). The
+files themselves stay in A's outputs. A book a store account or another
+branch in A still holds keeps its files as that book's. If the branch
+shares the title again later, it is delivered again.
 
 ### Shared catalog
 

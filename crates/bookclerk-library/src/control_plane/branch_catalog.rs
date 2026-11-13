@@ -35,6 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::column_read::SelectColumnExt as _;
 use bookclerk_node_proto::{
     CatalogRef, CatalogTitle, UploadFile, CATALOG_ITEM, MAX_CATALOG_BATCH_TITLES,
     MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_TITLE_BYTES, MAX_CATALOG_WANTED,
@@ -444,6 +445,11 @@ struct PreparedCatalogBatch {
     wanted: Vec<CatalogRef>,
     /// The full pass this batch ends, when it is the last batch of one.
     ends_pass: Option<String>,
+    /// The branch's other holdings of titles this batch linked: a title
+    /// that now resolves to another listing (its listing plugin or
+    /// marketplace changed) leaves its earlier holding behind, which goes
+    /// once the batch is written.
+    replaced: Vec<String>,
 }
 
 /// Records one batch of `node_id`'s shared titles under `fence`, then the
@@ -518,6 +524,7 @@ async fn prepare_catalog_batch(
     // holding recorded for it earlier is stamped with the pass, so the
     // pass's end does not withdraw it as gone from the branch.
     let mut held_seen = Vec::new();
+    let mut linked: BTreeMap<String, String> = BTreeMap::new();
     for title in titles {
         let reference = share_ref(&title.store, &title.product_id);
         if held_here(store, &owned, title).await? {
@@ -552,6 +559,11 @@ async fn prepare_catalog_batch(
                 continue;
             }
         };
+        // The link is written ahead of the gated batch. When the batch
+        // then finds its fence gone (`Lost`), the cursor stays put and the
+        // branch sends these titles again under its next fence, which
+        // writes their share state; a branch that stopped sharing meanwhile
+        // has all its holdings removed instead.
         let plan = store.record_listing(&listing, &held_by_node).await?;
         let Some(holding) = holdings::Entity::find()
             .filter(holdings::Column::ListingId.eq(&plan.listing.id))
@@ -564,6 +576,7 @@ async fn prepare_catalog_batch(
             // read above: the link wrote no holding.
             return Ok(Err(CatalogAccept::Lost));
         };
+        linked.insert(reference.clone(), holding.id.clone());
         let digest = title.manifest_digest();
         let shared = serde_json::to_string(title)
             .map_err(|err| LibraryError::Other(anyhow::anyhow!("catalog title: {err}")))?;
@@ -582,13 +595,30 @@ async fn prepare_catalog_batch(
         ));
         if holding.delivered_digest.as_deref() != Some(digest.as_str())
             && wanted.len() < MAX_CATALOG_WANTED
-            && !edition_has_other_audio(store, &plan.listing.edition_id, &holding.id).await?
+            && !edition_has_other_audio(store, node_id, &plan.listing.edition_id, &holding.id)
+                .await?
         {
             wanted.push(title.reference());
         }
     }
     let recorded = statements.len() - 1;
     statements.extend(held_seen);
+    let mut replaced = Vec::new();
+    if !linked.is_empty() {
+        for row in holdings::Entity::find()
+            .filter(holdings::Column::HolderKind.eq("node"))
+            .filter(holdings::Column::NodeId.eq(node_id))
+            .filter(holdings::Column::ShareRef.is_in(linked.keys().cloned()))
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?
+        {
+            let kept = row.share_ref.as_ref().and_then(|r| linked.get(r));
+            if kept.is_some_and(|kept| *kept != row.id) {
+                replaced.push(row.id);
+            }
+        }
+    }
     Ok(Ok(PreparedCatalogBatch {
         operation_id: format!("catalog-batch:{node_id}:{fence}:{now}"),
         statements,
@@ -596,6 +626,7 @@ async fn prepare_catalog_batch(
         skipped,
         wanted,
         ends_pass: pass.filter(|_| done),
+        replaced,
     }))
 }
 
@@ -618,18 +649,27 @@ async fn apply_catalog_batch(
     let upserted = (1..=prepared.titles)
         .map(|index| batch::rows_affected(&reply, index))
         .sum();
+    if !prepared.replaced.is_empty() {
+        store
+            .remove_node_holdings(node_id, NodeHoldingSelection::Ids(&prepared.replaced))
+            .await?;
+    }
+    // Ending the pass follows the batch rather than joining it: the
+    // removal is paged and may take several batches. When a step fails
+    // the pass stays under way and the branch's next sync, which ends
+    // with another `done` batch, ends it again.
     if let Some(pass) = prepared.ends_pass {
         // Each removal is guarded on this pass still being the node's, so a
         // pass started over meanwhile keeps what it stamps.
-        let withdrawn = store
+        let selected = store
             .remove_node_holdings(node_id, NodeHoldingSelection::UnseenBy(&pass))
             .await?;
-        if withdrawn > 0 {
+        if selected > 0 {
             tracing::info!(
                 node_id,
-                withdrawn,
+                selected,
                 reason = DETACHED_WITHDRAWN,
-                "a branch's full catalog pass withdrew titles"
+                "a branch's full catalog pass withdrew titles it no longer names"
             );
         }
         let now = stamp();
@@ -660,11 +700,14 @@ async fn apply_catalog_batch(
 }
 
 /// True when `edition_id` already has audio in this library's outputs
-/// that `holding_id`'s own uploads did not write: an acquire's, another
-/// account's upload, or another branch's delivery. Such a title's files
-/// are not asked for again.
+/// that `node_id` did not deliver: an acquire's, another account's upload,
+/// or another branch's delivery. Such a title's files are not asked for
+/// again. The branch's own catalog uploads never count against it, also
+/// those of an earlier holding of the same title (one removed when the
+/// branch stopped sharing and held again since, under a new id).
 async fn edition_has_other_audio(
     store: &LibraryStore,
+    node_id: &str,
     edition_id: &str,
     holding_id: &str,
 ) -> Result<bool> {
@@ -681,6 +724,7 @@ async fn edition_has_other_audio(
                     .to_owned(),
             ),
         )
+        .filter(edition_files::Column::Writer.not_in_subquery(catalog_uploads_of(node_id)))
         .count(store.db())
         .await
         .map_err(LibraryError::Orm)?;
@@ -735,7 +779,7 @@ pub async fn pending_deliveries(
                 .await
                 .map_err(LibraryError::Orm)?;
             if let Some(listing) = edition {
-                if edition_has_other_audio(store, &listing.edition_id, &row.id).await? {
+                if edition_has_other_audio(store, node_id, &listing.edition_id, &row.id).await? {
                     continue;
                 }
             }
@@ -846,7 +890,7 @@ pub async fn grant_catalog_upload(
     if offered != declared {
         return Ok(UploadGrant::Refused("manifest_changed"));
     }
-    if edition_has_other_audio(store, &edition_id, &row.id).await? {
+    if edition_has_other_audio(store, node_id, &edition_id, &row.id).await? {
         return Ok(UploadGrant::Refused("edition_has_files"));
     }
     let keys: Vec<String> = declared.keys().map(|key| (*key).to_string()).collect();
@@ -1235,8 +1279,10 @@ pub async fn detach_branch_titles(
 }
 
 /// The condition that a file record is one `node_id`'s catalog uploads
-/// delivered for an edition the branch no longer holds here: an entry
-/// left by a branch that stopped sharing, withdrew the title or left.
+/// delivered for an edition nothing here holds any more: an entry left by
+/// a branch that stopped sharing, withdrew the title or left. An edition
+/// an account or another branch still holds keeps the records, since its
+/// files are still that edition's.
 fn left_behind_by(node_id: &str) -> Condition {
     Condition::all()
         .add(edition_files::Column::OwnerKind.eq("edition"))
@@ -1251,7 +1297,6 @@ fn left_behind_by(node_id: &str) -> Condition {
                             Query::select()
                                 .column(holdings::Column::ListingId)
                                 .from(holdings::Entity)
-                                .and_where(holdings::Column::NodeId.eq(node_id))
                                 .to_owned(),
                         ),
                     )
@@ -1263,19 +1308,20 @@ fn left_behind_by(node_id: &str) -> Condition {
 /// The editions `node_id` left entries for ([`left_behind_by`]).
 async fn editions_left_behind(store: &LibraryStore, node_id: &str) -> Result<BTreeSet<String>> {
     Ok(edition_files::Entity::find()
+        .distinct()
         .filter(left_behind_by(node_id))
+        .into_column::<String, _>(edition_files::Column::OwnerId)
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?
         .into_iter()
-        .map(|row| row.owner_id)
         .collect())
 }
 
 /// Forgets the files branches left behind (entries "from a branch that
 /// left" and the like), of one branch or of every one: the
-/// `edition_files` records its catalog uploads wrote for editions it no
-/// longer holds here. Answers how many editions' entries went. The files
+/// `edition_files` records its catalog uploads wrote for editions nothing
+/// here holds any more. Answers how many editions' entries went. The files
 /// themselves stay in this library's outputs.
 ///
 /// # Errors
@@ -1288,15 +1334,12 @@ pub async fn remove_detached_branch_titles(
     let nodes: Vec<String> = match node_id {
         Some(node_id) => vec![node_id.to_string()],
         None => node_upload_sessions::Entity::find()
+            .distinct()
             .filter(node_upload_sessions::Column::JobId.eq(CATALOG_ITEM))
+            .into_column::<String, _>(node_upload_sessions::Column::NodeId)
             .all(store.db())
             .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|row| row.node_id)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect(),
+            .map_err(LibraryError::Orm)?,
     };
     let mut removed = 0u64;
     for node in nodes {
@@ -1414,8 +1457,9 @@ pub struct BranchTitleCounts {
     /// Of those, titles whose files arrived.
     #[schema(example = 120)]
     pub delivered: u64,
-    /// Titles whose files it delivered but no longer shares (it stopped
-    /// sharing, left, or withdrew them).
+    /// Editions whose files it delivered that nothing in this library holds
+    /// any more (it stopped sharing, left, or withdrew them, and no store
+    /// account or other branch here holds them).
     #[schema(example = 3)]
     pub detached: u64,
 }

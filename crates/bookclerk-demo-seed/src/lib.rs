@@ -881,7 +881,16 @@ fn catalog_title(sample: &SampleTitle, hit: Option<&CatalogHit>) -> CatalogTitle
     CatalogTitle {
         store: sample.store.id.into(),
         product_id: book.product_id,
-        marketplace: book.marketplace.to_ascii_lowercase(),
+        marketplace: {
+            // A storefront's own spelling (`en-US`, padded) is sent as no
+            // marketplace rather than refusing the whole sample batch.
+            let market = book.marketplace.trim().to_ascii_lowercase();
+            if bookclerk_node_proto::is_marketplace(&market) {
+                market
+            } else {
+                String::new()
+            }
+        },
         metadata: CatalogMetadata {
             title: book.title,
             subtitle: book.subtitle,

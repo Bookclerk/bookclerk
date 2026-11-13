@@ -397,8 +397,9 @@ impl LibraryStore {
     ///   (`books.uuid`) of a job upload, or the node holding
     ///   (`holdings.id`) of a catalog upload. A key its edition already
     ///   holds is taken over only when this upload or an earlier upload for
-    ///   the same title wrote it, never one an acquire or another account's
-    ///   upload wrote: the edition's files are shared, so one node cannot
+    ///   the same title (or, for a catalog upload, an earlier catalog upload
+    ///   of the same branch) wrote it, never one an acquire or another
+    ///   account's upload wrote: the edition's files are shared, so one node cannot
     ///   replace them. A job upload may also take over a key a branch's
     ///   catalog upload wrote (`catalog` false), as an acquire on this node
     ///   would replace a delivered copy with its own.
@@ -475,7 +476,24 @@ impl LibraryStore {
             .add(uploads_for(
                 Condition::all().add(node_upload_sessions::Column::BookUuid.eq(title)),
             ));
-        if !catalog {
+        if catalog {
+            // The same branch's other catalog uploads: a title it shares
+            // again after a pause is held under a new id, and its earlier
+            // delivery is still its own.
+            writers = writers.add(uploads_for(
+                Condition::all()
+                    .add(node_upload_sessions::Column::JobId.eq(bookclerk_node_proto::CATALOG_ITEM))
+                    .add(
+                        node_upload_sessions::Column::NodeId.in_subquery(
+                            Query::select()
+                                .column(node_upload_sessions::Column::NodeId)
+                                .from(node_upload_sessions::Entity)
+                                .and_where(node_upload_sessions::Column::UploadId.eq(writer))
+                                .to_owned(),
+                        ),
+                    ),
+            ));
+        } else {
             writers = writers.add(uploads_for(Condition::all().add(
                 node_upload_sessions::Column::JobId.eq(bookclerk_node_proto::CATALOG_ITEM),
             )));

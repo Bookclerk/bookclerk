@@ -99,6 +99,9 @@ pub enum NodeHoldingSelection<'a> {
     UnseenBy(&'a str),
     /// Every holding of the node (it stopped sharing, left or was revoked).
     All,
+    /// These holdings of the node, by id (ones a title's newer holding
+    /// replaced).
+    Ids(&'a [String]),
 }
 
 /// Whose holdings a removal reads: one account, or one branch node.
@@ -322,6 +325,17 @@ impl LibraryStore {
             NodeHoldingSelection::All => {
                 self.remove_selected(Scope::Node(node_id), Condition::all(), None)
                     .await
+            }
+            NodeHoldingSelection::Ids(ids) => {
+                let mut total = 0;
+                for chunk in ids.chunks(self.lookup_chunk().max(1)) {
+                    let cond =
+                        Condition::all().add(holdings::Column::Id.is_in(chunk.iter().cloned()));
+                    total += self
+                        .remove_selected(Scope::Node(node_id), cond, None)
+                        .await?;
+                }
+                Ok(total)
             }
         }
     }

@@ -2008,8 +2008,9 @@ it: a tree, A ← B ← C.
   with `holding_removed` (at the next `catalog.begin` with sharing off,
   or when the node leaves or is revoked); a node holding is written only
   while its node shares with a live credential. Delivered files stay with
-  their editions in A's outputs and are shown as "from a branch that
-  left"; the owner forgets them in bulk (`POST
+  their editions in A's outputs; those of an edition nothing in A holds
+  any more are shown as "from a branch that left", and the owner forgets
+  them in bulk (`POST
   /api/config/branches/titles/remove {node_id?}`, operator or Owner),
   which drops their `edition_files` records and leaves the files.
 - **Tests.** Library: attribution, dedup and resume under a stale fence,
