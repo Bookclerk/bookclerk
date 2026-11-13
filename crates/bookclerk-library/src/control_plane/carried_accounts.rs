@@ -338,15 +338,30 @@ async fn account_secrets(
     plugin_key: &str,
     account_id: &str,
 ) -> Result<Vec<CarriedSecret>> {
-    let rows = encrypted_secrets::Entity::find()
-        .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
-        .filter(encrypted_secrets::Column::Provider.eq(plugin_key))
-        .filter(encrypted_secrets::Column::AccountId.eq(account_id))
-        .order_by_asc(encrypted_secrets::Column::Kind)
-        .order_by_asc(encrypted_secrets::Column::Name)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    // Read in pages under the database plugin's result limit, ordered by
+    // the rest of the primary key so pages don't overlap.
+    let page = super::keeper::read_page(store);
+    let mut rows = Vec::new();
+    let mut offset = 0_u64;
+    loop {
+        let batch = encrypted_secrets::Entity::find()
+            .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
+            .filter(encrypted_secrets::Column::Provider.eq(plugin_key))
+            .filter(encrypted_secrets::Column::AccountId.eq(account_id))
+            .order_by_asc(encrypted_secrets::Column::Kind)
+            .order_by_asc(encrypted_secrets::Column::Name)
+            .offset(offset)
+            .limit(page)
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        let full = u64::try_from(batch.len()).unwrap_or(u64::MAX) >= page;
+        rows.extend(batch);
+        if !full {
+            break;
+        }
+        offset = offset.saturating_add(page);
+    }
     let mut secrets = Vec::new();
     for row in rows {
         let Some(record) = get_secret(

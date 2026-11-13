@@ -115,10 +115,27 @@ async fn a_library_applies_only_newer_pushes_from_its_keeper_branch() {
             Some("b1"),
             "{name}"
         );
+        // Sent, but not taken over until the branch pushes a sign-in: a
+        // branch that could not keep the account leaves it with the library.
+        assert_eq!(
+            confirmed_keeping_branch(store, KEEPER, "ana")
+                .await
+                .unwrap(),
+            None,
+            "{name}"
+        );
         let outcome = apply_keeper_update(store, ana.id, "b1", &pushed("ana", b"v2"), 10)
             .await
             .unwrap();
         assert_eq!(outcome, KeeperUpdate::Applied, "{name}");
+        assert_eq!(
+            confirmed_keeping_branch(store, KEEPER, "ana")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("b1"),
+            "{name}"
+        );
         assert_eq!(secret_of(store, "ana").await, b"v2", "{name}");
 
         // The same or an older revision changes nothing.
@@ -278,5 +295,11 @@ async fn a_keeper_tracks_what_it_pushed_to_each_library() {
         upsert_secret(store.db(), &second).await.unwrap();
         let after = sign_in_revision(store, KEEPER, "ana").await.unwrap();
         assert!(after > before, "{name}: {before:?} -> {after:?}");
+        // The export a push sends holds both secrets, read in pages too.
+        let carried = accounts_to_carry_where(store, ana.id, &|_, _| true)
+            .await
+            .unwrap();
+        assert_eq!(carried.len(), 1, "{name}");
+        assert_eq!(carried[0].secrets.len(), 2, "{name}");
     }
 }

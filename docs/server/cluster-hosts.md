@@ -326,10 +326,13 @@ account itself.
   keeper, for the person who owns the branch, and only when its revision
   is newer than the last one applied (`account_credential_revisions`), in
   one guarded atomic batch, and audits `branch_sign_in_applied`. A push
-  retried or overtaken by a newer one changes nothing. The library doesn't
-  save its own scans' refreshes of a kept account, and refuses a job's
-  write-back of it (`kept_by_branch`), so neither overwrites the keeper's
-  newer sign-in.
+  retried or overtaken by a newer one changes nothing. Once the keeper's
+  first push is applied, the library doesn't save its own scans' refreshes
+  of the account, and refuses a job's write-back of it (`kept_by_branch`),
+  so neither overwrites the keeper's newer sign-in. Until then the library
+  keeps refreshing it itself, so a branch that was sent the account but
+  couldn't keep it (no Owner to keep it for, or its member rule refused it)
+  never leaves it stale.
 - **Elsewhere.** A kept account travels back only to its keeper, never to
   a second branch, and a second branch's offer of it is not kept.
 - **A new keeper.** When the account is disconnected everywhere on the

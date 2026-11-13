@@ -321,11 +321,12 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 account_id: secret_ref.account_id,
                 name: secret_ref.name,
             };
-            // A single-keeper account a branch keeps for this library takes
-            // only that branch's pushes (`accounts.update`): a job's
-            // write-back would overwrite them with an older login.
+            // A single-keeper account a branch keeps for this library (and
+            // has pushed a sign-in for) takes only that branch's pushes
+            // (`accounts.update`): a job's write-back would overwrite them
+            // with an older login.
             if secret_ref.kind == bookclerk_library::secrets::secret_kind::SOURCE_AUTH {
-                match bookclerk_library::control_plane::keeping_branch(
+                match bookclerk_library::control_plane::confirmed_keeping_branch(
                     library,
                     &secret_ref.provider,
                     &secret_ref.account_id,

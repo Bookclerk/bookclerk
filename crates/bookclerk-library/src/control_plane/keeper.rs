@@ -43,7 +43,7 @@ const LINK_PEER: &str = "link:";
 const READ_PAGE: u64 = 256;
 
 /// Rows per read page under the database plugin's result limit.
-fn read_page(store: &LibraryStore) -> u64 {
+pub(super) fn read_page(store: &LibraryStore) -> u64 {
     match store.db_capabilities().max_result_rows {
         0 => READ_PAGE,
         rows => u64::from(rows).clamp(1, READ_PAGE),
@@ -116,6 +116,36 @@ pub async fn keeping_branch(
         .await
         .map_err(LibraryError::Orm)?;
     Ok(first.and_then(|share| share.peer.strip_prefix(NODE_PEER).map(str::to_owned)))
+}
+
+/// The branch that has taken over this account's sign-in for this library:
+/// its [`keeping_branch`], once that branch has pushed a sign-in here
+/// (`accounts.update`). Until then the library still keeps the account
+/// itself (saves its own refreshes and takes write-backs), so a branch that
+/// was sent the account but could not keep it never leaves it unrefreshed.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn confirmed_keeping_branch(
+    store: &LibraryStore,
+    plugin_key: &str,
+    account_id: &str,
+) -> Result<Option<String>> {
+    let Some(node_id) = keeping_branch(store, plugin_key, account_id).await? else {
+        return Ok(None);
+    };
+    // One row by its primary key.
+    let pushed = account_credential_revisions::Entity::find_by_id((
+        plugin_key.to_owned(),
+        account_id.to_owned(),
+        node_peer(&node_id),
+    ))
+    .one(store.db())
+    .await
+    .map_err(LibraryError::Orm)?
+    .is_some();
+    Ok(pushed.then_some(node_id))
 }
 
 /// True when this install keeps the account for the library it joined as

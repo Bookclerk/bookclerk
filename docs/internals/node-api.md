@@ -40,7 +40,7 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `deployments.list` | `deployments` (what targets this node, with versions and the requested grant) |
 | `instance.config` | `CONFIG`, and `SECRETS` sealed to the node only for a node trusted with every job |
 | `observation` | `ok` (`materialized` or `error` for its own deployments) |
-| `secret.update` | `ok` (a refreshed store token, sealed to the owner, only for a ref handed with a live job), or `error` `refused` `kept_by_branch` for a single-keeper account a branch keeps |
+| `secret.update` | `ok` (a refreshed store token, sealed to the owner, only for a ref handed with a live job), or `error` `refused` `kept_by_branch` for a single-keeper account a branch keeps and has pushed a sign-in for |
 | `accounts.update {sealed, revision}` | `accounts.updated {outcome}`: `applied`, `stale` (not newer than the last one applied) or `not_shared` (not an account this branch keeps there); see [One refresh keeper](../server/cluster-hosts.md#one-refresh-keeper) |
 | `scan.results` | `scan.accepted {batch, upserted}` |
 | `acquire.plan` | `acquire.targets {targets, destinations}` |

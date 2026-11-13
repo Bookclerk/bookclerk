@@ -1706,7 +1706,8 @@ mod tests {
         assert_eq!(stored(&scope).await, serde_json::json!({"token": "v2"}));
 
         // A single-keeper account saves its refreshes until a branch keeps
-        // it for this library; from then on the branch's pushes win.
+        // it for this library and has pushed a sign-in here; from then on
+        // the branch's pushes win.
         let v2 = serde_json::to_vec(&serde_json::json!({"token": "v2"})).unwrap();
         let single = |refreshed: &[u8]| {
             keep_refreshed_credentials(
@@ -1733,6 +1734,8 @@ mod tests {
         )
         .await
         .unwrap();
+        // Sent to the branch, which has not pushed yet: still saved here,
+        // so a branch that could not keep it never leaves it unrefreshed.
         let v4 = serde_json::to_vec(&serde_json::json!({"token": "v4"})).unwrap();
         keep_refreshed_credentials(
             "echo",
@@ -1743,7 +1746,34 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(stored(&scope).await, serde_json::json!({"token": "v4"}));
+        assert_eq!(stored(&scope).await, serde_json::json!({"token": "v5"}));
+        // The branch's first push applied: its refreshes win from now on.
+        {
+            use bookclerk_library::entities::account_credential_revisions;
+            use sea_orm::{ActiveModelTrait as _, Set};
+            account_credential_revisions::ActiveModel {
+                plugin_key: Set("path:file:///plugins/echo".into()),
+                account_id: Set("a1".into()),
+                peer: Set(bookclerk_library::control_plane::node_peer("branch")),
+                revision: Set(1),
+                observed: Set(0),
+                updated_at: Set("2026-11-13T00:00:00Z".into()),
+            }
+            .insert(store.db())
+            .await
+            .unwrap();
+        }
+        let v5 = serde_json::to_vec(&serde_json::json!({"token": "v5"})).unwrap();
+        keep_refreshed_credentials(
+            "echo",
+            RefreshTarget::SingleKeeper(&scope),
+            "a1",
+            &v5,
+            br#"{"token":"v6"}"#.to_vec(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stored(&scope).await, serde_json::json!({"token": "v5"}));
     }
 
     #[tokio::test]

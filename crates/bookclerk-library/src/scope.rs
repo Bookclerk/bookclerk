@@ -476,16 +476,17 @@ impl SourceScope {
     }
 
     /// The branch that keeps this account's login fresh for this library
-    /// (a branch it was shared with; see
-    /// [`crate::control_plane::keeping_branch`]), or `None` when this
-    /// install keeps it. For a single-keeper storefront the host then saves
+    /// (the branch it was shared with, once that branch has pushed a
+    /// sign-in here; see [`crate::control_plane::confirmed_keeping_branch`]),
+    /// or `None` when this install keeps it. For a single-keeper storefront the host then saves
     /// none of its own refreshes of the account: the branch pushes them.
     ///
     /// # Errors
     ///
     /// Returns the read error.
     pub async fn keeping_branch(&self, account_id: &str) -> Result<Option<String>> {
-        crate::control_plane::keeping_branch(&self.store, &self.plugin_key, account_id).await
+        crate::control_plane::confirmed_keeping_branch(&self.store, &self.plugin_key, account_id)
+            .await
     }
 
     /// Stores the credentials a guest handed back after refreshing them
