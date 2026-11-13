@@ -165,7 +165,7 @@ where
 
 /// Whether `err` is the plugin refusing a reply for its size in bytes, which
 /// fewer rows can fix.
-fn is_result_bytes_limit(err: &LibraryError) -> bool {
+pub(crate) fn is_result_bytes_limit(err: &LibraryError) -> bool {
     err.limit().is_some_and(|limit| {
         matches!(
             limit.limit.as_str(),

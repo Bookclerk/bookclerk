@@ -37,8 +37,9 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
 use super::batch::{exec, int, text, text_opt};
 use super::catalog_lookup::{
-    book_edition, identifiers_of, in_chunk, is_trusted_branch, read_chunked_all, read_paged,
-    read_paged_by, result_page, run_batches, stamp, work_for_question, works_of_editions,
+    book_edition, identifiers_of, in_chunk, is_result_bytes_limit, is_trusted_branch,
+    read_chunked_all, read_paged, read_paged_by, result_page, run_batches, stamp,
+    work_for_question, works_of_editions,
 };
 use super::cluster_links::list_cluster_links;
 use crate::entities::{
@@ -155,6 +156,61 @@ fn encoded_len<T: serde::Serialize>(value: &T) -> usize {
     serde_json::to_vec(value).map_or(WINDOW_PAGE_BUDGET, |bytes| bytes.len() + 1)
 }
 
+/// The books `select` reads, and the ids it matched in order.
+///
+/// A book row is as wide as all its metadata together, which can pass the
+/// plugin's `maxResultBytes` even when every field fits a cell. When the
+/// page is refused for its bytes, the ids are read alone and each book on
+/// its own; a book still too wide to read is left out of the window (and
+/// logged) instead of failing every page after it. The ids include the
+/// books left out, so the caller's cursor moves past them.
+///
+/// # Errors
+///
+/// Returns any read error other than a book too wide to read.
+async fn read_books_within_bytes(
+    store: &LibraryStore,
+    select: sea_orm::Select<books::Entity>,
+) -> Result<(Vec<books::Model>, Vec<i64>)> {
+    use crate::column_read::SelectColumnExt as _;
+    match select.clone().all(store.db()).await {
+        Ok(rows) => {
+            let ids = rows.iter().map(|b| b.id).collect();
+            return Ok((rows, ids));
+        }
+        Err(err) => {
+            let err = LibraryError::Orm(err);
+            if !is_result_bytes_limit(&err) {
+                return Err(err);
+            }
+        }
+    }
+    let ids: Vec<i64> = select
+        .into_column::<i64, _>(books::Column::Id)
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    let mut rows = Vec::with_capacity(ids.len());
+    for &id in &ids {
+        match books::Entity::find_by_id(id).one(store.db()).await {
+            Ok(Some(book)) => rows.push(book),
+            Ok(None) => {}
+            Err(err) => {
+                let err = LibraryError::Orm(err);
+                if !is_result_bytes_limit(&err) {
+                    return Err(err);
+                }
+                tracing::warn!(
+                    book_id = id,
+                    error = %err,
+                    "book left out of the window: its row is wider than one database reply"
+                );
+            }
+        }
+    }
+    Ok((rows, ids))
+}
+
 /// One page of the books this library holds for branch `node_id`'s owner,
 /// for the `window.books` frame.
 ///
@@ -219,17 +275,15 @@ pub async fn window_books_page(
     let mut read: Vec<books::Model> = Vec::new();
     let mut boundary: Option<i64> = None;
     for part in account_ids.chunks(width.max(1)) {
-        let rows = books::Entity::find()
+        let select = books::Entity::find()
             .filter(books::Column::AccountId.is_in(part.to_vec()))
             .filter(books::Column::Id.gt(after))
             .order_by_asc(books::Column::Id)
-            .limit(limit)
-            .all(store.db())
-            .await
-            .map_err(LibraryError::Orm)?;
-        if u64::try_from(rows.len()).unwrap_or(u64::MAX) >= limit {
-            if let Some(last) = rows.last() {
-                boundary = Some(boundary.map_or(last.id, |b| b.min(last.id)));
+            .limit(limit);
+        let (rows, seen) = read_books_within_bytes(store, select).await?;
+        if u64::try_from(seen.len()).unwrap_or(u64::MAX) >= limit {
+            if let Some(&last) = seen.last() {
+                boundary = Some(boundary.map_or(last, |b| b.min(last)));
             }
         }
         read.extend(rows);

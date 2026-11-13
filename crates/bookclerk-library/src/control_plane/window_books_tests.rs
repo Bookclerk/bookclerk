@@ -823,3 +823,118 @@ async fn an_isbn_alone_does_not_place_a_window_book() {
     assert_eq!(view.len(), 1);
     assert_eq!(view[0].work_id, None, "not placed by the ISBN");
 }
+
+/// Stands in for an adapter that refuses a read whose rows carry more than
+/// `cap` bytes of text, the way a plugin refuses a reply past its
+/// `maxResultBytes` (the profile kit does not size ORM reads).
+#[derive(Debug)]
+struct TextCapped {
+    /// The engine every statement goes to.
+    inner: bookclerk_plugin_database_sqlite::sqlite::SqliteProxy,
+    /// Most bytes of text one reply may carry, once set (0 until then, so
+    /// the fixture can store a book the host's own writes read back whole).
+    cap: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl sea_orm::ProxyDatabaseTrait for TextCapped {
+    async fn query(
+        &self,
+        statement: sea_orm::Statement,
+    ) -> std::result::Result<Vec<sea_orm::ProxyRow>, sea_orm::DbErr> {
+        let rows = self.inner.query(statement).await?;
+        let used: usize = rows
+            .iter()
+            .flat_map(|row| row.values.values())
+            .map(|value| match value {
+                sea_orm::Value::String(Some(text)) => text.len(),
+                _ => 0,
+            })
+            .sum();
+        let cap = self.cap.load(std::sync::atomic::Ordering::SeqCst);
+        if cap > 0 && used > cap {
+            return Err(sea_orm::DbErr::Custom(
+                bookclerk_plugin_abi::LimitExceeded::new(
+                    "maxResultBytes",
+                    u64::try_from(cap).unwrap(),
+                    u64::try_from(used).unwrap(),
+                )
+                .to_message(),
+            ));
+        }
+        Ok(rows)
+    }
+
+    async fn execute(
+        &self,
+        statement: sea_orm::Statement,
+    ) -> std::result::Result<sea_orm::ProxyExecResult, sea_orm::DbErr> {
+        self.inner.execute(statement).await
+    }
+
+    async fn begin(&self) {
+        self.inner.begin().await;
+    }
+
+    async fn commit(&self) {
+        self.inner.commit().await;
+    }
+
+    async fn rollback(&self) {
+        self.inner.rollback().await;
+    }
+
+    async fn ping(&self) -> std::result::Result<(), sea_orm::DbErr> {
+        self.inner.ping().await
+    }
+}
+
+/// A book whose metadata together is wider than one database reply (each
+/// field fits a cell) does not stop the window: the page is read again a
+/// book at a time, that book is left out, and the books around it are
+/// listed. (The book is stored before the cap applies, since the host's
+/// own write reads a book back whole.)
+#[tokio::test]
+async fn a_book_wider_than_one_reply_is_left_out_of_the_window() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let conn = rusqlite::Connection::open(dir.path().join("library.db")).unwrap();
+    let cap = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let engine = TextCapped {
+        inner: bookclerk_plugin_database_sqlite::sqlite::SqliteProxy::new(conn).unwrap(),
+        cap: std::sync::Arc::clone(&cap),
+    };
+    let db = sea_orm::Database::connect_proxy(
+        sea_orm::DbBackend::Sqlite,
+        std::sync::Arc::new(Box::new(engine)),
+    )
+    .await
+    .unwrap();
+    crate::apply_host_schema(&db).await.unwrap();
+    crate::configure_master_key(dir.path()).unwrap();
+    let store = LibraryStore::from_connection(db);
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    hold(&store, riley, "riley-acct", &["B0NARROW01".into()]).await;
+    let mut wide = book("riley-acct", "B0WIDE0001");
+    wide.title = "T".repeat(900);
+    wide.subtitle = Some("S".repeat(900));
+    wide.authors = Some("A".repeat(900));
+    wide.narrators = Some("N".repeat(900));
+    wide.series = Some("R".repeat(900));
+    store.upsert_book(&wide).await.unwrap();
+    hold(&store, riley, "riley-acct", &["B0NARROW02".into()]).await;
+    add_branch(&store, BRANCH, riley).await;
+    cap.store(4096, std::sync::atomic::Ordering::SeqCst);
+
+    let listed: Vec<String> = read_all(&store, BRANCH)
+        .await
+        .into_iter()
+        .flat_map(|work| work.editions)
+        .map(|edition| edition.product_id)
+        .collect();
+    assert_eq!(listed, vec!["B0NARROW01", "B0NARROW02"]);
+}
