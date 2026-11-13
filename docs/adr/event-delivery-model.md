@@ -83,15 +83,24 @@ callers await a promise, and long work is a durable job.
    name. The guest request and its Cap'n Proto codecs are a fuzzed
    boundary (`event_read`).
 
+5. **On-demand activation, first step.** Cold start was measured with the
+   ignored `cold_start` test in `bookclerk-plugin-e2e`. Ready times on a
+   1-CPU, 1 GiB machine were about 60 ms for native guests, 75 ms for
+   workerd JavaScript and 4 s for workerd Python. Runtime, not family,
+   decides the cost. A plugin whose only family is integration and that
+   exports no `remoteLibrary` or `oidc` entrypoint and is not Python is
+   registered behind an on-demand proxy. The proxy answers identity,
+   subscriptions, schedules and health while the guest sleeps, starts
+   the guest on the next delivery, queue batch, cron fire or lookup, and
+   stops it after 60 seconds with no call in flight. Placement keeps
+   reserving budget for asleep instances.
+
 The following phases are proposed and get their own pull requests and
 updates to this record:
 
-- **On-demand activation.** A due delivery, queue message, job or cron
-  fire, or an RPC call, starts an asleep instance; an idle timeout per
-  family stops it with `PluginWorker.shutdown`. Cold-start time is
-  measured per family first (the ignored `cold_start` test in
-  `bookclerk-plugin-e2e`), and the RPC budget is set from those
-  numbers. Placement keeps reserving budget for asleep instances.
+- **On-demand activation for the rest.** Storefronts, storage and remote
+  libraries sleep too, with an idle timeout per family; Python guests
+  need a faster start (snapshots or prewarming) before they can.
 - **Batched delivery.** `event(batch)` and `queue(batch)` receive up to
   `max_batch_size` messages per call.
 - **Richer host-side filters.** Envelope selectors and per-instance
