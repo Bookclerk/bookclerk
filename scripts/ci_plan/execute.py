@@ -206,6 +206,9 @@ POSTGRES_STEPS: dict[str, tuple[str, list[str]]] = {
 # Cargo subcommands kept in build-only runs: each leaves artifacts in
 # `target/` that the dependency cache saves.
 BUILD_SUBCOMMANDS = frozenset({"build", "build-app", "check", "clippy", "install-platform"})
+# Generates the API reference (`api_docs`); a build-only run keeps it, since
+# its `cargo doc --all-features` dependencies are cached nowhere else.
+API_DOCS_SCRIPT = "./scripts/generate-api-docs.sh"
 # Jobs that save the dependency caches other runs restore (see ci.yml
 # `save-if`). Build-only runs skip every other job.
 BUILD_ONLY_JOBS = frozenset({"check", "test", "native-gateway", "release"})
@@ -1147,8 +1150,8 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         ]
     if check == "api_docs":
         if params.get("all"):
-            return [Command("API docs (all)", ["./scripts/generate-api-docs.sh", "--check", "--all"])]
-        argv = ["./scripts/generate-api-docs.sh", "--check"]
+            return [Command("API docs (all)", [API_DOCS_SCRIPT, "--check", "--all"])]
+        argv = [API_DOCS_SCRIPT, "--check"]
         for p in params.get("rust_packages", []):
             argv += ["--rust-package", p]
         if params.get("typescript"):
@@ -1519,8 +1522,11 @@ def build_only_command(cmd: Command) -> Command | None:
 
     Builds, Clippy, installs and ``cargo bench --no-run`` keep running (they
     produce the cached artifacts); test commands compile their targets with
-    ``--no-run``;
-    doctests, formatting, scripts and runtime assertions are dropped.
+    ``--no-run``. Doctests and the API docs run whole: Cargo has no way to
+    only compile them, and each builds its dependencies with a feature set
+    no other command uses (``--all-features``), which the queue's check job
+    would otherwise compile from scratch on every run. Formatting, other
+    scripts and runtime assertions are dropped.
     """
     argv = cmd.argv
     if argv[:3] == ["cargo", "nextest", "run"]:
@@ -1538,12 +1544,14 @@ def build_only_command(cmd: Command) -> Command | None:
     if argv[:2] == ["cargo", "test"]:
         cargo_args = argv[2 : argv.index("--")] if "--" in argv else argv[2:]
         if "--doc" in cargo_args:
-            return None
+            return cmd
         no_run = [] if "--no-run" in cargo_args else ["--no-run"]
         return Command(cmd.label + " (build only)", ["cargo", "test", *cargo_args, *no_run], cmd.cwd, cmd.env)
     if argv[:2] == ["cargo", "bench"] and "--no-run" in argv:
         return cmd
     if argv[0] == "cargo" and len(argv) > 1 and argv[1] in BUILD_SUBCOMMANDS:
+        return cmd
+    if argv[0] == API_DOCS_SCRIPT:
         return cmd
     return None
 

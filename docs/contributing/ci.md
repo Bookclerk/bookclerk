@@ -158,8 +158,13 @@ tested that exact commit. So the push run resolves with `--build-only`
   envelope check (`BUILD_ONLY_SKIPPED_CHECKS`), which only measures, and
   runs a fat and a thin leg so both of its caches stay warm.
 - Builds, Clippy and installs run as usual. `cargo test` and the nextest
-  run become `cargo test … --no-run`. Doctests, formatting, scripts,
-  staging and runtime assertions are dropped.
+  run become `cargo test … --no-run`. Formatting, scripts, staging and
+  runtime assertions are dropped.
+- Doctests and the API docs (`generate-api-docs.sh`) run whole. Both build
+  their dependencies with `--all-features`, a feature set no other command
+  uses, and Cargo can't only compile them. Without them in the `lint`
+  cache, the `check` job compiled about 1,500 dependencies for them on every
+  queue run (about 10 of its 18 minutes).
 
 Caches are saved only on `main`, because merge-group refs can't share
 theirs. So this run is what keeps pull-request and queue runs warm.
@@ -235,10 +240,13 @@ That job runs no repository code and is the only one with
 end (nextest's `--no-fail-fast`, and no cancelling job), so one round shows
 every failure among them.
 
-The job frees the preinstalled SDKs it never uses (Android, .NET, GHC and
-the CodeQL bundle) before it builds. A full-suite coverage build fills most
-of a hosted runner's disk, and when the dependency cache only partly
-matches, the stale dependencies it restores can push the build out of space.
+A full-suite coverage build, plus the stale dependencies a partial cache
+restore brings, once ran the job out of space on runners with about 20 GiB
+free. So when the runner has less than 40 GiB free (`CI_MIN_FREE_GIB`), the
+job first removes the preinstalled SDKs it never uses (Android, .NET, GHC
+and the CodeQL bundle). Current runner images have about 90 GiB free, so it
+normally skips that: deleting those hundreds of thousands of files took 2 to
+5 minutes of every test part.
 
 Test targets with `harness = false` whose `main` doesn't answer libtest's
 `--list` protocol would list zero tests under nextest. So they are excluded

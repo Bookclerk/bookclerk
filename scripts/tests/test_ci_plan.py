@@ -2152,6 +2152,8 @@ class RunnerLayoutTests(unittest.TestCase):
         art = self.build_only_artifact()
         execution = plan_from_dict(art["execution"])
         for check in execution.checks:
+            if check in ("doctest", "api_docs"):
+                continue  # Run whole; see test_build_only_runs_doctests_and_api_docs.
             for key, cmd in planned_commands(art, check, CTX):
                 with self.subTest(check=check, argv=cmd.argv):
                     self.assertEqual(cmd.argv[0], "cargo", cmd.argv)
@@ -2189,6 +2191,17 @@ class RunnerLayoutTests(unittest.TestCase):
         assert kept is not None
         self.assertEqual(kept.argv, bench)
         self.assertIsNone(build_only_command(Command("bench run", bench[:-1])))
+
+    def test_build_only_runs_doctests_and_api_docs(self) -> None:
+        # Both build `--all-features` dependencies no other command builds,
+        # so the main push runs them whole to leave those in the lint cache.
+        art = self.build_only_artifact()
+        doctests = [c.argv for _, c in planned_commands(art, "doctest", CTX)]
+        self.assertEqual(doctests, [["cargo", "test", "--workspace", "--exclude", "bookclerk-desktop", "--doc", "--all-features"]])
+        api_docs = [c.argv for _, c in planned_commands(art, "api_docs", CTX)]
+        self.assertEqual(api_docs, [["./scripts/generate-api-docs.sh", "--check", "--all"]])
+        # Other scripts still drop out.
+        self.assertIsNone(build_only_command(Command("store-free host scan", ["./scripts/check-store-free-hosts.sh"])))
 
     def draft_artifact(self, *paths: str, force_full: bool = False) -> dict:
         return resolve(

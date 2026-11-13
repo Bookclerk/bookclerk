@@ -580,13 +580,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends capnproto
 
-      # A full-suite coverage build fills most of a hosted runner's disk, and
-      # a partial cache restore adds stale dependencies on top, which ran
-      # merge groups out of space. Drop the preinstalled SDKs this job never
-      # uses, as the mutation job does (docs/contributing/ci.md#test-runner-and-retries).
+      # A full-suite coverage build plus a partial cache restore once ran
+      # merge groups out of space on runners with about 20 GiB free. Drop the
+      # preinstalled SDKs this job never uses only on such a runner: deleting
+      # their hundreds of thousands of files takes 2 to 5 minutes, and current
+      # images have about 90 GiB free (docs/contributing/ci.md#test-runner-and-retries).
       - name: Free disk space
+        env:
+          CI_MIN_FREE_GIB: 40
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          free_gib=$(df --output=avail -BG / | tail -n 1 | tr -dc '0-9')
+          if [ "$free_gib" -lt "$CI_MIN_FREE_GIB" ]; then
+            echo "Only ${free_gib} GiB free; removing unused SDKs"
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          else
+            echo "${free_gib} GiB free; keeping the preinstalled SDKs"
+          fi
           df -h / "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
 
       # Build-only main push: the dependency cache key covers Cargo.lock, the
