@@ -39,6 +39,7 @@ members = [
     "crates/bookclerk-storage",
     "crates/bookclerk-tls",
     "crates/bookclerk-tray",
+    "crates/bookclerk-window-policy",
     "crates/bookclerk-workerd",
     "crates/bookclerkd",
     # Auto-pickup: new guests under these trees need only Cargo.toml + plugin.toml.
@@ -113,6 +114,7 @@ bookclerk-acquire = { path = "crates/bookclerk-acquire" }
 bookclerk-naming = { path = "crates/bookclerk-naming" }
 bookclerk-node-client = { path = "crates/bookclerk-node-client" }
 bookclerk-node-proto = { path = "crates/bookclerk-node-proto" }
+bookclerk-window-policy = { path = "crates/bookclerk-window-policy" }
 bookclerk-migrate = { path = "crates/bookclerk-migrate" }
 bookclerk-search = { path = "crates/bookclerk-search" }
 bookclerk-integrations = { path = "crates/bookclerk-integrations" }

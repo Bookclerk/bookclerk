@@ -46,8 +46,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode};
+use axum::http::{header, Request, Response, StatusCode};
 use axum::Router;
+use bookclerk_window_policy::{
+    classify_navigation, join_sign_in_ttl, refusal, rewrite_request_headers, Refusal,
+    JOIN_START_PATH,
+};
+pub use bookclerk_window_policy::{Navigation, APP_ORIGINS, EMBEDDED_ORIGIN};
 use tower_service::Service as _;
 
 use crate::api::AppState;
@@ -61,32 +66,6 @@ pub const MAX_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
 /// `504 Gateway Timeout`. A route that streams without end (none should be
 /// reachable here) would otherwise hold the request forever.
 pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// The `Host` every embedded request is routed under.
-const EMBEDDED_HOST: &str = "localhost";
-
-/// The origin the router sees every embedded request come from: loopback,
-/// so a join's return address is one the library accepts.
-pub const EMBEDDED_ORIGIN: &str = "http://localhost";
-
-/// Origins of the window's own pages: the custom scheme, and the form
-/// WebView2 (Windows) gives it.
-pub const APP_ORIGINS: [&str; 2] = ["bookclerk://localhost", "http://bookclerk.localhost"];
-
-/// The route that starts a join; its answer opens the sign-in window.
-const JOIN_START_PATH: &str = "/api/config/join/start";
-
-/// Request headers dropped before routing, so the page cannot present a
-/// credential, an origin or a forwarded address of its own.
-const DROPPED_REQUEST_HEADERS: [HeaderName; 7] = [
-    header::AUTHORIZATION,
-    header::COOKIE,
-    header::ORIGIN,
-    header::REFERER,
-    header::FORWARDED,
-    header::HOST,
-    header::PROXY_AUTHORIZATION,
-];
 
 /// Where the embedded host reads its files and configuration, as
 /// `bookclerkd`'s `--bookclerk-files` and `--config` do.
@@ -110,35 +89,10 @@ pub struct EmbeddedHost {
     join_open_until: Mutex<Option<Instant>>,
 }
 
-/// Where the window may go, as [`EmbeddedHost::navigation`] decides.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Navigation {
-    /// One of the app's own pages.
-    App,
-    /// A library's sign-in page, while a join is open.
-    JoinSignIn,
-    /// The library sending the window back after sign-in. The window opens
-    /// this path and query on the app scheme instead.
-    JoinReturn(String),
-    /// Anywhere else: refused.
-    Refuse,
-}
-
 impl std::fmt::Debug for EmbeddedHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EmbeddedHost").finish_non_exhaustive()
     }
-}
-
-/// Why a request was refused before it reached the router.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Refusal {
-    /// A node API path: other nodes reach it over TLS, never the window.
-    NodeApi,
-    /// The live WebSocket, which a custom scheme cannot carry.
-    LiveSocket,
-    /// A request a page from another origin sent.
-    ForeignOrigin,
 }
 
 impl EmbeddedHost {
@@ -238,194 +192,6 @@ impl EmbeddedHost {
     }
 }
 
-/// Refuses requests from other origins and paths the window must not reach.
-///
-/// # Arguments
-///
-/// * `method` - The request method.
-/// * `headers` - The headers the webview sent.
-/// * `path` - The request path, undecoded (as the router matches it).
-///
-/// # Returns
-///
-/// `Some` with the reason for a refused request, `None` otherwise.
-fn refusal(method: &axum::http::Method, headers: &HeaderMap, path: &str) -> Option<Refusal> {
-    if from_another_origin(method, headers) {
-        return Some(Refusal::ForeignOrigin);
-    }
-    refused_path(path)
-}
-
-/// Whether a request was sent by a page that is not the app's: its
-/// `Origin` names another origin (or is opaque), or, for a write without
-/// `Origin`, its `Referer` does.
-///
-/// # Arguments
-///
-/// * `method` - The request method.
-/// * `headers` - The headers the webview sent.
-///
-/// # Returns
-///
-/// `true` when the request must be refused.
-fn from_another_origin(method: &axum::http::Method, headers: &HeaderMap) -> bool {
-    if let Some(origin) = headers.get(header::ORIGIN) {
-        return !origin
-            .to_str()
-            .is_ok_and(|origin| APP_ORIGINS.contains(&origin));
-    }
-    let writes = !matches!(
-        *method,
-        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
-    );
-    if !writes {
-        return false;
-    }
-    headers.get(header::REFERER).is_some_and(|referer| {
-        !referer
-            .to_str()
-            .is_ok_and(|referer| url::Url::parse(referer).is_ok_and(|url| is_app_url(&url)))
-    })
-}
-
-/// Whether `url` is one of the app's own pages.
-fn is_app_url(url: &url::Url) -> bool {
-    match url.scheme() {
-        "bookclerk" => url.host_str() == Some("localhost"),
-        "http" => url.host_str() == Some("bookclerk.localhost"),
-        _ => false,
-    }
-}
-
-/// Whether `url` is a loopback `http` address (`localhost`, `127.0.0.1`,
-/// `[::1]`, any port).
-fn is_loopback_http(url: &url::Url) -> bool {
-    url.scheme() == "http"
-        && match url.host() {
-            Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
-            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-            None => false,
-        }
-}
-
-/// Where the window may go.
-///
-/// # Arguments
-///
-/// * `raw` - The URL the window is about to open.
-/// * `join_open` - Whether a join's sign-in is under way.
-///
-/// # Returns
-///
-/// The app's own pages always; the library's return to
-/// `http://localhost/join/callback` (any loopback host and port) as a
-/// [`Navigation::JoinReturn`] while a join is open; other `https` pages,
-/// or loopback `http` ones, only while a join is open.
-fn classify_navigation(raw: &str, join_open: bool) -> Navigation {
-    let Ok(url) = url::Url::parse(raw) else {
-        return Navigation::Refuse;
-    };
-    if is_app_url(&url) {
-        return Navigation::App;
-    }
-    if !join_open {
-        return Navigation::Refuse;
-    }
-    if is_loopback_http(&url) && url.path() == bookclerk_node_proto::JOIN_CALLBACK_PATH {
-        let query = url.query().map(|q| format!("?{q}")).unwrap_or_default();
-        return Navigation::JoinReturn(format!("{}{query}", url.path()));
-    }
-    if url.scheme() == "https" || is_loopback_http(&url) {
-        return Navigation::JoinSignIn;
-    }
-    Navigation::Refuse
-}
-
-/// How long the window may show the library's sign-in, from a successful
-/// join start's JSON answer (`expires_in_secs`, at most an hour).
-///
-/// # Arguments
-///
-/// * `body` - The answer's body.
-///
-/// # Returns
-///
-/// The time to allow, or `None` when the body is not a join start.
-fn join_sign_in_ttl(body: &[u8]) -> Option<Duration> {
-    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    value.get("authorize_url")?.as_str()?;
-    let secs = value.get("expires_in_secs")?.as_u64()?.min(3600);
-    Some(Duration::from_secs(secs))
-}
-
-/// Refuses paths the window must not reach.
-///
-/// # Arguments
-///
-/// * `path` - The request path, undecoded (as the router matches it).
-///
-/// # Returns
-///
-/// `Some` with the reason for a refused path, `None` otherwise.
-fn refused_path(path: &str) -> Option<Refusal> {
-    let under = |prefix: &str| {
-        path == prefix
-            || path
-                .strip_prefix(prefix)
-                .is_some_and(|rest| rest.starts_with('/'))
-    };
-    if under("/api/node") {
-        Some(Refusal::NodeApi)
-    } else if under(crate::live::LIVE_PATH) {
-        Some(Refusal::LiveSocket)
-    } else {
-        None
-    }
-}
-
-/// The headers the router sees for an embedded request: the page's own,
-/// less credentials, origins and forwarding headers, plus `Host`, `Origin`
-/// ([`EMBEDDED_ORIGIN`]) and, when operator auth is on, the operator's bearer
-/// token.
-///
-/// # Arguments
-///
-/// * `page` - The headers the webview sent.
-/// * `bearer` - The operator token, or `None` when operator auth is off.
-///
-/// # Returns
-///
-/// The rewritten headers.
-fn rewrite_request_headers(page: &HeaderMap, bearer: Option<&str>) -> HeaderMap {
-    let mut headers = page.clone();
-    for name in &DROPPED_REQUEST_HEADERS {
-        headers.remove(name);
-    }
-    let forwarded: Vec<HeaderName> = headers
-        .keys()
-        .filter(|name| name.as_str().starts_with("x-forwarded-") || name.as_str() == "x-real-ip")
-        .cloned()
-        .collect();
-    for name in forwarded {
-        headers.remove(name);
-    }
-    headers.insert(header::HOST, HeaderValue::from_static(EMBEDDED_HOST));
-    headers.insert(header::ORIGIN, HeaderValue::from_static(EMBEDDED_ORIGIN));
-    if let Some(token) = bearer {
-        match HeaderValue::from_str(&format!("Bearer {token}")) {
-            Ok(mut value) => {
-                value.set_sensitive(true);
-                headers.insert(header::AUTHORIZATION, value);
-            }
-            // An operator token is URL-safe text; one that is not a valid
-            // header value leaves the request unauthenticated (fail closed).
-            Err(_) => tracing::error!("operator token is not a valid header value"),
-        }
-    }
-    headers
-}
-
 /// Routes one request through `app` under the embedded policy.
 ///
 /// # Arguments
@@ -460,7 +226,13 @@ async fn serve(
         Ok(uri) => uri,
         Err(_) => return status_only(StatusCode::BAD_REQUEST),
     };
-    *routed.headers_mut() = rewrite_request_headers(&parts.headers, bearer);
+    let headers = rewrite_request_headers(&parts.headers, bearer);
+    if bearer.is_some() && !headers.contains_key(header::AUTHORIZATION) {
+        // An operator token is URL-safe text; one that is not a valid header
+        // value leaves the request unauthenticated (fail closed).
+        tracing::error!("operator token is not a valid header value");
+    }
+    *routed.headers_mut() = headers;
 
     let answer = async {
         let response = match app.call(routed).await {
@@ -492,7 +264,13 @@ fn status_only(status: StatusCode) -> Response<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::{HeaderMap, HeaderValue};
     use axum::routing::{get, post};
+
+    #[test]
+    fn the_policy_refuses_the_live_socket_this_daemon_serves() {
+        assert_eq!(bookclerk_window_policy::LIVE_PATH, crate::live::LIVE_PATH);
+    }
 
     /// A router that echoes the headers it sees and sets a cookie.
     fn echo_router() -> Router {
@@ -574,16 +352,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    #[test]
-    fn refusal_matches_whole_segments_only() {
-        assert_eq!(refused_path("/api/node"), Some(Refusal::NodeApi));
-        assert_eq!(refused_path("/api/node/"), Some(Refusal::NodeApi));
-        assert_eq!(refused_path("/api/live"), Some(Refusal::LiveSocket));
-        assert_eq!(refused_path("/api/nodes"), None);
-        assert_eq!(refused_path("/api/livexyz"), None);
-        assert_eq!(refused_path("/"), None);
-    }
-
     fn with(origin: Option<&str>, referer: Option<&str>, method: &str) -> Request<Vec<u8>> {
         let mut builder = Request::builder()
             .method(method)
@@ -628,60 +396,6 @@ mod tests {
                 "{origin:?} {referer:?} {method}"
             );
         }
-    }
-
-    #[test]
-    fn the_window_stays_on_the_app_unless_a_join_is_open() {
-        for open in [false, true] {
-            assert_eq!(
-                classify_navigation("bookclerk://localhost/settings", open),
-                Navigation::App
-            );
-            assert_eq!(
-                classify_navigation("http://bookclerk.localhost/", open),
-                Navigation::App
-            );
-            assert_eq!(
-                classify_navigation("file:///etc/passwd", open),
-                Navigation::Refuse
-            );
-            assert_eq!(classify_navigation("not a url", open), Navigation::Refuse);
-        }
-        assert_eq!(
-            classify_navigation("https://library.example/join/approve", false),
-            Navigation::Refuse
-        );
-        assert_eq!(
-            classify_navigation("https://library.example/join/approve", true),
-            Navigation::JoinSignIn
-        );
-        assert_eq!(
-            classify_navigation("http://localhost/join/callback?code=c&state=s", false),
-            Navigation::Refuse
-        );
-        assert_eq!(
-            classify_navigation("http://localhost/join/callback?code=c&state=s", true),
-            Navigation::JoinReturn("/join/callback?code=c&state=s".into())
-        );
-        assert_eq!(
-            classify_navigation("http://127.0.0.1:8787/join/callback", true),
-            Navigation::JoinReturn("/join/callback".into())
-        );
-        assert_eq!(
-            classify_navigation("http://evil.example/join/callback", true),
-            Navigation::Refuse
-        );
-    }
-
-    #[test]
-    fn join_ttl_comes_from_a_join_start_answer_only() {
-        let started =
-            br#"{"authorize_url":"https://l.example/join/approve","expires_in_secs":600}"#;
-        assert_eq!(join_sign_in_ttl(started), Some(Duration::from_secs(600)));
-        let long = br#"{"authorize_url":"x","expires_in_secs":999999}"#;
-        assert_eq!(join_sign_in_ttl(long), Some(Duration::from_secs(3600)));
-        assert_eq!(join_sign_in_ttl(br#"{"expires_in_secs":600}"#), None);
-        assert_eq!(join_sign_in_ttl(b"not json"), None);
     }
 
     #[tokio::test]

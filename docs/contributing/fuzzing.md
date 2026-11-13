@@ -51,6 +51,7 @@ boundary extends it.
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
+| `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, and the URLs the window is asked to open | `bookclerk-window-policy` |
 
 Some boundaries need more than a cell:
 
@@ -264,6 +265,19 @@ only that. The others check:
   or a boolean, and nothing else. Anything else is refused as `Invalid`.
   The shared oracle is `fuzz/oracles/connections_request.rs`, replayed
   from `bookclerk-library`.
+- **`window_policy`**: restates the policy from the bytes. A request is
+  refused as foreign exactly when its `Origin` is not byte for byte one of
+  the two app origins, or when it has no `Origin`, is a write, and its
+  `Referer` is not a URL on an app origin; otherwise it is refused exactly
+  when its path is the node API or the live socket, by whole segments. The
+  headers the router sees never hold the page's cookies, credentials,
+  `Referer` or forwarding headers, always hold one `Host: localhost` and
+  one `Origin: http://localhost`, carry `Bearer <token>` only when a token
+  was given, and keep every other header unchanged. Navigation allows app
+  pages always and, only while a join is open, `https` and loopback `http`
+  sign-in pages, with the return to the join callback kept on its path. The
+  shared oracle is `fuzz/oracles/window_policy.rs`, replayed from
+  `bookclerk-window-policy`.
 
 ## Boundaries outside the Rust workspace
 

@@ -78,6 +78,10 @@ network can reach this host's web API.
   library sends it back, and that return (to `http://localhost/join/callback`)
   is handed to the app scheme. Navigation anywhere else is refused, and no
   page gets Tauri commands (the capability set is empty).
+- These rules (which requests are refused, the headers the router sees,
+  where the window may go) live in the `bookclerk-window-policy` crate,
+  which the `window_policy` fuzz target checks (see
+  [Fuzzing](../fuzzing.md)).
 
 #### First run in the window
 

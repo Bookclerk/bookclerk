@@ -26,6 +26,7 @@ axum = { workspace = true, features = ["ws"] }
 # The host side of the node API (this daemon as a host node).
 bookclerk-node-client.workspace = true
 bookclerk-node-proto.workspace = true
+bookclerk-window-policy.workspace = true
 bookclerk-tls.workspace = true
 chrono.workspace = true
 clap.workspace = true

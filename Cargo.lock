@@ -2504,6 +2504,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-window-policy"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-node-proto",
+ "http",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "bookclerk-workerd"
 version = "0.1.0"
 dependencies = [
@@ -2560,6 +2570,7 @@ dependencies = [
  "bookclerk-storage",
  "bookclerk-tls",
  "bookclerk-tray",
+ "bookclerk-window-policy",
  "bytes",
  "chrono",
  "clap",
