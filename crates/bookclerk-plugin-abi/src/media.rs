@@ -321,6 +321,7 @@ pub fn encode_plain_fetch_bytes(fetch: &PlainFetch) -> capnp::Result<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
     use crate::FetchedFile;
