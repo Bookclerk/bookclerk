@@ -52,6 +52,11 @@ type = "secret"
 
 [secrets]
 
+# What the last listening sync sent, so a sync passes on only the progress
+# rows that changed (see `collect_listening_changes`).
+[[databases]]
+binding = "LISTENING_STATE"
+
 [[events.consumers]]
 type = "book_acquired"
 schema_versions = [1]

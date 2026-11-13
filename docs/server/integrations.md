@@ -124,6 +124,17 @@ points at a work, so its title and authors are read from the work rather
 than copied onto the row. A sync is written in a few bulk reads and
 atomic batches sized to the database plugin's limits.
 
+The Audiobookshelf plugin remembers what each person's progress looked
+like when it last sent it, in its own `LISTENING_STATE` database:
+
+- A sync sends only the progress that changed since the last one, and
+  skips looking up the Audiobookshelf items whose progress did not move.
+- Once a day it sends each person's whole progress again. That picks up an
+  item the library did not know yet, or a person linked since.
+- It forgets a person who has not been synced for seven days.
+- Until you approve that database in the plugin's consent, every sync
+  sends all progress, as before.
+
 API coverage notes:
 [`crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md`](../../crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md).
 

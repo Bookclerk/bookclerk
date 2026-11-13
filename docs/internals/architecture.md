@@ -82,8 +82,8 @@ PostgreSQL 16+, or Cloudflare D1
 | Source trait + registry (host side) | `bookclerk-source` (re-exports `bookclerk-storefront`) |
 | Storefront guest types | `bookclerk-storefront` (DTOs, ABI conversions, listing helpers; no database, ORM, config or OpenAPI) |
 | Store adapters (plugins) | `bookclerk-plugins/optional/source-{audible,libro,chirp,graphicaudio}` (lib + guest bin; each links only the SDK, `bookclerk-storefront` and its own store crates, Audible adding `bookclerk-audible-catalog` and `bookclerk-mp4`, Libro.fm, Chirp and GraphicAudio adding `bookclerk-scan-delta`) |
-| Scan deltas for stores with no change feed (plugins) | `bookclerk-scan-delta` (fingerprints in the plugin's own `SCAN_STATE` database; links only the SDK) |
-| ABS integration (plugin) | `bookclerk-plugins/integration-audiobookshelf` (lib + guest bin) |
+| Scan deltas for stores with no change feed (plugins) | `bookclerk-scan-delta` (fingerprints in the plugin's own `SCAN_STATE` database, and the keyed reader the Audiobookshelf listening memory shares; links only the SDK) |
+| ABS integration (plugin) | `bookclerk-plugins/integration-audiobookshelf` (lib + guest bin; listening memory in its own `LISTENING_STATE` database) |
 | Clear-media packaging | `bookclerk-media` (remux / fixup / MP3; no DRM) |
 | MP4 container plumbing | `bookclerk-mp4` (shared with store plugins, plus the Audible brand-trim helpers; no cryptography) |
 | Process confinement | `bookclerk-sandbox` (Landlock+seccomp / Seatbelt / AppContainer) |

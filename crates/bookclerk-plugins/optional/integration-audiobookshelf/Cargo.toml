@@ -30,13 +30,16 @@ bookclerk-config.workspace = true
 bookclerk-integrations.workspace = true
 bookclerk-library.workspace = true
 bookclerk-plugin-sdk = { workspace = true, features = ["http"] }
+bookclerk-scan-delta.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "sync"] }
 tracing.workspace = true
 
 [dev-dependencies]
+bookclerk-db-testkit.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 wiremock.workspace = true
 
