@@ -420,7 +420,7 @@ where
 
 /// Binds a [`read_chunked_all`] statement may carry besides its `ids`: the
 /// query's other filters and the page's limit and offset.
-const PAGED_FIXED_BINDS: usize = 8;
+pub(crate) const PAGED_FIXED_BINDS: usize = 8;
 
 /// [`read_chunked`] for a key that can match several rows (a work's
 /// expressions, an edition's identifiers, a product's listings): each chunk

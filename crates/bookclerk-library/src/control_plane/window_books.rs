@@ -39,7 +39,7 @@ use super::batch::{exec, int, text, text_opt};
 use super::catalog_lookup::{
     book_edition, identifiers_of, in_chunk, is_result_bytes_limit, is_trusted_branch,
     read_chunked_all, read_paged, read_paged_by, result_page, run_batches, stamp,
-    work_for_question, works_of_editions,
+    work_for_question, works_of_editions, PAGED_FIXED_BINDS,
 };
 use super::cluster_links::list_cluster_links;
 use crate::entities::{
@@ -687,7 +687,9 @@ async fn earlier_in_read(
     }
     let versions: Vec<String> = named.iter().map(|(_, version)| version.clone()).collect();
     let mut parts = Vec::new();
-    for chunk in versions.chunks(in_chunk(store, 1)) {
+    // Room for the owner filter and the page's limit and offset beside the
+    // versions.
+    for chunk in versions.chunks(in_chunk(store, PAGED_FIXED_BINDS)) {
         parts.extend(
             read_parts(
                 store,

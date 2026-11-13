@@ -837,6 +837,9 @@ struct TextCapped {
     /// Most bytes of text one reply may carry, once set (0 until then, so
     /// the fixture can store a book the host's own writes read back whole).
     cap: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Most binds one read may carry (0: no limit), the way a plugin
+    /// refuses a statement past its `maxBinds`.
+    max_binds: usize,
 }
 
 #[async_trait::async_trait]
@@ -845,6 +848,17 @@ impl sea_orm::ProxyDatabaseTrait for TextCapped {
         &self,
         statement: sea_orm::Statement,
     ) -> std::result::Result<Vec<sea_orm::ProxyRow>, sea_orm::DbErr> {
+        let binds = statement.values.as_ref().map_or(0, |values| values.0.len());
+        if self.max_binds > 0 && binds > self.max_binds {
+            return Err(sea_orm::DbErr::Custom(
+                bookclerk_plugin_abi::LimitExceeded::new(
+                    "maxBinds",
+                    u64::try_from(self.max_binds).unwrap(),
+                    u64::try_from(binds).unwrap(),
+                )
+                .to_message(),
+            ));
+        }
         let rows = self.inner.query(statement).await?;
         let used: usize = rows
             .iter()
@@ -906,6 +920,7 @@ async fn a_book_wider_than_one_reply_is_left_out_of_the_window() {
     let engine = TextCapped {
         inner: bookclerk_plugin_database_sqlite::sqlite::SqliteProxy::new(conn).unwrap(),
         cap: std::sync::Arc::clone(&cap),
+        max_binds: 0,
     };
     let db = sea_orm::Database::connect_proxy(
         sea_orm::DbBackend::Sqlite,
@@ -961,4 +976,52 @@ async fn a_book_wider_than_one_reply_is_left_out_of_the_window() {
         }
     }
     assert_eq!(listed, vec!["B0NARROW01", "B0NARROW02"]);
+}
+
+/// A page repeating many editions stored earlier in the same read reads
+/// their pieces in chunks that leave room for the owner filter and the
+/// page's limit and offset, under a plugin with few binds and a large
+/// result page.
+#[tokio::test]
+async fn many_editions_repeated_in_one_read_stay_within_the_bind_limit() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let conn = rusqlite::Connection::open(dir.path().join("library.db")).unwrap();
+    let engine = TextCapped {
+        inner: bookclerk_plugin_database_sqlite::sqlite::SqliteProxy::new(conn).unwrap(),
+        cap: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        max_binds: 32,
+    };
+    let db = sea_orm::Database::connect_proxy(
+        sea_orm::DbBackend::Sqlite,
+        std::sync::Arc::new(Box::new(engine)),
+    )
+    .await
+    .unwrap();
+    crate::apply_host_schema(&db).await.unwrap();
+    crate::configure_master_key(dir.path()).unwrap();
+    let mut caps = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
+    caps.max_binds = 32;
+    caps.max_result_rows = 500;
+    let store = LibraryStore::from_connection(db).with_db_capabilities(caps);
+    link(&store, "alpha", false).await;
+    let works: Vec<WindowWork> = (0..40)
+        .map(|n| {
+            let id = format!("B0REPEAT{n:02}");
+            WindowWork {
+                work: format!("w-{n}"),
+                identifiers: vec![asin(&id)],
+                editions: vec![edition(&id, &format!("Book {n}"))],
+            }
+        })
+        .collect();
+    let read = window_read_stamp();
+    record_window_page(&store, "alpha", &read, &works)
+        .await
+        .unwrap();
+    record_window_page(&store, "alpha", &read, &works)
+        .await
+        .unwrap();
+    finish_window_read(&store, "alpha", &read).await.unwrap();
+    assert_eq!(window_view(&store).await.unwrap().len(), 40);
 }
