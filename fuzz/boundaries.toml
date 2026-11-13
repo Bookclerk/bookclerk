@@ -233,7 +233,7 @@ artifacts = ["bookclerk"]
 
 [targets.window_policy]
 crate = "bookclerk-window-policy"
-boundary = "Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, and the URLs the window is asked to open"
+boundary = "Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates"
 input_from = "web page"
 side = "host"
 artifacts = ["bookclerk"]

@@ -54,7 +54,9 @@ use bookclerk_window_policy::{
     classify_navigation, join_sign_in_ttl, refusal, rewrite_request_headers, Refusal,
     JOIN_START_PATH,
 };
-pub use bookclerk_window_policy::{Navigation, APP_ORIGINS, EMBEDDED_ORIGIN};
+pub use bookclerk_window_policy::{
+    live_refusal, LiveRefusal, Navigation, APP_ORIGINS, EMBEDDED_ORIGIN, MAIN_WINDOW_LABEL,
+};
 use tower_service::Service as _;
 
 use crate::api::AppState;

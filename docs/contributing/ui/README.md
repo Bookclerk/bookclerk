@@ -84,9 +84,10 @@ network can reach this host's web API.
   page but its channel. The capability in
   `crates/bookclerk-desktop/capabilities/main.json` allows it for the main
   window's own pages only, so the library's sign-in pages, which are remote,
-  can't call it.
+  can't call it, and the command itself checks the calling webview and page
+  again before it starts the feed.
 - These rules (which requests are refused, the headers the router sees,
-  where the window may go) live in the `bookclerk-window-policy` crate,
+  where the window may go, who may start the live feed) live in the `bookclerk-window-policy` crate,
   which the `window_policy` fuzz target checks (see
   [Fuzzing](../fuzzing.md)).
 

@@ -220,6 +220,44 @@ pub fn classify_navigation(raw: &str, join_open: bool) -> Navigation {
     Navigation::Refuse
 }
 
+/// The label of the desktop app's one window, the only webview the `live`
+/// command answers.
+pub const MAIN_WINDOW_LABEL: &str = "main";
+
+/// Why the desktop window's `live` command refused a caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveRefusal {
+    /// A webview other than the main window called it.
+    OtherWebview,
+    /// The calling page is not one of the app's own pages, such as a
+    /// library's sign-in page shown during a join.
+    ForeignPage,
+}
+
+/// Decides whether a page may start the window's live updates, which carry
+/// the operator's feed.
+///
+/// # Arguments
+///
+/// * `webview_label` - The calling webview's label.
+/// * `page_url` - The URL of the page that called, as the webview reports
+///   it.
+///
+/// # Returns
+///
+/// `None` when the main window's app page called; otherwise why it was
+/// refused. A wrong webview wins over a foreign page.
+#[must_use]
+pub fn live_refusal(webview_label: &str, page_url: &str) -> Option<LiveRefusal> {
+    if webview_label != MAIN_WINDOW_LABEL {
+        return Some(LiveRefusal::OtherWebview);
+    }
+    match url::Url::parse(page_url) {
+        Ok(url) if is_app_url(&url) => None,
+        _ => Some(LiveRefusal::ForeignPage),
+    }
+}
+
 /// How long the window may show the library's sign-in, from a successful
 /// join start's JSON answer.
 ///
@@ -440,5 +478,32 @@ mod tests {
         assert_eq!(join_sign_in_ttl(long), Some(Duration::from_secs(3600)));
         assert_eq!(join_sign_in_ttl(br#"{"expires_in_secs":600}"#), None);
         assert_eq!(join_sign_in_ttl(b"not json"), None);
+    }
+
+    #[test]
+    fn live_updates_answer_only_the_main_window_on_an_app_page() {
+        assert_eq!(live_refusal("main", "bookclerk://localhost/library"), None);
+        assert_eq!(live_refusal("main", "http://bookclerk.localhost/"), None);
+        assert_eq!(
+            live_refusal("join", "bookclerk://localhost/"),
+            Some(LiveRefusal::OtherWebview)
+        );
+        assert_eq!(
+            live_refusal("Main", "https://library.example/login"),
+            Some(LiveRefusal::OtherWebview)
+        );
+        for page in [
+            "https://library.example/login",
+            "http://localhost:8787/join/callback",
+            "http://bookclerk.localhost:8080/",
+            "not a url",
+            "",
+        ] {
+            assert_eq!(
+                live_refusal("main", page),
+                Some(LiveRefusal::ForeignPage),
+                "{page}"
+            );
+        }
     }
 }

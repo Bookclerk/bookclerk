@@ -2,7 +2,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use bookclerkd::embedded::{EmbeddedHost, EmbeddedOptions, Navigation};
+use bookclerkd::embedded::{
+    live_refusal, EmbeddedHost, EmbeddedOptions, LiveRefusal, Navigation, MAIN_WINDOW_LABEL,
+};
 use tauri::ipc::Channel;
 use tauri::{Manager as _, RunEvent, State, Url, Webview, WebviewUrl, WebviewWindowBuilder};
 use tokio::runtime::Handle;
@@ -22,9 +24,6 @@ const APP_ORIGIN: &str = "http://bookclerk.localhost";
 /// `http://<scheme>.localhost`; the other webviews take `<scheme>://`.
 #[cfg(not(windows))]
 const APP_ORIGIN: &str = "bookclerk://localhost";
-
-/// The window's label.
-const WINDOW_LABEL: &str = "main";
 
 /// What the `live` command needs: the host, the runtime its feed runs on,
 /// and the feed running now, which the next call replaces.
@@ -49,22 +48,30 @@ struct LiveFeed {
 ///
 /// # Arguments
 ///
-/// * `webview` - The calling webview; anything but the main window is
-///   refused.
+/// * `webview` - The calling webview; anything but the main window on
+///   one of the app's own pages is refused (see [`live_refusal`]).
 /// * `feed` - The host and the current feed.
 /// * `on_frame` - The page's channel; each frame is its JSON text.
 ///
 /// # Errors
 ///
-/// Returns an error when another webview calls it.
+/// Returns an error when another webview, or a page that is not the app's
+/// own, calls it.
 #[tauri::command]
 fn live(
     webview: Webview,
     feed: State<'_, LiveFeed>,
     on_frame: Channel<String>,
 ) -> Result<(), String> {
-    if webview.label() != WINDOW_LABEL {
-        return Err("live updates are for the main window".into());
+    let page = webview.url().map(String::from).unwrap_or_default();
+    match live_refusal(webview.label(), &page) {
+        None => {}
+        Some(LiveRefusal::OtherWebview) => {
+            return Err("live updates are for the main window".into());
+        }
+        Some(LiveRefusal::ForeignPage) => {
+            return Err("live updates are for the app's own pages".into());
+        }
     }
     let host = Arc::clone(&feed.host);
     let task = feed.runtime.spawn(async move {
@@ -118,7 +125,7 @@ pub fn run() -> anyhow::Result<()> {
         })
         .setup(move |app| {
             let handle = app.handle().clone();
-            WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::CustomProtocol(start))
+            WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::CustomProtocol(start))
                 .title("Bookclerk")
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(480.0, 360.0)
@@ -165,7 +172,7 @@ fn return_to_app(handle: &tauri::AppHandle, path_and_query: &str) {
     // Navigating from inside the navigation callback would re-enter the
     // webview; do it on the next turn of the main loop instead.
     let queued = handle.run_on_main_thread(move || {
-        if let Some(window) = window_handle.get_webview_window(WINDOW_LABEL) {
+        if let Some(window) = window_handle.get_webview_window(MAIN_WINDOW_LABEL) {
             if let Err(err) = window.navigate(target) {
                 tracing::warn!(error = %err, "could not return the window to the app");
             }
