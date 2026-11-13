@@ -4549,13 +4549,13 @@ export const ScanBookCodec: StructCodec<T.ScanBook> = {
 };
 
 /**
- * Wire codec for `ScanPage` (1 data words, 4 pointers).
+ * Wire codec for `ScanPage` (1 data words, 5 pointers).
  *
  * @internal
  */
 export const ScanPageCodec: StructCodec<T.ScanPage> = {
   dataWords: 1,
-  pointerCount: 4,
+  pointerCount: 5,
   write(s, v, caps) {
     {
       const list = v.books ?? [];
@@ -4569,9 +4569,12 @@ export const ScanPageCodec: StructCodec<T.ScanPage> = {
     s.setText(3, v.syncToken ?? "");
     s.setBool(0, v.complete ?? false);
     s.setUint32(1, v.storePages ?? 0);
+    if (v.refreshedCredentials !== undefined) {
+      s.setData(4, v.refreshedCredentials ?? EMPTY_BYTES);
+    }
   },
   read(s, caps) {
-    return {
+    const out: T.ScanPage = {
       books: s.getStructList(0, 2, 14).map((item) => ScanBookCodec.read(item, caps)),
       removed: s.getTextList(1),
       nextCursor: s.getText(2),
@@ -4579,6 +4582,11 @@ export const ScanPageCodec: StructCodec<T.ScanPage> = {
       complete: s.getBool(0),
       storePages: s.getUint32(1),
     };
+    const refreshedCredentialsValue = s.getData(4);
+    if (!(refreshedCredentialsValue.length === 0)) {
+      out.refreshedCredentials = refreshedCredentialsValue;
+    }
+    return out;
   },
 };
 
@@ -4595,7 +4603,7 @@ export const ScanReplyCodec: StructCodec<T.ScanReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          ScanPageCodec.write(s.initStruct(0, 1, 4), v.value, caps);
+          ScanPageCodec.write(s.initStruct(0, 1, 5), v.value, caps);
         }
         break;
       case "err":
@@ -4612,7 +4620,7 @@ export const ScanReplyCodec: StructCodec<T.ScanReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: ScanPageCodec.read(s.getStruct(0, 1, 4), caps) };
+        return { kind: "ok", value: ScanPageCodec.read(s.getStruct(0, 1, 5), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -4774,13 +4782,13 @@ export const ChapterMarkerCodec: StructCodec<T.ChapterMarker> = {
 };
 
 /**
- * Wire codec for `PlainFetch` (0 data words, 5 pointers).
+ * Wire codec for `PlainFetch` (0 data words, 6 pointers).
  *
  * @internal
  */
 export const PlainFetchCodec: StructCodec<T.PlainFetch> = {
   dataWords: 0,
-  pointerCount: 5,
+  pointerCount: 6,
   write(s, v, caps) {
     {
       const list = v.parts ?? [];
@@ -4805,6 +4813,9 @@ export const PlainFetchCodec: StructCodec<T.PlainFetch> = {
     if (v.pdfUrl !== undefined) {
       s.setText(4, v.pdfUrl ?? "");
     }
+    if (v.refreshedCredentials !== undefined) {
+      s.setData(5, v.refreshedCredentials ?? EMPTY_BYTES);
+    }
   },
   read(s, caps) {
     const out: T.PlainFetch = {
@@ -4823,6 +4834,10 @@ export const PlainFetchCodec: StructCodec<T.PlainFetch> = {
     if (!(pdfUrlValue === "")) {
       out.pdfUrl = pdfUrlValue;
     }
+    const refreshedCredentialsValue = s.getData(5);
+    if (!(refreshedCredentialsValue.length === 0)) {
+      out.refreshedCredentials = refreshedCredentialsValue;
+    }
     return out;
   },
 };
@@ -4840,7 +4855,7 @@ export const FetchTitleReplyCodec: StructCodec<T.FetchTitleReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          PlainFetchCodec.write(s.initStruct(0, 0, 5), v.value, caps);
+          PlainFetchCodec.write(s.initStruct(0, 0, 6), v.value, caps);
         }
         break;
       case "err":
@@ -4857,7 +4872,7 @@ export const FetchTitleReplyCodec: StructCodec<T.FetchTitleReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: PlainFetchCodec.read(s.getStruct(0, 0, 5), caps) };
+        return { kind: "ok", value: PlainFetchCodec.read(s.getStruct(0, 0, 6), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:

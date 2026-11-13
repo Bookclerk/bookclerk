@@ -164,6 +164,9 @@ where
         sync_token: String::new(),
         complete: false,
         store_pages: page.store_pages.unwrap_or(1),
+        // A guest that refreshed the account's credentials sets them on
+        // the page it answers with.
+        refreshed_credentials: None,
     };
     if page.books.len() > end || page.removed.len() > end {
         reply.next_cursor = write_cursor(&store_cursor, end)?;
@@ -282,6 +285,7 @@ mod tests {
                 sync_token: "t2".into(),
                 complete: true,
                 store_pages: 1,
+                refreshed_credentials: None,
             }]
         );
     }

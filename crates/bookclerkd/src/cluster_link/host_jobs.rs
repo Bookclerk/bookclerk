@@ -64,6 +64,7 @@ use bookclerk_node_proto::{
     MAX_UPLOAD_FILES,
 };
 use bookclerk_plugin_abi::ScanBook;
+use bookclerk_plugin_host::RefreshedCredentialSink;
 use bookclerk_source::DownloadOptions;
 use bookclerk_storage::{ObjectMeta, StorageBackend};
 use sha2::Digest as _;
@@ -204,20 +205,24 @@ pub struct AcquiredTitle {
 /// also stop cooperatively.
 pub trait HostGuests: Send + Sync + 'static {
     /// Runs the job's guest scan with the handed credentials and answers
-    /// its rows unwritten.
+    /// its rows unwritten; credentials the guest refreshes go to
+    /// `refreshed` ([`OwnerWriteBack`]).
     fn scan(
         &self,
         bindings: &HostJobBindings,
+        refreshed: Arc<dyn RefreshedCredentialSink>,
         scan: HostScan,
         cancel: Arc<AtomicBool>,
     ) -> impl Future<Output = anyhow::Result<Vec<ScanBook>>> + Send;
 
     /// Acquires `title` with the job's guest into `outbox`: destination
     /// `i`'s files, named with its options, under
-    /// [`destination_outbox`]`(outbox, i)`.
+    /// [`destination_outbox`]`(outbox, i)`. Credentials the guest
+    /// refreshes go to `refreshed` ([`OwnerWriteBack`]).
     fn acquire(
         &self,
         bindings: &HostJobBindings,
+        refreshed: Arc<dyn RefreshedCredentialSink>,
         title: &HostTitle,
         outbox: &Path,
         cancel: Arc<AtomicBool>,
@@ -298,10 +303,12 @@ impl GuestHost {
     }
 
     /// Spawns the job's guest under the consented grant, with only the
-    /// handed credentials. Fails closed.
+    /// handed credentials, sending credentials it refreshes to `refreshed`.
+    /// Fails closed.
     async fn open_source(
         &self,
         bindings: &HostJobBindings,
+        refreshed: Arc<dyn RefreshedCredentialSink>,
     ) -> anyhow::Result<bookclerk_plugin_host::ExternalSource> {
         let mut plugin =
             bookclerk_plugin_host::open_installed_plugin(&bindings.root, &bindings.version)
@@ -318,7 +325,9 @@ impl GuestHost {
         )
         .await
         .context("the owner's plugin did not start on this host")?;
-        Ok(source.with_handed_credentials(bindings.credentials.clone()))
+        Ok(source
+            .with_handed_credentials(bindings.credentials.clone())
+            .with_refresh_sink(refreshed))
     }
 }
 
@@ -326,10 +335,11 @@ impl HostGuests for GuestHost {
     async fn scan(
         &self,
         bindings: &HostJobBindings,
+        refreshed: Arc<dyn RefreshedCredentialSink>,
         scan: HostScan,
         cancel: Arc<AtomicBool>,
     ) -> anyhow::Result<Vec<ScanBook>> {
-        let source = self.open_source(bindings).await?;
+        let source = self.open_source(bindings, refreshed).await?;
         // The owner's import settings, not this host's: the owner writes
         // every row into its library.
         Ok(source
@@ -346,6 +356,7 @@ impl HostGuests for GuestHost {
     async fn acquire(
         &self,
         bindings: &HostJobBindings,
+        refreshed: Arc<dyn RefreshedCredentialSink>,
         title: &HostTitle,
         outbox: &Path,
         _cancel: Arc<AtomicBool>,
@@ -354,7 +365,7 @@ impl HostGuests for GuestHost {
         // (and with it the guest) once the job is cancelled, and all of the
         // title's scratch (its library, and the pipeline's download and
         // packaging dirs) sits under the job dir it removes.
-        let source = self.open_source(bindings).await?;
+        let source = self.open_source(bindings, refreshed).await?;
         let cfg = self.state.config.read().await.clone();
         let scratch_dir = outbox.with_extension("library");
         tokio::fs::create_dir_all(&scratch_dir).await?;
@@ -709,6 +720,66 @@ impl<G: HostGuests> JobTransport for HostJobTransport<G> {
     }
 }
 
+/// Writes credentials a guest refreshed on this host back to the owner,
+/// under the job's fence ([`HostJobCtx::write_back`]), as the row the owner
+/// handed for the account. The owner keeps the newest sign-in; a failed
+/// write-back is logged and the job goes on with the refreshed credentials.
+pub struct OwnerWriteBack {
+    /// The job, whose fence and handed secrets the write-back uses.
+    host: Arc<HostJobCtx>,
+    /// The job's plugin key, the provider of the account rows it may write.
+    plugin_key: String,
+}
+
+impl OwnerWriteBack {
+    /// The sink for the job `host` running `bindings`' plugin.
+    #[must_use]
+    pub fn sink(
+        host: &Arc<HostJobCtx>,
+        bindings: &HostJobBindings,
+    ) -> Arc<dyn RefreshedCredentialSink> {
+        Arc::new(Self {
+            host: Arc::clone(host),
+            plugin_key: bindings.plugin_key.clone(),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl RefreshedCredentialSink for OwnerWriteBack {
+    async fn refreshed(&self, account_id: &str, credentials: Vec<u8>) {
+        let credentials = zeroize::Zeroizing::new(credentials);
+        let Some(secret_ref) = self
+            .host
+            .secrets
+            .refs()
+            .find(|secret| {
+                secret.kind == bookclerk_library::secrets::secret_kind::SOURCE_AUTH
+                    && secret.provider == self.plugin_key
+                    && secret.account_id == account_id
+            })
+            .cloned()
+        else {
+            tracing::warn!(
+                account_id,
+                "a guest refreshed credentials the owner did not hand; dropped"
+            );
+            return;
+        };
+        match self.host.write_back(&secret_ref, &credentials).await {
+            Ok(()) => tracing::info!(
+                account_id,
+                "refreshed store credentials written back to the owner"
+            ),
+            Err(err) => tracing::warn!(
+                account_id,
+                error = %err,
+                "could not write refreshed store credentials back to the owner"
+            ),
+        }
+    }
+}
+
 /// Retries `call` while the owner is unavailable.
 async fn with_retries<T, F, Fut>(mut call: F) -> Result<T, OwnerCallError>
 where
@@ -739,14 +810,19 @@ fn owner_error(what: &str, err: &OwnerCallError) -> anyhow::Error {
 /// A host scan: the guest's rows go back in fenced batches.
 async fn host_scan<G: HostGuests>(
     guests: &G,
-    host: &HostJobCtx,
+    host: &Arc<HostJobCtx>,
     bindings: &HostJobBindings,
     scan: HostScan,
     ctx: &JobExecCtx,
 ) -> anyhow::Result<String> {
     let rows = until_cancelled(
         &ctx.cancel,
-        guests.scan(bindings, scan, Arc::clone(&ctx.cancel)),
+        guests.scan(
+            bindings,
+            OwnerWriteBack::sink(host, bindings),
+            scan,
+            Arc::clone(&ctx.cancel),
+        ),
     )
     .await?;
     let mut batch = Vec::new();
@@ -802,7 +878,7 @@ async fn host_scan<G: HostGuests>(
 /// by the closing upload.
 async fn host_acquire<G: HostGuests>(
     guests: &G,
-    host: &HostJobCtx,
+    host: &Arc<HostJobCtx>,
     bindings: &HostJobBindings,
     ctx: &JobExecCtx,
 ) -> anyhow::Result<String> {
@@ -833,7 +909,7 @@ async fn host_acquire<G: HostGuests>(
 /// were acquired and how many failed.
 async fn acquire_titles<G: HostGuests>(
     guests: &G,
-    host: &HostJobCtx,
+    host: &Arc<HostJobCtx>,
     bindings: &HostJobBindings,
     ctx: &JobExecCtx,
     job_dir: &Path,
@@ -897,7 +973,13 @@ async fn acquire_titles<G: HostGuests>(
             let commit_unsettled = AtomicBool::new(false);
             let uploaded = until_cancelled(&ctx.cancel, async {
                 let done = guests
-                    .acquire(bindings, &title, &outbox, Arc::clone(&ctx.cancel))
+                    .acquire(
+                        bindings,
+                        OwnerWriteBack::sink(host, bindings),
+                        &title,
+                        &outbox,
+                        Arc::clone(&ctx.cancel),
+                    )
                     .await?;
                 upload_title(
                     guests,

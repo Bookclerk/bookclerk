@@ -89,6 +89,20 @@ pub struct ExternalSource {
     /// Store credentials an owner cluster handed with a job, by account
     /// id. When set they are the only credentials this source uses.
     handed: Option<Arc<HandedCredentials>>,
+    /// Where credentials the guest refreshed go for handed credentials (the
+    /// owner, over the job's fence); unset, they are dropped with a warning.
+    refresh_sink: Option<Arc<dyn RefreshedCredentialSink>>,
+}
+
+/// Receives the credentials a guest refreshed while it used credentials an
+/// owner cluster handed with a job (`ScanPage.refreshedCredentials`,
+/// `PlainFetch.refreshedCredentials`), already checked against the ABI
+/// bounds. The daemon writes them back to the owner under the job's fence.
+#[async_trait::async_trait]
+pub trait RefreshedCredentialSink: Send + Sync {
+    /// Hands back `credentials`, the guest's refreshed credentials for
+    /// `account_id`. Failures are the sink's to log; the job goes on.
+    async fn refreshed(&self, account_id: &str, credentials: Vec<u8>);
 }
 
 /// Credentials handed with a host job, zeroized on drop and never shown by
@@ -178,7 +192,71 @@ impl ExternalSource {
             source_config,
             plugin_instance_id: None,
             handed: None,
+            refresh_sink: None,
         })
+    }
+
+    /// Sends credentials the guest refreshes while using handed credentials
+    /// to `sink` (see [`Self::with_handed_credentials`]).
+    #[must_use]
+    pub fn with_refresh_sink(mut self, sink: Arc<dyn RefreshedCredentialSink>) -> Self {
+        self.refresh_sink = Some(sink);
+        self
+    }
+
+    /// Keeps credentials the guest handed back after refreshing those of
+    /// `account_id`, which it was sent as `sent`.
+    ///
+    /// For handed credentials they go to the refresh sink (the owner); for
+    /// this install's own accounts they replace the stored credentials only
+    /// while those are still `sent`, so a sign-in that happened meanwhile
+    /// wins ([`SourceScope::replace_refreshed_credentials`]). An empty blob
+    /// means nothing changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the blob breaks the ABI bounds or storing it
+    /// fails.
+    async fn keep_refreshed(
+        &self,
+        scope: Option<&SourceScope>,
+        account_id: &str,
+        sent: &[u8],
+        refreshed: Vec<u8>,
+    ) -> bookclerk_source::Result<()> {
+        if refreshed.is_empty() {
+            return Ok(());
+        }
+        bookclerk_plugin_abi::validate_refreshed_credentials(&refreshed)
+            .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
+        bookclerk_config::register_secret_bytes(&refreshed);
+        if self.handed.is_some() {
+            match &self.refresh_sink {
+                Some(sink) => sink.refreshed(account_id, refreshed).await,
+                None => tracing::warn!(
+                    plugin = %self.id(),
+                    account_id,
+                    "the guest refreshed handed credentials, but nothing takes them back"
+                ),
+            }
+            return Ok(());
+        }
+        let Some(scope) = scope else {
+            return Ok(());
+        };
+        let sent = credentials_from_bytes(sent)?;
+        let stored = scope
+            .replace_refreshed_credentials(account_id, &sent, &refreshed)
+            .await
+            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        if !stored {
+            tracing::info!(
+                plugin = %self.id(),
+                account_id,
+                "kept the account's newer credentials over the guest's refreshed ones"
+            );
+        }
+        Ok(())
     }
 
     /// Uses only `credentials` (an owner cluster handed them with a job)
@@ -612,6 +690,7 @@ impl ContentSource for ExternalSource {
                 .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
             dir
         };
+        let sent = credentials.clone().unwrap_or_default();
         let params = FetchTitleParams {
             plugin_data_dir: self.plugin_data_dir.display().to_string(),
             account_id: account_id.to_string(),
@@ -621,9 +700,26 @@ impl ContentSource for ExternalSource {
             source_config: ExtensibleConfig::json(&self.source_config),
             fetch: (&opts.download).into(),
         };
-        let plain = self
+        let mut plain = self
             .cs_call(move |src| async move { src.fetch_title(params).await })
             .await?;
+        if let Some(refreshed) = plain.refreshed_credentials.take() {
+            // The title is already fetched: credentials that cannot be kept
+            // are logged, not the fetch's failure.
+            if !sent.is_empty() {
+                if let Err(err) = self
+                    .keep_refreshed(Some(scope), account_id, &sent, refreshed)
+                    .await
+                {
+                    tracing::warn!(
+                        plugin = %self.id(),
+                        account_id,
+                        error = %err,
+                        "could not keep the guest's refreshed credentials"
+                    );
+                }
+            }
+        }
         Ok(plain.into())
     }
 
@@ -1043,6 +1139,20 @@ impl PassLedger<'_> {
 }
 
 impl PassIo for LibraryPass<'_> {
+    async fn refreshed(&mut self, credentials: Vec<u8>) -> bookclerk_source::Result<()> {
+        self.source
+            .keep_refreshed(
+                Some(self.ledger.scope),
+                &self.ledger.account_id,
+                &self.credential,
+                credentials.clone(),
+            )
+            .await?;
+        // The pass's later pages use the guest's current credentials.
+        self.credential = credentials;
+        Ok(())
+    }
+
     async fn page(
         &mut self,
         cursor: &str,
@@ -1112,6 +1222,19 @@ struct CollectPass<'a> {
 }
 
 impl PassIo for CollectPass<'_> {
+    async fn refreshed(&mut self, credentials: Vec<u8>) -> bookclerk_source::Result<()> {
+        self.source
+            .keep_refreshed(
+                None,
+                &self.account_id,
+                &self.credential,
+                credentials.clone(),
+            )
+            .await?;
+        self.credential = credentials;
+        Ok(())
+    }
+
     async fn page(
         &mut self,
         cursor: &str,

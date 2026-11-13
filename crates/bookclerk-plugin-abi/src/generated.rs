@@ -1471,6 +1471,19 @@ pub struct ScanPage {
     /// Storefront requests this page took.
     #[serde(default)]
     pub store_pages: u32,
+    /// The account's credentials as the guest holds them after refreshing them
+    /// while producing this page (for example a renewed access token): the
+    /// same encoding login returned, a JSON object of at most
+    /// `maxRefreshedCredentialBytes`. The host stores them in place of the
+    /// credentials it sent, unless the account was signed in again meanwhile,
+    /// and sends them on the pass's later pages. Empty when nothing changed.
+    /// `None` when absent (wire zero value).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::json_bytes::opt_b64"
+    )]
+    pub refreshed_credentials: Option<Vec<u8>>,
 }
 
 /// Fetch-relevant acquire knobs the host forwards so external load matches
@@ -1608,6 +1621,16 @@ pub struct PlainFetch {
     /// `None` when absent (wire zero value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pdf_url: Option<String>,
+    /// The account's credentials as the guest holds them after refreshing them
+    /// during the fetch, as in `ScanPage.refreshedCredentials`. Empty when
+    /// nothing changed.
+    /// `None` when absent (wire zero value).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::json_bytes::opt_b64"
+    )]
+    pub refreshed_credentials: Option<Vec<u8>>,
 }
 
 /// Success payload of `ContentSource.listAccounts`.
@@ -3826,6 +3849,9 @@ pub fn write_scan_page(
     b.set_sync_token(&v.sync_token);
     b.set_complete(v.complete);
     b.set_store_pages(v.store_pages);
+    if let Some(value) = &v.refreshed_credentials {
+        b.set_refreshed_credentials(value);
+    }
     Ok(())
 }
 
@@ -3846,6 +3872,7 @@ pub fn read_scan_page(r: plugin_capnp::scan_page::Reader<'_>) -> capnp::Result<S
         sync_token: r.get_sync_token()?.to_string()?,
         complete: r.get_complete(),
         store_pages: r.get_store_pages(),
+        refreshed_credentials: opt_data(r.get_refreshed_credentials()?),
     })
 }
 
@@ -4065,6 +4092,9 @@ pub fn write_plain_fetch(
     if let Some(value) = &v.pdf_url {
         b.set_pdf_url(value);
     }
+    if let Some(value) = &v.refreshed_credentials {
+        b.set_refreshed_credentials(value);
+    }
     Ok(())
 }
 
@@ -4088,6 +4118,7 @@ pub fn read_plain_fetch(r: plugin_capnp::plain_fetch::Reader<'_>) -> capnp::Resu
             .map(|item| read_chapter_marker(item))
             .collect::<capnp::Result<Vec<_>>>()?,
         pdf_url: opt_text(r.get_pdf_url()?)?,
+        refreshed_credentials: opt_data(r.get_refreshed_credentials()?),
     })
 }
 

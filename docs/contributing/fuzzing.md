@@ -37,7 +37,7 @@ boundary extends it.
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
-| `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back and the account it names | `bookclerk-plugin-abi::validate_scan_page` |
+| `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
@@ -167,8 +167,9 @@ only that. The others check:
   exactly when an independent check of every rule agrees: at most
   `MAX_SCAN_PAGE_BOOKS` books and as many removed ids, a cursor and token
   within `MAX_SCAN_CURSOR_BYTES`, a next cursor that is empty or differs
-  from the one sent, books for that account only, and no blank product or
-  removed id. An accepted
+  from the one sent, books for that account only, no blank product or
+  removed id, and refreshed credentials that are absent, empty, or one
+  JSON object within `MAX_REFRESHED_CREDENTIAL_BYTES`. An accepted
   page round-trips through the codec and is accepted again. The shared
   oracle is `fuzz/oracles/scan_page.rs`, replayed from
   `bookclerk-plugin-abi`.

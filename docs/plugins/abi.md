@@ -993,6 +993,32 @@ scan(params: ScanParams): Promise<ScanPage> {
 The three SDKs write the same cursors, so a plugin can move between them
 without breaking a pass in progress.
 
+#### Refreshed credentials
+
+A store may renew an account's tokens while the plugin uses them, such as
+an access token that expired in the middle of a scan. The plugin hands the
+renewed credentials back so the next call does not have to renew them
+again:
+
+1. Set `refreshedCredentials` on the `ScanPage` or `PlainFetch` reply to
+   the account's whole credentials, in the same JSON form the host sent
+   them. Leave it empty when nothing changed.
+2. The value must be one JSON object of at most
+   `MAX_REFRESHED_CREDENTIAL_BYTES` (64 KiB). The host refuses a scan page
+   that breaks either rule and fails the scan.
+3. The host keeps the renewed credentials before it writes the page's
+   titles, and sends them on the pass's later pages.
+
+The host stores them only while the account still has the credentials it
+sent the plugin. If someone signed the account in again in the meantime,
+that sign-in wins and the renewed credentials are dropped. On a member's
+computer that runs a job for a library it joined, the renewed credentials
+go back to that library under the job's lease instead, and are never
+stored on the member's computer.
+
+The host registers the renewed values for log redaction as it receives
+them. A plugin should still never log them.
+
 #### Catalog search capabilities
 
 Discover's catalog search merges every storefront's `searchCatalog` hits
