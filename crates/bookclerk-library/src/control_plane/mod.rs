@@ -26,6 +26,7 @@ mod identity;
 mod instance_config;
 mod instances;
 mod job_routing;
+mod keeper;
 mod leases;
 mod link_imports;
 mod live;
@@ -165,6 +166,10 @@ pub use job_routing::{
     job_source_plugin_key, node_can_run_job, resolve_job_requirements, JobClaimFilter,
     JobClaimLimits, JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT,
     ROUTED_CLAIM_CANDIDATES,
+};
+pub use keeper::{
+    apply_keeper_update, confirmed_keeping_branch, keeping_branch, keeps_for_link, kept_shares,
+    record_pushed_revision, sign_in_revision, KeeperUpdate, KeptShare, SignIn,
 };
 pub use leases::{
     acquire_lease, acquire_lease_on, list_leases, load_lease, load_lease_on, release_lease,
@@ -928,6 +933,8 @@ mod enrollment_tests;
 mod instance_tests;
 #[cfg(test)]
 mod job_routing_tests;
+#[cfg(test)]
+mod keeper_tests;
 #[cfg(test)]
 mod leases_tests;
 #[cfg(test)]

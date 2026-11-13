@@ -253,6 +253,12 @@ pub trait HostGuests: Send + Sync + 'static {
     /// ([`OwnerTitleCopy`]). Best effort: a failure is logged, never the
     /// job's.
     fn import_owner_title(&self, copy: OwnerTitleCopy<'_>) -> impl Future<Output = ()> + Send;
+
+    /// This install's own copies of the single-keeper accounts it keeps for
+    /// the library ([`OwnerWriteBack`]); `None` when it keeps none here.
+    fn local_keeper(&self) -> Option<Arc<dyn LocalKeeper>> {
+        None
+    }
 }
 
 /// One of this host's own destinations: its destination id (`local`, `s3`;
@@ -331,7 +337,82 @@ impl GuestHost {
     }
 }
 
+/// [`GuestHost`]'s [`LocalKeeper`]: this install's library, for the link
+/// to `cluster_id`.
+pub(super) struct DaemonKeeper {
+    /// Daemon state, for the current library.
+    pub(super) state: Arc<AppState>,
+    /// The library the jobs come from.
+    pub(super) cluster_id: String,
+}
+
+#[async_trait::async_trait]
+impl LocalKeeper for DaemonKeeper {
+    async fn keep(
+        &self,
+        plugin_key: &str,
+        account_id: &str,
+        sent: &[u8],
+        refreshed: &[u8],
+    ) -> Option<KeptHere> {
+        let library = self.state.library_snapshot().await;
+        // A shareable account's copies each refresh on their own: its
+        // refresh goes back to the library as before.
+        let sharing = crate::node_api::branch::credential_sharing(&self.state, &library).await;
+        if sharing.get(plugin_key) != Some(&bookclerk_plugin_host::CredentialSharing::SingleKeeper)
+        {
+            return None;
+        }
+        match bookclerk_library::control_plane::keeps_for_link(
+            &library,
+            plugin_key,
+            account_id,
+            &self.cluster_id,
+        )
+        .await
+        {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(err) => {
+                tracing::warn!(account_id, error = %err, "could not read whether this install keeps an account");
+                return None;
+            }
+        }
+        let Ok(sent) = serde_json::from_slice::<serde_json::Value>(sent) else {
+            tracing::warn!(
+                account_id,
+                "a job's handed credentials are not JSON; its refresh is not kept here"
+            );
+            return Some(KeptHere::Failed);
+        };
+        let scope = bookclerk_library::SourceScope::new(library, plugin_key, "");
+        match scope
+            .replace_refreshed_credentials(
+                account_id,
+                &sent,
+                refreshed,
+                bookclerk_library::RefreshKeeping::SingleKeeper,
+            )
+            .await
+        {
+            Ok(true) => Some(KeptHere::Saved),
+            Ok(false) => Some(KeptHere::Superseded),
+            Err(err) => {
+                tracing::warn!(account_id, error = %err, "could not keep a job's refreshed credentials here");
+                Some(KeptHere::Failed)
+            }
+        }
+    }
+}
+
 impl HostGuests for GuestHost {
+    fn local_keeper(&self) -> Option<Arc<dyn LocalKeeper>> {
+        Some(Arc::new(DaemonKeeper {
+            state: Arc::clone(&self.state),
+            cluster_id: self.cluster_id.clone(),
+        }))
+    }
+
     async fn scan(
         &self,
         bindings: &HostJobBindings,
@@ -726,17 +807,68 @@ impl<G: HostGuests> JobTransport for HostJobTransport<G> {
 /// with the refreshed credentials either way: one sink serves the whole
 /// job, so its later guests are sent them ([`RefreshedCredentialSink::latest`]).
 ///
-/// The owner replaces the account's row under the job's fence without
-/// comparing it with what it handed, so a sign-in on the owner during the
-/// job can be overwritten; the keeper lease (single-keeper accounts) is
-/// what closes that.
+/// When this install keeps the account for the library itself (a
+/// single-keeper account its person brought here; [`LocalKeeper`]), the
+/// refresh is saved here instead and reaches the library as this branch's
+/// next push: the library refuses write-backs of accounts a branch keeps.
+///
+/// Otherwise the owner replaces the account's row under the job's fence
+/// without comparing it with what it handed, so a sign-in on the owner
+/// during the job can be overwritten.
 pub struct OwnerWriteBack {
     /// The job, whose fence and handed secrets the write-back uses.
     host: Arc<HostJobCtx>,
     /// The job's plugin key, the provider of the account rows it may write.
     plugin_key: String,
-    /// The newest refreshed credentials of each account this job.
+    /// The newest refreshed credentials of each account this job: what its
+    /// guests hold, and what later guests are sent.
     latest: std::sync::Mutex<BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>>,
+    /// For an account this install keeps, the copy this job last saved (or
+    /// found newer) here: what the next local save is compared against. A
+    /// failed save leaves it as it was, so the next refresh is saved over
+    /// the copy that is really stored.
+    saved: std::sync::Mutex<BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>>,
+    /// Accounts whose newest refresh this install keeps but could not save
+    /// yet: saved by the next refresh, or by [`OwnerWriteBack::flush`] when
+    /// the job ends.
+    pending: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// This install's own copies of the accounts it keeps for the library.
+    local: Option<Arc<dyn LocalKeeper>>,
+}
+
+/// What became of a job's refresh of an account this install keeps
+/// ([`LocalKeeper::keep`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeptHere {
+    /// Saved as this install's copy, for its next push.
+    Saved,
+    /// Not saved: a newer sign-in here won.
+    Superseded,
+    /// Not saved: the write failed, so this install's copy is still the
+    /// one the job was handed. The job's next refresh is compared with that
+    /// one again, and the save is retried when the job ends.
+    Failed,
+}
+
+/// This install's own copy of a single-keeper account it keeps for the
+/// library a job came from ([`OwnerWriteBack`]).
+#[async_trait::async_trait]
+pub trait LocalKeeper: Send + Sync {
+    /// Saves `refreshed` as this install's copy of the account while that
+    /// copy is still `sent` (the credentials the guest was given).
+    ///
+    /// # Returns
+    ///
+    /// `None` when this install does not keep the account for the library
+    /// (the write-back goes to the owner); otherwise what became of the
+    /// refresh here (it never goes to the owner then).
+    async fn keep(
+        &self,
+        plugin_key: &str,
+        account_id: &str,
+        sent: &[u8],
+        refreshed: &[u8],
+    ) -> Option<KeptHere>;
 }
 
 impl OwnerWriteBack {
@@ -745,12 +877,80 @@ impl OwnerWriteBack {
     pub fn sink(
         host: &Arc<HostJobCtx>,
         bindings: &HostJobBindings,
-    ) -> Arc<dyn RefreshedCredentialSink> {
+        local: Option<Arc<dyn LocalKeeper>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             host: Arc::clone(host),
             plugin_key: bindings.plugin_key.clone(),
             latest: std::sync::Mutex::default(),
+            saved: std::sync::Mutex::default(),
+            pending: std::sync::Mutex::default(),
+            local,
         })
+    }
+
+    /// Saves, when the job ends, each refresh this install keeps whose save
+    /// failed and that no later refresh saved: the guests are gone, so this
+    /// is the last chance to keep their newest credentials.
+    pub async fn flush(&self) {
+        let pending: Vec<String> =
+            std::mem::take(&mut *self.pending.lock().unwrap_or_else(|p| p.into_inner()))
+                .into_iter()
+                .collect();
+        for account_id in pending {
+            let latest = self
+                .latest
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&account_id)
+                .cloned();
+            let (Some(credentials), Some(local)) = (latest, &self.local) else {
+                continue;
+            };
+            let sent = self.stored_here(&account_id);
+            match local
+                .keep(&self.plugin_key, &account_id, &sent, &credentials)
+                .await
+            {
+                Some(KeptHere::Saved) => tracing::info!(
+                    account_id,
+                    "refreshed store credentials kept here when the job ended"
+                ),
+                Some(KeptHere::Superseded) => tracing::info!(
+                    account_id,
+                    "a newer sign-in here won over a job's refreshed credentials"
+                ),
+                Some(KeptHere::Failed) => tracing::warn!(
+                    account_id,
+                    "could not keep a job's refreshed credentials here; this install's copy stays the older one"
+                ),
+                None => {}
+            }
+        }
+    }
+
+    /// What this install holds of `account_id`: the copy this job last
+    /// saved here, else the handed copy.
+    fn stored_here(&self, account_id: &str) -> zeroize::Zeroizing<Vec<u8>> {
+        let secret_ref = self.host.secrets.refs().find(|secret| {
+            secret.kind == bookclerk_library::secrets::secret_kind::SOURCE_AUTH
+                && secret.provider == self.plugin_key
+                && secret.account_id == account_id
+        });
+        self.saved
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(account_id)
+            .cloned()
+            .or_else(|| {
+                secret_ref.and_then(|secret_ref| {
+                    self.host
+                        .secrets
+                        .get(secret_ref)
+                        .map(|value| zeroize::Zeroizing::new(value.expose().to_vec()))
+                })
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -762,6 +962,25 @@ impl RefreshedCredentialSink for OwnerWriteBack {
     }
 
     async fn refreshed(&self, account_id: &str, credentials: Vec<u8>) {
+        self.refresh(account_id, credentials).await;
+    }
+}
+
+impl OwnerWriteBack {
+    /// Records `credentials` in `map` for `account_id`.
+    fn remember(
+        map: &std::sync::Mutex<BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>>,
+        account_id: &str,
+        credentials: &zeroize::Zeroizing<Vec<u8>>,
+    ) {
+        map.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(account_id.to_owned(), credentials.clone());
+    }
+
+    /// Keeps a refresh here or writes it back to the owner
+    /// ([`RefreshedCredentialSink::refreshed`]).
+    async fn refresh(&self, account_id: &str, credentials: Vec<u8>) {
         let credentials = zeroize::Zeroizing::new(credentials);
         let Some(secret_ref) = self
             .host
@@ -780,10 +999,61 @@ impl RefreshedCredentialSink for OwnerWriteBack {
             );
             return;
         };
-        self.latest
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(account_id.to_owned(), credentials.clone());
+        // The guest holds these now, whatever becomes of them here.
+        Self::remember(&self.latest, account_id, &credentials);
+        let sent = self.stored_here(account_id);
+        if let Some(local) = &self.local {
+            // Pending until the save settles, so a job cancelled while it
+            // is in flight still retries it at its end.
+            self.pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(account_id.to_owned());
+            let mut kept = local
+                .keep(&self.plugin_key, account_id, &sent, &credentials)
+                .await;
+            // One retry of a failed save; after that the next refresh, or
+            // the job's end, tries again against the copy really stored.
+            if kept == Some(KeptHere::Failed) {
+                kept = local
+                    .keep(&self.plugin_key, account_id, &sent, &credentials)
+                    .await;
+            }
+            if kept != Some(KeptHere::Failed) {
+                self.pending
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(account_id);
+            }
+            match kept {
+                Some(KeptHere::Saved) => {
+                    Self::remember(&self.saved, account_id, &credentials);
+                    tracing::info!(
+                        account_id,
+                        "refreshed store credentials kept here, for this branch's next push"
+                    );
+                    return;
+                }
+                Some(KeptHere::Superseded) => {
+                    tracing::info!(
+                        account_id,
+                        "a newer sign-in here won over a job's refreshed credentials"
+                    );
+                    return;
+                }
+                // The copy here is still the one compared against, so the
+                // job's next refresh (or its end) saves over it; its guests
+                // already have the new credentials.
+                Some(KeptHere::Failed) => {
+                    tracing::warn!(
+                        account_id,
+                        "could not keep a job's refreshed credentials here yet; retried when the job ends"
+                    );
+                    return;
+                }
+                None => {}
+            }
+        }
         match self.host.write_back(&secret_ref, &credentials).await {
             Ok(()) => tracing::info!(
                 account_id,
@@ -833,16 +1103,20 @@ async fn host_scan<G: HostGuests>(
     scan: HostScan,
     ctx: &JobExecCtx,
 ) -> anyhow::Result<String> {
+    let refreshed = OwnerWriteBack::sink(host, bindings, guests.local_keeper());
     let rows = until_cancelled(
         &ctx.cancel,
         guests.scan(
             bindings,
-            OwnerWriteBack::sink(host, bindings),
+            Arc::clone(&refreshed) as Arc<dyn RefreshedCredentialSink>,
             scan,
             Arc::clone(&ctx.cancel),
         ),
     )
-    .await?;
+    .await;
+    // The guest is done refreshing, whether or not the scan finished.
+    refreshed.flush().await;
+    let rows = rows?;
     let mut batch = Vec::new();
     let mut batch_bytes = 0usize;
     let mut written = 0u64;
@@ -901,8 +1175,11 @@ async fn host_acquire<G: HostGuests>(
     ctx: &JobExecCtx,
 ) -> anyhow::Result<String> {
     let job_dir = job_work_path(&guests.work_dir(), &host.job.job.id, host.job.fence)?;
-    let refreshed = OwnerWriteBack::sink(host, bindings);
+    let writer = OwnerWriteBack::sink(host, bindings, guests.local_keeper());
+    let refreshed: Arc<dyn RefreshedCredentialSink> = Arc::clone(&writer) as _;
     let result = acquire_titles(guests, host, bindings, &refreshed, ctx, &job_dir).await;
+    // The guests are done refreshing, whether or not every title came.
+    writer.flush().await;
     let _ = tokio::fs::remove_dir_all(&job_dir).await;
     let (acquired, failed) = result?;
     let detail = format!("acquired={acquired} failed={failed} (on a host)");

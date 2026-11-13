@@ -29653,7 +29653,7 @@
           },
           "travels": {
             "type": "boolean",
-            "description": "True when the storefront lets its login be used in more than one\nplace, so the connection travels; false when it keeps one login\nthat only this library refreshes.",
+            "description": "True when the connection travels: a shareable storefront's, or a\nsingle-keeper one's that no other branch keeps yet (the branch then\nkeeps its login fresh for this library). False when another branch\nalready keeps it, or it does not fit one join's bundle.",
             "example": true
           }
         }

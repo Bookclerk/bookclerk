@@ -475,6 +475,20 @@ impl SourceScope {
         self.save_source_auth(account_id, &name, &bytes).await
     }
 
+    /// The branch that keeps this account's login fresh for this library
+    /// (the branch it was shared with, once that branch has pushed a
+    /// sign-in here; see [`crate::control_plane::confirmed_keeping_branch`]),
+    /// or `None` when this install keeps it. For a single-keeper storefront the host then saves
+    /// none of its own refreshes of the account: the branch pushes them.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read error.
+    pub async fn keeping_branch(&self, account_id: &str) -> Result<Option<String>> {
+        crate::control_plane::confirmed_keeping_branch(&self.store, &self.plugin_key, account_id)
+            .await
+    }
+
     /// Stores the credentials a guest handed back after refreshing them
     /// (`ScanPage.refreshedCredentials`, `PlainFetch.refreshedCredentials`)
     /// in place of `sent`, the credentials the host gave it.
@@ -484,7 +498,14 @@ impl SourceScope {
     /// `sent` was read, the newer credentials stay and nothing is written.
     /// The check and the write are one host batch guarded on the sealed row
     /// read, so a sign-in that lands in between wins. Nothing is written
-    /// when the account has no stored credentials (it was disconnected).
+    /// when the account has no stored credentials (it was disconnected),
+    /// nor, for a [`RefreshKeeping::SingleKeeper`] storefront, once a branch
+    /// has taken the account's sign-in over for this library (it has applied
+    /// a push from one, a `node:` row in `account_credential_revisions`),
+    /// checked in the same batch so a first push that lands in between wins
+    /// too. A shared storefront ignores those rows: no branch takes its
+    /// sign-ins over, so a row left from when it kept a single sign-in
+    /// never blocks its saves.
     /// The new value is registered with log redaction before it is stored.
     ///
     /// # Arguments
@@ -493,6 +514,8 @@ impl SourceScope {
     /// * `sent` - The credentials the host sent the guest.
     /// * `refreshed` - The credentials the guest handed back, already
     ///   checked as one JSON object within the ABI bound.
+    /// * `keeping` - How the storefront's manifest says its sign-ins may be
+    ///   held, which decides whether a keeping branch fences the write.
     ///
     /// # Returns
     ///
@@ -507,6 +530,7 @@ impl SourceScope {
         account_id: &str,
         sent: &Value,
         refreshed: &[u8],
+        keeping: RefreshKeeping,
     ) -> Result<bool> {
         let parsed: Value = serde_json::from_slice(refreshed)
             .map_err(|e| LibraryError::Invalid(format!("refreshed credentials: {e}")))?;
@@ -548,7 +572,10 @@ impl SourceScope {
                             kdf_m_cost = ?, kdf_t_cost = ?, kdf_p_cost = ?,
                             cipher_algorithm = ?, cipher_nonce = ?, updated_at = ?
                       WHERE kind = ? AND provider = ? AND account_type = ?
-                        AND account_id = ? AND name = ? AND ciphertext = ?",
+                        AND account_id = ? AND name = ? AND ciphertext = ?
+                        AND (? = 0 OR NOT EXISTS (SELECT 1 FROM account_credential_revisions
+                                         WHERE plugin_key = ? AND account_id = ?
+                                           AND peer LIKE 'node:%'))",
                     vec![
                         batch::text(&record.format),
                         batch::blob(&record.ciphertext),
@@ -566,6 +593,12 @@ impl SourceScope {
                         batch::text(account_id),
                         batch::text(&name),
                         batch::blob(&current.ciphertext),
+                        batch::int(match keeping {
+                            RefreshKeeping::Shared => 0,
+                            RefreshKeeping::SingleKeeper => 1,
+                        }),
+                        batch::text(&self.plugin_key),
+                        batch::text(account_id),
                     ],
                 )],
             ))
@@ -591,6 +624,18 @@ impl SourceScope {
             .map_err(|e| LibraryError::Other(anyhow::anyhow!("credentials JSON: {e}")))?;
         Ok(Some(value))
     }
+}
+
+/// How a storefront's sign-ins may be held, as its manifest declares it,
+/// for [`SourceScope::replace_refreshed_credentials`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshKeeping {
+    /// Every holder refreshes on its own; no branch takes a sign-in over,
+    /// so the library always saves its own refreshes.
+    Shared,
+    /// One install refreshes each sign-in; once a branch keeps an account
+    /// for this library, the library's own refreshes of it are not saved.
+    SingleKeeper,
 }
 
 impl LibraryStore {
@@ -628,7 +673,12 @@ mod tests {
             // The stored credentials are still the ones sent: replaced.
             assert!(
                 scope
-                    .replace_refreshed_credentials("alice", &sent, br#"{"token":"new"}"#)
+                    .replace_refreshed_credentials(
+                        "alice",
+                        &sent,
+                        br#"{"token":"new"}"#,
+                        RefreshKeeping::Shared
+                    )
                     .await
                     .unwrap(),
                 "{name}"
@@ -644,7 +694,12 @@ mod tests {
             // or another refresh) leaves the newer ones.
             assert!(
                 !scope
-                    .replace_refreshed_credentials("alice", &sent, br#"{"token":"stale"}"#)
+                    .replace_refreshed_credentials(
+                        "alice",
+                        &sent,
+                        br#"{"token":"stale"}"#,
+                        RefreshKeeping::Shared
+                    )
                     .await
                     .unwrap(),
                 "{name}"
@@ -658,7 +713,12 @@ mod tests {
             // Handing back what is already stored writes nothing and is fine.
             assert!(
                 scope
-                    .replace_refreshed_credentials("alice", &renewed, br#"{"token":"new"}"#)
+                    .replace_refreshed_credentials(
+                        "alice",
+                        &renewed,
+                        br#"{"token":"new"}"#,
+                        RefreshKeeping::Shared
+                    )
                     .await
                     .unwrap(),
                 "{name}"
@@ -667,7 +727,12 @@ mod tests {
             // A disconnected account (no stored credentials) gets nothing.
             assert!(
                 !scope
-                    .replace_refreshed_credentials("bob", &sent, br#"{"token":"x"}"#)
+                    .replace_refreshed_credentials(
+                        "bob",
+                        &sent,
+                        br#"{"token":"x"}"#,
+                        RefreshKeeping::Shared
+                    )
                     .await
                     .unwrap(),
                 "{name}"
@@ -676,9 +741,65 @@ mod tests {
 
             // Bytes that are not JSON are refused.
             assert!(scope
-                .replace_refreshed_credentials("alice", &renewed, b"not json")
+                .replace_refreshed_credentials(
+                    "alice",
+                    &renewed,
+                    b"not json",
+                    RefreshKeeping::Shared
+                )
                 .await
                 .is_err());
+
+            // Once a branch keeps the account here, only a single-keeper
+            // storefront's refreshes are fenced off.
+            scope
+                .upsert_account("alice", "us", None, true)
+                .await
+                .unwrap();
+            {
+                use crate::entities::account_credential_revisions;
+                use sea_orm::{ActiveModelTrait as _, Set};
+                account_credential_revisions::ActiveModel {
+                    plugin_key: Set("platform:bookclerk/audible".into()),
+                    account_id: Set("alice".into()),
+                    peer: Set(crate::control_plane::node_peer("branch")),
+                    revision: Set(1),
+                    observed: Set(0),
+                    updated_at: Set("2026-11-13T00:00:00Z".into()),
+                }
+                .insert(kit.store().db())
+                .await
+                .unwrap();
+            }
+            assert!(
+                !scope
+                    .replace_refreshed_credentials(
+                        "alice",
+                        &renewed,
+                        br#"{"token":"kept"}"#,
+                        RefreshKeeping::SingleKeeper
+                    )
+                    .await
+                    .unwrap(),
+                "{name}"
+            );
+            assert!(
+                scope
+                    .replace_refreshed_credentials(
+                        "alice",
+                        &renewed,
+                        br#"{"token":"shared"}"#,
+                        RefreshKeeping::Shared
+                    )
+                    .await
+                    .unwrap(),
+                "{name}"
+            );
+            assert_eq!(
+                scope.load_credentials_json("alice").await.unwrap(),
+                Some(serde_json::json!({"token": "shared"})),
+                "{name}"
+            );
         }
     }
 

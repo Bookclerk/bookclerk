@@ -2159,6 +2159,7 @@ dependencies = [
  "bookclerk-db-exec",
  "bookclerk-integrations",
  "bookclerk-library",
+ "bookclerk-node-proto",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-catalog",
  "bookclerk-plugin-database-sqlite",
