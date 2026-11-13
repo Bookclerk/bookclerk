@@ -735,6 +735,8 @@ export function ClusterConsentsPanel({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
   const [joinedTo, setJoinedTo] = useState<string | null>(null);
+  // Desktop window only: whether the invite join became a window.
+  const [joinedAsWindow, setJoinedAsWindow] = useState<boolean | null>(null);
   const [defaultBranchName, setDefaultBranchName] = useState<string | undefined>();
 
   useEffect(() => {
@@ -817,7 +819,11 @@ export function ClusterConsentsPanel({
       </div>
       {sharingOnly ? null : joinedTo ? (
         <p className="text-sm font-medium text-ink" role="status">
-          Connected to {joinedTo}. Its plugin requests appear below.
+          {joinedAsWindow === true
+            ? `Connected to ${joinedTo}. This computer is a window of it: it shows your books there and downloads nothing.`
+            : joinedAsWindow === false
+              ? `Connected to ${joinedTo}, but downloading could not be turned off. Turn off "Use this computer to download" below to make it a window.`
+              : `Connected to ${joinedTo}. Its plugin requests appear below.`}
         </p>
       ) : null}
       {sharingOnly ? null : joining ? (
@@ -825,8 +831,9 @@ export function ClusterConsentsPanel({
           <h3 className="text-sm font-semibold text-ink">Join a library</h3>
           <JoinWizard
             defaultBranchName={defaultBranchName}
-            onJoined={(origin) => {
+            onJoined={(origin, _link, asWindow) => {
               setJoining(false);
+              setJoinedAsWindow(asWindow);
               setJoinedTo(origin);
               void refresh();
             }}

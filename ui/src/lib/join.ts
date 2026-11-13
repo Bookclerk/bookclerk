@@ -683,6 +683,29 @@ export function setLinkDownload(
   });
 }
 
+/**
+ * After a join from the desktop window: makes this computer a window of the
+ * library it just joined, by turning "Use this computer to download" off.
+ * The library's plugins wait for approval before they run here, so nothing
+ * downloads in between.
+ *
+ * @param link - The link the join recorded.
+ * @returns True when downloading is off; false when the setting could not be
+ *   stored (the link stays a downloading branch until it is changed in
+ *   Settings → Library).
+ */
+export async function makeWindowOf(
+  link: Pick<BranchLinkView, "cluster_id" | "share_books" | "include_branches" | "download">,
+): Promise<boolean> {
+  if (link.download === false) return true;
+  try {
+    await setLinkDownload(link, false);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** One edition in the window view, and the library that holds it. */
 export interface WindowEditionView {
   /** The library (cluster id) that holds it for this server's person. */
