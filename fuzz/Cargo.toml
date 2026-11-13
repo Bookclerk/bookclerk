@@ -234,6 +234,27 @@ doc = false
 bench = false
 
 [[bin]]
+name = "client_authorization"
+path = "fuzz_targets/client_authorization.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_authorize"
+path = "fuzz_targets/client_authorize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_token_request"
+path = "fuzz_targets/client_token_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "members_books_request"
 path = "fuzz_targets/members_books_request.rs"
 test = false

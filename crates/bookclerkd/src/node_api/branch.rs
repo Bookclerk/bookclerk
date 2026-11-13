@@ -136,7 +136,7 @@ pub(crate) fn shared_database(
 }
 
 /// What `info` and Settings → Branches report.
-async fn owner_info(state: &Arc<AppState>) -> Result<OwnerInfo, Response> {
+pub(super) async fn owner_info(state: &Arc<AppState>) -> Result<OwnerInfo, Response> {
     let library = state.library_snapshot().await;
     let cluster_id = load_cluster_row(&library)
         .await
@@ -981,7 +981,7 @@ pub(crate) fn parse_branch_query(raw: &str) -> Option<BranchAuthorizeParams> {
 }
 
 /// True for a base64url S256 challenge (43 characters).
-fn is_challenge(raw: &str) -> bool {
+pub(super) fn is_challenge(raw: &str) -> bool {
     raw.len() == 43
         && raw
             .bytes()
@@ -1028,7 +1028,7 @@ pub(crate) fn branch_request_problem(params: &BranchAuthorizeParams) -> Option<&
 }
 
 /// `redirect_uri` with `pairs` appended to its query.
-fn redirect_with(redirect_uri: &str, pairs: &[(&str, &str)]) -> Option<String> {
+pub(super) fn redirect_with(redirect_uri: &str, pairs: &[(&str, &str)]) -> Option<String> {
     let mut url = url::Url::parse(redirect_uri).ok()?;
     {
         let mut query = url.query_pairs_mut();
@@ -1040,7 +1040,7 @@ fn redirect_with(redirect_uri: &str, pairs: &[(&str, &str)]) -> Option<String> {
 }
 
 /// A JSON error with `detail`.
-fn consent_error(status: StatusCode, error: &str, detail: &str) -> Response {
+pub(super) fn consent_error(status: StatusCode, error: &str, detail: &str) -> Response {
     (
         status,
         Json(crate::http_error::ErrorDetail::new(error, detail)),
@@ -1267,7 +1267,7 @@ pub struct BranchJoinSetting {
 
 /// The signed-in user a consent is for: never the operator, who owns no
 /// node.
-async fn consenting_user(
+pub(super) async fn consenting_user(
     state: &Arc<AppState>,
     caller: UserCaller,
 ) -> Result<bookclerk_library::UserRecord, Response> {

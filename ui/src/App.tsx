@@ -27,6 +27,7 @@ import {
   isAppPath,
   isInvitePath,
   joinPage,
+  isConsentPage,
   normalizeAppView,
   resolveView,
   syncUrlToView,
@@ -60,6 +61,9 @@ const WishlistPage = lazy(() =>
 );
 const JoinApprovePage = lazy(() =>
   import("@/components/JoinApprovePage").then((m) => ({ default: m.JoinApprovePage })),
+);
+const ClientApprovePage = lazy(() =>
+  import("@/components/ClientApprovePage").then((m) => ({ default: m.ClientApprovePage })),
 );
 const JoinCallbackPage = lazy(() =>
   import("@/components/JoinCallbackPage").then((m) => ({ default: m.JoinCallbackPage })),
@@ -149,7 +153,7 @@ export default function App() {
         const me = await authMeUntilAnswered(() => cancelled);
         if (cancelled || me === null) return;
         if (me.authenticated && joinPage() != null) {
-          if (joinPage() === "approve") takeApproveReturn();
+          if (isConsentPage(joinPage())) takeApproveReturn();
           setSession(me);
           setAuth("authed");
         } else if (me.authenticated) {
@@ -244,7 +248,7 @@ export default function App() {
   // Signing in on the consent page with SSO leaves the SPA and comes back
   // to `/`: remember where to return.
   useEffect(() => {
-    if (auth === "anon" && join === "approve") {
+    if (auth === "anon" && isConsentPage(join)) {
       rememberApproveReturn(`${window.location.pathname}${window.location.search}`);
     }
   }, [auth, join]);
@@ -258,7 +262,7 @@ export default function App() {
 
   function onLoginSuccess(next: AuthSession) {
     if (joinPage() != null) {
-      if (joinPage() === "approve") takeApproveReturn();
+      if (isConsentPage(joinPage())) takeApproveReturn();
       setSession(next);
       setAuth("authed");
       return;
@@ -334,6 +338,20 @@ export default function App() {
         <JoinApprovePage
           onSignOut={async () => {
             await logout().catch(() => undefined);
+            onLogout();
+          }}
+        />
+      </PageSuspense>
+    );
+  }
+
+  if (join === "client-approve") {
+    return (
+      <PageSuspense>
+        <ClientApprovePage
+          onSignOut={async () => {
+            // A failure reaches the page, which says so and stays signed in.
+            await logout();
             onLogout();
           }}
         />

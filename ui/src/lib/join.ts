@@ -901,6 +901,46 @@ export function fetchBranchConsent(search: string): Promise<BranchConsentView> {
   return request(`/api/auth/branch-consent?${query}`);
 }
 
+/** `GET /api/auth/client-consent`: what a client app's consent page shows. */
+export interface ClientConsentView {
+  /** This library's name, as the consent question shows it. */
+  library_name: string;
+  /** The name the client app gave itself. */
+  client_name: string;
+  /** Where the browser goes back to (the client app). */
+  redirect_origin: string;
+  /** The signed-in user the client app would sign in as. */
+  user: { id: number; display_name?: string | null };
+}
+
+/**
+ * Reads what a client app's consent page shows.
+ *
+ * @param search - The authorize request (query string).
+ * @returns The consent view.
+ */
+export function fetchClientConsent(search: string): Promise<ClientConsentView> {
+  const query = search.startsWith("?") ? search.slice(1) : search;
+  return request(`/api/auth/client-consent?${query}`);
+}
+
+/**
+ * Approves or denies a client app's sign-in; answers where to send the browser.
+ *
+ * @param search - The authorize request (query string).
+ * @param approve - True to give the client app a library card.
+ * @returns Where to send the browser.
+ */
+export function answerClientConsent(
+  search: string,
+  approve: boolean,
+): Promise<{ redirect: string }> {
+  return request("/api/auth/client-consent", {
+    method: "POST",
+    body: { ...authorizeParams(search), approve },
+  });
+}
+
 /**
  * Approves or denies a branch; answers where to send the browser.
  *
@@ -1245,13 +1285,14 @@ export function rememberApproveReturn(location: string): void {
 /**
  * Takes the remembered consent page address once, if it is one.
  *
- * @returns `/join/approve?…`, or `null`.
+ * @returns `/join/approve?…` or `/client/approve?…` (with or without a
+ *   slash before the query, as {@link joinPage} accepts both), or `null`.
  */
 export function takeApproveReturn(): string | null {
   try {
     const value = sessionStorage.getItem(APPROVE_RETURN);
     sessionStorage.removeItem(APPROVE_RETURN);
-    return value && value.startsWith("/join/approve?") ? value : null;
+    return value && /^\/(?:join|client)\/approve\/?\?/.test(value) ? value : null;
   } catch {
     return null;
   }

@@ -55,6 +55,10 @@ const UPLOAD_TOKEN: &str = "uploadToken";
 /// Security scheme: an access token this daemon issued as an OIDC provider.
 const OIDC_ACCESS_TOKEN: &str = "oidcAccessToken";
 
+/// Security scheme: a client sign-in's session token (a library card), as
+/// `Authorization: Bookclerk-Client <token>`.
+const CLIENT_TOKEN: &str = "clientToken";
+
 /// Who a route group admits, as enforced by its auth layer.
 ///
 /// The variants mirror the `require_*` middleware in [`crate::auth`]; the
@@ -109,8 +113,13 @@ impl Access {
             Access::OperatorOrAdministrator
             | Access::OperatorOrOwner
             | Access::OperatorOrNodeOwner
-            | Access::OperatorOrUser
-            | Access::OperatorOrPortal => &[OPERATOR_TOKEN, OPERATOR_SESSION, PORTAL_SESSION],
+            | Access::OperatorOrUser => &[OPERATOR_TOKEN, OPERATOR_SESSION, PORTAL_SESSION],
+            Access::OperatorOrPortal => &[
+                OPERATOR_TOKEN,
+                OPERATOR_SESSION,
+                PORTAL_SESSION,
+                CLIENT_TOKEN,
+            ],
         }
     }
 
@@ -133,7 +142,9 @@ impl Access {
                 "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
             }
             Access::OperatorOrUser => "The operator, or any signed-in user.",
-            Access::OperatorOrPortal => "The operator, or any library session.",
+            Access::OperatorOrPortal => {
+                "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+            }
         }
     }
 }
@@ -144,8 +155,8 @@ impl Access {
 ///
 /// (name, scheme) for the operator Bearer token, the two session cookies, and
 /// the credentials single routes check themselves: node signatures, upload
-/// tokens and OIDC access tokens.
-fn security_schemes() -> [(&'static str, SecurityScheme); 6] {
+/// tokens, OIDC access tokens and client sign-in tokens.
+fn security_schemes() -> [(&'static str, SecurityScheme); 7] {
     [
         (
             OPERATOR_TOKEN,
@@ -197,6 +208,13 @@ fn security_schemes() -> [(&'static str, SecurityScheme); 6] {
                     .build(),
             ),
         ),
+        (
+            CLIENT_TOKEN,
+            SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
+                "Authorization",
+                "A client sign-in's session token (`POST /api/client/v1/token`), as `Authorization: Bookclerk-Client <token>`. Accepted only on routes any library session may use, over TLS except on loopback.",
+            ))),
+        ),
     ]
 }
 
@@ -242,6 +260,7 @@ const TAGS: &[(&str, &str, &str)] = &[
     ("Cluster", "/api/config/cluster-consents", "Nodes, branches, joining a library and host enrollment."),
     ("Cluster", "/api/config/clusters", "Nodes, branches, joining a library and host enrollment."),
     ("Accounts", "/api/portal", "Store accounts a library user connects (the Accounts page)."),
+    ("Client sign-in", "/api/client/v1", "A client install's sign-in as a person: redeem an approved code for a session token."),
     ("Node protocol", "/api/node/v1", "Node-to-node enrollment, socket, artifacts and uploads; each route checks its own credential."),
     ("OIDC provider", "/.well-known", "Bookclerk as an OpenID Connect provider for other apps."),
     ("OIDC provider", "/oidc", "Bookclerk as an OpenID Connect provider for other apps."),
@@ -390,6 +409,12 @@ fn add_group(doc: &mut OpenApi, mut group: OpenApi, access: Access, prefix: &str
             }
             if access.gates_enrollment() {
                 add_session_check_refusal(op);
+            }
+            if access == Access::OperatorOrPortal {
+                let generic_forbidden = !method.is_safe();
+                for refusal in &CLIENT_TRANSPORT_REFUSALS {
+                    add_forbidden_refusal(op, generic_forbidden, refusal);
+                }
             }
         }
     }
@@ -685,6 +710,8 @@ const MANUAL_JSON_BODIES: &[&str] = &[
     "/api/node/v1/enroll/oauth",
     "/api/auth/branch-consent",
     "/api/node/v1/uploads/{upload_id}/commit",
+    "/api/auth/client-consent",
+    "/api/client/v1/token",
 ];
 
 /// The three refusals axum's `Json` extractor writes before a handler
@@ -1137,12 +1164,65 @@ const MFA_ENROLLMENT_MESSAGE: &str = "This server requires a passkey or authenti
 ///   middleware's plain `forbidden` (a role check, or the CSRF check on a
 ///   write); false for a safe method behind the any-session layer.
 fn add_enrollment_refusal(op: &mut Operation, generic_forbidden: bool) {
+    add_forbidden_refusal(
+        op,
+        generic_forbidden,
+        &MiddlewareRefusal {
+            slug: MFA_ENROLLMENT_REQUIRED,
+            summary: "The user must enroll a second factor first",
+            sentence: "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            message: MFA_ENROLLMENT_MESSAGE,
+        },
+    );
+}
+
+/// A 403 a layer answers before the handler runs, in the standard error
+/// body.
+struct MiddlewareRefusal {
+    /// The `error` slug, also the example's name.
+    slug: &'static str,
+    /// The example's summary.
+    summary: &'static str,
+    /// What the response description adds.
+    sentence: &'static str,
+    /// The body's `message`.
+    message: &'static str,
+}
+
+/// The two refusals [`crate::client_token::admit_client_token`] answers in
+/// front of every [`Access::OperatorOrPortal`] route when a library card
+/// fails the transport check or the node API is not mounted.
+const CLIENT_TRANSPORT_REFUSALS: [MiddlewareRefusal; 2] = [
+    MiddlewareRefusal {
+        slug: crate::client_token::TRANSPORT_INSECURE,
+        summary: "A library card over plain HTTP from another machine",
+        sentence: "A library card sent over plain HTTP from another machine gets `transport_insecure`.",
+        message: crate::client_token::TRANSPORT_INSECURE_MESSAGE,
+    },
+    MiddlewareRefusal {
+        slug: crate::client_token::CLIENT_SIGN_IN_UNAVAILABLE,
+        summary: "A library card on a listener without the node API",
+        sentence: "A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+        message: crate::client_token::CLIENT_SIGN_IN_UNAVAILABLE_MESSAGE,
+    },
+];
+
+/// Adds `refusal` to the operation's 403, as [`add_enrollment_refusal`]
+/// describes.
+///
+/// # Arguments
+///
+/// * `op` - The operation, before [`fill_untyped_content`] types its bare
+///   error responses.
+/// * `generic_forbidden` - Whether a layer can answer the route with the
+///   middleware's plain `forbidden`.
+/// * `refusal` - The refusal to state.
+fn add_forbidden_refusal(op: &mut Operation, generic_forbidden: bool, refusal: &MiddlewareRefusal) {
     use axum::http::StatusCode;
     use utoipa::openapi::example::ExampleBuilder;
     use utoipa::openapi::schema::{AnyOfBuilder, Schema};
     use utoipa::openapi::{Content, ContentBuilder, Ref, RefOr, ResponseBuilder};
-    const SENTENCE: &str =
-        "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.";
+    let sentence = refusal.sentence;
     let example_named = |name: &str, summary: &str, value: serde_json::Value| {
         (
             name.to_string(),
@@ -1171,7 +1251,7 @@ fn add_enrollment_refusal(op: &mut Operation, generic_forbidden: bool) {
         None => {
             op.responses.responses.insert(
                 "403".to_string(),
-                ResponseBuilder::new().description(SENTENCE).build().into(),
+                ResponseBuilder::new().description(sentence).build().into(),
             );
             match op.responses.responses.get_mut("403") {
                 Some(RefOr::T(response)) => response,
@@ -1179,8 +1259,8 @@ fn add_enrollment_refusal(op: &mut Operation, generic_forbidden: bool) {
             }
         }
     };
-    if !response.description.contains(MFA_ENROLLMENT_REQUIRED) {
-        response.description = format!("{} {SENTENCE}", response.description.trim_end());
+    if !response.description.contains(refusal.slug) {
+        response.description = format!("{} {sentence}", response.description.trim_end());
     }
     let json = response
         .content
@@ -1214,7 +1294,7 @@ fn add_enrollment_refusal(op: &mut Operation, generic_forbidden: bool) {
             }
         }
     };
-    if content.examples.contains_key(MFA_ENROLLMENT_REQUIRED) {
+    if content.examples.contains_key(refusal.slug) {
         return;
     }
     if !standard_body(&content.schema) {
@@ -1245,12 +1325,12 @@ fn add_enrollment_refusal(op: &mut Operation, generic_forbidden: bool) {
         content.examples.insert(name, example);
     }
     let (name, example) = example_named(
-        MFA_ENROLLMENT_REQUIRED,
-        "The user must enroll a second factor first",
+        refusal.slug,
+        refusal.summary,
         serde_json::to_value(crate::http_error::ErrorJson::new(
             StatusCode::FORBIDDEN,
-            MFA_ENROLLMENT_REQUIRED,
-            MFA_ENROLLMENT_MESSAGE,
+            refusal.slug,
+            refusal.message,
         ))
         .unwrap_or_default(),
     );
@@ -1991,13 +2071,24 @@ mod tests {
                 .map(|examples| examples.keys().cloned().collect::<Vec<_>>())
                 .unwrap_or_default()
         };
+        // The any-session layer is also where a library card is admitted,
+        // so its routes state the card's transport refusals too.
         assert_eq!(
             examples("get", "/api/wishlist"),
-            ["mfa_enrollment_required"]
+            [
+                "client_sign_in_unavailable",
+                "mfa_enrollment_required",
+                "transport_insecure"
+            ]
         );
         assert_eq!(
             examples("post", "/api/wishlist"),
-            ["forbidden", "mfa_enrollment_required"]
+            [
+                "client_sign_in_unavailable",
+                "forbidden",
+                "mfa_enrollment_required",
+                "transport_insecure"
+            ]
         );
         assert_eq!(
             examples("get", "/api/status"),

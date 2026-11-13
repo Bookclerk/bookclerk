@@ -26,6 +26,10 @@ pub struct Model {
     pub device_type: Option<String>,
     /// Best-effort OS / client label (`Windows`, `Android`, `API`, …).
     pub client_label: Option<String>,
+    /// Where the token is presented: `browser` (the session cookie) or
+    /// `client` (a client sign-in's `Authorization: Bookclerk-Client`
+    /// header); see [`crate::models::PortalSessionKind`].
+    pub kind: String,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).

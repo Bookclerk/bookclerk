@@ -466,11 +466,13 @@ fn secret_patterns() -> &'static [Regex] {
             r"(?i)\bAtna\|[A-Za-z0-9._\-+/=]+",
             r"(?i)\bAtnr\|[A-Za-z0-9._\-+/=]+",
             r"(?i)\bBearer\s+[A-Za-z0-9._\-+/=]+",
+            // A client app's library card (`Authorization: Bookclerk-Client`).
+            r"(?i)\bBookclerk-Client\s+[A-Za-z0-9_\-]+",
             r"\bAKIA[0-9A-Z]{16}\b",
             r"(?i)(aws_secret_access_key\s*[=:]\s*)\S+",
             r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b",
             r"\bgithub_pat_[A-Za-z0-9_]{20,}\b",
-            r"(?i)([?&](?:password|passwd|token|access_token|refresh_token|api_key|key|secret)=)[^&\s]+",
+            r"(?i)([?&](?:password|passwd|token|access_token|refresh_token|api_key|key|secret|code|code_verifier)=)[^&\s]+",
             r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
             r"(?i)(otp|totp|mfa)([=: ])\S+",
         ];
@@ -688,6 +690,16 @@ mod tests {
         assert!(!out.contains("Atna|abcDEF123"));
         assert!(!out.contains("Atnr|xyz"));
         assert!(out.contains(REDACTED));
+    }
+
+    #[test]
+    fn redacts_library_cards_and_authorization_codes() {
+        let s = "Authorization: Bookclerk-Client Zm9vYmFyYmF6cXV4cXV1eGNvcmdlZ3JhdWx0Z2FycGx \
+                 GET /client/callback?code=q8Zl0m3VnS2xR7bW4cYd1eTf6gUh9iJk5LoNpQrStUv&state=s1";
+        let out = redact_str(s);
+        assert!(!out.contains("Zm9vYmFyYmF6cXV4"), "{out}");
+        assert!(!out.contains("q8Zl0m3VnS2xR7bW"), "{out}");
+        assert!(out.contains("state=s1"), "{out}");
     }
 
     #[test]

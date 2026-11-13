@@ -1214,6 +1214,12 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(
             crate::node_api::branch::post_branch_consent_step_up
         ))
+        // A client sign-in's consent ("Let <client> show your books from
+        // <library>?"): a signed-in user, never the operator alone.
+        .routes(routes!(
+            crate::node_api::client::get_client_consent,
+            crate::node_api::client::post_client_consent
+        ))
         // Settings → Branches: the library's join settings (operator or
         // Owner; the handler checks).
         .routes(routes!(
@@ -1366,10 +1372,17 @@ fn guarded(
             state,
             auth::require_operator_or_user_auth,
         )),
-        Access::OperatorOrPortal => routes.route_layer(middleware::from_fn_with_state(
-            state,
-            auth::require_operator_or_portal_auth,
-        )),
+        // The one group a client sign-in's token is admitted to: the auth
+        // layer runs after the token is put back (`crate::client_token`).
+        Access::OperatorOrPortal => routes
+            .route_layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::require_operator_or_portal_auth,
+            ))
+            .route_layer(middleware::from_fn_with_state(
+                state,
+                crate::client_token::admit_client_token,
+            )),
     }
 }
 
@@ -1463,6 +1476,9 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         state,
         crate::csrf::require_csrf_for_cookie_api,
     ));
+    // A client sign-in's token is taken out of every request before routing
+    // and put back only for the routes that admit it.
+    app = app.layer(middleware::from_fn(crate::client_token::hold_client_token));
 
     if let Some(dist) = ui_dist {
         if dist.is_dir() {
@@ -1485,6 +1501,8 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 // joining install's callback.
                 "/join/approve",
                 "/join/callback",
+                // A client sign-in's consent page on the library.
+                "/client/approve",
             ];
             let spa_index = axum::routing::get_service(ServeFile::new(index.clone()))
                 .layer(middleware::from_fn(spa_document_csp));
