@@ -256,6 +256,7 @@ ensure_workerd = true
 
 [test_guests.bookclerk-plugin-host]
 build = [
+    "bookclerk-plugin-echo-native-rust",
     "bookclerk-plugin-database-sqlite",
     "bookclerk-plugin-database-postgres",
     "bookclerk-plugin-destination-local",

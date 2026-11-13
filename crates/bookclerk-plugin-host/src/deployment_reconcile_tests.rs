@@ -1252,7 +1252,11 @@ fn resolver_source_does_not_consult_family_settings() {
 }
 
 fn graphicaudio_binary() -> PathBuf {
-    let name = "bookclerk-plugin-source-graphicaudio";
+    workspace_binary("bookclerk-plugin-source-graphicaudio")
+}
+
+/// A workspace binary from the current profile's target directory.
+fn workspace_binary(name: &str) -> PathBuf {
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
@@ -1267,7 +1271,7 @@ fn graphicaudio_binary() -> PathBuf {
         .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     assert!(
         candidate.is_file(),
-        "bookclerk-plugin-source-graphicaudio is missing at {}",
+        "{name} is missing at {}",
         candidate.display()
     );
     candidate
@@ -1970,4 +1974,183 @@ async fn a_non_canonical_digest_never_names_a_cache_path() {
     assert!(crate::version_cache_path(&files, &good)
         .unwrap()
         .starts_with(crate::version_cache_root(&files)));
+}
+
+/// Stages the native echo example as an event-only integration: the
+/// example's binary under a manifest that keeps only its event consumer, so
+/// the deployment needs no database or queue binding.
+fn stage_event_only_echo_tree(files: &Path) -> PathBuf {
+    let install = files.join("plugins").join("echo_native_rust");
+    std::fs::create_dir_all(&install).unwrap();
+    let binary_name = format!(
+        "bookclerk-plugin-echo-native-rust{}",
+        std::env::consts::EXE_SUFFIX
+    );
+    std::fs::write(
+        install.join("plugin.toml"),
+        format!(
+            "api_version = 3\nid = \"echo_native_rust\"\nversion = \"0.1.0\"\n\
+             runtime = \"native\"\ncommand = \"./{binary_name}\"\nentrypoints = []\n\n\
+             [capabilities.network]\nmode = \"deny\"\n\n[vars]\n\n\
+             [[events.consumers]]\ntype = \"book_acquired\"\nschema_versions = [1]\n"
+        ),
+    )
+    .unwrap();
+    place_guest_binary(
+        &workspace_binary("bookclerk-plugin-echo-native-rust"),
+        &install.join(binary_name),
+    );
+    install
+}
+
+/// True while `pid` names a live process.
+fn pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+            || std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .status()
+                .is_ok_and(|status| status.success())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// One reconcile pass over `runtime` with no operator packages.
+async fn reconcile_live(
+    store: &LibraryStore,
+    config: &Config,
+    node_id: &str,
+    runtime: &LiveDeploymentRuntime,
+) {
+    reconcile_local_deployments(
+        store,
+        config,
+        node_id,
+        &AuthorizedLocalPackages::default(),
+        runtime,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn live_event_only_integration_sleeps_when_idle_and_wakes_on_delivery() {
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path();
+    stage_event_only_echo_tree(files);
+    std::fs::write(files.join("config.toml"), "").unwrap();
+    let mut config =
+        Config::load(Some(files.to_path_buf()), Some(files.join("config.toml"))).unwrap();
+    config.plugins.isolation = Isolation::Off;
+    let store = file_store(&files.join("library.db")).await;
+    let scratch = files.join("cache");
+    let session = bookclerk_library::control_plane::bootstrap_control_plane(
+        &store,
+        files,
+        &scratch,
+        None,
+        &bookclerk_config::Config::default(),
+    )
+    .await
+    .unwrap();
+    let plugin = discover_plugins(&config)
+        .unwrap()
+        .into_iter()
+        .find(|plugin| plugin.manifest.id == "echo_native_rust")
+        .expect("staged echo");
+    assert!(crate::activates_on_demand(&plugin.manifest));
+    save_manifest_grant(files, &plugin).await;
+    let actor = ConfigActor::Bootstrap;
+    let instance = create_plugin_instance(&store, &actor, plugin.plugin_key().canonical(), "")
+        .await
+        .unwrap();
+    import_instance_config_if_absent(
+        &store,
+        &actor,
+        &instance.id,
+        &plugin.manifest.settings_schema(),
+        &PluginInstanceConfigV1 {
+            settings: BTreeMap::new(),
+            secret_refs: Vec::new(),
+        },
+        "import-echo",
+    )
+    .await
+    .unwrap();
+    let deployment = ensure_plugin_deployment(
+        &store,
+        &actor,
+        &instance.id,
+        &session.node.node_id,
+        DesiredState::Present,
+    )
+    .await
+    .unwrap();
+    let mut runtime = live_runtime(&store, &config);
+    runtime.set_on_demand_idle_timeout(std::time::Duration::from_millis(300));
+    reconcile_live(&store, &config, &session.node.node_id, &runtime).await;
+    let obs = load_observation(&store, &deployment.deployment_id, &session.node.node_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
+    let instance_id = instance.id.as_str();
+    let proxy = runtime
+        .on_demand_integration(instance_id)
+        .expect("event-only plugin runs on demand");
+    let first_pid = runtime.tracked_guest_pid(instance_id).expect("awake pid");
+    assert!(proxy.is_awake());
+
+    let mut asleep = false;
+    for _ in 0..100 {
+        if !proxy.is_awake() && !pid_alive(first_pid) {
+            asleep = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(asleep, "idle guest should have stopped");
+    assert_eq!(runtime.tracked_guest_pid(instance_id), None);
+    assert!(
+        DeploymentRuntime::guest_still_running(&runtime, instance_id).await,
+        "an asleep deployment needs no respawn"
+    );
+    reconcile_live(&store, &config, &session.node.node_id, &runtime).await;
+    assert!(!proxy.is_awake(), "reconcile leaves an asleep guest asleep");
+    let registered = runtime
+        .integrations
+        .read()
+        .await
+        .all()
+        .iter()
+        .find(|integration| integration.plugin_instance_id() == Some(instance_id))
+        .cloned()
+        .expect("registered while asleep");
+    assert_eq!(registered.event_subscriptions().len(), 1);
+    let health = registered.health().await.expect("asleep health");
+    assert!(health.ok);
+
+    let result = registered
+        .deliver_domain_event(bookclerk_plugin_abi::DomainEvent {
+            event_id: "evt-1".into(),
+            event_type: "book_acquired".into(),
+            schema_version: 1,
+            delivery_attempt: 1,
+            ..bookclerk_plugin_abi::DomainEvent::default()
+        })
+        .await
+        .expect("delivery wakes the guest");
+    assert_eq!(result, bookclerk_plugin_abi::EventResult::Ack);
+    assert_eq!(proxy.wakes(), 1);
+    let woken_pid = runtime.tracked_guest_pid(instance_id).expect("woken pid");
+    assert_ne!(woken_pid, first_pid);
+    assert!(registered.health().await.expect("awake health").ok);
+    DeploymentRuntime::retire_instance(&runtime, instance_id).await;
+    assert!(proxy.is_retired());
 }

@@ -298,3 +298,114 @@ fn stateful_sign_in_and_registry_plugins_stay_resident() {
     )));
     assert!(!activates_on_demand(&manifest("native", "\"storage\"", "")));
 }
+
+#[tokio::test]
+async fn every_guest_call_wakes_a_sleeping_proxy_and_reaches_the_guest() {
+    let (proxy, _first, started) = proxy(Duration::from_millis(40), Duration::ZERO, None);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!proxy.is_awake());
+    let cancel = || Arc::new(AtomicBool::new(false));
+
+    assert_eq!(
+        proxy
+            .deliver_domain_event_cancelable(event(), cancel())
+            .await
+            .expect("delivered"),
+        EventResult::Ack
+    );
+    let cron = bookclerk_plugin_manifest::CronSchedule::parse("*/5 * * * *").expect("cron");
+    let scheduled = proxy
+        .run_scheduled_cancelable(
+            bookclerk_integrations::ScheduledInvocation {
+                cron,
+                scheduled_time_ms: 0,
+                job_id: "job-1".into(),
+                attempt: 1,
+                deadline_unix_ms: 0,
+            },
+            cancel(),
+        )
+        .await
+        .expect_err("the double declares no cron");
+    assert!(
+        scheduled.to_string().contains("declares no cron"),
+        "{scheduled}"
+    );
+    let queued = proxy
+        .deliver_queue_batch_cancelable(
+            bookclerk_plugin_abi::QueueBatch {
+                queue: "echo".into(),
+                ..bookclerk_plugin_abi::QueueBatch::default()
+            },
+            cancel(),
+        )
+        .await
+        .expect_err("the double consumes no queues");
+    assert!(
+        queued.to_string().contains("consumes no queues"),
+        "{queued}"
+    );
+    for err in [
+        proxy
+            .metadata_lookup(bookclerk_plugin_abi::MetadataLookupParams::default())
+            .await
+            .expect_err("no metadata"),
+        proxy
+            .metadata_search(bookclerk_plugin_abi::MetadataSearchParams::default())
+            .await
+            .expect_err("no metadata"),
+    ] {
+        assert!(
+            err.to_string().contains("does not provide metadata"),
+            "{err}"
+        );
+    }
+    let chapters = proxy
+        .metadata_chapters(bookclerk_plugin_abi::MetadataChaptersParams::default())
+        .await
+        .expect_err("no metadata");
+    assert!(chapters.to_string().contains("does not provide metadata"));
+    let covers = proxy
+        .fetch_covers(bookclerk_plugin_abi::CoverFetchParams::default())
+        .await
+        .expect_err("no covers");
+    assert!(covers.to_string().contains("does not fetch covers"));
+    let login = proxy
+        .authenticate_user("reader", "pw")
+        .await
+        .expect_err("no login");
+    assert!(login.to_string().contains("credential login"));
+    let scan = proxy.scan_library(false).await.expect_err("no scan");
+    assert!(scan.to_string().contains("library scan"));
+    assert!(proxy
+        .provided_oidc_clients()
+        .await
+        .expect("oidc")
+        .is_empty());
+    let diagnosis = proxy.diagnose().await.expect("diagnose");
+    assert!(
+        diagnosis.iter().any(|line| line == "awake"),
+        "{diagnosis:?}"
+    );
+
+    assert_eq!(
+        proxy.wakes(),
+        1,
+        "every call after the wake reuses the guest"
+    );
+    assert_eq!(started.lock().expect("started").len(), 1);
+    assert_eq!(proxy.display_name(), "fake");
+    assert!(!proxy.supports_metadata());
+    assert!(!proxy.supports_covers());
+    assert!(!proxy.supports_credential_login());
+    assert!(!proxy.supports_library_scan());
+    assert!(!proxy.supports_listening_sync());
+    assert!(proxy.portal_brand().is_none());
+    assert!(proxy.queue_subscriptions().is_empty());
+    assert!(proxy.cron_schedules().is_empty());
+    assert_eq!(proxy.idle_timeout(), Duration::from_millis(40));
+    proxy
+        .start(IntegrationContext::default())
+        .await
+        .expect("start forwards to the running guest");
+}

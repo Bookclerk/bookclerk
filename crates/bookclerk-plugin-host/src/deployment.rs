@@ -848,6 +848,8 @@ pub struct LiveDeploymentRuntime {
     /// after a config reload must not install or spawn the same deployment
     /// twice.
     reconcile_lock: tokio::sync::Mutex<()>,
+    /// Idle time after which an on-demand integration's guest is stopped.
+    on_demand_idle: std::time::Duration,
 }
 
 impl LiveDeploymentRuntime {
@@ -871,6 +873,36 @@ impl LiveDeploymentRuntime {
                 bookclerk_integrations::IntegrationContext::default(),
             ),
             reconcile_lock: tokio::sync::Mutex::new(()),
+            on_demand_idle: crate::TRIGGER_IDLE_TIMEOUT,
+        }
+    }
+
+    /// Shortens the on-demand idle timeout so tests see a guest sleep.
+    #[cfg(test)]
+    pub(crate) fn set_on_demand_idle_timeout(&mut self, idle: std::time::Duration) {
+        self.on_demand_idle = idle;
+    }
+
+    /// The on-demand integration registered for `plugin_instance_id`, if
+    /// this process tracks one.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the deployment guest lock is poisoned.
+    #[must_use]
+    pub fn on_demand_integration(
+        &self,
+        plugin_instance_id: &str,
+    ) -> Option<Arc<crate::OnDemandIntegration>> {
+        match &self
+            .guests
+            .lock()
+            .expect("deployment guests")
+            .get(plugin_instance_id)?
+            .process
+        {
+            GuestProcess::OnDemand(proxy) => Some(Arc::clone(proxy)),
+            GuestProcess::Resident(_) => None,
         }
     }
 
@@ -1376,7 +1408,7 @@ async fn spawn_integration(
                         &request.plugin_instance_id,
                         Box::new(starter),
                         context.clone(),
-                        crate::TRIGGER_IDLE_TIMEOUT,
+                        runtime.on_demand_idle,
                     );
                     (proxy.clone(), GuestProcess::OnDemand(proxy))
                 }
