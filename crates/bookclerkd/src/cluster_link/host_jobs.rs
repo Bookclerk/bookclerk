@@ -815,8 +815,14 @@ pub struct OwnerWriteBack {
     host: Arc<HostJobCtx>,
     /// The job's plugin key, the provider of the account rows it may write.
     plugin_key: String,
-    /// The newest refreshed credentials of each account this job.
+    /// The newest refreshed credentials of each account this job: what its
+    /// guests hold, and what later guests are sent.
     latest: std::sync::Mutex<BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>>,
+    /// For an account this install keeps, the copy this job last saved (or
+    /// found newer) here: what the next local save is compared against. A
+    /// failed save leaves it as it was, so the next refresh is saved over
+    /// the copy that is really stored.
+    saved: std::sync::Mutex<BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>>,
     /// This install's own copies of the accounts it keeps for the library.
     local: Option<Arc<dyn LocalKeeper>>,
 }
@@ -868,6 +874,7 @@ impl OwnerWriteBack {
             host: Arc::clone(host),
             plugin_key: bindings.plugin_key.clone(),
             latest: std::sync::Mutex::default(),
+            saved: std::sync::Mutex::default(),
             local,
         })
     }
@@ -886,11 +893,13 @@ impl RefreshedCredentialSink for OwnerWriteBack {
 }
 
 impl OwnerWriteBack {
-    /// Records `credentials` as what the guest holds for `account_id` now:
-    /// the credentials its next refresh replaces.
-    fn remember(&self, account_id: &str, credentials: &zeroize::Zeroizing<Vec<u8>>) {
-        self.latest
-            .lock()
+    /// Records `credentials` in `map` for `account_id`.
+    fn remember(
+        map: &std::sync::Mutex<BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>>,
+        account_id: &str,
+        credentials: &zeroize::Zeroizing<Vec<u8>>,
+    ) {
+        map.lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(account_id.to_owned(), credentials.clone());
     }
@@ -916,10 +925,12 @@ impl OwnerWriteBack {
             );
             return;
         };
-        // What the guest was given: this job's last refresh, else the
-        // handed copy.
+        // The guest holds these now, whatever becomes of them here.
+        Self::remember(&self.latest, account_id, &credentials);
+        // What this install holds: the copy this job last saved here, else
+        // the handed copy.
         let sent = self
-            .latest
+            .saved
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(account_id)
@@ -932,12 +943,19 @@ impl OwnerWriteBack {
             })
             .unwrap_or_default();
         if let Some(local) = &self.local {
-            match local
+            let mut kept = local
                 .keep(&self.plugin_key, account_id, &sent, &credentials)
-                .await
-            {
+                .await;
+            // One retry of a failed save; after that the next refresh tries
+            // again against the copy that is really stored.
+            if kept == Some(KeptHere::Failed) {
+                kept = local
+                    .keep(&self.plugin_key, account_id, &sent, &credentials)
+                    .await;
+            }
+            match kept {
                 Some(KeptHere::Saved) => {
-                    self.remember(account_id, &credentials);
+                    Self::remember(&self.saved, account_id, &credentials);
                     tracing::info!(
                         account_id,
                         "refreshed store credentials kept here, for this branch's next push"
@@ -945,7 +963,6 @@ impl OwnerWriteBack {
                     return;
                 }
                 Some(KeptHere::Superseded) => {
-                    self.remember(account_id, &credentials);
                     tracing::info!(
                         account_id,
                         "a newer sign-in here won over a job's refreshed credentials"
@@ -953,12 +970,12 @@ impl OwnerWriteBack {
                     return;
                 }
                 // The copy here is still the one compared against, so the
-                // job's next refresh is saved over it.
+                // job's next refresh is saved over it; its guests already
+                // have the new credentials.
                 Some(KeptHere::Failed) => return,
                 None => {}
             }
         }
-        self.remember(account_id, &credentials);
         match self.host.write_back(&secret_ref, &credentials).await {
             Ok(()) => tracing::info!(
                 account_id,

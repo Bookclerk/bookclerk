@@ -1459,6 +1459,47 @@ mod results_and_uploads {
         /// Credentials the guest hands back as refreshed during a scan,
         /// for `riley-acct` and for an account the owner did not hand.
         refresh: Option<&'static str>,
+        /// A second refresh of `riley-acct` in the same scan.
+        refresh_again: Option<&'static str>,
+        /// What the sink said its guests hold for `riley-acct` after each
+        /// refresh.
+        latest_seen: Arc<Mutex<Vec<Option<Vec<u8>>>>>,
+        /// This install's own copies of accounts it keeps.
+        keeper: Option<Arc<dyn super::super::host_jobs::LocalKeeper>>,
+    }
+
+    /// A [`super::super::host_jobs::LocalKeeper`] that keeps every account,
+    /// fails its first `failures` saves and records each call's
+    /// `(sent, refreshed)`.
+    #[derive(Default)]
+    struct FlakyKeeper {
+        /// Saves still to fail.
+        failures: Mutex<usize>,
+        /// Every call's `(sent, refreshed)`.
+        calls: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl super::super::host_jobs::LocalKeeper for FlakyKeeper {
+        async fn keep(
+            &self,
+            _plugin_key: &str,
+            _account_id: &str,
+            sent: &[u8],
+            refreshed: &[u8],
+        ) -> Option<super::super::host_jobs::KeptHere> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((sent.to_vec(), refreshed.to_vec()));
+            let mut failures = self.failures.lock().unwrap();
+            Some(if *failures > 0 {
+                *failures -= 1;
+                super::super::host_jobs::KeptHere::Failed
+            } else {
+                super::super::host_jobs::KeptHere::Saved
+            })
+        }
     }
 
     /// An owner's title a [`StubGuests`] imported: the owner's book uuid and
@@ -1499,9 +1540,22 @@ mod results_and_uploads {
                 refreshed
                     .refreshed("riley-acct", credentials.as_bytes().to_vec())
                     .await;
+                self.latest_seen
+                    .lock()
+                    .unwrap()
+                    .push(refreshed.latest("riley-acct"));
                 refreshed
                     .refreshed("not-handed", credentials.as_bytes().to_vec())
                     .await;
+            }
+            if let Some(credentials) = self.refresh_again {
+                refreshed
+                    .refreshed("riley-acct", credentials.as_bytes().to_vec())
+                    .await;
+                self.latest_seen
+                    .lock()
+                    .unwrap()
+                    .push(refreshed.latest("riley-acct"));
             }
             self.scans
                 .lock()
@@ -1545,6 +1599,10 @@ mod results_and_uploads {
 
         async fn keeps_member_copies(&self) -> bool {
             self.keep_member_copies
+        }
+
+        fn local_keeper(&self) -> Option<Arc<dyn super::super::host_jobs::LocalKeeper>> {
+            self.keeper.clone()
         }
 
         async fn local_destinations(
@@ -1810,6 +1868,58 @@ mod results_and_uploads {
             stored(&world.owner, &token_ref).await,
             r#"{"token":"riley-token-v2"}"#
         );
+    }
+
+    /// An account this host keeps has a job's refresh saved here, never
+    /// written back. A save that fails (and fails its retry) still leaves
+    /// the job's guests with the new credentials, and the next refresh is
+    /// compared with the copy really stored here, so it is saved.
+    #[tokio::test]
+    async fn a_failed_local_save_keeps_the_guests_credentials_and_retries() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let token_ref = SecretRef {
+            kind: secret_kind::SOURCE_AUTH.into(),
+            provider: PLUGIN.into(),
+            account_id: "riley-acct".into(),
+            name: "riley-acct.auth".into(),
+        };
+        let handed = stored(&world.owner, &token_ref).await;
+        let keeper = Arc::new(FlakyKeeper {
+            failures: Mutex::new(2),
+            ..FlakyKeeper::default()
+        });
+        let guests = StubGuests {
+            rows: vec![row("riley-acct", "p1")],
+            work: world.host_files.path().join("cluster-work"),
+            refresh: Some(r#"{"token":"riley-token-v2"}"#),
+            refresh_again: Some(r#"{"token":"riley-token-v3"}"#),
+            keeper: Some(keeper.clone()),
+            ..StubGuests::default()
+        };
+        let (_handle, _stop) = start(&world, guests.clone()).await;
+
+        let job_id = enqueue_scan(&world.owner).await;
+        eventually("the host scan to finish", || async {
+            job(&world.owner, &job_id).await.state == JobState::Succeeded
+        })
+        .await;
+        // The guests hold each refresh, saved or not.
+        assert_eq!(
+            *guests.latest_seen.lock().unwrap(),
+            vec![
+                Some(br#"{"token":"riley-token-v2"}"#.to_vec()),
+                Some(br#"{"token":"riley-token-v3"}"#.to_vec()),
+            ]
+        );
+        // The failed save and its retry, then the next refresh compared
+        // with the copy really stored (the handed one), and saved.
+        let calls = keeper.calls.lock().unwrap().clone();
+        let sent: Vec<&[u8]> = calls.iter().map(|(sent, _)| sent.as_slice()).collect();
+        assert_eq!(sent, [handed.as_bytes(); 3]);
+        assert_eq!(calls[2].1, br#"{"token":"riley-token-v3"}"#);
+        // Nothing went back to the owner.
+        assert_eq!(stored(&world.owner, &token_ref).await, handed);
     }
 
     /// A member's host whose guest returns a row for another user's
