@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::drm::{
@@ -266,7 +266,7 @@ pub async fn guest_scan_page(
     cursor: Option<AudibleScanCursor>,
 ) -> Result<ScanPage> {
     let creds = scan_credential(params).map_err(|e| AudibleError::Auth(e.to_string()))?;
-    let auth = authenticator_from_credentials(&creds)?;
+    let (auth, refreshed) = capturing_authenticator(&creds)?;
     let marketplace = auth.locale().country_code.to_string();
     let client = Client::new(auth).map_err(AudibleError::from)?;
     let request_token = Some(params.sync_token.clone()).filter(|t| !t.is_empty());
@@ -282,7 +282,9 @@ pub async fn guest_scan_page(
         import_plus_titles: params.import_plus_titles,
     };
     let rows = fetch_library_page(&client, &params.account_id, &marketplace, &request).await?;
-    scan_page_from_rows(rows, seen, request_token)
+    let mut page = scan_page_from_rows(rows, seen, request_token)?;
+    page.refreshed_credentials = refreshed.hand_back(&creds);
+    Ok(page)
 }
 
 /// Turns one library page into a scan page: a middle page carries the
@@ -455,7 +457,7 @@ pub async fn guest_fetch_title(
     source_config: &Value,
     fetch: &FetchOptions,
 ) -> Result<PlainFetch> {
-    let auth = authenticator_from_credentials(credentials)?;
+    let (auth, refreshed) = capturing_authenticator(credentials)?;
     let marketplace = auth.locale().country_code.to_string();
     let account_id = auth
         .customer_id()
@@ -575,6 +577,7 @@ pub async fn guest_fetch_title(
             .map(|(title, start_ms)| bookclerk_plugin_sdk::ChapterMarker { title, start_ms })
             .collect(),
         pdf_url: downloaded.pdf_url,
+        refreshed_credentials: refreshed.hand_back(credentials),
     })
 }
 
@@ -708,6 +711,92 @@ pub fn credentials_json_from_auth(auth: &Authenticator, widevine: Option<&[u8]>)
     Ok(Value::Object(obj))
 }
 
+/// The auth state audible-rs wrote back while one guest call ran (a renewed
+/// access token, exchanged cookies), to hand to the host as the account's
+/// refreshed credentials. Empty while nothing was refreshed.
+#[derive(Clone, Default)]
+struct RefreshCapture(Arc<Mutex<Option<Value>>>);
+
+impl RefreshCapture {
+    /// [`Self::credentials`] for a reply: refreshed credentials that do not
+    /// encode are logged and left out rather than failing a call whose work
+    /// already succeeded (the stored credentials still sign in).
+    fn hand_back(&self, original: &Value) -> Option<Vec<u8>> {
+        self.credentials(original).unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "could not hand back refreshed credentials");
+            None
+        })
+    }
+
+    /// The credential bytes to hand back: `original` with its
+    /// `authfile_b64` replaced by the refreshed auth state, other fields
+    /// (the Widevine CDM) kept; `None` when nothing was refreshed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the capture lock was poisoned or the refreshed
+    /// state does not encode.
+    fn credentials(&self, original: &Value) -> Result<Option<Vec<u8>>> {
+        let captured = self
+            .0
+            .lock()
+            .map_err(|_| AudibleError::Auth("refreshed credentials lock poisoned".into()))?
+            .take();
+        let Some(auth) = captured else {
+            return Ok(None);
+        };
+        let plain = audible_rs::auth::authfile::write(
+            &auth,
+            audible_rs::auth::authfile::Protection::Plain,
+            None,
+        )
+        .map_err(|e| AudibleError::Auth(e.to_string()))?;
+        let mut updated = original.clone();
+        let Some(fields) = updated.as_object_mut() else {
+            return Err(AudibleError::Auth(
+                "credentials are not a JSON object".into(),
+            ));
+        };
+        fields.insert("authfile_b64".into(), json!(STANDARD.encode(plain)));
+        credentials_to_bytes(&updated)
+            .map(Some)
+            .map_err(|e| AudibleError::Auth(e.to_string()))
+    }
+}
+
+/// [`authenticator_from_credentials`], with audible-rs's write-back (token
+/// refreshes and cookie exchanges) captured instead of lost when the
+/// process exits.
+///
+/// # Errors
+///
+/// Returns an error when the credentials do not decode.
+fn capturing_authenticator(creds: &Value) -> Result<(Authenticator, RefreshCapture)> {
+    let mut auth = authenticator_from_credentials(creds)?;
+    let capture = RefreshCapture::default();
+    let base = auth.export_value();
+    let slot = Arc::clone(&capture.0);
+    auth.set_write_back_fn(move |value, scope| {
+        let slot = Arc::clone(&slot);
+        let base = base.clone();
+        async move {
+            let mut held = slot.lock().map_err(|_| {
+                audible_rs::auth::AuthError::InvalidData("refresh capture poisoned".into())
+            })?;
+            match scope {
+                None => *held = Some(value),
+                Some(scope) => {
+                    let mut current = held.take().unwrap_or(base);
+                    audible_rs::auth::merge_auth_json(&mut current, value, &scope)?;
+                    *held = Some(current);
+                }
+            }
+            Ok(())
+        }
+    });
+    Ok((auth, capture))
+}
+
 /// Rebuilds an [`Authenticator`] from host-unsealed `authfile_b64` JSON (this guest never opens the library DB).
 fn authenticator_from_credentials(creds: &Value) -> Result<Authenticator> {
     let b64 = creds
@@ -797,6 +886,57 @@ mod tests {
             account_id: "amzn1.account.TEST".into(),
             marketplace: "us".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn a_token_refresh_is_handed_back_as_refreshed_credentials() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "Atna|renewed",
+                "expires_in": 3600
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let original = Authenticator::from_value(json!({
+            "country_code": "us",
+            "identity": {"customer_id": "amzn1.account.TEST"},
+            "bearer": {
+                "access_token": "Atna|stale",
+                "refresh_token": "Atnr|synthetic",
+                "expires": 1.0
+            }
+        }))
+        .unwrap();
+        let creds = credentials_json_from_auth(&original, Some(b"cdm")).unwrap();
+        let (auth, refreshed) = capturing_authenticator(&creds).unwrap();
+        let url = url::Url::parse(&server.uri()).unwrap();
+        let client = Client::builder(auth)
+            .auth_base_override(url)
+            .build()
+            .unwrap();
+        // Nothing refreshed yet: nothing to hand back.
+        assert!(refreshed.clone().credentials(&creds).unwrap().is_none());
+        client.force_refresh_access_token().await.unwrap();
+
+        let bytes = refreshed.credentials(&creds).unwrap().unwrap();
+        let handed: Value = serde_json::from_slice(&bytes).unwrap();
+        // The CDM rides along unchanged; the auth file carries the new token.
+        assert_eq!(handed["widevine_b64"], creds["widevine_b64"]);
+        let renewed = authenticator_from_credentials(&handed)
+            .unwrap()
+            .export_value();
+        assert_eq!(renewed["bearer"]["access_token"], "Atna|renewed");
+        assert_eq!(renewed["bearer"]["refresh_token"], "Atnr|synthetic");
+        // Taken once: a later call with no refresh hands nothing back.
+        assert!(refreshed.credentials(&creds).unwrap().is_none());
+        assert!(refreshed.hand_back(&creds).is_none());
+
+        // A refresh that cannot be encoded is left out, not an error.
+        let broken = RefreshCapture(Arc::new(Mutex::new(Some(json!({"bearer": {}})))));
+        assert!(broken.hand_back(&json!(["not", "an", "object"])).is_none());
     }
 
     #[tokio::test]

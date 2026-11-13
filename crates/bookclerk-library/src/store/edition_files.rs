@@ -17,13 +17,12 @@
 //! from then on, whichever edition had it before). A host upload claims
 //! every key of its manifest when it is granted
 //! ([`LibraryStore::claim_edition_file`]), and only keys no other edition
-//! holds (a Host job's upload of a book may take over a branch title's
-//! keys, as an acquire does); a grant refused part way gives back what it
+//! holds (a Host job's upload of a book may take over keys a branch's
+//! catalog upload wrote); a grant refused part way gives back what it
 //! claimed ([`LibraryStore::release_edition_file`]).
 //!
-//! A title a branch shares here has no edition yet, so its keys are held
-//! by the branch title ([`FileOwner::BranchTitle`]) until branch titles
-//! become holdings.
+//! A title a branch shares here is a node holding of an edition, so its
+//! files are that edition's like any other.
 
 use std::collections::BTreeSet;
 
@@ -32,7 +31,7 @@ use sea_orm::{ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter
 
 use super::{now_str, LibraryStore};
 use crate::entities::{
-    books, branch_titles, edition_files, editions, node_upload_sessions, store_listings,
+    books, edition_files, editions, holdings, node_upload_sessions, store_listings,
 };
 use crate::error::{LibraryError, Result};
 
@@ -45,9 +44,6 @@ pub enum FileOwner {
     /// An edition (`editions.id`): every account row that holds it shares
     /// the file.
     Edition(String),
-    /// A title a branch shares here (`branch_titles.uuid`), which has no
-    /// edition until branch titles become holdings.
-    BranchTitle(String),
 }
 
 impl FileOwner {
@@ -56,7 +52,6 @@ impl FileOwner {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Edition(_) => "edition",
-            Self::BranchTitle(_) => "branch_title",
         }
     }
 
@@ -64,7 +59,7 @@ impl FileOwner {
     #[must_use]
     pub fn id(&self) -> &str {
         match self {
-            Self::Edition(id) | Self::BranchTitle(id) => id,
+            Self::Edition(id) => id,
         }
     }
 
@@ -72,7 +67,6 @@ impl FileOwner {
     fn from_row(kind: &str, id: String) -> Option<Self> {
         match kind {
             "edition" => Some(Self::Edition(id)),
-            "branch_title" => Some(Self::BranchTitle(id)),
             _ => None,
         }
     }
@@ -246,6 +240,28 @@ impl LibraryStore {
             .map(FileOwner::Edition))
     }
 
+    /// The file owner of a node holding (`holdings.id`, a title a branch
+    /// shares here): the edition its listing sells.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read fails.
+    pub async fn file_owner_of_holding(&self, holding_id: &str) -> Result<Option<FileOwner>> {
+        let Some(holding) = super::holdings::find_holdings()
+            .filter(holdings::Column::Id.eq(holding_id))
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        Ok(store_listings::Entity::find_by_id(holding.listing_id)
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(|listing| FileOwner::Edition(listing.edition_id)))
+    }
+
     /// Every library title (`books.uuid`) whose listing sells `edition_id`:
     /// the account rows that share the edition's files.
     ///
@@ -360,10 +376,7 @@ impl LibraryStore {
     /// (any account's row of the same edition), or recorded for an owner
     /// that holds no key against this claim; answers false, changing
     /// nothing, when another edition holds it. An edition holds its keys
-    /// against every claim while it exists. A title a branch shares here
-    /// holds its keys only against another branch title's claim
-    /// (`branch_titles_hold`, a catalog upload): a Host job's upload of a
-    /// book takes them over, as an acquire on this node would. Each claim
+    /// against every claim while it exists. Each claim
     /// is one conditional write, so of two uploads of different editions
     /// racing for one key only one wins.
     ///
@@ -381,13 +394,17 @@ impl LibraryStore {
     /// * `writer` - The host upload id.
     /// * `role`, `sha256` - What the file is and its declared digest.
     /// * `expected` - The record read before the claim.
-    /// * `branch_titles_hold` - True for a catalog upload's claim.
-    /// * `title` - The library title (`books.uuid`) a job upload writes
-    ///   for. A key its edition already holds is taken over only when this
-    ///   upload or an earlier upload of the same title wrote it, never one
-    ///   an acquire or another account's upload wrote: the edition's files
-    ///   are shared, so one account's node cannot replace them. `None` for
-    ///   a catalog upload, whose branch title holds its keys alone.
+    /// * `title` - What the upload writes for: the library title
+    ///   (`books.uuid`) of a job upload, or the node holding
+    ///   (`holdings.id`) of a catalog upload. A key its edition already
+    ///   holds is taken over only when this upload or an earlier upload for
+    ///   the same title (or, for a catalog upload, an earlier catalog upload
+    ///   of the same branch) wrote it, never one an acquire or another
+    ///   account's upload wrote: the edition's files are shared, so one node cannot
+    ///   replace them. A job upload may also take over a key a branch's
+    ///   catalog upload wrote (`catalog` false), as an acquire on this node
+    ///   would replace a delivered copy with its own.
+    /// * `catalog` - True for a catalog upload's claim.
     ///
     /// # Errors
     ///
@@ -402,8 +419,8 @@ impl LibraryStore {
         role: FileRole,
         sha256: Option<&str>,
         expected: Option<&EditionFile>,
-        branch_titles_hold: bool,
-        title: Option<&str>,
+        title: &str,
+        catalog: bool,
     ) -> Result<bool> {
         let now = now_str();
         // Only a key read as unrecorded is inserted: a claim expecting a
@@ -434,10 +451,9 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         }
-        // A holder is live while it is in the library: an edition that
-        // exists, or, against a catalog upload's claim, a title a branch
-        // shares here. Only a holder that is neither is stale.
-        let live_edition = Condition::all()
+        // A holder is live while its edition is in the library; only a
+        // holder that is not is stale.
+        let live = Condition::all()
             .add(edition_files::Column::OwnerKind.eq("edition"))
             .add(
                 edition_files::Column::OwnerId.in_subquery(
@@ -447,39 +463,46 @@ impl LibraryStore {
                         .to_owned(),
                 ),
             );
-        let mut live = Condition::any().add(live_edition);
-        if branch_titles_hold {
-            live = live.add(
+        let uploads_for = |cond: Condition| {
+            edition_files::Column::Writer.in_subquery(
+                Query::select()
+                    .column(node_upload_sessions::Column::UploadId)
+                    .from(node_upload_sessions::Entity)
+                    .cond_where(cond)
+                    .to_owned(),
+            )
+        };
+        let mut writers = Condition::any()
+            .add(edition_files::Column::Writer.eq(writer))
+            .add(uploads_for(
+                Condition::all().add(node_upload_sessions::Column::BookUuid.eq(title)),
+            ));
+        if catalog {
+            // The same branch's other catalog uploads: a title it shares
+            // again after a pause is held under a new id, and its earlier
+            // delivery is still its own.
+            writers = writers.add(uploads_for(
                 Condition::all()
-                    .add(edition_files::Column::OwnerKind.eq("branch_title"))
+                    .add(node_upload_sessions::Column::JobId.eq(bookclerk_node_proto::CATALOG_ITEM))
                     .add(
-                        edition_files::Column::OwnerId.in_subquery(
+                        node_upload_sessions::Column::NodeId.in_subquery(
                             Query::select()
-                                .column(branch_titles::Column::Uuid)
-                                .from(branch_titles::Entity)
-                                .to_owned(),
-                        ),
-                    ),
-            );
-        }
-        let mut mine = Condition::all()
-            .add(edition_files::Column::OwnerKind.eq(owner.kind()))
-            .add(edition_files::Column::OwnerId.eq(owner.id()));
-        if let Some(title) = title {
-            mine = mine.add(
-                Condition::any()
-                    .add(edition_files::Column::Writer.eq(writer))
-                    .add(
-                        edition_files::Column::Writer.in_subquery(
-                            Query::select()
-                                .column(node_upload_sessions::Column::UploadId)
+                                .column(node_upload_sessions::Column::NodeId)
                                 .from(node_upload_sessions::Entity)
-                                .and_where(node_upload_sessions::Column::BookUuid.eq(title))
+                                .and_where(node_upload_sessions::Column::UploadId.eq(writer))
                                 .to_owned(),
                         ),
                     ),
-            );
+            ));
+        } else {
+            writers = writers.add(uploads_for(Condition::all().add(
+                node_upload_sessions::Column::JobId.eq(bookclerk_node_proto::CATALOG_ITEM),
+            )));
         }
+        let mine = Condition::all()
+            .add(edition_files::Column::OwnerKind.eq(owner.kind()))
+            .add(edition_files::Column::OwnerId.eq(owner.id()))
+            .add(writers);
         let claimed = edition_files::Entity::update_many()
             .col_expr(edition_files::Column::OwnerKind, Expr::value(owner.kind()))
             .col_expr(edition_files::Column::OwnerId, Expr::value(owner.id()))

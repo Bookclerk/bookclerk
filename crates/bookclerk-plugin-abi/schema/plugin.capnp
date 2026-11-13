@@ -48,6 +48,9 @@ const maxCheckpointBytes :UInt32 = 65536;
 const maxScanPageBooks :UInt32 = 500;
 # Maximum bytes of a scan cursor or sync token.
 const maxScanCursorBytes :UInt32 = 4096;
+# Maximum bytes of refreshed credentials a storefront hands back
+# (`ScanPage.refreshedCredentials`, `PlainFetch.refreshedCredentials`).
+const maxRefreshedCredentialBytes :UInt32 = 65536;
 # Maximum bytes of an `EventReadRequest.after` / `EventReadPage.cursor`.
 const maxEventCursorBytes :UInt32 = 512;
 # Maximum plugin / account identifier length (bytes).
@@ -1784,6 +1787,13 @@ struct ScanPage {
   complete @4 :Bool;
   # Storefront requests this page took.
   storePages @5 :UInt32;
+  # The account's credentials as the guest holds them after refreshing them
+  # while producing this page (for example a renewed access token): the
+  # same encoding login returned, a JSON object of at most
+  # `maxRefreshedCredentialBytes`. The host stores them in place of the
+  # credentials it sent, unless the account was signed in again meanwhile,
+  # and sends them on the pass's later pages. Empty when nothing changed.
+  refreshedCredentials @6 :Data $optional;
 }
 
 # Result union of `ContentSource.scan`.
@@ -1879,6 +1889,10 @@ struct PlainFetch {
   chapters @3 :List(ChapterMarker);
   # Companion PDF download URL when the store exposes one.
   pdfUrl @4 :Text $optional;
+  # The account's credentials as the guest holds them after refreshing them
+  # during the fetch, as in `ScanPage.refreshedCredentials`. Empty when
+  # nothing changed.
+  refreshedCredentials @5 :Data $optional;
 }
 
 # Result union of `ContentSource.fetchTitle`.

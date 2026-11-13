@@ -94,6 +94,7 @@ pub(crate) fn link_json(link: &ClusterLink) -> ClusterLinkView {
         max_jobs: link.max_jobs.map(|cap| cap.jobs()),
         job_share: None,
         list_members_books: link.list_members_books,
+        download: link.download,
         running: None,
     }
 }
@@ -150,6 +151,12 @@ pub struct ClusterLinkView {
     /// out) as well as the owner's.
     #[schema(example = true)]
     pub list_members_books: bool,
+    /// "Use this computer to download": the link takes the library's jobs
+    /// and runs its plugins here. Off makes this install a window of the
+    /// library: no jobs, no plugins, and the books the library holds for
+    /// this install's person are shown instead.
+    #[schema(example = true)]
+    pub download: bool,
     /// Whether this install's client for the link is running now; only the join routes report it.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = true)]

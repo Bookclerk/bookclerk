@@ -26,6 +26,12 @@ export const MAX_SCAN_PAGE_BOOKS = 500 as const;
 /** Maximum bytes of a scan cursor or sync token. */
 export const MAX_SCAN_CURSOR_BYTES = 4096 as const;
 
+/**
+ * Maximum bytes of refreshed credentials a storefront hands back
+ * (`ScanPage.refreshedCredentials`, `PlainFetch.refreshedCredentials`).
+ */
+export const MAX_REFRESHED_CREDENTIAL_BYTES = 65536 as const;
+
 /** Maximum bytes of an `EventReadRequest.after` / `EventReadPage.cursor`. */
 export const MAX_EVENT_CURSOR_BYTES = 512 as const;
 

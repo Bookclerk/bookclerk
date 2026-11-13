@@ -19,9 +19,9 @@ pub struct Model {
     /// Storage key on that destination.
     #[sea_orm(primary_key, auto_increment = false)]
     pub storage_key: String,
-    /// `edition`, or `branch_title` for a title a branch shares here.
+    /// `edition`: files belong to editions.
     pub owner_kind: String,
-    /// The edition id, or the branch title's `uuid`.
+    /// The edition id.
     pub owner_id: String,
     /// What the file is ([`crate::FileRole`]).
     pub role: String,

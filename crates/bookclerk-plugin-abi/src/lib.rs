@@ -249,8 +249,9 @@ pub use limits::{
     cover_sink_slot, ScalarLimits, MAX_COVER_BYTES, MAX_COVER_HEADER_BYTES, MAX_COVER_URLS,
     MAX_CRON_BYTES, MAX_EVENT_CURSOR_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES,
     MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
-    MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES,
-    MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS,
+    MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
+    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 pub use roles::{
     AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
@@ -277,7 +278,8 @@ pub use rpc_types::{
     JSON_MEDIA_TYPE, MAX_CHECKPOINT_BYTES,
 };
 pub use scan_page::{
-    decode_scan_page_bytes, encode_scan_page_bytes, validate_scan_page, ScanPageError,
+    decode_scan_page_bytes, encode_scan_page_bytes, validate_refreshed_credentials,
+    validate_scan_page, ScanPageError,
 };
 pub use settings_schema::{
     is_valid_setting_key, EffectiveConfig, SettingKind, SettingSpec, SettingValueSpec,

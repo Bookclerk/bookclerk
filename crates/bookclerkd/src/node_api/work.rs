@@ -485,6 +485,9 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             super::host_interlibrary::finish(library, host, id.clone(), job, generation, outcome)
                 .await
         }
+        Body::WindowBooks { after } => {
+            super::host_window::books(library, host, id.clone(), after).await
+        }
         _ => {
             return error(
                 id,

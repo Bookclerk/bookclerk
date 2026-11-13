@@ -801,16 +801,20 @@ batch as its rows:
 - `edition_updated` (`editionId`) when the listing filled a missing
   subtitle, publication date or duration on its edition;
 - `holding_added` (`listingId`, `holder`, `holdingId`) when an account or
-  branch library holds the listing, or holds it again after it was
-  removed; `account_id` is the account for an account holder.
+  branch library holds the listing (a title a branch shares, with holder
+  `node:<node id>`), or holds it again after it was removed;
+  `account_id` is the account for an account holder and empty for a
+  branch.
 
 The host publishes `holding_removed` (`listingId`, `holder`, `holdingId`)
 in the batch that deletes a holding: a scan no longer lists the title (see
-[Paged scans](#paged-scans)), the account is revoked, or its id is
-remapped (the holding moves, with `holding_removed` for the old account
-and `holding_added` for the new one).
+[Paged scans](#paged-scans)), the account is revoked, its id is remapped
+(the holding moves, with `holding_removed` for the old account and
+`holding_added` for the new one), or a branch no longer shares the title
+(its full catalog pass no longer names it, it stopped sharing, or it
+left).
 
-Their `source` is the storefront plugin that reported the listing.
+Their `source` is the plugin key of the listing's store.
 Each daemon's search index consumes them, with `book_acquired`, to keep its
 node-local index current (see
 [Search index](../internals/jobs.md#search-index)).
@@ -992,6 +996,34 @@ scan(params: ScanParams): Promise<ScanPage> {
 
 The three SDKs write the same cursors, so a plugin can move between them
 without breaking a pass in progress.
+
+#### Refreshed credentials
+
+A store may renew an account's tokens while the plugin uses them, such as
+an access token that expired in the middle of a scan. The plugin hands the
+renewed credentials back so the next call does not have to renew them
+again:
+
+1. Set `refreshedCredentials` on the `ScanPage` or `PlainFetch` reply to
+   the account's whole credentials, in the same JSON form the host sent
+   them. Leave it empty when nothing changed.
+2. The value must be one JSON object of at most
+   `MAX_REFRESHED_CREDENTIAL_BYTES` (64 KiB). The host refuses a scan page
+   that breaks either rule and fails the scan.
+3. The host keeps the renewed credentials before it writes the page's
+   titles, and sends them on the pass's later pages. A `PlainFetch` reply
+   that breaks the rules keeps its title; the credentials are logged and
+   dropped.
+
+The host stores them only while the account still has the credentials it
+sent the plugin. If someone signed the account in again in the meantime,
+that sign-in wins and the renewed credentials are dropped. On a member's
+computer that runs a job for a library it joined, the renewed credentials
+go back to that library under the job's lease instead, and are never
+stored on the member's computer.
+
+The host registers the renewed values for log redaction as it receives
+them. A plugin should still never log them.
 
 #### Catalog search capabilities
 

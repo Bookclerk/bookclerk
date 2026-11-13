@@ -20,6 +20,10 @@ pub const MAX_SCAN_PAGE_BOOKS: u32 = crate::plugin_capnp::MAX_SCAN_PAGE_BOOKS;
 /// Longest scan cursor or sync token in bytes.
 pub const MAX_SCAN_CURSOR_BYTES: u32 = crate::plugin_capnp::MAX_SCAN_CURSOR_BYTES;
 
+/// Longest refreshed credential blob a storefront may hand back in bytes
+/// (`ScanPage.refreshedCredentials`, `PlainFetch.refreshedCredentials`).
+pub const MAX_REFRESHED_CREDENTIAL_BYTES: u32 = crate::plugin_capnp::MAX_REFRESHED_CREDENTIAL_BYTES;
+
 /// Longest `EventPublisher.read` cursor in bytes.
 pub const MAX_EVENT_CURSOR_BYTES: u32 = crate::plugin_capnp::MAX_EVENT_CURSOR_BYTES;
 

@@ -1272,6 +1272,17 @@ class NativeGatewayTests(unittest.TestCase):
                     checks[-1].env["BOOKCLERK_WORKERD_BIN"], str(Path("/ws/target/debug") / exe)
                 )
 
+    def test_clippy_denies_cargo_warnings(self) -> None:
+        # RUSTFLAGS="-D warnings" leaves Cargo's own lints (unused
+        # dependencies, unused workspace entries) as warnings; build.warnings
+        # fails the lint check on them, for both the full and selective scope.
+        for p in (plan("Cargo.lock"), plan("crates/bookclerk-tls/src/lib.rs")):
+            cmds = [c for key, c in planned_commands(artifact(p), "clippy", CTX) if not key]
+            with self.subTest(argv=cmds[0].argv):
+                self.assertEqual(len(cmds), 1)
+                self.assertEqual(cmds[0].argv[:2], ["cargo", "clippy"])
+                self.assertEqual(cmds[0].env.get("CARGO_BUILD_WARNINGS"), "deny")
+
     def test_smoke_runs_only_in_its_own_check(self) -> None:
         full = artifact(plan("Cargo.lock"))
         for check in ALL_CHECKS:

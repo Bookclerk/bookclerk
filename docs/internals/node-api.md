@@ -51,6 +51,7 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `catalog.found {answers, missing}` | `ok`, or `error` `invalid` / `refused` (see [Shared catalog](../server/cluster-hosts.md#shared-catalog)) |
 | `requests.claim` | `requests.claimed {requests}`: up to 16 interlibrary requests `{job, generation, work, store, marketplace, product_id}` leased to this branch for 5 minutes, or `error` `refused` |
 | `requests.finish {job, generation, outcome}` | `ok`, `lost` when the lease moved on, or `error` `invalid` for a malformed job id or generation; `outcome` is `accepted`, `not_listed` or `failed` (see [Requesting a book from a branch](../server/cluster-hosts.md#requesting-a-book-from-a-branch)) |
+| `window.books {after}` | `window.page {works, next?}`: up to 100 works `{work, identifiers, editions}` the library holds for the node's owner, or `error` `refused` / `invalid` (see [Window mode](../server/cluster-hosts.md#window-mode)) |
 | `node.leaving` | `accepted`, then close 4403 (the node is revoked) |
 | `scan.request {account, plugin_instance_id}` | `scan.planned {created, duplicates, queue_full}`, or `error` `forbidden` / `invalid` |
 | `job.status {job_ids}` (at most 64) | `job.statuses {jobs}`: only jobs this node may claim |
@@ -68,7 +69,11 @@ questions wait for a branch, and `requests.queued` when interlibrary
 requests do), which the host acks. Secrets are
 never frame text: job secrets, instance secrets and upload tokens are sealed
 to the node's box key and bound to the node and the job or instance they
-belong to; a write-back is sealed to the owner's box key.
+belong to; a write-back is sealed to the owner's box key. A host job's
+storefront guest that renews an account's tokens mid-job hands them back
+([Refreshed credentials](../plugins/abi.md#refreshed-credentials)), and
+the host writes them back to the owner this way, as the account row the
+job was handed.
 
 ## The live socket (`/api/live`)
 

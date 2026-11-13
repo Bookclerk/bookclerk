@@ -15,7 +15,9 @@ Changes and review fixes stay inside that scope.
 ### Code standards
 
 Write code that passes the lints the first time; CI turns every warning into
-an error (`RUSTFLAGS="-D warnings"`).
+an error (`RUSTFLAGS="-D warnings"` for rustc and Clippy,
+`CARGO_BUILD_WARNINGS=deny` for Cargo's own warnings such as unused
+dependencies).
 
 Documentation is enforced by `missing_docs` and
 `clippy::missing_docs_in_private_items`, by `# Errors` / `# Panics` sections on
@@ -119,7 +121,7 @@ pull request as the behavior they describe:
 ### Before every push
 
 - `cargo fmt --all -- --check` and
-  `cargo clippy --workspace --all-targets -- -D warnings`.
+  `CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets -- -D warnings`.
 - Prettier and markdownlint when non-Rust files changed: `npm ci --prefix
   tools/lint`, then `node tools/lint/node_modules/prettier/bin/prettier.cjs
   --check .` and `node tools/lint/node_modules/markdownlint-cli2/markdownlint-cli2-bin.mjs`
@@ -315,8 +317,9 @@ stay on the bind mount so you can run built Linux binaries on the host afterward
 
 - Build: `cargo build --workspace`
 - Format check: `cargo fmt --all -- --check`
-- Lint: `cargo clippy --workspace --all-targets -- -D warnings` (CI treats
-  warnings as errors via `RUSTFLAGS="-D warnings"`).
+- Lint: `CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets -- -D warnings`
+  (CI treats warnings as errors via `RUSTFLAGS="-D warnings"`, and Cargo's
+  own warnings via `CARGO_BUILD_WARNINGS=deny`).
 - Test: `cargo test --workspace`
 - CI planner (selective PR checks): `python3 scripts/ci-plan.py --paths <file>… --format summary`
   (or `--base <sha> --head <sha>`); reproduce a check locally with

@@ -23,8 +23,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::catalog::is_marketplace;
 use crate::catalog::{is_product_id, is_store_id};
-use crate::lookup::{is_marketplace, LookupWork};
+use crate::lookup::LookupWork;
 
 /// Most requests one [`crate::Body::RequestsClaimed`] may carry.
 pub const MAX_CLAIMED_REQUESTS: usize = 16;

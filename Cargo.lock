@@ -1569,7 +1569,6 @@ dependencies = [
 name = "bookclerk-config"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bookclerk-tls",
  "directories",
  "getrandom 0.4.3",
@@ -1785,7 +1784,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tower",
- "tower-http 0.7.1",
  "tracing",
  "utoipa",
  "utoipa-axum",
@@ -1992,9 +1990,7 @@ dependencies = [
 name = "bookclerk-plugin-catalog"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bookclerk-plugin-manifest",
- "bookclerk-sandbox",
  "bookclerk-tls",
  "chrono",
  "flate2",
@@ -2444,7 +2440,6 @@ dependencies = [
  "bookclerk-config",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
- "bookclerk-source",
  "bytes",
  "chrono",
  "filetime",
@@ -2589,7 +2584,6 @@ dependencies = [
  "reqwest 0.13.5",
  "rustls-acme",
  "sea-orm",
- "secrecy",
  "serde",
  "serde_json",
  "sha2 0.11.1",

@@ -1375,6 +1375,7 @@ mod results_and_uploads {
     use bookclerk_library::{JobResourceClass, NewBook};
     use bookclerk_node_proto::{Body, UploadFile};
     use bookclerk_plugin_abi::ScanBook;
+    use bookclerk_plugin_host::RefreshedCredentialSink;
     use bookclerk_source::DownloadOptions;
     use bookclerk_storage::StorageBackend;
     use sha2::Digest as _;
@@ -1455,6 +1456,9 @@ mod results_and_uploads {
         /// Each owner's title imported into this install's library: the
         /// owner's book uuid and the `(destination, key)` files kept.
         imported: Arc<Mutex<Vec<ImportedTitle>>>,
+        /// Credentials the guest hands back as refreshed during a scan,
+        /// for `riley-acct` and for an account the owner did not hand.
+        refresh: Option<&'static str>,
     }
 
     /// An owner's title a [`StubGuests`] imported: the owner's book uuid and
@@ -1486,10 +1490,19 @@ mod results_and_uploads {
         async fn scan(
             &self,
             bindings: &HostJobBindings,
+            refreshed: Arc<dyn RefreshedCredentialSink>,
             scan: HostScan,
             _cancel: Arc<AtomicBool>,
         ) -> anyhow::Result<Vec<ScanBook>> {
             self.note(bindings);
+            if let Some(credentials) = self.refresh {
+                refreshed
+                    .refreshed("riley-acct", credentials.as_bytes().to_vec())
+                    .await;
+                refreshed
+                    .refreshed("not-handed", credentials.as_bytes().to_vec())
+                    .await;
+            }
             self.scans
                 .lock()
                 .unwrap()
@@ -1505,6 +1518,7 @@ mod results_and_uploads {
         async fn acquire(
             &self,
             bindings: &HostJobBindings,
+            _refreshed: Arc<dyn RefreshedCredentialSink>,
             title: &HostTitle,
             outbox: &Path,
             _cancel: Arc<AtomicBool>,
@@ -1764,6 +1778,38 @@ mod results_and_uploads {
             .unwrap()
             .iter()
             .all(|book| book.product_id != "late"));
+    }
+
+    /// Credentials the guest refreshed during a host scan are written back
+    /// to the owner as the handed account's row; a refresh for an account
+    /// the owner did not hand is dropped, and the scan still succeeds.
+    #[tokio::test]
+    async fn a_host_scan_writes_refreshed_credentials_back_to_the_owner() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let guests = StubGuests {
+            rows: vec![row("riley-acct", "p1")],
+            work: world.host_files.path().join("cluster-work"),
+            refresh: Some(r#"{"token":"riley-token-v2"}"#),
+            ..StubGuests::default()
+        };
+        let (_handle, _stop) = start(&world, guests).await;
+
+        let job_id = enqueue_scan(&world.owner).await;
+        eventually("the host scan to finish", || async {
+            job(&world.owner, &job_id).await.state == JobState::Succeeded
+        })
+        .await;
+        let token_ref = SecretRef {
+            kind: secret_kind::SOURCE_AUTH.into(),
+            provider: PLUGIN.into(),
+            account_id: "riley-acct".into(),
+            name: "riley-acct.auth".into(),
+        };
+        assert_eq!(
+            stored(&world.owner, &token_ref).await,
+            r#"{"token":"riley-token-v2"}"#
+        );
     }
 
     /// A member's host whose guest returns a row for another user's
@@ -4360,7 +4406,7 @@ async fn departed_libraries_lose_their_plugin_state() {
     );
 
     let links = list_cluster_links(&store).await.unwrap();
-    super::purge_departed_link_state(&state, &links).await;
+    super::purge_departed_link_state(&state, &store, &links).await;
     assert!(
         !state_dir("cluster-left").exists(),
         "a departed library's state goes"
@@ -4369,4 +4415,72 @@ async fn departed_libraries_lose_their_plugin_state() {
         state_dir("cluster-kept").join("plugin").exists(),
         "an active library's state stays"
     );
+}
+
+/// "Use this computer to download" off makes the link a window: the
+/// consented plugin is withdrawn, the owner sees the deployment as an
+/// error naming window mode, and no job is claimed until the setting is on
+/// again.
+#[tokio::test]
+async fn a_window_link_runs_no_owner_plugin_until_it_downloads_again() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let host_files = tempfile::tempdir().unwrap();
+    let (state, owner) = crate::node_api::tests::test_state(&owner_files).await;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    let origin = public_origin(&state, &format!("http://127.0.0.1:{}", addr.port())).await;
+    let host = host_store(host_files.path()).await;
+    let (admin, _token) =
+        owner_account_as(&owner, b"riley-token-v1", UserRole::Administrator).await;
+    let link = join(&owner, &host, admin, &origin, None).await.unwrap();
+    let node_id = link.remote_node_id.clone();
+    let cluster_id = link.owner_cluster_id.clone();
+    let deployed = deploy_store(&owner, owner_files.path(), &node_id).await;
+    let first = enqueue_scan(&owner).await;
+    let transport = EchoTransport::default();
+    let (handle, _stop) = start_client(
+        &host,
+        host_files.path(),
+        link,
+        transport.clone(),
+        Duration::from_millis(200),
+    )
+    .await;
+    connected(&handle, 1).await;
+    approve_store(&host, &cluster_id).await;
+    eventually("the scan to finish on the host", || async {
+        job(&owner, &first).await.state == JobState::Succeeded
+    })
+    .await;
+
+    assert!(
+        bookclerk_library::control_plane::set_cluster_link_download(&host, &cluster_id, false)
+            .await
+            .unwrap()
+    );
+    notify_consent_changed();
+    eventually("the owner to see window mode", || async {
+        observed(&owner, &deployed, &node_id)
+            .await
+            .is_some_and(|seen| {
+                seen.status == DeploymentStatus::Error
+                    && seen.detail == super::consent::WINDOW_MODE_DETAIL
+            })
+    })
+    .await;
+    assert!(handle.consented_plugins().is_empty());
+    let second = enqueue_scan(&owner).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(job(&owner, &second).await.state, JobState::Pending);
+    assert_eq!(transport.runs().len(), 1, "a window claims nothing");
+
+    bookclerk_library::control_plane::set_cluster_link_download(&host, &cluster_id, true)
+        .await
+        .unwrap();
+    notify_consent_changed();
+    eventually(
+        "the second scan to finish once it downloads again",
+        || async { job(&owner, &second).await.state == JobState::Succeeded },
+    )
+    .await;
 }

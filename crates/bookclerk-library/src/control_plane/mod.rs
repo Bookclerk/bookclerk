@@ -47,6 +47,7 @@ mod template;
 mod trust;
 mod uploads;
 mod versions;
+mod window_books;
 
 use std::path::Path;
 
@@ -57,9 +58,9 @@ pub use branch_catalog::{
     accept_catalog_batch, begin_catalog, branch_provenance, branch_title_counts,
     catalog_fence_live, detach_branch_titles, forwardable_branch_title,
     forwardable_branch_title_keys_page, grant_catalog_upload, list_branch_titles,
-    pending_deliveries, remove_detached_branch_titles, BranchTitle, BranchTitleCounts,
-    CatalogAccept, CatalogBegin, CatalogSessionOpened, ForwardableBranchKey, BRANCH_TITLE_DETACHED,
-    BRANCH_TITLE_SHARED, DETACHED_LEFT, DETACHED_STOPPED_SHARING, DETACHED_WITHDRAWN,
+    listing_from_catalog_title, pending_deliveries, remove_detached_branch_titles, BranchTitle,
+    BranchTitleCounts, CatalogAccept, CatalogBegin, CatalogSessionOpened, ForwardableBranchKey,
+    ForwardableBranchTitle, DETACHED_LEFT, DETACHED_STOPPED_SHARING, DETACHED_WITHDRAWN,
     FORWARDABLE_KEYS_MAX_PAGE, FULL_CATALOG_PASS_EVERY,
 };
 pub use branch_requests::{
@@ -95,11 +96,11 @@ pub use cluster_links::{
     decode_spki_pin, join_cycle, join_overflows_ancestry, leave_cluster_link, library_ancestry,
     list_cluster_links, load_cluster_link, load_cluster_link_keys, mark_cluster_link_revoked,
     parse_job_cap_request, parse_sharing_request, record_cluster_link, set_cluster_link_ancestry,
-    set_cluster_link_job_cap, set_cluster_link_listing, set_cluster_link_person,
-    set_cluster_link_settings, set_cluster_link_sharing, set_cluster_link_state,
-    set_cluster_link_work, CapacityBody, ClusterLink, ClusterLinkKeys, ClusterLinkSettings,
-    JobCapRequest, LinkJobCap, NewClusterLink, SharingBody, SharingRequest, CLUSTER_LINK_ACTIVE,
-    CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
+    set_cluster_link_download, set_cluster_link_job_cap, set_cluster_link_listing,
+    set_cluster_link_person, set_cluster_link_settings, set_cluster_link_sharing,
+    set_cluster_link_state, set_cluster_link_work, CapacityBody, ClusterLink, ClusterLinkKeys,
+    ClusterLinkSettings, JobCapRequest, LinkJobCap, NewClusterLink, SharingBody, SharingRequest,
+    CLUSTER_LINK_ACTIVE, CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
 };
 pub use connections_request::{
     parse_add_connections_request, parse_disconnect_request, AccountRef, AddConnectionsBody,
@@ -260,6 +261,11 @@ pub use versions::{
     activate_version, add_plugin_version, approve_version_grant, clear_install, list_installs,
     list_versions, load_active_version, load_install, load_version, AddVersion, PluginArtifact,
     PluginInstall, PluginVersion, ARTIFACT_BLOB_SCHEME,
+};
+pub use window_books::{
+    clear_window_books, discard_window_read, finish_window_read, record_window_page,
+    window_books_page, window_read_stamp, window_view, WindowEntry, WindowEntryEdition,
+    WINDOW_BOOKS_READ,
 };
 
 use documents::{import_if_absent, load_document, replace_document};

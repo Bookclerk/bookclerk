@@ -21,6 +21,7 @@ import {
   MAX_OFFERED_JOB_CAP,
   setBranchJobCap,
   setBranchSharing,
+  setLinkDownload,
   setMembersListing,
   type BranchWorkSettings,
 } from "@/lib/join";
@@ -216,6 +217,65 @@ function SharingSettings({ link, onSaved }: { link: ClusterLinkView; onSaved: ()
 }
 
 /**
+ * "Use this computer to download" for one library this server is a branch
+ * of. On by default; off makes this server a window of that library.
+ */
+function DownloadSetting({ link, onSaved }: { link: ClusterLinkView; onSaved: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const download = link.download ?? true;
+  const library = libraryLabel(link.owner_origin);
+
+  async function save(next: boolean) {
+    if (
+      !next &&
+      !window.confirm(
+        `Stop downloading for ${library}? This server stops running its work and its plugins here, and hands back anything in progress. Your books there are shown in Library instead.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await setLinkDownload(link, next);
+      onSaved();
+    } catch (err) {
+      setError(joinErrorMessage(err, "Could not save."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="w-full space-y-2 pt-1">
+      <label className="flex items-start gap-3 text-sm text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={download}
+          disabled={busy}
+          onChange={(e) => void save(e.target.checked)}
+        />
+        <span>
+          <span className="block font-medium">Use this computer to download</span>
+          <span className="block text-xs text-ink/55">
+            {download
+              ? `This server runs ${library}'s work and keeps the books it downloads. Turn off to only see your books there, without downloading anything.`
+              : `Off: this server runs none of ${library}'s work. Your books there are shown in Library.`}
+          </span>
+        </span>
+      </label>
+      {error ? (
+        <p className="text-xs font-medium text-brick" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * How much of this computer one library may use: an equal share after this
  * server's own work (the default), a cap, or none.
  */
@@ -352,6 +412,7 @@ function LinkRow({
           Leave library
         </Button>
       ) : null}
+      {link.state === "active" ? <DownloadSetting link={link} onSaved={onLeft} /> : null}
       {link.state === "active" ? <SharingSettings link={link} onSaved={onLeft} /> : null}
       {note ? (
         <p className="w-full text-xs font-medium text-brick" role="status">

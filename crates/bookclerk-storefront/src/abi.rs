@@ -91,6 +91,9 @@ impl From<PlainFetch> for abi::PlainFetch {
                 .map(|(title, start_ms)| abi::ChapterMarker { title, start_ms })
                 .collect(),
             pdf_url: plain.pdf_url,
+            // A guest that refreshed the account's credentials sets them on
+            // the ABI value it answers with.
+            refreshed_credentials: None,
         }
     }
 }
@@ -501,6 +504,7 @@ pub fn full_pass_page(
         next_cursor,
         sync_token: String::new(),
         store_pages,
+        refreshed_credentials: None,
     }
 }
 

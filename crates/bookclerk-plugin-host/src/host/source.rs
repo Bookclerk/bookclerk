@@ -89,6 +89,107 @@ pub struct ExternalSource {
     /// Store credentials an owner cluster handed with a job, by account
     /// id. When set they are the only credentials this source uses.
     handed: Option<Arc<HandedCredentials>>,
+    /// Where credentials the guest refreshed go for handed credentials (the
+    /// owner, over the job's fence); unset, they are dropped with a warning.
+    refresh_sink: Option<Arc<dyn RefreshedCredentialSink>>,
+}
+
+/// Receives the credentials a guest refreshed while it used credentials an
+/// owner cluster handed with a job (`ScanPage.refreshedCredentials`,
+/// `PlainFetch.refreshedCredentials`), already checked against the ABI
+/// bounds. The daemon writes them back to the owner under the job's fence.
+///
+/// One sink serves a whole job, so the job's later guest calls (the next
+/// title of an acquire, a fetch after a scan) are sent the refreshed
+/// credentials ([`Self::latest`]) rather than the stale handed ones.
+#[async_trait::async_trait]
+pub trait RefreshedCredentialSink: Send + Sync {
+    /// Hands back `credentials`, the guest's refreshed credentials for
+    /// `account_id`. Failures are the sink's to log; the job goes on.
+    async fn refreshed(&self, account_id: &str, credentials: Vec<u8>);
+
+    /// The newest credentials handed to [`Self::refreshed`] for
+    /// `account_id` during this job, if any; they replace the handed ones.
+    fn latest(&self, account_id: &str) -> Option<Vec<u8>>;
+}
+
+/// Where credentials a guest refreshed go
+/// ([`keep_refreshed_credentials`]).
+enum RefreshTarget<'a> {
+    /// The credentials were handed with a host job: the refreshed ones go
+    /// to the sink (the owner), or are dropped with a warning without one.
+    Handed(Option<&'a dyn RefreshedCredentialSink>),
+    /// This install's own account, stored in the scope (none: not stored).
+    Local(Option<&'a SourceScope>),
+}
+
+/// Keeps credentials a guest of `plugin` handed back after refreshing those
+/// of `account_id`, which it was sent as `sent`.
+///
+/// For handed credentials they go to the refresh sink (the owner); for
+/// this install's own accounts they replace the stored credentials only
+/// while those are still `sent`, so a sign-in that happened meanwhile wins
+/// ([`SourceScope::replace_refreshed_credentials`]). An empty blob means
+/// nothing changed. The value is registered for redaction before it is
+/// sent or stored.
+///
+/// # Errors
+///
+/// Returns an error when the blob breaks the ABI bounds, `sent` is not
+/// JSON, or storing it fails.
+async fn keep_refreshed_credentials(
+    plugin: &str,
+    target: RefreshTarget<'_>,
+    account_id: &str,
+    sent: &[u8],
+    refreshed: Vec<u8>,
+) -> bookclerk_source::Result<()> {
+    if refreshed.is_empty() {
+        return Ok(());
+    }
+    bookclerk_plugin_abi::validate_refreshed_credentials(&refreshed)
+        .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
+    // The library registers what it stores; handed values are registered
+    // here, before they go anywhere.
+    if matches!(target, RefreshTarget::Handed(_)) {
+        bookclerk_config::register_secret_bytes(&refreshed);
+    }
+    let scope = match target {
+        RefreshTarget::Handed(Some(sink)) => {
+            sink.refreshed(account_id, refreshed).await;
+            return Ok(());
+        }
+        RefreshTarget::Handed(None) => {
+            tracing::warn!(
+                plugin,
+                account_id,
+                "the guest refreshed handed credentials, but nothing takes them back"
+            );
+            return Ok(());
+        }
+        RefreshTarget::Local(None) => {
+            tracing::warn!(
+                plugin,
+                account_id,
+                "the guest refreshed credentials with no library to keep them in"
+            );
+            return Ok(());
+        }
+        RefreshTarget::Local(Some(scope)) => scope,
+    };
+    let sent = credentials_from_bytes(sent)?;
+    let stored = scope
+        .replace_refreshed_credentials(account_id, &sent, &refreshed)
+        .await
+        .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+    if !stored {
+        tracing::info!(
+            plugin,
+            account_id,
+            "kept the account's newer credentials over the guest's refreshed ones"
+        );
+    }
+    Ok(())
 }
 
 /// Credentials handed with a host job, zeroized on drop and never shown by
@@ -178,7 +279,50 @@ impl ExternalSource {
             source_config,
             plugin_instance_id: None,
             handed: None,
+            refresh_sink: None,
         })
+    }
+
+    /// Sends credentials the guest refreshes while using handed credentials
+    /// to `sink` (see [`Self::with_handed_credentials`]).
+    #[must_use]
+    pub fn with_refresh_sink(mut self, sink: Arc<dyn RefreshedCredentialSink>) -> Self {
+        self.refresh_sink = Some(sink);
+        self
+    }
+
+    /// Keeps credentials the guest handed back after refreshing those of
+    /// `account_id`, which it was sent as `sent`.
+    ///
+    /// For handed credentials they go to the refresh sink (the owner); for
+    /// this install's own accounts they replace the stored credentials only
+    /// while those are still `sent`, so a sign-in that happened meanwhile
+    /// wins ([`SourceScope::replace_refreshed_credentials`]). An empty blob
+    /// means nothing changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the blob breaks the ABI bounds or storing it
+    /// fails.
+    async fn keep_refreshed(
+        &self,
+        scope: Option<&SourceScope>,
+        account_id: &str,
+        sent: &[u8],
+        refreshed: Vec<u8>,
+    ) -> bookclerk_source::Result<()> {
+        let target = if self.handed.is_some() {
+            RefreshTarget::Handed(self.refresh_sink.as_deref())
+        } else {
+            RefreshTarget::Local(scope)
+        };
+        keep_refreshed_credentials(self.id(), target, account_id, sent, refreshed).await
+    }
+
+    /// Credentials the guest refreshed for `account_id` earlier in this job,
+    /// which replace the handed ones.
+    fn refreshed_since(&self, account_id: &str) -> Option<Vec<u8>> {
+        self.refresh_sink.as_ref()?.latest(account_id)
     }
 
     /// Uses only `credentials` (an owner cluster handed them with a job)
@@ -226,7 +370,12 @@ impl ExternalSource {
             .0
             .iter()
             .filter(|(account, _)| opts.accounts.is_empty() || opts.accounts.contains(account))
-            .map(|(account, value)| (account.clone(), value.to_vec()))
+            .map(|(account, value)| {
+                let value = self
+                    .refreshed_since(account)
+                    .unwrap_or_else(|| value.to_vec());
+                (account.clone(), value)
+            })
             .collect();
         if !credentials.is_empty() {
             self.session.require_binding("secrets")?;
@@ -363,7 +512,9 @@ impl ExternalSource {
         account_id: &str,
     ) -> bookclerk_source::Result<Option<Vec<u8>>> {
         let credentials = match self.handed.as_ref() {
-            Some(handed) => handed.0.get(account_id).map(|value| value.to_vec()),
+            Some(handed) => self
+                .refreshed_since(account_id)
+                .or_else(|| handed.0.get(account_id).map(|value| value.to_vec())),
             None => scope
                 .load_credentials_json(account_id)
                 .await
@@ -612,6 +763,7 @@ impl ContentSource for ExternalSource {
                 .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
             dir
         };
+        let sent = credentials.clone().unwrap_or_default();
         let params = FetchTitleParams {
             plugin_data_dir: self.plugin_data_dir.display().to_string(),
             account_id: account_id.to_string(),
@@ -621,9 +773,26 @@ impl ContentSource for ExternalSource {
             source_config: ExtensibleConfig::json(&self.source_config),
             fetch: (&opts.download).into(),
         };
-        let plain = self
+        let mut plain = self
             .cs_call(move |src| async move { src.fetch_title(params).await })
             .await?;
+        if let Some(refreshed) = plain.refreshed_credentials.take() {
+            // The title is already fetched: credentials that cannot be kept
+            // are logged, not the fetch's failure.
+            if !sent.is_empty() {
+                if let Err(err) = self
+                    .keep_refreshed(Some(scope), account_id, &sent, refreshed)
+                    .await
+                {
+                    tracing::warn!(
+                        plugin = %self.id(),
+                        account_id,
+                        error = %err,
+                        "could not keep the guest's refreshed credentials"
+                    );
+                }
+            }
+        }
         Ok(plain.into())
     }
 
@@ -1043,6 +1212,33 @@ impl PassLedger<'_> {
 }
 
 impl PassIo for LibraryPass<'_> {
+    async fn refreshed(&mut self, credentials: Vec<u8>) -> bookclerk_source::Result<()> {
+        // The page already passed the ABI checks, so a failure here is the
+        // store's; the guest's credentials still work, so the pass goes on.
+        if let Err(err) = self
+            .source
+            .keep_refreshed(
+                Some(self.ledger.scope),
+                &self.ledger.account_id,
+                &self.credential,
+                credentials.clone(),
+            )
+            .await
+        {
+            tracing::warn!(
+                plugin = %self.ledger.plugin,
+                account_id = %self.ledger.account_id,
+                error = %err,
+                "could not keep the guest's refreshed credentials"
+            );
+        }
+        // The pass's later pages use the guest's current credentials, even
+        // when a newer sign-in won the store: one pass never switches
+        // sessions midway, and the next pass uses the newer sign-in.
+        self.credential = credentials;
+        Ok(())
+    }
+
     async fn page(
         &mut self,
         cursor: &str,
@@ -1112,6 +1308,19 @@ struct CollectPass<'a> {
 }
 
 impl PassIo for CollectPass<'_> {
+    async fn refreshed(&mut self, credentials: Vec<u8>) -> bookclerk_source::Result<()> {
+        self.source
+            .keep_refreshed(
+                None,
+                &self.account_id,
+                &self.credential,
+                credentials.clone(),
+            )
+            .await?;
+        self.credential = credentials;
+        Ok(())
+    }
+
     async fn page(
         &mut self,
         cursor: &str,
@@ -1382,6 +1591,91 @@ mod tests {
         full.reset().await.unwrap();
         let state = scope.scan_state("a1").await.unwrap();
         assert!(state.is_none_or(|s| s.sync_token.is_empty()));
+    }
+
+    /// Records what reached it.
+    #[derive(Default)]
+    struct Recorded(std::sync::Mutex<Vec<(String, Vec<u8>)>>);
+
+    #[async_trait::async_trait]
+    impl RefreshedCredentialSink for Recorded {
+        async fn refreshed(&self, account_id: &str, credentials: Vec<u8>) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((account_id.into(), credentials));
+        }
+
+        fn latest(&self, account_id: &str) -> Option<Vec<u8>> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|(account, _)| account == account_id)
+                .map(|(_, credentials)| credentials.clone())
+        }
+    }
+
+    /// Refreshed credentials go to the sink for handed credentials, replace
+    /// this install's stored ones only while they are still what was sent,
+    /// and are refused when they break the ABI bounds.
+    #[tokio::test]
+    async fn refreshed_credentials_go_where_the_credentials_came_from() {
+        let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
+        shared_test_master_key();
+        let store = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let scope = store.scope("path:file:///plugins/echo", "echo");
+        scope.upsert_account("a1", "us", None, true).await.unwrap();
+        let v1 = serde_json::json!({"token": "v1"});
+        scope.save_credentials_json("a1", &v1).await.unwrap();
+        let sent = serde_json::to_vec(&v1).unwrap();
+        let keep = |target, refreshed: &[u8]| {
+            keep_refreshed_credentials("echo", target, "a1", &sent, refreshed.to_vec())
+        };
+
+        // Handed: to the sink, or dropped without one; nothing stored here.
+        let sink = Recorded::default();
+        keep(RefreshTarget::Handed(Some(&sink)), br#"{"token":"h"}"#)
+            .await
+            .unwrap();
+        keep(RefreshTarget::Handed(None), br#"{"token":"h"}"#)
+            .await
+            .unwrap();
+        assert_eq!(
+            sink.0.lock().unwrap().as_slice(),
+            &[("a1".to_string(), br#"{"token":"h"}"#.to_vec())]
+        );
+        assert_eq!(sink.latest("a1"), Some(br#"{"token":"h"}"#.to_vec()));
+        assert_eq!(sink.latest("other"), None);
+        keep(RefreshTarget::Local(None), br#"{"token":"x"}"#)
+            .await
+            .unwrap();
+        let stored = |scope: &SourceScope| {
+            let scope = scope.clone();
+            async move { scope.load_credentials_json("a1").await.unwrap().unwrap() }
+        };
+        assert_eq!(stored(&scope).await, v1);
+
+        // Empty means unchanged; a non-object is refused.
+        keep(RefreshTarget::Local(Some(&scope)), b"").await.unwrap();
+        assert!(keep(RefreshTarget::Local(Some(&scope)), b"[1]")
+            .await
+            .is_err());
+        assert_eq!(stored(&scope).await, v1);
+
+        // Local: replaces what was sent.
+        keep(RefreshTarget::Local(Some(&scope)), br#"{"token":"v2"}"#)
+            .await
+            .unwrap();
+        assert_eq!(stored(&scope).await, serde_json::json!({"token": "v2"}));
+        // Sent v1 again, but the account now holds v2: v2 stays.
+        keep(RefreshTarget::Local(Some(&scope)), br#"{"token":"v3"}"#)
+            .await
+            .unwrap();
+        assert_eq!(stored(&scope).await, serde_json::json!({"token": "v2"}));
     }
 
     #[tokio::test]

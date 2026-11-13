@@ -9,9 +9,9 @@
 //! value rather than the typed body: a body is accepted exactly when it is
 //! one JSON object with no repeated keys, no keys besides `cluster_id`,
 //! `share_books`, `include_branches`, `list_members_books`,
-//! `work_for_members` and `keep_member_copies`, a string `cluster_id`, and
-//! booleans for `share_books` and `include_branches`; each of the other
-//! three is absent, `null` or a boolean. An accepted body yields the
+//! `work_for_members`, `keep_member_copies` and `download`, a string
+//! `cluster_id`, and booleans for `share_books` and `include_branches`;
+//! each of the other four is absent, `null` or a boolean. An accepted body yields the
 //! trimmed `cluster_id` and those values, with an absent or `null` setting
 //! left unset (kept as stored), never read as `false`. A refused one is
 //! `Invalid`, never another error.
@@ -26,13 +26,14 @@ pub const MAX_INPUT_BYTES: usize = 1024;
 
 /// The keys the route documents, written out rather than read from the
 /// parser.
-const KEYS: [&str; 6] = [
+const KEYS: [&str; 7] = [
     "cluster_id",
     "share_books",
     "include_branches",
     "list_members_books",
     "work_for_members",
     "keep_member_copies",
+    "download",
 ];
 
 /// What the oracle expects from one body.
@@ -104,11 +105,18 @@ fn expected(data: &[u8]) -> Expected {
     else {
         return Expected::Refused;
     };
-    let (Some(list_members_books), Some(work_for_members), Some(keep_member_copies)) = (
+    let (
+        Some(list_members_books),
+        Some(work_for_members),
+        Some(keep_member_copies),
+        Some(download),
+    ) = (
         optional(&fields, "list_members_books"),
         optional(&fields, "work_for_members"),
         optional(&fields, "keep_member_copies"),
-    ) else {
+        optional(&fields, "download"),
+    )
+    else {
         return Expected::Refused;
     };
     Expected::Accepted(
@@ -119,6 +127,7 @@ fn expected(data: &[u8]) -> Expected {
             list_members_books,
             work_for_members,
             keep_member_copies,
+            download,
         },
     )
 }
