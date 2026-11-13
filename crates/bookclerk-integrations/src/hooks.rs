@@ -35,8 +35,10 @@ pub async fn emit_book_acquired(
         )));
     };
 
+    let edition = library.edition_of_book(&book.uuid).await?;
     let payload = serde_json::json!({
         "titleId": book.uuid,
+        "editionId": edition,
         "source": book.source,
         "asin": book.asin,
         "isbn": book.isbn,

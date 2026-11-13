@@ -1996,6 +1996,60 @@ async fn a_fence_lost_before_the_commit_writes_nothing() {
     );
 }
 
+/// A title's upload acquires the title but leaves its edition with the
+/// sibling title that acquired it first, while that title is still in the
+/// library.
+#[tokio::test]
+async fn an_upload_keeps_the_edition_with_the_title_that_acquired_it() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let sam_book = w
+        .store
+        .scope(PLUGIN, "test")
+        .upsert_book(&crate::store::NewBook {
+            uuid: None,
+            ..scanned("sam-acct", "t1")
+        })
+        .await
+        .unwrap();
+    let edition = w
+        .store
+        .edition_of_book(&book_uuid)
+        .await
+        .unwrap()
+        .expect("the title has an edition");
+    assert_eq!(
+        w.store.edition_of_book(&sam_book.uuid).await.unwrap(),
+        Some(edition.clone()),
+        "one product on two accounts is one edition"
+    );
+    w.store
+        .set_acquire_status(
+            &sam_book.uuid,
+            "sam-acct",
+            crate::models::AcquireStatus::Acquired,
+            Some("Sam/Title/Title.m4b"),
+            None,
+        )
+        .await
+        .unwrap();
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    upload_title(&w.store, &job_id, fence, &book_uuid, &files).await;
+    let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
+    assert_eq!(book.acquire_status, crate::models::AcquireStatus::Acquired);
+    let kept = w
+        .store
+        .edition_acquisition(&edition)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.status, crate::models::AcquireStatus::Acquired);
+    assert_eq!(kept.title_uuid, sam_book.uuid);
+    assert_eq!(kept.storage_key.as_deref(), Some("Sam/Title/Title.m4b"));
+}
+
 /// H-2: a node-local instance deploys only to the node that owns it, is
 /// never placed by the scheduler, and never pins an acquire to its node.
 #[tokio::test]

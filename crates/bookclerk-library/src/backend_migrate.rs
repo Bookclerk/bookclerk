@@ -8,8 +8,8 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, 
 
 use crate::entities::{
     account_credential_revisions, account_links, account_shares, accounts, books, claim_tickets,
-    contributors, credits, edition_files, edition_identifiers, editions, embeddings,
-    encrypted_secrets, expressions, holdings, ignored_titles, job_temp_paths, jobs,
+    contributors, credits, edition_acquisitions, edition_files, edition_identifiers, editions,
+    embeddings, encrypted_secrets, expressions, holdings, ignored_titles, job_temp_paths, jobs,
     listening_progress, listing_offers, member_account_rules, oidc_auth_codes, oidc_clients,
     oidc_refresh_tokens, oidc_rp_states, operator_sessions, portal_identities, portal_sessions,
     resolution_conflicts, resolution_overrides, saved_filters, security_audit_events, series,
@@ -124,6 +124,7 @@ pub async fn migrate_library_backend(
     copy!(resolution_conflicts, "resolution_conflicts");
     copy!(books, "books");
     copy!(edition_files, "edition_files");
+    copy!(edition_acquisitions, "edition_acquisitions");
     copy!(ignored_titles, "ignored_titles");
     copy!(saved_filters, "saved_filters");
     copy!(claim_tickets, "claim_tickets");
@@ -233,6 +234,7 @@ async fn dry_run_counts(
     count!(resolution_conflicts, "resolution_conflicts");
     count!(books, "books");
     count!(edition_files, "edition_files");
+    count!(edition_acquisitions, "edition_acquisitions");
     count!(ignored_titles, "ignored_titles");
     count!(saved_filters, "saved_filters");
     count!(claim_tickets, "claim_tickets");

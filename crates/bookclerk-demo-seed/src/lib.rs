@@ -707,7 +707,7 @@ pub async fn seed(
                 isbn: hit.and_then(|h| present(h.isbn().as_ref())),
                 notes: None,
                 status: RequestStatus::Open,
-                resolved_book_uuid: None,
+                resolved_edition_id: None,
                 cover_url: hit.and_then(|h| present(h.cover_url.as_ref())),
             })
             .await

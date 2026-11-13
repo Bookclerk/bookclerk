@@ -550,7 +550,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         notes TEXT,
         status TEXT NOT NULL DEFAULT 'open',
         preferred_source TEXT,
-        resolved_book_uuid TEXT,
+        resolved_edition_id TEXT,
         cover_url TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -1539,6 +1539,23 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_edition_files_writer ON edition_files(writer)",
     ),
+    // Each edition's acquire state (docs/adr/library-data-model.md): files
+    // belong to editions, so one acquire serves every title of the edition.
+    // `title_uuid` is the library title (`books.uuid`) whose write set the
+    // row. Once acquired, only that title's writes change the row (or any
+    // title's, after that one leaves the library), never a sibling title's
+    // queued, downloading or failed attempt. An edition with no row is not
+    // acquired.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS edition_acquisitions (
+        edition_id TEXT PRIMARY KEY NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK (status IN ('not_acquired', 'queued', 'downloading', 'acquired', 'error')),
+        storage_key TEXT,
+        error_message TEXT,
+        title_uuid TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    ),
     // The live socket's revision reads take each table's newest change
     // stamp every couple of seconds; an index makes that a lookup.
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_updated ON books(updated_at)"),
@@ -1800,6 +1817,11 @@ mod tests {
             "edition_files",
             "role",
             crate::FileRole::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "edition_acquisitions",
+            "status",
+            crate::AcquireStatus::ALL.iter().map(|k| k.as_str()),
         );
     }
 }

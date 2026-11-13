@@ -186,12 +186,12 @@ pub use store::{
     scan_state::{plan_pass, PassStart, ScanState, FULL_PASS_INTERVAL, RESUME_CURSOR_TTL},
     search_feed::ListingRef,
     set_dispatch_chunk_for_test, AcquiredBookKey, BookPage, CandidateRef, CatalogEnrichmentFields,
-    DiscoverSubject, EditionFile, FileOwner, FileRole, HeldIdentifiers, HoldingSelection,
-    LibraryStore, NewBook, NewListeningProgress, NewTitleRequest, NewTitleRequestSource,
-    NodeHoldingSelection, QueueRank, SavedFilterRecord, ScannedTitle, SeedScope, StoreCallHit,
-    StoredCandidate, StoredDiscoverTaste, StoredFeed, StoredQueueRank, UserBookFields, WishWork,
-    ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
-    HOLDING_REMOVED, MAX_QUEUE_REASONS,
+    DiscoverSubject, EditionAcquisition, EditionFile, FileOwner, FileRole, HeldIdentifiers,
+    HoldingSelection, LibraryStore, NewBook, NewListeningProgress, NewTitleRequest,
+    NewTitleRequestSource, NodeHoldingSelection, QueueRank, SavedFilterRecord, ScannedTitle,
+    SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste, StoredFeed, StoredQueueRank,
+    UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT,
+    BOOK_PAGE_MAX_LIMIT, HOLDING_REMOVED, MAX_QUEUE_REASONS,
 };
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

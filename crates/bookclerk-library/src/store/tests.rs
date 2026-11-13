@@ -94,6 +94,17 @@ async fn account_and_book_roundtrip() {
     assert_eq!(pending.event_type, "book_acquired");
     assert_eq!(pending.ordering_key, updated.uuid);
     assert_eq!(pending.dedup_key, format!("book_acquired:{}", updated.uuid));
+    let payload: serde_json::Value = serde_json::from_str(&pending.payload).unwrap();
+    let edition = store.edition_of_book(&updated.uuid).await.unwrap();
+    assert!(edition.is_some(), "the stored title resolves to an edition");
+    assert_eq!(payload["editionId"].as_str(), edition.as_deref());
+    let acquisition = store
+        .edition_acquisition(edition.as_deref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(acquisition.status, AcquireStatus::Acquired);
+    assert_eq!(acquisition.title_uuid, updated.uuid);
 }
 
 #[tokio::test]
@@ -686,7 +697,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open, // ignored
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         })
         .await
@@ -701,7 +712,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         })
         .await
@@ -717,7 +728,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         })
         .await
@@ -734,7 +745,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         })
         .await
@@ -761,7 +772,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         })
         .await
@@ -776,7 +787,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         })
         .await
@@ -828,7 +839,7 @@ async fn wishlist_sources_merge_description_and_editions() {
             isbn: Some("9781984811234".into()),
             notes: None,
             status: RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         })
         .await
@@ -7151,7 +7162,7 @@ async fn wishlist_writes_publish_wishlist_changed() {
         isbn: None,
         notes: None,
         status: RequestStatus::Open,
-        resolved_book_uuid: None,
+        resolved_edition_id: None,
         cover_url: None,
     };
     let row = store.create_title_request(&wish).await.unwrap();

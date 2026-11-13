@@ -125,6 +125,7 @@ Each enum is a Rust enum matched exhaustively, a capnp enum on the wire, and a
 | `listing_offers` | What a listing costs one audience (`non_member` or `member`): price, label, currency, `observed_at` | `(listing_id, audience)` |
 | `holdings` | Ownership of a listing by an account (`plugin_key`, `account_id`), or by a branch (`node_id`, `node:<node_id>` provenance), as typed holder columns with cascading foreign keys, with entitlement (`purchase`, `plus`, `loan`, `free`) and `purchased_at` | Surrogate id; unique `(listing_id, holder)` |
 | `edition_files` | A file of an edition at a destination, with `role` (`audio`, `part`, `chapter`, `pdf`, `cover`, `sidecar`, `transcript`, `epub`), digest, quality and writer | `(destination, storage_key)` |
+| `edition_acquisitions` | An edition's acquire state (`status`, primary `storage_key`, last error) and the title whose write set it; only that title changes an acquired edition | `edition_id` |
 | `user_title_state` | One user's finished flag, ratings and tags for a work (listening progress stays per provider in `listening_progress`, keyed by work) | `(user_id, work_id)` |
 | `resolution_overrides` | An Administrator's manual merge or split, which the resolver obeys | `(subject_kind, subject_id)` |
 
@@ -371,6 +372,15 @@ and the media worker probes each file and records it (`lossless`,
 store is then acquired anyway, the better audio kept and the sidecars
 merged, and both copies marked acquired. `edition_files_written` comes
 with step 5 too.
+
+Step 6 keeps each edition's acquire state in `edition_acquisitions`,
+written in the same batch as the title's own status. A title of an edition
+another title already acquired takes that copy instead of fetching it again,
+and a sibling title that is queued, downloading or failed never hides files
+the edition already has. Only the title that acquired the edition, or any
+title once that one has left the library, can change its state. `book_acquired`
+names the edition (`editionId`), and a wishlist item records the edition
+that fulfilled it (`resolved_edition_id`).
 
 User-facing pages (the glossary, *Where books go*, *Branches*, the plugin ABI
 reference) change with the step that changes their behaviour.

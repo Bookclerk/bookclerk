@@ -721,6 +721,10 @@ library holds as works, expressions and editions:
   `chapter`, `pdf`, `cover`, `sidecar`, `transcript`, `epub`) and, for an
   upload, the file's SHA-256. The quality columns (`lossless`,
   `bitrate_kbps`) stay empty until uploads carry a file's quality.
+- `edition_acquisitions`: each edition's acquire state (status, primary
+  storage key, last error) and the title whose write set it, written with
+  the title's own status. Only that title changes an acquired edition, so
+  a sibling title's failed attempt never hides its files.
 - `user_title_state`: one user's finished flag, ratings and tags for a
   work, keyed `(user_id, work_id)`. Fields imported for an account reach
   every user linked to that account. Discover reads its taste from here,
@@ -735,8 +739,9 @@ A wish for a book the library does not hold creates a catalog work and
 edition with no listing or holding.
 
 A book is acquired once per edition: the account rows of one edition share
-its files, and an acquire of one is marked acquired at another's key when
-every destination already holds it. A host upload never replaces a file of
+its files, and an acquire of one is marked acquired at the key the
+edition's acquiring title recorded (`edition_acquisitions`) when every
+destination already holds it. A host upload never replaces a file of
 its edition that another account's acquire or upload wrote, and an acquire
 never writes a key another edition holds: the write is refused before it
 reaches storage. A book with
