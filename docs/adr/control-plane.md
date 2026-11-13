@@ -1968,8 +1968,10 @@ it: a tree, A ← B ← C.
   token sealed to B's box key; B then `PUT`s each file and commits as a
   host acquire does, the library tees each body straight to its
   destinations (no staging), and the commit records the delivered digest
-  in one batch gated on the live catalog fence. The files are the
-  holding's edition's (`edition_files`), so an edition already in A's
+  in one batch gated on the live catalog fence and on the holding's
+  listing still selling the edition the grant claimed keys for (else
+  `edition_changed`, and the branch offers the title again). The files
+  are the holding's edition's (`edition_files`), so an edition already in A's
   outputs from another writer (an acquire, another branch) is not asked
   for and its upload is refused (`edition_has_files`): the cluster
   delivers each edition once. Files keep the branch's own keys on every

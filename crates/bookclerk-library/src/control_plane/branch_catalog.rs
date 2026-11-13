@@ -63,6 +63,7 @@ use crate::entities::{
 use crate::error::{LibraryError, Result};
 use crate::models::UserStatus;
 use crate::store::edition_files::like_escaped;
+use crate::store::holdings::{find_holdings, share_title_of};
 use crate::store::{LibraryStore, NewBook, NodeHoldingSelection};
 
 /// Removal reason: the branch turned "Share this branch's books" off.
@@ -99,6 +100,11 @@ fn split_share_ref(share_ref: &str) -> (String, String) {
 /// library asks for a full pass again, so titles a branch no longer has
 /// (removed, or from a sub-branch that left) are withdrawn within a day.
 pub const FULL_CATALOG_PASS_EVERY: chrono::Duration = chrono::Duration::hours(24);
+
+/// How long a node holding may carry no share state before a session's
+/// start removes it: longer than any catalog batch takes between linking a
+/// title and writing its share state.
+pub const UNSHARED_GRACE: chrono::Duration = chrono::Duration::minutes(10);
 
 /// True when the branch's last full pass ended long enough ago (and no
 /// pass is under way) that the next session starts from the beginning.
@@ -225,9 +231,25 @@ pub async fn begin_catalog(
             continue;
         }
         let wanted = if share_books {
+            // Holdings a batch linked under a fence that was gone by the
+            // time it wrote carry no share state; once old enough that no
+            // batch can still be writing them, they go.
+            // `created_at` is written as `to_rfc3339`, so the cutoff is too.
+            let cutoff = (Utc::now() - UNSHARED_GRACE).to_rfc3339();
+            store
+                .remove_node_holdings(node_id, NodeHoldingSelection::UnsharedBefore(&cutoff))
+                .await?;
             pending_deliveries(store, node_id, MAX_CATALOG_WANTED).await?
         } else {
-            detach_branch_titles(store, node_id, DETACHED_STOPPED_SHARING).await?;
+            // Guarded on this connection's fence: a newer connection that
+            // shares again keeps what it links meanwhile.
+            detach(
+                store,
+                node_id,
+                NodeHoldingSelection::AllUnderFence(fence),
+                DETACHED_STOPPED_SHARING,
+            )
+            .await?;
             Vec::new()
         };
         tracing::info!(
@@ -450,9 +472,6 @@ struct PreparedCatalogBatch {
     /// marketplace changed) leaves its earlier holding behind, which goes
     /// once the batch is written.
     replaced: Vec<String>,
-    /// The holdings this batch's links created, taken back when the batch
-    /// finds its fence gone ([`take_back`]).
-    fresh: Vec<String>,
 }
 
 /// Records one batch of `node_id`'s shared titles under `fence`, then the
@@ -528,9 +547,6 @@ async fn prepare_catalog_batch(
     // pass's end does not withdraw it as gone from the branch.
     let mut held_seen = Vec::new();
     let mut linked: BTreeMap<String, String> = BTreeMap::new();
-    // Holdings this batch's links created (they carry no share state
-    // yet): taken back when the batch turns out to be under a stale fence.
-    let mut fresh: Vec<String> = Vec::new();
     for title in titles {
         let reference = share_ref(&title.store, &title.product_id);
         if held_here(store, &owned, title).await? {
@@ -567,11 +583,12 @@ async fn prepare_catalog_batch(
         };
         // The link is written ahead of the gated batch (the link batch
         // checks sharing and the credential, not the catalog fence). When
-        // the batch then finds its fence gone (`Lost`), the holdings its
-        // links created are taken back, so a newer pass that already ended
-        // is not left with a title it did not name.
+        // the batch then finds its fence gone (`Lost`), a holding its link
+        // created is left without share state; the next session's start
+        // removes such holdings once no batch can still be writing them
+        // ([`UNSHARED_GRACE`]).
         let plan = store.record_listing(&listing, &held_by_node).await?;
-        let Some(holding) = holdings::Entity::find()
+        let Some(holding) = find_holdings()
             .filter(holdings::Column::ListingId.eq(&plan.listing.id))
             .filter(holdings::Column::Holder.eq(holder.stored()))
             .one(store.db())
@@ -580,12 +597,8 @@ async fn prepare_catalog_batch(
         else {
             // The branch stopped sharing, left or was revoked since the
             // read above: the link wrote no holding.
-            take_back(store, node_id, &fresh).await?;
             return Ok(Err(CatalogAccept::Lost));
         };
-        if holding.share_digest.is_none() {
-            fresh.push(holding.id.clone());
-        }
         linked.insert(reference.clone(), holding.id.clone());
         let digest = title.manifest_digest();
         let shared = serde_json::to_string(title)
@@ -613,39 +626,7 @@ async fn prepare_catalog_batch(
     }
     let recorded = statements.len() - 1;
     statements.extend(held_seen);
-    let mut replaced = Vec::new();
-    let mut after = String::new();
-    while !linked.is_empty() {
-        let page_rows = super::trust::result_page(store);
-        let page = holdings::Entity::find()
-            .select_only()
-            .column(holdings::Column::Id)
-            .column(holdings::Column::ShareRef)
-            .filter(holdings::Column::HolderKind.eq("node"))
-            .filter(holdings::Column::NodeId.eq(node_id))
-            .filter(holdings::Column::ShareRef.is_in(linked.keys().cloned()))
-            .filter(holdings::Column::Id.gt(after.clone()))
-            .order_by_asc(holdings::Column::Id)
-            .limit(page_rows)
-            .into_model::<RefRow>()
-            .all(store.db())
-            .await
-            .map_err(LibraryError::Orm)?;
-        let Some(last) = page.last() else {
-            break;
-        };
-        after.clone_from(&last.id);
-        let full = u64::try_from(page.len()).unwrap_or(u64::MAX) >= page_rows;
-        for row in page {
-            let kept = row.share_ref.as_ref().and_then(|r| linked.get(r));
-            if kept.is_some_and(|kept| *kept != row.id) {
-                replaced.push(row.id);
-            }
-        }
-        if !full {
-            break;
-        }
-    }
+    let replaced = replaced_holdings(store, node_id, &linked).await?;
     Ok(Ok(PreparedCatalogBatch {
         operation_id: format!("catalog-batch:{node_id}:{fence}:{now}"),
         statements,
@@ -654,8 +635,67 @@ async fn prepare_catalog_batch(
         wanted,
         ends_pass: pass.filter(|_| done),
         replaced,
-        fresh,
     }))
+}
+
+/// The node's holdings that share a reference with a holding this batch
+/// linked (`linked` maps each reference to the holding kept for it) but
+/// are not that holding: ones a title's newer listing replaced. The
+/// references are read in chunks that fit the backend's binds and
+/// statement size, and each chunk in keyset pages of at most one result
+/// page.
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn replaced_holdings(
+    store: &LibraryStore,
+    node_id: &str,
+    linked: &BTreeMap<String, String>,
+) -> Result<Vec<String>> {
+    let page_rows = super::trust::result_page(store);
+    let query = |refs: &[String], after: &str| {
+        holdings::Entity::find()
+            .select_only()
+            .column(holdings::Column::Id)
+            .column(holdings::Column::ShareRef)
+            .filter(holdings::Column::HolderKind.eq("node"))
+            .filter(holdings::Column::NodeId.eq(node_id))
+            .filter(holdings::Column::ShareRef.is_in(refs.iter().cloned()))
+            .filter(holdings::Column::Id.gt(after.to_string()))
+            .order_by_asc(holdings::Column::Id)
+            .limit(page_rows)
+    };
+    let refs: Vec<String> = linked.keys().cloned().collect();
+    let fits = |part: &[String]| {
+        super::sea_exec(&query(part, "")).map_or(true, |stmt| store.admits_read(&stmt))
+    };
+    let mut replaced = Vec::new();
+    for chunk in crate::store::holdings::fitting_chunks(&refs, store.lookup_chunk(), fits) {
+        let mut after = String::new();
+        loop {
+            let page = query(chunk, &after)
+                .into_model::<RefRow>()
+                .all(store.db())
+                .await
+                .map_err(LibraryError::Orm)?;
+            let Some(last) = page.last() else {
+                break;
+            };
+            after.clone_from(&last.id);
+            let full = u64::try_from(page.len()).unwrap_or(u64::MAX) >= page_rows;
+            for row in page {
+                let kept = row.share_ref.as_ref().and_then(|r| linked.get(r));
+                if kept.is_some_and(|kept| *kept != row.id) {
+                    replaced.push(row.id);
+                }
+            }
+            if !full {
+                break;
+            }
+        }
+    }
+    Ok(replaced)
 }
 
 /// Writes a prepared batch in one transaction ([`CatalogAccept::Lost`],
@@ -672,7 +712,6 @@ async fn apply_catalog_batch(
         batch::execute_host_batch(store, request(&prepared.operation_id, prepared.statements))
             .await?;
     if batch::rows_affected(&reply, 0) != 1 {
-        take_back(store, node_id, &prepared.fresh).await?;
         return Ok(CatalogAccept::Lost);
     }
     let upserted = (1..=prepared.titles)
@@ -680,7 +719,13 @@ async fn apply_catalog_batch(
         .sum();
     if !prepared.replaced.is_empty() {
         store
-            .remove_node_holdings(node_id, NodeHoldingSelection::Ids(&prepared.replaced))
+            .remove_node_holdings(
+                node_id,
+                NodeHoldingSelection::Replaced {
+                    ids: &prepared.replaced,
+                    fence,
+                },
+            )
             .await?;
     }
     // Ending the pass follows the batch rather than joining it: the
@@ -726,22 +771,6 @@ async fn apply_catalog_batch(
         skipped: prepared.skipped,
         wanted: prepared.wanted,
     })
-}
-
-/// Removes the holdings in `fresh` that still carry no share state: ones a
-/// catalog batch linked before finding its fence gone. A holding a live
-/// batch has given its share state since is kept.
-///
-/// # Errors
-///
-/// Returns the read or write error.
-async fn take_back(store: &LibraryStore, node_id: &str, fresh: &[String]) -> Result<()> {
-    if !fresh.is_empty() {
-        store
-            .remove_node_holdings(node_id, NodeHoldingSelection::Unshared(fresh))
-            .await?;
-    }
-    Ok(())
 }
 
 /// True when `edition_id` already has audio in this library's outputs
@@ -798,7 +827,7 @@ pub async fn pending_deliveries(
     let mut after = String::new();
     let page_rows = PENDING_PAGE.min(super::trust::result_page(store));
     while out.len() < limit {
-        let page = holdings::Entity::find()
+        let page = find_holdings()
             .filter(holdings::Column::HolderKind.eq("node"))
             .filter(holdings::Column::NodeId.eq(node_id))
             .filter(holdings::Column::ShareDigest.is_not_null())
@@ -850,7 +879,7 @@ async fn shared_holding(
     store_id: &str,
     product_id: &str,
 ) -> Result<Option<(holdings::Model, String, CatalogTitle)>> {
-    let Some(row) = holdings::Entity::find()
+    let Some(row) = find_holdings()
         .filter(holdings::Column::HolderKind.eq("node"))
         .filter(holdings::Column::NodeId.eq(node_id))
         .filter(holdings::Column::ShareRef.eq(share_ref(store_id, product_id)))
@@ -862,10 +891,9 @@ async fn shared_holding(
     else {
         return Ok(None);
     };
-    let Some(title) = row
-        .share_title
-        .as_deref()
-        .and_then(|text| serde_json::from_str::<CatalogTitle>(text).ok())
+    let Some(title) = share_title_of(store, &row.id)
+        .await?
+        .and_then(|text| serde_json::from_str::<CatalogTitle>(&text).ok())
     else {
         return Ok(None);
     };
@@ -1212,9 +1240,19 @@ pub(super) async fn commit_catalog_upload(
     {
         return Ok(UploadCommit::Lost);
     }
-    let Some(digest) = session.catalog_digest.as_deref() else {
+    let (Some(digest), Some(edition)) = (
+        session.catalog_digest.as_deref(),
+        session.catalog_edition.as_deref(),
+    ) else {
         return Ok(UploadCommit::Refused("unknown_title"));
     };
+    // The upload wrote under the keys of the edition the holding's listing
+    // sold at grant; once the listing sells another, those files are not
+    // the holding's and nothing is recorded as delivered. The batch
+    // re-checks this in its gate.
+    if !holding_sells_edition(store, &session.book_uuid, edition).await? {
+        return Ok(UploadCommit::Refused("edition_changed"));
+    }
     // A key another title (or an acquire) took since the grant is not
     // recorded for this one; the batch re-checks this in its gate. Checked
     // only once the fence is known live, so a lost fence answers `Lost`.
@@ -1236,6 +1274,8 @@ pub(super) async fn commit_catalog_upload(
                              AND share_books = 1) \
                 AND EXISTS (SELECT 1 FROM node_credentials \
                              WHERE node_id = ? AND revoked_at IS NULL) \
+                AND EXISTS (SELECT 1 FROM holdings WHERE id = ? AND listing_id IN \
+                             (SELECT id FROM store_listings WHERE edition_id = ?)) \
                 AND (SELECT COUNT(*) FROM edition_files WHERE writer = ?) = ?",
             vec![
                 text(&now),
@@ -1243,6 +1283,8 @@ pub(super) async fn commit_catalog_upload(
                 text(&session.node_id),
                 batch::int(session.generation),
                 text(&session.node_id),
+                text(&session.book_uuid),
+                text(edition),
                 text(&session.upload_id),
                 batch::int(i64::try_from(granted_keys).unwrap_or(i64::MAX)),
             ],
@@ -1284,6 +1326,12 @@ pub(super) async fn commit_catalog_upload(
             }
             Some(row)
                 if catalog_fence_live(store, &row.node_id, row.generation).await?
+                    && !holding_sells_edition(store, &row.book_uuid, edition).await? =>
+            {
+                Ok(UploadCommit::Refused("edition_changed"))
+            }
+            Some(row)
+                if catalog_fence_live(store, &row.node_id, row.generation).await?
                     && !upload_holds_its_keys(store, &row).await? =>
             {
                 Ok(UploadCommit::Refused("key_taken"))
@@ -1303,6 +1351,22 @@ pub(super) async fn commit_catalog_upload(
     })
 }
 
+/// True while holding `holding_id`'s listing still sells `edition_id`.
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn holding_sells_edition(
+    store: &LibraryStore,
+    holding_id: &str,
+    edition_id: &str,
+) -> Result<bool> {
+    Ok(matches!(
+        store.file_owner_of_holding(holding_id).await?,
+        Some(crate::store::FileOwner::Edition(owner)) if owner == edition_id
+    ))
+}
+
 /// Removes every holding of `node_id` (it stopped sharing, left or was
 /// revoked; `reason` is logged), each with `holding_removed`; answers how
 /// many went. Files already delivered stay with their editions.
@@ -1315,9 +1379,22 @@ pub async fn detach_branch_titles(
     node_id: &str,
     reason: &str,
 ) -> Result<u64> {
-    let removed = store
-        .remove_node_holdings(node_id, NodeHoldingSelection::All)
-        .await?;
+    detach(store, node_id, NodeHoldingSelection::All, reason).await
+}
+
+/// Removes the holdings of `node_id` that `selection` names, logging
+/// `reason`; answers how many were selected.
+///
+/// # Errors
+///
+/// Returns the read or write error.
+async fn detach(
+    store: &LibraryStore,
+    node_id: &str,
+    selection: NodeHoldingSelection<'_>,
+    reason: &str,
+) -> Result<u64> {
+    let removed = store.remove_node_holdings(node_id, selection).await?;
     if removed > 0 {
         tracing::info!(node_id, removed, reason, "removed a branch's titles");
     }
@@ -1440,7 +1517,7 @@ pub async fn list_branch_titles(
     node_id: Option<&str>,
     limit: u64,
 ) -> Result<Vec<BranchTitle>> {
-    let mut find = holdings::Entity::find()
+    let mut find = find_holdings()
         .filter(holdings::Column::HolderKind.eq("node"))
         .filter(holdings::Column::ShareDigest.is_not_null())
         .order_by_asc(holdings::Column::Id);
@@ -1468,10 +1545,9 @@ pub async fn list_branch_titles(
                 owner
             }
         };
-        let shared: Option<CatalogTitle> = row
-            .share_title
-            .as_deref()
-            .and_then(|text| serde_json::from_str(text).ok());
+        let shared: Option<CatalogTitle> = share_title_of(store, &row.id)
+            .await?
+            .and_then(|text| serde_json::from_str(&text).ok());
         let (store_id, product_id) = split_share_ref(row.share_ref.as_deref().unwrap_or_default());
         out.push(BranchTitle {
             delivered: row.delivered_digest.is_some() && row.delivered_digest == row.share_digest,
@@ -1688,7 +1764,8 @@ pub async fn forwardable_branch_title(
     store: &LibraryStore,
     id: &str,
 ) -> Result<Option<ForwardableBranchTitle>> {
-    let Some(row) = holdings::Entity::find_by_id(id.to_string())
+    let Some(row) = find_holdings()
+        .filter(holdings::Column::Id.eq(id))
         .filter(holdings::Column::HolderKind.eq("node"))
         .one(store.db())
         .await
@@ -1699,10 +1776,9 @@ pub async fn forwardable_branch_title(
     if row.share_digest.is_none() || row.delivered_digest != row.share_digest {
         return Ok(None);
     }
-    Ok(row
-        .share_title
-        .as_deref()
-        .and_then(|text| serde_json::from_str::<CatalogTitle>(text).ok())
+    Ok(share_title_of(store, &row.id)
+        .await?
+        .and_then(|text| serde_json::from_str::<CatalogTitle>(&text).ok())
         .map(|title| ForwardableBranchTitle {
             id: row.id,
             title,

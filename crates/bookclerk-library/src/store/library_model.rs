@@ -1033,7 +1033,7 @@ pub fn holding_from_book(book: &NewBook) -> resolve::HoldingDraft {
 
 impl LibraryStore {
     /// Ids bound per `IN (...)` lookup on this store's backend.
-    pub(super) fn lookup_chunk(&self) -> usize {
+    pub(crate) fn lookup_chunk(&self) -> usize {
         lookup_chunk(self.max_binds)
     }
 

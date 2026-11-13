@@ -84,6 +84,10 @@ struct Manifest {
     /// For a branch's catalog upload: the title's manifest digest at grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     catalog_digest: Option<String>,
+    /// For a branch's catalog upload: the edition (`editions.id`) the
+    /// holding's listing sold at grant, whose keys the upload claimed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    catalog_edition: Option<String>,
 }
 
 /// In a [`TitleNames::part_patterns`] pattern: one or more characters of a
@@ -316,6 +320,10 @@ pub struct UploadSession {
     /// For a branch's catalog upload ([`Self::is_catalog`]): the title's
     /// manifest digest at grant.
     pub catalog_digest: Option<String>,
+    /// For a branch's catalog upload: the edition the holding's listing
+    /// sold at grant. The upload writes under that edition's keys, so it
+    /// is recorded as delivered only while the listing still sells it.
+    pub catalog_edition: Option<String>,
 }
 
 impl UploadSession {
@@ -955,6 +963,27 @@ pub(super) async fn open_upload_session(
     if let Some(reason) = manifest_problem(req) {
         return Ok(UploadGrant::Refused(reason));
     }
+    let catalog = job_id == bookclerk_node_proto::CATALOG_ITEM;
+    // A book's keys are its edition's, and so are a node holding's.
+    // Resolved before the row goes in, so a catalog upload records the
+    // edition whose keys it claims.
+    let owner = if req.book_uuid.is_empty() {
+        None
+    } else {
+        let owner = if catalog {
+            store.file_owner_of_holding(req.book_uuid).await?
+        } else {
+            store.file_owner_of_book(req.book_uuid).await?
+        };
+        let Some(owner) = owner else {
+            return Ok(UploadGrant::Refused("unresolved_title"));
+        };
+        Some(owner)
+    };
+    let catalog_edition = match (&owner, catalog) {
+        (Some(FileOwner::Edition(edition)), true) => Some(edition.clone()),
+        (Some(FileOwner::Edition(_)) | None, _) => None,
+    };
     let manifest = serde_json::to_string(&Manifest {
         destinations: if req.book_uuid.is_empty() {
             Vec::new()
@@ -964,6 +993,7 @@ pub(super) async fn open_upload_session(
         files: req.files.to_vec(),
         pdf_key: req.pdf_key.map(str::to_string),
         catalog_digest: catalog_digest.map(str::to_string),
+        catalog_edition,
     })
     .map_err(|err| LibraryError::Other(anyhow::anyhow!("upload manifest encode: {err}")))?;
     let upload_id = uuid::Uuid::new_v4().hyphenated().to_string();
@@ -995,29 +1025,7 @@ pub(super) async fn open_upload_session(
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
-    let catalog = job_id == bookclerk_node_proto::CATALOG_ITEM;
     let mut claimed = Vec::new();
-    // A book's keys are its edition's, and so are a node holding's.
-    let owner = if req.book_uuid.is_empty() {
-        None
-    } else {
-        let owner = if catalog {
-            store.file_owner_of_holding(req.book_uuid).await
-        } else {
-            store.file_owner_of_book(req.book_uuid).await
-        };
-        match owner {
-            Ok(Some(owner)) => Some(owner),
-            Ok(None) => {
-                undo_grant(store, &upload_id, &claimed).await;
-                return Ok(UploadGrant::Refused("unresolved_title"));
-            }
-            Err(err) => {
-                undo_grant(store, &upload_id, &claimed).await;
-                return Err(err);
-            }
-        }
-    };
     if let Some(owner) = &owner {
         match claim_upload_keys(
             store,
@@ -1182,6 +1190,7 @@ fn session_from_model(row: node_upload_sessions::Model) -> Result<UploadSession>
         received,
         state: row.state,
         catalog_digest: manifest.catalog_digest,
+        catalog_edition: manifest.catalog_edition,
     })
 }
 

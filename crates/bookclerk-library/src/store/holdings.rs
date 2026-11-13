@@ -57,7 +57,7 @@ fn stored_ids(product_ids: &[String]) -> Vec<String> {
 /// Splits `ids` into chunks of at most `width`, halving a chunk until
 /// `fits` admits its statement, so long ids (UUIDs on D1) stay under the
 /// backend's `maxPayloadBytes` where a bind count alone would not.
-fn fitting_chunks(
+pub(crate) fn fitting_chunks(
     ids: &[String],
     width: usize,
     fits: impl Fn(&[String]) -> bool,
@@ -97,15 +97,26 @@ pub enum NodeHoldingSelection<'a> {
     /// `catalog_pass_started_at`) did not name, while that pass is still
     /// the node's.
     UnseenBy(&'a str),
-    /// Every holding of the node (it stopped sharing, left or was revoked).
+    /// Every holding of the node (it left or was revoked).
     All,
+    /// Every holding of the node while `fence` is still the node's catalog
+    /// fence (it stopped sharing under that fence): a newer connection that
+    /// shares again keeps what it links.
+    AllUnderFence(i64),
     /// These holdings of the node, by id (ones a title's newer holding
-    /// replaced).
-    Ids(&'a [String]),
-    /// These holdings of the node, by id, while they still carry no share
-    /// state: ones a catalog batch linked before finding its fence gone.
-    /// A holding a live batch has since given its share state stays.
-    Unshared(&'a [String]),
+    /// replaced), while `fence` is still the node's catalog fence: a newer
+    /// connection may have taken them up again.
+    Replaced {
+        /// The holdings' ids.
+        ids: &'a [String],
+        /// The catalog fence the replacing batch was written under.
+        fence: i64,
+    },
+    /// The node's holdings created before this stamp that still carry no
+    /// share state: ones a catalog batch linked before finding its fence
+    /// gone. A holding a live batch has given its share state since stays,
+    /// and one newer than the stamp may belong to a batch still in flight.
+    UnsharedBefore(&'a str),
 }
 
 /// What each delete of a removal repeats, so a holding that changed since
@@ -118,6 +129,79 @@ enum DeleteGuard<'a> {
     UnseenBy(&'a str),
     /// The holding still carries no share state.
     Unshared,
+    /// The node's catalog fence is still this one.
+    LiveFence(i64),
+}
+
+/// A read of `holdings` rows that leaves `share_title` out (read as
+/// `NULL`): a branch's shared title may be larger than one cell a database
+/// plugin may return (`maxCellBytes`), so it is read only on its own, in
+/// pieces ([`share_title_of`]).
+pub(crate) fn find_holdings() -> sea_orm::Select<holdings::Entity> {
+    use sea_orm::sea_query::Expr;
+    use sea_orm::Iterable as _;
+    let mut select = holdings::Entity::find().select_only();
+    for column in holdings::Column::iter().filter(|c| !matches!(c, holdings::Column::ShareTitle)) {
+        select = select.column(column);
+    }
+    select.column_as(Expr::cust("NULL"), "share_title")
+}
+
+/// One piece of a holding's `share_title`.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct SharePiece {
+    /// The piece's text; `None` when the holding or its title is gone.
+    piece: Option<String>,
+}
+
+/// Reads holding `holding_id`'s `share_title` in pieces that each fit one
+/// cell the database plugin may return, so a title of any accepted size is
+/// readable under every profile.
+///
+/// # Returns
+///
+/// The title as the branch shared it, or `None` when the holding or its
+/// title is gone.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub(crate) async fn share_title_of(
+    store: &LibraryStore,
+    holding_id: &str,
+) -> Result<Option<String>> {
+    use sea_orm::sea_query::Expr;
+    // `substr` counts characters; a character is at most four bytes.
+    let cell = match store.db_capabilities().max_cell_bytes {
+        0 => 64 * 1024,
+        cap => usize::try_from(cap).unwrap_or(usize::MAX),
+    };
+    let chars = i64::try_from((cell.saturating_sub(64) / 4).max(1)).unwrap_or(i64::MAX);
+    let mut out: Option<String> = None;
+    let mut start: i64 = 1;
+    loop {
+        let piece = holdings::Entity::find()
+            .select_only()
+            .column_as(
+                Expr::cust_with_values("substr(share_title, ?, ?)", [start, chars]),
+                "piece",
+            )
+            .filter(holdings::Column::Id.eq(holding_id))
+            .into_model::<SharePiece>()
+            .one(store.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .and_then(|row| row.piece);
+        let Some(piece) = piece else {
+            return Ok(out);
+        };
+        let read = i64::try_from(piece.chars().count()).unwrap_or(i64::MAX);
+        out.get_or_insert_with(String::new).push_str(&piece);
+        if read < chars {
+            return Ok(out);
+        }
+        start = start.saturating_add(read);
+    }
 }
 
 /// Whose holdings a removal reads: one account, or one branch node.
@@ -342,28 +426,45 @@ impl LibraryStore {
                 self.remove_selected(Scope::Node(node_id), Condition::all(), DeleteGuard::Id)
                     .await
             }
-            NodeHoldingSelection::Ids(ids) => {
+            NodeHoldingSelection::AllUnderFence(fence) => {
+                self.remove_selected(
+                    Scope::Node(node_id),
+                    Condition::all(),
+                    DeleteGuard::LiveFence(fence),
+                )
+                .await
+            }
+            NodeHoldingSelection::Replaced { ids, fence } => {
+                let of_ids = |part: &[String]| {
+                    Condition::all().add(holdings::Column::Id.is_in(part.iter().cloned()))
+                };
+                let fits = |part: &[String]| {
+                    crate::control_plane::sea_exec(&self.selected_page(
+                        Scope::Node(node_id),
+                        "",
+                        of_ids(part),
+                    ))
+                    .map(|stmt| self.admits_read(&stmt))
+                    .unwrap_or(true)
+                };
                 let mut total = 0;
-                for chunk in ids.chunks(self.lookup_chunk().max(1)) {
-                    let cond =
-                        Condition::all().add(holdings::Column::Id.is_in(chunk.iter().cloned()));
+                for chunk in fitting_chunks(ids, self.lookup_chunk(), fits) {
                     total += self
-                        .remove_selected(Scope::Node(node_id), cond, DeleteGuard::Id)
+                        .remove_selected(
+                            Scope::Node(node_id),
+                            of_ids(chunk),
+                            DeleteGuard::LiveFence(fence),
+                        )
                         .await?;
                 }
                 Ok(total)
             }
-            NodeHoldingSelection::Unshared(ids) => {
-                let mut total = 0;
-                for chunk in ids.chunks(self.lookup_chunk().max(1)) {
-                    let cond = Condition::all()
-                        .add(holdings::Column::Id.is_in(chunk.iter().cloned()))
-                        .add(holdings::Column::ShareDigest.is_null());
-                    total += self
-                        .remove_selected(Scope::Node(node_id), cond, DeleteGuard::Unshared)
-                        .await?;
-                }
-                Ok(total)
+            NodeHoldingSelection::UnsharedBefore(stamp) => {
+                let cond = Condition::all()
+                    .add(holdings::Column::ShareDigest.is_null())
+                    .add(holdings::Column::CreatedAt.lt(stamp));
+                self.remove_selected(Scope::Node(node_id), cond, DeleteGuard::Unshared)
+                    .await
             }
         }
     }
@@ -452,7 +553,7 @@ impl LibraryStore {
         after: &str,
         cond: Condition,
     ) -> sea_orm::Select<holdings::Entity> {
-        holdings::Entity::find()
+        find_holdings()
             .filter(scope.condition())
             .filter(holdings::Column::Id.gt(after.to_string()))
             .filter(cond)
@@ -494,7 +595,18 @@ impl LibraryStore {
                     "id = ? AND share_digest IS NULL",
                     vec![batch::text(&holding.id)],
                 ),
-                (DeleteGuard::Id, _) => ("id = ?", vec![batch::text(&holding.id)]),
+                (DeleteGuard::LiveFence(fence), Scope::Node(node_id)) => (
+                    "id = ? AND EXISTS \
+                     (SELECT 1 FROM nodes WHERE node_id = ? AND catalog_fence = ?)",
+                    vec![
+                        batch::text(&holding.id),
+                        batch::text(node_id),
+                        bookclerk_plugin_abi::DbValue::Int64(fence),
+                    ],
+                ),
+                (DeleteGuard::Id | DeleteGuard::LiveFence(_), _) => {
+                    ("id = ?", vec![batch::text(&holding.id)])
+                }
             };
             let event = holding_event(HOLDING_REMOVED, holding, &now, guard, guard_binds.clone());
             let delete = batch::exec(&format!("DELETE FROM holdings WHERE {guard}"), guard_binds);

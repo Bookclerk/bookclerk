@@ -247,7 +247,8 @@ impl LibraryStore {
     ///
     /// Returns an error when a read fails.
     pub async fn file_owner_of_holding(&self, holding_id: &str) -> Result<Option<FileOwner>> {
-        let Some(holding) = holdings::Entity::find_by_id(holding_id.to_string())
+        let Some(holding) = super::holdings::find_holdings()
+            .filter(holdings::Column::Id.eq(holding_id))
             .one(self.db())
             .await
             .map_err(LibraryError::Orm)?
