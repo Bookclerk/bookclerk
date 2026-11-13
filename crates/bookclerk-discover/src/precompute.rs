@@ -55,7 +55,7 @@ use crate::shelves::{shelf_is_disabled, DiscoverFeed};
 use crate::stored_feed::{
     decode_stored_feed, encode_stored_feed, feed_needs_pool, join_feed, CandidatePool,
 };
-use crate::stored_taste::{is_fresh, StoredTaste, STORED_TASTE_MAX_BYTES};
+use crate::stored_taste::{is_fresh, taste_budget, StoredTaste};
 
 /// Longest one storefront call may take before its store moves on.
 pub const STORE_CALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1151,7 +1151,10 @@ async fn store_taste(
     taste: &SubjectTaste,
 ) -> Result<StoredTaste> {
     let mut stored = StoredTaste::of(taste);
-    let json = stored.encode(STORED_TASTE_MAX_BYTES).map_err(|e| {
+    // One bind of one statement: sized to what the database's statements
+    // carry, so a database with small statements keeps the heaviest part.
+    let budget = taste_budget(library.db_capabilities().max_payload_bytes);
+    let json = stored.encode(budget).map_err(|e| {
         crate::error::DiscoverError::message(format!("encode the discover taste: {e}"))
     })?;
     library

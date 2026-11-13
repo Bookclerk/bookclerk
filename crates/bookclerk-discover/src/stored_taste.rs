@@ -35,6 +35,24 @@ pub const STORED_TASTE_FORMAT: u32 = 1;
 /// other columns.
 pub const STORED_TASTE_MAX_BYTES: usize = 128 * 1024;
 
+/// Bytes of a statement's payload kept for the taste upsert's SQL text and
+/// its other binds (subject key, scope, timestamp).
+pub(crate) const TASTE_STATEMENT_HEADROOM: usize = 1024;
+
+/// The byte budget for a stored taste under a database whose statements
+/// carry at most `max_payload_bytes` of SQL and binds: the taste is written
+/// as one bind of one statement, so it takes what the statement leaves
+/// after [`TASTE_STATEMENT_HEADROOM`], never more than
+/// [`STORED_TASTE_MAX_BYTES`]. A database with small statements (D1's are
+/// about 3.6 KiB) keeps only the heaviest entries.
+pub(crate) fn taste_budget(max_payload_bytes: u32) -> usize {
+    let payload =
+        usize::try_from(max_payload_bytes.min(bookclerk_plugin_abi::MAX_SCALAR_BYTES)).unwrap_or(0);
+    payload
+        .saturating_sub(TASTE_STATEMENT_HEADROOM)
+        .min(STORED_TASTE_MAX_BYTES)
+}
+
 /// How long a stored taste is used before a ranking loads it again.
 ///
 /// Every taste event (a wish, a listening sync, an acquire, a holding
@@ -191,6 +209,24 @@ mod tests {
         }
         taste.languages.insert("en".into());
         taste
+    }
+
+    #[test]
+    fn the_budget_follows_the_database_statement_size() {
+        assert_eq!(taste_budget(u32::MAX), STORED_TASTE_MAX_BYTES);
+        let d1 = taste_budget(bookclerk_plugin_abi::D1_MAX_PAYLOAD_BYTES);
+        assert!(d1 > 0 && d1 < 4 * 1024);
+        assert_eq!(taste_budget(512), 0);
+        // A wide taste still stores under a D1-sized budget, keeping its
+        // heaviest authors.
+        let mut taste = wide(500);
+        let json = taste.encode(d1).unwrap();
+        assert!(serde_json::to_string(&json).unwrap().len() <= d1);
+        let back = StoredTaste::decode(&json).unwrap();
+        assert!(back
+            .scores
+            .liked_authors
+            .contains_key("author number 000499 with a long name"));
     }
 
     #[test]

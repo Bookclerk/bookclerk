@@ -126,7 +126,9 @@ operator, a household user, or a portal identity) has a **subject key**
    library, so its cost follows the person's candidates, not the size of
    the library. It checks the candidates it ranks against the library by
    their ASINs, ISBNs and product ids only. Like a stored feed, the row is
-   one cell: a taste whose JSON would pass 128 KiB keeps only its heaviest
+   one cell, written as one bind of one statement: a taste whose JSON would
+   pass 128 KiB, or what the database's statements carry less 1 KiB for
+   the rest of the upsert (about 2.6 KiB on D1), keeps only its heaviest
    entries, which move a score the most, and its first wish titles. A ranking with no stored taste,
    or one more than a day old, loads the taste from the library and stores
    it again. Every [taste event](#taste-events) queues a fetch, which
