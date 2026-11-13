@@ -26,6 +26,10 @@ use crate::stored_feed::CandidatePool;
 /// One branch a title is available through.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct BranchAvailability {
+    /// This library's work the branch supplies: the `work_id` to send
+    /// `POST /api/branch-requests` to ask the branch for it.
+    #[schema(example = "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b")]
+    pub work_id: String,
     /// The branch node id.
     #[schema(example = "node-7f3a")]
     pub node_id: String,
@@ -42,9 +46,11 @@ pub struct BranchAvailability {
     pub product_id: String,
 }
 
-impl From<BranchOffer> for BranchAvailability {
-    fn from(offer: BranchOffer) -> Self {
+impl BranchAvailability {
+    /// The wire form of `offer`, a branch that supplies `work_id`.
+    fn new(work_id: &str, offer: BranchOffer) -> Self {
         Self {
+            work_id: work_id.to_string(),
             node_id: offer.node_id,
             owner_name: offer.owner_name,
             store: offer.store,
@@ -57,7 +63,13 @@ impl From<BranchOffer> for BranchAvailability {
 fn by_work(offers: HashMap<String, Vec<BranchOffer>>) -> HashMap<String, Vec<BranchAvailability>> {
     offers
         .into_iter()
-        .map(|(work, list)| (work, list.into_iter().map(Into::into).collect()))
+        .map(|(work, list)| {
+            let list = list
+                .into_iter()
+                .map(|offer| BranchAvailability::new(&work, offer))
+                .collect();
+            (work, list)
+        })
         .collect()
 }
 

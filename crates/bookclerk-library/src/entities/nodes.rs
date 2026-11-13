@@ -64,6 +64,11 @@ pub struct Model {
     pub catalog_synced_at: Option<String>,
     /// RFC 3339 end of the branch's last completed full catalog pass.
     pub catalog_full_pass_at: Option<String>,
+    /// For a branch: this library's "Acquire all of this branch's members'
+    /// books" (1 = on), set by its operator. While on, the branch's
+    /// catalog sync also sends the books its members acquired that it lists
+    /// to this library (`catalog.session.members_books`).
+    pub acquire_members_books: i64,
 }
 
 /// Declared SeaORM relations (nodes are addressed by `node_id`).
