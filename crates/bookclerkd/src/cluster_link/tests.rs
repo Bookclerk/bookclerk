@@ -1922,6 +1922,53 @@ mod results_and_uploads {
         assert_eq!(stored(&world.owner, &token_ref).await, handed);
     }
 
+    /// A job whose last refresh could not be saved here, with no refresh
+    /// after it, saves it when the job ends rather than leaving it only in
+    /// the guests' memory.
+    #[tokio::test]
+    async fn a_failed_local_save_is_retried_when_the_job_ends() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let token_ref = SecretRef {
+            kind: secret_kind::SOURCE_AUTH.into(),
+            provider: PLUGIN.into(),
+            account_id: "riley-acct".into(),
+            name: "riley-acct.auth".into(),
+        };
+        let handed = stored(&world.owner, &token_ref).await;
+        let keeper = Arc::new(FlakyKeeper {
+            failures: Mutex::new(2),
+            ..FlakyKeeper::default()
+        });
+        let guests = StubGuests {
+            rows: vec![row("riley-acct", "p1")],
+            work: world.host_files.path().join("cluster-work"),
+            refresh: Some(r#"{"token":"riley-token-v2"}"#),
+            keeper: Some(keeper.clone()),
+            ..StubGuests::default()
+        };
+        let (_handle, _stop) = start(&world, guests.clone()).await;
+
+        let job_id = enqueue_scan(&world.owner).await;
+        eventually("the host scan to finish", || async {
+            job(&world.owner, &job_id).await.state == JobState::Succeeded
+        })
+        .await;
+        // The failed save and its retry during the job, then one more
+        // when it ended, which saved it.
+        eventually("the save at the job's end", || async {
+            keeper.calls.lock().unwrap().len() == 3
+        })
+        .await;
+        let calls = keeper.calls.lock().unwrap().clone();
+        let sent: Vec<&[u8]> = calls.iter().map(|(sent, _)| sent.as_slice()).collect();
+        assert_eq!(sent, [handed.as_bytes(); 3]);
+        assert_eq!(calls[2].1, br#"{"token":"riley-token-v2"}"#);
+        assert_eq!(*keeper.failures.lock().unwrap(), 0);
+        // Nothing went back to the owner.
+        assert_eq!(stored(&world.owner, &token_ref).await, handed);
+    }
+
     /// A member's host whose guest returns a row for another user's
     /// account gets the whole batch refused; nothing of it is written and
     /// the scan fails.

@@ -828,6 +828,10 @@ pub struct OwnerWriteBack {
     /// failed save leaves it as it was, so the next refresh is saved over
     /// the copy that is really stored.
     saved: std::sync::Mutex<BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>>,
+    /// Accounts whose newest refresh this install keeps but could not save
+    /// yet: saved by the next refresh, or by [`OwnerWriteBack::flush`] when
+    /// the job ends.
+    pending: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// This install's own copies of the accounts it keeps for the library.
     local: Option<Arc<dyn LocalKeeper>>,
 }
@@ -841,8 +845,8 @@ pub enum KeptHere {
     /// Not saved: a newer sign-in here won.
     Superseded,
     /// Not saved: the write failed, so this install's copy is still the
-    /// one the job was handed, and the job's next refresh is compared with
-    /// that one again.
+    /// one the job was handed. The job's next refresh is compared with that
+    /// one again, and the save is retried when the job ends.
     Failed,
 }
 
@@ -874,14 +878,79 @@ impl OwnerWriteBack {
         host: &Arc<HostJobCtx>,
         bindings: &HostJobBindings,
         local: Option<Arc<dyn LocalKeeper>>,
-    ) -> Arc<dyn RefreshedCredentialSink> {
+    ) -> Arc<Self> {
         Arc::new(Self {
             host: Arc::clone(host),
             plugin_key: bindings.plugin_key.clone(),
             latest: std::sync::Mutex::default(),
             saved: std::sync::Mutex::default(),
+            pending: std::sync::Mutex::default(),
             local,
         })
+    }
+
+    /// Saves, when the job ends, each refresh this install keeps whose save
+    /// failed and that no later refresh saved: the guests are gone, so this
+    /// is the last chance to keep their newest credentials.
+    pub async fn flush(&self) {
+        let pending: Vec<String> =
+            std::mem::take(&mut *self.pending.lock().unwrap_or_else(|p| p.into_inner()))
+                .into_iter()
+                .collect();
+        for account_id in pending {
+            let latest = self
+                .latest
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&account_id)
+                .cloned();
+            let (Some(credentials), Some(local)) = (latest, &self.local) else {
+                continue;
+            };
+            let sent = self.stored_here(&account_id);
+            match local
+                .keep(&self.plugin_key, &account_id, &sent, &credentials)
+                .await
+            {
+                Some(KeptHere::Saved) => tracing::info!(
+                    account_id,
+                    "refreshed store credentials kept here when the job ended"
+                ),
+                Some(KeptHere::Superseded) => tracing::info!(
+                    account_id,
+                    "a newer sign-in here won over a job's refreshed credentials"
+                ),
+                Some(KeptHere::Failed) => tracing::warn!(
+                    account_id,
+                    "could not keep a job's refreshed credentials here; this install's copy stays the older one"
+                ),
+                None => {}
+            }
+        }
+    }
+
+    /// What this install holds of `account_id`: the copy this job last
+    /// saved here, else the handed copy.
+    fn stored_here(&self, account_id: &str) -> zeroize::Zeroizing<Vec<u8>> {
+        let secret_ref = self.host.secrets.refs().find(|secret| {
+            secret.kind == bookclerk_library::secrets::secret_kind::SOURCE_AUTH
+                && secret.provider == self.plugin_key
+                && secret.account_id == account_id
+        });
+        self.saved
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(account_id)
+            .cloned()
+            .or_else(|| {
+                secret_ref.and_then(|secret_ref| {
+                    self.host
+                        .secrets
+                        .get(secret_ref)
+                        .map(|value| zeroize::Zeroizing::new(value.expose().to_vec()))
+                })
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -932,31 +1001,25 @@ impl OwnerWriteBack {
         };
         // The guest holds these now, whatever becomes of them here.
         Self::remember(&self.latest, account_id, &credentials);
-        // What this install holds: the copy this job last saved here, else
-        // the handed copy.
-        let sent = self
-            .saved
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(account_id)
-            .cloned()
-            .or_else(|| {
-                self.host
-                    .secrets
-                    .get(&secret_ref)
-                    .map(|value| zeroize::Zeroizing::new(value.expose().to_vec()))
-            })
-            .unwrap_or_default();
+        let sent = self.stored_here(account_id);
         if let Some(local) = &self.local {
             let mut kept = local
                 .keep(&self.plugin_key, account_id, &sent, &credentials)
                 .await;
-            // One retry of a failed save; after that the next refresh tries
-            // again against the copy that is really stored.
+            // One retry of a failed save; after that the next refresh, or
+            // the job's end, tries again against the copy really stored.
             if kept == Some(KeptHere::Failed) {
                 kept = local
                     .keep(&self.plugin_key, account_id, &sent, &credentials)
                     .await;
+            }
+            if kept.is_some() {
+                let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+                if kept == Some(KeptHere::Failed) {
+                    pending.insert(account_id.to_owned());
+                } else {
+                    pending.remove(account_id);
+                }
             }
             match kept {
                 Some(KeptHere::Saved) => {
@@ -975,9 +1038,15 @@ impl OwnerWriteBack {
                     return;
                 }
                 // The copy here is still the one compared against, so the
-                // job's next refresh is saved over it; its guests already
-                // have the new credentials.
-                Some(KeptHere::Failed) => return,
+                // job's next refresh (or its end) saves over it; its guests
+                // already have the new credentials.
+                Some(KeptHere::Failed) => {
+                    tracing::warn!(
+                        account_id,
+                        "could not keep a job's refreshed credentials here yet; retried when the job ends"
+                    );
+                    return;
+                }
                 None => {}
             }
         }
@@ -1030,16 +1099,20 @@ async fn host_scan<G: HostGuests>(
     scan: HostScan,
     ctx: &JobExecCtx,
 ) -> anyhow::Result<String> {
+    let refreshed = OwnerWriteBack::sink(host, bindings, guests.local_keeper());
     let rows = until_cancelled(
         &ctx.cancel,
         guests.scan(
             bindings,
-            OwnerWriteBack::sink(host, bindings, guests.local_keeper()),
+            Arc::clone(&refreshed) as Arc<dyn RefreshedCredentialSink>,
             scan,
             Arc::clone(&ctx.cancel),
         ),
     )
-    .await?;
+    .await;
+    // The guest is done refreshing, whether or not the scan finished.
+    refreshed.flush().await;
+    let rows = rows?;
     let mut batch = Vec::new();
     let mut batch_bytes = 0usize;
     let mut written = 0u64;
@@ -1098,8 +1171,11 @@ async fn host_acquire<G: HostGuests>(
     ctx: &JobExecCtx,
 ) -> anyhow::Result<String> {
     let job_dir = job_work_path(&guests.work_dir(), &host.job.job.id, host.job.fence)?;
-    let refreshed = OwnerWriteBack::sink(host, bindings, guests.local_keeper());
+    let writer = OwnerWriteBack::sink(host, bindings, guests.local_keeper());
+    let refreshed: Arc<dyn RefreshedCredentialSink> = Arc::clone(&writer) as _;
     let result = acquire_titles(guests, host, bindings, &refreshed, ctx, &job_dir).await;
+    // The guests are done refreshing, whether or not every title came.
+    writer.flush().await;
     let _ = tokio::fs::remove_dir_all(&job_dir).await;
     let (acquired, failed) = result?;
     let detail = format!("acquired={acquired} failed={failed} (on a host)");
