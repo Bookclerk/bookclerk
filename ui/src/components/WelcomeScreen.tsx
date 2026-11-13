@@ -55,7 +55,7 @@ export function WelcomeScreen({
     return (
       <JoinShell
         title="Join your library"
-        lead="Enter your library's address, with its port if it has one, then sign in as a member. This computer shows your books from the library and downloads nothing; to make it a branch that downloads your own books, turn on Use this computer to download in Settings → Library."
+        lead="Enter your library's address, with its port if it has one, then sign in as a member. This computer becomes a branch of that library, and nothing the library sends runs here until you approve it."
       >
         <JoinWizard
           defaultBranchName={defaultBranchName}

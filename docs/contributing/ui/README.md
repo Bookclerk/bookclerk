@@ -88,10 +88,9 @@ the library as a member, through the same join flow a server uses (see
 **Host a library on this computer instead** sets up a library here, as
 `bookclerkd`'s first run does.
 
-A computer that joins from the window is a **window** of the library: it shows
-the person's books and downloads nothing. Turning on **Use this computer to
-download** in Settings → Library makes it a branch that downloads their own
-books.
+A computer that joins from the window becomes a branch of the library, like
+any other install that joins. Nothing the library deploys runs there until
+the window's operator approves it in Settings → Library.
 
 Not there yet: the tray, live updates over a Tauri channel, uploads (when
 they come, through the native file picker), opening external links in the
