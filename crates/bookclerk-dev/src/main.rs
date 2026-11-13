@@ -424,38 +424,15 @@ fn prepend_helper_path(root: &Path, release: bool, cmd: &mut Command) {
     cmd.env("PATH", std::env::join_paths(paths).unwrap_or(path));
 }
 
-/// The desktop app's package formats on this platform, as `cargo tauri
-/// build --bundles` names them: unsigned `.deb` and AppImage on Linux, an
-/// NSIS installer on Windows, an app and `.dmg` on macOS.
-fn desktop_bundles() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "nsis"
-    } else if cfg!(target_os = "macos") {
-        "app,dmg"
-    } else {
-        "deb,appimage"
-    }
-}
-
-/// Runs the Tauri CLI on the desktop crate with its packaging config, after
+/// Runs the Tauri CLI on the desktop crate with its packaging config
+/// ([`package::tauri_build_command`]), after
 /// [`package::stage_desktop_runtime`].
 ///
 /// # Errors
 ///
 /// Returns an error when `cargo tauri` cannot start or fails.
 fn bundle_desktop(root: &Path) -> Result<()> {
-    let crate_dir = root.join("crates").join("bookclerk-desktop");
-    let status = cargo(&crate_dir)
-        .args([
-            "tauri",
-            "build",
-            "--features",
-            "window",
-            "--config",
-            "tauri.packaging.json",
-            "--bundles",
-            desktop_bundles(),
-        ])
+    let status = package::tauri_build_command(root)
         .status()
         .context("run `cargo tauri build` (install it with `cargo install tauri-cli --locked`)")?;
     if !status.success() {

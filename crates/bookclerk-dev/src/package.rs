@@ -352,12 +352,40 @@ pub const DESKTOP_RUNTIME_STAGE: &str = "desktop-runtime";
 pub fn stage_desktop_runtime(root: &Path, version: &str) -> Result<PathBuf> {
     let out = root.join("target").join("desktop-stage");
     package_platform(root, &out, version)?;
-    let bundle = out.join(bundle_dir_name(version));
-    let runtime = root.join("target").join(DESKTOP_RUNTIME_STAGE);
+    let runtime = finish_desktop_runtime(
+        &out.join(bundle_dir_name(version)),
+        &root.join("target").join(DESKTOP_RUNTIME_STAGE),
+        &root.join("ui").join("dist"),
+    )?;
+    eprintln!("staged desktop runtime -> {}", runtime.display());
+    Ok(runtime)
+}
+
+/// Turns a platform bundle into the desktop app's runtime folder.
+///
+/// Moves `bundle` to `runtime` (replacing an earlier one), drops what the
+/// app doesn't use (the install ledger and lock, `bookclerk`, `bookclerkd`),
+/// copies the web app in as `ui/dist`, and checks the result.
+///
+/// # Arguments
+///
+/// * `bundle` - A `package-platform` bundle directory; it is moved.
+/// * `runtime` - Where the runtime folder goes.
+/// * `ui_dist` - The built web app.
+///
+/// # Returns
+///
+/// `runtime`.
+///
+/// # Errors
+///
+/// Returns an error when a move, removal or copy fails, or the result lacks
+/// a helper, `plugins/` or the web app.
+fn finish_desktop_runtime(bundle: &Path, runtime: &Path, ui_dist: &Path) -> Result<PathBuf> {
     if runtime.exists() {
-        fs::remove_dir_all(&runtime).with_context(|| format!("remove {}", runtime.display()))?;
+        fs::remove_dir_all(runtime).with_context(|| format!("remove {}", runtime.display()))?;
     }
-    fs::rename(&bundle, &runtime)
+    fs::rename(bundle, runtime)
         .with_context(|| format!("move {} -> {}", bundle.display(), runtime.display()))?;
     let unused = [
         "install-ledger.json".to_owned(),
@@ -371,13 +399,49 @@ pub fn stage_desktop_runtime(root: &Path, version: &str) -> Result<PathBuf> {
             fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
         }
     }
-    copy_dir_all(
-        &root.join("ui").join("dist"),
-        &runtime.join("ui").join("dist"),
-    )?;
-    check_desktop_runtime(&runtime)?;
-    eprintln!("staged desktop runtime -> {}", runtime.display());
-    Ok(runtime)
+    copy_dir_all(ui_dist, &runtime.join("ui").join("dist"))?;
+    check_desktop_runtime(runtime)?;
+    Ok(runtime.to_path_buf())
+}
+
+/// The desktop app's package formats on this platform, as `cargo tauri
+/// build --bundles` names them: unsigned `.deb` and AppImage on Linux, an
+/// NSIS installer on Windows, an app and `.dmg` on macOS.
+fn desktop_bundles() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "nsis"
+    } else if cfg!(target_os = "macos") {
+        "app,dmg"
+    } else {
+        "deb,appimage"
+    }
+}
+
+/// The `cargo tauri build` call that bundles the desktop app with the
+/// packaging config, run in the desktop crate.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+///
+/// # Returns
+///
+/// The command, not yet run.
+pub fn tauri_build_command(root: &Path) -> std::process::Command {
+    let mut cmd =
+        std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    cmd.current_dir(root.join("crates").join("bookclerk-desktop"))
+        .args([
+            "tauri",
+            "build",
+            "--features",
+            "window",
+            "--config",
+            "tauri.packaging.json",
+            "--bundles",
+            desktop_bundles(),
+        ]);
+    cmd
 }
 
 /// Checks that `runtime` holds what the desktop app needs from it.
@@ -675,5 +739,79 @@ mod tests {
         assert!(err.to_string().contains("ui/dist"), "{err}");
         fs::create_dir_all(root.join("ui/dist")).unwrap();
         check_desktop_runtime(root).unwrap();
+    }
+
+    #[test]
+    fn a_platform_bundle_becomes_the_desktop_runtime_without_what_the_app_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("bundle");
+        let runtime = dir.path().join("desktop-runtime");
+        let ui = dir.path().join("dist");
+        fs::create_dir_all(bundle.join("plugins")).unwrap();
+        for file in [
+            exe_name("bookclerk-jail"),
+            exe_name("bookclerk-workerd"),
+            exe_name("bookclerk-media-worker"),
+            exe_name("workerd"),
+            exe_name("bookclerk"),
+            exe_name("bookclerkd"),
+            "install-ledger.json".to_owned(),
+        ] {
+            fs::write(bundle.join(file), b"").unwrap();
+        }
+        fs::create_dir_all(&ui).unwrap();
+        fs::write(ui.join("index.html"), b"<!doctype html>").unwrap();
+        // An earlier runtime is replaced.
+        fs::create_dir_all(runtime.join("stale")).unwrap();
+
+        let staged = finish_desktop_runtime(&bundle, &runtime, &ui).unwrap();
+        assert_eq!(staged, runtime);
+        assert!(!bundle.exists());
+        assert!(!runtime.join("stale").exists());
+        assert!(runtime.join("ui/dist/index.html").is_file());
+        assert!(runtime.join(exe_name("bookclerk-jail")).is_file());
+        for gone in [
+            exe_name("bookclerk"),
+            exe_name("bookclerkd"),
+            "install-ledger.json".to_owned(),
+        ] {
+            assert!(!runtime.join(&gone).exists(), "{gone} was kept");
+        }
+    }
+
+    #[test]
+    fn a_bundle_missing_a_helper_is_not_a_desktop_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("bundle");
+        fs::create_dir_all(bundle.join("plugins")).unwrap();
+        let ui = dir.path().join("dist");
+        fs::create_dir_all(&ui).unwrap();
+        let err = finish_desktop_runtime(&bundle, &dir.path().join("runtime"), &ui).unwrap_err();
+        assert!(err.to_string().contains("bookclerk-jail"), "{err}");
+    }
+
+    #[test]
+    fn tauri_bundles_the_desktop_crate_with_the_packaging_config() {
+        let root = Path::new("/workspace");
+        let cmd = tauri_build_command(root);
+        assert_eq!(
+            cmd.get_current_dir(),
+            Some(root.join("crates").join("bookclerk-desktop").as_path())
+        );
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy()).collect();
+        assert_eq!(
+            args[..7],
+            [
+                "tauri",
+                "build",
+                "--features",
+                "window",
+                "--config",
+                "tauri.packaging.json",
+                "--bundles"
+            ]
+        );
+        assert_eq!(args[7], desktop_bundles());
+        assert!(!desktop_bundles().is_empty());
     }
 }
