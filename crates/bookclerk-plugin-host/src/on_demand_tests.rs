@@ -409,3 +409,26 @@ async fn every_guest_call_wakes_a_sleeping_proxy_and_reaches_the_guest() {
         .await
         .expect("start forwards to the running guest");
 }
+
+#[tokio::test]
+async fn a_call_waiting_on_a_wake_does_not_start_a_guest_after_stop() {
+    let (proxy, _first, started) =
+        proxy(Duration::from_millis(40), Duration::from_millis(20), None);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Hold the slot so the call passes the first retirement check and then
+    // waits, as it would behind a concurrent `stop`.
+    let slot = proxy.guest.lock().await;
+    let waiting = {
+        let proxy = Arc::clone(&proxy);
+        tokio::spawn(async move { proxy.deliver_domain_event(event()).await })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    proxy.retired.store(true, Ordering::SeqCst);
+    drop(slot);
+    let err = waiting
+        .await
+        .expect("join")
+        .expect_err("retired while waiting");
+    assert!(err.to_string().contains("was stopped"), "{err}");
+    assert!(started.lock().expect("started").is_empty());
+}

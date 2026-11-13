@@ -303,6 +303,14 @@ impl OnDemandIntegration {
             )));
         }
         let mut slot = self.guest.lock().await;
+        // `stop` may have retired the proxy while this call waited for the
+        // slot; a retired proxy must not start a guest.
+        if self.is_retired() {
+            return Err(IntegrationError::message(format!(
+                "integration `{}` was stopped",
+                self.identity.id
+            )));
+        }
         if let Some(guest) = slot.as_ref() {
             if guest.guest_running() {
                 return Ok((Arc::clone(guest), busy));
