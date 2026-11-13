@@ -102,6 +102,22 @@ pub enum NodeHoldingSelection<'a> {
     /// These holdings of the node, by id (ones a title's newer holding
     /// replaced).
     Ids(&'a [String]),
+    /// These holdings of the node, by id, while they still carry no share
+    /// state: ones a catalog batch linked before finding its fence gone.
+    /// A holding a live batch has since given its share state stays.
+    Unshared(&'a [String]),
+}
+
+/// What each delete of a removal repeats, so a holding that changed since
+/// it was read is kept.
+#[derive(Debug, Clone, Copy)]
+enum DeleteGuard<'a> {
+    /// Only the holding's id.
+    Id,
+    /// The holding is still unseen by this scan or catalog pass.
+    UnseenBy(&'a str),
+    /// The holding still carries no share state.
+    Unshared,
 }
 
 /// Whose holdings a removal reads: one account, or one branch node.
@@ -262,7 +278,7 @@ impl LibraryStore {
                 };
                 for chunk in fitting_chunks(&ids, self.lookup_chunk(), fits) {
                     total += self
-                        .remove_selected(scope, of_products(chunk), None)
+                        .remove_selected(scope, of_products(chunk), DeleteGuard::Id)
                         .await?;
                 }
             }
@@ -277,7 +293,7 @@ impl LibraryStore {
                             account_id,
                         },
                         cond,
-                        Some(pass_id),
+                        DeleteGuard::UnseenBy(pass_id),
                     )
                     .await?;
             }
@@ -289,7 +305,7 @@ impl LibraryStore {
                             account_id,
                         },
                         Condition::all(),
-                        None,
+                        DeleteGuard::Id,
                     )
                     .await?;
             }
@@ -319,11 +335,11 @@ impl LibraryStore {
                 let cond = Condition::any()
                     .add(holdings::Column::SeenPass.is_null())
                     .add(holdings::Column::SeenPass.ne(pass));
-                self.remove_selected(Scope::Node(node_id), cond, Some(pass))
+                self.remove_selected(Scope::Node(node_id), cond, DeleteGuard::UnseenBy(pass))
                     .await
             }
             NodeHoldingSelection::All => {
-                self.remove_selected(Scope::Node(node_id), Condition::all(), None)
+                self.remove_selected(Scope::Node(node_id), Condition::all(), DeleteGuard::Id)
                     .await
             }
             NodeHoldingSelection::Ids(ids) => {
@@ -332,7 +348,19 @@ impl LibraryStore {
                     let cond =
                         Condition::all().add(holdings::Column::Id.is_in(chunk.iter().cloned()));
                     total += self
-                        .remove_selected(Scope::Node(node_id), cond, None)
+                        .remove_selected(Scope::Node(node_id), cond, DeleteGuard::Id)
+                        .await?;
+                }
+                Ok(total)
+            }
+            NodeHoldingSelection::Unshared(ids) => {
+                let mut total = 0;
+                for chunk in ids.chunks(self.lookup_chunk().max(1)) {
+                    let cond = Condition::all()
+                        .add(holdings::Column::Id.is_in(chunk.iter().cloned()))
+                        .add(holdings::Column::ShareDigest.is_null());
+                    total += self
+                        .remove_selected(Scope::Node(node_id), cond, DeleteGuard::Unshared)
                         .await?;
                 }
                 Ok(total)
@@ -341,12 +369,12 @@ impl LibraryStore {
     }
 
     /// Reads the scope's holdings matching `cond` in keyset pages and
-    /// removes each; `unseen_by` repeats the pass guard in the delete.
+    /// removes each; `guard` is repeated in each delete.
     async fn remove_selected(
         &self,
         scope: Scope<'_>,
         cond: Condition,
-        unseen_by: Option<&str>,
+        guard: DeleteGuard<'_>,
     ) -> Result<usize> {
         let mut after = String::new();
         let mut total = 0;
@@ -363,7 +391,7 @@ impl LibraryStore {
             total += rows.len();
             let full = u64::try_from(rows.len()).unwrap_or(u64::MAX) >= self.removal_page();
             let page = self.doomed(scope, rows).await?;
-            self.delete_holdings(scope, &page, unseen_by).await?;
+            self.delete_holdings(scope, &page, guard).await?;
             if !full {
                 return Ok(total);
             }
@@ -433,26 +461,26 @@ impl LibraryStore {
     }
 
     /// Deletes `doomed`, each with its `holding_removed` event, in batches
-    /// sized from the database plugin's limits. With `unseen_by`, each
-    /// delete repeats the pass guard; for a node's catalog pass it also
-    /// requires the pass to still be the node's, so a pass started over
-    /// meanwhile keeps what it stamps.
+    /// sized from the database plugin's limits. Each delete repeats
+    /// `guard`: a pass guard for a node's catalog pass also requires the
+    /// pass to still be the node's, so a pass started over meanwhile keeps
+    /// what it stamps.
     async fn delete_holdings(
         &self,
         scope: Scope<'_>,
         doomed: &[Doomed],
-        unseen_by: Option<&str>,
+        guard: DeleteGuard<'_>,
     ) -> Result<()> {
         let now = super::now_str();
         let mut batches = WriteBatches::new(self.db_capabilities(), "holding removal")
             .with_trailer(crate::control_plane::bump(LiveTopic::Library))?;
         for holding in doomed {
-            let (guard, guard_binds) = match (unseen_by, scope) {
-                (Some(pass), Scope::Account { .. }) => (
+            let (guard, guard_binds) = match (guard, scope) {
+                (DeleteGuard::UnseenBy(pass), Scope::Account { .. }) => (
                     "id = ? AND (seen_pass IS NULL OR seen_pass <> ?)",
                     vec![batch::text(&holding.id), batch::text(pass)],
                 ),
-                (Some(pass), Scope::Node(node_id)) => (
+                (DeleteGuard::UnseenBy(pass), Scope::Node(node_id)) => (
                     "id = ? AND (seen_pass IS NULL OR seen_pass <> ?) AND EXISTS \
                      (SELECT 1 FROM nodes WHERE node_id = ? AND catalog_pass_started_at = ?)",
                     vec![
@@ -462,7 +490,11 @@ impl LibraryStore {
                         batch::text(pass),
                     ],
                 ),
-                (None, _) => ("id = ?", vec![batch::text(&holding.id)]),
+                (DeleteGuard::Unshared, _) => (
+                    "id = ? AND share_digest IS NULL",
+                    vec![batch::text(&holding.id)],
+                ),
+                (DeleteGuard::Id, _) => ("id = ?", vec![batch::text(&holding.id)]),
             };
             let event = holding_event(HOLDING_REMOVED, holding, &now, guard, guard_binds.clone());
             let delete = batch::exec(&format!("DELETE FROM holdings WHERE {guard}"), guard_binds);
@@ -1008,7 +1040,7 @@ mod tests {
                     account_id: "a1",
                 },
                 &doomed,
-                Some("pass-1"),
+                DeleteGuard::UnseenBy("pass-1"),
             )
             .await
             .unwrap();

@@ -1802,3 +1802,86 @@ async fn a_title_on_a_new_listing_replaces_its_earlier_holding() {
     assert_eq!(rows.len(), 1, "one holding per shared title");
     assert_eq!(removed_events(&store).await, 1);
 }
+
+/// A batch read under one fence and written after a newer connection
+/// opened (and the branch still shares) takes back the holdings its links
+/// created, so the newer pass is not left holding titles it did not name;
+/// a title that already carried share state keeps its holding.
+#[tokio::test]
+async fn a_batch_overtaken_by_a_newer_connection_takes_back_its_holdings() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let session = open(&store, true, true).await;
+    accepted(&store, session.fence, "a", false, &[title("p1", 1)]).await;
+
+    // `p1` is shared already; `p2` is linked by this batch only.
+    let prepared = prepared_batch(&store, session.fence).await;
+    open(&store, true, true).await;
+    assert_eq!(
+        apply_catalog_batch(&store, BRANCH, session.fence, prepared)
+            .await
+            .unwrap(),
+        CatalogAccept::Lost
+    );
+    let products: Vec<String> = list_branch_titles(&store, None, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.product_id)
+        .collect();
+    assert_eq!(products, ["p1"]);
+    let held = holdings::Entity::find()
+        .filter(holdings::Column::NodeId.eq(BRANCH))
+        .count(store.db())
+        .await
+        .unwrap();
+    assert_eq!(held, 1, "p2's holding was taken back");
+    assert_eq!(removed_events(&store).await, 1);
+}
+
+/// The detached count and Remove answer in one aggregate, so they work
+/// under every database profile however many editions were left behind.
+#[tokio::test]
+async fn left_behind_counts_and_removal_work_under_every_profile() {
+    let _lock = master_key_test_lock_async().await;
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let dir = tempfile::tempdir().unwrap();
+        crate::configure_master_key(dir.path()).expect("master key");
+        let store = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        let member = store
+            .create_user(UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        add_node(&store, BRANCH, "host", Some(member.id)).await;
+        let titles = [
+            title_with("p1", "Author/p1/p1.m4b", &[]),
+            title_with("p2", "Author/p2/p2.m4b", &[]),
+        ];
+        let fence = open_branch(&store, BRANCH, &titles).await;
+        deliver_local(&store, BRANCH, fence, "p1", &["Author/p1/p1.m4b"]).await;
+        deliver_local(&store, BRANCH, fence, "p2", &["Author/p2/p2.m4b"]).await;
+        let counts = branch_title_counts(&store, BRANCH).await.unwrap();
+        assert_eq!((counts.shared, counts.delivered), (2, 2), "{name}");
+
+        open(&store, false, true).await;
+        assert_eq!(
+            branch_title_counts(&store, BRANCH).await.unwrap().detached,
+            2,
+            "{name}"
+        );
+        assert_eq!(
+            remove_detached_branch_titles(&store, None).await.unwrap(),
+            2,
+            "{name}"
+        );
+        assert_eq!(
+            branch_title_counts(&store, BRANCH).await.unwrap().detached,
+            0,
+            "{name}"
+        );
+    }
+}
