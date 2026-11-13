@@ -169,7 +169,9 @@ only that. The others check:
   within `MAX_SCAN_CURSOR_BYTES`, a next cursor that is empty or differs
   from the one sent, books for that account only, no blank product or
   removed id, and refreshed credentials that are absent, empty, or one
-  JSON object within `MAX_REFRESHED_CREDENTIAL_BYTES`. An accepted
+  JSON object within `MAX_REFRESHED_CREDENTIAL_BYTES` (the same
+  `validate_refreshed_credentials` check the host runs on a
+  `PlainFetch` reply's refreshed credentials). An accepted
   page round-trips through the codec and is accepted again. The shared
   oracle is `fuzz/oracles/scan_page.rs`, replayed from
   `bookclerk-plugin-abi`.

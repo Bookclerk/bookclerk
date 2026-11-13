@@ -1007,7 +1007,9 @@ again:
    `MAX_REFRESHED_CREDENTIAL_BYTES` (64 KiB). The host refuses a scan page
    that breaks either rule and fails the scan.
 3. The host keeps the renewed credentials before it writes the page's
-   titles, and sends them on the pass's later pages.
+   titles, and sends them on the pass's later pages. A `PlainFetch` reply
+   that breaks the rules keeps its title; the credentials are logged and
+   dropped.
 
 The host stores them only while the account still has the credentials it
 sent the plugin. If someone signed the account in again in the meantime,

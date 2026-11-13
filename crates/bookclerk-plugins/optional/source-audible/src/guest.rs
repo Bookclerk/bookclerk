@@ -283,7 +283,7 @@ pub async fn guest_scan_page(
     };
     let rows = fetch_library_page(&client, &params.account_id, &marketplace, &request).await?;
     let mut page = scan_page_from_rows(rows, seen, request_token)?;
-    page.refreshed_credentials = refreshed.credentials(&creds)?;
+    page.refreshed_credentials = refreshed.hand_back(&creds);
     Ok(page)
 }
 
@@ -577,7 +577,7 @@ pub async fn guest_fetch_title(
             .map(|(title, start_ms)| bookclerk_plugin_sdk::ChapterMarker { title, start_ms })
             .collect(),
         pdf_url: downloaded.pdf_url,
-        refreshed_credentials: refreshed.credentials(credentials)?,
+        refreshed_credentials: refreshed.hand_back(credentials),
     })
 }
 
@@ -718,6 +718,16 @@ pub fn credentials_json_from_auth(auth: &Authenticator, widevine: Option<&[u8]>)
 struct RefreshCapture(Arc<Mutex<Option<Value>>>);
 
 impl RefreshCapture {
+    /// [`Self::credentials`] for a reply: refreshed credentials that do not
+    /// encode are logged and left out rather than failing a call whose work
+    /// already succeeded (the stored credentials still sign in).
+    fn hand_back(&self, original: &Value) -> Option<Vec<u8>> {
+        self.credentials(original).unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "could not hand back refreshed credentials");
+            None
+        })
+    }
+
     /// The credential bytes to hand back: `original` with its
     /// `authfile_b64` replaced by the refreshed auth state, other fields
     /// (the Widevine CDM) kept; `None` when nothing was refreshed.
@@ -922,6 +932,11 @@ mod tests {
         assert_eq!(renewed["bearer"]["refresh_token"], "Atnr|synthetic");
         // Taken once: a later call with no refresh hands nothing back.
         assert!(refreshed.credentials(&creds).unwrap().is_none());
+        assert!(refreshed.hand_back(&creds).is_none());
+
+        // A refresh that cannot be encoded is left out, not an error.
+        let broken = RefreshCapture(Arc::new(Mutex::new(Some(json!({"bearer": {}})))));
+        assert!(broken.hand_back(&json!(["not", "an", "object"])).is_none());
     }
 
     #[tokio::test]

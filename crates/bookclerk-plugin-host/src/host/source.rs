@@ -98,11 +98,19 @@ pub struct ExternalSource {
 /// owner cluster handed with a job (`ScanPage.refreshedCredentials`,
 /// `PlainFetch.refreshedCredentials`), already checked against the ABI
 /// bounds. The daemon writes them back to the owner under the job's fence.
+///
+/// One sink serves a whole job, so the job's later guest calls (the next
+/// title of an acquire, a fetch after a scan) are sent the refreshed
+/// credentials ([`Self::latest`]) rather than the stale handed ones.
 #[async_trait::async_trait]
 pub trait RefreshedCredentialSink: Send + Sync {
     /// Hands back `credentials`, the guest's refreshed credentials for
     /// `account_id`. Failures are the sink's to log; the job goes on.
     async fn refreshed(&self, account_id: &str, credentials: Vec<u8>);
+
+    /// The newest credentials handed to [`Self::refreshed`] for
+    /// `account_id` during this job, if any; they replace the handed ones.
+    fn latest(&self, account_id: &str) -> Option<Vec<u8>>;
 }
 
 /// Where credentials a guest refreshed go
@@ -122,7 +130,8 @@ enum RefreshTarget<'a> {
 /// this install's own accounts they replace the stored credentials only
 /// while those are still `sent`, so a sign-in that happened meanwhile wins
 /// ([`SourceScope::replace_refreshed_credentials`]). An empty blob means
-/// nothing changed. The value is registered for redaction first.
+/// nothing changed. The value is registered for redaction before it is
+/// sent or stored.
 ///
 /// # Errors
 ///
@@ -140,7 +149,11 @@ async fn keep_refreshed_credentials(
     }
     bookclerk_plugin_abi::validate_refreshed_credentials(&refreshed)
         .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
-    bookclerk_config::register_secret_bytes(&refreshed);
+    // The library registers what it stores; handed values are registered
+    // here, before they go anywhere.
+    if matches!(target, RefreshTarget::Handed(_)) {
+        bookclerk_config::register_secret_bytes(&refreshed);
+    }
     let scope = match target {
         RefreshTarget::Handed(Some(sink)) => {
             sink.refreshed(account_id, refreshed).await;
@@ -154,7 +167,14 @@ async fn keep_refreshed_credentials(
             );
             return Ok(());
         }
-        RefreshTarget::Local(None) => return Ok(()),
+        RefreshTarget::Local(None) => {
+            tracing::warn!(
+                plugin,
+                account_id,
+                "the guest refreshed credentials with no library to keep them in"
+            );
+            return Ok(());
+        }
         RefreshTarget::Local(Some(scope)) => scope,
     };
     let sent = credentials_from_bytes(sent)?;
@@ -299,6 +319,12 @@ impl ExternalSource {
         keep_refreshed_credentials(self.id(), target, account_id, sent, refreshed).await
     }
 
+    /// Credentials the guest refreshed for `account_id` earlier in this job,
+    /// which replace the handed ones.
+    fn refreshed_since(&self, account_id: &str) -> Option<Vec<u8>> {
+        self.refresh_sink.as_ref()?.latest(account_id)
+    }
+
     /// Uses only `credentials` (an owner cluster handed them with a job)
     /// for every guest call: no library is read for credentials, and
     /// [`ContentSource::scan`] is refused in favour of
@@ -344,7 +370,12 @@ impl ExternalSource {
             .0
             .iter()
             .filter(|(account, _)| opts.accounts.is_empty() || opts.accounts.contains(account))
-            .map(|(account, value)| (account.clone(), value.to_vec()))
+            .map(|(account, value)| {
+                let value = self
+                    .refreshed_since(account)
+                    .unwrap_or_else(|| value.to_vec());
+                (account.clone(), value)
+            })
             .collect();
         if !credentials.is_empty() {
             self.session.require_binding("secrets")?;
@@ -481,7 +512,9 @@ impl ExternalSource {
         account_id: &str,
     ) -> bookclerk_source::Result<Option<Vec<u8>>> {
         let credentials = match self.handed.as_ref() {
-            Some(handed) => handed.0.get(account_id).map(|value| value.to_vec()),
+            Some(handed) => self
+                .refreshed_since(account_id)
+                .or_else(|| handed.0.get(account_id).map(|value| value.to_vec())),
             None => scope
                 .load_credentials_json(account_id)
                 .await
@@ -1180,15 +1213,28 @@ impl PassLedger<'_> {
 
 impl PassIo for LibraryPass<'_> {
     async fn refreshed(&mut self, credentials: Vec<u8>) -> bookclerk_source::Result<()> {
-        self.source
+        // The page already passed the ABI checks, so a failure here is the
+        // store's; the guest's credentials still work, so the pass goes on.
+        if let Err(err) = self
+            .source
             .keep_refreshed(
                 Some(self.ledger.scope),
                 &self.ledger.account_id,
                 &self.credential,
                 credentials.clone(),
             )
-            .await?;
-        // The pass's later pages use the guest's current credentials.
+            .await
+        {
+            tracing::warn!(
+                plugin = %self.ledger.plugin,
+                account_id = %self.ledger.account_id,
+                error = %err,
+                "could not keep the guest's refreshed credentials"
+            );
+        }
+        // The pass's later pages use the guest's current credentials, even
+        // when a newer sign-in won the store: one pass never switches
+        // sessions midway, and the next pass uses the newer sign-in.
         self.credential = credentials;
         Ok(())
     }
@@ -1559,6 +1605,16 @@ mod tests {
                 .unwrap()
                 .push((account_id.into(), credentials));
         }
+
+        fn latest(&self, account_id: &str) -> Option<Vec<u8>> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|(account, _)| account == account_id)
+                .map(|(_, credentials)| credentials.clone())
+        }
     }
 
     /// Refreshed credentials go to the sink for handed credentials, replace
@@ -1592,6 +1648,8 @@ mod tests {
             sink.0.lock().unwrap().as_slice(),
             &[("a1".to_string(), br#"{"token":"h"}"#.to_vec())]
         );
+        assert_eq!(sink.latest("a1"), Some(br#"{"token":"h"}"#.to_vec()));
+        assert_eq!(sink.latest("other"), None);
         keep(RefreshTarget::Local(None), br#"{"token":"x"}"#)
             .await
             .unwrap();

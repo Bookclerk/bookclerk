@@ -47,7 +47,7 @@
 //! The guest work itself sits behind [`HostGuests`], so tests can stand in
 //! a guest without spawning one; [`GuestHost`] is the daemon's.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -722,13 +722,21 @@ impl<G: HostGuests> JobTransport for HostJobTransport<G> {
 
 /// Writes credentials a guest refreshed on this host back to the owner,
 /// under the job's fence ([`HostJobCtx::write_back`]), as the row the owner
-/// handed for the account. The owner keeps the newest sign-in; a failed
-/// write-back is logged and the job goes on with the refreshed credentials.
+/// handed for the account. A failed write-back is logged; the job goes on
+/// with the refreshed credentials either way: one sink serves the whole
+/// job, so its later guests are sent them ([`RefreshedCredentialSink::latest`]).
+///
+/// The owner replaces the account's row under the job's fence without
+/// comparing it with what it handed, so a sign-in on the owner during the
+/// job can be overwritten; the keeper lease (single-keeper accounts) is
+/// what closes that.
 pub struct OwnerWriteBack {
     /// The job, whose fence and handed secrets the write-back uses.
     host: Arc<HostJobCtx>,
     /// The job's plugin key, the provider of the account rows it may write.
     plugin_key: String,
+    /// The newest refreshed credentials of each account this job.
+    latest: std::sync::Mutex<BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>>,
 }
 
 impl OwnerWriteBack {
@@ -741,12 +749,18 @@ impl OwnerWriteBack {
         Arc::new(Self {
             host: Arc::clone(host),
             plugin_key: bindings.plugin_key.clone(),
+            latest: std::sync::Mutex::default(),
         })
     }
 }
 
 #[async_trait::async_trait]
 impl RefreshedCredentialSink for OwnerWriteBack {
+    fn latest(&self, account_id: &str) -> Option<Vec<u8>> {
+        let latest = self.latest.lock().unwrap_or_else(|p| p.into_inner());
+        latest.get(account_id).map(|value| value.to_vec())
+    }
+
     async fn refreshed(&self, account_id: &str, credentials: Vec<u8>) {
         let credentials = zeroize::Zeroizing::new(credentials);
         let Some(secret_ref) = self
@@ -766,6 +780,10 @@ impl RefreshedCredentialSink for OwnerWriteBack {
             );
             return;
         };
+        self.latest
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(account_id.to_owned(), credentials.clone());
         match self.host.write_back(&secret_ref, &credentials).await {
             Ok(()) => tracing::info!(
                 account_id,
@@ -883,7 +901,8 @@ async fn host_acquire<G: HostGuests>(
     ctx: &JobExecCtx,
 ) -> anyhow::Result<String> {
     let job_dir = job_work_path(&guests.work_dir(), &host.job.job.id, host.job.fence)?;
-    let result = acquire_titles(guests, host, bindings, ctx, &job_dir).await;
+    let refreshed = OwnerWriteBack::sink(host, bindings);
+    let result = acquire_titles(guests, host, bindings, &refreshed, ctx, &job_dir).await;
     let _ = tokio::fs::remove_dir_all(&job_dir).await;
     let (acquired, failed) = result?;
     let detail = format!("acquired={acquired} failed={failed} (on a host)");
@@ -911,6 +930,7 @@ async fn acquire_titles<G: HostGuests>(
     guests: &G,
     host: &Arc<HostJobCtx>,
     bindings: &HostJobBindings,
+    refreshed: &Arc<dyn RefreshedCredentialSink>,
     ctx: &JobExecCtx,
     job_dir: &Path,
 ) -> anyhow::Result<(u32, u32)> {
@@ -975,7 +995,7 @@ async fn acquire_titles<G: HostGuests>(
                 let done = guests
                     .acquire(
                         bindings,
-                        OwnerWriteBack::sink(host, bindings),
+                        Arc::clone(refreshed),
                         &title,
                         &outbox,
                         Arc::clone(&ctx.cancel),
