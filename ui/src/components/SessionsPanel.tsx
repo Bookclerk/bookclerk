@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Cable, ChevronRight, Monitor, RefreshCw, Smartphone, Tablet } from "lucide-react";
+import { Cable, ChevronRight, IdCard, Monitor, RefreshCw, Smartphone, Tablet } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { type ListedSession } from "@/lib/api";
@@ -12,6 +12,8 @@ function sessionDeviceIcon(deviceType: string | null | undefined) {
       return Tablet;
     case "api":
       return Cable;
+    case "client":
+      return IdCard;
     default:
       return Monitor;
   }
@@ -50,6 +52,9 @@ function SessionMeta({ row }: { row: ListedSession }) {
 function SessionBadges({ row }: { row: ListedSession }) {
   return (
     <>
+      {row.channel === "client" ? (
+        <Badge className="bg-ink/10 text-ink normal-case tracking-normal">Library card</Badge>
+      ) : null}
       {row.elevated ? (
         <Badge className="bg-teal/15 text-ink normal-case tracking-normal">Elevated</Badge>
       ) : null}

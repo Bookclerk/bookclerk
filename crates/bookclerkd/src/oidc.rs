@@ -8,7 +8,10 @@
 //! or https redirect URIs). Its authorize requests go to the SPA consent
 //! page `/join/approve`, and its codes are redeemed only at
 //! `POST /api/node/v1/enroll/oauth` (`crate::node_api::branch`), never at
-//! the token endpoint.
+//! the token endpoint. A second, `bookclerk-client` (scope
+//! `library:member`), is how a client install signs in as a person: its
+//! requests go to `/client/approve` and its codes are redeemed only at
+//! `POST /api/client/v1/token` (`crate::node_api::client`).
 
 use crate::openapi::{Access, RouteGroup};
 use std::sync::Arc;
@@ -158,7 +161,7 @@ pub struct AuthorizeQuery {
     path = "/oidc/authorize",
     params(AuthorizeQuery),
     responses(
-        (status = 303, description = "A `bookclerk-branch` request is sent to the SPA consent page (`/join/approve`)."),
+        (status = 303, description = "A `bookclerk-branch` request is sent to the SPA consent page `/join/approve`, and a `bookclerk-client` request to `/client/approve`."),
         (status = 307, description = "Redirects to sign-in (no user session) or to the client with a code."),
         (status = 400, description = "The request is invalid. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body. A query string that cannot be parsed gets a plain-text line.", content(
             (crate::http_error::ErrorJson = "application/json"),
@@ -184,6 +187,9 @@ async fn authorize(
     if q.client_id == bookclerk_node_proto::BRANCH_CLIENT_ID {
         return branch_authorize(raw.as_deref().unwrap_or(""));
     }
+    if q.client_id == bookclerk_node_proto::CLIENT_CLIENT_ID {
+        return client_authorize(raw.as_deref().unwrap_or(""));
+    }
     validate_authorize_request(&state, &q).await?;
     let Some(user_id) = require_user_session(&state, &headers).await? else {
         // Operator token alone is not enough — send to SPA login.
@@ -207,6 +213,17 @@ fn branch_authorize(raw: &str) -> Result<Response, StatusCode> {
         return Err(StatusCode::BAD_REQUEST);
     }
     Ok(Redirect::to(&format!("/join/approve?{raw}")).into_response())
+}
+
+/// A `bookclerk-client` authorize request: checked here (a malformed one is
+/// 400 and never redirects), then sent to the SPA consent page, which signs
+/// the user in and asks before any code is issued.
+fn client_authorize(raw: &str) -> Result<Response, StatusCode> {
+    let params = crate::node_api::client::parse_client_query(raw).ok_or(StatusCode::BAD_REQUEST)?;
+    if crate::node_api::client::client_request_problem(&params).is_some() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(Redirect::to(&format!("/client/approve?{raw}")).into_response())
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -510,8 +527,11 @@ async fn token_authorization_code(
         .as_deref()
         .ok_or(StatusCode::BAD_REQUEST)?;
     let client_id = form.client_id.as_deref().ok_or(StatusCode::BAD_REQUEST)?;
-    // A branch's code is redeemed only at the node API's enroll/oauth.
-    if client_id.trim() == bookclerk_node_proto::BRANCH_CLIENT_ID {
+    // A branch's code is redeemed only at the node API's enroll/oauth, and
+    // a client sign-in's only at the client token route.
+    if client_id.trim() == bookclerk_node_proto::BRANCH_CLIENT_ID
+        || client_id.trim() == bookclerk_node_proto::CLIENT_CLIENT_ID
+    {
         return Err(StatusCode::UNAUTHORIZED);
     }
     let verifier = form
@@ -1087,10 +1107,10 @@ async fn sync_plugin_oidc_clients_with(
     }
     let library = state.library_snapshot().await;
     for tmpl in templates {
-        if tmpl.client_id.trim() == bookclerk_node_proto::BRANCH_CLIENT_ID {
+        if is_built_in_client_id(&tmpl.client_id) {
             tracing::warn!(
                 plugin = %tmpl.plugin_id,
-                "skipping a plugin OIDC client that claims the built-in branch client id"
+                "skipping a plugin OIDC client that claims a built-in client id"
             );
             continue;
         }
@@ -1264,10 +1284,17 @@ fn oidc_client_error(status: StatusCode, message: impl Into<String>) -> Response
         .into_response()
 }
 
+/// True for the ids of the built-in public clients (a joining branch and a
+/// client app's library card), which are never stored as registered clients.
+fn is_built_in_client_id(id: &str) -> bool {
+    let id = id.trim();
+    id == bookclerk_node_proto::BRANCH_CLIENT_ID || id == bookclerk_node_proto::CLIENT_CLIENT_ID
+}
+
 /// Reject empty, oversized, or punctuation-heavy client ids.
 pub(crate) fn validate_client_id(id: &str) -> Result<(), String> {
     let trimmed = id.trim();
-    if trimmed == bookclerk_node_proto::BRANCH_CLIENT_ID {
+    if is_built_in_client_id(trimmed) {
         return Err(format!("client id {trimmed} is built in"));
     }
     if trimmed.len() < 2 || trimmed.len() > 128 {

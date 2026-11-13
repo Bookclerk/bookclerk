@@ -48,6 +48,7 @@ boundary extends it.
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
+| `client_authorization` | A client app's library card, the `Authorization: Bookclerk-Client <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_client_authorization` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
@@ -249,6 +250,12 @@ only that. The others check:
   Member, checked against the oracle's own model rather than the planner's
   queries. A refusal is `Forbidden` or `Invalid`. The shared oracle is
   `fuzz/oracles/plan_authz.rs`, replayed from `bookclerk-library`.
+- **`client_authorization`**: reads the header value byte by byte. It
+  yields a token exactly when it is the scheme `Bookclerk-Client` in any
+  ASCII case, one space, and 43 characters from `A-Z`, `a-z`, `0-9`, `-`
+  and `_`, with nothing else, and the token is those 43 bytes. The shared
+  oracle is `fuzz/oracles/client_authorization.rs`, replayed from
+  `bookclerk-node-proto`.
 - **`job_cap_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
   besides `cluster_id` (a string) and `max_jobs` (`null` or a whole number

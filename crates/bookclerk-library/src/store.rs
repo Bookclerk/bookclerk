@@ -2351,6 +2351,9 @@ impl LibraryStore {
             user_agent: Set(client.and_then(|c| c.user_agent.clone())),
             device_type: Set(client.map(|c| c.device_type.clone())),
             client_label: Set(client.map(|c| c.client_label.clone())),
+            kind: Set(crate::models::PortalSessionKind::Browser
+                .as_str()
+                .to_string()),
         };
         session.insert(txn).await.map_err(LibraryError::Orm)?;
         if let Some(user_id) = identity.user_id {
@@ -2397,10 +2400,77 @@ impl LibraryStore {
             user_agent: Set(client.and_then(|c| c.user_agent.clone())),
             device_type: Set(client.map(|c| c.device_type.clone())),
             client_label: Set(client.map(|c| c.client_label.clone())),
+            kind: Set(crate::models::PortalSessionKind::Browser
+                .as_str()
+                .to_string()),
         };
         am.insert(&self.db).await.map_err(LibraryError::Orm)?;
         Self::set_last_seen_for_identity_on(&self.db, identity_id, &now).await?;
         Ok(())
+    }
+
+    /// Creates a client sign-in session: a token a client install presents
+    /// as `Authorization: Bookclerk-Client`, never as a cookie.
+    ///
+    /// # Arguments
+    ///
+    /// * `token_hash` - SHA-256 hex of the token (the token is never stored).
+    /// * `identity_id` - The user's portal identity.
+    /// * `expires_at` - First expiry; each use moves it forward
+    ///   ([`Self::get_client_session_identity`]).
+    /// * `label` - The name the client install gave itself, shown in the
+    ///   user's session list.
+    ///
+    /// # Returns
+    ///
+    /// The new session's row id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the insert fails.
+    pub async fn insert_client_session(
+        &self,
+        token_hash: &str,
+        identity_id: i64,
+        expires_at: chrono::DateTime<Utc>,
+        label: &str,
+    ) -> Result<i64> {
+        let now = now_str();
+        let am = portal_sessions::ActiveModel {
+            id: NotSet,
+            token_hash: Set(token_hash.to_string()),
+            identity_id: Set(identity_id),
+            expires_at: Set(expires_at.to_rfc3339()),
+            created_at: Set(now.clone()),
+            last_used_at: Set(Some(now.clone())),
+            user_agent: Set(None),
+            device_type: Set(Some(String::from("client"))),
+            client_label: Set(Some(label.to_string())),
+            kind: Set(crate::models::PortalSessionKind::Client
+                .as_str()
+                .to_string()),
+        };
+        let row = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Self::set_last_seen_for_identity_on(&self.db, identity_id, &now).await?;
+        Ok(row.id)
+    }
+
+    /// Deletes a client sign-in session by token hash (the client signing
+    /// itself out). A browser session with that hash is left alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the delete fails.
+    pub async fn delete_client_session(&self, token_hash: &str) -> Result<bool> {
+        let result = portal_sessions::Entity::delete_many()
+            .filter(portal_sessions::Column::TokenHash.eq(token_hash))
+            .filter(
+                portal_sessions::Column::Kind.eq(crate::models::PortalSessionKind::Client.as_str()),
+            )
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(result.rows_affected > 0)
     }
 
     /// Delete a portal session by token hash (logout / revoke).
@@ -2452,15 +2522,20 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
             .into_iter()
-            .map(|r| crate::models::PortalSessionRecord {
-                id: r.id,
-                token_hash: r.token_hash,
-                created_at: r.created_at,
-                expires_at: r.expires_at,
-                last_used_at: r.last_used_at,
-                user_agent: r.user_agent,
-                device_type: r.device_type,
-                client_label: r.client_label,
+            .filter_map(|r| {
+                // The column's CHECK admits only known kinds.
+                let kind = crate::models::PortalSessionKind::parse(&r.kind)?;
+                Some(crate::models::PortalSessionRecord {
+                    id: r.id,
+                    token_hash: r.token_hash,
+                    created_at: r.created_at,
+                    expires_at: r.expires_at,
+                    last_used_at: r.last_used_at,
+                    user_agent: r.user_agent,
+                    device_type: r.device_type,
+                    client_label: r.client_label,
+                    kind,
+                })
             })
             .collect())
     }
@@ -2502,11 +2577,13 @@ impl LibraryStore {
             .map_err(LibraryError::Orm)
     }
 
-    /// Resolve a valid portal session to its identity.
+    /// Resolve a valid browser (cookie) session to its identity.
     ///
     /// Refreshes `portal_sessions.last_used_at` and `users.last_seen_at` at most
     /// once per minute so administrator presence can tell active from idle
     /// without a write on every request. `last_seen_at` is kept after logout.
+    /// A client sign-in's token is not a browser session and resolves to
+    /// nothing here.
     ///
     /// # Errors
     ///
@@ -2515,9 +2592,49 @@ impl LibraryStore {
         &self,
         token_hash: &str,
     ) -> Result<Option<crate::models::PortalIdentity>> {
+        self.session_identity(token_hash, crate::models::PortalSessionKind::Browser, None)
+            .await
+    }
+
+    /// Resolve a valid client sign-in session to its identity.
+    ///
+    /// Like [`Self::get_portal_session_identity`], but only for a `client`
+    /// session, and each touch (at most once a minute) also moves its expiry
+    /// to `idle` from now, so a client in use stays signed in and one left
+    /// unused for `idle` is signed out.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
+    pub async fn get_client_session_identity(
+        &self,
+        token_hash: &str,
+        idle: chrono::Duration,
+    ) -> Result<Option<crate::models::PortalIdentity>> {
+        self.session_identity(
+            token_hash,
+            crate::models::PortalSessionKind::Client,
+            Some(idle),
+        )
+        .await
+    }
+
+    /// Resolves a live session of one kind, touching it at most once a
+    /// minute and, with `slide`, moving its expiry to `slide` from now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read or the touch fails.
+    async fn session_identity(
+        &self,
+        token_hash: &str,
+        kind: crate::models::PortalSessionKind,
+        slide: Option<chrono::Duration>,
+    ) -> Result<Option<crate::models::PortalIdentity>> {
         let now = now_str();
         let Some(session) = portal_sessions::Entity::find()
             .filter(portal_sessions::Column::TokenHash.eq(token_hash))
+            .filter(portal_sessions::Column::Kind.eq(kind.as_str()))
             .filter(portal_sessions::Column::ExpiresAt.gt(&now))
             .one(&self.db)
             .await
@@ -2533,6 +2650,9 @@ impl LibraryStore {
         if should_touch {
             let mut am: portal_sessions::ActiveModel = session.into();
             am.last_used_at = Set(Some(now.clone()));
+            if let Some(idle) = slide {
+                am.expires_at = Set((Utc::now() + idle).to_rfc3339());
+            }
             am.update(&self.db).await.map_err(LibraryError::Orm)?;
         }
         let identity = self.get_portal_identity_by_id(identity_id).await?;

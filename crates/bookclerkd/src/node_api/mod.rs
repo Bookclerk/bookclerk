@@ -31,6 +31,7 @@
 
 mod artifacts;
 pub mod branch;
+pub mod client;
 mod host_accounts;
 mod host_catalog;
 mod host_interlibrary;
@@ -447,6 +448,9 @@ pub(crate) fn node_routes() -> OpenApiRouter<Arc<AppState>> {
         // the redeem of an approved code (code + PKCE verifier).
         .routes(routes!(branch::get_info))
         .routes(routes!(branch::post_enroll_oauth))
+        // A client sign-in's redeem of its approved code (code + PKCE
+        // verifier) for a session token.
+        .routes(routes!(client::post_client_token))
         // Host-node socket: the node's Ed25519 key is the credential.
         .routes(routes!(ws::get_connect))
         // Owner plugin archives: a node-signed request is the credential.
@@ -480,7 +484,7 @@ where
 /// runs [`classify_transport`]. Answers 404 `node_api_unmounted` while a
 /// TLS mode has no certificate, or 403 `transport_insecure` when the
 /// connection is refused.
-async fn check_transport(
+pub(crate) async fn check_transport(
     state: &Arc<AppState>,
     parts: &mut Parts,
     what: &'static str,

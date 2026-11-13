@@ -227,6 +227,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "client_authorization"
+path = "fuzz_targets/client_authorization.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "job_cap_request"
 path = "fuzz_targets/job_cap_request.rs"
 test = false

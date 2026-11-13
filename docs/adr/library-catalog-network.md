@@ -1,9 +1,11 @@
 # ADR: Library catalog network
 
-- **Status:** Accepted (2026-11-11). Step 1, per-library plugin state on a
-  branch, step 2, own library first, step 4, catalog lookup, and step 7,
-  capacity shares, are implemented. Step 5's requests are implemented; its
-  "acquire all of this branch's members' books" setting is planned. The other steps are planned and listed under
+- **Status:** Accepted (2026-11-11), amended 2026-11-13 (client apps are
+  not nodes; see [Kinds of install](#kinds-of-install)). Step 1,
+  per-library plugin state on a branch, step 2, own library first, step 4,
+  catalog lookup, and step 7, capacity shares, are implemented. Step 5's
+  requests are implemented; its "acquire all of this branch's members'
+  books" setting is planned. The other steps are planned and listed under
   [Consequences](#consequences).
 - **Date:** 2026-11-11
 - **Related:** [Control plane](control-plane.md) (H-4 branches, branches of
@@ -151,21 +153,26 @@ take all of it.
 
 ### Kinds of install
 
-A **library** and a **branch** are the same software with no technical
-difference, except that a library others join must be routable. A
-branch dials out to its library over a websocket and is not assumed to
-be publicly addressable. It contributes to that library (jobs, catalog
-answers, requests) whether or not it keeps local copies for itself.
+Amended 2026-11-13. Every install runs the same software; what differs is
+how it relates to other libraries:
 
-A **window** also dials out, but it is a client of the libraries a
-person joined, not one of their nodes. It shows those libraries in one
-view and refuses their work: no jobs, no catalog answers, no requests.
-A window can be turned into a branch. Being a desktop window has nothing
-to do with it; any install can be a window.
+- A **library** is a branch with no parent. Only a library others join
+  must be routable; branches and client apps dial out to it over a
+  websocket and are not assumed to be publicly addressable.
+- A **branch** is a node of its parent library. It contributes to that
+  library (jobs, catalog answers, requests) whether or not it keeps local
+  copies of the books for itself.
+- A **client app** is not a node. It signs in as the person with a
+  **library card** (the built-in OAuth client `bookclerk-client`, scope
+  `library:member`) and uses the library's member routes with that card,
+  the same routes the person's browser session may use. It has no node
+  row, node key or node socket, and the library never sends it work. A
+  client app can later be turned into a branch.
 
-Today the per-link setting "Use this computer to download" is what marks
-a link as a window. Separating the window from that setting, so a
-branch can contribute without downloading, is still open.
+This replaces the first version of this section, which made a branch with
+"Use this computer to download" turned off a **window**: a node that
+refuses its library's work. Until step 6 lands, that setting still marks
+a window on `main`.
 
 ## Consequences
 
@@ -178,7 +185,10 @@ branch can contribute without downloading, is still open.
   5. Interlibrary requests (implemented), including the library
      operator's "acquire all of this branch's members' books" setting
      (planned).
-  6. Window mode.
+  6. Window mode, now replaced by client apps with library cards (see
+     [Kinds of install](#kinds-of-install)): the library side first, then
+     the client side, then the copy setting redefined as "Keep copies on
+     this computer", then turning a client app into a branch.
   7. Capacity shares between a branch's own work and each link
      (implemented).
 - Steps 2 to 7 add node-socket frames. Each ships with a fuzz target, a

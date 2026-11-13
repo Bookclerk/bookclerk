@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConfigNodeView } from "./api";
 import {
   answerBranchConsent,
+  answerClientConsent,
+  rememberApproveReturn,
+  takeApproveReturn,
   clerkNodes,
   authorizeParams,
   branchSharingSummary,
@@ -27,7 +30,7 @@ import {
   setMembersListing,
   setBranchSharing,
 } from "./join";
-import { isAppPath, joinPage } from "./routes";
+import { isAppPath, isConsentPage, joinPage } from "./routes";
 
 const AUTHORIZE =
   "?client_id=bookclerk-branch&response_type=code&scope=node%3Aenroll" +
@@ -41,6 +44,64 @@ describe("join pages", () => {
     expect(joinPage("/join/approve")).toBe("approve");
     expect(joinPage("/join/callback")).toBe("callback");
     expect(joinPage("/settings")).toBeNull();
+  });
+
+  it("include a client app's consent page", () => {
+    expect(isAppPath("/client/approve")).toBe(true);
+    expect(joinPage("/client/approve/")).toBe("client-approve");
+    expect(isConsentPage("client-approve")).toBe(true);
+    expect(isConsentPage("approve")).toBe(true);
+    expect(isConsentPage("callback")).toBe(false);
+    expect(isConsentPage(null)).toBe(false);
+  });
+});
+
+describe("approve return", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("keeps either consent page once, and nothing else", () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+      removeItem: (key: string) => void store.delete(key),
+    });
+    rememberApproveReturn("/client/approve?client_id=bookclerk-client");
+    expect(takeApproveReturn()).toBe("/client/approve?client_id=bookclerk-client");
+    expect(takeApproveReturn()).toBeNull();
+    rememberApproveReturn("/join/approve?client_id=bookclerk-branch");
+    expect(takeApproveReturn()).toBe("/join/approve?client_id=bookclerk-branch");
+    rememberApproveReturn("/settings?x=1");
+    expect(takeApproveReturn()).toBeNull();
+  });
+});
+
+describe("answerClientConsent", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends the authorize request with the answer", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify({ redirect: "http://localhost:41923/client/callback" }), {
+          status: 200,
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const search =
+      "?client_id=bookclerk-client&response_type=code&scope=library%3Amember" +
+      "&redirect_uri=http%3A%2F%2Flocalhost%3A41923%2Fclient%2Fcallback" +
+      "&code_challenge=abc&code_challenge_method=S256&state=s1&client_name=Laptop";
+    await answerClientConsent(search, true);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/auth/client-consent");
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(body).toMatchObject({
+      client_id: "bookclerk-client",
+      client_name: "Laptop",
+      approve: true,
+    });
+    await answerClientConsent(search, false);
+    const denied = JSON.parse(String(fetchMock.mock.calls[1][1].body));
+    expect(denied.approve).toBe(false);
   });
 });
 

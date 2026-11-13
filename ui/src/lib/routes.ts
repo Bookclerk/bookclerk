@@ -3,6 +3,9 @@ import type { AppView } from "@/lib/api";
 /** The library's consent page for a branch's sign-in. */
 export const JOIN_APPROVE_PATH = "/join/approve";
 
+/** The library's consent page for a client app's sign-in (a library card). */
+export const CLIENT_APPROVE_PATH = "/client/approve";
+
 /** Where a library sends the joining install's browser back. */
 export const JOIN_CALLBACK_PATH = "/join/callback";
 
@@ -20,20 +23,39 @@ const APP_PATHS = new Set([
   // callback.
   JOIN_APPROVE_PATH,
   JOIN_CALLBACK_PATH,
+  // A client app's sign-in: the library's consent page.
+  CLIENT_APPROVE_PATH,
 ]);
+
+/**
+ * A page that sign-in flows from other installs own: a branch's consent
+ * (`approve`), a client app's consent (`client-approve`), or the joining
+ * install's callback (`callback`).
+ */
+export type JoinPage = "approve" | "client-approve" | "callback";
+
+/**
+ * True for a consent page, which keeps its address across a sign-in.
+ *
+ * @param page - The page, from {@link joinPage}.
+ * @returns Whether it is a branch's or a client app's consent page.
+ */
+export function isConsentPage(page: JoinPage | null): boolean {
+  return page === "approve" || page === "client-approve";
+}
 
 /**
  * Which Join a library page this document is, if any.
  *
  * @param pathname - Document pathname.
- * @returns `approve`, `callback`, or `null`.
+ * @returns `approve`, `client-approve`, `callback`, or `null`.
  */
-export function joinPage(
-  pathname: string = window.location.pathname,
-): "approve" | "callback" | null {
+export function joinPage(pathname: string = window.location.pathname): JoinPage | null {
   switch (normalizePathname(pathname)) {
     case JOIN_APPROVE_PATH:
       return "approve";
+    case CLIENT_APPROVE_PATH:
+      return "client-approve";
     case JOIN_CALLBACK_PATH:
       return "callback";
     default:

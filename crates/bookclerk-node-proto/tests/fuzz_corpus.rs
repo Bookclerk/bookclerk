@@ -1,4 +1,5 @@
-//! Replays the checked-in `node_frame` and `node_account_bundle` fuzz
+//! Replays the checked-in `node_frame`, `node_account_bundle` and
+//! `client_authorization` fuzz
 //! corpora in PR CI (no libFuzzer required), through the same oracles the
 //! targets use, so an input that once broke a parsing invariant stays fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
@@ -15,6 +16,10 @@ mod oracle;
 /// The `node_account_bundle` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/node_account_bundle.rs"]
 mod bundle_oracle;
+
+/// The `client_authorization` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/client_authorization.rs"]
+mod client_authorization_oracle;
 
 /// Regular files directly under `fuzz/corpus/<target>/`, canonicalized
 /// and confined to that directory.
@@ -77,4 +82,21 @@ fn node_account_bundle_corpus_keeps_every_invariant() {
     // runs, and bundles it refuses.
     assert!(accepted > 0, "no corpus bundle parsed");
     assert!(refused > 0, "every corpus bundle parsed");
+}
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_client_authorization_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("client_authorization") {
+        if client_authorization_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(accepted > 0, "no client_authorization seed was accepted");
+    assert!(refused > 0, "every client_authorization seed was accepted");
 }

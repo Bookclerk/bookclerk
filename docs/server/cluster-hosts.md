@@ -16,6 +16,10 @@ clerk, and what each side runs and shares.
 - A **clerk** is the other way to join: an empty install that shares the
   library's database and keys and serves the same library. See
   [Clerks](#clerks).
+- A **client app** signs in to a library as its person with a **library
+  card** and shows that person's books. It isn't a node: the library
+  never sends it work, and it holds no node key. See
+  [Library cards](sign-in.md#library-cards).
 
 The web UI says *library* and *branch*. The code, the API and the CLI keep
 the older names:
@@ -202,6 +206,12 @@ The exchange runs in five steps:
 5. **Done.** The daemon checks that the answer names the library it read.
    It seals both private keys into its `encrypted_secrets`, records the
    link in `cluster_links`, and starts the link's client.
+
+A client app's library card uses the same authorization server with a
+second built-in public client, `bookclerk-client` (scope
+`library:member`). Its code is redeemed at `POST /api/client/v1/token`
+for a session token, not at the node API, and no node row is made. See
+[Library cards](sign-in.md#library-cards).
 
 ### Store connections that follow the person
 

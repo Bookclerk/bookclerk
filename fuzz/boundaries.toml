@@ -196,6 +196,13 @@ input_from = "operator"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.client_authorization]
+crate = "bookclerk-node-proto"
+boundary = "A client app's library card, the Authorization: Bookclerk-Client header value"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.job_cap_request]
 crate = "bookclerk-library"
 boundary = "A branch's job cap for one library, from POST /api/config/join/capacity"

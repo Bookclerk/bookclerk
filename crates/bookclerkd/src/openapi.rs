@@ -55,6 +55,10 @@ const UPLOAD_TOKEN: &str = "uploadToken";
 /// Security scheme: an access token this daemon issued as an OIDC provider.
 const OIDC_ACCESS_TOKEN: &str = "oidcAccessToken";
 
+/// Security scheme: a client sign-in's session token (a library card), as
+/// `Authorization: Bookclerk-Client <token>`.
+const CLIENT_TOKEN: &str = "clientToken";
+
 /// Who a route group admits, as enforced by its auth layer.
 ///
 /// The variants mirror the `require_*` middleware in [`crate::auth`]; the
@@ -109,8 +113,13 @@ impl Access {
             Access::OperatorOrAdministrator
             | Access::OperatorOrOwner
             | Access::OperatorOrNodeOwner
-            | Access::OperatorOrUser
-            | Access::OperatorOrPortal => &[OPERATOR_TOKEN, OPERATOR_SESSION, PORTAL_SESSION],
+            | Access::OperatorOrUser => &[OPERATOR_TOKEN, OPERATOR_SESSION, PORTAL_SESSION],
+            Access::OperatorOrPortal => &[
+                OPERATOR_TOKEN,
+                OPERATOR_SESSION,
+                PORTAL_SESSION,
+                CLIENT_TOKEN,
+            ],
         }
     }
 
@@ -133,7 +142,9 @@ impl Access {
                 "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
             }
             Access::OperatorOrUser => "The operator, or any signed-in user.",
-            Access::OperatorOrPortal => "The operator, or any library session.",
+            Access::OperatorOrPortal => {
+                "The operator, or any library session, including a client sign-in's token."
+            }
         }
     }
 }
@@ -144,8 +155,8 @@ impl Access {
 ///
 /// (name, scheme) for the operator Bearer token, the two session cookies, and
 /// the credentials single routes check themselves: node signatures, upload
-/// tokens and OIDC access tokens.
-fn security_schemes() -> [(&'static str, SecurityScheme); 6] {
+/// tokens, OIDC access tokens and client sign-in tokens.
+fn security_schemes() -> [(&'static str, SecurityScheme); 7] {
     [
         (
             OPERATOR_TOKEN,
@@ -197,6 +208,13 @@ fn security_schemes() -> [(&'static str, SecurityScheme); 6] {
                     .build(),
             ),
         ),
+        (
+            CLIENT_TOKEN,
+            SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
+                "Authorization",
+                "A client sign-in's session token (`POST /api/client/v1/token`), as `Authorization: Bookclerk-Client <token>`. Accepted only on routes any library session may use, over TLS except on loopback.",
+            ))),
+        ),
     ]
 }
 
@@ -242,6 +260,7 @@ const TAGS: &[(&str, &str, &str)] = &[
     ("Cluster", "/api/config/cluster-consents", "Nodes, clerks, branches, joining a library and host enrollment."),
     ("Cluster", "/api/config/clusters", "Nodes, clerks, branches, joining a library and host enrollment."),
     ("Accounts", "/api/portal", "Store accounts a library user connects (the Accounts page)."),
+    ("Client sign-in", "/api/client/v1", "A client install's sign-in as a person: redeem an approved code for a session token."),
     ("Node protocol", "/api/node/v1", "Node-to-node enrollment, socket, artifacts and uploads; each route checks its own credential."),
     ("OIDC provider", "/.well-known", "Bookclerk as an OpenID Connect provider for other apps."),
     ("OIDC provider", "/oidc", "Bookclerk as an OpenID Connect provider for other apps."),

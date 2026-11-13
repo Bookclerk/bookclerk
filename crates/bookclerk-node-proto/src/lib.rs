@@ -71,6 +71,11 @@
 //! accounts as an [`AccountBundle`] sealed the same way, when the user
 //! chose to bring them.
 //!
+//! An install can also sign in to a library as a person rather than join
+//! it as a node: a client ([`CLIENT_CLIENT_ID`], [`ClientTokenAnswer`]),
+//! whose session token travels as `Authorization: Bookclerk-Client`
+//! ([`parse_client_authorization`]).
+//!
 //! This crate is pure: no I/O, no clock, no randomness. The daemon (owner)
 //! and the host client share it so both sides sign and check the same
 //! bytes.
@@ -78,6 +83,7 @@
 mod accounts;
 mod catalog;
 mod clerk;
+mod client;
 mod frames;
 mod join;
 mod keys;
@@ -105,6 +111,11 @@ pub use clerk::{
     clerk_bootstrap_aad, open_clerk_bootstrap, seal_clerk_bootstrap, ClerkBootstrap, ClerkDatabase,
     ConnectionType, CLERK_BOOTSTRAP_AAD_DOMAIN, CLERK_BOOTSTRAP_VERSION, CLERK_GRANTED_SCOPE,
     CLERK_OFFER_PARAM, DEK_LEN,
+};
+pub use client::{
+    is_client_name, is_client_token, parse_client_authorization, ClientTokenAnswer,
+    ClientTokenRequest, ClientUser, CLIENT_AUTH_SCHEME, CLIENT_CLIENT_ID, CLIENT_CODE_TTL_SECS,
+    CLIENT_IDLE_DAYS, CLIENT_SCOPE, CLIENT_TOKEN_LEN, CLIENT_TOKEN_PATH, MAX_CLIENT_NAME_BYTES,
 };
 pub use ed25519_dalek::SigningKey;
 pub use frames::{

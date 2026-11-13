@@ -1725,6 +1725,15 @@ names are unchanged.
   operator alone) checks the user is active, `core.host_enrollment` is on
   and `classify_transport` allows the connection, then stores a
   single-use code (hashed, 60 s) in `oidc_auth_codes`.
+- **Library cards (2026-11-13).** A second built-in public client,
+  `bookclerk-client` (scope `library:member`, same redirect and PKCE
+  rules), signs a client app in as the person. Its code is redeemed only
+  at `POST /api/client/v1/token` for an opaque session token
+  (`portal_sessions`, `kind = client`, 90 idle days), sent as
+  `Authorization: Bookclerk-Client <token>` and accepted only on the
+  routes a browser session may use for the person's own library, never on
+  administration or as a cookie. No node is enrolled; see
+  [ADR: Library catalog network](library-catalog-network.md#kinds-of-install).
 - **One redeem batch.** `POST /api/node/v1/enroll/oauth` consumes the code,
   checks client, redirect URI, scope and verifier, and records an
   enrollment link whose id and secret derive from the code and verifier
