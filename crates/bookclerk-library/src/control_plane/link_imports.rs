@@ -324,7 +324,7 @@ async fn still_listed_requests(
 /// store account connected here to the branch's person
 /// ([`super::branch_person`]), and the books that library asked for
 /// through an interlibrary request and this branch still lists to it
-/// ([`still_listed_requests`]), but never one imported from that library
+/// (`still_listed_requests`), but never one imported from that library
 /// ([`books_imported_from_link`]). With no single person, only the
 /// requested books.
 #[derive(Debug, Clone, Default)]
