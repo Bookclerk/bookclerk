@@ -1,0 +1,1 @@
+{"v":1,"id":"r1","type":"catalog.sync","fence":3,"batch":1,"cursor":"c2","done":true,"titles":[{"store":"audible","product_id":"B0TEST","marketplace":"us","metadata":{"title":"Dune","asin":"B0TEST","content_kind":"book"},"primary_key":"Frank Herbert/Dune/Dune.m4b","files":[{"key":"Frank Herbert/Dune/Dune.m4b","size":10}]}]}

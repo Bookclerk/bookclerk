@@ -1119,6 +1119,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // held again announces itself again (`holding_added:<id>`). `seen_pass`
     // is the scan pass that last listed it (`account_scan_state.pass_id`);
     // a complete full pass removes the account's holdings it did not list.
+    // A node holding is a title that branch shares with this library
+    // (`control_plane::branch_catalog`): `share_ref` is `store:product_id` as
+    // the branch named it, `share_title` the title as received (JSON
+    // `CatalogTitle`), `share_digest` its manifest digest and
+    // `delivered_digest` the digest whose files reached this library; its
+    // `seen_pass` is the branch's catalog pass. Account holdings leave them
+    // empty.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS holdings (
         id TEXT PRIMARY KEY NOT NULL,
@@ -1131,18 +1138,27 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         entitlement TEXT NOT NULL CHECK (entitlement IN ('purchase', 'plus', 'loan', 'free')),
         purchased_at TEXT,
         seen_pass TEXT,
+        share_ref TEXT,
+        share_title TEXT,
+        share_digest TEXT,
+        delivered_digest TEXT,
+        delivered_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE (listing_id, holder),
         FOREIGN KEY (plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE,
         CHECK ((holder_kind = 'account' AND plugin_key IS NOT NULL AND account_id IS NOT NULL AND node_id IS NULL)
-            OR (holder_kind = 'node' AND node_id IS NOT NULL AND plugin_key IS NULL AND account_id IS NULL))
+            OR (holder_kind = 'node' AND node_id IS NOT NULL AND plugin_key IS NULL AND account_id IS NULL)),
+        CHECK (holder_kind = 'node' OR (share_ref IS NULL AND share_title IS NULL
+            AND share_digest IS NULL AND delivered_digest IS NULL AND delivered_at IS NULL))
     )",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_holdings_account ON holdings(plugin_key, account_id)",
     ),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_holdings_node ON holdings(node_id)"),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_holdings_node ON holdings(node_id, share_ref)",
+    ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_holdings_holder ON holdings(holder)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_nodes_heartbeat ON nodes(heartbeat_at)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_nodes_owner ON nodes(owner_user_id)"),
@@ -1485,17 +1501,17 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // Every file key an acquire or a host upload wrote, per output
     // destination, and the edition it belongs to (`owner_kind = 'edition'`),
     // so an upload is never granted another edition's file in a folder
-    // titles share. A title a branch shares here owns its keys as
-    // `branch_title` until branch titles become holdings. `writer` is the
-    // host upload id that claimed the key last, or `acquire` for an acquire
-    // run on the node itself. `role` says what the file is; audio quality
+    // titles share. A title a branch shares here is a node holding, so its
+    // keys are its edition's too. `writer` is the host upload id that
+    // claimed the key last (a branch's catalog upload included), or
+    // `acquire` for an acquire run on the node itself. `role` says what the file is; audio quality
     // (`lossless`, `bitrate_kbps`) decides whether a later copy of the same
     // edition replaces it.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS edition_files (
         destination TEXT NOT NULL,
         storage_key TEXT NOT NULL,
-        owner_kind TEXT NOT NULL CHECK (owner_kind IN ('edition', 'branch_title')),
+        owner_kind TEXT NOT NULL CHECK (owner_kind IN ('edition')),
         owner_id TEXT NOT NULL,
         role TEXT NOT NULL CHECK (role IN ('audio', 'part', 'chapter', 'pdf', 'cover', 'sidecar', 'transcript', 'epub')),
         lossless INTEGER NOT NULL DEFAULT 0,
@@ -1542,43 +1558,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL
     )",
-    ),
-    // Branches of branches: on a library, the titles a branch shared with
-    // it. Each row is owned by the user who owns the branch's node, with
-    // provenance `node:<node_id>`; nothing names the branch's own store
-    // accounts, users or branches. One row per (provenance, store, product
-    // id). `delivered_sha256` is the manifest digest whose files reached
-    // this library's destinations; `state = 'detached'` marks a title from
-    // a branch that stopped sharing or left (its files stay).
-    MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS branch_titles (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        uuid TEXT NOT NULL UNIQUE,
-        provenance TEXT NOT NULL,
-        node_id TEXT NOT NULL,
-        owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-        store TEXT NOT NULL,
-        product_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        authors TEXT,
-        metadata_json TEXT NOT NULL,
-        primary_key TEXT NOT NULL,
-        pdf_key TEXT,
-        manifest_json TEXT NOT NULL,
-        manifest_sha256 TEXT NOT NULL,
-        delivered_sha256 TEXT,
-        state TEXT NOT NULL DEFAULT 'shared' CHECK (state IN ('shared', 'detached')),
-        detached_reason TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        seen_at TEXT NOT NULL,
-        delivered_at TEXT,
-        detached_at TEXT,
-        UNIQUE(provenance, store, product_id)
-    )",
-    ),
-    MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_branch_titles_node ON branch_titles(node_id, state)",
     ),
     // Catalog lookup on a library (`control_plane::catalog_lookup`): one
     // question per branch node and work, pulled by the branch. `sent_at` is

@@ -7719,7 +7719,7 @@ pub use discover::{
 };
 pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
-pub use holdings::{HoldingSelection, HOLDING_REMOVED};
+pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};
 pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};
 pub(crate) mod job_queue;
 

@@ -629,7 +629,7 @@ visible:
 | OIDC authorization codes, portal sessions | Past `expires_at` |
 | OIDC refresh tokens | Past `expires_at`, or revoked |
 | Claim tickets, user invites, node enrollment links | 30 days past `expires_at` (expired and redeemed ones stay listed until then) |
-| Committed or aborted host uploads | 1 day past `expires_at`; open uploads are kept, since an abort still reads them |
+| Committed or aborted host uploads | 1 day past `expires_at`; open uploads are kept, since an abort still reads them, and so is a branch's catalog upload while a file record names it as writer, since that is how its files are known to be the branch's |
 | Storage-scan inventories | Job terminal or gone; a jobless (CLI) scan silent for 1 day |
 | `security_audit_events`, `configuration_audit` | 365 days old |
 | `configuration_changes` | 30 days old (the document and its audit row keep the content) |

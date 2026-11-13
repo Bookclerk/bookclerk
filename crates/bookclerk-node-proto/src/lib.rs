@@ -90,9 +90,10 @@ pub use accounts::{
     MAX_CARRIED_FIELD_BYTES, MAX_CARRIED_PLUGIN_KEY_BYTES, MAX_CARRIED_SECRET_BYTES,
 };
 pub use catalog::{
-    is_ancestry, is_cluster_id, is_product_id, is_store_id, CatalogFile, CatalogMetadata,
-    CatalogRef, CatalogTitle, CATALOG_ITEM, MAX_ANCESTRY, MAX_CATALOG_BATCH_TITLES,
-    MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_TITLE_BYTES, MAX_CATALOG_WANTED,
+    is_ancestry, is_cluster_id, is_marketplace, is_product_id, is_store_id, CatalogFile,
+    CatalogMetadata, CatalogRef, CatalogTitle, CATALOG_ITEM, MAX_ANCESTRY,
+    MAX_CATALOG_BATCH_TITLES, MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_TITLE_BYTES,
+    MAX_CATALOG_WANTED, MAX_MARKETPLACE_BYTES,
 };
 pub use clerk::{
     clerk_bootstrap_aad, open_clerk_bootstrap, seal_clerk_bootstrap, ClerkBootstrap, ClerkDatabase,

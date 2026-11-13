@@ -81,6 +81,7 @@ fn title(product: &str, size: u64) -> CatalogTitle {
     CatalogTitle {
         store: "audible".into(),
         product_id: product.into(),
+        marketplace: "us".into(),
         metadata: CatalogMetadata {
             title: format!("Title {product}"),
             authors: Some("Author".into()),
@@ -157,7 +158,6 @@ async fn shared_titles_land_as_the_branch_owners_and_deduplicate() {
     for row in &rows {
         assert_eq!(row.owner_user_id, Some(member), "attributed to the owner");
         assert_eq!(row.provenance, format!("node:{BRANCH}"));
-        assert_eq!(row.state, BRANCH_TITLE_SHARED);
         assert!(!row.delivered);
     }
 
@@ -165,7 +165,9 @@ async fn shared_titles_land_as_the_branch_owners_and_deduplicate() {
     let again = open(&store, true, true).await;
     assert_eq!(again.fence, 2);
     assert_eq!(again.cursor, "c2");
-    assert_eq!(again.wanted, vec![reference("p1"), reference("p2")]);
+    let mut wanted = again.wanted.clone();
+    wanted.sort();
+    assert_eq!(wanted, vec![reference("p1"), reference("p2")]);
     // A batch under the old fence is lost and writes nothing.
     assert_eq!(
         accept_catalog_batch(&store, BRANCH, 1, "c3", false, &[title("p3", 1)])
@@ -182,7 +184,7 @@ async fn shared_titles_land_as_the_branch_owners_and_deduplicate() {
     );
 }
 
-/// A limited listing is a prefix of the full, oldest-first listing.
+/// A limited listing is a prefix of the full listing (by holding id).
 #[tokio::test]
 async fn branch_title_limits_are_prefixes_of_the_full_listing() {
     let _lock = master_key_test_lock_async().await;
@@ -201,8 +203,9 @@ async fn branch_title_limits_are_prefixes_of_the_full_listing() {
         rows.into_iter().map(|row| row.product_id).collect()
     };
     let full = products(list_branch_titles(&store, Some(BRANCH), 100).await.unwrap());
-    // Oldest first, which is insertion order, not product order.
-    assert_eq!(full, ["p3", "p1", "p2"]);
+    let mut sorted = full.clone();
+    sorted.sort();
+    assert_eq!(sorted, ["p1", "p2", "p3"]);
     for limit in 1..=4u64 {
         let page = products(
             list_branch_titles(&store, Some(BRANCH), limit)
@@ -341,7 +344,7 @@ async fn a_title_the_library_holds_for_that_user_is_not_echoed_back() {
 }
 
 /// A title a full pass skips because the library now holds it for the
-/// branch's owner is still one the branch names: its row is not
+/// branch's owner is still one the branch names: its holding is not
 /// withdrawn as if the branch had dropped it.
 #[tokio::test]
 async fn a_full_pass_does_not_withdraw_a_title_it_skips_as_held_here() {
@@ -366,18 +369,12 @@ async fn a_full_pass_does_not_withdraw_a_title_it_skips_as_held_here() {
         accepted(&store, second.fence, "c", true, &[title("held", 1)]).await;
     assert_eq!((upserted, skipped), (0, 1));
     let rows = list_branch_titles(&store, None, 10).await.unwrap();
-    let state = |product: &str| {
-        rows.iter()
-            .find(|row| row.product_id == product)
-            .map(|row| row.state.clone())
-            .unwrap()
-    };
-    assert_eq!(state("held"), BRANCH_TITLE_SHARED);
-    assert_eq!(state("gone"), BRANCH_TITLE_DETACHED);
+    let products: Vec<&str> = rows.iter().map(|row| row.product_id.as_str()).collect();
+    assert_eq!(products, ["held"], "only the title no longer named went");
 }
 
 #[tokio::test]
-async fn stopping_sharing_or_leaving_marks_the_titles_and_the_owner_removes_them() {
+async fn stopping_sharing_or_leaving_removes_the_branchs_holdings() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let (store, _member) = world(dir.path()).await;
@@ -386,12 +383,11 @@ async fn stopping_sharing_or_leaving_marks_the_titles_and_the_owner_removes_them
 
     let stopped = open(&store, false, true).await;
     assert!(stopped.wanted.is_empty());
-    let rows = list_branch_titles(&store, None, 10).await.unwrap();
-    assert_eq!(rows[0].state, BRANCH_TITLE_DETACHED);
-    assert_eq!(
-        rows[0].detached_reason.as_deref(),
-        Some(DETACHED_STOPPED_SHARING)
-    );
+    assert!(list_branch_titles(&store, None, 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(removed_events(&store).await, 1);
     // While sharing is off, nothing new is recorded.
     assert_eq!(
         accept_catalog_batch(&store, BRANCH, stopped.fence, "c", false, &[title("p2", 1)])
@@ -413,12 +409,15 @@ async fn stopping_sharing_or_leaving_marks_the_titles_and_the_owner_removes_them
         }
     );
 
-    // Leaving marks everything "from a branch that left".
+    // Leaving removes everything it shared.
     assert!(super::super::record_node_left(&store, BRANCH)
         .await
         .unwrap());
-    let rows = list_branch_titles(&store, None, 10).await.unwrap();
-    assert_eq!(rows[0].detached_reason.as_deref(), Some(DETACHED_LEFT));
+    assert!(list_branch_titles(&store, None, 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(removed_events(&store).await, 2);
     // A retried leave finds the credential revoked and redoes only the
     // idempotent cleanup; an unknown node is still answered false.
     assert!(!super::super::record_node_left(&store, BRANCH)
@@ -428,25 +427,27 @@ async fn stopping_sharing_or_leaving_marks_the_titles_and_the_owner_removes_them
         .await
         .unwrap());
     assert_eq!(
-        list_branch_titles(&store, None, 10).await.unwrap()[0]
-            .detached_reason
-            .as_deref(),
-        Some(DETACHED_LEFT)
-    );
-    assert_eq!(
         begin_catalog(&store, BRANCH, true, true).await.unwrap(),
         CatalogBegin::Refused("not_a_branch")
     );
+    // No files arrived, so nothing was left behind to forget.
     assert_eq!(
         remove_detached_branch_titles(&store, Some(BRANCH))
             .await
             .unwrap(),
-        1
+        0
     );
-    assert!(list_branch_titles(&store, None, 10)
+}
+
+/// `holding_removed` events published so far.
+async fn removed_events(store: &LibraryStore) -> usize {
+    crate::entities::domain_events::Entity::find()
+        .filter(crate::entities::domain_events::Column::EventType.eq(crate::store::HOLDING_REMOVED))
+        .count(store.db())
         .await
         .unwrap()
-        .is_empty());
+        .try_into()
+        .unwrap()
 }
 
 #[tokio::test]
@@ -469,20 +470,9 @@ async fn a_full_pass_withdraws_what_it_no_longer_names() {
     assert_eq!(second.cursor, "");
     accepted(&store, second.fence, "c", true, &[title("own", 1)]).await;
     let rows = list_branch_titles(&store, None, 10).await.unwrap();
-    let state = |product: &str| {
-        rows.iter()
-            .find(|row| row.product_id == product)
-            .map(|row| (row.state.clone(), row.detached_reason.clone()))
-            .unwrap()
-    };
-    assert_eq!(state("own"), (BRANCH_TITLE_SHARED.into(), None));
-    assert_eq!(
-        state("from-below"),
-        (
-            BRANCH_TITLE_DETACHED.into(),
-            Some(DETACHED_WITHDRAWN.into())
-        )
-    );
+    let products: Vec<&str> = rows.iter().map(|row| row.product_id.as_str()).collect();
+    assert_eq!(products, ["own"]);
+    assert_eq!(removed_events(&store).await, 1);
 }
 
 /// A batch of `p1` and `p2`, read and checked under `fence` but not yet
@@ -504,17 +494,9 @@ async fn prepared_batch(store: &LibraryStore, fence: i64) -> PreparedCatalogBatc
     }
 }
 
-/// Only `p1`, detached with `reason`.
-fn only_p1_detached(rows: &[BranchTitle], reason: &str) {
-    assert_eq!(rows.len(), 1, "no new title: {rows:?}");
-    assert_eq!(rows[0].product_id, "p1");
-    assert_eq!(rows[0].state, BRANCH_TITLE_DETACHED);
-    assert_eq!(rows[0].detached_reason.as_deref(), Some(reason));
-}
-
 /// A batch read under a live fence whose branch stops sharing or leaves
-/// before it is written records nothing: titles marked detached stay
-/// detached, no new title appears, and the cursor does not move.
+/// before it is written records nothing: the branch holds nothing here
+/// afterwards, and the cursor does not move.
 #[tokio::test]
 async fn a_batch_overtaken_by_a_detach_records_nothing() {
     let _lock = master_key_test_lock_async().await;
@@ -527,13 +509,15 @@ async fn a_batch_overtaken_by_a_detach_records_nothing() {
     let prepared = prepared_batch(&store, session.fence).await;
     open(&store, false, true).await;
     assert_eq!(
-        apply_catalog_batch(&store, BRANCH, prepared).await.unwrap(),
+        apply_catalog_batch(&store, BRANCH, session.fence, prepared)
+            .await
+            .unwrap(),
         CatalogAccept::Lost
     );
-    only_p1_detached(
-        &list_branch_titles(&store, None, 10).await.unwrap(),
-        DETACHED_STOPPED_SHARING,
-    );
+    assert!(list_branch_titles(&store, None, 10)
+        .await
+        .unwrap()
+        .is_empty());
 
     // The branch left between the read and the write.
     let resumed = open(&store, true, true).await;
@@ -543,13 +527,15 @@ async fn a_batch_overtaken_by_a_detach_records_nothing() {
         .await
         .unwrap());
     assert_eq!(
-        apply_catalog_batch(&store, BRANCH, prepared).await.unwrap(),
+        apply_catalog_batch(&store, BRANCH, resumed.fence, prepared)
+            .await
+            .unwrap(),
         CatalogAccept::Lost
     );
-    only_p1_detached(
-        &list_branch_titles(&store, None, 10).await.unwrap(),
-        DETACHED_LEFT,
-    );
+    assert!(list_branch_titles(&store, None, 10)
+        .await
+        .unwrap()
+        .is_empty());
     let node = nodes::Entity::find_by_id(BRANCH.to_string())
         .one(store.db())
         .await
@@ -592,9 +578,10 @@ async fn a_full_pass_is_asked_for_again_a_day_later() {
     let full = open(&store, true, true).await;
     assert_eq!(full.cursor, "", "a day later the pass starts over");
     accepted(&store, full.fence, "c", true, &[]).await;
-    let rows = list_branch_titles(&store, None, 10).await.unwrap();
-    assert_eq!(rows[0].state, BRANCH_TITLE_DETACHED);
-    assert_eq!(rows[0].detached_reason.as_deref(), Some(DETACHED_WITHDRAWN));
+    assert!(list_branch_titles(&store, None, 10)
+        .await
+        .unwrap()
+        .is_empty());
     assert_eq!(open(&store, true, true).await.cursor, "c");
 }
 
@@ -713,6 +700,26 @@ async fn a_catalog_upload_commits_only_under_the_live_fence() {
         UploadCommit::Lost
     );
     assert!(!list_branch_titles(&store, None, 10).await.unwrap()[0].delivered);
+
+    // Once the branch stops sharing, the files it delivered are entries
+    // the owner may forget; the files themselves stay.
+    open(&store, false, true).await;
+    assert_eq!(
+        branch_title_counts(&store, BRANCH).await.unwrap(),
+        BranchTitleCounts {
+            shared: 0,
+            delivered: 0,
+            detached: 1,
+        }
+    );
+    assert_eq!(
+        remove_detached_branch_titles(&store, None).await.unwrap(),
+        1
+    );
+    assert_eq!(
+        branch_title_counts(&store, BRANCH).await.unwrap().detached,
+        0
+    );
 }
 
 #[tokio::test]
@@ -969,16 +976,26 @@ async fn a_catalog_upload_never_overwrites_another_titles_files() {
         other.fence,
         "c",
         false,
-        &[keyed("free", "Author/free/free.m4b")],
+        &[
+            keyed("free", "Author/free/free.m4b"),
+            keyed("free-c", "Author/free/free.m4b"),
+        ],
     )
     .await
     .unwrap()
     {
-        CatalogAccept::Accepted { upserted: 1, .. } => {}
+        CatalogAccept::Accepted { upserted: 2, .. } => {}
         other => panic!("expected the batch accepted: {other:?}"),
     }
+    // The same edition already has its audio from the first branch: it is
+    // delivered once.
     assert!(matches!(
         grant("branch-c", other.fence, "free", "Author/free/free.m4b").await,
+        UploadGrant::Refused("edition_has_files")
+    ));
+    // Another edition on the same key.
+    assert!(matches!(
+        grant("branch-c", other.fence, "free-c", "Author/free/free.m4b").await,
         UploadGrant::Refused("key_in_use")
     ));
 }
@@ -1276,18 +1293,43 @@ async fn a_catalog_upload_never_writes_into_another_titles_folder() {
     ));
 }
 
-/// A key a shared title's upload claimed is that title's against another
-/// branch title's upload; a job upload of a library book takes it over (as
-/// an acquire run here would), and a catalog upload whose key was taken
-/// since its grant is refused at commit.
+/// A key a shared title's upload claimed is its edition's: another
+/// edition's upload (a branch's or a job's) cannot take it, a job upload of
+/// the same edition takes it over (as an acquire run here would), and a
+/// catalog upload whose key was taken since its grant is refused at
+/// commit.
 #[tokio::test]
 async fn a_shared_titles_keys_stay_its_own() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let (store, _member) = world(dir.path()).await;
-    let book = acquired_book(&store, "someone-else", "own", "Own/own/own.m4b").await;
+    let other = acquired_book(&store, "someone-else", "own", "Own/own/own.m4b").await;
+    // An account of the store the branch names: its book of `p1` is the
+    // same listing, so the same edition, as the shared title.
+    store
+        .upsert_account(PLUGIN, "same-store", "us", None, true, "audible")
+        .await
+        .unwrap();
     let session = open(&store, true, true).await;
     accepted(&store, session.fence, "c", false, &[title("p1", 1)]).await;
+    let same = store
+        .scope(PLUGIN, "audible")
+        .upsert_book(&NewBook {
+            plugin_key: PLUGIN.into(),
+            ..NewBook::minimal("p1", "same-store", "us", "Title p1")
+        })
+        .await
+        .unwrap()
+        .uuid;
+    assert_eq!(
+        owner_of(&store, &same).await,
+        store
+            .file_owner_of_holding(&list_branch_titles(&store, None, 1).await.unwrap()[0].uuid)
+            .await
+            .unwrap()
+            .unwrap(),
+        "the book and the shared title are one edition"
+    );
     let key = "Author/p1/p1.m4b";
     let UploadGrant::Granted { upload_id, .. } =
         grant_local(&store, session.fence, "p1", &[key]).await
@@ -1299,40 +1341,55 @@ async fn a_shared_titles_keys_stay_its_own() {
         held.as_ref().map(|held| held.writer.as_str()),
         Some(upload_id.as_str())
     );
-    assert!(
-        !store
-            .claim_edition_file(
-                "local",
-                key,
-                &FileOwner::BranchTitle("another-branch-title".into()),
-                "catalog-upload",
-                FileRole::Audio,
-                None,
-                held.as_ref(),
-                true,
-                None
-            )
-            .await
-            .unwrap(),
-        "another branch title's upload cannot take the shared title's key"
-    );
-    assert_eq!(store.edition_file("local", key).await.unwrap(), held);
+    for (owner, writer, title, catalog) in [
+        (
+            FileOwner::Edition("another-edition".into()),
+            "catalog-upload",
+            "another-holding",
+            true,
+        ),
+        (
+            owner_of(&store, &other).await,
+            "job-upload",
+            other.as_str(),
+            false,
+        ),
+    ] {
+        assert!(
+            !store
+                .claim_edition_file(
+                    "local",
+                    key,
+                    &owner,
+                    writer,
+                    FileRole::Audio,
+                    None,
+                    held.as_ref(),
+                    title,
+                    catalog,
+                )
+                .await
+                .unwrap(),
+            "another edition's upload cannot take the shared title's key ({writer})"
+        );
+        assert_eq!(store.edition_file("local", key).await.unwrap(), held);
+    }
     assert!(
         store
             .claim_edition_file(
                 "local",
                 key,
-                &owner_of(&store, &book).await,
+                &owner_of(&store, &same).await,
                 "job-upload",
                 FileRole::Audio,
                 None,
                 held.as_ref(),
+                same.as_str(),
                 false,
-                Some(book.as_str())
             )
             .await
             .unwrap(),
-        "a job upload of a library book takes the shared title's key over"
+        "a job upload of the same edition takes the delivered key over"
     );
     store
         .release_edition_file("local", key, "job-upload", held.as_ref())
@@ -1340,10 +1397,10 @@ async fn a_shared_titles_keys_stay_its_own() {
         .unwrap();
     assert_eq!(store.edition_file("local", key).await.unwrap(), held);
 
-    // An acquire run here writes the key anyway; the catalog upload no
-    // longer holds it and is refused at commit.
+    // An acquire of the edition run here writes the key anyway; the catalog
+    // upload no longer holds it and is refused at commit.
     assert!(record_upload_file(&store, &upload_id, 0).await.unwrap());
-    record_for_book(&store, "local", key, &book).await.unwrap();
+    record_for_book(&store, "local", key, &same).await.unwrap();
     let limits = JobClaimLimits {
         class: 1,
         plugin_instance: 1,
@@ -1524,42 +1581,85 @@ async fn record_for_book(
         .map(|recorded| assert!(recorded, "{key} is another edition's"))
 }
 
-/// Writes one `branch_titles` row straight to the table.
-async fn insert_branch_title(store: &LibraryStore, uuid: &str, state: &str, delivered: bool) {
-    let now = chrono::Utc::now().to_rfc3339();
-    crate::entities::branch_titles::ActiveModel {
-        uuid: Set(uuid.into()),
-        provenance: Set(branch_provenance(BRANCH)),
-        node_id: Set(BRANCH.into()),
-        owner_user_id: Set(None),
-        store: Set("audible".into()),
-        product_id: Set(format!("p-{uuid}")),
-        title: Set(format!("Title {uuid}")),
-        authors: Set(None),
-        metadata_json: Set("{}".into()),
-        primary_key: Set(format!("a/{uuid}.m4b")),
-        pdf_key: Set(None),
-        manifest_json: Set("[]".into()),
-        manifest_sha256: Set(format!("m-{uuid}")),
-        delivered_sha256: Set(delivered.then(|| format!("m-{uuid}"))),
-        state: Set(state.into()),
-        detached_reason: Set(None),
-        created_at: Set(now.clone()),
-        updated_at: Set(now.clone()),
-        seen_at: Set(now),
-        delivered_at: Set(None),
-        detached_at: Set(None),
-        ..Default::default()
+/// Records `product` as a node holding of [`BRANCH`] straight through the
+/// library model, with its share state written as a catalog batch would
+/// (`shared`), its files delivered or not; answers the holding id.
+async fn insert_node_holding(
+    store: &LibraryStore,
+    product: &str,
+    shared: bool,
+    delivered: bool,
+) -> String {
+    use sea_orm::ConnectionTrait;
+    store
+        .db()
+        .execute_unprepared(&format!(
+            "INSERT OR IGNORE INTO nodes (node_id, cluster_id, created_at, incarnation, \
+             heartbeat_at, software_version, schema_state, compatible, kind, share_books) \
+             VALUES ('{BRANCH}', 'c', '2026-01-01T00:00:00Z', 'i', '2026-01-01T00:00:00Z', \
+             'v', 's', 1, 'host', 1)"
+        ))
+        .await
+        .unwrap();
+    store
+        .db()
+        .execute_unprepared(&format!(
+            "INSERT OR IGNORE INTO node_credentials (node_id, sign_public_key, \
+             box_public_key, link_id, enrolled_at) VALUES ('{BRANCH}', x'00', x'00', \
+             'link-{BRANCH}', '2026-01-01T00:00:00Z')"
+        ))
+        .await
+        .unwrap();
+    let shared_title = title(product, 1);
+    let listing = listing_from_catalog_title(&shared_title, "audible").unwrap();
+    let plan = store
+        .record_listing(
+            &listing,
+            &bookclerk_resolve::HoldingDraft {
+                holder: bookclerk_resolve::Holder::Node(BRANCH.into()),
+                entitlement: bookclerk_resolve::Entitlement::Purchase,
+                purchased_at: None,
+            },
+        )
+        .await
+        .unwrap();
+    let holding = crate::entities::holdings::Entity::find()
+        .filter(crate::entities::holdings::Column::ListingId.eq(&plan.listing.id))
+        .one(store.db())
+        .await
+        .unwrap()
+        .expect("the node holds it");
+    if shared {
+        let digest = shared_title.manifest_digest();
+        crate::entities::holdings::Entity::update_many()
+            .col_expr(
+                crate::entities::holdings::Column::ShareRef,
+                sea_orm::sea_query::Expr::value(format!("audible:{product}")),
+            )
+            .col_expr(
+                crate::entities::holdings::Column::ShareTitle,
+                sea_orm::sea_query::Expr::value(serde_json::to_string(&shared_title).unwrap()),
+            )
+            .col_expr(
+                crate::entities::holdings::Column::ShareDigest,
+                sea_orm::sea_query::Expr::value(digest.clone()),
+            )
+            .col_expr(
+                crate::entities::holdings::Column::DeliveredDigest,
+                sea_orm::sea_query::Expr::value(delivered.then_some(digest)),
+            )
+            .filter(crate::entities::holdings::Column::Id.eq(&holding.id))
+            .exec(store.db())
+            .await
+            .unwrap();
     }
-    .insert(store.db())
-    .await
-    .unwrap();
+    holding.id
 }
 
 /// The keyset walk names every shared title once, columns bound by name,
-/// marks which may be passed on, and leaves detached titles out; the
-/// single-title read returns only a forwardable one. Checked under every
-/// database profile.
+/// marks which may be passed on, and leaves out a holding with no share
+/// state; the single-title read returns only a forwardable one. Checked
+/// under every database profile.
 #[tokio::test]
 async fn forwardable_keys_page_by_id_and_bind_columns_by_name() {
     for profile in crate::test_support::Profile::ALL {
@@ -1567,46 +1667,48 @@ async fn forwardable_keys_page_by_id_and_bind_columns_by_name() {
         let store = crate::test_support::sqlite::memory(profile)
             .await
             .into_store();
-        insert_branch_title(&store, "t1", BRANCH_TITLE_SHARED, true).await;
-        insert_branch_title(&store, "t2", BRANCH_TITLE_SHARED, false).await;
-        insert_branch_title(&store, "t3", BRANCH_TITLE_DETACHED, true).await;
-        insert_branch_title(&store, "t4", BRANCH_TITLE_SHARED, true).await;
+        let t1 = insert_node_holding(&store, "t1", true, true).await;
+        let t2 = insert_node_holding(&store, "t2", true, false).await;
+        let t3 = insert_node_holding(&store, "t3", false, false).await;
+        insert_node_holding(&store, "t4", true, true).await;
 
         let mut walked = Vec::new();
-        let mut after = None;
+        let mut after: Option<String> = None;
         loop {
-            let page = forwardable_branch_title_keys_page(&store, after, 1)
+            let page = forwardable_branch_title_keys_page(&store, after.as_deref(), 1)
                 .await
                 .unwrap();
             let Some(last) = page.last() else { break };
-            after = Some(last.id);
+            after = Some(last.id.clone());
             walked.extend(page);
         }
-        let seen: Vec<(&str, &str, &str, bool)> = walked
+        let ids: Vec<&str> = walked.iter().map(|k| k.id.as_str()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        assert_eq!(ids, sorted, "{name}: by holding id");
+        let mut seen: Vec<(&str, &str, bool)> = walked
             .iter()
-            .map(|k| {
-                (
-                    k.uuid.as_str(),
-                    k.store.as_str(),
-                    k.product_id.as_str(),
-                    k.delivered,
-                )
-            })
+            .map(|k| (k.store.as_str(), k.product_id.as_str(), k.delivered))
             .collect();
+        seen.sort_unstable();
         assert_eq!(
             seen,
             vec![
-                ("t1", "audible", "p-t1", true),
-                ("t2", "audible", "p-t2", false),
-                ("t4", "audible", "p-t4", true),
+                ("audible", "t1", true),
+                ("audible", "t2", false),
+                ("audible", "t4", true),
             ],
             "{name}"
         );
         assert!(walked.iter().all(|k| !k.updated_at.is_empty()), "{name}");
 
-        let one = forwardable_branch_title(&store, "t1").await.unwrap();
-        assert_eq!(one.map(|row| row.product_id), Some("p-t1".into()), "{name}");
-        for gone in ["t2", "t3", "missing"] {
+        let one = forwardable_branch_title(&store, &t1).await.unwrap();
+        assert_eq!(
+            one.map(|row| row.title.product_id),
+            Some("t1".into()),
+            "{name}"
+        );
+        for gone in [t2.as_str(), t3.as_str(), "missing"] {
             assert!(
                 forwardable_branch_title(&store, gone)
                     .await
@@ -1616,4 +1718,562 @@ async fn forwardable_keys_page_by_id_and_bind_columns_by_name() {
             );
         }
     }
+}
+
+/// A title a branch shares again after a pause is held under a new id; its
+/// earlier delivery stays its own, so it is asked for and delivered again.
+/// The files it left behind are kept while another holder here still
+/// holds their edition.
+#[tokio::test]
+async fn a_title_shared_again_is_delivered_again_and_its_files_kept_while_held() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    // An account of the store the branch names, so its book of `p1` is
+    // the same listing as the shared title.
+    store
+        .upsert_account(PLUGIN, "same-store", "us", None, true, "audible")
+        .await
+        .unwrap();
+    let key = "Author/p1/p1.m4b";
+    let fence = open_branch(&store, BRANCH, &[title_with("p1", key, &[])]).await;
+    deliver_local(&store, BRANCH, fence, "p1", &[key]).await;
+    let first = list_branch_titles(&store, None, 1).await.unwrap()[0]
+        .uuid
+        .clone();
+
+    open(&store, false, true).await;
+    assert_eq!(
+        branch_title_counts(&store, BRANCH).await.unwrap().detached,
+        1
+    );
+
+    let resumed = open(&store, true, true).await;
+    let (_, _, wanted) = accepted(
+        &store,
+        resumed.fence,
+        "c",
+        false,
+        &[title_with("p1", key, &[])],
+    )
+    .await;
+    assert_eq!(
+        wanted,
+        vec![reference("p1")],
+        "its own delivery is no other's"
+    );
+    let rows = list_branch_titles(&store, None, 10).await.unwrap();
+    assert_ne!(rows[0].uuid, first, "held again under a new id");
+    deliver_local(&store, BRANCH, resumed.fence, "p1", &[key]).await;
+    assert!(list_branch_titles(&store, None, 10).await.unwrap()[0].delivered);
+
+    // An account here holds the same edition: when the branch stops
+    // sharing again, the delivered files stay that edition's.
+    store
+        .scope(PLUGIN, "audible")
+        .upsert_book(&NewBook {
+            plugin_key: PLUGIN.into(),
+            ..NewBook::minimal("p1", "same-store", "us", "Title p1")
+        })
+        .await
+        .unwrap();
+    open(&store, false, true).await;
+    assert_eq!(
+        branch_title_counts(&store, BRANCH).await.unwrap().detached,
+        0
+    );
+    assert_eq!(
+        remove_detached_branch_titles(&store, None).await.unwrap(),
+        0
+    );
+    assert!(store.edition_file("local", key).await.unwrap().is_some());
+}
+
+/// A title that resolves to another listing (here its marketplace
+/// changed) replaces the branch's earlier holding of it.
+#[tokio::test]
+async fn a_title_on_a_new_listing_replaces_its_earlier_holding() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let session = open(&store, true, true).await;
+    accepted(&store, session.fence, "c", false, &[title("p1", 1)]).await;
+    let moved = CatalogTitle {
+        marketplace: "uk".into(),
+        ..title("p1", 1)
+    };
+    accepted(&store, session.fence, "d", false, &[moved]).await;
+    let rows = list_branch_titles(&store, None, 10).await.unwrap();
+    assert_eq!(rows.len(), 1, "one holding per shared title");
+    assert_eq!(removed_events(&store).await, 1);
+}
+
+/// A batch read under one fence and written after a newer connection
+/// opened (and the branch still shares) leaves the holding its link
+/// created without share state: it is not listed, and a later session's
+/// start removes it once no batch can still be writing it. A recent one is
+/// kept, since a newer connection's batch may be about to write it.
+#[tokio::test]
+async fn a_batch_overtaken_by_a_newer_connection_leaves_no_title_behind() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let session = open(&store, true, true).await;
+    accepted(&store, session.fence, "a", false, &[title("p1", 1)]).await;
+
+    // `p1` is shared already; `p2` is linked by this batch only.
+    let prepared = prepared_batch(&store, session.fence).await;
+    open(&store, true, true).await;
+    assert_eq!(
+        apply_catalog_batch(&store, BRANCH, session.fence, prepared)
+            .await
+            .unwrap(),
+        CatalogAccept::Lost
+    );
+    let listed = || async {
+        list_branch_titles(&store, None, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.product_id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(listed().await, ["p1"]);
+    let held = || async {
+        holdings::Entity::find()
+            .filter(holdings::Column::NodeId.eq(BRANCH))
+            .count(store.db())
+            .await
+            .unwrap()
+    };
+    // A session starting now keeps the recent unshared holding.
+    open(&store, true, true).await;
+    assert_eq!(held().await, 2);
+
+    // Once older than the grace period, the next session removes it.
+    let old = (chrono::Utc::now() - UNSHARED_GRACE - chrono::Duration::minutes(1)).to_rfc3339();
+    holdings::Entity::update_many()
+        .col_expr(
+            holdings::Column::CreatedAt,
+            sea_orm::sea_query::Expr::value(old),
+        )
+        .filter(holdings::Column::ShareDigest.is_null())
+        .exec(store.db())
+        .await
+        .unwrap();
+    open(&store, true, true).await;
+    assert_eq!(held().await, 1, "p2's holding is gone");
+    assert_eq!(listed().await, ["p1"]);
+    assert_eq!(removed_events(&store).await, 1);
+}
+
+/// A replaced holding is removed only while the replacing batch's fence is
+/// still the node's: a newer connection may have taken it up again.
+#[tokio::test]
+async fn a_replaced_holding_stays_once_a_newer_connection_opened() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let session = open(&store, true, true).await;
+    accepted(&store, session.fence, "a", false, &[title("p1", 1)]).await;
+    let id = list_branch_titles(&store, None, 1).await.unwrap()[0]
+        .uuid
+        .clone();
+    open(&store, true, true).await;
+    store
+        .remove_node_holdings(
+            BRANCH,
+            NodeHoldingSelection::Replaced {
+                ids: std::slice::from_ref(&id),
+                fence: session.fence,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_branch_titles(&store, None, 10).await.unwrap().len(), 1);
+    assert_eq!(removed_events(&store).await, 0);
+}
+
+/// A shared title larger than one cell the smallest database profile may
+/// return (but within one request) is still listed, asked for, delivered, passed on and removed:
+/// its stored title is read in pieces.
+#[tokio::test]
+async fn a_large_shared_title_works_under_every_profile() {
+    let _lock = master_key_test_lock_async().await;
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let dir = tempfile::tempdir().unwrap();
+        crate::configure_master_key(dir.path()).expect("master key");
+        let store = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        let member = store
+            .create_user(UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        add_node(&store, BRANCH, "host", Some(member.id)).await;
+        let key = "Author/p1/p1.m4b";
+        let mut big = title_with("p1", key, &[]);
+        big.metadata.title = "Ä long title ".repeat(60);
+        big.metadata.subtitle = Some("é".repeat(300));
+        // Past the smallest profile's cell, within its request.
+        let size = serde_json::to_string(&big).unwrap().len();
+        assert!((1500..2500).contains(&size), "{name}: {size}");
+        let opened = match begin_catalog(&store, BRANCH, true, true).await.unwrap() {
+            CatalogBegin::Opened(opened) => opened,
+            other => panic!("{name}: expected a session: {other:?}"),
+        };
+        let (_, _, wanted) =
+            accepted(&store, opened.fence, "c", false, std::slice::from_ref(&big)).await;
+        assert_eq!(wanted, vec![reference("p1")], "{name}");
+        let rows = list_branch_titles(&store, None, 10).await.unwrap();
+        assert_eq!(rows[0].title, big.metadata.title, "{name}");
+        let reopened = match begin_catalog(&store, BRANCH, true, true).await.unwrap() {
+            CatalogBegin::Opened(opened) => opened,
+            other => panic!("{name}: expected a session: {other:?}"),
+        };
+        assert_eq!(reopened.wanted, vec![reference("p1")], "{name}");
+        deliver_local(&store, BRANCH, reopened.fence, "p1", &[key]).await;
+        let forwarded = forwardable_branch_title(&store, &rows[0].uuid)
+            .await
+            .unwrap()
+            .expect("delivered, so passed on");
+        assert_eq!(forwarded.title, big, "{name}");
+        open(&store, false, true).await;
+        assert!(
+            list_branch_titles(&store, None, 10)
+                .await
+                .unwrap()
+                .is_empty(),
+            "{name}"
+        );
+    }
+}
+
+/// The detached count and Remove answer in one aggregate, so they work
+/// under every database profile however many editions were left behind.
+#[tokio::test]
+async fn left_behind_counts_and_removal_work_under_every_profile() {
+    let _lock = master_key_test_lock_async().await;
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let dir = tempfile::tempdir().unwrap();
+        crate::configure_master_key(dir.path()).expect("master key");
+        let store = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        let member = store
+            .create_user(UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        add_node(&store, BRANCH, "host", Some(member.id)).await;
+        let titles = [
+            title_with("p1", "Author/p1/p1.m4b", &[]),
+            title_with("p2", "Author/p2/p2.m4b", &[]),
+        ];
+        let fence = open_branch(&store, BRANCH, &titles).await;
+        deliver_local(&store, BRANCH, fence, "p1", &["Author/p1/p1.m4b"]).await;
+        deliver_local(&store, BRANCH, fence, "p2", &["Author/p2/p2.m4b"]).await;
+        let counts = branch_title_counts(&store, BRANCH).await.unwrap();
+        assert_eq!((counts.shared, counts.delivered), (2, 2), "{name}");
+
+        open(&store, false, true).await;
+        assert_eq!(
+            branch_title_counts(&store, BRANCH).await.unwrap().detached,
+            2,
+            "{name}"
+        );
+        assert_eq!(
+            remove_detached_branch_titles(&store, None).await.unwrap(),
+            2,
+            "{name}"
+        );
+        assert_eq!(
+            branch_title_counts(&store, BRANCH).await.unwrap().detached,
+            0,
+            "{name}"
+        );
+    }
+}
+
+/// The stop-sharing cleanup is guarded on the connection that stopped
+/// sharing: a newer connection that shares again keeps what it links.
+#[tokio::test]
+async fn a_stop_sharing_cleanup_keeps_a_newer_sharing_sessions_titles() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let stale = open(&store, true, true).await;
+    let session = open(&store, true, true).await;
+    accepted(&store, session.fence, "a", false, &[title("p1", 1)]).await;
+    store
+        .remove_node_holdings(BRANCH, NodeHoldingSelection::AllUnderFence(stale.fence))
+        .await
+        .unwrap();
+    assert_eq!(list_branch_titles(&store, None, 10).await.unwrap().len(), 1);
+    assert_eq!(removed_events(&store).await, 0);
+    store
+        .remove_node_holdings(BRANCH, NodeHoldingSelection::AllUnderFence(session.fence))
+        .await
+        .unwrap();
+    assert!(list_branch_titles(&store, None, 10)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// Twenty titles moved to new listings in one batch replace their earlier
+/// holdings under every database profile: the replaced read is chunked and
+/// paged to the backend's limits, and the replaced holdings' share state is
+/// retired in a few statements, so the batch stays within the minimum
+/// profile's statement count.
+#[tokio::test]
+async fn replaced_holdings_are_found_under_every_profile() {
+    let _lock = master_key_test_lock_async().await;
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let dir = tempfile::tempdir().unwrap();
+        crate::configure_master_key(dir.path()).expect("master key");
+        let store = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        let member = store
+            .create_user(UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        add_node(&store, BRANCH, "host", Some(member.id)).await;
+        let opened = match begin_catalog(&store, BRANCH, true, true).await.unwrap() {
+            CatalogBegin::Opened(opened) => opened,
+            other => panic!("{name}: expected a session: {other:?}"),
+        };
+        let us: Vec<CatalogTitle> = (0..20).map(|n| title(&format!("p{n}"), 1)).collect();
+        accepted(&store, opened.fence, "a", false, &us).await;
+        let uk: Vec<CatalogTitle> = us
+            .iter()
+            .map(|t| CatalogTitle {
+                marketplace: "uk".into(),
+                ..t.clone()
+            })
+            .collect();
+        accepted(&store, opened.fence, "b", false, &uk).await;
+        let held = holdings::Entity::find()
+            .filter(holdings::Column::NodeId.eq(BRANCH))
+            .count(store.db())
+            .await
+            .unwrap();
+        assert_eq!(held, 20, "{name}: one holding per title");
+        assert_eq!(removed_events(&store).await, 20, "{name}");
+    }
+}
+
+/// A catalog upload is recorded as delivered only while the holding's
+/// listing still sells the edition whose keys it was granted.
+#[tokio::test]
+async fn a_catalog_upload_is_refused_once_its_listing_sells_another_edition() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let session = open(&store, true, true).await;
+    accepted(
+        &store,
+        session.fence,
+        "c",
+        false,
+        &[title("p1", 3), title("p2", 3)],
+    )
+    .await;
+    let destinations = vec!["local".to_string()];
+    let files = [UploadFile {
+        copies: vec![FileCopy {
+            destination: "local".into(),
+            key: "Author/p1/p1.m4b".into(),
+        }],
+        size: 3,
+        sha256: "ab".repeat(32),
+        content_type: None,
+    }];
+    let UploadGrant::Granted { upload_id, .. } = grant_catalog_upload(
+        &store,
+        BRANCH,
+        session.fence,
+        "owner-node",
+        "audible",
+        "p1",
+        &files,
+        &destinations,
+    )
+    .await
+    .unwrap() else {
+        panic!("expected a grant");
+    };
+    assert!(record_upload_file(&store, &upload_id, 0).await.unwrap());
+    // p1's listing now sells p2's edition.
+    let edition_of = |product: &str| {
+        let store = store.clone();
+        let product = product.to_string();
+        async move {
+            store_listings::Entity::find()
+                .filter(store_listings::Column::ProductId.eq(product))
+                .one(store.db())
+                .await
+                .unwrap()
+                .unwrap()
+        }
+    };
+    let p1 = edition_of("p1").await;
+    let p2 = edition_of("p2").await;
+    assert_ne!(p1.edition_id, p2.edition_id);
+    store_listings::Entity::update_many()
+        .col_expr(
+            store_listings::Column::EditionId,
+            sea_orm::sea_query::Expr::value(p2.edition_id.clone()),
+        )
+        .filter(store_listings::Column::Id.eq(p1.id.clone()))
+        .exec(store.db())
+        .await
+        .unwrap();
+    let limits = JobClaimLimits {
+        class: 1,
+        plugin_instance: 1,
+    };
+    assert_eq!(
+        commit_upload(&store, &upload_id, None, limits)
+            .await
+            .unwrap(),
+        UploadCommit::Refused("edition_changed")
+    );
+    assert!(list_branch_titles(&store, None, 10)
+        .await
+        .unwrap()
+        .iter()
+        .all(|row| !row.delivered));
+}
+
+/// Two shared titles of one edition are delivered once: the branch's
+/// delivery for one title it still shares counts as the edition's audio
+/// for the other.
+#[tokio::test]
+async fn a_branchs_two_listings_of_one_edition_are_delivered_once() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let fence = open_branch(
+        &store,
+        BRANCH,
+        &[
+            title_with("p1", "Author/p1/p1.m4b", &[]),
+            title_with("p2", "Author/p2/p2.m4b", &[]),
+        ],
+    )
+    .await;
+    deliver_local(&store, BRANCH, fence, "p1", &["Author/p1/p1.m4b"]).await;
+    let listing = |product: &str| {
+        let store = store.clone();
+        let product = product.to_string();
+        async move {
+            store_listings::Entity::find()
+                .filter(store_listings::Column::ProductId.eq(product))
+                .one(store.db())
+                .await
+                .unwrap()
+                .unwrap()
+        }
+    };
+    let p1 = listing("p1").await;
+    let p2 = listing("p2").await;
+    store_listings::Entity::update_many()
+        .col_expr(
+            store_listings::Column::EditionId,
+            sea_orm::sea_query::Expr::value(p1.edition_id.clone()),
+        )
+        .filter(store_listings::Column::Id.eq(p2.id.clone()))
+        .exec(store.db())
+        .await
+        .unwrap();
+    assert!(
+        pending_deliveries(&store, BRANCH, 10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "p2's edition already has p1's audio"
+    );
+}
+
+/// Keys claimed by another branch's upload that was abandoned hold no
+/// audio: the edition is still asked for.
+#[tokio::test]
+async fn an_abandoned_claim_does_not_suppress_another_branchs_delivery() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, member) = world(dir.path()).await;
+    add_node(&store, "branch-c", "host", Some(member)).await;
+    let key = "Author/p1/p1.m4b";
+    let fence = open_branch(&store, BRANCH, &[title_with("p1", key, &[])]).await;
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_branch_local(&store, BRANCH, fence, "p1", &[key]).await
+    else {
+        panic!("expected a grant");
+    };
+    open_branch(&store, "branch-c", &[title_with("p1", "Other/p1.m4b", &[])]).await;
+    assert!(
+        pending_deliveries(&store, "branch-c", 10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "an open upload's claim stands while it may still arrive"
+    );
+    // The upload's token lapses without its audio.
+    node_upload_sessions::Entity::update_many()
+        .col_expr(
+            node_upload_sessions::Column::ExpiresAt,
+            sea_orm::sea_query::Expr::value("2000-01-01T00:00:00Z"),
+        )
+        .filter(node_upload_sessions::Column::UploadId.eq(upload_id))
+        .exec(store.db())
+        .await
+        .unwrap();
+    assert_eq!(
+        pending_deliveries(&store, "branch-c", 10).await.unwrap(),
+        vec![reference("p1")]
+    );
+}
+
+/// The batch that replaces a title's holding also stops sharing the old
+/// one, so it is never chosen for the title again even when its removal
+/// after the batch is skipped.
+#[tokio::test]
+async fn a_replaced_holding_stops_being_shared_in_the_replacing_batch() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let session = open(&store, true, true).await;
+    accepted(&store, session.fence, "a", false, &[title("p1", 1)]).await;
+    let moved = CatalogTitle {
+        marketplace: "uk".into(),
+        ..title("p1", 1)
+    };
+    let prepared = match prepare_catalog_batch(&store, BRANCH, session.fence, "b", false, &[moved])
+        .await
+        .unwrap()
+    {
+        Ok(prepared) => prepared,
+        Err(other) => panic!("expected a prepared batch: {other:?}"),
+    };
+    assert_eq!(prepared.replaced.len(), 1);
+    // Only the batch is written; the removal after it never runs.
+    let reply = batch::execute_host_batch(
+        &store,
+        batch::request(&prepared.operation_id, prepared.statements),
+    )
+    .await
+    .unwrap();
+    assert_eq!(batch::rows_affected(&reply, 0), 1);
+    let shared = holdings::Entity::find()
+        .filter(holdings::Column::NodeId.eq(BRANCH))
+        .filter(holdings::Column::ShareDigest.is_not_null())
+        .count(store.db())
+        .await
+        .unwrap();
+    assert_eq!(shared, 1, "only the replacing holding is shared");
+    assert_eq!(list_branch_titles(&store, None, 10).await.unwrap().len(), 1);
 }

@@ -232,7 +232,7 @@ fn pin_library_id(req: &mut AcquireRequest, owner: Option<&FileOwner>) {
         Some(FileOwner::Edition(edition)) => {
             req.library_id = bookclerk_library::library_id(edition)
         }
-        Some(FileOwner::BranchTitle(_)) | None => {}
+        None => {}
     }
 }
 

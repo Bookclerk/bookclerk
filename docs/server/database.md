@@ -697,8 +697,10 @@ library holds as works, expressions and editions:
   `listing_offers` (its price per audience, `non_member` or `member`) and
   `holdings` (who holds each listing: an account or a branch library, in
   typed columns whose foreign keys drop the holding with its account or
-  node; a holding a scan no longer lists, or of a revoked account, is
-  removed with a `holding_removed` event). A
+  node; a holding a scan no longer lists, of a revoked account, or of a
+  branch that no longer shares the title, is removed with a
+  `holding_removed` event; a branch's holding also keeps the title as it
+  shared it and whether its files arrived). A
   listing with no holding is a catalog title a store returned to Discover;
   Discover's candidates and its storefront call cache refer to listings
   instead of keeping their own copies
@@ -708,8 +710,8 @@ library holds as works, expressions and editions:
   `resolution_conflicts` (identifier clashes the resolver recorded instead
   of merging);
 - `edition_files`: every key an acquire or a host upload wrote, per
-  destination, with the edition it belongs to (or, until branch titles
-  become holdings, the branch title), its role (`audio`, `part`,
+  destination, with the edition it belongs to (a branch's delivered
+  title's included), its role (`audio`, `part`,
   `chapter`, `pdf`, `cover`, `sidecar`, `transcript`, `epub`) and, for an
   upload, the file's SHA-256. The quality columns (`lossless`,
   `bitrate_kbps`) stay empty until uploads carry a file's quality.

@@ -27,7 +27,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::{is_product_id, is_store_id, CatalogMetadata};
+use crate::catalog::{is_marketplace, is_product_id, is_store_id, CatalogMetadata};
 
 /// Most works one [`crate::Body::CatalogAsk`] or
 /// [`crate::Body::CatalogFound`] may name.
@@ -44,9 +44,6 @@ pub const MAX_WORK_REF_BYTES: usize = 64;
 
 /// Longest identifier value.
 const MAX_IDENTIFIER_BYTES: usize = 64;
-
-/// Longest marketplace.
-const MAX_MARKETPLACE_BYTES: usize = 16;
 
 /// Longest metadata text field in an answer.
 const MAX_TEXT_BYTES: usize = 2048;
@@ -124,12 +121,7 @@ impl LookupIdentifier {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-');
         let market_ok = if self.scheme.is_scoped() {
-            !self.marketplace.is_empty()
-                && self.marketplace.len() <= MAX_MARKETPLACE_BYTES
-                && self
-                    .marketplace
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+            !self.marketplace.is_empty() && is_marketplace(&self.marketplace)
         } else {
             self.marketplace.is_empty()
         };
@@ -243,12 +235,7 @@ impl LookupEdition {
         if !is_product_id(&self.product_id) {
             return Some("invalid_product_id");
         }
-        if self.marketplace.len() > MAX_MARKETPLACE_BYTES
-            || !self
-                .marketplace
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        {
+        if !is_marketplace(&self.marketplace) {
             return Some("invalid_marketplace");
         }
         let mut formats = self.formats.clone();

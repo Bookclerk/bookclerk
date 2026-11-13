@@ -1942,38 +1942,50 @@ it: a tree, A ← B ← C.
   ancestry, destinations, wanted}` says where to resume, the library's
   ancestry, its destination ids, and titles whose files it still wants.
   `catalog.sync {fence, batch, cursor, done, titles}` sends at most 100
-  titles; each `CatalogTitle` is `{store, product_id, metadata,
-  primary_key, pdf_key, files}` (`deny_unknown_fields`, no account or user
-  field). The library validates a batch the way it does `scan.results`
+  titles; each `CatalogTitle` is `{store, product_id, marketplace,
+  metadata, primary_key, pdf_key, files}` (`deny_unknown_fields`, no
+  account or user field; the metadata carries the ASIN, ISBN and content
+  kind). The library validates a batch the way it does `scan.results`
   (shape, sizes, keys, no repeats) and answers `catalog.accepted {batch,
   upserted, skipped, wanted}`, `lost` under a stale fence, or `refused`.
   Only a `host` node with a live credential and an active owner may share.
-- **`branch_titles` (SQL-v1 + SeaORM).** One row per (provenance, store,
-  product id): provenance `node:<B>`, the owner user (B's owner), the
-  metadata and manifest (with its SHA-256), the delivered manifest's
-  digest, `state` (`shared` or `detached`) and the reason (`stopped_sharing`,
-  `left`, `withdrawn`). A title A already holds in its own `books` for that
-  user (same store and product id under an account the user owns) is
-  skipped, so nothing B got from A comes back as B's.
+- **Node holdings (SQL-v1 + SeaORM).** Each title is resolved into A's
+  library model like a scanned listing (work, expression, edition and
+  store listing, the ASIN scoped to the title's marketplace) and held by
+  B: a `holdings` row with holder `node:<B>` (`holder_kind = 'node'`),
+  published as `holding_added`. The holding carries the share state: the
+  title's `store:product_id` (`share_ref`), the title as received
+  (`share_title`), its manifest digest and the digest whose files arrived.
+  B's owner user owns B's node, so the title is theirs. A title A already
+  holds in its own `books` for that user (same store and product id under
+  an account the user owns) is skipped, so nothing B got from A comes
+  back as B's. Book model step 5 replaced the earlier `branch_titles`
+  table with these holdings
+  ([library data model](library-data-model.md)).
 - **Files reuse the upload endpoint.** `catalog.upload {fence, store,
   product_id, files}` opens a `node_upload_sessions` row bound to the
   catalog fence (job id `catalog`) and answers `upload.granted` with the
   token sealed to B's box key; B then `PUT`s each file and commits as a
   host acquire does, the library tees each body straight to its
   destinations (no staging), and the commit records the delivered digest
-  in one batch gated on the live catalog fence. Files keep the branch's
-  own keys on every destination (A's naming templates are not applied
-  again), so a grant is refused (`key_in_use`) when a key is one of A's
-  own books' (its audio, PDF, or a file beside the audio with the same
-  stem) or another branch title's: a branch never overwrites what is in
-  A's outputs. With no destination on A, the catalog is shared without
-  files.
+  in one batch gated on the live catalog fence and on the holding's
+  listing still selling the edition the grant claimed keys for (else
+  `edition_changed`, and the branch offers the title again). The files
+  are the holding's edition's (`edition_files`), so an edition already in A's
+  outputs from another writer (an acquire, another branch) is not asked
+  for and its upload is refused (`edition_has_files`): the cluster
+  delivers each edition once. Files keep the branch's own keys on every
+  destination (A's naming templates are not applied again), so a grant is
+  refused (`key_in_use`) when a key is one of A's own books' (its audio,
+  PDF, or a file beside the audio with the same stem) or another
+  edition's: a branch never overwrites what is in A's outputs. With no
+  destination on A, the catalog is shared without files.
 - **Incremental, resumable.** B sends titles in a stable order (last
   change, kind, id) after the cursor the library keeps; a reconnect resumes
   after the last accepted batch and re-offers undelivered files. A change
   of either setting, and a session a day after the last full pass,
-  restart from the start; a full pass (`done`) withdraws the titles it no
-  longer named, which is how "Include books from my own branches" off, a
+  restart from the start; a full pass (`done`) removes B's holdings it no
+  longer named (each holding is stamped with the pass), which is how "Include books from my own branches" off, a
   removed book or a sub-branch that left reaches A.
 - **Two settings on `cluster_links`** (`share_books`, `include_branches`,
   both on by default), set in Settings → Library on the branch
@@ -1994,11 +2006,15 @@ it: a tree, A ← B ← C.
   (`409 ancestry_too_deep`) rather than cutting the list short. A clerk shares
   its library's database and so reports the same ancestry: the same tree
   node.
-- **Stop sharing or leave.** New titles stop; delivered files stay in A's
-  outputs; the rows are marked detached (`stopped_sharing` at the next
-  `catalog.begin`, `left` when the node leaves or is revoked) and shown as
-  "from a branch that left"; the owner removes them in bulk
-  (`POST /api/config/branches/titles/remove {node_id?}`, operator or Owner).
+- **Stop sharing or leave.** New titles stop and B's holdings are removed
+  with `holding_removed` (at the next `catalog.begin` with sharing off,
+  or when the node leaves or is revoked); a node holding is written only
+  while its node shares with a live credential. Delivered files stay with
+  their editions in A's outputs; those of an edition nothing in A holds
+  any more are shown as "from a branch that left", and the owner forgets
+  them in bulk (`POST
+  /api/config/branches/titles/remove {node_id?}`, operator or Owner),
+  which drops their `edition_files` records and leaves the files.
 - **Tests.** Library: attribution, dedup and resume under a stale fence,
   trust refusal, no echo back, stop/leave/remove, a full pass withdrawing,
   the daily full pass, catalog uploads committing only under the live
@@ -2008,8 +2024,8 @@ it: a tree, A ← B ← C.
   C; the echo is skipped; a second pass sends nothing; files went through
   the upload endpoint under the catalog item and nothing was staged; the
   cycle refused; include-sub-branches off withdraws C's title; sharing
-  off marks B's titles and the bulk remove clears them; C leaving marks
-  its title on B), `info` ancestry, Settings → Branches and the remove, and
+  off removes B's holdings and the bulk remove forgets their files; C
+  leaving removes its holding on B), `info` ancestry, Settings → Branches and the remove, and
   the sharing endpoint reaching the library on a running link, for the
   operator and for an Owner, refused to an Administrator and a Member. UI
   (vitest): the read-only summaries and who sees the sharing settings.
@@ -2035,8 +2051,8 @@ it: a tree, A ← B ← C.
   (dedup is unique per queue); `event_deliveries` gains `queue_name`;
   `nodes` gains `target`, `labels_json`, `kind`, and `owner_user_id`.
   H-4 adds `node_enrollment_links`, `node_credentials`, `cluster_links`,
-  `job_secret_handoffs`, `remote_plugin_consents`, and (branches of
-  branches) `branch_titles`; `cluster_links` gains `share_books`,
+  `job_secret_handoffs`, and `remote_plugin_consents` (branches of
+  branches keep their titles as node holdings); `cluster_links` gains `share_books`,
   `include_branches` and `ancestry_json`, and `nodes` the reported
   settings and the catalog fence, cursor and pass times.
   Checksum of the
