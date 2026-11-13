@@ -18,11 +18,98 @@
 
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait as _, EntityTrait as _, QueryFilter as _};
+use serde::Deserialize;
 
 use super::identity::NodeKind;
+use super::node_queue::is_valid_node_id;
 use crate::entities::nodes;
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
+
+/// `PUT /api/config/branches/members-books` body: a branch, and whether
+/// this library acquires all of its members' books.
+#[derive(Debug, utoipa::ToSchema)]
+// Read by the schema only (no unknown fields); `MembersBooksFields`
+// enforces it.
+#[serde(deny_unknown_fields)]
+pub struct MembersBooksBody {
+    /// The branch's node id, as Settings → Branches lists it.
+    #[schema(example = "2b7e1c4d-9f3a-4e8b-a6c5-0d1e2f3a4b5c")]
+    node_id: String,
+    /// "Acquire all of this branch's members' books".
+    #[schema(example = true)]
+    acquire: bool,
+}
+
+/// [`MembersBooksBody`]'s fields as JSON carries them; read only from a
+/// JSON object ([`MembersBooksBody`]'s `Deserialize`), never from an array.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MembersBooksFields {
+    /// See [`MembersBooksBody::node_id`].
+    node_id: String,
+    /// See [`MembersBooksBody::acquire`].
+    acquire: bool,
+}
+
+impl<'de> Deserialize<'de> for MembersBooksBody {
+    /// Reads the body from a JSON object only.
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let fields: MembersBooksFields = super::cluster_links::from_object(
+            deserializer,
+            "a JSON object with node_id and acquire",
+        )?;
+        Ok(Self {
+            node_id: fields.node_id,
+            acquire: fields.acquire,
+        })
+    }
+}
+
+/// A validated [`MembersBooksBody`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MembersBooksChoice {
+    /// The branch's node id, trimmed: a valid node id.
+    pub node_id: String,
+    /// The new choice.
+    pub acquire: bool,
+}
+
+impl MembersBooksBody {
+    /// Checks the body: a well-formed node id, with surrounding whitespace
+    /// removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] for a malformed node id.
+    pub fn validate(self) -> Result<MembersBooksChoice> {
+        let node_id = self.node_id.trim();
+        if !is_valid_node_id(node_id) {
+            return Err(LibraryError::Invalid("invalid node_id".into()));
+        }
+        Ok(MembersBooksChoice {
+            node_id: node_id.to_string(),
+            acquire: self.acquire,
+        })
+    }
+}
+
+/// Parses and validates a `PUT /api/config/branches/members-books` body
+/// from its raw bytes, sans IO, the way the route reads it: JSON into
+/// [`MembersBooksBody`], then [`MembersBooksBody::validate`].
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for bytes that are not the body's JSON
+/// shape (unknown or repeated fields, wrong types, a missing field) or a
+/// malformed node id.
+pub fn parse_members_books_request(body: &[u8]) -> Result<MembersBooksChoice> {
+    serde_json::from_slice::<MembersBooksBody>(body)
+        .map_err(|err| LibraryError::Invalid(format!("members' books body: {err}")))?
+        .validate()
+}
 
 /// Turns "Acquire all of this branch's members' books" on or off for
 /// branch `node_id`.

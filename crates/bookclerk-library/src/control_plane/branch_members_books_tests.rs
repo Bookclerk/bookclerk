@@ -9,19 +9,16 @@ use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
 use super::*;
 use crate::control_plane::*;
 use crate::entities::{node_credentials, nodes};
-use crate::master_key::master_key_test_lock_async;
 use crate::models::UserRole;
 use crate::store::LibraryStore;
+use crate::test_support::Profile;
 
 const BRANCH: &str = "branch-b";
 
-async fn store_in(dir: &std::path::Path) -> LibraryStore {
-    let db = bookclerk_plugin_database_sqlite::open(&dir.join("library.db"))
+async fn store(profile: Profile) -> LibraryStore {
+    crate::test_support::sqlite::memory(profile)
         .await
-        .expect("open sqlite file");
-    crate::apply_host_schema(&db).await.expect("schema");
-    crate::configure_master_key(dir).expect("master key");
-    LibraryStore::from_connection(db)
+        .into_store()
 }
 
 async fn add_node(store: &LibraryStore, node_id: &str, kind: &str, owner: Option<i64>) {
@@ -98,92 +95,98 @@ fn title(product: &str) -> CatalogTitle {
 
 #[tokio::test]
 async fn the_choice_reaches_the_branch_and_restarts_its_pass() {
-    let _lock = master_key_test_lock_async().await;
-    let dir = tempfile::tempdir().unwrap();
-    let store = store_in(dir.path()).await;
-    let member = store
-        .create_user(UserRole::Member, Some("Riley"), None)
-        .await
-        .unwrap();
-    add_node(&store, BRANCH, "host", Some(member.id)).await;
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = store(profile).await;
+        let member = store
+            .create_user(UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        add_node(&store, BRANCH, "host", Some(member.id)).await;
 
-    // Off by default.
-    let first = open(&store).await;
-    assert!(!first.members_books);
-    match accept_catalog_batch(&store, BRANCH, first.fence, "c1", false, &[title("B1")])
-        .await
-        .unwrap()
-    {
-        CatalogAccept::Accepted { .. } => {}
-        other => panic!("expected the batch accepted: {other:?}"),
+        // Off by default.
+        let first = open(&store).await;
+        assert!(!first.members_books, "{name}");
+        match accept_catalog_batch(&store, BRANCH, first.fence, "c1", false, &[title("B1")])
+            .await
+            .unwrap()
+        {
+            CatalogAccept::Accepted { .. } => {}
+            other => panic!("expected the batch accepted: {other:?}"),
+        }
+        assert_eq!(node(&store, BRANCH).await.catalog_cursor, "c1");
+
+        // Turning it on loses the pass under way and clears the cursor.
+        assert_eq!(
+            set_branch_members_books(&store, BRANCH, true)
+                .await
+                .unwrap(),
+            Some(true)
+        );
+        assert!(!catalog_fence_live(&store, BRANCH, first.fence)
+            .await
+            .unwrap());
+        let row = node(&store, BRANCH).await;
+        assert_eq!(row.acquire_members_books, 1, "{name}");
+        assert_eq!(row.catalog_cursor, "");
+
+        // The next session carries it and starts from the start.
+        let second = open(&store).await;
+        assert!(second.members_books, "{name}");
+        assert_eq!(second.cursor, "");
+        assert!(second.fence > first.fence);
+
+        // The same value again changes nothing: the session stays live.
+        assert_eq!(
+            set_branch_members_books(&store, BRANCH, true)
+                .await
+                .unwrap(),
+            Some(true)
+        );
+        assert!(catalog_fence_live(&store, BRANCH, second.fence)
+            .await
+            .unwrap());
+
+        // Off again restarts the pass, so the members' books are withdrawn
+        // when it ends.
+        assert_eq!(
+            set_branch_members_books(&store, BRANCH, false)
+                .await
+                .unwrap(),
+            Some(false)
+        );
+        assert!(!catalog_fence_live(&store, BRANCH, second.fence)
+            .await
+            .unwrap());
+        let third = open(&store).await;
+        assert!(!third.members_books, "{name}");
+        assert_eq!(third.cursor, "");
     }
-    assert_eq!(node(&store, BRANCH).await.catalog_cursor, "c1");
-
-    // Turning it on loses the pass under way and clears the cursor.
-    assert_eq!(
-        set_branch_members_books(&store, BRANCH, true)
-            .await
-            .unwrap(),
-        Some(true)
-    );
-    assert!(!catalog_fence_live(&store, BRANCH, first.fence)
-        .await
-        .unwrap());
-    let row = node(&store, BRANCH).await;
-    assert_eq!(row.acquire_members_books, 1);
-    assert_eq!(row.catalog_cursor, "");
-
-    // The next session carries it and starts from the start.
-    let second = open(&store).await;
-    assert!(second.members_books);
-    assert_eq!(second.cursor, "");
-    assert!(second.fence > first.fence);
-
-    // The same value again changes nothing: the session stays live.
-    assert_eq!(
-        set_branch_members_books(&store, BRANCH, true)
-            .await
-            .unwrap(),
-        Some(true)
-    );
-    assert!(catalog_fence_live(&store, BRANCH, second.fence)
-        .await
-        .unwrap());
-
-    // Off again restarts the pass, so the members' books are withdrawn
-    // when it ends.
-    assert_eq!(
-        set_branch_members_books(&store, BRANCH, false)
-            .await
-            .unwrap(),
-        Some(false)
-    );
-    assert!(!catalog_fence_live(&store, BRANCH, second.fence)
-        .await
-        .unwrap());
-    let third = open(&store).await;
-    assert!(!third.members_books);
-    assert_eq!(third.cursor, "");
 }
 
 #[tokio::test]
 async fn only_a_branch_takes_the_choice() {
-    let _lock = master_key_test_lock_async().await;
-    let dir = tempfile::tempdir().unwrap();
-    let store = store_in(dir.path()).await;
-    add_node(&store, "owner-node", "owner", None).await;
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = store(profile).await;
+        add_node(&store, "owner-node", "owner", None).await;
 
-    assert_eq!(
-        set_branch_members_books(&store, "owner-node", true)
-            .await
-            .unwrap(),
-        None
-    );
-    assert_eq!(node(&store, "owner-node").await.acquire_members_books, 0);
-    assert_eq!(
-        set_branch_members_books(&store, "nowhere", true)
-            .await
-            .unwrap(),
-        None
-    );
+        assert_eq!(
+            set_branch_members_books(&store, "owner-node", true)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            node(&store, "owner-node").await.acquire_members_books,
+            0,
+            "{name}"
+        );
+        assert_eq!(
+            set_branch_members_books(&store, "nowhere", true)
+                .await
+                .unwrap(),
+            None
+        );
+    }
 }

@@ -1920,18 +1920,6 @@ pub async fn post_remove_branch_titles(
     }
 }
 
-/// `PUT /api/config/branches/members-books` body.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PutBranchMembersBooks {
-    /// The branch.
-    #[schema(example = "2b7e1c4d-9f3a-4e8b-a6c5-0d1e2f3a4b5c")]
-    pub node_id: String,
-    /// "Acquire all of this branch's members' books".
-    #[schema(example = true)]
-    pub acquire: bool,
-}
-
 /// JSON body after `PUT /api/config/branches/members-books`.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BranchMembersBooks {
@@ -1966,9 +1954,10 @@ fn admin_audit_actor(actor: &ConfigActor) -> String {
 #[utoipa::path(
     put,
     path = "/api/config/branches/members-books",
-    request_body = PutBranchMembersBooks,
+    request_body = bookclerk_library::control_plane::MembersBooksBody,
     responses(
         (status = 200, description = "The setting after the change.", body = BranchMembersBooks),
+        (status = 400, description = "The node id is malformed.", body = crate::http_error::ErrorMessage, example = json!({"error": "invalid node_id"})),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
             ("forbidden" = (summary = "The user is not an active Owner.", value = json!({"error": "forbidden"}))),
@@ -1983,15 +1972,26 @@ fn admin_audit_actor(actor: &ConfigActor) -> String {
 pub async fn put_branch_members_books(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
-    Json(body): Json<PutBranchMembersBooks>,
+    Json(body): Json<bookclerk_library::control_plane::MembersBooksBody>,
 ) -> Response {
     let actor = match require_branch_admin(&state, caller).await {
         Ok(actor) => actor,
         Err(refused) => return refused,
     };
+    // The same parse the fuzz target drives (`parse_members_books_request`).
+    let choice = match body.validate() {
+        Ok(choice) => choice,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(crate::http_error::ErrorMessage::new(err)),
+            )
+                .into_response()
+        }
+    };
     let library = state.library_snapshot().await;
-    let node_id = body.node_id.trim();
-    match set_branch_members_books(&library, node_id, body.acquire).await {
+    let node_id = choice.node_id.as_str();
+    match set_branch_members_books(&library, node_id, choice.acquire).await {
         Ok(Some(acquire)) => {
             let detail = json!({ "node_id": node_id, "acquire": acquire }).to_string();
             if let Err(err) = library

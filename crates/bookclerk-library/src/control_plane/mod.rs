@@ -64,7 +64,9 @@ pub use branch_catalog::{
     ForwardableBranchTitle, DETACHED_LEFT, DETACHED_STOPPED_SHARING, DETACHED_WITHDRAWN,
     FORWARDABLE_KEYS_MAX_PAGE, FULL_CATALOG_PASS_EVERY,
 };
-pub use branch_members_books::set_branch_members_books;
+pub use branch_members_books::{
+    parse_members_books_request, set_branch_members_books, MembersBooksBody, MembersBooksChoice,
+};
 pub use branch_requests::{
     books_requested_by_link, claim_branch_requests, finish_branch_request, notify_requests_queued,
     parse_branch_request, plan_branch_request, record_link_request, BranchRequestAsk,

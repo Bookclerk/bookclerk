@@ -13508,7 +13508,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PutBranchMembersBooks"
+                "$ref": "#/components/schemas/MembersBooksBody"
               }
             }
           },
@@ -13526,8 +13526,16 @@
             }
           },
           "400": {
-            "description": "The body is not syntactically valid JSON.",
+            "description": "The node id is malformed. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid node_id"
+                }
+              },
               "text/plain": {
                 "schema": {
                   "type": "string"
@@ -32363,6 +32371,27 @@
           }
         }
       },
+      "MembersBooksBody": {
+        "type": "object",
+        "description": "`PUT /api/config/branches/members-books` body: a branch, and whether\nthis library acquires all of its members' books.",
+        "required": [
+          "node_id",
+          "acquire"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "The branch's node id, as Settings → Branches lists it.",
+            "example": "2b7e1c4d-9f3a-4e8b-a6c5-0d1e2f3a4b5c"
+          },
+          "acquire": {
+            "type": "boolean",
+            "description": "\"Acquire all of this branch's members' books\".",
+            "example": true
+          }
+        },
+        "additionalProperties": false
+      },
       "MfaPolicy": {
         "type": "object",
         "description": "The host-wide second-factor policy.",
@@ -37937,27 +37966,6 @@
             "example": "0.4.1"
           }
         }
-      },
-      "PutBranchMembersBooks": {
-        "type": "object",
-        "description": "`PUT /api/config/branches/members-books` body.",
-        "required": [
-          "node_id",
-          "acquire"
-        ],
-        "properties": {
-          "node_id": {
-            "type": "string",
-            "description": "The branch.",
-            "example": "2b7e1c4d-9f3a-4e8b-a6c5-0d1e2f3a4b5c"
-          },
-          "acquire": {
-            "type": "boolean",
-            "description": "\"Acquire all of this branch's members' books\".",
-            "example": true
-          }
-        },
-        "additionalProperties": false
       },
       "PutBranches": {
         "type": "object",
