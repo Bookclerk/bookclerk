@@ -1,8 +1,9 @@
 # ADR: Library catalog network
 
 - **Status:** Accepted (2026-11-11). Step 1, per-library plugin state on a
-  branch, step 2, own library first, and step 7, capacity shares, are
-  implemented. The other steps are planned and listed under
+  branch, step 2, own library first, step 3, accounts that follow the
+  person (with one refresh keeper per single-keeper account), and step 7,
+  capacity shares, are implemented. The other steps are planned and listed under
   [Consequences](#consequences).
 - **Date:** 2026-11-11
 - **Related:** [Control plane](control-plane.md) (H-4 branches, branches of

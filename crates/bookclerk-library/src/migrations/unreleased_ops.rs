@@ -1650,6 +1650,22 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         ('library', 0), ('jobs', 0), ('deliveries', 0), ('nodes', 0), ('config', 0),
         ('consents', 0), ('clusters', 0), ('users', 0), ('discover', 0)",
     ),
+    // The newest sign-in of a single-keeper store account that crossed
+    // each share (`control_plane::keeper`): on a library, the revision its
+    // keeper branch (`peer = node:<id>`) last pushed and this library
+    // applied; on the keeper branch, the revision it last pushed up the
+    // link (`peer = link:<cluster_id>`). A push applies only above it.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_credential_revisions (
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        peer TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (plugin_key, account_id, peer),
+        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
+    )",
+    ),
 ];
 
 #[cfg(test)]

@@ -46,6 +46,7 @@ use crate::protocol::{
     LoginResult, RevokeAccountParams, ScanParams, SearchCatalogParams,
 };
 use crate::rpc_session::{PluginSession, SessionServices, HOST_SHARED_ACCOUNT};
+use crate::CredentialSharing;
 use crate::Result;
 
 /// Longest a guest may spend signing an account out at the store before the
@@ -92,6 +93,9 @@ pub struct ExternalSource {
     /// Where credentials the guest refreshed go for handed credentials (the
     /// owner, over the job's fence); unset, they are dropped with a warning.
     refresh_sink: Option<Arc<dyn RefreshedCredentialSink>>,
+    /// The storefront declares `credentials = "single_keeper"` (or leaves
+    /// the key out): one instance keeps each account's login fresh.
+    single_keeper: bool,
 }
 
 /// Receives the credentials a guest refreshed while it used credentials an
@@ -121,6 +125,10 @@ enum RefreshTarget<'a> {
     Handed(Option<&'a dyn RefreshedCredentialSink>),
     /// This install's own account, stored in the scope (none: not stored).
     Local(Option<&'a SourceScope>),
+    /// This install's account of a single-keeper storefront: stored as
+    /// [`Self::Local`] unless a branch keeps the account for this library,
+    /// which pushes its own sign-ins instead.
+    SingleKeeper(&'a SourceScope),
 }
 
 /// Keeps credentials a guest of `plugin` handed back after refreshing those
@@ -176,6 +184,22 @@ async fn keep_refreshed_credentials(
             return Ok(());
         }
         RefreshTarget::Local(Some(scope)) => scope,
+        RefreshTarget::SingleKeeper(scope) => {
+            let keeper = scope
+                .keeping_branch(account_id)
+                .await
+                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+            if let Some(node_id) = keeper {
+                tracing::info!(
+                    plugin,
+                    account_id,
+                    %node_id,
+                    "a branch keeps this account's sign-in; the guest's refresh is not saved here"
+                );
+                return Ok(());
+            }
+            scope
+        }
     };
     let sent = credentials_from_bytes(sent)?;
     let stored = scope
@@ -280,6 +304,7 @@ impl ExternalSource {
             plugin_instance_id: None,
             handed: None,
             refresh_sink: None,
+            single_keeper: plugin.manifest.credential_sharing() == CredentialSharing::SingleKeeper,
         })
     }
 
@@ -314,7 +339,10 @@ impl ExternalSource {
         let target = if self.handed.is_some() {
             RefreshTarget::Handed(self.refresh_sink.as_deref())
         } else {
-            RefreshTarget::Local(scope)
+            match scope {
+                Some(scope) if self.single_keeper => RefreshTarget::SingleKeeper(scope),
+                scope => RefreshTarget::Local(scope),
+            }
         };
         keep_refreshed_credentials(self.id(), target, account_id, sent, refreshed).await
     }
@@ -1676,6 +1704,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stored(&scope).await, serde_json::json!({"token": "v2"}));
+
+        // A single-keeper account saves its refreshes until a branch keeps
+        // it for this library; from then on the branch's pushes win.
+        let v2 = serde_json::to_vec(&serde_json::json!({"token": "v2"})).unwrap();
+        let single = |refreshed: &[u8]| {
+            keep_refreshed_credentials(
+                "echo",
+                RefreshTarget::SingleKeeper(&scope),
+                "a1",
+                &v2,
+                refreshed.to_vec(),
+            )
+        };
+        single(br#"{"token":"v4"}"#).await.unwrap();
+        assert_eq!(stored(&scope).await, serde_json::json!({"token": "v4"}));
+        bookclerk_library::control_plane::record_accounts_sent_to(
+            &store,
+            &bookclerk_library::control_plane::node_peer("branch"),
+            &[bookclerk_node_proto::CarriedAccount {
+                plugin_key: "path:file:///plugins/echo".into(),
+                account_id: "a1".into(),
+                source: "echo".into(),
+                marketplace: "us".into(),
+                label: None,
+                secrets: Vec::new(),
+            }],
+        )
+        .await
+        .unwrap();
+        let v4 = serde_json::to_vec(&serde_json::json!({"token": "v4"})).unwrap();
+        keep_refreshed_credentials(
+            "echo",
+            RefreshTarget::SingleKeeper(&scope),
+            "a1",
+            &v4,
+            br#"{"token":"v5"}"#.to_vec(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stored(&scope).await, serde_json::json!({"token": "v4"}));
     }
 
     #[tokio::test]

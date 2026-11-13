@@ -669,7 +669,7 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `accounts`, `books`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
 `operator_sessions`, `account_links`, `member_account_rules`,
-`account_shares`, `listening_progress`, `title_requests`, `title_request_sources`,
+`account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `discover_candidates`, `discover_store_calls`,
 `discover_store_call_hits`, `discover_feeds`, `discover_fetches`,
 `discover_request_queue`,
@@ -684,7 +684,10 @@ accounts: a row with `may_connect = 0` stops that user from connecting
 store accounts here, and no row allows it. `account_shares` records each
 account a person's join sent to a branch (`sent`, peer `node:<id>`) or
 received from a library (`received`, peer `link:<cluster id>`); it is
-removed with the account.
+removed with the account. `account_credential_revisions` holds, per account
+and peer, the newest sign-in revision of a single-keeper account: on a
+library the last one applied from its keeper branch, on that branch the
+last one pushed to each library. It is removed with the account.
 
 The library model ([ADR](../adr/library-data-model.md)) stores what the
 library holds as works, expressions and editions:

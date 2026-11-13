@@ -40,7 +40,8 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `deployments.list` | `deployments` (what targets this node, with versions and the requested grant) |
 | `instance.config` | `CONFIG`, and `SECRETS` sealed to the node only for a node trusted with every job |
 | `observation` | `ok` (`materialized` or `error` for its own deployments) |
-| `secret.update` | `ok` (a refreshed store token, sealed to the owner, only for a ref handed with a live job) |
+| `secret.update` | `ok` (a refreshed store token, sealed to the owner, only for a ref handed with a live job), or `error` `refused` `kept_by_branch` for a single-keeper account a branch keeps |
+| `accounts.update {sealed, revision}` | `accounts.updated {outcome}`: `applied`, `stale` (not newer than the last one applied) or `not_shared` (not an account this branch keeps there); see [One refresh keeper](../server/cluster-hosts.md#one-refresh-keeper) |
 | `scan.results` | `scan.accepted {batch, upserted}` |
 | `acquire.plan` | `acquire.targets {targets, destinations}` |
 | `upload.grant` | `upload.granted {upload_id, sealed_token, expires_in_secs}` |
@@ -69,7 +70,9 @@ belong to; a write-back is sealed to the owner's box key. A host job's
 storefront guest that renews an account's tokens mid-job hands them back
 ([Refreshed credentials](../plugins/abi.md#refreshed-credentials)), and
 the host writes them back to the owner this way, as the account row the
-job was handed.
+job was handed. A single-keeper account the branch keeps for that library
+is the exception: the branch saves the refresh in its own library, and
+its link pushes it up as `accounts.update`.
 
 ## The live socket (`/api/live`)
 

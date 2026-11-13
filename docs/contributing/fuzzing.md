@@ -43,7 +43,7 @@ boundary extends it.
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
-| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, and a branch offers its library (`accounts.add`) | `bookclerk-node-proto::parse_account_bundle` |
+| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
@@ -220,7 +220,8 @@ only that. The others check:
   checked byte by byte. A `catalog.ask` or `catalog.found` that passes
   its validator names at most 100 works, each once, by plain correlation
   keys; its identifiers are plain ASCII with a marketplace exactly on an
-  ASIN, and each answer lists 1 to 8 distinct editions with a title. The shared oracle is `fuzz/oracles/node_frame.rs`,
+  ASIN, and each answer lists 1 to 8 distinct editions with a title. Seeds
+  cover `accounts.update` and `accounts.updated`. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
   has the bundle version and names the cluster and node it was opened

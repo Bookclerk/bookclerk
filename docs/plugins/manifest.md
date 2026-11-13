@@ -174,9 +174,9 @@ supports_suspend = true
 
 ### `credentials` (storefronts)
 
-A storefront says whether its store sign-in may be held in more than one
-place. A person's store connections follow them to the branches they join
-only when every copy of the plugin there says `shareable`.
+A storefront says whether its store sign-in may be refreshed in more than
+one place. A person's store connections follow them to the branches they
+join either way; the declaration decides who refreshes them.
 
 ```toml
 entrypoints = ["storefront"]
@@ -187,8 +187,13 @@ credentials = "shareable"   # or "single_keeper" (the default)
   copies may refresh it on their own. Libro.fm, Chirp and GraphicAudio
   declare it.
 - `single_keeper` (the default, also when the key is left out): one place
-  keeps and refreshes the sign-in, so a copy elsewhere would break it.
-  Audible is a single keeper. Its accounts stay where they were connected.
+  keeps and refreshes the sign-in, so a copy refreshing on its own would
+  break it. Audible is a single keeper. A branch keeps such an account for
+  each library it shares it with and pushes its newer sign-ins there (see
+  [One refresh keeper](../server/cluster-hosts.md#one-refresh-keeper)).
+
+A plugin counts as shareable only when every copy of it the install knows
+says `shareable`.
 
 The key is refused on a plugin without the `storefront` entrypoint.
 

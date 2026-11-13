@@ -253,6 +253,12 @@ pub trait HostGuests: Send + Sync + 'static {
     /// ([`OwnerTitleCopy`]). Best effort: a failure is logged, never the
     /// job's.
     fn import_owner_title(&self, copy: OwnerTitleCopy<'_>) -> impl Future<Output = ()> + Send;
+
+    /// This install's own copies of the single-keeper accounts it keeps for
+    /// the library ([`OwnerWriteBack`]); `None` when it keeps none here.
+    fn local_keeper(&self) -> Option<Arc<dyn LocalKeeper>> {
+        None
+    }
 }
 
 /// One of this host's own destinations: its destination id (`local`, `s3`;
@@ -331,7 +337,65 @@ impl GuestHost {
     }
 }
 
+/// [`GuestHost`]'s [`LocalKeeper`]: this install's library, for the link
+/// to `cluster_id`.
+pub(super) struct DaemonKeeper {
+    /// Daemon state, for the current library.
+    pub(super) state: Arc<AppState>,
+    /// The library the jobs come from.
+    pub(super) cluster_id: String,
+}
+
+#[async_trait::async_trait]
+impl LocalKeeper for DaemonKeeper {
+    async fn keep(
+        &self,
+        plugin_key: &str,
+        account_id: &str,
+        sent: &[u8],
+        refreshed: &[u8],
+    ) -> Option<bool> {
+        let library = self.state.library_snapshot().await;
+        match bookclerk_library::control_plane::keeps_for_link(
+            &library,
+            plugin_key,
+            account_id,
+            &self.cluster_id,
+        )
+        .await
+        {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(err) => {
+                tracing::warn!(account_id, error = %err, "could not read whether this install keeps an account");
+                return None;
+            }
+        }
+        let Ok(sent) = serde_json::from_slice::<serde_json::Value>(sent) else {
+            return Some(false);
+        };
+        let scope = bookclerk_library::SourceScope::new(library, plugin_key, "");
+        match scope
+            .replace_refreshed_credentials(account_id, &sent, refreshed)
+            .await
+        {
+            Ok(stored) => Some(stored),
+            Err(err) => {
+                tracing::warn!(account_id, error = %err, "could not keep a job's refreshed credentials here");
+                Some(false)
+            }
+        }
+    }
+}
+
 impl HostGuests for GuestHost {
+    fn local_keeper(&self) -> Option<Arc<dyn LocalKeeper>> {
+        Some(Arc::new(DaemonKeeper {
+            state: Arc::clone(&self.state),
+            cluster_id: self.cluster_id.clone(),
+        }))
+    }
+
     async fn scan(
         &self,
         bindings: &HostJobBindings,
@@ -726,10 +790,14 @@ impl<G: HostGuests> JobTransport for HostJobTransport<G> {
 /// with the refreshed credentials either way: one sink serves the whole
 /// job, so its later guests are sent them ([`RefreshedCredentialSink::latest`]).
 ///
-/// The owner replaces the account's row under the job's fence without
-/// comparing it with what it handed, so a sign-in on the owner during the
-/// job can be overwritten; the keeper lease (single-keeper accounts) is
-/// what closes that.
+/// When this install keeps the account for the library itself (a
+/// single-keeper account its person brought here; [`LocalKeeper`]), the
+/// refresh is saved here instead and reaches the library as this branch's
+/// next push: the library refuses write-backs of accounts a branch keeps.
+///
+/// Otherwise the owner replaces the account's row under the job's fence
+/// without comparing it with what it handed, so a sign-in on the owner
+/// during the job can be overwritten.
 pub struct OwnerWriteBack {
     /// The job, whose fence and handed secrets the write-back uses.
     host: Arc<HostJobCtx>,
@@ -737,6 +805,29 @@ pub struct OwnerWriteBack {
     plugin_key: String,
     /// The newest refreshed credentials of each account this job.
     latest: std::sync::Mutex<BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>>,
+    /// This install's own copies of the accounts it keeps for the library.
+    local: Option<Arc<dyn LocalKeeper>>,
+}
+
+/// This install's own copy of a single-keeper account it keeps for the
+/// library a job came from ([`OwnerWriteBack`]).
+#[async_trait::async_trait]
+pub trait LocalKeeper: Send + Sync {
+    /// Saves `refreshed` as this install's copy of the account while that
+    /// copy is still `sent` (the credentials the guest was given).
+    ///
+    /// # Returns
+    ///
+    /// `None` when this install does not keep the account for the library
+    /// (the write-back goes to the owner); otherwise whether it was saved
+    /// (false: a newer sign-in here won).
+    async fn keep(
+        &self,
+        plugin_key: &str,
+        account_id: &str,
+        sent: &[u8],
+        refreshed: &[u8],
+    ) -> Option<bool>;
 }
 
 impl OwnerWriteBack {
@@ -745,11 +836,13 @@ impl OwnerWriteBack {
     pub fn sink(
         host: &Arc<HostJobCtx>,
         bindings: &HostJobBindings,
+        local: Option<Arc<dyn LocalKeeper>>,
     ) -> Arc<dyn RefreshedCredentialSink> {
         Arc::new(Self {
             host: Arc::clone(host),
             plugin_key: bindings.plugin_key.clone(),
             latest: std::sync::Mutex::default(),
+            local,
         })
     }
 }
@@ -780,10 +873,42 @@ impl RefreshedCredentialSink for OwnerWriteBack {
             );
             return;
         };
-        self.latest
+        // What the guest was given: this job's last refresh, else the
+        // handed copy.
+        let sent = self
+            .latest
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(account_id.to_owned(), credentials.clone());
+            .insert(account_id.to_owned(), credentials.clone())
+            .or_else(|| {
+                self.host
+                    .secrets
+                    .get(&secret_ref)
+                    .map(|value| zeroize::Zeroizing::new(value.expose().to_vec()))
+            })
+            .unwrap_or_default();
+        if let Some(local) = &self.local {
+            match local
+                .keep(&self.plugin_key, account_id, &sent, &credentials)
+                .await
+            {
+                Some(true) => {
+                    tracing::info!(
+                        account_id,
+                        "refreshed store credentials kept here, for this branch's next push"
+                    );
+                    return;
+                }
+                Some(false) => {
+                    tracing::info!(
+                        account_id,
+                        "a newer sign-in here won over a job's refreshed credentials"
+                    );
+                    return;
+                }
+                None => {}
+            }
+        }
         match self.host.write_back(&secret_ref, &credentials).await {
             Ok(()) => tracing::info!(
                 account_id,
@@ -837,7 +962,7 @@ async fn host_scan<G: HostGuests>(
         &ctx.cancel,
         guests.scan(
             bindings,
-            OwnerWriteBack::sink(host, bindings),
+            OwnerWriteBack::sink(host, bindings, guests.local_keeper()),
             scan,
             Arc::clone(&ctx.cancel),
         ),
@@ -901,7 +1026,7 @@ async fn host_acquire<G: HostGuests>(
     ctx: &JobExecCtx,
 ) -> anyhow::Result<String> {
     let job_dir = job_work_path(&guests.work_dir(), &host.job.job.id, host.job.fence)?;
-    let refreshed = OwnerWriteBack::sink(host, bindings);
+    let refreshed = OwnerWriteBack::sink(host, bindings, guests.local_keeper());
     let result = acquire_titles(guests, host, bindings, &refreshed, ctx, &job_dir).await;
     let _ = tokio::fs::remove_dir_all(&job_dir).await;
     let (acquired, failed) = result?;
