@@ -483,9 +483,11 @@ dependencies = [
  "bookclerk-plugin-source-libro",
  "bookclerk-resolve",
  "bookclerk-storefront",
+ "bookclerk-window-policy",
  "bookclerk-workerd",
  "chrono",
  "hmac",
+ "http",
  "httparse",
  "libfuzzer-sys",
  "rusqlite",
@@ -745,6 +747,16 @@ version = "0.1.0"
 dependencies = [
  "rustls",
  "ureq",
+]
+
+[[package]]
+name = "bookclerk-window-policy"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-node-proto",
+ "http",
+ "serde_json",
+ "url",
 ]
 
 [[package]]

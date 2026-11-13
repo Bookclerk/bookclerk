@@ -567,6 +567,90 @@ export function setMembersListing(
   });
 }
 
+/** What a library kept of the store connections a branch's person added. */
+export interface ConnectionsAdded {
+  /** Accounts now connected in the library for the person. */
+  added: number;
+  /** Accounts the person had already connected there. */
+  already_here: number;
+  /** Accounts connected to someone else there; left as they are. */
+  taken: number;
+  /** Accounts that could not be kept there. */
+  failed: number;
+  /** Accounts not sent: not the person's, not connected, or not shareable. */
+  not_sent: number;
+  /** The library's operator does not let the person connect accounts there. */
+  not_allowed: boolean;
+}
+
+/**
+ * "Add my connections to <library>": sends some of the branch person's
+ * store connections up the link. Only the person this branch belongs to may.
+ *
+ * @param clusterId - The library to add them to.
+ * @param accounts - The connections, by plugin key and store account id.
+ * @returns What the library kept.
+ */
+export function addConnectionsToLibrary(
+  clusterId: string,
+  accounts: { plugin_key: string; account_id: string }[],
+): Promise<ConnectionsAdded> {
+  return request("/api/config/join/connections", {
+    method: "POST",
+    body: { cluster_id: clusterId, accounts },
+  });
+}
+
+/** Where a store connection is disconnected after a disconnect. */
+export interface ConnectionDisconnected {
+  /** It was the person's here and is disconnected here now. */
+  here: boolean;
+  /** Linked libraries (cluster ids) that confirmed the disconnect. */
+  libraries: string[];
+  /** Linked libraries that could not be reached or refused. */
+  unreached: string[];
+}
+
+/**
+ * Disconnects one of the branch person's store connections here and, with
+ * `everywhere`, in every linked library it was shared with.
+ *
+ * @param pluginKey - The storefront's plugin key.
+ * @param accountId - The store account id.
+ * @param everywhere - Also disconnect it in the linked libraries.
+ * @returns Where it is disconnected now.
+ */
+export function disconnectConnection(
+  pluginKey: string,
+  accountId: string,
+  everywhere: boolean,
+): Promise<ConnectionDisconnected> {
+  return request("/api/config/join/connections/disconnect", {
+    method: "POST",
+    body: { plugin_key: pluginKey, account_id: accountId, everywhere },
+  });
+}
+
+/**
+ * One line on what a library kept of added connections.
+ *
+ * @param library - The library's display name.
+ * @param report - The library's answer.
+ * @returns The line to show.
+ */
+export function connectionsAddedLine(library: string, report: ConnectionsAdded): string {
+  if (report.not_allowed) {
+    return `${library} doesn't let you connect store accounts there; nothing was added.`;
+  }
+  const parts = [`${report.added} added to ${library}`];
+  if (report.already_here > 0) parts.push(`${report.already_here} already there`);
+  if (report.taken > 0) parts.push(`${report.taken} connected to someone else there`);
+  if (report.failed + report.not_sent > 0) {
+    parts.push(`${report.failed + report.not_sent} not added`);
+  }
+  return `${parts.join(", ")}.`;
+}
+
 /**
  * Removes the entries of titles from branches that stopped sharing or left
  * (one branch, or all). Files already delivered stay in the outputs.

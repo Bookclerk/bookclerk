@@ -91,6 +91,14 @@ fn host_routes_as(state: &Arc<AppState>, caller: UserCaller) -> axum::Router {
             "/api/config/join/sharing",
             get(super::get_join_sharing).post(super::post_join_sharing),
         )
+        .route(
+            "/api/config/join/connections",
+            post(crate::cluster_link::connections::post_join_connections),
+        )
+        .route(
+            "/api/config/join/connections/disconnect",
+            post(crate::cluster_link::connections::post_join_connections_disconnect),
+        )
         .route("/api/config/join/capacity", post(super::post_join_capacity))
         .layer(axum::Extension(caller))
         .with_state(Arc::clone(state))
@@ -919,4 +927,160 @@ async fn a_branch_join_brings_the_persons_store_connections_when_asked() {
         .filter(|event| event.action == "branch_connections_sent")
         .count();
     assert_eq!(sent, 1);
+}
+
+#[tokio::test]
+async fn a_branch_adds_a_connection_to_its_library_and_disconnects_it_everywhere() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let (owner_state, owner_store, origin, member) = owner(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let (host_state, host_store) = crate::node_api::tests::test_state(&host_files).await;
+    let plugin_key = stage_storefront(&owner_files, &owner_state, "shareable");
+    // Both installs discover the same package, so its path-provenance key
+    // matches on both, as a platform key does in a real install.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        owner_files.path().join("plugins"),
+        host_files.path().join("plugins"),
+    )
+    .unwrap();
+    #[cfg(not(unix))]
+    return;
+    let host_cfg = host_state.config.read().await.clone();
+    let found = bookclerk_plugin_host::discover_plugins(&host_cfg).unwrap();
+    assert_eq!(found[0].identity.plugin_key.to_string(), plugin_key);
+    let me = host_store
+        .create_user(UserRole::Owner, Some("Riley"), None)
+        .await
+        .unwrap();
+    // The supervisor a join wakes, as the daemon runs it.
+    super::super::spawn_cluster_links(Arc::clone(&host_state));
+    let host = host_routes(&host_state);
+    let start = json!({ "address": origin, "branch_name": "Den PC" });
+    let (status, _, started) = call(&host, "POST", "/api/config/join/start", Some(start)).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let authorize_url = started["authorize_url"].as_str().unwrap().to_string();
+    let back = consent(&owner_state, member, &authorize_url, true).await;
+    let callback = json!({ "code": back["code"], "state": back["state"] });
+    let (status, _, joined) =
+        call(&host, "POST", "/api/config/join/callback", Some(callback)).await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    let cluster_id = bookclerk_library::control_plane::list_cluster_links(&host_store)
+        .await
+        .unwrap()[0]
+        .owner_cluster_id
+        .clone();
+
+    // The branch's Owner connects an account on the branch afterwards.
+    connect_account(
+        &host_store,
+        me.id,
+        &plugin_key,
+        "den@example.com",
+        b"den-token",
+    )
+    .await;
+    let as_person = host_routes_as(&host_state, UserCaller::User { user_id: me.id });
+    let add = json!({
+        "cluster_id": cluster_id,
+        "accounts": [{ "plugin_key": plugin_key, "account_id": "den@example.com" }],
+    });
+    // Only the person this branch belongs to may add them.
+    let (status, _, refused) = call(
+        &host,
+        "POST",
+        "/api/config/join/connections",
+        Some(add.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["error"], "not_branch_person");
+
+    // The link's client may still be connecting: retry while it is.
+    assert_eq!(joined["running"], true, "{joined}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let added = loop {
+        let (status, _, answer) = call(
+            &as_person,
+            "POST",
+            "/api/config/join/connections",
+            Some(add.clone()),
+        )
+        .await;
+        if status == StatusCode::OK {
+            break answer;
+        }
+        assert!(
+            status == StatusCode::SERVICE_UNAVAILABLE && Instant::now() < deadline,
+            "{status} {answer}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(
+        added,
+        json!({ "added": 1, "already_here": 0, "taken": 0, "failed": 0, "not_sent": 0, "not_allowed": false })
+    );
+    // The library keeps it for the user who let the branch join.
+    let identity = owner_store
+        .ensure_local_portal_identity(member, None)
+        .await
+        .unwrap();
+    assert!(owner_store
+        .list_account_links(identity.id)
+        .await
+        .unwrap()
+        .iter()
+        .any(|link| link.account_id == "den@example.com"));
+
+    // Disconnect everywhere: gone on the branch and on the library.
+    let (status, _, gone) = call(
+        &as_person,
+        "POST",
+        "/api/config/join/connections/disconnect",
+        Some(json!({ "plugin_key": plugin_key, "account_id": "den@example.com", "everywhere": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{gone}");
+    assert_eq!(
+        gone,
+        json!({ "here": true, "libraries": [cluster_id], "unreached": [] })
+    );
+    for store in [&owner_store, &host_store] {
+        let account = store
+            .get_account(&plugin_key, "den@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(account.connection_status, "revoked");
+    }
+
+    // The join bound the link to Riley, so a second Owner may not act
+    // through it: their add is refused and their disconnect stays here.
+    let link = bookclerk_library::control_plane::load_cluster_link(&host_store, &cluster_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(link.person_user_id, Some(me.id));
+    let sam = host_store
+        .create_user(UserRole::Owner, Some("Sam"), None)
+        .await
+        .unwrap();
+    let as_sam = host_routes_as(&host_state, UserCaller::User { user_id: sam.id });
+    let (status, _, refused) =
+        call(&as_sam, "POST", "/api/config/join/connections", Some(add)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["error"], "not_branch_person");
+    let (status, _, gone) = call(
+        &as_sam,
+        "POST",
+        "/api/config/join/connections/disconnect",
+        Some(json!({ "plugin_key": plugin_key, "account_id": "den@example.com", "everywhere": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{gone}");
+    assert_eq!(
+        gone,
+        json!({ "here": false, "libraries": [], "unreached": [] })
+    );
 }

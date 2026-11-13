@@ -6,8 +6,8 @@ Bookclerk from the command line. For a first start in the web app, see
 
 ## Prerequisites
 
-- Rust stable (see `rust-toolchain.toml`; edition 2021, with the MSRV in
-  the workspace).
+- Rust, at the release `rust-toolchain.toml` pins (rustup installs it on
+  the first cargo command; edition 2021, with the MSRV in the workspace).
 - Network access to the stores you intend to use.
 - Optionally, Docker, if you prefer the packaged daemon image.
 

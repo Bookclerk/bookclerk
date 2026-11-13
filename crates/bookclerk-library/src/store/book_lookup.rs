@@ -19,7 +19,7 @@ use crate::models::{AcquireStatus, BookRecord};
 
 /// Upper clamp for one [`LibraryStore::acquired_book_keys_page`] read.
 ///
-/// A key row is five short columns (well under 1 KiB on the wire), so this
+/// A key row is eight short columns (well under 1 KiB on the wire), so this
 /// many stay far below the 256 KiB inline result cap of an adapter that
 /// does not stream.
 pub const ACQUIRED_KEYS_MAX_PAGE: u64 = 256;
@@ -38,6 +38,12 @@ pub struct AcquiredBookKey {
     pub uuid: String,
     /// Store alias the book came from (`audible`, `libro`, ...), as stored.
     pub source: String,
+    /// Provenance-qualified plugin key of the store.
+    pub plugin_key: String,
+    /// Store account that holds the book.
+    pub account_id: String,
+    /// Store marketplace, as stored on the flat row.
+    pub marketplace: String,
     /// Store product id.
     pub product_id: String,
     /// Last change of the row. An unparsable stored value reads as the
@@ -57,6 +63,12 @@ struct KeyRow {
     uuid: String,
     /// Store alias.
     source: String,
+    /// Plugin key.
+    plugin_key: String,
+    /// Store account id.
+    account_id: String,
+    /// Marketplace.
+    marketplace: String,
     /// Store product id.
     product_id: String,
     /// RFC 3339 last change, as stored.
@@ -242,6 +254,9 @@ impl LibraryStore {
             .column(books::Column::Id)
             .column(books::Column::Uuid)
             .column(books::Column::Source)
+            .column(books::Column::PluginKey)
+            .column(books::Column::AccountId)
+            .column(books::Column::Marketplace)
             .column(books::Column::ProductId)
             .column(books::Column::UpdatedAt)
             .filter(books::Column::AcquireStatus.eq(AcquireStatus::Acquired.as_str()))
@@ -262,6 +277,9 @@ impl LibraryStore {
                 id: row.id,
                 uuid: row.uuid,
                 source: row.source,
+                plugin_key: row.plugin_key,
+                account_id: row.account_id,
+                marketplace: row.marketplace,
                 product_id: row.product_id,
                 updated_at: parse_dt(&row.updated_at),
             })

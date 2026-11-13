@@ -2,7 +2,7 @@
 # Installs the Bookclerk development toolchain on a Debian-family system.
 #
 # The single list of what a development environment needs beyond the Rust
-# and Node.js base images: system packages, Rust components, cargo-nextest at
+# and Node.js base images: system packages, the pinned Rust toolchain, cargo-nextest at
 # the version CI pins, and a virtualenv with the hashed test requirements of
 # scripts/tests/. .devcontainer/Dockerfile runs it at image build time, so
 # anything added here lands in the Dev Container; add new tools here rather
@@ -96,11 +96,16 @@ if [[ ! -f "${requirements}" ]]; then
   exit 1
 fi
 
-# cargo-nextest version: the pin in the repository's .tool-versions, which CI
+# cargo-nextest and Rust versions: the pins in the repository's .tool-versions, which CI
 # installs too (docs/contributing/ci.md#tool-versions).
 NEXTEST_VERSION="$(awk '$1 == "cargo-nextest" { print $2 }' "${repo}/.tool-versions" 2>/dev/null || true)"
 if [[ ! "${NEXTEST_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   log "no cargo-nextest pin in ${repo}/.tool-versions; pass --repo <checkout>"
+  exit 1
+fi
+RUST_VERSION="$(awk '$1 == "rust" { print $2 }' "${repo}/.tool-versions" 2>/dev/null || true)"
+if [[ ! "${RUST_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  log "no rust pin in ${repo}/.tool-versions; pass --repo <checkout>"
   exit 1
 fi
 
@@ -118,14 +123,14 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
 
-# rust-toolchain.toml asks for the `stable` channel by name. Base images
-# install a numbered toolchain (1.x.y), which rustup does not treat as
-# `stable`, so without this the first cargo command in the checkout would
-# download stable at run time. Installing it here, with the components the
-# toolchain file lists, keeps that out of every new container.
-log "rust stable toolchain"
-rustup toolchain install stable --profile minimal --component rustfmt,clippy --no-self-update
-rustup default stable
+# rust-toolchain.toml names the `rust` pin from .tool-versions. Base images
+# install whatever Rust release they were built with, so without this the
+# first cargo command in the checkout would download the pinned toolchain at
+# run time. Installing it here, with the components the toolchain file lists,
+# keeps that out of every new container.
+log "rust ${RUST_VERSION} toolchain"
+rustup toolchain install "${RUST_VERSION}" --profile minimal --component rustfmt,clippy --no-self-update
+rustup default "${RUST_VERSION}"
 
 if [[ "$(cargo nextest --version 2>/dev/null | head -n1)" == "cargo-nextest ${NEXTEST_VERSION} "* ]]; then
   log "cargo-nextest ${NEXTEST_VERSION} already installed"

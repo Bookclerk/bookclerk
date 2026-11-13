@@ -102,6 +102,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["PUT", "/api/config/host-enrollment", "deny"],
   ["GET", "/api/config/join", "allow"],
   ["POST", "/api/config/join/callback", "deny"],
+  ["POST", "/api/config/join/connections", "deny"],
+  ["POST", "/api/config/join/connections/disconnect", "deny"],
   ["POST", "/api/config/join/inspect", "deny"],
   ["POST", "/api/config/join/invite", "deny"],
   ["POST", "/api/config/join/leave", "deny"],

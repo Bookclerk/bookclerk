@@ -15,6 +15,7 @@ mod carried_accounts;
 mod catalog_lookup;
 mod clerks;
 mod cluster_links;
+mod connections_request;
 mod cron_fires;
 mod deployments;
 mod documents;
@@ -24,6 +25,7 @@ mod instance_config;
 mod instances;
 mod job_routing;
 mod leases;
+mod link_imports;
 mod live;
 mod node_queue;
 mod node_status;
@@ -66,10 +68,12 @@ pub use cache::{
     MIN_CACHE_BUDGET_BYTES,
 };
 pub use carried_accounts::{
-    accounts_to_carry, branch_person, identity_may_connect_accounts, import_carried_accounts,
-    link_peer, member_account_rules, member_accounts, member_may_connect_accounts, node_peer,
-    record_accounts_sent, revoke_unlinked_account, set_member_may_connect_accounts, CarriedImport,
-    MemberAccount, SHARE_RECEIVED, SHARE_SENT,
+    account_share_peers, accounts_to_carry, accounts_to_carry_where, branch_person,
+    identity_may_connect_accounts, import_carried_accounts, import_offered_accounts, link_peer,
+    member_account_rules, member_accounts, member_may_connect_accounts, node_peer,
+    record_accounts_sent, record_accounts_sent_to, revoke_unlinked_account,
+    set_member_may_connect_accounts, withdraw_person_account, CarriedImport, MemberAccount,
+    Withdrawn, SHARE_RECEIVED, SHARE_SENT,
 };
 pub use catalog_lookup::{
     answer_questions, ask_branches, branch_listing_key, branch_listings_for_works,
@@ -83,11 +87,15 @@ pub use cluster_links::{
     decode_spki_pin, join_cycle, join_overflows_ancestry, leave_cluster_link, library_ancestry,
     list_cluster_links, load_cluster_link, load_cluster_link_keys, mark_cluster_link_revoked,
     parse_job_cap_request, parse_sharing_request, record_cluster_link, set_cluster_link_ancestry,
-    set_cluster_link_job_cap, set_cluster_link_listing, set_cluster_link_settings,
-    set_cluster_link_sharing, set_cluster_link_state, set_cluster_link_work, CapacityBody,
-    ClusterLink, ClusterLinkKeys, ClusterLinkSettings, JobCapRequest, LinkJobCap, NewClusterLink,
-    SharingBody, SharingRequest, CLUSTER_LINK_ACTIVE, CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT,
-    CLUSTER_LINK_REVOKED,
+    set_cluster_link_job_cap, set_cluster_link_listing, set_cluster_link_person,
+    set_cluster_link_settings, set_cluster_link_sharing, set_cluster_link_state,
+    set_cluster_link_work, CapacityBody, ClusterLink, ClusterLinkKeys, ClusterLinkSettings,
+    JobCapRequest, LinkJobCap, NewClusterLink, SharingBody, SharingRequest, CLUSTER_LINK_ACTIVE,
+    CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
+};
+pub use connections_request::{
+    parse_add_connections_request, parse_disconnect_request, AccountRef, AddConnectionsBody,
+    AddConnectionsRequest, DisconnectBody, DisconnectRequest, MAX_ADD_CONNECTIONS,
 };
 pub use cron_fires::{
     claim_cron_fire, ensure_cron_cursor, load_cron_cursor, CronCursor, CronFireClaim,
@@ -150,6 +158,10 @@ pub use leases::{
     release_lease_on, renew_lease, renew_lease_on, ClusterLease, LeaseFence, SingletonDuty,
     EVENT_RETENTION_LEASE, JOB_RETENTION_LEASE, KV_EXPIRY_LEASE, MIGRATION_LEASE,
     RECORD_RETENTION_LEASE, SESSION_EXPIRY_LEASE,
+};
+pub use link_imports::{
+    books_imported_from_link, import_link_title, HeldBookKey, LinkImport, LinkImportOutcome,
+    OwnerShareFilter,
 };
 pub(crate) use live::{
     bump, bump_if_any, bump_if_stamped, bump_on, exec_bumped_via, sea_exec, sea_probe, Bump,

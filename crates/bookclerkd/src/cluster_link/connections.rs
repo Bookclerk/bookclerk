@@ -1,0 +1,389 @@
+//! Store connections across the libraries this install is a branch of
+//! ("Accounts on every instance" in the library catalog network ADR).
+//!
+//! - `POST /api/config/join/connections` `{cluster_id, accounts}`: "Add my
+//!   connections to *library*". The branch's person picks some of their own
+//!   connected accounts; the branch seals them to the library's owner box
+//!   key over the link's socket ([`HostClientHandle::offer_accounts`](bookclerk_node_client::HostClientHandle::offer_accounts)),
+//!   records where each went (`account_shares`, peer `link:<cluster>`) and
+//!   answers what the library kept.
+//! - `POST /api/config/join/connections/disconnect` `{plugin_key,
+//!   account_id, everywhere}`: disconnects one of the person's accounts
+//!   here, and with `everywhere` also in every linked library it was
+//!   shared with (`accounts.remove` up each link).
+//!
+//! Only an active Owner may call them, and each acts only through the links
+//! that Owner joined: the join binds a link to its person
+//! ([`ClusterLink::person_user_id`](bookclerk_library::control_plane::ClusterLink::person_user_id),
+//! the Owner who elevated into the joining session, or else the install's
+//! only Owner), because the library attributes what arrives to the user its
+//! node row names as the branch's owner. Another Owner is refused on add
+//! and their disconnect stays on this install. Each call to a library is
+//! bounded by [`LIBRARY_CALL_TIMEOUT`], inside the routes' API deadline. Only accounts of
+//! storefronts every installed copy declares `credentials = "shareable"`
+//! travel.
+
+use std::sync::Arc;
+
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
+use bookclerk_library::control_plane::{
+    account_share_peers, accounts_to_carry_where, link_peer, list_cluster_links, load_cluster_link,
+    record_accounts_sent_to, withdraw_person_account, AddConnectionsBody, AddConnectionsRequest,
+    DisconnectBody, DisconnectRequest, Withdrawn,
+};
+use bookclerk_node_client::OwnerCallError;
+use serde::Serialize;
+use serde_json::json;
+
+use super::join::join_error;
+use crate::api::AppState;
+use crate::auth::UserCaller;
+
+/// Longest one call to a library may take on these routes (the client
+/// otherwise waits up to its 30 s request timeout for a connection); the
+/// routes' API deadline in `api_timeout_for_path` leaves room for one
+/// other connection request ahead of this one ([`CONNECTIONS_LOCK`]) and
+/// margin above both.
+pub const LIBRARY_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// Serializes "Add my connections" and "Disconnect" on this install, from
+/// reading the person's accounts to the libraries' answers, so an offer
+/// that read an account before a disconnect never reaches a library after
+/// the disconnect reported it gone. Both are rare, person-driven actions.
+static CONNECTIONS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// JSON body after `POST /api/config/join/connections`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionsAdded {
+    /// Accounts now connected in the library for the person.
+    #[schema(example = 1)]
+    pub added: u64,
+    /// Accounts the person had already connected there.
+    #[schema(example = 0)]
+    pub already_here: u64,
+    /// Accounts connected to someone else there; left as they are.
+    #[schema(example = 0)]
+    pub taken: u64,
+    /// Accounts that could not be kept there.
+    #[schema(example = 0)]
+    pub failed: u64,
+    /// Accounts not sent: not the person's, not connected, or of a
+    /// storefront whose sign-ins can't be shared.
+    #[schema(example = 0)]
+    pub not_sent: u64,
+    /// The library's operator does not let the person connect store
+    /// accounts there; nothing was kept.
+    #[schema(example = false)]
+    pub not_allowed: bool,
+}
+
+/// JSON body after `POST /api/config/join/connections/disconnect`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct Disconnected {
+    /// The account was the person's here and is disconnected here now.
+    #[schema(example = true)]
+    pub here: bool,
+    /// Linked libraries (owner cluster ids) that confirmed the disconnect.
+    #[schema(example = json!(["6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"]))]
+    pub libraries: Vec<String>,
+    /// Linked libraries that could not be reached or refused; the account
+    /// stays connected there until the person disconnects it there.
+    #[schema(example = json!([]))]
+    pub unreached: Vec<String>,
+}
+
+/// `403 not_branch_person`: the caller is not the person this branch (or
+/// this link) belongs to.
+fn not_branch_person() -> Response {
+    join_error(
+        StatusCode::FORBIDDEN,
+        "not_branch_person",
+        "sign in as the person this branch belongs to",
+    )
+}
+
+/// The caller's user id, when `caller` is a signed-in user who is an active
+/// Owner here now. Which links they may use is checked against each link's
+/// person.
+async fn caller_person(state: &Arc<AppState>, caller: UserCaller) -> Result<i64, Response> {
+    let UserCaller::User { user_id } = caller else {
+        return Err(not_branch_person());
+    };
+    let store = state.library_snapshot().await;
+    match store.get_user(user_id).await {
+        Ok(Some(user))
+            if user.status == bookclerk_library::UserStatus::Active
+                && user.role == bookclerk_library::UserRole::Owner =>
+        {
+            Ok(user_id)
+        }
+        Ok(_) => Err(not_branch_person()),
+        Err(err) => Err(crate::config_authority::events_error(err)),
+    }
+}
+
+/// `POST /api/config/join/connections`: "Add my connections to *library*".
+#[utoipa::path(
+    post,
+    path = "/api/config/join/connections",
+    request_body = AddConnectionsBody,
+    responses(
+        (status = 200, description = "What the library kept.", body = ConnectionsAdded),
+        (status = 400, description = "No accounts, or more than 64 (`invalid_request`).", body = crate::http_error::ErrorDetail, example = json!({"error": "invalid_request", "detail": "name between 1 and 64 accounts"})),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller is not the person this branch belongs to (`not_branch_person`).", body = crate::http_error::ErrorDetail, example = json!({"error": "not_branch_person", "detail": "sign in as the person this branch belongs to"})),
+        (status = 404, description = "This install is not a branch of that library (`not_found`).", body = crate::http_error::ErrorDetail, example = json!({"error": "not_found", "detail": "this install is not a branch of that library"})),
+        (status = 409, description = "The library refused the offer (`refused`).", body = crate::http_error::ErrorDetail, example = json!({"error": "refused", "detail": "no_owner"})),
+        (status = 503, description = "The library could not be reached (`unavailable`).", body = crate::http_error::ErrorDetail, example = json!({"error": "unavailable", "detail": "the library could not be reached; try again"})),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
+    ),
+)]
+pub async fn post_join_connections(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+    Json(body): Json<AddConnectionsBody>,
+) -> Response {
+    // The same sans-IO check the `connections_request` fuzz target drives.
+    let AddConnectionsRequest {
+        cluster_id,
+        accounts: picked,
+    } = match body.validate() {
+        Ok(request) => request,
+        Err(_) => {
+            return join_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "name between 1 and 64 accounts",
+            )
+        }
+    };
+    let person = match caller_person(&state, caller).await {
+        Ok(person) => person,
+        Err(refused) => return refused,
+    };
+    let _serialized = CONNECTIONS_LOCK.lock().await;
+    let store = state.library_snapshot().await;
+    let cluster_id = cluster_id.as_str();
+    let link = match load_cluster_link(&store, cluster_id).await {
+        Ok(Some(link)) if link.is_active() => link,
+        Ok(_) => {
+            return join_error(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "this install is not a branch of that library",
+            )
+        }
+        Err(err) => return crate::config_authority::events_error(err),
+    };
+    // Only the person who joined through this link adds through it: the
+    // library files what arrives under its branch owner.
+    if link.person_user_id != Some(person) {
+        return not_branch_person();
+    }
+    let shareable = crate::node_api::branch::shareable_plugin_keys(&state, &store).await;
+    let named = picked.len();
+    let picked = &picked;
+    let keep = move |plugin_key: &str, account_id: &str| {
+        shareable.contains(plugin_key)
+            && picked
+                .iter()
+                .any(|pick| pick.plugin_key == plugin_key && pick.account_id == account_id)
+    };
+    // The pick is applied before the bundle's limits, so the accounts
+    // named are the ones that fill it.
+    let wanted = match accounts_to_carry_where(&store, person, &keep).await {
+        Ok(wanted) => wanted,
+        Err(err) => return crate::config_authority::events_error(err),
+    };
+    let not_sent = count(named.saturating_sub(wanted.len()));
+    if wanted.is_empty() {
+        return Json(ConnectionsAdded {
+            added: 0,
+            already_here: 0,
+            taken: 0,
+            failed: 0,
+            not_sent,
+            not_allowed: false,
+        })
+        .into_response();
+    }
+    let Some(handle) = super::link_handle(&link.owner_cluster_id, &link.remote_node_id) else {
+        return unavailable();
+    };
+    // Recorded before the offer leaves: nothing is sent without a record
+    // of where it went.
+    if let Err(err) = record_accounts_sent_to(&store, &link_peer(cluster_id), &wanted).await {
+        return crate::config_authority::events_error(err);
+    }
+    let sent = wanted.len();
+    let offered = tokio::time::timeout(LIBRARY_CALL_TIMEOUT, handle.offer_accounts(wanted))
+        .await
+        .unwrap_or(Err(OwnerCallError::Unavailable));
+    match offered {
+        Ok(report) => {
+            let detail = json!({
+                "cluster_id": cluster_id,
+                "sent": sent,
+                "added": report.added,
+                "not_allowed": report.not_allowed,
+            })
+            .to_string();
+            if let Err(err) = store
+                .insert_security_audit_event(
+                    &format!("user:{person}"),
+                    "connections_offered",
+                    Some(&detail),
+                )
+                .await
+            {
+                tracing::warn!(%cluster_id, error = %err, "could not audit offered store connections");
+            }
+            Json(ConnectionsAdded {
+                added: report.added,
+                already_here: report.already_here,
+                taken: report.taken,
+                failed: report.failed,
+                not_sent,
+                not_allowed: report.not_allowed,
+            })
+            .into_response()
+        }
+        Err(OwnerCallError::Refused(reason)) => {
+            join_error(StatusCode::CONFLICT, "refused", &reason)
+        }
+        Err(OwnerCallError::Lost | OwnerCallError::Unavailable) => unavailable(),
+    }
+}
+
+/// `POST /api/config/join/connections/disconnect`: disconnects one of the
+/// person's store accounts here, and with `everywhere` in every linked
+/// library it was shared with.
+#[utoipa::path(
+    post,
+    path = "/api/config/join/connections/disconnect",
+    request_body = DisconnectBody,
+    responses(
+        (status = 200, description = "Where the account is disconnected now.", body = Disconnected),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller is not the person this branch belongs to (`not_branch_person`).", body = crate::http_error::ErrorDetail, example = json!({"error": "not_branch_person", "detail": "sign in as the person this branch belongs to"})),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
+    ),
+)]
+pub async fn post_join_connections_disconnect(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+    Json(body): Json<DisconnectBody>,
+) -> Response {
+    let DisconnectRequest {
+        account,
+        everywhere,
+    } = body.into_request();
+    let person = match caller_person(&state, caller).await {
+        Ok(person) => person,
+        Err(refused) => return refused,
+    };
+    let _serialized = CONNECTIONS_LOCK.lock().await;
+    let store = state.library_snapshot().await;
+    // Where it was shared is read before the local withdrawal, which may
+    // revoke the account and its share records with it.
+    let mut targets = Vec::new();
+    if everywhere {
+        let peers =
+            match account_share_peers(&store, &account.plugin_key, &account.account_id).await {
+                Ok(peers) => peers,
+                Err(err) => return crate::config_authority::events_error(err),
+            };
+        let links = match list_cluster_links(&store).await {
+            Ok(links) => links,
+            Err(err) => return crate::config_authority::events_error(err),
+        };
+        targets = links
+            .into_iter()
+            // A link this install left or lost still names a library that
+            // holds the account: it is tried, and reported unreached.
+            // Only links this person joined: another Owner's library files
+            // what arrives from this branch under that Owner.
+            .filter(|link| link.person_user_id == Some(person))
+            .filter(|link| peers.contains(&link_peer(&link.owner_cluster_id)))
+            .collect();
+    }
+    // Here first, so an unreachable library never keeps it connected here.
+    let here =
+        match withdraw_person_account(&store, person, &account.plugin_key, &account.account_id)
+            .await
+        {
+            Ok(Withdrawn::Unlinked) => true,
+            Ok(Withdrawn::NotTheirs) => false,
+            Err(err) => return crate::config_authority::events_error(err),
+        };
+    // Every library at once, each bounded, so the whole fits the deadline.
+    let reached = futures::future::join_all(targets.iter().map(|link| {
+        let handle = super::link_handle(&link.owner_cluster_id, &link.remote_node_id);
+        let plugin_key = account.plugin_key.as_str();
+        let account_id = account.account_id.as_str();
+        async move {
+            let Some(handle) = handle else {
+                return false;
+            };
+            matches!(
+                tokio::time::timeout(
+                    LIBRARY_CALL_TIMEOUT,
+                    handle.withdraw_account(plugin_key, account_id),
+                )
+                .await,
+                Ok(Ok(()))
+            )
+        }
+    }))
+    .await;
+    let mut libraries = Vec::new();
+    let mut unreached = Vec::new();
+    for (link, reached) in targets.iter().zip(reached) {
+        if reached {
+            libraries.push(link.owner_cluster_id.clone());
+        } else {
+            unreached.push(link.owner_cluster_id.clone());
+        }
+    }
+    let detail = json!({
+        "plugin_key": account.plugin_key,
+        "everywhere": everywhere,
+        "here": here,
+        "libraries": libraries,
+        "unreached": unreached,
+    })
+    .to_string();
+    if let Err(err) = store
+        .insert_security_audit_event(
+            &format!("user:{person}"),
+            "connection_disconnected",
+            Some(&detail),
+        )
+        .await
+    {
+        tracing::warn!(error = %err, "could not audit a disconnected store connection");
+    }
+    Json(Disconnected {
+        here,
+        libraries,
+        unreached,
+    })
+    .into_response()
+}
+
+/// `503 unavailable`: the library could not be reached.
+fn unavailable() -> Response {
+    join_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "unavailable",
+        "the library could not be reached; try again",
+    )
+}
+
+/// A count as the answer's `u64`.
+fn count(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
+}
