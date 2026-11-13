@@ -354,7 +354,7 @@ impl LocalKeeper for DaemonKeeper {
         account_id: &str,
         sent: &[u8],
         refreshed: &[u8],
-    ) -> Option<bool> {
+    ) -> Option<KeptHere> {
         let library = self.state.library_snapshot().await;
         // A shareable account's copies each refresh on their own: its
         // refresh goes back to the library as before.
@@ -379,17 +379,22 @@ impl LocalKeeper for DaemonKeeper {
             }
         }
         let Ok(sent) = serde_json::from_slice::<serde_json::Value>(sent) else {
-            return Some(false);
+            tracing::warn!(
+                account_id,
+                "a job's handed credentials are not JSON; its refresh is not kept here"
+            );
+            return Some(KeptHere::Failed);
         };
         let scope = bookclerk_library::SourceScope::new(library, plugin_key, "");
         match scope
             .replace_refreshed_credentials(account_id, &sent, refreshed)
             .await
         {
-            Ok(stored) => Some(stored),
+            Ok(true) => Some(KeptHere::Saved),
+            Ok(false) => Some(KeptHere::Superseded),
             Err(err) => {
                 tracing::warn!(account_id, error = %err, "could not keep a job's refreshed credentials here");
-                Some(false)
+                Some(KeptHere::Failed)
             }
         }
     }
@@ -816,6 +821,20 @@ pub struct OwnerWriteBack {
     local: Option<Arc<dyn LocalKeeper>>,
 }
 
+/// What became of a job's refresh of an account this install keeps
+/// ([`LocalKeeper::keep`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeptHere {
+    /// Saved as this install's copy, for its next push.
+    Saved,
+    /// Not saved: a newer sign-in here won.
+    Superseded,
+    /// Not saved: the write failed, so this install's copy is still the
+    /// one the job was handed, and the job's next refresh is compared with
+    /// that one again.
+    Failed,
+}
+
 /// This install's own copy of a single-keeper account it keeps for the
 /// library a job came from ([`OwnerWriteBack`]).
 #[async_trait::async_trait]
@@ -826,15 +845,15 @@ pub trait LocalKeeper: Send + Sync {
     /// # Returns
     ///
     /// `None` when this install does not keep the account for the library
-    /// (the write-back goes to the owner); otherwise whether it was saved
-    /// (false: a newer sign-in here won).
+    /// (the write-back goes to the owner); otherwise what became of the
+    /// refresh here (it never goes to the owner then).
     async fn keep(
         &self,
         plugin_key: &str,
         account_id: &str,
         sent: &[u8],
         refreshed: &[u8],
-    ) -> Option<bool>;
+    ) -> Option<KeptHere>;
 }
 
 impl OwnerWriteBack {
@@ -862,6 +881,23 @@ impl RefreshedCredentialSink for OwnerWriteBack {
     }
 
     async fn refreshed(&self, account_id: &str, credentials: Vec<u8>) {
+        self.refresh(account_id, credentials).await;
+    }
+}
+
+impl OwnerWriteBack {
+    /// Records `credentials` as what the guest holds for `account_id` now:
+    /// the credentials its next refresh replaces.
+    fn remember(&self, account_id: &str, credentials: &zeroize::Zeroizing<Vec<u8>>) {
+        self.latest
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(account_id.to_owned(), credentials.clone());
+    }
+
+    /// Keeps a refresh here or writes it back to the owner
+    /// ([`RefreshedCredentialSink::refreshed`]).
+    async fn refresh(&self, account_id: &str, credentials: Vec<u8>) {
         let credentials = zeroize::Zeroizing::new(credentials);
         let Some(secret_ref) = self
             .host
@@ -886,7 +922,8 @@ impl RefreshedCredentialSink for OwnerWriteBack {
             .latest
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(account_id.to_owned(), credentials.clone())
+            .get(account_id)
+            .cloned()
             .or_else(|| {
                 self.host
                     .secrets
@@ -899,23 +936,29 @@ impl RefreshedCredentialSink for OwnerWriteBack {
                 .keep(&self.plugin_key, account_id, &sent, &credentials)
                 .await
             {
-                Some(true) => {
+                Some(KeptHere::Saved) => {
+                    self.remember(account_id, &credentials);
                     tracing::info!(
                         account_id,
                         "refreshed store credentials kept here, for this branch's next push"
                     );
                     return;
                 }
-                Some(false) => {
+                Some(KeptHere::Superseded) => {
+                    self.remember(account_id, &credentials);
                     tracing::info!(
                         account_id,
                         "a newer sign-in here won over a job's refreshed credentials"
                     );
                     return;
                 }
+                // The copy here is still the one compared against, so the
+                // job's next refresh is saved over it.
+                Some(KeptHere::Failed) => return,
                 None => {}
             }
         }
+        self.remember(account_id, &credentials);
         match self.host.write_back(&secret_ref, &credentials).await {
             Ok(()) => tracing::info!(
                 account_id,

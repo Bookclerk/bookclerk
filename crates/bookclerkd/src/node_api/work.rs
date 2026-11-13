@@ -325,6 +325,14 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             // has pushed a sign-in for) takes only that branch's pushes
             // (`accounts.update`): a job's write-back would overwrite them
             // with an older login.
+            // Held through the write, so a keeper's first push (which takes
+            // the account over) can't land between the check and the write.
+            let _serialized =
+                if secret_ref.kind == bookclerk_library::secrets::secret_kind::SOURCE_AUTH {
+                    Some(super::host_accounts::ACCOUNTS_GATE.lock().await)
+                } else {
+                    None
+                };
             if secret_ref.kind == bookclerk_library::secrets::secret_kind::SOURCE_AUTH {
                 match bookclerk_library::control_plane::confirmed_keeping_branch(
                     library,

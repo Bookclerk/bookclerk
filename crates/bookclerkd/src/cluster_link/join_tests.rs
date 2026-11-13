@@ -1148,7 +1148,7 @@ async fn a_branch_adds_a_connection_to_its_library_and_disconnects_it_everywhere
 /// nothing.
 #[tokio::test]
 async fn a_keeping_branch_pushes_its_newer_sign_ins_up_the_link() {
-    use super::super::host_jobs::{DaemonKeeper, LocalKeeper as _};
+    use super::super::host_jobs::{DaemonKeeper, KeptHere, LocalKeeper as _};
     use super::super::keeper::{PushPass, SignInPusher};
     use bookclerk_library::control_plane::keeping_branch;
     use bookclerk_library::secrets::{get_secret, secret_account_type, secret_kind, unseal_secret};
@@ -1278,7 +1278,14 @@ async fn a_keeping_branch_pushes_its_newer_sign_ins_up_the_link() {
         keeper
             .keep(&plugin_key, account, br#"{"t":"1"}"#, br#"{"t":"2"}"#)
             .await,
-        Some(true)
+        Some(KeptHere::Saved)
+    );
+    // A refresh of a copy that is no longer the one here loses to it.
+    assert_eq!(
+        keeper
+            .keep(&plugin_key, account, br#"{"t":"1"}"#, br#"{"t":"9"}"#)
+            .await,
+        Some(KeptHere::Superseded)
     );
     assert_eq!(secret_in(host_store.clone()).await, br#"{"t":"2"}"#);
     // ... and an account this branch does not keep is not its to save.

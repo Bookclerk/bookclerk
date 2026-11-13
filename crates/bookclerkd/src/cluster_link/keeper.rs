@@ -14,11 +14,13 @@
 //! library does not take from this branch yet (`not_shared`, such as one
 //! that overtook its offer) is sent again on the next pass.
 //!
-//! A sign-in is told apart by the time of the account's newest secret
-//! write here: a sign-in in Accounts, a refresh a storefront handed back,
-//! or a sign-in that arrived from the library at join all change it. Any
-//! change counts, an earlier time included, so a clock that went back
-//! can't hide a sign-in.
+//! A sign-in is told apart by a fingerprint of the account's secrets here
+//! ([`bookclerk_library::control_plane::SignIn`]): a sign-in in Accounts, a
+//! refresh a storefront handed back, or a sign-in that arrived from the
+//! library at join all change it, even two writes in one millisecond or
+//! one whose clock went back. A push the library answers `stale` (it
+//! already holds that revision, as after a lost answer) uses the revision
+//! up but leaves the sign-in unsent, so the next pass sends it above it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -144,7 +146,7 @@ impl SignInPusher {
             else {
                 continue;
             };
-            let Some(revision) = share.next_revision(sign_in) else {
+            let Some(revision) = share.next_revision(&sign_in) else {
                 continue;
             };
             let (plugin_key, account_id) = (share.plugin_key.as_str(), share.account_id.as_str());
@@ -163,21 +165,34 @@ impl SignInPusher {
                     .await
                     .unwrap_or(Err(OwnerCallError::Unavailable));
             match pushed {
-                Ok(outcome @ (KeeperOutcome::Applied | KeeperOutcome::Stale)) => {
+                Ok(KeeperOutcome::Applied) => {
                     record_pushed_revision(
                         &self.library,
                         plugin_key,
                         account_id,
                         &self.cluster_id,
                         revision,
-                        sign_in,
+                        sign_in.fingerprint,
                     )
                     .await?;
-                    if outcome == KeeperOutcome::Applied {
-                        pass.applied += 1;
-                    } else {
-                        pass.settled += 1;
-                    }
+                    pass.applied += 1;
+                }
+                // The library already holds this revision or a newer one: an
+                // earlier push it applied whose answer was lost, so this
+                // sign-in may not be what it holds. The revision is used up,
+                // but the sign-in stays unsent: the next pass sends it again
+                // above it.
+                Ok(KeeperOutcome::Stale) => {
+                    record_pushed_revision(
+                        &self.library,
+                        plugin_key,
+                        account_id,
+                        &self.cluster_id,
+                        revision,
+                        share.observed,
+                    )
+                    .await?;
+                    pass.settled += 1;
                 }
                 // Not (yet) this branch's to keep there: an offer still on its
                 // way, or one retried later, may make it so. Not recorded,

@@ -165,7 +165,7 @@ pub use job_routing::{
 };
 pub use keeper::{
     apply_keeper_update, confirmed_keeping_branch, keeping_branch, keeps_for_link, kept_shares,
-    record_pushed_revision, sign_in_revision, KeeperUpdate, KeptShare,
+    record_pushed_revision, sign_in_revision, KeeperUpdate, KeptShare, SignIn,
 };
 pub use leases::{
     acquire_lease, acquire_lease_on, list_leases, load_lease, load_lease_on, release_lease,

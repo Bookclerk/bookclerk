@@ -401,11 +401,9 @@ pub(crate) async fn credential_sharing(
     library: &bookclerk_library::LibraryStore,
 ) -> BTreeMap<String, CredentialSharing> {
     use bookclerk_plugin_host::PluginManifest;
-    /// Records one manifest's declaration for `key`; `None` is a manifest
-    /// that could not be read, which is not a declaration.
-    fn note(seen: &mut BTreeMap<String, bool>, key: String, manifest: Option<&PluginManifest>) {
-        let shareable = manifest
-            .is_some_and(|manifest| manifest.credential_sharing() == CredentialSharing::Shareable);
+    /// Records one manifest's declaration for `key`.
+    fn note(seen: &mut BTreeMap<String, bool>, key: String, manifest: &PluginManifest) {
+        let shareable = manifest.credential_sharing() == CredentialSharing::Shareable;
         let entry = seen.entry(key).or_insert(true);
         *entry = *entry && shareable;
     }
@@ -417,7 +415,7 @@ pub(crate) async fn credential_sharing(
                 note(
                     &mut seen,
                     plugin.identity.plugin_key.to_string(),
-                    Some(&plugin.manifest),
+                    &plugin.manifest,
                 );
             }
         }
@@ -450,8 +448,20 @@ pub(crate) async fn credential_sharing(
                         return BTreeMap::new();
                     }
                 };
-                let manifest = PluginManifest::parse(&version.manifest_toml).ok();
-                note(&mut seen, install.plugin_key, manifest.as_ref());
+                // An unreadable declaration is no declaration: nothing
+                // travels rather than guess the plugin's policy.
+                let manifest = match PluginManifest::parse(&version.manifest_toml) {
+                    Ok(manifest) => manifest,
+                    Err(err) => {
+                        tracing::warn!(
+                            plugin_key = %install.plugin_key,
+                            error = %err,
+                            "an installed plugin's manifest does not parse; no connections travel"
+                        );
+                        return BTreeMap::new();
+                    }
+                };
+                note(&mut seen, install.plugin_key, &manifest);
             }
         }
         Err(err) => {

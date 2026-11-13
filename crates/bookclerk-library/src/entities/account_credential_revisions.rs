@@ -22,10 +22,9 @@ pub struct Model {
     /// it applied from its keeper; on a keeper, the newest one it sent.
     /// Each push a keeper sends carries a higher one than the last.
     pub revision: i64,
-    /// On a keeper's `link:` row, the account's sign-in time here
-    /// ([`crate::control_plane::sign_in_revision`], milliseconds) when it
-    /// last pushed; a different time means a new sign-in to send. 0 on a
-    /// library's rows.
+    /// On a keeper's `link:` row, the fingerprint of the sign-in it last
+    /// pushed ([`crate::control_plane::SignIn::fingerprint`]); a different
+    /// one means a new sign-in to send. 0 on a library's rows.
     pub observed: i64,
     /// RFC 3339 time this row was last written.
     pub updated_at: String,

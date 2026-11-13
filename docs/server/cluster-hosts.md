@@ -315,13 +315,15 @@ account itself.
 - **On the branch.** The branch's copy is the one that refreshes: Accounts
   sign-ins, refreshes its own scans hand back, and refreshes a job for
   that library hands back are all saved there. Once a minute, and each
-  time the link connects, the branch looks for accounts whose newest
-  secret write is newer than what it last pushed, and sends each up the
-  link as `accounts.update`: one account sealed to the connection's owner
-  box key like an offer, with a revision above the last one it sent
-  there. A sign-in counts as new whenever its write time differs from the
-  one last sent, so a clock that went back can't hide one. A push the
-  library answers is recorded so it isn't sent again.
+  time the link connects, the branch looks for accounts whose secrets
+  changed since what it last pushed, and sends each up the link as
+  `accounts.update`: one account sealed to the connection's owner box key
+  like an offer, with a revision above the last one it sent there. Any
+  secret write counts as a new sign-in (the branch compares a fingerprint
+  of the secrets, not their times), so neither a clock that went back nor
+  two writes in one millisecond can hide one. A push the library applies
+  is recorded so it isn't sent again; one it already had a revision for
+  (`stale`, as after a lost answer) is sent again above it.
 - **On the library.** The library applies a push only from the account's
   keeper, for the person who owns the branch, and only when its revision
   is newer than the last one applied (`account_credential_revisions`), in

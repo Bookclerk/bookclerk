@@ -50,8 +50,22 @@ pub(super) fn read_page(store: &LibraryStore) -> u64 {
     }
 }
 
-/// The keeper's revision of an account's sign-in: milliseconds since the
-/// Unix epoch of its newest secret write here, or `None` when it has no
+/// An account's current sign-in on its keeper ([`sign_in_revision`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignIn {
+    /// Milliseconds since the Unix epoch of the account's newest secret
+    /// write here: the revision a push of it carries, unless that would
+    /// not be above the last one sent.
+    pub at: i64,
+    /// A non-zero fingerprint of every secret the account holds here (each
+    /// one's kind, name, sealed value and write time). Every secret write
+    /// seals with a fresh nonce, so any write changes it, even two in the
+    /// same millisecond or one whose time went back.
+    pub fingerprint: i64,
+}
+
+/// The keeper's view of an account's sign-in: when its newest secret was
+/// written here and a fingerprint of all of them, or `None` when it has no
 /// secret.
 ///
 /// # Errors
@@ -62,9 +76,11 @@ pub async fn sign_in_revision(
     store: &LibraryStore,
     plugin_key: &str,
     account_id: &str,
-) -> Result<Option<i64>> {
+) -> Result<Option<SignIn>> {
+    use sha2::Digest as _;
     let page = read_page(store);
     let mut newest = None;
+    let mut digest = sha2::Sha256::new();
     let mut offset = 0_u64;
     loop {
         // Ordered by the rest of the primary key, so pages don't overlap.
@@ -85,13 +101,35 @@ pub async fn sign_in_revision(
                 .map_err(|err| LibraryError::Invalid(format!("secret updated_at: {err}")))?
                 .timestamp_millis();
             newest = Some(newest.map_or(at, |seen: i64| seen.max(at)));
+            // Length-prefixed, so no two secret lists hash the same bytes.
+            for part in [
+                row.kind.as_bytes(),
+                row.name.as_bytes(),
+                &row.ciphertext,
+                row.cipher_nonce.as_deref().unwrap_or_default(),
+                row.updated_at.as_bytes(),
+            ] {
+                digest.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
+                digest.update(part);
+            }
         }
         if !full {
             break;
         }
         offset = offset.saturating_add(page);
     }
-    Ok(newest)
+    let Some(at) = newest else {
+        return Ok(None);
+    };
+    let hash = digest.finalize();
+    let mut first = [0_u8; 8];
+    first.copy_from_slice(&hash[..8]);
+    // 0 means "never sent" on a share.
+    let fingerprint = match i64::from_le_bytes(first) {
+        0 => 1,
+        value => value,
+    };
+    Ok(Some(SignIn { at, fingerprint }))
 }
 
 /// The branch that keeps this account for this library: the node of its
@@ -183,20 +221,21 @@ pub struct KeptShare {
     pub cluster_id: String,
     /// The revision last sent to that library; 0 before the first push.
     pub pushed: i64,
-    /// The account's sign-in time here when it was last sent; 0 before the
+    /// The [`SignIn::fingerprint`] of the sign-in last sent; 0 before the
     /// first push.
     pub observed: i64,
 }
 
 impl KeptShare {
-    /// The revision to send for a sign-in whose time here is `sign_in`, or
-    /// `None` when that sign-in was already sent. A sign-in counts as new
-    /// whenever its time differs from the one last sent, even an earlier
-    /// time (the clock went back), and each push carries a revision above
-    /// the last one sent, so the library takes it.
+    /// The revision to send for `sign_in`, or `None` when that sign-in was
+    /// already sent. A sign-in counts as new whenever its fingerprint
+    /// differs from the one last sent, and each push carries a revision
+    /// above the last one sent (its write time, when that is higher), so
+    /// the library takes it even after the clock went back.
     #[must_use]
-    pub fn next_revision(&self, sign_in: i64) -> Option<i64> {
-        (sign_in != self.observed).then(|| sign_in.max(self.pushed.saturating_add(1)))
+    pub fn next_revision(&self, sign_in: &SignIn) -> Option<i64> {
+        (sign_in.fingerprint != self.observed)
+            .then(|| sign_in.at.max(self.pushed.saturating_add(1)))
     }
 }
 
@@ -260,7 +299,8 @@ pub async fn kept_shares(store: &LibraryStore) -> Result<Vec<KeptShare>> {
 
 /// Records that the keeper sent `revision` of the account to the library
 /// `cluster_id` (whether it applied it or already had it), for the sign-in
-/// whose time here is `observed`. Never lowers the recorded revision.
+/// whose fingerprint is `observed` ([`SignIn::fingerprint`]). Never lowers
+/// the recorded revision.
 ///
 /// # Errors
 ///
@@ -291,7 +331,7 @@ pub async fn record_pushed_revision(
 }
 
 /// The two statements that raise one share's revision to `revision`, with
-/// its `observed` sign-in time (update, then insert), each applied only
+/// its `observed` sign-in fingerprint (update, then insert), each applied only
 /// while `guard` holds and the stored revision is lower.
 fn revision_statements(
     plugin_key: &str,

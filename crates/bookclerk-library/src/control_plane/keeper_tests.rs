@@ -220,10 +220,19 @@ async fn a_keeper_tracks_what_it_pushed_to_each_library() {
             .await
             .unwrap();
         connect(store, ana.id, "ana", b"v1").await;
-        assert!(sign_in_revision(store, KEEPER, "ana")
+        let first = sign_in_revision(store, KEEPER, "ana")
             .await
             .unwrap()
-            .is_some_and(|rev| rev > 0));
+            .expect("a sign-in");
+        assert!(first.at > 0 && first.fingerprint != 0, "{name}");
+        // Rewriting the same value still changes the fingerprint (a fresh
+        // seal), whatever its time.
+        connect(store, ana.id, "ana", b"v1").await;
+        let again = sign_in_revision(store, KEEPER, "ana")
+            .await
+            .unwrap()
+            .expect("a sign-in");
+        assert_ne!(again.fingerprint, first.fingerprint, "{name}");
         assert_eq!(
             sign_in_revision(store, KEEPER, "nobody").await.unwrap(),
             None
@@ -246,11 +255,12 @@ async fn a_keeper_tracks_what_it_pushed_to_each_library() {
             }],
             "{name}"
         );
+        let sign_in = |at, fingerprint| SignIn { at, fingerprint };
         assert_eq!(
-            kept_shares(store).await.unwrap()[0].next_revision(20),
+            kept_shares(store).await.unwrap()[0].next_revision(&sign_in(20, 7)),
             Some(20)
         );
-        record_pushed_revision(store, KEEPER, "ana", "c1", 20, 20)
+        record_pushed_revision(store, KEEPER, "ana", "c1", 20, 7)
             .await
             .unwrap();
         // Never lowered.
@@ -258,12 +268,13 @@ async fn a_keeper_tracks_what_it_pushed_to_each_library() {
             .await
             .unwrap();
         let share = kept_shares(store).await.unwrap().remove(0);
-        assert_eq!((share.pushed, share.observed), (20, 20), "{name}");
+        assert_eq!((share.pushed, share.observed), (20, 7), "{name}");
         // The same sign-in is not sent again; a new one is, even one whose
-        // time went back, above the last revision sent.
-        assert_eq!(share.next_revision(20), None, "{name}");
-        assert_eq!(share.next_revision(30), Some(30), "{name}");
-        assert_eq!(share.next_revision(12), Some(21), "{name}");
+        // time went back or matches the last, above the last revision sent.
+        assert_eq!(share.next_revision(&sign_in(20, 7)), None, "{name}");
+        assert_eq!(share.next_revision(&sign_in(30, 8)), Some(30), "{name}");
+        assert_eq!(share.next_revision(&sign_in(12, 8)), Some(21), "{name}");
+        assert_eq!(share.next_revision(&sign_in(20, 8)), Some(21), "{name}");
 
         // Several shares and several secrets read in pages within the
         // profile's result limit (one row on the minimum profile).
@@ -294,7 +305,9 @@ async fn a_keeper_tracks_what_it_pushed_to_each_library() {
         .unwrap();
         upsert_secret(store.db(), &second).await.unwrap();
         let after = sign_in_revision(store, KEEPER, "ana").await.unwrap();
-        assert!(after > before, "{name}: {before:?} -> {after:?}");
+        let (before, after) = (before.unwrap(), after.unwrap());
+        assert!(after.at > before.at, "{name}: {before:?} -> {after:?}");
+        assert_ne!(after.fingerprint, before.fingerprint, "{name}");
         // The export a push sends holds both secrets, read in pages too.
         let carried = accounts_to_carry_where(store, ana.id, &|_, _| true)
             .await

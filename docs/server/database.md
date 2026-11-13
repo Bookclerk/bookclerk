@@ -687,7 +687,7 @@ received from a library (`received`, peer `link:<cluster id>`); it is
 removed with the account. `account_credential_revisions` holds, per account
 and peer, the newest sign-in revision of a single-keeper account: on a
 library the last one applied from its keeper branch, on that branch the
-last one sent to each library, with the sign-in's write time then
+last one sent to each library, with a fingerprint of the sign-in sent
 (`observed`). It is removed with the account. When an
 account is taken back with no link left, its `node:` rows in both tables
 go too, so the library picks its next keeper afresh.
