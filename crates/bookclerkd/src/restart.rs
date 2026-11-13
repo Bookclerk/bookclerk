@@ -1,6 +1,6 @@
 //! A clean restart of the daemon on new bootstrap files.
 //!
-//! Joining a library as a clerk replaces this install's `[database]`,
+//! Joining a library as a shared branch replaces this install's `[database]`,
 //! `master.key` and `node-identity.json`. Those are read once at startup
 //! (the database connection, the process DEK and the node id are fixed for
 //! the life of the process), so the daemon does not hot-switch: [`request`]

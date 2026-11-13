@@ -11,11 +11,11 @@
 //!    code with the PKCE verifier only this process holds, and record the
 //!    link. A running daemon starts the link's client within a few seconds.
 //!
-//! With `--as clerk` the sign-in also offers to join as a clerk (an owner
+//! With `--as shared-branch` the sign-in also offers to join as a shared branch (an owner
 //! node that shares the library's database and DEK; only an empty install
-//! may). When the library's Owner chooses clerk, the sealed bootstrap is
+//! may). When the library's Owner chooses shared branch, the sealed bootstrap is
 //! opened with the node key and written as this install's own bootstrap
-//! ([`bookclerk_node_client::apply_clerk_bootstrap`]); `bookclerkd` then
+//! ([`bookclerk_node_client::apply_shared_branch_bootstrap`]); `bookclerkd` then
 //! starts on it as an owner node at its next start.
 //!
 //! The verifier, `state`, code, node keys and bootstrap never go on argv or
@@ -25,9 +25,10 @@ use std::time::{Duration, Instant};
 
 use bookclerk_config::DatabasePluginKind;
 use bookclerk_node_client::{
-    apply_clerk_bootstrap, authorize_join, bootstrap_database_kind, database_guest_installed,
-    inspect_library, install_problem, keep_brought_connections, redeem_branch_code,
-    redeem_clerk_code, AppliedClerk, BranchRedeem, BroughtConnections, InspectedLibrary, JoinError,
+    apply_shared_branch_bootstrap, authorize_join, bootstrap_database_kind,
+    database_guest_installed, inspect_library, install_problem, keep_brought_connections,
+    redeem_branch_code, redeem_shared_branch_code, AppliedSharedBranch, BranchRedeem,
+    BroughtConnections, InspectedLibrary, JoinError,
 };
 use bookclerk_node_proto::{ConnectionType, JOIN_CALLBACK_PATH};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -47,7 +48,7 @@ pub struct Callback {
     pub code: Zeroizing<String>,
     /// The library's `error`, when it denied.
     pub error: Option<String>,
-    /// The connection type the library's user chose (`clerk`), when not a
+    /// The connection type the library's user chose (`shared_branch`), when not a
     /// branch.
     pub connection: Option<String>,
 }
@@ -253,19 +254,19 @@ fn confirm_fingerprint(library: &InspectedLibrary, given: Option<&str>) -> anyho
 pub enum Joined {
     /// A branch: the link is recorded and a running daemon dials it.
     Branch(bookclerk_library::control_plane::ClusterLink),
-    /// A clerk: the library's bootstrap is written; `bookclerkd` starts on
+    /// A shared branch: the library's bootstrap is written; `bookclerkd` starts on
     /// it as an owner node at its next start.
-    Clerk {
+    SharedBranch {
         /// The library's cluster id.
         cluster_id: String,
         /// The owner node id the library recorded.
         node_id: String,
         /// What was written.
-        applied: AppliedClerk,
+        applied: AppliedSharedBranch,
     },
 }
 
-/// Refuses a clerk join while `bookclerkd` runs on this install: applying
+/// Refuses a shared branch join while `bookclerkd` runs on this install: applying
 /// the bootstrap rewrites `config.toml` and `master.key` under it. Running
 /// means this install's node (its `node-identity.json`) heartbeated within
 /// the live window, the signal the library uses before removing an owner
@@ -290,20 +291,20 @@ async fn refuse_while_daemon_runs(
         .is_some_and(|status| status.is_live(now_ms))
     {
         anyhow::bail!(
-            "bookclerkd is running on this install (node {}): stop bookclerkd first, then join as a clerk",
+            "bookclerkd is running on this install (node {}): stop bookclerkd first, then join as a shared branch",
             node.node_id
         );
     }
     Ok(())
 }
 
-/// Runs `clusters join --url`, as a branch, or offering a clerk when
-/// `offer_clerk` (the library's Owner then chooses).
+/// Runs `clusters join --url`, as a branch, or offering a shared branch when
+/// `offer_shared_branch` (the library's Owner then chooses).
 ///
 /// # Errors
 ///
 /// Returns an error when the library cannot be read or refuses, the
-/// fingerprint is not confirmed, the sign-in does not come back, a clerk
+/// fingerprint is not confirmed, the sign-in does not come back, a shared branch
 /// join is not possible here, or the link or bootstrap cannot be written.
 pub async fn join_with_sign_in(
     store: &bookclerk_library::LibraryStore,
@@ -311,14 +312,14 @@ pub async fn join_with_sign_in(
     address: &str,
     branch_name: Option<&str>,
     fingerprint: Option<&str>,
-    offer_clerk: bool,
+    offer_shared_branch: bool,
 ) -> anyhow::Result<Joined> {
-    if offer_clerk {
+    if offer_shared_branch {
         if let Some(problem) = install_problem(store)
             .await
             .map_err(|err| anyhow::anyhow!("{err}"))?
         {
-            anyhow::bail!("cannot join as a clerk: {problem}");
+            anyhow::bail!("cannot join as a shared branch: {problem}");
         }
         refuse_while_daemon_runs(store, config).await?;
     }
@@ -339,11 +340,11 @@ pub async fn join_with_sign_in(
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .map_or_else(default_branch_name, str::to_string);
-    let authorization = authorize_join(&library, &redirect_uri, &branch_name, offer_clerk)
+    let authorization = authorize_join(&library, &redirect_uri, &branch_name, offer_shared_branch)
         .map_err(|err| anyhow::anyhow!("{err}"))?;
-    if offer_clerk {
+    if offer_shared_branch {
         eprintln!(
-            "Joining as a clerk replaces this install's own (empty) library with {}'s.",
+            "Joining as a shared branch replaces this install's own (empty) library with {}'s.",
             library.info.library_name
         );
     }
@@ -386,7 +387,7 @@ pub async fn join_with_sign_in(
     let keys = &authorization.keys;
     match connection {
         ConnectionType::Branch => {
-            if offer_clerk {
+            if offer_shared_branch {
                 eprintln!("The library's user chose to let this install join as a branch.");
             }
             let redeem = &redeem;
@@ -407,18 +408,20 @@ pub async fn join_with_sign_in(
             }
             Ok(Joined::Branch(redeemed.link))
         }
-        ConnectionType::Clerk => {
-            if !offer_clerk {
-                anyhow::bail!("the library answered for a clerk, which this join did not offer");
+        ConnectionType::SharedBranch => {
+            if !offer_shared_branch {
+                anyhow::bail!(
+                    "the library answered for a shared branch join, which this join did not offer"
+                );
             }
             if let Some(problem) = install_problem(store)
                 .await
                 .map_err(|err| anyhow::anyhow!("{err}"))?
             {
-                anyhow::bail!("cannot join as a clerk: {problem}");
+                anyhow::bail!("cannot join as a shared branch: {problem}");
             }
             let redeem = &redeem;
-            let joined = redeem_with_retries(|_| redeem_clerk_code(redeem, keys))
+            let joined = redeem_with_retries(|_| redeem_shared_branch_code(redeem, keys))
                 .await
                 .map_err(join_failed)?;
             // The library holds the node now; the verifier lives only in
@@ -447,21 +450,21 @@ pub async fn join_with_sign_in(
                 )
             })?;
             let password = config.auth_password().map(Zeroizing::new);
-            let applied = apply_clerk_bootstrap(
+            let applied = apply_shared_branch_bootstrap(
                 &config.paths().files_dir,
                 &config.paths().config_file,
                 &joined.bootstrap,
                 password.as_ref().map(|p| p.as_str()),
             )
             // The library holds the node now: name it, so the operator can
-            // have that clerk removed there before joining again.
+            // have that shared branch removed there before joining again.
             .map_err(|err| {
                 join_failed(JoinError::Unsaved {
                     node_id: Some(joined.node_id.clone()),
                     reason: err.to_string(),
                 })
             })?;
-            Ok(Joined::Clerk {
+            Ok(Joined::SharedBranch {
                 cluster_id: joined.cluster_id,
                 node_id: joined.node_id,
                 applied,

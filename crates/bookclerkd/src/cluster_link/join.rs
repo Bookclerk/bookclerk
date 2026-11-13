@@ -9,16 +9,16 @@
 //!   under the transport policy; a self-signed library's fingerprint comes
 //!   back for the operator to confirm.
 //! - `POST /api/config/join/start` `{address, fingerprint?, branch_name?,
-//!   clerk?}`: reads the library again, checks the confirmed fingerprint,
+//!   shared branch?}`: reads the library again, checks the confirmed fingerprint,
 //!   makes the PKCE verifier, `state` and node keys, keeps them sealed in a
 //!   pending join (10 minutes), and answers the authorize URL to send the
 //!   browser to. The redirect URI is this install's own `/join/callback`.
-//!   With `clerk: true` the sign-in also offers to join as a clerk; only an
+//!   With `shared_branch: true` the sign-in also offers to join as a shared branch; only an
 //!   empty install may ([`bookclerk_node_client::install_problem`]).
 //! - `POST /api/config/join/callback` `{code, state, connection?}`: the
 //!   browser came back. The daemon matches `state` to its pending join and
 //!   redeems the code with the verifier only it holds. As a branch it
-//!   records the link and starts its client at once. As a clerk (only for
+//!   records the link and starts its client at once. As a shared branch (only for
 //!   a pending join that offered it, and only while the install is still
 //!   empty) it opens the sealed bootstrap with the node key, checks the
 //!   library's database guest is installed here, writes the bootstrap as
@@ -69,8 +69,8 @@ use bookclerk_library::control_plane::{
     create_pending_join, finish_pending_join, list_cluster_links, open_pending_join, NewPendingJoin,
 };
 use bookclerk_node_client::{
-    apply_clerk_bootstrap, authorize_join, bootstrap_database_kind, inspect_library,
-    install_problem, join_cluster, redeem_branch_code, redeem_clerk_code, refuse_cycle,
+    apply_shared_branch_bootstrap, authorize_join, bootstrap_database_kind, inspect_library,
+    install_problem, join_cluster, redeem_branch_code, redeem_shared_branch_code, refuse_cycle,
     BranchRedeem, InspectedLibrary, JoinError,
 };
 use bookclerk_node_proto::{is_branch_name, ConnectionType, JOIN_CALLBACK_PATH};
@@ -125,12 +125,12 @@ pub struct JoinStatus {
     /// Whether an Owner (or legacy administrator) exists here.
     #[schema(example = true)]
     pub has_owner: bool,
-    /// Whether this install could still join a library as a clerk.
+    /// Whether this install could still join a library as a shared branch.
     #[schema(example = false)]
-    pub clerk_eligible: bool,
-    /// Why it cannot join as a clerk, when it cannot.
+    pub shared_branch_eligible: bool,
+    /// Why it cannot join as a shared branch, when it cannot.
     #[schema(example = "this install already holds library data of its own")]
-    pub clerk_problem: Option<String>,
+    pub shared_branch_problem: Option<String>,
     /// The name a join is offered under by default (this machine's name).
     #[schema(example = "living-room")]
     pub default_branch_name: String,
@@ -184,9 +184,9 @@ pub struct JoinStarted {
     /// The name this install asked to join as.
     #[schema(example = "living-room")]
     pub branch_name: String,
-    /// Whether joining as a clerk was offered.
+    /// Whether joining as a shared branch was offered.
     #[schema(example = false)]
-    pub clerk_offered: bool,
+    pub shared_branch_offered: bool,
     /// Seconds the pending sign-in stays valid.
     #[schema(example = 600)]
     pub expires_in_secs: u64,
@@ -194,12 +194,12 @@ pub struct JoinStarted {
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 #[serde(untagged)]
-/// JSON body once a join completed: as a branch, or as a clerk.
+/// JSON body once a join completed: as a branch, or as a shared branch.
 pub enum JoinCompleted {
     /// Joined as a branch; the link's client starts at once.
     Branch(BranchJoined),
-    /// Joined as a clerk: this install restarts as an owner node of the library.
-    Clerk(ClerkJoined),
+    /// Joined as a shared branch: this install restarts as an owner node of the library.
+    SharedBranch(SharedBranchJoined),
 }
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
@@ -280,10 +280,10 @@ impl BroughtConnectionsView {
 }
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
-/// JSON body once this install joined a library as a clerk.
-pub struct ClerkJoined {
-    /// Always `clerk`.
-    #[schema(example = "clerk")]
+/// JSON body once this install joined a library as a shared branch.
+pub struct SharedBranchJoined {
+    /// Always `shared_branch`.
+    #[schema(example = "shared_branch")]
     pub connection: &'static str,
     /// The library's cluster id.
     #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
@@ -495,7 +495,7 @@ fn default_branch_name() -> String {
         (status = 200, description = "Whether this install has joined a library, and its state.", body = JoinStatus),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The session is impersonating a user."),
-        (status = 502, description = "Whether this install may join as a clerk could not be checked: its own contents could not be read (`join_failed`).", body = crate::http_error::ErrorDetail, example = json!({"error": "join_failed", "detail": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
+        (status = 502, description = "Whether this install may join as a shared branch could not be checked: its own contents could not be read (`join_failed`).", body = crate::http_error::ErrorDetail, example = json!({"error": "join_failed", "detail": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
         (status = 500, description = "The library database could not be read.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
@@ -507,15 +507,15 @@ pub async fn get_join_status(State(state): State<Arc<AppState>>) -> Response {
     };
     let owners = library.count_owners().await.unwrap_or(1);
     let admins = library.count_administrators().await.unwrap_or(1);
-    let clerk_problem = match install_problem(&library).await {
+    let shared_branch_problem = match install_problem(&library).await {
         Ok(problem) => problem,
         Err(err) => return join_failed(&err),
     };
     Json(JoinStatus {
         fresh: owners == 0 && admins == 0 && links.is_empty(),
         has_owner: owners > 0 || admins > 0,
-        clerk_eligible: clerk_problem.is_none(),
-        clerk_problem,
+        shared_branch_eligible: shared_branch_problem.is_none(),
+        shared_branch_problem,
         default_branch_name: default_branch_name(),
         links: links
             .iter()
@@ -599,11 +599,11 @@ pub struct StartBody {
     #[serde(default)]
     #[schema(example = "study-mini")]
     branch_name: Option<String>,
-    /// Offer to join as a clerk (an owner node that shares the library's
+    /// Offer to join as a shared branch (an owner node that shares the library's
     /// database): only an empty install may, and its data is replaced.
     #[serde(default)]
     #[schema(example = false)]
-    clerk: bool,
+    shared_branch: bool,
 }
 
 /// `POST /api/config/join/start`.
@@ -622,9 +622,9 @@ pub struct StartBody {
             ("enrollment_disabled" = (summary = "The library has host enrollment switched off.", value = json!({"error": "enrollment_disabled", "detail": "This library isn't accepting new branches"}))),
             ("impersonating" = (summary = "The session is impersonating a user.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
         )),
-        (status = 409, description = "The library's fingerprint is not confirmed (`fingerprint_unconfirmed`), this install holds data of its own for a clerk join (`not_empty`), joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given (`origin_mismatch`).", body = JoinConflict, examples(
+        (status = 409, description = "The library's fingerprint is not confirmed (`fingerprint_unconfirmed`), this install holds data of its own for a shared branch join (`not_empty`), joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given (`origin_mismatch`).", body = JoinConflict, examples(
             ("fingerprint_unconfirmed" = (summary = "A self-signed library's fingerprint was not confirmed.", value = json!({"error": "fingerprint_unconfirmed", "detail": "confirm the library's fingerprint first; it must match the one on its Settings → Branches page"}))),
-            ("not_empty" = (summary = "This install already holds library data (clerk join).", value = json!({"error": "not_empty", "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a clerk"}))),
+            ("not_empty" = (summary = "This install already holds library data (shared branch join).", value = json!({"error": "not_empty", "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a shared branch"}))),
             ("join_cycle" = (summary = "The library is this one or one of its branches.", value = json!({"error": "join_cycle", "detail": "that library is this library or one of its own branches; joining it would make a loop"}))),
             ("origin_mismatch" = (summary = "The library answers under another address.", value = json!({"error": "origin_mismatch", "detail": "this library's address is https://books.example.com; join with that address", "origin": "https://books.example.com"}))),
         )),
@@ -667,7 +667,7 @@ pub async fn post_join_start(
             );
         }
     }
-    if body.clerk {
+    if body.shared_branch {
         match install_problem(&store).await {
             Ok(None) => {}
             Ok(Some(problem)) => return join_error(StatusCode::CONFLICT, "not_empty", &problem),
@@ -687,10 +687,11 @@ pub async fn post_join_start(
             callback_origin(&cfg, &headers).trim_end_matches('/')
         )
     };
-    let authorization = match authorize_join(&library, &redirect_uri, &branch_name, body.clerk) {
-        Ok(authorization) => authorization,
-        Err(err) => return join_failed(&err),
-    };
+    let authorization =
+        match authorize_join(&library, &redirect_uri, &branch_name, body.shared_branch) {
+            Ok(authorization) => authorization,
+            Err(err) => return join_failed(&err),
+        };
     let pending = NewPendingJoin {
         owner_origin: library.origin.clone(),
         spki_pin: library.spki_pin.clone(),
@@ -698,7 +699,7 @@ pub async fn post_join_start(
         library_name: library.info.library_name.clone(),
         branch_name: branch_name.clone(),
         redirect_uri: authorization.redirect_uri.clone(),
-        allow_clerk: body.clerk,
+        allow_shared_branch: body.shared_branch,
     };
     if let Err(err) = create_pending_join(
         &store,
@@ -715,7 +716,7 @@ pub async fn post_join_start(
     tracing::info!(
         origin = %library.origin,
         cluster_id = %library.info.cluster_id,
-        clerk_offered = body.clerk,
+        shared_branch_offered = body.shared_branch,
         "branch sign-in started"
     );
     no_store(
@@ -723,7 +724,7 @@ pub async fn post_join_start(
             authorize_url: authorization.authorize_url,
             library: library_json(&library),
             branch_name,
-            clerk_offered: body.clerk,
+            shared_branch_offered: body.shared_branch,
             expires_in_secs: bookclerk_library::control_plane::PENDING_JOIN_TTL.as_secs(),
         })
         .into_response(),
@@ -746,11 +747,11 @@ pub struct CallbackBody {
     #[serde(default)]
     #[schema(example = "access_denied")]
     error: Option<String>,
-    /// The connection type the library's user chose (`clerk`; a branch
+    /// The connection type the library's user chose (`shared_branch`; a branch
     /// when left out). The code is bound to it, so a changed value only
     /// fails the redeem.
     #[serde(default)]
-    #[schema(example = "clerk")]
+    #[schema(example = "shared_branch")]
     connection: Option<String>,
 }
 
@@ -795,10 +796,10 @@ const CALLBACK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
     request_body = CallbackBody,
     responses(
         (status = 200, description = "The join completed.", body = JoinCompleted),
-        (status = 400, description = "The callback carries no code or an unknown connection type (`invalid_request`), or the sign-in did not offer a clerk join (`clerk_not_offered`).", body = crate::http_error::ErrorDetail, examples(
+        (status = 400, description = "The callback carries no code or an unknown connection type (`invalid_request`), or the sign-in did not offer a shared branch join (`shared_branch_not_offered`).", body = crate::http_error::ErrorDetail, examples(
             ("no_code" = (summary = "The callback has no authorization code.", value = json!({"error": "invalid_request", "detail": "no code"}))),
-            ("bad_connection" = (summary = "The connection type is not branch or clerk.", value = json!({"error": "invalid_request", "detail": "connection must be branch or clerk"}))),
-            ("clerk_not_offered" = (summary = "The sign-in did not offer to join as a clerk.", value = json!({"error": "clerk_not_offered", "detail": "this sign-in did not offer to join as a clerk; start again and choose to join as a clerk"}))),
+            ("bad_connection" = (summary = "The connection type is not branch or shared_branch.", value = json!({"error": "invalid_request", "detail": "connection must be branch or shared_branch"}))),
+            ("shared_branch_not_offered" = (summary = "The sign-in did not offer to join as a shared branch.", value = json!({"error": "shared_branch_not_offered", "detail": "this sign-in did not offer to join as a shared branch; start again and choose to join as a shared branch"}))),
         )),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The library's user did not approve (`denied`), the library refused the sign-in (`refused`), or the session is impersonating a user (the standard error body).", body = crate::http_error::ErrorAnswer, examples(
@@ -806,8 +807,8 @@ const CALLBACK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
             ("refused" = (summary = "The library refused the sign-in.", value = json!({"error": "refused", "detail": "the library refused: the sign-in or invite is used, expired, revoked, or the library isn't accepting new branches"}))),
             ("impersonating" = (summary = "The session is impersonating a user.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
         )),
-        (status = 409, description = "This install holds data of its own for a clerk join (`not_empty`), the library's database plugin is not installed here (`database_guest_missing`), the D1 token is not set here (`d1_token_missing`), or joining would make a loop (`join_cycle`, `ancestry_too_deep`).", body = crate::http_error::ErrorDetail, examples(
-            ("not_empty" = (summary = "This install already holds library data (clerk join).", value = json!({"error": "not_empty", "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a clerk"}))),
+        (status = 409, description = "This install holds data of its own for a shared branch join (`not_empty`), the library's database plugin is not installed here (`database_guest_missing`), the D1 token is not set here (`d1_token_missing`), or joining would make a loop (`join_cycle`, `ancestry_too_deep`).", body = crate::http_error::ErrorDetail, examples(
+            ("not_empty" = (summary = "This install already holds library data (shared branch join).", value = json!({"error": "not_empty", "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a shared branch"}))),
             ("database_guest_missing" = (summary = "The library's database plugin is not installed on this server.", value = json!({"error": "database_guest_missing", "detail": "the library's database is postgres, and its database plugin is not installed on this server; install it, then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)"}))),
             ("d1_token_missing" = (summary = "The library's database is D1 and this server has no token.", value = json!({"error": "d1_token_missing", "detail": "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN for this server and restart it (the token is never sent between servers), then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)"}))),
         )),
@@ -868,12 +869,12 @@ pub async fn post_join_callback(
             return join_error(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
-                "connection must be branch or clerk",
+                "connection must be branch or shared_branch",
             )
         }
     };
-    if connection == ConnectionType::Clerk {
-        let answer = join_as_clerk(&state, &store, sign_in, taken, code.trim()).await;
+    if connection == ConnectionType::SharedBranch {
+        let answer = join_as_shared_branch(&state, &store, sign_in, taken, code.trim()).await;
         drop(one_at_a_time);
         return answer;
     }
@@ -999,7 +1000,7 @@ fn database_guest_installed(cfg: &bookclerk_config::Config, kind: DatabasePlugin
     bookclerk_node_client::database_guest_installed(cfg, kind)
 }
 
-/// The callback for a clerk: redeem as a clerk, open the sealed bootstrap,
+/// The callback for a shared branch: redeem as a shared branch, open the sealed bootstrap,
 /// write it as this install's own, and restart on it. The caller holds the
 /// callback lock. Like a branch's, the pending sign-in is kept when the
 /// redeem fails for a reason a retry can fix (502 `join_retry`), and ended
@@ -1007,19 +1008,19 @@ fn database_guest_installed(cfg: &bookclerk_config::Config, kind: DatabasePlugin
 /// lacks the database guest or D1 token the bootstrap needs (409
 /// `database_guest_missing`, `d1_token_missing`), so Try again works once
 /// that is fixed.
-async fn join_as_clerk(
+async fn join_as_shared_branch(
     state: &Arc<AppState>,
     store: &bookclerk_library::LibraryStore,
     sign_in: &str,
     taken: bookclerk_library::control_plane::TakenJoin,
     code: &str,
 ) -> Response {
-    if !taken.join.allow_clerk {
+    if !taken.join.allow_shared_branch {
         end_sign_in(store, sign_in).await;
         return join_error(
             StatusCode::BAD_REQUEST,
-            "clerk_not_offered",
-            "this sign-in did not offer to join as a clerk; start again and choose to join as a clerk",
+            "shared_branch_not_offered",
+            "this sign-in did not offer to join as a shared branch; start again and choose to join as a shared branch",
         );
     }
     // Checked again here: nothing may have been added since the start.
@@ -1041,7 +1042,7 @@ async fn join_as_clerk(
     }
     let joined = tokio::time::timeout(
         REDEEM_TIMEOUT,
-        redeem_clerk_code(
+        redeem_shared_branch_code(
             &BranchRedeem {
                 origin: &taken.join.owner_origin,
                 spki_pin: taken.join.spki_pin.as_deref(),
@@ -1118,7 +1119,7 @@ async fn join_as_clerk(
     let files_dir = cfg.paths().files_dir.clone();
     let config_file = cfg.paths().config_file.clone();
     let password = cfg.auth_password().map(Zeroizing::new);
-    let applied = apply_clerk_bootstrap(
+    let applied = apply_shared_branch_bootstrap(
         &files_dir,
         &config_file,
         &joined.bootstrap,
@@ -1128,7 +1129,7 @@ async fn join_as_clerk(
     let applied = match applied {
         Ok(applied) => applied,
         // The library holds the node now: name it, so the operator can
-        // have that clerk removed there before joining again.
+        // have that shared branch removed there before joining again.
         Err(err) => {
             return join_failed(&JoinError::Unsaved {
                 node_id: Some(joined.node_id.clone()),
@@ -1139,7 +1140,7 @@ async fn join_as_clerk(
     let _ = store
         .insert_security_audit_event(
             "operator",
-            "clerk_joined",
+            "shared_branch_joined",
             Some(
                 &json!({
                     "cluster_id": joined.cluster_id,
@@ -1153,15 +1154,15 @@ async fn join_as_clerk(
     tracing::info!(
         cluster_id = %joined.cluster_id,
         node_id = %joined.node_id,
-        "joined the library as a clerk; restarting as an owner node"
+        "joined the library as a shared branch; restarting as an owner node"
     );
     // Answer first; the restart waits for in-flight requests.
     tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        crate::restart::request("clerk_join");
+        crate::restart::request("shared_branch_join");
     });
-    Json(JoinCompleted::Clerk(ClerkJoined {
-        connection: "clerk",
+    Json(JoinCompleted::SharedBranch(SharedBranchJoined {
+        connection: "shared_branch",
         cluster_id: joined.cluster_id,
         node_id: joined.node_id,
         library_name: taken.join.library_name,

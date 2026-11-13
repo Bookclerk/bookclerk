@@ -34,7 +34,7 @@ others go deeper.
 - [Web app and sign-in reference](server/sign-in.md): roles, sign-in methods, routes and screens
 - [Integrations and sign-in](server/integrations.md): Audiobookshelf, invites and identity providers
 - [Managing plugins](server/plugins.md): install, approve, configure and place plugins; isolation modes
-- [Libraries and branches](server/cluster-hosts.md): join a library, clerks and consent
+- [Libraries and branches](server/cluster-hosts.md): join a library, shared branches and consent
 - [Media worker](server/media.md): the confined process that handles audio files
 - [Backups, updates, import and export](server/backups.md): native backups, schema backups, updating, Libation and PostgreSQL export
 - [Diagnostics](server/diagnostics.md): opt-in error reports

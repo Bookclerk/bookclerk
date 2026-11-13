@@ -8341,7 +8341,7 @@
             }
           },
           "502": {
-            "description": "Whether this install may join as a clerk could not be checked: its own contents could not be read (`join_failed`).",
+            "description": "Whether this install may join as a shared branch could not be checked: its own contents could not be read (`join_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -8688,7 +8688,7 @@
             }
           },
           "409": {
-            "description": "The library's fingerprint is not confirmed (`fingerprint_unconfirmed`), this install holds data of its own for a clerk join (`not_empty`), joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given (`origin_mismatch`).",
+            "description": "The library's fingerprint is not confirmed (`fingerprint_unconfirmed`), this install holds data of its own for a shared branch join (`not_empty`), joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given (`origin_mismatch`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -8710,9 +8710,9 @@
                     }
                   },
                   "not_empty": {
-                    "summary": "This install already holds library data (clerk join).",
+                    "summary": "This install already holds library data (shared branch join).",
                     "value": {
-                      "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a clerk",
+                      "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a shared branch",
                       "error": "not_empty"
                     }
                   },
@@ -8841,7 +8841,7 @@
             }
           },
           "400": {
-            "description": "The callback carries no code or an unknown connection type (`invalid_request`), or the sign-in did not offer a clerk join (`clerk_not_offered`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "The callback carries no code or an unknown connection type (`invalid_request`), or the sign-in did not offer a shared branch join (`shared_branch_not_offered`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8849,17 +8849,10 @@
                 },
                 "examples": {
                   "bad_connection": {
-                    "summary": "The connection type is not branch or clerk.",
+                    "summary": "The connection type is not branch or shared_branch.",
                     "value": {
-                      "detail": "connection must be branch or clerk",
+                      "detail": "connection must be branch or shared_branch",
                       "error": "invalid_request"
-                    }
-                  },
-                  "clerk_not_offered": {
-                    "summary": "The sign-in did not offer to join as a clerk.",
-                    "value": {
-                      "detail": "this sign-in did not offer to join as a clerk; start again and choose to join as a clerk",
-                      "error": "clerk_not_offered"
                     }
                   },
                   "no_code": {
@@ -8867,6 +8860,13 @@
                     "value": {
                       "detail": "no code",
                       "error": "invalid_request"
+                    }
+                  },
+                  "shared_branch_not_offered": {
+                    "summary": "The sign-in did not offer to join as a shared branch.",
+                    "value": {
+                      "detail": "this sign-in did not offer to join as a shared branch; start again and choose to join as a shared branch",
+                      "error": "shared_branch_not_offered"
                     }
                   }
                 }
@@ -8929,7 +8929,7 @@
             }
           },
           "409": {
-            "description": "This install holds data of its own for a clerk join (`not_empty`), the library's database plugin is not installed here (`database_guest_missing`), the D1 token is not set here (`d1_token_missing`), or joining would make a loop (`join_cycle`, `ancestry_too_deep`).",
+            "description": "This install holds data of its own for a shared branch join (`not_empty`), the library's database plugin is not installed here (`database_guest_missing`), the D1 token is not set here (`d1_token_missing`), or joining would make a loop (`join_cycle`, `ancestry_too_deep`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -8951,9 +8951,9 @@
                     }
                   },
                   "not_empty": {
-                    "summary": "This install already holds library data (clerk join).",
+                    "summary": "This install already holds library data (shared branch join).",
                     "value": {
-                      "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a clerk",
+                      "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a shared branch",
                       "error": "not_empty"
                     }
                   }
@@ -10616,7 +10616,7 @@
         "tags": [
           "Cluster"
         ],
-        "summary": "`DELETE /api/config/nodes/{node_id}`: remove an owner node (a clerk, or\nany node sharing this database) that is no longer running from the\nlibrary's node list. The operator or an Owner may remove any; another\nuser only one they own. A running node, this node, or a branch is\nrefused (a branch is revoked instead).",
+        "summary": "`DELETE /api/config/nodes/{node_id}`: remove an owner node (a shared branch, or\nany node sharing this database) that is no longer running from the\nlibrary's node list. The operator or an Owner may remove any; another\nuser only one they own. A running node, this node, or a branch is\nrefused (a branch is revoked instead).",
         "operationId": "delete_owner_node",
         "parameters": [
           {
@@ -10786,20 +10786,20 @@
         "x-bookclerk-access": "The operator, a signed-in Owner, Administrator or Host, or a user who owns at least one node."
       }
     },
-    "/api/config/clerks": {
+    "/api/config/shared-branches": {
       "get": {
         "tags": [
           "Cluster"
         ],
-        "summary": "`GET /api/config/clerks`: the owner nodes (this one and its clerks) for\nSettings → Clerks, shaped like `GET /api/config/nodes`. The operator or\nan Owner sees every one, as `DELETE /api/config/nodes/{node_id}` lets\nthem remove any; another user only the ones they own, which the nodes\nlisting already shows them. Branches are not listed.",
-        "operationId": "get_clerks",
+        "summary": "`GET /api/config/shared-branches`: the owner nodes (this one and its shared branches) for\nSettings → Shared branches, shaped like `GET /api/config/nodes`. The operator or\nan Owner sees every one, as `DELETE /api/config/nodes/{node_id}` lets\nthem remove any; another user only the ones they own, which the nodes\nlisting already shows them. Branches are not listed.",
+        "operationId": "get_shared_branches",
         "responses": {
           "200": {
-            "description": "This node and its clerks.",
+            "description": "This node and its shared branches.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ClerksResponse"
+                  "$ref": "#/components/schemas/SharedBranchesResponse"
                 }
               }
             }
@@ -12401,9 +12401,9 @@
             }
           },
           {
-            "name": "clerk_offer",
+            "name": "shared_branch_offer",
             "in": "query",
-            "description": "`1` when the joining install offers to join as a clerk\n([`bookclerk_node_proto::CLERK_OFFER_PARAM`]).",
+            "description": "`1` when the joining install offers to join as a shared branch\n([`bookclerk_node_proto::SHARED_BRANCH_OFFER_PARAM`]).",
             "required": false,
             "schema": {
               "type": "string"
@@ -12593,7 +12593,7 @@
             }
           },
           "400": {
-            "description": "The body or its authorize parameters are invalid (`invalid_request`), or the joining server did not offer a clerk join (`clerk_not_offered`).",
+            "description": "The body or its authorize parameters are invalid (`invalid_request`), or the joining server did not offer a shared branch join (`shared_branch_not_offered`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -12601,9 +12601,9 @@
                 },
                 "examples": {
                   "bad_connection": {
-                    "summary": "The connection type is not branch or clerk.",
+                    "summary": "The connection type is not branch or shared_branch.",
                     "value": {
-                      "detail": "connection must be branch or clerk",
+                      "detail": "connection must be branch or shared_branch",
                       "error": "invalid_request"
                     }
                   },
@@ -12614,18 +12614,18 @@
                       "error": "invalid_request"
                     }
                   },
-                  "clerk_not_offered": {
-                    "summary": "The joining server did not offer to join as a clerk.",
-                    "value": {
-                      "detail": "the joining server did not offer to join as a clerk; it can join as a branch",
-                      "error": "clerk_not_offered"
-                    }
-                  },
                   "malformed": {
                     "summary": "The body does not parse.",
                     "value": {
                       "detail": "malformed consent",
                       "error": "invalid_request"
+                    }
+                  },
+                  "shared_branch_not_offered": {
+                    "summary": "The joining server did not offer to join as a shared branch.",
+                    "value": {
+                      "detail": "the joining server did not offer to join as a shared branch; it can join as a branch",
+                      "error": "shared_branch_not_offered"
                     }
                   },
                   "unknown_client": {
@@ -12655,7 +12655,7 @@
             }
           },
           "403": {
-            "description": "The caller is not an active library user (`user_required`, `user_inactive`), this library is not accepting branches (`enrollment_disabled`), a clerk join needs an Owner (`owner_required`) with a second factor (`step_up_unavailable`) that was confirmed (`step_up_required`) and passed (`step_up_failed`), the connection failed the transport policy (`transport_insecure`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The caller is not an active library user (`user_required`, `user_inactive`), this library is not accepting branches (`enrollment_disabled`), a shared branch join needs an Owner (`owner_required`) with a second factor (`step_up_unavailable`) that was confirmed (`step_up_required`) and passed (`step_up_failed`), the connection failed the transport policy (`transport_insecure`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12686,23 +12686,23 @@
                     }
                   },
                   "owner_required": {
-                    "summary": "Only an Owner can let a clerk join.",
+                    "summary": "Only an Owner can let a shared branch join.",
                     "value": {
-                      "detail": "only an Owner of this library can let a server join as a clerk",
+                      "detail": "only an Owner of this library can let a shared branch join",
                       "error": "owner_required"
                     }
                   },
                   "step_up_required": {
-                    "summary": "The clerk join was not confirmed with a second factor.",
+                    "summary": "The shared branch join was not confirmed with a second factor.",
                     "value": {
-                      "detail": "confirm with your authenticator app or a passkey to let a clerk join",
+                      "detail": "confirm with your authenticator app or a passkey to let a shared branch join",
                       "error": "step_up_required"
                     }
                   },
                   "step_up_unavailable": {
                     "summary": "The Owner has no second factor to confirm with.",
                     "value": {
-                      "detail": "joining as a clerk needs a fresh second factor: set up an authenticator app or a passkey on your account first",
+                      "detail": "joining as a shared branch needs a fresh second factor: set up an authenticator app or a passkey on your account first",
                       "error": "step_up_unavailable"
                     }
                   },
@@ -12745,14 +12745,14 @@
             }
           },
           "409": {
-            "description": "This library's database cannot be shared with a clerk (`database_not_shareable`).",
+            "description": "This library's database cannot be shared with another server (`database_not_shareable`).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorDetail"
                 },
                 "example": {
-                  "detail": "This library keeps its database in a SQLite file that only this server can open. A clerk needs a PostgreSQL or Cloudflare D1 database.",
+                  "detail": "This library keeps its database in a SQLite file that only this server can open. Sharing it needs a PostgreSQL or Cloudflare D1 database.",
                   "error": "database_not_shareable"
                 }
               }
@@ -12851,7 +12851,7 @@
         "tags": [
           "Auth"
         ],
-        "summary": "`POST /api/auth/branch-consent/step-up`: starts a passkey step-up for a\nclerk consent (an Owner with a passkey). Answers the WebAuthn request\noptions with a `challenge_id` to send back in the consent's `step_up`.",
+        "summary": "`POST /api/auth/branch-consent/step-up`: starts a passkey step-up for a\nshared branch consent (an Owner with a passkey). Answers the WebAuthn request\noptions with a `challenge_id` to send back in the consent's `step_up`.",
         "operationId": "post_branch_consent_step_up",
         "responses": {
           "200": {
@@ -12918,9 +12918,9 @@
                     }
                   },
                   "owner_required": {
-                    "summary": "Only an Owner can let a clerk join.",
+                    "summary": "Only an Owner can let a shared branch join.",
                     "value": {
-                      "detail": "only an Owner of this library can let a server join as a clerk",
+                      "detail": "only an Owner of this library can let a shared branch join",
                       "error": "owner_required"
                     }
                   },
@@ -25013,7 +25013,7 @@
         "tags": [
           "Node protocol"
         ],
-        "summary": "`POST /api/node/v1/enroll/oauth`: redeem an approved branch sign-in.\nAnswers `{cluster_id, node_id}` for a branch, plus `connection` and the\nsealed `bootstrap` for a clerk; 403 `transport_insecure` for a refused\nconnection, 403 `enrollment_refused` for a code that does not redeem\n(unknown, used, expired, another client's, a wrong verifier or\nredirect URI, enrollment off, or the user no longer active).",
+        "summary": "`POST /api/node/v1/enroll/oauth`: redeem an approved branch sign-in.\nAnswers `{cluster_id, node_id}` for a branch, plus `connection` and the\nsealed `bootstrap` for a shared branch; 403 `transport_insecure` for a refused\nconnection, 403 `enrollment_refused` for a code that does not redeem\n(unknown, used, expired, another client's, a wrong verifier or\nredirect URI, enrollment off, or the user no longer active).",
         "operationId": "post_enroll_oauth",
         "requestBody": {
           "content": {
@@ -25027,7 +25027,7 @@
         },
         "responses": {
           "200": {
-            "description": "The install is enrolled: its cluster and node ids for a branch, and for a clerk also `connection` and the clerk bootstrap sealed to its box key.",
+            "description": "The install is enrolled: its cluster and node ids for a branch, and for a shared branch join also `connection` and the bootstrap sealed to its box key.",
             "content": {
               "application/json": {
                 "schema": {
@@ -25041,12 +25041,12 @@
                       "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
                     }
                   },
-                  "clerk": {
-                    "summary": "A clerk joined; its bootstrap is sealed to its box key.",
+                  "shared_branch": {
+                    "summary": "A shared branch joined; its bootstrap is sealed to its box key.",
                     "value": {
                       "bootstrap": "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0",
                       "cluster_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
-                      "connection": "clerk",
+                      "connection": "shared_branch",
                       "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
                     }
                   }
@@ -25079,7 +25079,7 @@
             }
           },
           "403": {
-            "description": "The connection failed the transport policy (`transport_insecure`, with the check in `reason`), or the code does not redeem: blank, unknown, used, expired, wrong verifier, or the user may no longer let a clerk join (`enrollment_refused`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The connection failed the transport policy (`transport_insecure`, with the check in `reason`), or the code does not redeem: blank, unknown, used, expired, wrong verifier, or the user may no longer let a shared branch join (`enrollment_refused`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -25117,7 +25117,7 @@
             }
           },
           "409": {
-            "description": "This library's database cannot be shared with a clerk (`database_not_shareable`).",
+            "description": "This library's database cannot be shared with another server (`database_not_shareable`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -28113,9 +28113,9 @@
             "example": "study-mini",
             "nullable": true
           },
-          "clerk_offer": {
+          "shared_branch_offer": {
             "type": "string",
-            "description": "`1` when the joining install offers to join as a clerk\n([`bookclerk_node_proto::CLERK_OFFER_PARAM`]).",
+            "description": "`1` when the joining install offers to join as a shared branch\n([`bookclerk_node_proto::SHARED_BRANCH_OFFER_PARAM`]).",
             "example": "1",
             "nullable": true
           }
@@ -28176,12 +28176,12 @@
               },
               "connection": {
                 "type": "string",
-                "description": "`branch` (default) or `clerk`.",
+                "description": "`branch` (default) or `shared_branch`.",
                 "example": "branch",
                 "nullable": true
               },
               "step_up": {
-                "description": "The fresh second factor a clerk needs.",
+                "description": "The fresh second factor a shared branch needs.",
                 "oneOf": [
                   {
                     "type": "object",
@@ -28244,7 +28244,7 @@
               },
               "bring_connections": {
                 "type": "boolean",
-                "description": "True to send the user's store connections that may travel to the\nbranch when it joins. Ignored for a clerk. Defaults to false.",
+                "description": "True to send the user's store connections that may travel to the\nbranch when it joins. Ignored for a shared branch. Defaults to false.",
                 "example": false
               }
             }
@@ -28727,8 +28727,8 @@
           },
           "connection": {
             "type": "string",
-            "description": "The connection type the library's user chose (`clerk`; a branch\nwhen left out). The code is bound to it, so a changed value only\nfails the redeem.",
-            "example": "clerk",
+            "description": "The connection type the library's user chose (`shared_branch`; a branch\nwhen left out). The code is bound to it, so a changed value only\nfails the redeem.",
+            "example": "shared_branch",
             "nullable": true
           }
         },
@@ -29094,78 +29094,6 @@
           "both"
         ],
         "example": "off"
-      },
-      "ClerkJoined": {
-        "type": "object",
-        "description": "JSON body once this install joined a library as a clerk.",
-        "required": [
-          "connection",
-          "cluster_id",
-          "node_id",
-          "library_name",
-          "database",
-          "master_key_wrapped",
-          "restarting"
-        ],
-        "properties": {
-          "connection": {
-            "type": "string",
-            "description": "Always `clerk`.",
-            "example": "clerk"
-          },
-          "cluster_id": {
-            "type": "string",
-            "description": "The library's cluster id.",
-            "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
-          },
-          "node_id": {
-            "type": "string",
-            "description": "The node id the library minted for this install.",
-            "example": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
-          },
-          "library_name": {
-            "type": "string",
-            "description": "The library's name.",
-            "example": "books.example.com"
-          },
-          "database": {
-            "type": "string",
-            "description": "The database plugin this install now runs (`postgres` or `d1`).",
-            "example": "postgres"
-          },
-          "master_key_wrapped": {
-            "type": "boolean",
-            "description": "Whether the shared master key was wrapped with this install's password.",
-            "example": true
-          },
-          "restarting": {
-            "type": "boolean",
-            "description": "Always `true`: the daemon restarts as an owner node right after answering.",
-            "example": true
-          }
-        }
-      },
-      "ClerksResponse": {
-        "type": "object",
-        "description": "`GET /api/config/clerks` body.",
-        "required": [
-          "node_id",
-          "nodes"
-        ],
-        "properties": {
-          "node_id": {
-            "type": "string",
-            "description": "Id of the node that answered.",
-            "example": "node-7f3a9c"
-          },
-          "nodes": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/NodeView"
-            },
-            "description": "This node and the clerks the caller may see."
-          }
-        }
       },
       "ClusterConsentsResponse": {
         "type": "object",
@@ -29569,10 +29497,10 @@
                 "$ref": "#/components/schemas/OwnerChoice"
               }
             ],
-            "description": "An Owner may pick clerk, when it is available."
+            "description": "An Owner may pick shared_branch, when it is available."
           }
         ],
-        "description": "What the consent page may offer: branch only, or a choice between branch and clerk for an Owner."
+        "description": "What the consent page may offer: branch only, or a choice between branch and shared_branch for an Owner."
       },
       "ConnectionInfo": {
         "type": "object",
@@ -29656,7 +29584,7 @@
         "description": "How a joining install connects to a library.",
         "enum": [
           "branch",
-          "clerk"
+          "shared_branch"
         ]
       },
       "ConnectionsAdded": {
@@ -31734,13 +31662,13 @@
           {
             "allOf": [
               {
-                "$ref": "#/components/schemas/ClerkJoined"
+                "$ref": "#/components/schemas/SharedBranchJoined"
               }
             ],
-            "description": "Joined as a clerk: this install restarts as an owner node of the library."
+            "description": "Joined as a shared branch: this install restarts as an owner node of the library."
           }
         ],
-        "description": "JSON body once a join completed: as a branch, or as a clerk."
+        "description": "JSON body once a join completed: as a branch, or as a shared branch."
       },
       "JoinConflict": {
         "anyOf": [
@@ -31770,7 +31698,7 @@
           "authorize_url",
           "library",
           "branch_name",
-          "clerk_offered",
+          "shared_branch_offered",
           "expires_in_secs"
         ],
         "properties": {
@@ -31792,9 +31720,9 @@
             "description": "The name this install asked to join as.",
             "example": "living-room"
           },
-          "clerk_offered": {
+          "shared_branch_offered": {
             "type": "boolean",
-            "description": "Whether joining as a clerk was offered.",
+            "description": "Whether joining as a shared branch was offered.",
             "example": false
           },
           "expires_in_secs": {
@@ -31812,7 +31740,7 @@
         "required": [
           "fresh",
           "has_owner",
-          "clerk_eligible",
+          "shared_branch_eligible",
           "default_branch_name",
           "links"
         ],
@@ -31827,14 +31755,14 @@
             "description": "Whether an Owner (or legacy administrator) exists here.",
             "example": true
           },
-          "clerk_eligible": {
+          "shared_branch_eligible": {
             "type": "boolean",
-            "description": "Whether this install could still join a library as a clerk.",
+            "description": "Whether this install could still join a library as a shared branch.",
             "example": false
           },
-          "clerk_problem": {
+          "shared_branch_problem": {
             "type": "string",
-            "description": "Why it cannot join as a clerk, when it cannot.",
+            "description": "Why it cannot join as a shared branch, when it cannot.",
             "example": "this install already holds library data of its own",
             "nullable": true
           },
@@ -33056,7 +32984,7 @@
           },
           "bootstrap": {
             "type": "string",
-            "description": "For a clerk: the [`crate::ClerkBootstrap`] sealed to the node's box\nkey ([`crate::seal_clerk_bootstrap`]), as base64url without padding.",
+            "description": "For a shared branch: the [`crate::SharedBranchBootstrap`] sealed to the node's box\nkey ([`crate::seal_shared_branch_bootstrap`]), as base64url without padding.",
             "example": "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0",
             "nullable": true
           },
@@ -34267,11 +34195,11 @@
       },
       "OwnerChoice": {
         "type": "object",
-        "description": "The consent page's connection block for an Owner, who may pick clerk.",
+        "description": "The consent page's connection block for an Owner, who may pick shared branch.",
         "required": [
           "choice",
           "default",
-          "clerk_available",
+          "shared_branch_available",
           "step_up"
         ],
         "properties": {
@@ -34285,14 +34213,14 @@
             "description": "Always `branch`.",
             "example": "branch"
           },
-          "clerk_available": {
+          "shared_branch_available": {
             "type": "boolean",
-            "description": "Whether clerk may be chosen right now.",
+            "description": "Whether shared branch may be chosen right now.",
             "example": false
           },
-          "clerk_reason": {
+          "shared_branch_reason": {
             "type": "string",
-            "description": "Why clerk is shown disabled, when it is.",
+            "description": "Why shared branch is shown disabled, when it is.",
             "example": "The joining server already holds library data of its own (or did not offer it), so it can only join as a branch.",
             "nullable": true
           },
@@ -39245,6 +39173,78 @@
           }
         }
       },
+      "SharedBranchJoined": {
+        "type": "object",
+        "description": "JSON body once this install joined a library as a shared branch.",
+        "required": [
+          "connection",
+          "cluster_id",
+          "node_id",
+          "library_name",
+          "database",
+          "master_key_wrapped",
+          "restarting"
+        ],
+        "properties": {
+          "connection": {
+            "type": "string",
+            "description": "Always `shared_branch`.",
+            "example": "shared_branch"
+          },
+          "cluster_id": {
+            "type": "string",
+            "description": "The library's cluster id.",
+            "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+          },
+          "node_id": {
+            "type": "string",
+            "description": "The node id the library minted for this install.",
+            "example": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
+          },
+          "library_name": {
+            "type": "string",
+            "description": "The library's name.",
+            "example": "books.example.com"
+          },
+          "database": {
+            "type": "string",
+            "description": "The database plugin this install now runs (`postgres` or `d1`).",
+            "example": "postgres"
+          },
+          "master_key_wrapped": {
+            "type": "boolean",
+            "description": "Whether the shared master key was wrapped with this install's password.",
+            "example": true
+          },
+          "restarting": {
+            "type": "boolean",
+            "description": "Always `true`: the daemon restarts as an owner node right after answering.",
+            "example": true
+          }
+        }
+      },
+      "SharedBranchesResponse": {
+        "type": "object",
+        "description": "`GET /api/config/shared-branches` body.",
+        "required": [
+          "node_id",
+          "nodes"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "Id of the node that answered.",
+            "example": "node-7f3a9c"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeView"
+            },
+            "description": "This node and the shared branches the caller may see."
+          }
+        }
+      },
       "SharingBody": {
         "type": "object",
         "description": "`POST /api/config/join/sharing` body: one library and the settings to\nchange for it.",
@@ -39573,9 +39573,9 @@
             "example": "study-mini",
             "nullable": true
           },
-          "clerk": {
+          "shared_branch": {
             "type": "boolean",
-            "description": "Offer to join as a clerk (an owner node that shares the library's\ndatabase): only an empty install may, and its data is replaced.",
+            "description": "Offer to join as a shared branch (an owner node that shares the library's\ndatabase): only an empty install may, and its data is replaced.",
             "example": false
           }
         },
@@ -39717,7 +39717,7 @@
             }
           }
         ],
-        "description": "A fresh second factor for a clerk consent. `Debug` prints no code."
+        "description": "A fresh second factor for a shared branch consent. `Debug` prints no code."
       },
       "StoreEdition": {
         "type": "object",
@@ -41818,7 +41818,7 @@
     },
     {
       "name": "Cluster",
-      "description": "Nodes, clerks, branches, joining a library and host enrollment."
+      "description": "Nodes, branches, joining a library and host enrollment."
     },
     {
       "name": "Accounts",

@@ -19,7 +19,7 @@ Bookclerk stores library state (accounts, books, portal, discovery) in a
 | Backend | When to use it |
 | --- | --- |
 | SQLite (`sqlite`, the default) | One server. A local file, `$BOOKCLERK_FILES_DIR/library.db` |
-| PostgreSQL (`postgres`) | A shared database, for example for [clerks](cluster-hosts.md#clerks) |
+| PostgreSQL (`postgres`) | A shared database, for example for [shared branches](cluster-hosts.md#shared-branches) |
 | Cloudflare D1 (`d1`) | Remote SQLite through the Cloudflare HTTP API |
 
 Which backend to open is **bootstrap** configuration: `[database]` and the
@@ -859,4 +859,4 @@ let plain = unseal_secret(&record)?;
 - [ADR: SQL database contract](../adr/sql-database-contract.md) and the
   [SQL-v1 contract](../plugins/sql-contract/v1.md): the SQL every adapter accepts.
 - [Libraries and branches](cluster-hosts.md): sharing one database between
-  clerks.
+  a library and its branches.

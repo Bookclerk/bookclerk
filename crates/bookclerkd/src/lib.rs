@@ -118,9 +118,9 @@ pub enum OpenApiVersion {
     V30,
 }
 
-/// How many more times the first start after a clerk join tries the
+/// How many more times the first start after a shared branch join tries the
 /// library's database before undoing the join.
-const CLERK_JOIN_OPEN_RETRIES: u32 = 3;
+const SHARED_BRANCH_JOIN_OPEN_RETRIES: u32 = 3;
 
 /// Runs the daemon behind its HTTP listeners until the process is asked to
 /// stop (Ctrl+C, SIGTERM) or to restart onto new bootstrap files.
@@ -132,7 +132,7 @@ const CLERK_JOIN_OPEN_RETRIES: u32 = 3;
 /// # Errors
 ///
 /// Returns an error when the configuration cannot be loaded, the host cannot
-/// start (the control plane, an interrupted clerk join, operator auth),
+/// start (the control plane, an interrupted shared branch join, operator auth),
 /// `daemon.listen` is invalid, or a restart cannot re-exec the binary.
 pub async fn run(args: Args) -> anyhow::Result<()> {
     if let Some(version) = args.print_openapi {
@@ -232,7 +232,7 @@ struct HostParts {
 ///
 /// # Errors
 ///
-/// Returns an error when the files directory cannot be prepared, a clerk join
+/// Returns an error when the files directory cannot be prepared, a shared branch join
 /// was interrupted or had to be undone, the control plane does not open,
 /// `daemon.listen` is invalid in [`HostMode::Listening`], or operator auth
 /// cannot be built.
@@ -240,25 +240,25 @@ async fn start_host(config: Config, mode: HostMode) -> anyhow::Result<HostParts>
     let paths = config.paths().clone();
     paths.ensure_dirs()?;
     // Before the node identity, master key or database is opened: a
-    // half-applied clerk join would pair a database with the wrong node
+    // half-applied shared branch join would pair a database with the wrong node
     // identity or key.
     if let Some(problem) =
-        bookclerk_node_client::interrupted_clerk_join(&paths.files_dir, &paths.config_file)
+        bookclerk_node_client::interrupted_shared_branch_join(&paths.files_dir, &paths.config_file)
     {
         anyhow::bail!(problem);
     }
-    // A clerk join applied before this start is confirmed once the
+    // A shared branch join applied before this start is confirmed once the
     // library's database opens, and undone if it does not; one whose undoing
     // was cut short is finished first.
     let mut pending_join =
-        bookclerk_node_client::pending_clerk_join(&paths.files_dir, &paths.config_file);
+        bookclerk_node_client::pending_shared_branch_join(&paths.files_dir, &paths.config_file);
     if let Some(join) = pending_join.take_if(|join| join.reverting()) {
         return match join.revert() {
             Ok(()) => Err(anyhow::anyhow!(
-                "finished undoing an earlier clerk join: this server's own settings, node identity and key are back; start it again to run on them"
+                "finished undoing an earlier shared branch join: this server's own settings, node identity and key are back; start it again to run on them"
             )),
             Err(failed) => Err(anyhow::anyhow!(
-                "could not finish undoing an earlier clerk join ({failed}); fix that and start again"
+                "could not finish undoing an earlier shared branch join ({failed}); fix that and start again"
             )),
         };
     }
@@ -274,12 +274,12 @@ async fn start_host(config: Config, mode: HostMode) -> anyhow::Result<HostParts>
             let opened = loop {
                 match bookclerk_plugin_host::open_host_control_plane(&config).await {
                     Ok(opened) => break Ok(opened),
-                    Err(err) if tries < CLERK_JOIN_OPEN_RETRIES => {
+                    Err(err) if tries < SHARED_BRANCH_JOIN_OPEN_RETRIES => {
                         tries += 1;
                         tracing::warn!(
                             attempt = tries,
                             error = %err,
-                            "the library's database did not open after joining as a clerk; trying again"
+                            "the library's database did not open after joining as a shared branch; trying again"
                         );
                         tokio::time::sleep(std::time::Duration::from_secs(5 * u64::from(tries)))
                             .await;
@@ -290,20 +290,22 @@ async fn start_host(config: Config, mode: HostMode) -> anyhow::Result<HostParts>
             match opened {
                 Ok(opened) => {
                     join.confirm();
-                    tracing::info!("the library's database opened; the clerk join is complete");
+                    tracing::info!(
+                        "the library's database opened; the shared branch join is complete"
+                    );
                     opened
                 }
                 Err(err) => {
-                    tracing::error!(error = %err, "the library's database did not open after joining as a clerk; undoing the join");
+                    tracing::error!(error = %err, "the library's database did not open after joining as a shared branch; undoing the join");
                     return Err(match join.revert() {
                         Ok(()) => anyhow::anyhow!(
-                            "the library's database did not open after joining as a clerk (see the log), so the join was undone: this server's own settings, node identity and key are back. Start it again to run on them, and have the clerk removed in the library's Settings, Clerks"
+                            "the library's database did not open after joining as a shared branch (see the log), so the join was undone: this server's own settings, node identity and key are back. Start it again to run on them, and have it removed in the library's Settings, Shared branches"
                         ),
                         Err(failed) if failed.started => anyhow::anyhow!(
-                            "the library's database did not open after joining as a clerk (see the log), and undoing the join stopped part way ({failed}); the next start finishes undoing it"
+                            "the library's database did not open after joining as a shared branch (see the log), and undoing the join stopped part way ({failed}); the next start finishes undoing it"
                         ),
                         Err(failed) => anyhow::anyhow!(
-                            "the library's database did not open after joining as a clerk (see the log), and the join could not be undone ({failed}); if it is left as it is, the next start tries the library's database again"
+                            "the library's database did not open after joining as a shared branch (see the log), and the join could not be undone ({failed}); if it is left as it is, the next start tries the library's database again"
                         ),
                     });
                 }
@@ -526,7 +528,7 @@ async fn serve_listeners(host: HostParts) -> anyhow::Result<()> {
     // Best-effort stop of integration watchers on process exit.
     state.integrations.read().await.stop_all().await;
     if restart::is_requested() {
-        // New bootstrap files (a clerk join): start again on them.
+        // New bootstrap files (a shared branch join): start again on them.
         restart::reexec()?;
     }
     Ok(())

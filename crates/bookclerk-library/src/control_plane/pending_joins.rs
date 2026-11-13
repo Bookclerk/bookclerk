@@ -62,9 +62,9 @@ pub struct NewPendingJoin {
     pub branch_name: String,
     /// Redirect URI of the authorization request.
     pub redirect_uri: String,
-    /// True when the operator offered to join as a clerk (the install was
-    /// empty); the callback may then apply a clerk bootstrap.
-    pub allow_clerk: bool,
+    /// True when the operator offered to join as a shared branch (the install was
+    /// empty); the callback may then apply a shared branch bootstrap.
+    pub allow_shared_branch: bool,
 }
 
 /// A pending join as stored (no secrets).
@@ -82,8 +82,8 @@ pub struct PendingJoin {
     pub branch_name: String,
     /// Redirect URI.
     pub redirect_uri: String,
-    /// True when the operator offered to join as a clerk.
-    pub allow_clerk: bool,
+    /// True when the operator offered to join as a shared branch.
+    pub allow_shared_branch: bool,
     /// RFC 3339 expiry.
     pub expires_at: String,
 }
@@ -97,7 +97,7 @@ impl From<pending_joins::Model> for PendingJoin {
             library_name: row.library_name,
             branch_name: row.branch_name,
             redirect_uri: row.redirect_uri,
-            allow_clerk: row.allow_clerk != 0,
+            allow_shared_branch: row.allow_shared_branch != 0,
             expires_at: row.expires_at,
         }
     }
@@ -230,7 +230,7 @@ pub async fn create_pending_join(
                 batch::exec(
                     "INSERT INTO pending_joins (\
                         state_hash, owner_origin, spki_pin, owner_cluster_id, library_name, \
-                        branch_name, redirect_uri, allow_clerk, created_at, expires_at\
+                        branch_name, redirect_uri, allow_shared_branch, created_at, expires_at\
                      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     vec![
                         batch::text(&state_hash),
@@ -240,7 +240,7 @@ pub async fn create_pending_join(
                         batch::text(join.library_name.trim()),
                         batch::text(join.branch_name.trim()),
                         batch::text(&join.redirect_uri),
-                        batch::int(i64::from(join.allow_clerk)),
+                        batch::int(i64::from(join.allow_shared_branch)),
                         batch::text(&stamp(now)),
                         batch::text(&stamp(now + ttl)),
                     ],
@@ -429,7 +429,7 @@ mod tests {
             library_name: "owner.example".into(),
             branch_name: "den".into(),
             redirect_uri: "http://localhost:8787/join/callback".into(),
-            allow_clerk: false,
+            allow_shared_branch: false,
         }
     }
 

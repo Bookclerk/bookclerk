@@ -351,7 +351,7 @@ pub fn wrap_master_key(files_dir: &Path, password: &str) -> Result<MasterKey> {
     configure_master_key_with(files_dir, Some(password))
 }
 
-/// Installs `dek` as `{files_dir}/master.key`: a clerk joining a library
+/// Installs `dek` as `{files_dir}/master.key`: a shared branch joining a library
 /// receives the library's DEK (sealed to its node key, never the
 /// passphrase-wrapped file) and keeps it under its own `password`.
 ///
@@ -410,7 +410,7 @@ pub fn warn_unwrapped_master_key(path: &Path) {
 /// The `master.key` file contents for `dek`: `BCK2` (Argon2id +
 /// XChaCha20-Poly1305) when `password` is set and non-empty after
 /// trimming, `BCK1` otherwise. A caller that stages the file itself (a
-/// clerk applying its bootstrap as one recoverable step) writes these
+/// shared branch applying its bootstrap as one recoverable step) writes these
 /// bytes with mode `0600`.
 ///
 /// # Errors
@@ -657,7 +657,7 @@ fn write_secret_file_create_new(path: &Path, bytes: &[u8]) -> std::io::Result<()
 }
 
 /// Atomic replace via temp file + [`bookclerk_config::replace_file`] (for
-/// BCK1→BCK2 re-wrap and a clerk's installed DEK). That replace overwrites
+/// BCK1→BCK2 re-wrap and a shared branch's installed DEK). That replace overwrites
 /// an existing `master.key` on Windows too, where a plain `rename` onto an
 /// existing file is not relied on; the `0600` temp file keeps its mode.
 fn write_secret_file_atomic(path: &Path, bytes: &[u8]) -> Result<()> {

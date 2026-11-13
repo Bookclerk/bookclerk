@@ -1575,7 +1575,7 @@ Options:
 - `--url <URL>`: The owner library's address (`https://library.example`)
 - `--name <NAME>`: The name the owner sees for this branch (default: host name)
 - `--fingerprint <FINGERPRINT>`: The library's certificate fingerprint as Settings → Branches shows it (a `sha256:` prefix is accepted), confirming a self-signed library without a prompt
-- `--as <JOIN_AS>`: How to join: `branch` (default; keeps this install's own database) or `clerk` (shares the library's database and key; only an empty install, and only when an Owner of the library chooses it after a fresh second factor) (one of `branch`, `clerk`)
+- `--as <JOIN_AS>`: How to join: `branch` (default; keeps this install's own database) or `shared_branch` (shares the library's database and key; only an empty install, and only when an Owner of the library chooses it after a fresh second factor) (one of `branch`, `shared-branch`)
 
 ### `bookclerk clusters leave`
 

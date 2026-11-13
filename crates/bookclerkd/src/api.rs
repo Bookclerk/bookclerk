@@ -1183,12 +1183,12 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
 
     // Node administration: operators see and edit every node; a user who
     // owns nodes (Host, Administrator, Owner) sees and edits only those. An
-    // Owner also sees and removes every owner node (the clerks).
+    // Owner also sees and removes every owner node (the shared branches).
     let node_admin = OpenApiRouter::new()
         .routes(routes!(crate::config_authority::get_nodes))
         .routes(routes!(crate::config_authority::delete_owner_node))
-        // Settings → Clerks: every owner node for the operator or an Owner.
-        .routes(routes!(crate::config_authority::get_clerks))
+        // Settings → Shared branches: every owner node for the operator or an Owner.
+        .routes(routes!(crate::config_authority::get_shared_branches))
         .routes(routes!(crate::config_authority::put_node_runtime))
         .routes(routes!(crate::config_authority::get_cluster_status));
 
@@ -1210,7 +1210,7 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
             crate::node_api::branch::get_branch_consent,
             crate::node_api::branch::post_branch_consent
         ))
-        // A clerk consent's fresh passkey step (an Owner with a passkey).
+        // A shared branch consent's fresh passkey step (an Owner with a passkey).
         .routes(routes!(
             crate::node_api::branch::post_branch_consent_step_up
         ))

@@ -1,5 +1,5 @@
-//! Joining as a clerk, owner side: the consent page offers the choice only
-//! to an Owner, clerk needs a shareable database and a fresh second factor,
+//! Joining as a shared branch, owner side: the consent page offers the choice only
+//! to an Owner, shared branch needs a shareable database and a fresh second factor,
 //! the code is bound to the connection type chosen, and the redeem answer's
 //! bootstrap opens only with the node's box key.
 
@@ -14,7 +14,8 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::{LibraryStore, UserRole};
 use bookclerk_node_proto::{
-    open_clerk_bootstrap, pkce_challenge, ClerkDatabase, BRANCH_CLIENT_ID, BRANCH_SCOPE,
+    open_shared_branch_bootstrap, pkce_challenge, SharedBranchDatabase, BRANCH_CLIENT_ID,
+    BRANCH_SCOPE,
 };
 use serde_json::{json, Value};
 
@@ -25,7 +26,7 @@ use crate::auth::UserCaller;
 /// Where the joining install wants the code.
 const REDIRECT: &str = "http://127.0.0.1:41234/join/callback";
 
-/// The library's database: PostgreSQL, so a clerk may share it.
+/// The library's database: PostgreSQL, so a shared branch may share it.
 pub(crate) const POSTGRES_CONFIG: &str =
     "[database]\nplugin = \"postgres\"\n\n[database.postgres]\nurl = \"postgres://lib:pg-secret@db.example/library\"\n";
 
@@ -57,7 +58,7 @@ fn verifier(tag: char) -> String {
     std::iter::repeat_n(tag, 48).collect()
 }
 
-/// The authorization request, offering a clerk when `offer`.
+/// The authorization request, offering a shared branch when `offer`.
 fn params(verifier: &str, offer: bool) -> Value {
     let mut body = json!({
         "client_id": BRANCH_CLIENT_ID,
@@ -70,7 +71,7 @@ fn params(verifier: &str, offer: bool) -> Value {
         "branch_name": "Spare NAS",
     });
     if offer {
-        body["clerk_offer"] = json!("1");
+        body["shared_branch_offer"] = json!("1");
     }
     body
 }
@@ -162,7 +163,7 @@ async fn audit_actions(store: &LibraryStore) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn an_owner_with_a_fresh_second_factor_lets_a_clerk_join_with_a_sealed_bootstrap() {
+async fn an_owner_with_a_fresh_second_factor_lets_a_shared_branch_join_with_a_sealed_bootstrap() {
     let _dek = crate::auth::tests::process_dek_lock().await;
     let files = tempfile::tempdir().unwrap();
     let (state, store) = super::super::tests::test_state_with(&files, POSTGRES_CONFIG).await;
@@ -189,39 +190,43 @@ async fn an_owner_with_a_fresh_second_factor_lets_a_clerk_join_with_a_sealed_boo
     assert_eq!(status, StatusCode::OK, "{view}");
     assert_eq!(view["connection"]["choice"], true);
     assert_eq!(view["connection"]["default"], "branch");
-    assert_eq!(view["connection"]["clerk_available"], true, "{view}");
+    assert_eq!(
+        view["connection"]["shared_branch_available"], true,
+        "{view}"
+    );
     assert_eq!(view["connection"]["step_up"], json!(["totp"]));
 
-    // Clerk needs the step-up, and a code that verifies.
-    let (status, answer) = consent(&app, &v, true, Some("clerk"), None).await;
+    // Shared branch needs the step-up, and a code that verifies.
+    let (status, answer) = consent(&app, &v, true, Some("shared_branch"), None).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
     assert_eq!(answer["error"], "step_up_required");
     let (status, answer) = consent(
         &app,
         &v,
         true,
-        Some("clerk"),
+        Some("shared_branch"),
         Some(json!({ "method": "totp", "code": "000000" })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
     assert_eq!(answer["error"], "step_up_failed");
-    let (status, answer) = consent(&app, &v, true, Some("clerk"), Some(totp(&secret))).await;
+    let (status, answer) =
+        consent(&app, &v, true, Some("shared_branch"), Some(totp(&secret))).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
     let pairs = callback(&answer);
-    assert_eq!(pairs["connection"], "clerk");
+    assert_eq!(pairs["connection"], "shared_branch");
     let code = pairs["code"].clone();
 
     let (status, headers, enrolled) = call(
         &app,
         "POST",
         "/api/node/v1/enroll/oauth",
-        Some(redeem(&code, &v, Some("clerk"))),
+        Some(redeem(&code, &v, Some("shared_branch"))),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{enrolled}");
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
-    assert_eq!(enrolled["connection"], "clerk");
+    assert_eq!(enrolled["connection"], "shared_branch");
     let node_id = enrolled["node_id"].as_str().unwrap().to_string();
     let cluster_id = enrolled["cluster_id"].as_str().unwrap().to_string();
     let sealed = enrolled["bootstrap"].as_str().unwrap().to_string();
@@ -238,23 +243,24 @@ async fn an_owner_with_a_fresh_second_factor_lets_a_clerk_join_with_a_sealed_boo
         .is_none());
 
     // Only the node's box key opens the bootstrap: the database and the DEK.
-    let opened = open_clerk_bootstrap(&NODE_BOX_SECRET, &cluster_id, &node_id, &sealed).unwrap();
+    let opened =
+        open_shared_branch_bootstrap(&NODE_BOX_SECRET, &cluster_id, &node_id, &sealed).unwrap();
     match &opened.database {
-        ClerkDatabase::Postgres { url } => {
+        SharedBranchDatabase::Postgres { url } => {
             assert_eq!(url.expose(), b"postgres://lib:pg-secret@db.example/library");
         }
         other => panic!("unexpected database {other:?}"),
     }
     let dek = bookclerk_library::require_master_key(Some(files.path())).unwrap();
     assert_eq!(opened.dek.expose(), dek.as_bytes());
-    assert!(open_clerk_bootstrap(&[12u8; 32], &cluster_id, &node_id, &sealed).is_err());
+    assert!(open_shared_branch_bootstrap(&[12u8; 32], &cluster_id, &node_id, &sealed).is_err());
 
     // A lost answer: the retry replays the same node with a fresh box.
     let (status, _, again) = call(
         &app,
         "POST",
         "/api/node/v1/enroll/oauth",
-        Some(redeem(&code, &v, Some("clerk"))),
+        Some(redeem(&code, &v, Some("shared_branch"))),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{again}");
@@ -271,9 +277,9 @@ async fn an_owner_with_a_fresh_second_factor_lets_a_clerk_join_with_a_sealed_boo
 
     let actions = audit_actions(&store).await;
     for action in [
-        "clerk_authorize",
-        "clerk_enrolled",
-        "clerk_authorize_refused",
+        "shared_branch_authorize",
+        "shared_branch_enrolled",
+        "shared_branch_authorize_refused",
     ] {
         assert!(actions.iter().any(|a| a == action), "{action}: {actions:?}");
     }
@@ -292,7 +298,7 @@ async fn a_code_is_bound_to_the_connection_type_chosen_at_consent() {
         assert!(body.get("bootstrap").is_none());
     };
 
-    // A branch approval redeemed as a clerk: refused, and the code is spent.
+    // A branch approval redeemed as a shared branch: refused, and the code is spent.
     let v = verifier('b');
     let (status, answer) = consent(&app, &v, true, None, None).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
@@ -304,7 +310,7 @@ async fn a_code_is_bound_to_the_connection_type_chosen_at_consent() {
             &app,
             "POST",
             "/api/node/v1/enroll/oauth",
-            Some(redeem(&branch_code, &v, Some("clerk"))),
+            Some(redeem(&branch_code, &v, Some("shared_branch"))),
         )
         .await,
     );
@@ -318,21 +324,22 @@ async fn a_code_is_bound_to_the_connection_type_chosen_at_consent() {
         .await,
     );
 
-    // A clerk approval redeemed as a branch: refused too.
-    let (status, answer) = consent(&app, &v, true, Some("clerk"), Some(totp(&secret))).await;
+    // A shared branch approval redeemed as a branch: refused too.
+    let (status, answer) =
+        consent(&app, &v, true, Some("shared_branch"), Some(totp(&secret))).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
-    let clerk_code = callback(&answer)["code"].clone();
+    let shared_branch_code = callback(&answer)["code"].clone();
     refused(
         call(
             &app,
             "POST",
             "/api/node/v1/enroll/oauth",
-            Some(redeem(&clerk_code, &v, None)),
+            Some(redeem(&shared_branch_code, &v, None)),
         )
         .await,
     );
 
-    // A branch redeemed as a branch, then retried as a clerk.
+    // A branch redeemed as a branch, then retried as a shared branch.
     let v = verifier('c');
     let (_, answer) = consent(&app, &v, true, Some("branch"), None).await;
     let code = callback(&answer)["code"].clone();
@@ -354,17 +361,17 @@ async fn a_code_is_bound_to_the_connection_type_chosen_at_consent() {
             &app,
             "POST",
             "/api/node/v1/enroll/oauth",
-            Some(redeem(&code, &v, Some("clerk"))),
+            Some(redeem(&code, &v, Some("shared_branch"))),
         )
         .await,
     );
 }
 
 /// A first redeem that fails after the owner has recorded the branch link
-/// and spent the code never lets a retry redeem that link as a clerk: the
+/// and spent the code never lets a retry redeem that link as a shared branch: the
 /// link's secret binds the kind approved at consent.
 #[tokio::test]
-async fn a_spent_branch_code_never_redeems_as_a_clerk() {
+async fn a_spent_branch_code_never_redeems_as_a_shared_branch() {
     let _dek = crate::auth::tests::process_dek_lock().await;
     let files = tempfile::tempdir().unwrap();
     let (state, store) = super::super::tests::test_state_with(&files, POSTGRES_CONFIG).await;
@@ -400,7 +407,7 @@ async fn a_spent_branch_code_never_redeems_as_a_clerk() {
         &app,
         "POST",
         "/api/node/v1/enroll/oauth",
-        Some(redeem(&code, &v, Some("clerk"))),
+        Some(redeem(&code, &v, Some("shared_branch"))),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -422,7 +429,7 @@ async fn a_spent_branch_code_never_redeems_as_a_clerk() {
 }
 
 #[tokio::test]
-async fn clerk_is_refused_to_non_owners_without_a_shareable_database_or_second_factor() {
+async fn shared_branch_is_refused_to_non_owners_without_a_shareable_database_or_second_factor() {
     let _dek = crate::auth::tests::process_dek_lock().await;
 
     // SQLite: shown disabled with the reason, and refused.
@@ -439,15 +446,16 @@ async fn clerk_is_refused_to_non_owners_without_a_shareable_database_or_second_f
     )
     .await;
     assert_eq!(view["connection"]["choice"], true);
-    assert_eq!(view["connection"]["clerk_available"], false);
+    assert_eq!(view["connection"]["shared_branch_available"], false);
     assert!(
-        view["connection"]["clerk_reason"]
+        view["connection"]["shared_branch_reason"]
             .as_str()
             .unwrap()
             .contains("SQLite"),
         "{view}"
     );
-    let (status, answer) = consent(&app, &v, true, Some("clerk"), Some(totp(&secret))).await;
+    let (status, answer) =
+        consent(&app, &v, true, Some("shared_branch"), Some(totp(&secret))).await;
     assert_eq!(status, StatusCode::CONFLICT, "{answer}");
     assert_eq!(answer["error"], "database_not_shareable");
 
@@ -456,7 +464,7 @@ async fn clerk_is_refused_to_non_owners_without_a_shareable_database_or_second_f
     let (state, store) = super::super::tests::test_state_with(&files, POSTGRES_CONFIG).await;
     let (owner, secret) = owner_with_totp(&store).await;
 
-    // Anyone but an Owner gets branch only: no choice, and clerk refused.
+    // Anyone but an Owner gets branch only: no choice, and shared branch refused.
     let member = store
         .create_user(UserRole::Administrator, Some("Riley"), None)
         .await
@@ -470,14 +478,21 @@ async fn clerk_is_refused_to_non_owners_without_a_shareable_database_or_second_f
     )
     .await;
     assert_eq!(view["connection"]["choice"], false, "{view}");
-    let (status, answer) = consent(&as_member, &v, true, Some("clerk"), Some(totp(&secret))).await;
+    let (status, answer) = consent(
+        &as_member,
+        &v,
+        true,
+        Some("shared_branch"),
+        Some(totp(&secret)),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
     assert_eq!(answer["error"], "owner_required");
     let (status, _, answer) =
         call(&as_member, "POST", "/api/auth/branch-consent/step-up", None).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
 
-    // The joining install did not offer a clerk (it is not empty).
+    // The joining install did not offer a shared branch (it is not empty).
     let app = routes(&state, UserCaller::User { user_id: owner }, LOOPBACK);
     let (_, _, view) = call(
         &app,
@@ -486,18 +501,23 @@ async fn clerk_is_refused_to_non_owners_without_a_shareable_database_or_second_f
         None,
     )
     .await;
-    assert_eq!(view["connection"]["clerk_available"], false, "{view}");
-    let (status, answer) = consent(&app, &v, false, Some("clerk"), Some(totp(&secret))).await;
+    assert_eq!(
+        view["connection"]["shared_branch_available"], false,
+        "{view}"
+    );
+    let (status, answer) =
+        consent(&app, &v, false, Some("shared_branch"), Some(totp(&secret))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
-    assert_eq!(answer["error"], "clerk_not_offered");
+    assert_eq!(answer["error"], "shared_branch_not_offered");
 
-    // Plain HTTP from the LAN: no clerk consent.
+    // Plain HTTP from the LAN: no shared branch consent.
     let lan = routes(
         &state,
         UserCaller::User { user_id: owner },
         ("192.168.1.20:5000", "0.0.0.0:8787"),
     );
-    let (status, answer) = consent(&lan, &v, true, Some("clerk"), Some(totp(&secret))).await;
+    let (status, answer) =
+        consent(&lan, &v, true, Some("shared_branch"), Some(totp(&secret))).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
     assert_eq!(answer["error"], "transport_insecure");
 
@@ -514,12 +534,12 @@ async fn clerk_is_refused_to_non_owners_without_a_shareable_database_or_second_f
         None,
     )
     .await;
-    assert_eq!(view["connection"]["clerk_available"], false);
-    assert!(view["connection"]["clerk_reason"]
+    assert_eq!(view["connection"]["shared_branch_available"], false);
+    assert!(view["connection"]["shared_branch_reason"]
         .as_str()
         .unwrap()
         .contains("second factor"));
-    let (status, answer) = consent(&as_bare, &v, true, Some("clerk"), None).await;
+    let (status, answer) = consent(&as_bare, &v, true, Some("shared_branch"), None).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
     assert_eq!(answer["error"], "step_up_unavailable");
     let (status, _, answer) =
@@ -528,7 +548,8 @@ async fn clerk_is_refused_to_non_owners_without_a_shareable_database_or_second_f
     assert_eq!(answer["error"], "no_passkey");
 
     // An Owner demoted between consent and redeem: refused at redeem.
-    let (status, answer) = consent(&app, &v, true, Some("clerk"), Some(totp(&secret))).await;
+    let (status, answer) =
+        consent(&app, &v, true, Some("shared_branch"), Some(totp(&secret))).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
     let code = callback(&answer)["code"].clone();
     store
@@ -539,18 +560,18 @@ async fn clerk_is_refused_to_non_owners_without_a_shareable_database_or_second_f
         &app,
         "POST",
         "/api/node/v1/enroll/oauth",
-        Some(redeem(&code, &v, Some("clerk"))),
+        Some(redeem(&code, &v, Some("shared_branch"))),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
     assert!(refused.get("bootstrap").is_none());
 }
 
-/// A D1 library is offered to clerks only on Cloudflare's own API origin:
-/// a clerk sends its D1 token nowhere else, so it would refuse anything
+/// A D1 library is offered to shared branches only on Cloudflare's own API origin:
+/// a shared branch sends its D1 token nowhere else, so it would refuse anything
 /// else after the library had already recorded its node.
 #[test]
-fn a_d1_library_off_cloudflare_is_not_offered_to_clerks() {
+fn a_d1_library_off_cloudflare_is_not_offered_to_shared_branches() {
     let d1 = |api_base: &str| {
         bookclerk_config::Config::from_toml_str(
             &format!(
@@ -562,7 +583,7 @@ fn a_d1_library_off_cloudflare_is_not_offered_to_clerks() {
     };
     assert!(matches!(
         super::shared_database(&d1("https://api.cloudflare.com/client/v4")),
-        Ok(ClerkDatabase::D1 { .. })
+        Ok(SharedBranchDatabase::D1 { .. })
     ));
     assert!(super::shared_database(&d1("https://d1-proxy.example/client/v4")).is_err());
 }

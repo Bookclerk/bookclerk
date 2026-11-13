@@ -13,7 +13,7 @@
 //!
 //! `join --url <owner>` joins by signing in to the owner library in a
 //! browser (an OAuth code with PKCE, sent back to a loopback listener this
-//! command opens). `--as clerk` offers to join as a clerk instead of a
+//! command opens). `--as shared-branch` offers to join as a shared branch instead of a
 //! branch (an owner node sharing the library's database; only an empty
 //! install, and only when the library's Owner chooses it). Without `--url`, `join` reads an enrollment link (a
 //! branch invite) from stdin or a prompt, never from argv: the link carries
@@ -46,8 +46,8 @@ const CLI_APPROVER: &str = "cli";
 pub enum JoinAs {
     /// A branch (host node) with its own database.
     Branch,
-    /// A clerk (owner node) sharing the library's database and key.
-    Clerk,
+    /// A shared branch (owner node) sharing the library's database and key.
+    SharedBranch,
 }
 
 #[derive(Debug, Subcommand)]
@@ -75,7 +75,7 @@ pub enum ClustersCommand {
         #[arg(long, requires = "url")]
         fingerprint: Option<String>,
         /// How to join: `branch` (default; keeps this install's own
-        /// database) or `clerk` (shares the library's database and key;
+        /// database) or `shared_branch` (shares the library's database and key;
         /// only an empty install, and only when an Owner of the library
         /// chooses it after a fresh second factor).
         #[arg(long = "as", value_enum, default_value_t = JoinAs::Branch)]
@@ -330,7 +330,7 @@ pub async fn run(
                 &url,
                 name.as_deref(),
                 fingerprint.as_deref(),
-                join_as == JoinAs::Clerk,
+                join_as == JoinAs::SharedBranch,
             )
             .await?;
             match joined {
@@ -344,14 +344,14 @@ pub async fn run(
                         );
                     },
                 ),
-                super::clusters_join::Joined::Clerk {
+                super::clusters_join::Joined::SharedBranch {
                     cluster_id,
                     node_id,
                     applied,
                 } => emit(
                     format,
                     &json!({
-                        "connection": "clerk",
+                        "connection": "shared_branch",
                         "cluster_id": cluster_id,
                         "node_id": node_id,
                         "database": applied.database.as_str(),
@@ -360,7 +360,7 @@ pub async fn run(
                     }),
                     || {
                         println!(
-                            "joined library {cluster_id} as clerk node {node_id} ({} database); restart bookclerkd to start as an owner node of the library",
+                            "joined library {cluster_id} as shared branch node {node_id} ({} database); restart bookclerkd to start as an owner node of the library",
                             applied.database.as_str()
                         );
                     },
@@ -370,8 +370,8 @@ pub async fn run(
         ClustersCommand::Join {
             url: None, join_as, ..
         } => {
-            if join_as == JoinAs::Clerk {
-                anyhow::bail!("a clerk joins with a sign-in: pass --url <library>");
+            if join_as == JoinAs::SharedBranch {
+                anyhow::bail!("a shared branch joins with a sign-in: pass --url <library>");
             }
             use secrecy::ExposeSecret as _;
             let link = read_link_from_stdin()?;
@@ -657,12 +657,12 @@ mod tests {
     }
 
     #[test]
-    fn join_is_a_branch_unless_asked_for_a_clerk() {
+    fn join_is_a_branch_unless_asked_for_a_shared_branch() {
         let url = ["join", "--url", "https://library.example"];
         assert_eq!(join_as(&url).unwrap(), JoinAs::Branch);
         assert_eq!(
-            join_as(&[&url[..], &["--as", "clerk"]].concat()).unwrap(),
-            JoinAs::Clerk
+            join_as(&[&url[..], &["--as", "shared_branch"]].concat()).unwrap(),
+            JoinAs::SharedBranch
         );
         assert_eq!(
             join_as(&[&url[..], &["--as", "branch"]].concat()).unwrap(),

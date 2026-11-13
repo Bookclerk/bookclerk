@@ -14,7 +14,6 @@ mod branch_requests;
 mod cache;
 mod carried_accounts;
 mod catalog_lookup;
-mod clerks;
 mod cluster_links;
 mod connections_request;
 mod cron_fires;
@@ -43,6 +42,7 @@ mod routing;
 mod schemas;
 mod secret;
 mod semaphore;
+mod shared_branches;
 mod template;
 mod trust;
 mod uploads;
@@ -91,7 +91,6 @@ pub use catalog_lookup::{
     AskReport, BranchListing, BranchOffer, BRANCH_LISTING_PREFIX, BRANCH_LISTING_TTL,
     LOOKUP_ANSWER_TTL, LOOKUP_RESEND,
 };
-pub use clerks::{library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents};
 pub use cluster_links::{
     decode_spki_pin, join_cycle, join_overflows_ancestry, leave_cluster_link, library_ancestry,
     list_cluster_links, load_cluster_link, load_cluster_link_keys, mark_cluster_link_revoked,
@@ -241,6 +240,9 @@ pub use semaphore::{
     acquire_permit, acquire_permits, live_permits, permits_held_by, release_permits,
     renew_fenced_lease, renew_permits, semaphore_slot_lease_name, PermitAcquire, SemaphorePermit,
     SemaphoreRequest, MAX_SEMAPHORE_LIMIT, SEMAPHORE_LEASE_PREFIX,
+};
+pub use shared_branches::{
+    library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents,
 };
 pub use template::{strip_install_state, TemplateStrip};
 pub use trust::{

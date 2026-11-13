@@ -264,7 +264,7 @@ pub struct OperatorAuthState {
     /// Sign-in throttle buckets: one per resolved client IP, plus per-account
     /// buckets such as `password:<user_id>` (password re-checks by a signed-in
     /// user: elevation, step-up re-auth, password change) and
-    /// `clerk-step-up:<user_id>` (clerk join step-up).
+    /// `shared-branch-step-up:<user_id>` (shared branch join step-up).
     login_attempts: Mutex<HashMap<String, LoginThrottleBucket>>,
 }
 

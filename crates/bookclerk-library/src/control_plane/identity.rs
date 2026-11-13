@@ -244,7 +244,7 @@ pub fn bind_cluster_id(files_dir: &Path, cluster_id: &str) -> Result<NodeIdentit
 }
 
 /// Writes the identity file for a node id the cluster already recorded,
-/// bound to `cluster_id`, replacing any file there atomically. A clerk
+/// bound to `cluster_id`, replacing any file there atomically. A shared branch
 /// joining a library takes the node id the library minted for it at
 /// redeem, so its first heartbeat lands on that `nodes` row.
 ///
@@ -257,14 +257,14 @@ pub fn install_node_identity(
     node_id: &str,
     cluster_id: &str,
 ) -> Result<NodeIdentity> {
-    let identity = clerk_identity_file(node_id, cluster_id)?;
+    let identity = shared_branch_identity_file(node_id, cluster_id)?;
     std::fs::create_dir_all(files_dir)?;
     write_identity_atomic(&node_identity_path(files_dir), &identity)?;
     Ok(public_identity(identity))
 }
 
 /// The [`NODE_IDENTITY_FILE`] contents [`install_node_identity`] writes, for
-/// a caller that stages the file itself (a clerk applying its bootstrap as
+/// a caller that stages the file itself (a shared branch applying its bootstrap as
 /// one recoverable step) with mode `0600`.
 ///
 /// # Errors
@@ -272,14 +272,14 @@ pub fn install_node_identity(
 /// Returns [`LibraryError::Invalid`] for a node id that is not a UUID or an
 /// empty cluster id, and the encode error.
 pub fn encode_node_identity_file(node_id: &str, cluster_id: &str) -> Result<Vec<u8>> {
-    let identity = clerk_identity_file(node_id, cluster_id)?;
+    let identity = shared_branch_identity_file(node_id, cluster_id)?;
     serde_json::to_vec_pretty(&identity)
         .map_err(|err| LibraryError::Other(anyhow::anyhow!("node identity encode: {err}")))
 }
 
 /// The identity file for a node id the cluster recorded, bound to
 /// `cluster_id`.
-fn clerk_identity_file(node_id: &str, cluster_id: &str) -> Result<IdentityFile> {
+fn shared_branch_identity_file(node_id: &str, cluster_id: &str) -> Result<IdentityFile> {
     if Uuid::parse_str(node_id).is_err() || cluster_id.trim().is_empty() {
         return Err(LibraryError::Invalid(
             "a node identity needs a UUID node id and a cluster id".into(),
