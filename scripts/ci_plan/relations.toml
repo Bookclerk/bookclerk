@@ -96,6 +96,8 @@ paths = [
     "fuzz/oracles/job_cap_request.rs",
     "fuzz/corpus/branch_request/**",
     "fuzz/oracles/branch_request.rs",
+    "fuzz/corpus/members_books_request/**",
+    "fuzz/oracles/members_books_request.rs",
     "fuzz/corpus/sharing_request/**",
     "fuzz/oracles/sharing_request.rs",
     "fuzz/corpus/connections_request/**",
@@ -376,6 +378,21 @@ paths = [
     "crates/bookclerk-library/src/control_plane/secret.rs",
     "crates/bookclerk-library/src/control_plane/tests.rs",
     "crates/bookclerk-config/src/atomic_replace.rs",
+]
+
+# The desktop window job: Clippy on `bookclerk-desktop --features window`
+# (Linux, with the WebKitGTK development files). It selects on these paths
+# only, not on every package the window links (that is most of the host),
+# so a pull request pays for it when it touches the window, its request
+# policy, or the embedded host it drives; the full suite (the merge queue
+# and `main`) always runs it and catches drift from the rest of the host.
+[desktop]
+paths = [
+    "crates/bookclerk-desktop/**",
+    "crates/bookclerk-window-policy/**",
+    "crates/bookclerkd/src/embedded.rs",
+    "crates/bookclerkd/src/lib.rs",
+    "crates/bookclerkd/Cargo.toml",
 ]
 
 # 1 vCPU / 1 GiB measurement. The ubuntu-latest VM builds the release

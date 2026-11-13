@@ -527,7 +527,9 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
         }
         let keys = store.acquired_book_keys_page(None, 100).await.unwrap();
         let key = keys.iter().find(|k| k.uuid == members.uuid).unwrap();
-        let asked = OwnerShareFilter::load(&store, "library-x").await.unwrap();
+        let asked = OwnerShareFilter::load(&store, "library-x", false)
+            .await
+            .unwrap();
         assert!(
             !asked.admits(key),
             "{name}: a member's book is not sent unasked"
@@ -548,7 +550,9 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
             1,
             "{name}"
         );
-        let asked = OwnerShareFilter::load(&store, "library-x").await.unwrap();
+        let asked = OwnerShareFilter::load(&store, "library-x", false)
+            .await
+            .unwrap();
         assert!(asked.admits(key), "{name}: sent to the library that asked");
         // Ordered by the request, so a book already past the sync's cursor
         // still goes up; asking again moves it later.
@@ -556,13 +560,15 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
         record_link_request(&store, "library-x", &found)
             .await
             .unwrap();
-        let again = OwnerShareFilter::load(&store, "library-x")
+        let again = OwnerShareFilter::load(&store, "library-x", false)
             .await
             .unwrap()
             .requested_at(key)
             .unwrap();
         assert!(again >= first, "{name}");
-        let other_library = OwnerShareFilter::load(&store, "library-y").await.unwrap();
+        let other_library = OwnerShareFilter::load(&store, "library-y", false)
+            .await
+            .unwrap();
         assert!(
             !other_library.admits(key),
             "{name}: not sent to another library"
@@ -573,7 +579,9 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
         crate::control_plane::set_catalog_listing_opt_out(&store, member.id, true)
             .await
             .unwrap();
-        let opted_out = OwnerShareFilter::load(&store, "library-x").await.unwrap();
+        let opted_out = OwnerShareFilter::load(&store, "library-x", false)
+            .await
+            .unwrap();
         assert!(!opted_out.admits(key), "{name}: not sent after an opt-out");
         crate::control_plane::set_catalog_listing_opt_out(&store, member.id, false)
             .await
@@ -584,10 +592,134 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
                 .unwrap(),
             "{name}"
         );
-        let members_off = OwnerShareFilter::load(&store, "library-x").await.unwrap();
+        let members_off = OwnerShareFilter::load(&store, "library-x", false)
+            .await
+            .unwrap();
         assert!(
             !members_off.admits(key),
             "{name}: not sent once members' books are off"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_library_that_acquires_all_members_books_is_sent_every_listed_one() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = store(profile).await;
+        let owner = store
+            .create_user(UserRole::Owner, Some("Owner"), None)
+            .await
+            .unwrap();
+        let member = store
+            .create_user(UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        let owners = hold(&store, owner.id, "owner-acct", "B0OWNBOOK1").await;
+        let members = hold(&store, member.id, "riley-acct", "B0MEMBOOK1").await;
+        // Books on an account linked to no one are never listed.
+        store
+            .upsert_account(PLUGIN, "nobody-acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let orphan = store
+            .upsert_book(&book("nobody-acct", "B0ORPHAN01"))
+            .await
+            .unwrap();
+        for (uuid, account) in [
+            (&owners.uuid, "owner-acct"),
+            (&members.uuid, "riley-acct"),
+            (&orphan.uuid, "nobody-acct"),
+        ] {
+            store
+                .set_acquire_status(uuid, account, AcquireStatus::Acquired, Some("b.m4b"), None)
+                .await
+                .unwrap();
+        }
+        crate::entities::cluster_links::ActiveModel {
+            owner_cluster_id: Set("library-x".into()),
+            owner_origin: Set("https://x.example".into()),
+            remote_node_id: Set("node-x".into()),
+            spki_pin: Set(None),
+            state: Set("active".into()),
+            enrolled_at: Set(Utc::now().to_rfc3339()),
+            share_books: Set(1),
+            include_branches: Set(0),
+            ancestry_json: Set("[]".into()),
+            work_for_members: Set(0),
+            keep_member_copies: Set(0),
+            max_jobs: Set(None),
+            list_members_books: Set(1),
+            person_user_id: Set(None),
+            download: Set(1),
+        }
+        .insert(store.db())
+        .await
+        .unwrap();
+        let keys = store.acquired_book_keys_page(None, 100).await.unwrap();
+        let key_of = |uuid: &str| keys.iter().find(|k| k.uuid == uuid).unwrap().clone();
+        let (owners, members, orphan) = (
+            key_of(&owners.uuid),
+            key_of(&members.uuid),
+            key_of(&orphan.uuid),
+        );
+
+        let off = OwnerShareFilter::load(&store, "library-x", false)
+            .await
+            .unwrap();
+        assert!(
+            !off.admits(&members),
+            "{name}: not sent while the library does not ask"
+        );
+        let on = OwnerShareFilter::load(&store, "library-x", true)
+            .await
+            .unwrap();
+        assert!(on.admits(&owners), "{name}");
+        assert!(
+            on.admits(&members),
+            "{name}: a listed member's book is sent"
+        );
+        assert!(
+            !on.admits(&orphan),
+            "{name}: an unlinked account's book is not"
+        );
+        assert!(
+            on.requested_at(&members).is_none(),
+            "{name}: ordered by its own change, not as a request"
+        );
+
+        // The listing rules decide: an opt-out, members' books off, or
+        // sharing off stop the member's books.
+        crate::control_plane::set_catalog_listing_opt_out(&store, member.id, true)
+            .await
+            .unwrap();
+        let opted_out = OwnerShareFilter::load(&store, "library-x", true)
+            .await
+            .unwrap();
+        assert!(!opted_out.admits(&members), "{name}: not after an opt-out");
+        assert!(opted_out.admits(&owners), "{name}");
+        crate::control_plane::set_catalog_listing_opt_out(&store, member.id, false)
+            .await
+            .unwrap();
+        crate::control_plane::set_cluster_link_listing(&store, "library-x", false)
+            .await
+            .unwrap();
+        let members_off = OwnerShareFilter::load(&store, "library-x", true)
+            .await
+            .unwrap();
+        assert!(
+            !members_off.admits(&members),
+            "{name}: not once members' books are off"
+        );
+        crate::control_plane::set_cluster_link_listing(&store, "library-x", true)
+            .await
+            .unwrap();
+        let other_library = OwnerShareFilter::load(&store, "library-y", true)
+            .await
+            .unwrap();
+        assert!(
+            !other_library.admits(&members),
+            "{name}: not to a library this branch has no link to"
         );
     }
 }

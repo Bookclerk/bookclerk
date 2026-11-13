@@ -106,9 +106,19 @@ operator, a household user, or a portal identity) has a **subject key**
    Each job reads the library once: the taste and the set of titles the
    library already holds (by ASIN, ISBN and store product id, used to keep
    owned titles out of the candidates and the feed) come from the same
-   read. A per-person taste profile stored between jobs, so a job no
-   longer reads the whole library at all, is planned with the book model's
-   step that retires the `books` table.
+   read. The read is one title per **work** the library holds, built from
+   holdings, listings, editions and works (a book held on two accounts or
+   from two stores counts once), so it never touches the `books` table.
+   Finished flags, ratings and tags come from each user's own state on the
+   work (`user_title_state`): a person's own books carry theirs, and
+   household books carry everyone's merged (finished when anyone finished
+   it, each rating the mean of those who gave one). A work a person
+   finished, rated or tagged counts as one of their own books, so a user
+   with no portal identity or linked store account still gets a taste of
+   their own once they have any. A portal visitor with no user has no
+   stored state. A per-person taste profile stored between
+   jobs, so a job no longer reads the whole library at all, is planned for
+   the rest of the book model's step 6.
 
    Both steps read through the database plugin's streamed result path
    ([SQL contract](../plugins/sql-contract/v1.md#streamed-results)), so a
@@ -506,10 +516,11 @@ reads the whole library and listening history, so doing it per request
 held the Discover gate and slowed every Wishlist load as libraries grew.
 
 1. A `discover_request_queue` job ranks every open entry against household
-   taste. It stores one row per entry in `discover_request_queue`: the
-   entry key (the work id every wish names), the `work_id`, the taste score, up to
-   six taste reasons and whether the library already holds the work. It
-   copies no title, cover or price: those stay with the wishes.
+   taste. It stores one row per entry in `discover_request_queue`, keyed by
+   the work every wish names: the taste score, up to six taste reasons and
+   whether the library already holds the work (an account or a branch holds
+   a listing of one of its editions). It copies no title, cover or price:
+   those stay with the wishes.
 2. Discover's consumer (see [Taste events](#taste-events)) queues the job
    on every `wishlist_changed`, `book_acquired` and `listening_synced`,
    after the same 30-second debounce. The queue is not personalized, so one
@@ -525,9 +536,8 @@ held the Discover gate and slowed every Wishlist load as libraries grew.
    covers taste changes no event announces, such as a removed book.
 
 > [!NOTE]
-> The entry key changes when wishes are keyed by work and edition rather
-> than by `work_key`. Store titles and prices for the queue move to the
-> shared store listing pool, not to this table.
+> Store titles and prices for the queue live in the shared store listing
+> pool, not in this table.
 
 ## Configuration
 

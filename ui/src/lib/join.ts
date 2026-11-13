@@ -230,6 +230,8 @@ export interface BranchRowView {
   share_books: boolean | null;
   /** As the branch last reported it; `null` before its first sync. */
   include_branches: boolean | null;
+  /** This library's "Acquire all of this branch's members' books". */
+  acquire_members_books?: boolean;
   titles: BranchTitleCounts;
 }
 
@@ -830,6 +832,25 @@ export function removeBranchTitles(nodeId?: string): Promise<{ removed: number }
   return request("/api/config/branches/titles/remove", {
     method: "POST",
     body: nodeId ? { node_id: nodeId } : {},
+  });
+}
+
+/**
+ * Turns this library's "Acquire all of this branch's members' books" on or
+ * off for one branch. While on, the branch also sends the books its members
+ * acquired that it lists here, not only its owner's.
+ *
+ * @param nodeId - The branch.
+ * @param acquire - The new value.
+ * @returns The stored value.
+ */
+export function putBranchMembersBooks(
+  nodeId: string,
+  acquire: boolean,
+): Promise<{ node_id: string; acquire_members_books: boolean }> {
+  return request("/api/config/branches/members-books", {
+    method: "PUT",
+    body: { node_id: nodeId, acquire },
   });
 }
 

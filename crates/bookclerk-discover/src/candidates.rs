@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use bookclerk_library::{BookRecord, LibraryStore};
+use bookclerk_library::{LibraryStore, TasteTitle};
 use bookclerk_source::{CatalogHit, ExpandSeed, SourceRegistry};
 
 use crate::error::Result;
@@ -170,7 +170,7 @@ impl Default for CandidateFetchOptions {
 pub async fn gather_storefront_candidates(
     _library: &LibraryStore,
     registry: &SourceRegistry,
-    seeds: &[BookRecord],
+    seeds: &[TasteTitle],
     owned_asins: &HashSet<String>,
     owned_isbns: &HashSet<String>,
     owned_product_keys: &HashSet<String>,
@@ -179,7 +179,7 @@ pub async fn gather_storefront_candidates(
     let mut by_key: HashMap<String, StorefrontCandidate> = HashMap::new();
     let mut remote_calls = 0usize;
 
-    let seeds: Vec<&BookRecord> = seeds.iter().take(opts.seed_limit).collect();
+    let seeds: Vec<&TasteTitle> = seeds.iter().take(opts.seed_limit).collect();
 
     for seed in &seeds {
         if remote_calls >= opts.max_remote_calls {
@@ -193,7 +193,7 @@ pub async fn gather_storefront_candidates(
             authors: seed.authors.clone(),
             narrators: seed.narrators.clone(),
             series: seed.series.clone(),
-            series_asin: seed.series_asin.clone(),
+            series_asin: seed.series_store_id.clone(),
             asin: seed.asin.clone(),
             isbn: seed.isbn.clone(),
             region: opts.region.clone(),
@@ -349,7 +349,7 @@ pub struct SeedTitle {
 impl SeedTitle {
     /// A seed from a library book.
     #[must_use]
-    pub fn from_book(book: &BookRecord, region: &str) -> Self {
+    pub fn from_book(book: &TasteTitle, region: &str) -> Self {
         Self {
             seed: ExpandSeed {
                 source: book.source.clone(),
@@ -358,7 +358,7 @@ impl SeedTitle {
                 authors: book.authors.clone(),
                 narrators: book.narrators.clone(),
                 series: book.series.clone(),
-                series_asin: book.series_asin.clone(),
+                series_asin: book.series_store_id.clone(),
                 asin: book.asin.clone(),
                 isbn: book.isbn.clone(),
                 region: region.to_string(),
@@ -414,7 +414,7 @@ pub(crate) fn apply_seed_title(
 }
 
 /// Copies seed title/categories onto a candidate when those fields are still empty.
-fn apply_seed(mut c: StorefrontCandidate, seed: &BookRecord) -> StorefrontCandidate {
+fn apply_seed(mut c: StorefrontCandidate, seed: &TasteTitle) -> StorefrontCandidate {
     if c.seed_title.is_none() {
         c.seed_title = Some(seed.title.clone());
     }
@@ -631,22 +631,19 @@ fn languages_differ(a: Option<&str>, b: Option<&str>) -> bool {
 /// Collected results (may be empty).
 #[must_use]
 pub fn select_taste_seeds(
-    books: &[BookRecord],
+    books: &[TasteTitle],
     listening_engagement_by_uuid: &HashMap<String, f64>,
-) -> Vec<BookRecord> {
-    let mut scored: Vec<(i32, &BookRecord)> = books
+) -> Vec<TasteTitle> {
+    let mut scored: Vec<(i32, &TasteTitle)> = books
         .iter()
         // Podcasts are out of v1 Discover (no expand / suggestion seeds).
-        .filter(|b| {
-            !bookclerk_library::is_podcast_parent(&b.content_kind)
-                && !bookclerk_library::is_episode(&b.content_kind)
-        })
+        .filter(|b| !b.is_podcast)
         .map(|b| {
             let mut s = 0;
             if b.is_finished {
                 s += 50;
             }
-            if let Some(w) = listening_engagement_by_uuid.get(&b.uuid) {
+            if let Some(w) = listening_engagement_by_uuid.get(&b.work_id) {
                 // Continuous hours-weighted engagement → up to ~+40 seed priority.
                 s += ((*w / 6.0) * 40.0).round() as i32;
             }
@@ -667,7 +664,7 @@ pub fn select_taste_seeds(
             if b.source == "chirp" || b.source == "graphicaudio" {
                 s += 8;
             }
-            if b.series_asin.is_some() {
+            if b.series_store_id.is_some() {
                 s += 6;
             }
             if b.series.is_some() {

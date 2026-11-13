@@ -527,13 +527,20 @@ fn table_names_from_statements(stmts: &[String]) -> Vec<String> {
 /// `bookclerk_schema_migrations` ledger created before any plan step.
 #[must_use]
 pub fn host_sql_type_env() -> bookclerk_plugin_abi::SqlTypeEnv {
-    // The ledger table is created before any plan step and is not part of
-    // [`current_canonical_statements`]. Later statements (the unreleased marker
-    // and reads of that table) still have to typecheck against it.
-    bookclerk_plugin_abi::sql_type_env_from_canonical_statements(
-        std::iter::once(SCHEMA_MIGRATIONS_DDL)
-            .chain(current_canonical_statements().iter().map(String::as_str)),
-    )
+    // Every host write stamps its batch against this environment, so it is
+    // parsed once per process and cloned: the statements it comes from are
+    // themselves fixed for the life of the binary.
+    static ENV: OnceLock<bookclerk_plugin_abi::SqlTypeEnv> = OnceLock::new();
+    ENV.get_or_init(|| {
+        // The ledger table is created before any plan step and is not part of
+        // [`current_canonical_statements`]. Later statements (the unreleased
+        // marker and reads of that table) still have to typecheck against it.
+        bookclerk_plugin_abi::sql_type_env_from_canonical_statements(
+            std::iter::once(SCHEMA_MIGRATIONS_DDL)
+                .chain(current_canonical_statements().iter().map(String::as_str)),
+        )
+    })
+    .clone()
 }
 
 /// Frozen host migration steps. Empty until a release cut copies

@@ -229,7 +229,7 @@ async fn a_branch_takes_its_librarys_request_for_a_members_book() {
     .unwrap();
     let keys = b.acquired_book_keys_page(None, 100).await.unwrap();
     let key = keys.iter().find(|k| k.uuid == sams.uuid).unwrap();
-    assert!(OwnerShareFilter::load(&b, &link.owner_cluster_id)
+    assert!(OwnerShareFilter::load(&b, &link.owner_cluster_id, false)
         .await
         .unwrap()
         .admits(key));

@@ -202,7 +202,7 @@ async fn idempotent_create_action(
     ) {
         return Ok(action.clone());
     }
-    let physical = load_physical_sql_type_env(txn).await?;
+    let physical = load_physical_table_env(txn, &schema.table).await?;
     if let Some(columns) = physical.table_columns(&schema.table) {
         if !physical_columns_match(&schema.columns, columns) {
             return Err(DbErr::Custom(format!(
@@ -397,12 +397,51 @@ async fn load_sql_type_env_paged(
 ///
 /// Returns [`DbErr`] when the physical catalog query fails.
 pub async fn load_physical_sql_type_env(conn: &impl ConnectionTrait) -> Result<SqlTypeEnv, DbErr> {
+    load_physical_env(conn, None).await
+}
+
+/// [`load_physical_sql_type_env`] narrowed to the one live table named
+/// `table` (matched without regard to case, as the full snapshot keys it).
+///
+/// A schema walk checks each `CREATE TABLE IF NOT EXISTS` against the table
+/// it names; reading and parsing every table's DDL for each of them made a
+/// fresh schema apply quadratic in the number of tables.
+///
+/// # Arguments
+///
+/// * `conn` - the connection or transaction the snapshot is read on.
+/// * `table` - the table whose physical columns are wanted.
+///
+/// # Returns
+///
+/// An environment holding at most `table`, with the same columns the full
+/// snapshot would hold for it; empty when no such live table exists.
+///
+/// # Errors
+///
+/// Returns [`DbErr`] when the physical catalog query fails.
+async fn load_physical_table_env(
+    conn: &impl ConnectionTrait,
+    table: &str,
+) -> Result<SqlTypeEnv, DbErr> {
+    load_physical_env(conn, Some(table)).await
+}
+
+/// Reads the live physical tables, or only the one named `only`.
+///
+/// # Errors
+///
+/// Returns [`DbErr`] when the physical catalog query fails.
+async fn load_physical_env(
+    conn: &impl ConnectionTrait,
+    only: Option<&str>,
+) -> Result<SqlTypeEnv, DbErr> {
     let _guard = suspend_execute_row_cap();
     let backend = conn.get_database_backend();
     if backend == sea_orm::DatabaseBackend::Postgres {
-        load_physical_postgres(conn, backend).await
+        load_physical_postgres(conn, backend, only).await
     } else {
-        load_physical_sqlite(conn, backend).await
+        load_physical_sqlite(conn, backend, only).await
     }
 }
 
@@ -439,15 +478,19 @@ async fn catalog_env_for_typed(
 async fn load_physical_sqlite(
     conn: &impl ConnectionTrait,
     backend: sea_orm::DatabaseBackend,
+    only: Option<&str>,
 ) -> Result<SqlTypeEnv, DbErr> {
-    let rows = conn
-        .query_all_raw(Statement::from_string(
+    const ALL: &str = "SELECT name, sql FROM sqlite_master WHERE type = 'table' \
+                       AND name NOT LIKE 'sqlite_%'";
+    let statement = match only {
+        None => Statement::from_string(backend, ALL.to_string()),
+        Some(table) => Statement::from_sql_and_values(
             backend,
-            "SELECT name, sql FROM sqlite_master WHERE type = 'table' \
-             AND name NOT LIKE 'sqlite_%'"
-                .to_string(),
-        ))
-        .await?;
+            format!("{ALL} AND lower(name) = lower(?)"),
+            [SeaValue::from(table.to_string())],
+        ),
+    };
+    let rows = conn.query_all_raw(statement).await?;
     let mut env = SqlTypeEnv::new();
     for row in rows {
         let name = query_result_text(&row, "name");
@@ -531,19 +574,26 @@ fn declared_sql_type(ty: &str) -> Option<SqlType> {
 async fn load_physical_postgres(
     conn: &impl ConnectionTrait,
     backend: sea_orm::DatabaseBackend,
+    only: Option<&str>,
 ) -> Result<SqlTypeEnv, DbErr> {
-    let sql = "SELECT c.relname::text AS table_name, a.attname::text AS column_name, \
-               t.typname::text AS data_type \
-               FROM pg_catalog.pg_class c \
-               JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-               JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid \
-               JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
-               WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') \
-               AND a.attnum > 0 AND NOT a.attisdropped \
-               ORDER BY c.relname, a.attnum";
-    let rows = conn
-        .query_all_raw(Statement::from_string(backend, sql.to_string()))
-        .await?;
+    const SELECT: &str = "SELECT c.relname::text AS table_name, a.attname::text AS column_name, \
+                          t.typname::text AS data_type \
+                          FROM pg_catalog.pg_class c \
+                          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                          JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid \
+                          JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+                          WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') \
+                          AND a.attnum > 0 AND NOT a.attisdropped";
+    const ORDER: &str = "ORDER BY c.relname, a.attnum";
+    let statement = match only {
+        None => Statement::from_string(backend, format!("{SELECT} {ORDER}")),
+        Some(table) => Statement::from_sql_and_values(
+            backend,
+            format!("{SELECT} AND lower(c.relname::text) = lower($1) {ORDER}"),
+            [SeaValue::from(table.to_string())],
+        ),
+    };
+    let rows = conn.query_all_raw(statement).await?;
     let mut env = SqlTypeEnv::new();
     for row in rows {
         let table = query_result_text(&row, "table_name");

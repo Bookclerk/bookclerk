@@ -742,6 +742,94 @@ pub struct WorkRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A storefront account that holds a work, as a [`TasteTitle`] lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TasteHolder {
+    /// The account's plugin key.
+    pub plugin_key: String,
+    /// The account id at that plugin.
+    pub account_id: String,
+    /// The account's storefront id (`accounts.source`), lowercase.
+    pub source: String,
+}
+
+/// One work the library holds, as Discover reads it for taste and seeds.
+///
+/// Bibliographic fields come from the work (credits, series, subjects,
+/// description) and from a representative edition and store listing: one
+/// whose edition has files, else the most recently bought. The person's
+/// fields (`is_finished`, ratings, `tags`) start empty and are filled from
+/// `user_title_state` for whichever people the reader asks about.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TasteTitle {
+    /// The work (`works.id`); the title's identity.
+    pub work_id: String,
+    /// The representative edition (`editions.id`).
+    pub edition_id: String,
+    /// Plugin key of the representative listing's store.
+    pub plugin_key: String,
+    /// Storefront id of that store (an account's `source`), lowercase.
+    pub source: String,
+    /// The representative listing's product id at its store.
+    pub product_id: String,
+    /// The representative listing's stored marketplace.
+    pub marketplace: String,
+    /// The representative edition's ASIN, when it has one.
+    pub asin: Option<String>,
+    /// The representative edition's ISBN, when it has one.
+    pub isbn: Option<String>,
+    /// The work's title.
+    pub title: String,
+    /// The edition's subtitle, when known.
+    pub subtitle: Option<String>,
+    /// Names credited on the work (authors first), comma-separated.
+    pub authors: Option<String>,
+    /// Narrators credited on the work's expressions, comma-separated.
+    pub narrators: Option<String>,
+    /// The first series the work belongs to.
+    pub series: Option<String>,
+    /// The work's position in that series as printed (`"3"`, `"2.5"`).
+    pub series_index: Option<String>,
+    /// The representative store's own id for the series, when it gave one.
+    pub series_store_id: Option<String>,
+    /// The edition's first credited publisher.
+    pub publisher: Option<String>,
+    /// Store categories (serialized), from the listing or the work.
+    pub categories: Option<String>,
+    /// Subject tags of the work (serialized), when enriched.
+    pub subjects: Option<String>,
+    /// The work's synopsis (may contain HTML).
+    pub description: Option<String>,
+    /// The expression's language, when known.
+    pub language: Option<String>,
+    /// Cover art URL of the edition, else of the work.
+    pub cover_url: Option<String>,
+    /// The edition's running time in minutes, when known.
+    pub length_minutes: Option<i64>,
+    /// The edition's publication date as given, when known.
+    pub published_at: Option<String>,
+    /// Whether the expression is abridged.
+    pub is_abridged: bool,
+    /// Whether the work is a podcast show or episode.
+    pub is_podcast: bool,
+    /// The newest purchase date of the representative listing's holders.
+    pub purchased_at: Option<DateTime<Utc>>,
+    /// Whether the representative edition has files at a destination.
+    pub acquired: bool,
+    /// The accounts that hold any edition of the work, by plugin and id.
+    pub holders: Vec<TasteHolder>,
+    /// Whether the people asked about finished the work.
+    pub is_finished: bool,
+    /// Their mean overall rating (0 to 5), when any gave one.
+    pub rating_overall: Option<f32>,
+    /// Their mean narration rating (0 to 5), when any gave one.
+    pub rating_performance: Option<f32>,
+    /// Their mean story rating (0 to 5), when any gave one.
+    pub rating_story: Option<f32>,
+    /// Their tags, space-separated, each once.
+    pub tags: Option<String>,
+}
+
 /// One user's own state for one work (`user_title_state`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserTitleState {

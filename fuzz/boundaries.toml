@@ -238,6 +238,13 @@ input_from = "signed-in user"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.members_books_request]
+crate = "bookclerk-library"
+boundary = "A library operator's \"Acquire all of this branch's members' books\" choice, from PUT /api/config/branches/members-books"
+input_from = "Owner or operator"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.connections_request]
 crate = "bookclerk-library"
 boundary = "A branch Owner's store connections to add to one library, or one to disconnect, from POST /api/config/join/connections and POST /api/config/join/connections/disconnect"

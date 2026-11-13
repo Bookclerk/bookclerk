@@ -1227,6 +1227,7 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
             crate::node_api::branch::put_branches
         ))
         .routes(routes!(crate::node_api::branch::post_remove_branch_titles))
+        .routes(routes!(crate::node_api::branch::put_branch_members_books))
         // Settings → Library's two sharing settings on a branch (operator
         // or Owner; the handler checks).
         .routes(routes!(
