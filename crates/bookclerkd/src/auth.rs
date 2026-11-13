@@ -1294,6 +1294,7 @@ pub(crate) fn too_many_requests(retry_after: Duration) -> Response {
     path = "/api/auth/logout",
     responses(
         (status = 200, description = "Signed out; both session cookies are cleared.", body = OkResponse),
+        (status = 503, description = "A library card's session could not be ended (`sign_out_failed`); the card is still signed in, so try again. Clearing cookies does not end a card.", body = crate::http_error::ErrorJson),
     ),
 )]
 pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
@@ -1319,7 +1320,16 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
                     .await;
             }
             Ok(false) => {}
-            Err(err) => tracing::warn!(error = %err, "failed to end a client session"),
+            Err(err) => {
+                // Unlike a browser, whose cookies are cleared below, a card
+                // stays signed in until its row is gone: say so.
+                tracing::warn!(error = %err, "failed to end a client session");
+                return json_auth_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "sign_out_failed",
+                    "The library card could not be signed out. Try again.",
+                );
+            }
         }
     }
     let flags = {

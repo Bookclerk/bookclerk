@@ -71,6 +71,10 @@ describe("approve return", () => {
     expect(takeApproveReturn()).toBeNull();
     rememberApproveReturn("/join/approve?client_id=bookclerk-branch");
     expect(takeApproveReturn()).toBe("/join/approve?client_id=bookclerk-branch");
+    rememberApproveReturn("/client/approve/?client_id=bookclerk-client");
+    expect(takeApproveReturn()).toBe("/client/approve/?client_id=bookclerk-client");
+    rememberApproveReturn("/client/approver?client_id=bookclerk-client");
+    expect(takeApproveReturn()).toBeNull();
     rememberApproveReturn("/settings?x=1");
     expect(takeApproveReturn()).toBeNull();
   });

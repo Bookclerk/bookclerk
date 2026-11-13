@@ -448,6 +448,9 @@ pub async fn post_client_token(State(state): State<Arc<AppState>>, request: Requ
             .await;
         return token_error(StatusCode::FORBIDDEN, "sign_in_refused");
     };
+    // Registered only once it has proven itself, so a stranger's guesses
+    // never grow the redaction registry.
+    bookclerk_config::register_secret(verifier);
     let user = match library.get_user(user_id).await {
         Ok(Some(user)) if user.status == bookclerk_library::UserStatus::Active => user,
         Ok(_) => return token_error(StatusCode::FORBIDDEN, "sign_in_refused"),

@@ -198,7 +198,9 @@ The client app then sends `Authorization: Bookclerk-Client <token>`:
   card.
 - Each use keeps it signed in for another 90 days. Sign-out
   (`POST /api/auth/logout`) ends it, and so does **Revoke** in the
-  person's sessions or disabling the user.
+  person's sessions or disabling the user. When the library can't end the
+  card's session, sign-out answers 503 `sign_out_failed` and the card stays
+  signed in.
 - It belongs to the sign-in that approved it, so it is listed and revoked
   beside that browser session, including a sign-in through an integration
   such as Audiobookshelf.

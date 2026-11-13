@@ -1260,15 +1260,14 @@ export function rememberApproveReturn(location: string): void {
 /**
  * Takes the remembered consent page address once, if it is one.
  *
- * @returns `/join/approve?…` or `/client/approve?…`, or `null`.
+ * @returns `/join/approve?…` or `/client/approve?…` (with or without a
+ *   slash before the query, as {@link joinPage} accepts both), or `null`.
  */
 export function takeApproveReturn(): string | null {
   try {
     const value = sessionStorage.getItem(APPROVE_RETURN);
     sessionStorage.removeItem(APPROVE_RETURN);
-    return value && (value.startsWith("/join/approve?") || value.startsWith("/client/approve?"))
-      ? value
-      : null;
+    return value && /^\/(?:join|client)\/approve\/?\?/.test(value) ? value : null;
   } catch {
     return null;
   }

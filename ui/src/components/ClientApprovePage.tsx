@@ -69,11 +69,24 @@ export function ClientApprovePage({ onSignOut }: ClientApprovePageProps) {
     }
   }
 
+  /** Signs out with every control disabled, so Allow can't race it. */
+  async function signOut() {
+    setBusy(true);
+    setError(null);
+    try {
+      await onSignOut();
+    } catch (err) {
+      setError(joinErrorMessage(err, "Could not sign out."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!view) {
     return (
       <JoinShell title="Library card" lead={error ?? "Loading the request…"}>
         {error ? (
-          <Button type="button" variant="ghost" onClick={() => void onSignOut()}>
+          <Button type="button" variant="ghost" onClick={() => void signOut()}>
             Sign in with another account
           </Button>
         ) : null}
@@ -122,7 +135,7 @@ export function ClientApprovePage({ onSignOut }: ClientApprovePageProps) {
         >
           Deny
         </Button>
-        <Button type="button" variant="ghost" disabled={busy} onClick={() => void onSignOut()}>
+        <Button type="button" variant="ghost" disabled={busy} onClick={() => void signOut()}>
           Not you? Sign out
         </Button>
       </div>

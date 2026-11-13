@@ -13133,7 +13133,7 @@
             }
           },
           "400": {
-            "description": "The body or its authorize parameters are invalid (`invalid_request`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "The body or its authorize parameters are invalid (`invalid_request`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -13162,12 +13162,6 @@
                     }
                   }
                 }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -13261,7 +13255,7 @@
             }
           },
           "415": {
-            "description": "The request is not `application/json`. As `text/plain`, when the request did not declare a JSON body.",
+            "description": "The request is not `application/json`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13270,23 +13264,6 @@
                 "example": {
                   "error": "expected application/json"
                 }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Expected request with `Content-Type: application/json`"
-              }
-            }
-          },
-          "422": {
-            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to deserialize the JSON body into the target type: invalid type: null, expected a map at line 1 column 4"
               }
             }
           },
@@ -15408,18 +15385,34 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "mfa_enrollment_required": {
                     "summary": "The user must enroll a second factor first",
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -15541,18 +15534,34 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "mfa_enrollment_required": {
                     "summary": "The user must enroll a second factor first",
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -15690,18 +15699,34 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "mfa_enrollment_required": {
                     "summary": "The user must enroll a second factor first",
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -15837,18 +15862,34 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "mfa_enrollment_required": {
                     "summary": "The user must enroll a second factor first",
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -15980,18 +16021,34 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "mfa_enrollment_required": {
                     "summary": "The user must enroll a second factor first",
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -16123,18 +16180,34 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "mfa_enrollment_required": {
                     "summary": "The user must enroll a second factor first",
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -16266,18 +16339,34 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "mfa_enrollment_required": {
                     "summary": "The user must enroll a second factor first",
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -16390,18 +16479,34 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "mfa_enrollment_required": {
                     "summary": "The user must enroll a second factor first",
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -16504,13 +16609,21 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "forbidden": {
                     "summary": "The caller may not do this",
                     "value": {
@@ -16524,6 +16637,14 @@
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -16638,18 +16759,34 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "mfa_enrollment_required": {
                     "summary": "The user must enroll a second factor first",
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -16786,13 +16923,21 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "forbidden": {
                     "summary": "The caller may not do this",
                     "value": {
@@ -16806,6 +16951,14 @@
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -16953,13 +17106,21 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "forbidden": {
                     "summary": "The caller may not do this",
                     "value": {
@@ -16973,6 +17134,14 @@
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -17308,18 +17477,34 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "mfa_enrollment_required": {
                     "summary": "The user must enroll a second factor first",
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -17452,13 +17637,21 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "forbidden": {
                     "summary": "The caller may not do this",
                     "value": {
@@ -17472,6 +17665,14 @@
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -17619,13 +17820,21 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "forbidden": {
                     "summary": "The caller may not do this",
                     "value": {
@@ -17639,6 +17848,14 @@
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -17786,13 +18003,21 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "forbidden": {
                     "summary": "The caller may not do this",
                     "value": {
@@ -17806,6 +18031,14 @@
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -17926,18 +18159,34 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "mfa_enrollment_required": {
                     "summary": "The user must enroll a second factor first",
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -18072,13 +18321,21 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "forbidden": {
                     "summary": "The caller may not do this",
                     "value": {
@@ -18092,6 +18349,14 @@
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -18242,7 +18507,7 @@
             }
           },
           "403": {
-            "description": "The request belongs to someone else. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The request belongs to someone else. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -18255,6 +18520,14 @@
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "forbidden": {
                     "summary": "The caller may not do this",
                     "value": {
@@ -18268,6 +18541,14 @@
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -18389,18 +18670,34 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "mfa_enrollment_required": {
                     "summary": "The user must enroll a second factor first",
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -18538,13 +18835,21 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "forbidden": {
                     "summary": "The caller may not do this",
                     "value": {
@@ -18558,6 +18863,14 @@
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -18683,40 +18996,51 @@
             }
           },
           "403": {
-            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
           },
           "503": {
-            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "format": "int64",
-                  "minimum": 0
-                },
-                "description": "Seconds to wait before asking again."
-              }
-            },
+            "description": "A library card's session could not be ended (`sign_out_failed`); the card is still signed in, so try again. Clearing cookies does not end a card. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "session_check_unavailable",
-                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "error": "service_unavailable",
+                  "message": "The Bookclerk daemon is not ready to handle this request.",
                   "status": 503
                 }
               }
@@ -18780,6 +19104,34 @@
                   "error": "unauthorized",
                   "message": "Operator authentication is required. Sign in with your operator token.",
                   "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
@@ -18914,16 +19266,37 @@
             }
           },
           "403": {
-            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
@@ -19106,16 +19479,37 @@
             }
           },
           "403": {
-            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
@@ -19275,16 +19669,29 @@
             }
           },
           "403": {
-            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user.",
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
@@ -19411,16 +19818,37 @@
             }
           },
           "403": {
-            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
@@ -19575,16 +20003,37 @@
             }
           },
           "403": {
-            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
@@ -19709,16 +20158,37 @@
             }
           },
           "403": {
-            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
@@ -19848,18 +20318,34 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
                   "mfa_enrollment_required": {
                     "summary": "The user must enroll a second factor first",
                     "value": {
                       "error": "mfa_enrollment_required",
                       "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
                       "status": 403
                     }
                   }
@@ -19980,6 +20466,34 @@
               }
             }
           },
+          "403": {
+            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
           "500": {
             "description": "The request could not be read or written.",
             "content": {
@@ -20094,16 +20608,37 @@
             }
           },
           "403": {
-            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept client apps on this address.",
+                      "status": 403
+                    }
+                  },
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
@@ -25432,7 +25967,7 @@
             }
           },
           "400": {
-            "description": "The body is not a token request (`invalid_request`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "The body is not a token request (`invalid_request`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -25441,12 +25976,6 @@
                 "example": {
                   "error": "invalid_request"
                 }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -25502,7 +26031,7 @@
             }
           },
           "415": {
-            "description": "The request is not `application/json`. As `text/plain`, when the request did not declare a JSON body.",
+            "description": "The request is not `application/json`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -25511,23 +26040,6 @@
                 "example": {
                   "error": "expected application/json"
                 }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Expected request with `Content-Type: application/json`"
-              }
-            }
-          },
-          "422": {
-            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `code` at line 1 column 2"
               }
             }
           },

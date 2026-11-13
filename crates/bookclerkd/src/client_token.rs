@@ -146,16 +146,30 @@ fn transport_refusal(status: axum::http::StatusCode) -> Response {
     if status == StatusCode::NOT_FOUND {
         return crate::auth::json_auth_error(
             StatusCode::FORBIDDEN,
-            "client_sign_in_unavailable",
-            "This library does not accept client apps on this address.",
+            CLIENT_SIGN_IN_UNAVAILABLE,
+            CLIENT_SIGN_IN_UNAVAILABLE_MESSAGE,
         );
     }
     crate::auth::json_auth_error(
         StatusCode::FORBIDDEN,
-        "transport_insecure",
-        "A library card is only accepted over HTTPS, or on this machine.",
+        TRANSPORT_INSECURE,
+        TRANSPORT_INSECURE_MESSAGE,
     )
 }
+
+/// The `error` of a library card refused by the transport policy.
+pub(crate) const TRANSPORT_INSECURE: &str = "transport_insecure";
+
+/// The `message` of that refusal.
+pub(crate) const TRANSPORT_INSECURE_MESSAGE: &str =
+    "A library card is only accepted over HTTPS, or on this machine.";
+
+/// The `error` of a library card sent where the node API is not mounted.
+pub(crate) const CLIENT_SIGN_IN_UNAVAILABLE: &str = "client_sign_in_unavailable";
+
+/// The `message` of that refusal.
+pub(crate) const CLIENT_SIGN_IN_UNAVAILABLE_MESSAGE: &str =
+    "This library does not accept client apps on this address.";
 
 /// The client session token in `headers`, when an admitted request carries
 /// one.
