@@ -1122,6 +1122,24 @@ pub async fn rank_subject_feed(
     })
 }
 
+/// Loads `subject`'s taste from the library and stores it, so the next
+/// ranking reads it: what a candidate fetch does first, for a fetch that
+/// calls no storefront (`storefront_candidates = false`), whose taste
+/// events must still refresh the ranking.
+///
+/// # Errors
+///
+/// Returns the library read or write error.
+pub async fn refresh_subject_taste(
+    library: &LibraryStore,
+    subject: &DiscoverSubject,
+    opts: &RecommendOptions,
+) -> Result<()> {
+    let taste = load_subject_taste(library, subject, opts).await?;
+    store_taste(library, subject, &taste).await?;
+    Ok(())
+}
+
 /// Stores the ranking's part of `taste` as `subject`'s taste.
 ///
 /// # Errors
@@ -1914,6 +1932,25 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_fetch_without_storefronts_still_refreshes_the_taste() {
+        let (library, alice) = two_member_library().await;
+        let subject = DiscoverSubject::User(alice.user_id.unwrap());
+        let opts = RecommendOptions::default();
+        // A fresh but outdated taste, as a ranking stored it before an event.
+        library
+            .put_discover_taste(&subject, "{}", SeedScope::Household)
+            .await
+            .unwrap();
+        refresh_subject_taste(&library, &subject, &opts)
+            .await
+            .unwrap();
+        let row = library.get_discover_taste(&subject).await.unwrap().unwrap();
+        assert_eq!(row.seed_scope, SeedScope::Own);
+        let taste = StoredTaste::decode(&row.taste_json).unwrap();
+        assert!(taste.shelf.owned_sources.contains("libro"));
     }
 
     #[tokio::test]

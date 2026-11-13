@@ -130,7 +130,8 @@ operator, a household user, or a portal identity) has a **subject key**
    entries, which move a score the most. A ranking with no stored taste,
    or one more than a day old, loads the taste from the library and stores
    it again. Every [taste event](#taste-events) queues a fetch, which
-   stores a fresh taste, so the day only matters for finishes, ratings and
+   stores a fresh taste (also with `discovery.storefront_candidates`
+   off, when the fetch calls no store), so the day only matters for finishes, ratings and
    tags, which send no event.
 
    Both steps read through the database plugin's streamed result path

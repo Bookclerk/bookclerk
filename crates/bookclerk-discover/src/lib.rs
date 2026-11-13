@@ -68,9 +68,9 @@ pub use metadata_enrich::{
     METADATA_ENRICH_SOURCE_PREFIX,
 };
 pub use precompute::{
-    fetch_subject_candidates, load_subject_taste, rank_subject_feed, stored_subject_feed,
-    stored_subject_feed_state, FetchReport, OwnedIdentities, RankReport, StoredSubjectFeed,
-    SubjectTaste, HOUSEHOLD_BLEND_WEIGHT, OWN_TASTE_THRESHOLD, STARTER_GENRES,
+    fetch_subject_candidates, load_subject_taste, rank_subject_feed, refresh_subject_taste,
+    stored_subject_feed, stored_subject_feed_state, FetchReport, OwnedIdentities, RankReport,
+    StoredSubjectFeed, SubjectTaste, HOUSEHOLD_BLEND_WEIGHT, OWN_TASTE_THRESHOLD, STARTER_GENRES,
     STARTER_GENRE_MIN_SEEDS, STORE_CALL_MAX_AGE, STORE_CALL_TIMEOUT, STORE_FETCH_DEADLINE,
 };
 pub use purchase::{
