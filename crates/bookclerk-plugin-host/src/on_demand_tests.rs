@@ -343,6 +343,32 @@ async fn a_stopped_proxy_never_wakes_again() {
     assert!(started.lock().expect("started").is_empty());
 }
 
+#[tokio::test]
+async fn starting_a_stopped_proxy_revives_it_for_a_rollback() {
+    let (proxy, first, started) = proxy(Duration::from_millis(40), Duration::ZERO, None);
+    proxy.stop().await.expect("stop");
+    proxy
+        .start(IntegrationContext::default())
+        .await
+        .expect("restart");
+    assert!(!proxy.is_retired());
+    assert!(!first.guest_running());
+    assert_eq!(
+        proxy
+            .deliver_domain_event(event())
+            .await
+            .expect("delivered after the rollback"),
+        EventResult::Ack
+    );
+    let woken = started.lock().expect("started").clone();
+    assert_eq!(woken.len(), 1);
+    // The sweep kept running through the stop, so the revived proxy sleeps.
+    wait_for("the revived guest to sleep", || {
+        !woken[0].guest_running() && !proxy.is_awake()
+    })
+    .await;
+}
+
 /// A native manifest with `entrypoints` and `extra` TOML appended.
 fn manifest(runtime: &str, entrypoints: &str, extra: &str) -> crate::PluginManifest {
     let command = if runtime == "native" {

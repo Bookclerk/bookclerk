@@ -171,7 +171,8 @@ pub struct OnDemandIntegration {
     activity: std::sync::Mutex<Activity>,
     /// Lifecycle context passed to each guest's `start`.
     context: std::sync::Mutex<IntegrationContext>,
-    /// Set by [`Integration::stop`]; a retired proxy never wakes again.
+    /// Set by [`Integration::stop`]; a retired proxy does not wake until a
+    /// later [`Integration::start`] revives it (a deployment rollback).
     retired: AtomicBool,
     /// Guests started after the first, for logs and tests.
     wakes: AtomicU64,
@@ -393,8 +394,10 @@ impl OnDemandIntegration {
     }
 }
 
-/// Checks `proxy` for idleness a few times per timeout until it is dropped
-/// or retired.
+/// Checks `proxy` for idleness a few times per timeout until it is dropped.
+///
+/// A retired proxy is skipped rather than abandoned, so one revived by a
+/// rollback's [`Integration::start`] goes back to sleep when idle.
 fn spawn_idle_sweep(proxy: Weak<OnDemandIntegration>, idle_timeout: Duration) {
     let period = (idle_timeout / 4).clamp(Duration::from_millis(10), Duration::from_secs(15));
     tokio::spawn(async move {
@@ -406,7 +409,7 @@ fn spawn_idle_sweep(proxy: Weak<OnDemandIntegration>, idle_timeout: Duration) {
                 return;
             };
             if proxy.is_retired() {
-                return;
+                continue;
             }
             proxy.sleep_if_idle().await;
         }
@@ -431,7 +434,13 @@ impl Integration for OnDemandIntegration {
         &self.identity.display_name
     }
 
+    /// Stores `ctx` for later wakes and starts a running guest with it.
+    ///
+    /// Starting a stopped proxy revives it: a deployment whose replacement
+    /// failed to start registers the previous proxy again, and its next call
+    /// wakes a fresh guest.
     async fn start(&self, ctx: IntegrationContext) -> bookclerk_integrations::Result<()> {
+        self.retired.store(false, Ordering::SeqCst);
         *self
             .context
             .lock()
