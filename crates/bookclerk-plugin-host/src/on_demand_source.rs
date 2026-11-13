@@ -140,13 +140,6 @@ impl OnDemandSource {
         self.activation.sleep_if_idle().await
     }
 
-    /// Stops the guest for good; the deployment calls this when it retires
-    /// the instance.
-    pub async fn retire(&self) {
-        // A storefront has no stop RPC; dropping the session ends it.
-        let _ = self.activation.retire().await;
-    }
-
     /// Marks a call in flight and returns the running guest, starting one
     /// when asleep.
     ///
@@ -166,9 +159,16 @@ impl OnDemandSource {
     }
 }
 
+#[async_trait]
 impl OnDemandStatus for OnDemandSource {
     fn is_retired(&self) -> bool {
         self.activation.is_retired()
+    }
+
+    async fn retire(&self) {
+        // A storefront has no stop RPC; dropping the session ends it, so
+        // the stop cannot fail.
+        let _ = self.activation.retire().await;
     }
 
     fn is_awake(&self) -> bool {

@@ -825,6 +825,18 @@ impl GuestProcess {
             Self::OnDemand(proxy) => proxy.guest_pid(),
         }
     }
+
+    /// Ends a process the deployment no longer tracks.
+    ///
+    /// A resident session stops once the registries drop it. An on-demand
+    /// proxy is retired, because a job may still hold it in a registry
+    /// snapshot and would otherwise start the removed deployment again.
+    async fn retire(&self) {
+        match self {
+            Self::Resident(_) => {}
+            Self::OnDemand(proxy) => proxy.retire().await,
+        }
+    }
 }
 
 /// Production runtime: spawn through the existing host adapters and register
@@ -964,22 +976,27 @@ impl LiveDeploymentRuntime {
             .write()
             .await
             .remove_instance(plugin_instance_id);
-        self.forget_guest(plugin_instance_id);
+        self.forget_guest(plugin_instance_id).await;
     }
 
     /// Drops the tracked guest for `plugin_instance_id` without taking the source registry.
     ///
-    /// Config reload already holds that registry. Dropping this entry stops the
-    /// process once the registry no longer keeps the session.
+    /// Config reload already holds that registry. Dropping this entry stops a
+    /// resident process once the registry no longer keeps the session; an
+    /// on-demand proxy is retired so no snapshot of it can wake it again.
     ///
     /// # Panics
     ///
     /// Panics when the deployment guest lock is poisoned.
-    pub fn forget_guest(&self, plugin_instance_id: &str) {
-        self.guests
+    pub async fn forget_guest(&self, plugin_instance_id: &str) {
+        let removed = self
+            .guests
             .lock()
             .expect("deployment guests")
             .remove(plugin_instance_id);
+        if let Some(guest) = removed {
+            guest.process.retire().await;
+        }
     }
 
     /// `CONFIG` JSON the live `open` call delivered for `plugin_instance_id`.
@@ -1025,16 +1042,21 @@ impl LiveDeploymentRuntime {
             .and_then(|guest| guest.process.guest_pid())
     }
 
-    /// Replaces the tracked session for one instance.
+    /// Replaces the tracked session for one instance and retires the one it
+    /// replaces (see [`GuestProcess::retire`]).
     ///
     /// # Panics
     ///
     /// Panics when the deployment guest lock is poisoned.
-    fn remember(&self, plugin_instance_id: &str, guest: TrackedGuest) {
-        self.guests
+    async fn remember(&self, plugin_instance_id: &str, guest: TrackedGuest) {
+        let replaced = self
+            .guests
             .lock()
             .expect("deployment guests")
             .insert(plugin_instance_id.to_string(), guest);
+        if let Some(replaced) = replaced {
+            replaced.process.retire().await;
+        }
     }
 }
 
@@ -1335,15 +1357,17 @@ async fn spawn_storefront(
                     }
                     None => (Arc::new(source), GuestProcess::Resident(resident_session)),
                 };
-            runtime.remember(
-                &request.plugin_instance_id,
-                TrackedGuest {
-                    process,
-                    root,
-                    config: opened_config,
-                    secrets: opened_secrets,
-                },
-            );
+            runtime
+                .remember(
+                    &request.plugin_instance_id,
+                    TrackedGuest {
+                        process,
+                        root,
+                        config: opened_config,
+                        secrets: opened_secrets,
+                    },
+                )
+                .await;
             let default_instance = {
                 let store = runtime.store.read().await.clone();
                 default_instance_for_key(&store, &request.plugin_key)
@@ -1469,15 +1493,17 @@ async fn spawn_integration(
                 };
             }
             runtime.integrations.write().await.register(registered);
-            runtime.remember(
-                &request.plugin_instance_id,
-                TrackedGuest {
-                    process,
-                    root,
-                    config: opened_config,
-                    secrets: opened_secrets,
-                },
-            );
+            runtime
+                .remember(
+                    &request.plugin_instance_id,
+                    TrackedGuest {
+                        process,
+                        root,
+                        config: opened_config,
+                        secrets: opened_secrets,
+                    },
+                )
+                .await;
             SpawnHealth::Healthy
         }
         Err(err) => SpawnHealth::HealthFailed {
@@ -1595,15 +1621,17 @@ async fn spawn_storage(
             Err(detail) => return SpawnHealth::SpawnFailed { detail },
         }
     };
-    runtime.remember(
-        &request.plugin_instance_id,
-        TrackedGuest {
-            process: GuestProcess::Resident(session),
-            root: request.plugin_root.clone(),
-            config: tracked_config,
-            secrets: tracked_secrets,
-        },
-    );
+    runtime
+        .remember(
+            &request.plugin_instance_id,
+            TrackedGuest {
+                process: GuestProcess::Resident(session),
+                root: request.plugin_root.clone(),
+                config: tracked_config,
+                secrets: tracked_secrets,
+            },
+        )
+        .await;
     SpawnHealth::Healthy
 }
 

@@ -208,9 +208,20 @@ impl OnDemandIntegration {
     }
 }
 
+#[async_trait]
 impl OnDemandStatus for OnDemandIntegration {
     fn is_retired(&self) -> bool {
         self.activation.is_retired()
+    }
+
+    async fn retire(&self) {
+        if let Err(err) = self.activation.retire().await {
+            tracing::warn!(
+                integration = %self.identity.id,
+                error = %err,
+                "retired on-demand guest stop failed"
+            );
+        }
     }
 
     fn is_awake(&self) -> bool {

@@ -47,10 +47,17 @@ pub(crate) trait GuestStarter<G: ?Sized>: Send + Sync {
     async fn start_guest(&self) -> std::result::Result<Arc<G>, String>;
 }
 
-/// What the deployment reconciler reads from any on-demand proxy.
+/// What the deployment reconciler reads from, and does to, any on-demand
+/// proxy.
+#[async_trait]
 pub trait OnDemandStatus: Send + Sync {
-    /// True once the deployment stopped the proxy; it never wakes again.
+    /// True once the deployment stopped the proxy; it does not wake again
+    /// unless a rollback revives it.
     fn is_retired(&self) -> bool;
+
+    /// Stops the proxy for good: a running guest stops and later calls
+    /// fail, including calls through a registry snapshot a job still holds.
+    async fn retire(&self);
 
     /// True while a guest is running. False while a wake or a sleep holds
     /// the guest slot.

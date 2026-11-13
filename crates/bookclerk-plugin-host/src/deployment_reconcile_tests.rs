@@ -1606,6 +1606,17 @@ async fn a_killed_storefront_guest_is_replaced_on_its_next_call() {
         .unwrap()
         .unwrap();
     assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
+    // Removing the deployment retires the proxy, so a job still holding it
+    // in a registry snapshot cannot start the removed guest again.
+    runtime.retire_plugin_instance(instance.id.as_str()).await;
+    assert!(proxy.is_retired());
+    assert!(!proxy.is_awake());
+    let err = source
+        .revoke_credentials(&scope, "no-such-account")
+        .await
+        .expect_err("a retired storefront refuses calls");
+    assert!(err.to_string().contains("stopped"), "{err}");
+    assert_eq!(proxy.wakes(), 1);
 }
 
 #[tokio::test]
