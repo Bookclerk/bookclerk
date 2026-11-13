@@ -3815,15 +3815,15 @@ mod tests {
         assert_eq!(found.guest_pid(), Some(first_pid));
         assert!(job_registry.get(&plugin_key_for_lookup).is_some());
 
+        // The storefront runs on demand: killing its guest leaves the
+        // deployment in place, and the next call starts a replacement.
         kill_pid(first_pid);
+        let proxy = runtime
+            .on_demand(instance_id)
+            .expect("storefront runs on demand");
         let mut dead = false;
         for _ in 0..50 {
-            if !bookclerk_plugin_host::DeploymentRuntime::guest_still_running(
-                runtime.as_ref(),
-                instance_id,
-            )
-            .await
-            {
+            if !proxy.is_awake() {
                 dead = true;
                 break;
             }
@@ -3833,6 +3833,14 @@ mod tests {
         super::reconcile_deployments(&state)
             .await
             .expect("replacement tick");
+        assert_eq!(proxy.wakes(), 0, "reconcile leaves the guest asleep");
+        let scope = state
+            .library_snapshot()
+            .await
+            .scope(found.plugin_key(), found.id());
+        // No account exists, so the call fails after the wake.
+        let _ = found.revoke_credentials(&scope, "no-such-account").await;
+        assert_eq!(proxy.wakes(), 1);
         let second_pid = runtime
             .tracked_guest_pid(instance_id)
             .expect("replacement pid");
