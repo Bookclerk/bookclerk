@@ -271,6 +271,17 @@ uses the `debug` key: the instrumentation applies only to workspace crates,
 which no cache holds, so the cached dependencies match. The build-only
 `main` push that saves the key runs uninstrumented.
 
+#### Build profiles
+
+The workspace `Cargo.toml` builds every dependency at `opt-level = 1` in the
+dev and test profiles, for local builds and CI alike. Workspace crates stay
+at `opt-level = 0`, so they rebuild quickly, debug fully and carry the
+coverage instrumentation. Measured on the `bookclerk-library` unit tests
+(4 cores), the suite ran in 432 s instead of 573 s, for a cold dependency
+build 67 s longer; `opt-level = 2` gained only 8 s more for another 100 s of
+cold build. The cost is paid once per cache key, since the caches hold the
+built dependencies.
+
 CI builds the dev and test profiles with
 `CARGO_PROFILE_DEV_DEBUG=line-tables-only`. That keeps file and line in
 panics while cutting link time and cache size. A failing test prints its

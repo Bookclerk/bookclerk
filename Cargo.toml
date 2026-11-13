@@ -246,6 +246,14 @@ infer = "0.22"
 mime_guess = "2"
 svg-hush = "0.9.7"
 
+# Dependencies are built with light optimization in dev and test builds;
+# workspace crates stay unoptimized, so they keep fast rebuilds, full
+# debugging and coverage instrumentation. Unoptimized SQLite, serde_json and
+# hashing made the test suites spend much of their time in dependency code
+# (docs/contributing/ci.md#build-profiles).
+[profile.dev.package."*"]
+opt-level = 1
+
 [profile.release]
 lto = true
 codegen-units = 1
