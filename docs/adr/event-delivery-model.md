@@ -1,6 +1,6 @@
 # ADR: Event delivery follows the Workers model
 
-- **Status:** Accepted (decisions 1 to 4); later phases proposed
+- **Status:** Accepted (decisions 1 to 5); later phases proposed
 - **Date:** 2026-11-11
 
 ## Context

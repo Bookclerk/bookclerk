@@ -269,20 +269,23 @@ impl OnDemandIntegration {
 
     /// Locks the activity record.
     ///
-    /// # Panics
-    ///
-    /// Panics when the activity lock is poisoned.
+    /// A poisoned lock still yields the record: it holds two plain
+    /// counters that no panic can leave half-written.
     fn activity(&self) -> std::sync::MutexGuard<'_, Activity> {
-        self.activity.lock().expect("on-demand activity")
+        self.activity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Lifecycle context for the next guest.
     ///
-    /// # Panics
-    ///
-    /// Panics when the context lock is poisoned.
+    /// A poisoned lock still yields the context, which is only ever
+    /// replaced whole.
     fn context(&self) -> IntegrationContext {
-        self.context.lock().expect("on-demand context").clone()
+        self.context
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Marks a call in flight, then returns the running guest, starting one
@@ -330,6 +333,15 @@ impl OnDemandIntegration {
                     self.identity.id
                 ))
             })?;
+        // A retirement that landed while the guest started wins: stop the
+        // new guest rather than hand it work.
+        if self.is_retired() {
+            let _ = guest.stop().await;
+            return Err(IntegrationError::message(format!(
+                "integration `{}` was stopped",
+                self.identity.id
+            )));
+        }
         self.wakes.fetch_add(1, Ordering::SeqCst);
         tracing::debug!(
             plugin_instance_id = %self.identity.plugin_instance_id,
@@ -420,7 +432,10 @@ impl Integration for OnDemandIntegration {
     }
 
     async fn start(&self, ctx: IntegrationContext) -> bookclerk_integrations::Result<()> {
-        *self.context.lock().expect("on-demand context") = ctx.clone();
+        *self
+            .context
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = ctx.clone();
         let guest = self.guest.lock().await.clone();
         match guest {
             Some(guest) => guest.start(ctx).await,

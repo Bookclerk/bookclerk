@@ -21,6 +21,8 @@ struct FakeGuest {
     delivered: AtomicUsize,
     /// How long each delivery takes.
     delivery_time: Duration,
+    /// Set when a delivery finished on a guest that had been stopped.
+    stopped_mid_delivery: AtomicBool,
 }
 
 impl FakeGuest {
@@ -30,6 +32,7 @@ impl FakeGuest {
             running: AtomicBool::new(true),
             delivered: AtomicUsize::new(0),
             delivery_time,
+            stopped_mid_delivery: AtomicBool::new(false),
         })
     }
 }
@@ -58,6 +61,9 @@ impl Integration for FakeGuest {
         _event: DomainEvent,
     ) -> bookclerk_integrations::Result<EventResult> {
         tokio::time::sleep(self.delivery_time).await;
+        if !self.running.load(Ordering::SeqCst) {
+            self.stopped_mid_delivery.store(true, Ordering::SeqCst);
+        }
         self.delivered.fetch_add(1, Ordering::SeqCst);
         Ok(EventResult::Ack)
     }
@@ -94,7 +100,13 @@ struct FakeStarter {
     delivery_time: Duration,
     /// When set, starting fails with this text.
     fail: Option<String>,
+    /// When set, each start waits (at most [`GATE_LIMIT`]) for the test to
+    /// open it.
+    gate: Option<Arc<tokio::sync::Notify>>,
 }
+
+/// Longest a gated start waits, so a regression fails instead of hanging.
+const GATE_LIMIT: Duration = Duration::from_secs(5);
 
 #[async_trait]
 impl GuestStarter for FakeStarter {
@@ -102,6 +114,9 @@ impl GuestStarter for FakeStarter {
         &self,
         _ctx: IntegrationContext,
     ) -> std::result::Result<Arc<dyn AwakeGuest>, String> {
+        if let Some(gate) = &self.gate {
+            let _ = tokio::time::timeout(GATE_LIMIT, gate.notified()).await;
+        }
         if let Some(detail) = &self.fail {
             return Err(detail.clone());
         }
@@ -123,6 +138,16 @@ fn proxy(
     delivery_time: Duration,
     fail: Option<&str>,
 ) -> (Arc<OnDemandIntegration>, Arc<FakeGuest>, Started) {
+    gated_proxy(idle, delivery_time, fail, None)
+}
+
+/// [`proxy`] whose starter waits on `gate` before each start.
+fn gated_proxy(
+    idle: Duration,
+    delivery_time: Duration,
+    fail: Option<&str>,
+    gate: Option<Arc<tokio::sync::Notify>>,
+) -> (Arc<OnDemandIntegration>, Arc<FakeGuest>, Started) {
     let first = FakeGuest::new(delivery_time);
     let started = Arc::new(std::sync::Mutex::new(Vec::new()));
     let proxy = OnDemandIntegration::wrap(
@@ -132,11 +157,35 @@ fn proxy(
             started: Arc::clone(&started),
             delivery_time,
             fail: fail.map(str::to_string),
+            gate,
         }),
         IntegrationContext::default(),
         idle,
     );
     (proxy, first, started)
+}
+
+/// Polls `ready` every 10 ms for at most five seconds.
+///
+/// # Panics
+///
+/// Panics with `what` when `ready` never holds.
+async fn wait_for(what: &str, ready: impl Fn() -> bool) {
+    for _ in 0..500 {
+        if ready() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+/// Waits until the idle sweep has stopped `first` and emptied the slot.
+async fn wait_asleep(proxy: &OnDemandIntegration, first: &FakeGuest) {
+    wait_for("the idle sweep", || {
+        !first.guest_running() && !proxy.is_awake()
+    })
+    .await;
 }
 
 /// A minimal event to deliver.
@@ -152,9 +201,7 @@ fn event() -> DomainEvent {
 async fn a_sleeping_proxy_keeps_its_identity_and_reports_healthy_without_waking() {
     let (proxy, first, started) = proxy(Duration::from_millis(40), Duration::ZERO, None);
     assert!(proxy.is_awake());
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(!proxy.is_awake(), "idle guest should have been stopped");
-    assert!(!first.guest_running());
+    wait_asleep(&proxy, &first).await;
     assert_eq!(proxy.plugin_instance_id(), Some("instance-1"));
     assert_eq!(proxy.plugin_key(), "local:fake");
     assert_eq!(proxy.event_subscriptions().len(), 1);
@@ -170,9 +217,8 @@ async fn a_sleeping_proxy_keeps_its_identity_and_reports_healthy_without_waking(
 
 #[tokio::test]
 async fn the_next_call_wakes_a_sleeping_guest_and_reuses_it_while_busy() {
-    let (proxy, _first, started) = proxy(Duration::from_millis(40), Duration::ZERO, None);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(!proxy.is_awake());
+    let (proxy, first, started) = proxy(Duration::from_millis(40), Duration::ZERO, None);
+    wait_asleep(&proxy, &first).await;
     for _ in 0..3 {
         assert_eq!(
             proxy
@@ -198,18 +244,33 @@ async fn a_call_in_flight_keeps_the_guest_past_the_idle_timeout() {
         .await
         .expect("delivered");
     assert_eq!(first.delivered.load(Ordering::SeqCst), 1);
+    assert!(
+        !first.stopped_mid_delivery.load(Ordering::SeqCst),
+        "the sweep stopped a guest with a call in flight"
+    );
+    assert!(first.guest_running());
     assert!(started.lock().expect("started").is_empty());
 }
 
 #[tokio::test]
 async fn concurrent_calls_on_a_sleeping_proxy_start_one_guest() {
-    let (proxy, _first, started) =
-        proxy(Duration::from_millis(40), Duration::from_millis(20), None);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let calls = (0..8).map(|_| {
-        let proxy = Arc::clone(&proxy);
-        tokio::spawn(async move { proxy.deliver_domain_event(event()).await })
-    });
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let (proxy, first, started) = gated_proxy(
+        Duration::from_millis(40),
+        Duration::from_millis(20),
+        None,
+        Some(Arc::clone(&gate)),
+    );
+    wait_asleep(&proxy, &first).await;
+    let calls: Vec<_> = (0..8)
+        .map(|_| {
+            let proxy = Arc::clone(&proxy);
+            tokio::spawn(async move { proxy.deliver_domain_event(event()).await })
+        })
+        .collect();
+    // Hold the first wake until every call is waiting on it.
+    wait_for("all eight calls", || proxy.activity().in_flight == 8).await;
+    gate.notify_one();
     for call in calls {
         call.await.expect("join").expect("delivered");
     }
@@ -230,12 +291,12 @@ async fn an_exited_guest_is_replaced_on_the_next_call() {
 
 #[tokio::test]
 async fn a_failed_wake_is_an_error_the_worker_retries() {
-    let (proxy, _first, _started) = proxy(
+    let (proxy, first, _started) = proxy(
         Duration::from_millis(40),
         Duration::ZERO,
         Some("spawn refused"),
     );
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_asleep(&proxy, &first).await;
     let err = proxy
         .deliver_domain_event(event())
         .await
@@ -301,9 +362,8 @@ fn stateful_sign_in_and_registry_plugins_stay_resident() {
 
 #[tokio::test]
 async fn every_guest_call_wakes_a_sleeping_proxy_and_reaches_the_guest() {
-    let (proxy, _first, started) = proxy(Duration::from_millis(40), Duration::ZERO, None);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(!proxy.is_awake());
+    let (proxy, first, started) = proxy(Duration::from_millis(40), Duration::ZERO, None);
+    wait_asleep(&proxy, &first).await;
     let cancel = || Arc::new(AtomicBool::new(false));
 
     assert_eq!(
@@ -412,9 +472,8 @@ async fn every_guest_call_wakes_a_sleeping_proxy_and_reaches_the_guest() {
 
 #[tokio::test]
 async fn a_call_waiting_on_a_wake_does_not_start_a_guest_after_stop() {
-    let (proxy, _first, started) =
-        proxy(Duration::from_millis(40), Duration::from_millis(20), None);
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (proxy, first, started) = proxy(Duration::from_millis(40), Duration::from_millis(20), None);
+    wait_asleep(&proxy, &first).await;
     // Hold the slot so the call passes the first retirement check and then
     // waits, as it would behind a concurrent `stop`.
     let slot = proxy.guest.lock().await;
@@ -422,7 +481,10 @@ async fn a_call_waiting_on_a_wake_does_not_start_a_guest_after_stop() {
         let proxy = Arc::clone(&proxy);
         tokio::spawn(async move { proxy.deliver_domain_event(event()).await })
     };
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for("the call to wait on the slot", || {
+        proxy.activity().in_flight == 1
+    })
+    .await;
     proxy.retired.store(true, Ordering::SeqCst);
     drop(slot);
     let err = waiting
@@ -431,4 +493,37 @@ async fn a_call_waiting_on_a_wake_does_not_start_a_guest_after_stop() {
         .expect_err("retired while waiting");
     assert!(err.to_string().contains("was stopped"), "{err}");
     assert!(started.lock().expect("started").is_empty());
+}
+
+#[tokio::test]
+async fn a_guest_that_finishes_starting_after_stop_is_stopped_unused() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let (proxy, first, started) = gated_proxy(
+        Duration::from_millis(40),
+        Duration::ZERO,
+        None,
+        Some(Arc::clone(&gate)),
+    );
+    wait_asleep(&proxy, &first).await;
+    let waking = {
+        let proxy = Arc::clone(&proxy);
+        tokio::spawn(async move { proxy.deliver_domain_event(event()).await })
+    };
+    // The wake holds the slot while the starter waits on the gate.
+    wait_for("the wake to hold the slot", || {
+        proxy.guest.try_lock().is_err()
+    })
+    .await;
+    proxy.retired.store(true, Ordering::SeqCst);
+    gate.notify_one();
+    let err = waking
+        .await
+        .expect("join")
+        .expect_err("retired during the wake");
+    assert!(err.to_string().contains("was stopped"), "{err}");
+    let guests = started.lock().expect("started").clone();
+    assert_eq!(guests.len(), 1);
+    assert!(!guests[0].guest_running(), "the late guest was stopped");
+    assert_eq!(guests[0].delivered.load(Ordering::SeqCst), 0);
+    assert_eq!(proxy.wakes(), 0);
 }
