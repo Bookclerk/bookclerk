@@ -296,8 +296,16 @@ Optional companion (workspace member, not a default-member):
 
 Frontend sources live in `ui/` (Vite/React); `cargo dev` / `cargo build-app --platform`
 rebuild `ui/dist` when SPA sources are newer than the last Vite output. Manual:
-`npm ci && npm run build` in `ui/` so `bookclerkd` can serve `ui/dist`. Do not add Tauri/GTK3-pinned shells while
-RUSTSEC advisories remain (tracked in `#44`).
+`npm ci && npm run build` in `ui/` so `bookclerkd` can serve `ui/dist`.
+
+Optional desktop window (workspace member, not a default-member):
+
+- `bookclerk-desktop` — Tauri 2 window that runs the host in-process
+  (`bookclerkd::embedded`) and serves the web app over the `bookclerk`
+  custom scheme with no listener. Behind its `window` feature (needs
+  WebKitGTK 4.1 development files on Linux). Its gtk-rs 0.18 graph carries
+  the only two OSV ignores allowed for it; see
+  `docs/contributing/ui/README.md#the-desktop-window`.
 
 ### Build / lint / test (mirrors `.github/workflows/ci.yml`)
 

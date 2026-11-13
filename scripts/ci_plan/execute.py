@@ -558,6 +558,11 @@ def prereq_commands(prereq: Mapping[str, Any], ctx: Context) -> list[Command]:
     raise ExecError(f"unknown prerequisite kind `{kind}`")
 
 
+# The desktop window crate. Its `window` feature needs the platform webview's
+# development files, so checks that pass `--all-features` leave it out.
+DESKTOP_WINDOW_PACKAGE = "bookclerk-desktop"
+
+
 def _pkg_args(pkgs: Sequence[str]) -> list[str]:
     out: list[str] = []
     for p in pkgs:
@@ -1148,7 +1153,16 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             argv.append("--python")
         return [Command("API docs", argv)]
     if check == "doctest":
-        scope = ["--workspace"] if params.get("workspace") else _pkg_args(params["packages"])
+        # `--all-features` would turn on the desktop window, which needs the
+        # webview's development files (WebKitGTK) that the runners don't
+        # install; the window crate is a binary with no doctests anyway.
+        if params.get("workspace"):
+            scope = ["--workspace", "--exclude", DESKTOP_WINDOW_PACKAGE]
+        else:
+            packages = [p for p in params["packages"] if p != DESKTOP_WINDOW_PACKAGE]
+            if not packages:
+                return []
+            scope = _pkg_args(packages)
         return [Command("doctests", ["cargo", "test", *scope, "--doc", "--all-features"])]
     if check == "store_free":
         return [
