@@ -84,19 +84,19 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
     setBusy(true);
     setError(null);
     try {
-      let shared_branch: { step_up: SharedBranchStepUp } | undefined;
+      let sharedBranch: { step_up: SharedBranchStepUp } | undefined;
       if (approve && connection === "shared_branch" && method) {
         const stepUp = await sharedBranchStepUp(method);
         if (!stepUp) {
           setBusy(false);
           return;
         }
-        shared_branch = { step_up: stepUp };
+        sharedBranch = { step_up: stepUp };
       }
       const { redirect } = await answerBranchConsent(
         search,
         approve,
-        shared_branch,
+        sharedBranch,
         bringConnections,
       );
       if (!isConsentRedirect(redirect, search)) {

@@ -885,14 +885,14 @@ export function fetchBranchConsent(search: string): Promise<BranchConsentView> {
  *
  * @param search - The authorize request (query string).
  * @param approve - True to let the branch join.
- * @param shared branch - Set to join as a shared branch instead, with the Owner's step-up proof.
+ * @param sharedBranch - Set to join as a shared branch instead, with the Owner's step-up proof.
  * @param bringConnections - Send the user's store connections that can travel to the branch.
  * @returns Where to send the browser.
  */
 export function answerBranchConsent(
   search: string,
   approve: boolean,
-  shared_branch?: { step_up: SharedBranchStepUp },
+  sharedBranch?: { step_up: SharedBranchStepUp },
   bringConnections = false,
 ): Promise<{ redirect: string }> {
   return request("/api/auth/branch-consent", {
@@ -900,10 +900,10 @@ export function answerBranchConsent(
     body: {
       ...authorizeParams(search),
       approve,
-      ...(shared_branch && approve
-        ? { connection: "shared_branch", step_up: shared_branch.step_up }
+      ...(sharedBranch && approve
+        ? { connection: "shared_branch", step_up: sharedBranch.step_up }
         : {}),
-      ...(!shared_branch && approve && bringConnections ? { bring_connections: true } : {}),
+      ...(!sharedBranch && approve && bringConnections ? { bring_connections: true } : {}),
     },
   });
 }
