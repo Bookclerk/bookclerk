@@ -203,6 +203,13 @@ input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.client_authorize]
+crate = "bookclerk-node-proto"
+boundary = "A client app's authorization request, the /oidc/authorize query that leads to the library card consent page"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.job_cap_request]
 crate = "bookclerk-library"
 boundary = "A branch's job cap for one library, from POST /api/config/join/capacity"

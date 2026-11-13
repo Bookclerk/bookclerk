@@ -113,9 +113,11 @@ pub use clerk::{
     CLERK_OFFER_PARAM, DEK_LEN,
 };
 pub use client::{
-    is_client_name, is_client_token, parse_client_authorization, ClientTokenAnswer,
+    client_request_problem, is_client_name, is_client_token, is_s256_challenge,
+    parse_client_authorization, parse_client_query, ClientAuthorizeParams, ClientTokenAnswer,
     ClientTokenRequest, ClientUser, CLIENT_AUTH_SCHEME, CLIENT_CLIENT_ID, CLIENT_CODE_TTL_SECS,
     CLIENT_IDLE_DAYS, CLIENT_SCOPE, CLIENT_TOKEN_LEN, CLIENT_TOKEN_PATH, MAX_CLIENT_NAME_BYTES,
+    MAX_CLIENT_STATE_BYTES,
 };
 pub use ed25519_dalek::SigningKey;
 pub use frames::{

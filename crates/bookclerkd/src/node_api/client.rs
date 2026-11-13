@@ -34,18 +34,19 @@ use axum::{Extension, Json};
 use base64::Engine as _;
 use bookclerk_library::hash_token;
 use bookclerk_node_proto::{
-    canonical_origin, is_branch_redirect_uri, is_client_name, pkce_challenge, ClientTokenAnswer,
+    canonical_origin, is_client_name, pkce_challenge, ClientAuthorizeParams, ClientTokenAnswer,
     ClientTokenRequest, ClientUser, CLIENT_CLIENT_ID, CLIENT_CODE_TTL_SECS, CLIENT_IDLE_DAYS,
     CLIENT_SCOPE,
 };
+pub(crate) use bookclerk_node_proto::{client_request_problem, parse_client_query};
 use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use zeroize::Zeroizing;
 
 use super::branch::{
-    consent_error, consenting_user, is_challenge, no_store, owner_info, redirect_with,
-    ConsentRedirect, ConsentingUser,
+    consent_error, consenting_user, no_store, owner_info, redirect_with, ConsentRedirect,
+    ConsentingUser,
 };
 use super::check_transport;
 use crate::api::AppState;
@@ -61,92 +62,6 @@ const MAX_TOKEN_BODY_BYTES: usize = 8 * 1024;
 /// the consented client name, base64url, so the session is labelled with
 /// the name the user saw whatever the redeem says.
 const CONSENTED_NAME_MARK: &str = " name:";
-
-/// The authorization request a client consent is for (the query
-/// `/oidc/authorize` forwarded to `/client/approve`).
-#[derive(Debug, Clone, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
-#[into_params(parameter_in = Query)]
-pub struct ClientAuthorizeParams {
-    /// Must be [`CLIENT_CLIENT_ID`].
-    #[schema(example = "bookclerk-client")]
-    pub client_id: String,
-    /// Where the code goes: loopback or https.
-    #[schema(example = "http://127.0.0.1:41923/client/callback")]
-    pub redirect_uri: String,
-    /// Must be `code`.
-    #[schema(example = "code")]
-    pub response_type: String,
-    /// Must be [`CLIENT_SCOPE`].
-    #[serde(default)]
-    #[schema(example = "library:member")]
-    pub scope: Option<String>,
-    /// Echoed on the redirect.
-    #[serde(default)]
-    #[schema(example = "c3RhdGUtOGY2ZTJkMWE")]
-    pub state: Option<String>,
-    /// PKCE S256 challenge.
-    #[schema(example = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")]
-    pub code_challenge: String,
-    /// Must be `S256`.
-    #[serde(default)]
-    #[schema(example = "S256")]
-    pub code_challenge_method: Option<String>,
-    /// The name the client install gives itself, shown on the consent page
-    /// and in the user's session list.
-    #[serde(default)]
-    #[schema(example = "Riley's laptop")]
-    pub client_name: Option<String>,
-}
-
-/// Parses an authorize query string; `None` when a parameter repeats or the
-/// shape is wrong.
-pub(crate) fn parse_client_query(raw: &str) -> Option<ClientAuthorizeParams> {
-    let mut map = serde_json::Map::new();
-    for (name, value) in url::form_urlencoded::parse(raw.as_bytes()) {
-        if map
-            .insert(
-                name.into_owned(),
-                serde_json::Value::String(value.into_owned()),
-            )
-            .is_some()
-        {
-            return None;
-        }
-    }
-    serde_json::from_value(serde_json::Value::Object(map)).ok()
-}
-
-/// Why a client authorization request is malformed, or `None`.
-pub(crate) fn client_request_problem(params: &ClientAuthorizeParams) -> Option<&'static str> {
-    if params.client_id != CLIENT_CLIENT_ID {
-        return Some("unknown client");
-    }
-    if params.response_type != "code" {
-        return Some("response_type must be code");
-    }
-    if params.code_challenge_method.as_deref() != Some("S256")
-        || !is_challenge(&params.code_challenge)
-    {
-        return Some("an S256 code challenge is required");
-    }
-    if params.scope.as_deref().map(str::trim) != Some(CLIENT_SCOPE) {
-        return Some("scope must be library:member");
-    }
-    if !is_branch_redirect_uri(&params.redirect_uri) {
-        return Some("the redirect URI must be a loopback or https URL");
-    }
-    if !params.client_name.as_deref().is_some_and(is_client_name) {
-        return Some("the client needs a name of 1 to 64 characters");
-    }
-    if params
-        .state
-        .as_deref()
-        .is_some_and(|state| state.len() > 512 || state.chars().any(char::is_control))
-    {
-        return Some("malformed state");
-    }
-    None
-}
 
 /// The scope stored with an approved code: [`CLIENT_SCOPE`] and the
 /// consented client name.
@@ -322,6 +237,7 @@ pub async fn post_client_consent(
     }
     let client_name = params.client_name.as_deref().unwrap_or("").trim();
     let code = random_token();
+    bookclerk_config::register_secret(code.as_str());
     let expires = chrono::Utc::now() + chrono::Duration::seconds(CLIENT_CODE_TTL_SECS);
     let library = state.library_snapshot().await;
     if let Err(err) = library
@@ -469,6 +385,7 @@ pub async fn post_client_token(State(state): State<Arc<AppState>>, request: Requ
         }
     };
     let token = random_token();
+    bookclerk_config::register_secret(token.as_str());
     let idle = chrono::Duration::days(CLIENT_IDLE_DAYS);
     if let Err(err) = library
         .insert_client_session(

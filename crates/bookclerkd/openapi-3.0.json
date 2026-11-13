@@ -29879,7 +29879,7 @@
       },
       "ClientAuthorizeParams": {
         "type": "object",
-        "description": "The authorization request a client consent is for (the query\n`/oidc/authorize` forwarded to `/client/approve`).",
+        "description": "The authorization request a client consent is for (the query\n`/oidc/authorize` forwards to the library's `/client/approve` page).",
         "required": [
           "client_id",
           "redirect_uri",

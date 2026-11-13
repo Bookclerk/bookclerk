@@ -193,6 +193,14 @@ paths = [
 
 [[test_input]]
 package = "bookclerk-node-proto"
+# The client authorize oracle is shared with the replay test through `#[path]`.
+paths = [
+  "fuzz/corpus/client_authorize/**",
+  "fuzz/oracles/client_authorize.rs",
+]
+
+[[test_input]]
+package = "bookclerk-node-proto"
 # The account bundle oracle is shared with the replay test through `#[path]`.
 paths = [
   "fuzz/corpus/node_account_bundle/**",

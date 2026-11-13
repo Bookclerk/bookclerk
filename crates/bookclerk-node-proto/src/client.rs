@@ -26,6 +26,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::is_branch_redirect_uri;
+
 /// The built-in public OAuth client a client install signs in through. It
 /// is never stored in the library's clients table.
 pub const CLIENT_CLIENT_ID: &str = "bookclerk-client";
@@ -51,6 +53,12 @@ pub const MAX_CLIENT_NAME_BYTES: usize = 64;
 
 /// Length of a session token: base64url (no padding) of 32 random bytes.
 pub const CLIENT_TOKEN_LEN: usize = 43;
+
+/// Longest `state` an authorize request may carry.
+pub const MAX_CLIENT_STATE_BYTES: usize = 512;
+
+/// Length of an S256 code challenge: base64url (no padding) of a SHA-256.
+const S256_CHALLENGE_LEN: usize = 43;
 
 /// `POST /api/client/v1/token` body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -102,6 +110,119 @@ pub fn is_client_name(name: &str) -> bool {
     !name.trim().is_empty()
         && name.len() <= MAX_CLIENT_NAME_BYTES
         && !name.chars().any(char::is_control)
+}
+
+/// The authorization request a client consent is for (the query
+/// `/oidc/authorize` forwards to the library's `/client/approve` page).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
+#[into_params(parameter_in = Query)]
+pub struct ClientAuthorizeParams {
+    /// Must be [`CLIENT_CLIENT_ID`].
+    #[schema(example = "bookclerk-client")]
+    pub client_id: String,
+    /// Where the code goes: loopback or https.
+    #[schema(example = "http://127.0.0.1:41923/client/callback")]
+    pub redirect_uri: String,
+    /// Must be `code`.
+    #[schema(example = "code")]
+    pub response_type: String,
+    /// Must be [`CLIENT_SCOPE`].
+    #[serde(default)]
+    #[schema(example = "library:member")]
+    pub scope: Option<String>,
+    /// Echoed on the redirect.
+    #[serde(default)]
+    #[schema(example = "c3RhdGUtOGY2ZTJkMWE")]
+    pub state: Option<String>,
+    /// PKCE S256 challenge.
+    #[schema(example = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")]
+    pub code_challenge: String,
+    /// Must be `S256`.
+    #[serde(default)]
+    #[schema(example = "S256")]
+    pub code_challenge_method: Option<String>,
+    /// The name the client install gives itself, shown on the consent page
+    /// and in the user's session list.
+    #[serde(default)]
+    #[schema(example = "Riley's laptop")]
+    pub client_name: Option<String>,
+}
+
+/// Parses an authorize query string (the raw query `/oidc/authorize`
+/// received), sans-IO so the fuzz target drives the same code.
+///
+/// # Arguments
+///
+/// * `raw` - The query string, without the `?`.
+///
+/// # Returns
+///
+/// The parameters, or `None` when a parameter repeats, a required one is
+/// missing, or the shape is wrong. Unknown parameters are ignored.
+#[must_use]
+pub fn parse_client_query(raw: &str) -> Option<ClientAuthorizeParams> {
+    let mut map = serde_json::Map::new();
+    for (name, value) in url::form_urlencoded::parse(raw.as_bytes()) {
+        if map
+            .insert(
+                name.into_owned(),
+                serde_json::Value::String(value.into_owned()),
+            )
+            .is_some()
+        {
+            return None;
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(map)).ok()
+}
+
+/// Why a client authorization request is malformed, or `None` when the
+/// library may show its consent page.
+///
+/// # Arguments
+///
+/// * `params` - The parsed request ([`parse_client_query`]).
+///
+/// # Returns
+///
+/// A short reason, or `None`.
+#[must_use]
+pub fn client_request_problem(params: &ClientAuthorizeParams) -> Option<&'static str> {
+    if params.client_id != CLIENT_CLIENT_ID {
+        return Some("unknown client");
+    }
+    if params.response_type != "code" {
+        return Some("response_type must be code");
+    }
+    if params.code_challenge_method.as_deref() != Some("S256")
+        || !is_s256_challenge(&params.code_challenge)
+    {
+        return Some("an S256 code challenge is required");
+    }
+    if params.scope.as_deref().map(str::trim) != Some(CLIENT_SCOPE) {
+        return Some("scope must be library:member");
+    }
+    if !is_branch_redirect_uri(&params.redirect_uri) {
+        return Some("the redirect URI must be a loopback or https URL");
+    }
+    if !params.client_name.as_deref().is_some_and(is_client_name) {
+        return Some("the client needs a name of 1 to 64 characters");
+    }
+    if params.state.as_deref().is_some_and(|state| {
+        state.len() > MAX_CLIENT_STATE_BYTES || state.chars().any(char::is_control)
+    }) {
+        return Some("malformed state");
+    }
+    None
+}
+
+/// True for an S256 code challenge: exactly 43 base64url characters.
+#[must_use]
+pub fn is_s256_challenge(raw: &str) -> bool {
+    raw.len() == S256_CHALLENGE_LEN
+        && raw
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// True for a session token: exactly [`CLIENT_TOKEN_LEN`] base64url

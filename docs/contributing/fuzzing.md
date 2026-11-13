@@ -49,6 +49,7 @@ boundary extends it.
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `client_authorization` | A client app's library card, the `Authorization: Bookclerk-Client <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_client_authorization` |
+| `client_authorize` | A client app's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_client_query`, `client_request_problem` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
@@ -256,6 +257,18 @@ only that. The others check:
   and `_`, with nothing else, and the token is those 43 bytes. The shared
   oracle is `fuzz/oracles/client_authorization.rs`, replayed from
   `bookclerk-node-proto`.
+- **`client_authorize`**: reads the query as form-encoded pairs. It
+  parses exactly when no parameter repeats and `client_id`,
+  `redirect_uri`, `response_type` and `code_challenge` are present, and
+  each field is the decoded value sent. It is accepted exactly when the
+  client is `bookclerk-client`, the response type is `code`, the
+  challenge is S256 with 43 base64url characters, the scope is
+  `library:member`, the redirect URI is `https` with a host or `http` on
+  a loopback address or `localhost` (no user info, no fragment), the
+  client name is 1 to 64 bytes, not blank and without control
+  characters, and any state is at most 512 bytes without control
+  characters. The shared oracle is `fuzz/oracles/client_authorize.rs`,
+  replayed from `bookclerk-node-proto`.
 - **`job_cap_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
   besides `cluster_id` (a string) and `max_jobs` (`null` or a whole number
