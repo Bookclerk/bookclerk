@@ -22,12 +22,14 @@ use super::library_model::find_chunked;
 use super::{parse_dt, LibraryStore};
 use crate::entities::{
     accounts, books, credits, edition_files, edition_identifiers, editions, expressions, holdings,
-    series_entries, store_listings, user_title_state,
+    series, series_entries, store_listings, user_title_state,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{TasteHolder, TasteTitle, UserTitleState};
 
-/// Holdings read per keyset page.
+/// Most holdings read per keyset page; the page is narrowed further to the
+/// database plugin's `maxResultRows`, and halved when a reply is refused
+/// as over a negotiated limit.
 const HOLDINGS_PAGE: u64 = 500;
 
 /// The columns of one holding a taste read needs.
@@ -99,7 +101,14 @@ impl LibraryStore {
             .collect();
         let places = self.edition_places(&edition_ids).await?;
         let acquired = self.editions_with_files(&edition_ids).await?;
-        let sources = self.account_sources().await?;
+        let account_ids: Vec<String> = held
+            .values()
+            .flatten()
+            .filter_map(|r| r.account_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let sources = self.account_sources(&account_ids).await?;
 
         // Group held listings by work.
         let mut by_work: BTreeMap<String, Vec<HeldListing>> = BTreeMap::new();
@@ -128,7 +137,7 @@ impl LibraryStore {
 
         let work_ids: Vec<String> = by_work.keys().cloned().collect();
         let works = self.works_by_ids(&work_ids).await?;
-        let positions = self.series_positions(&work_ids).await?;
+        let primary_series = self.primary_series(&work_ids).await?;
         let reps: BTreeMap<String, HeldListing> = by_work
             .into_iter()
             .filter_map(|(work, mut candidates)| {
@@ -196,8 +205,13 @@ impl LibraryStore {
                     .or_else(|| rep.listing.subtitle.clone()),
                 authors: join_names(&work.credits),
                 narrators: join_names(&work.narrators),
-                series: work.series.first().cloned(),
-                series_index: positions.get(&work_id).cloned(),
+                series: primary_series
+                    .get(&work_id)
+                    .map(|(name, _)| name.clone())
+                    .or_else(|| work.series.first().cloned()),
+                series_index: primary_series
+                    .get(&work_id)
+                    .and_then(|(_, position)| position.clone()),
                 series_store_id,
                 publisher: publishers.get(&place.edition.id).cloned(),
                 categories: rep
@@ -274,6 +288,7 @@ impl LibraryStore {
     async fn held_listing_rows(&self) -> Result<BTreeMap<String, Vec<HoldingRow>>> {
         let mut out: BTreeMap<String, Vec<HoldingRow>> = BTreeMap::new();
         let mut after: Option<String> = None;
+        let mut page_size = HOLDINGS_PAGE.min(u64::from(self.max_result_rows.max(1)));
         loop {
             let mut query = holdings::Entity::find()
                 .select_only()
@@ -283,16 +298,23 @@ impl LibraryStore {
                 .column(holdings::Column::AccountId)
                 .column(holdings::Column::PurchasedAt)
                 .order_by_asc(holdings::Column::Id)
-                .limit(HOLDINGS_PAGE);
+                .limit(page_size);
             if let Some(after) = &after {
                 query = query.filter(holdings::Column::Id.gt(after.as_str()));
             }
-            let page = query
-                .into_model::<HoldingRow>()
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?;
-            let short = u64::try_from(page.len()).unwrap_or(u64::MAX) < HOLDINGS_PAGE;
+            let page = match query.into_model::<HoldingRow>().all(&self.db).await {
+                Ok(page) => page,
+                Err(err)
+                    if page_size > 1
+                        && bookclerk_plugin_abi::LimitExceeded::from_message(&err.to_string())
+                            .is_some() =>
+                {
+                    page_size /= 2;
+                    continue;
+                }
+                Err(err) => return Err(LibraryError::Orm(err)),
+            };
+            let short = u64::try_from(page.len()).unwrap_or(u64::MAX) < page_size;
             after = page.last().map(|r| r.id.clone());
             for row in page {
                 out.entry(row.listing_id.clone()).or_default().push(row);
@@ -358,19 +380,30 @@ impl LibraryStore {
         .collect())
     }
 
-    /// Each account's storefront id, by plugin key and account id.
-    async fn account_sources(&self) -> Result<BTreeMap<(String, String), String>> {
-        Ok(accounts::Entity::find()
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|a| ((a.plugin_key, a.account_id), a.source))
-            .collect())
+    /// The storefront id of each holding account, by plugin key and
+    /// account id, read in chunks of account ids.
+    async fn account_sources(
+        &self,
+        account_ids: &[String],
+    ) -> Result<BTreeMap<(String, String), String>> {
+        Ok(find_chunked(self, account_ids, |part| {
+            accounts::Entity::find().filter(accounts::Column::AccountId.is_in(part.iter().cloned()))
+        })
+        .await?
+        .into_iter()
+        .map(|a| ((a.plugin_key, a.account_id), a.source))
+        .collect())
     }
 
-    /// The display position of each work in its first series.
-    async fn series_positions(&self, work_ids: &[String]) -> Result<BTreeMap<String, String>> {
+    /// Each work's primary series entry: its series name and the work's
+    /// display position there, taken from one entry so the two always
+    /// describe the same series. The primary entry is the first with a
+    /// position (by sort position, then series id), or else the first by
+    /// series id.
+    async fn primary_series(
+        &self,
+        work_ids: &[String],
+    ) -> Result<BTreeMap<String, (String, Option<String>)>> {
         let mut entries = find_chunked(self, work_ids, |part| {
             series_entries::Entity::find()
                 .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
@@ -379,15 +412,38 @@ impl LibraryStore {
         entries.sort_by(|a, b| {
             a.work_id
                 .cmp(&b.work_id)
+                .then_with(|| a.position.is_none().cmp(&b.position.is_none()))
+                .then_with(|| {
+                    a.sort_position
+                        .unwrap_or(f64::INFINITY)
+                        .total_cmp(&b.sort_position.unwrap_or(f64::INFINITY))
+                })
                 .then_with(|| a.series_id.cmp(&b.series_id))
         });
-        let mut out = BTreeMap::new();
+        let mut primary: BTreeMap<String, series_entries::Model> = BTreeMap::new();
         for entry in entries {
-            if let Some(position) = entry.position {
-                out.entry(entry.work_id).or_insert(position);
-            }
+            primary.entry(entry.work_id.clone()).or_insert(entry);
         }
-        Ok(out)
+        let series_ids: Vec<String> = primary
+            .values()
+            .map(|e| e.series_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let names: BTreeMap<String, String> = find_chunked(self, &series_ids, |part| {
+            series::Entity::find().filter(series::Column::Id.is_in(part.iter().cloned()))
+        })
+        .await?
+        .into_iter()
+        .map(|s| (s.id, s.name))
+        .collect();
+        Ok(primary
+            .into_iter()
+            .filter_map(|(work_id, entry)| {
+                let name = names.get(&entry.series_id)?.clone();
+                Some((work_id, (name, entry.position)))
+            })
+            .collect())
     }
 
     /// Each edition's ASIN and ISBN, by scheme (the first of each, in value
@@ -761,6 +817,51 @@ mod tests {
             apply_user_states(&mut nobody, &states, &[ben.id + ana.id + 100]);
             assert_eq!(nobody[0].rating_overall, None, "{name}");
             assert_eq!(nobody[0].tags, None, "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn series_name_and_position_come_from_the_same_entry() {
+        use sea_orm::{ActiveValue::Set, EntityTrait};
+        for profile in Profile::ALL {
+            let kit = sqlite::memory(profile).await;
+            let store = kit.store();
+            let name = profile.name();
+            store
+                .upsert_account("audible", "a1", "us", None, true, "audible")
+                .await
+                .unwrap();
+            let work = scan(store, "B0JUSTICE", "a1", "Ancillary Justice").await;
+            // A second series that sorts first by id and gives no position:
+            // the title keeps the series that has one.
+            series::Entity::insert(series::ActiveModel {
+                id: Set("0-omnibus".into()),
+                name: Set("Radch Omnibus".into()),
+                name_key: Set("radch omnibus".into()),
+                created_at: Set("2026-01-01T00:00:00Z".into()),
+            })
+            .exec(&store.db)
+            .await
+            .unwrap();
+            series_entries::Entity::insert(series_entries::ActiveModel {
+                series_id: Set("0-omnibus".into()),
+                work_id: Set(work.clone()),
+                position: Set(None),
+                sort_position: Set(None),
+                created_at: Set("2026-01-01T00:00:00Z".into()),
+            })
+            .exec(&store.db)
+            .await
+            .unwrap();
+
+            let titles = store.taste_titles().await.unwrap();
+            assert_eq!(titles.len(), 1, "{name}");
+            assert_eq!(
+                titles[0].series.as_deref(),
+                Some("Imperial Radch"),
+                "{name}"
+            );
+            assert_eq!(titles[0].series_index.as_deref(), Some("1"), "{name}");
         }
     }
 }
