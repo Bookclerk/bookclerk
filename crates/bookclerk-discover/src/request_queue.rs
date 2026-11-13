@@ -20,14 +20,6 @@ use crate::recommend::RankedQueueEntry;
 /// still reach the queue within a day.
 pub const REQUEST_QUEUE_MAX_AGE: chrono::Duration = chrono::Duration::hours(24);
 
-/// The key a queue entry's stored ranking is filed under: the library work
-/// its wishes are for. Every wish names a work, so one work is one entry
-/// whatever identifiers each wisher's store gave.
-#[must_use]
-pub fn queue_entry_key(entry: &GlobalQueueEntry) -> String {
-    entry.work_id.clone()
-}
-
 /// The shared request queue as a read builds it.
 #[derive(Debug, Clone, Default)]
 pub struct StoredRequestQueue {
@@ -61,7 +53,7 @@ pub async fn read_request_queue(library: &LibraryStore) -> Result<StoredRequestQ
     let mut stale = stored.iter().any(|row| row.ranked_at < cutoff);
     let ranks: HashMap<String, QueueRank> = stored
         .into_iter()
-        .map(|row| (row.rank.entry_key.clone(), row.rank))
+        .map(|row| (row.rank.work_id.clone(), row.rank))
         .collect();
     Ok(StoredRequestQueue {
         entries: join_ranks(queue, &ranks, &mut stale),
@@ -74,7 +66,7 @@ pub async fn read_request_queue(library: &LibraryStore) -> Result<StoredRequestQ
 /// # Arguments
 ///
 /// * `queue` - Open queue entries, one per work.
-/// * `ranks` - Stored rankings by [`queue_entry_key`].
+/// * `ranks` - Stored rankings by work id.
 /// * `stale` - Set when an entry has no stored ranking.
 fn join_ranks(
     queue: Vec<GlobalQueueEntry>,
@@ -83,7 +75,7 @@ fn join_ranks(
 ) -> Vec<RankedQueueEntry> {
     let mut ranked = Vec::with_capacity(queue.len());
     for entry in queue {
-        match ranks.get(&queue_entry_key(&entry)) {
+        match ranks.get(&entry.work_id) {
             Some(rank) if rank.owned => {}
             Some(rank) => ranked.push(RankedQueueEntry::from_global(
                 entry,
@@ -145,18 +137,12 @@ mod tests {
         (
             key.to_string(),
             QueueRank {
-                entry_key: key.into(),
-                work_id: Some(key.into()),
+                work_id: key.into(),
                 owned,
                 taste_score: score,
                 reasons: vec![reason.into()],
             },
         )
-    }
-
-    #[test]
-    fn an_entry_keys_by_its_work() {
-        assert_eq!(queue_entry_key(&entry("w1", "A", 1)), "w1");
     }
 
     /// Stored taste orders the queue, the live wish count still dominates,

@@ -717,7 +717,8 @@ library holds as works, expressions and editions:
   `bitrate_kbps`) stay empty until uploads carry a file's quality.
 - `user_title_state`: one user's finished flag, ratings and tags for a
   work, keyed `(user_id, work_id)`. Fields imported for an account reach
-  every user linked to that account.
+  every user linked to that account. Discover reads its taste from here,
+  not from `books`.
 
 Per-person rows point at works instead of copying a title:
 `listening_progress` (one row per listener and work, with the edition when

@@ -28,8 +28,8 @@ use std::time::Duration;
 
 use crate::listening::ListeningSignal;
 use bookclerk_library::{
-    BookRecord, CandidateRef, DiscoverSubject, LibraryStore, ListingOffer, OfferAudience,
-    RequestStatus, SeedScope, StoreCallHit,
+    CandidateRef, DiscoverSubject, LibraryStore, ListingOffer, OfferAudience, RequestStatus,
+    SeedScope, StoreCallHit, TasteTitle,
 };
 use bookclerk_source::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, ContentSource,
@@ -123,7 +123,7 @@ pub struct SubjectTaste {
     /// Books whose finishes, ratings, series and authors shape the taste:
     /// the subject's own, then the household's blended in while the
     /// subject's own are fewer than [`OWN_TASTE_THRESHOLD`].
-    pub books: Vec<BookRecord>,
+    pub books: Vec<TasteTitle>,
     /// How much each book in `books` counts; a blended household book is
     /// listed at [`HOUSEHOLD_BLEND_WEIGHT`], the subject's own count in full.
     pub weights: TasteWeights,
@@ -156,7 +156,7 @@ pub struct OwnedIdentities {
 
 impl OwnedIdentities {
     /// The identifiers of `books`.
-    fn of(books: &[BookRecord]) -> Self {
+    fn of(books: &[TasteTitle]) -> Self {
         let (asins, isbns, products) = owned_identity_sets(books);
         Self {
             asins,
@@ -169,7 +169,7 @@ impl OwnedIdentities {
 impl SubjectTaste {
     /// The whole household's taste, for a subject with no signal of their own.
     fn household(
-        books: Vec<BookRecord>,
+        books: Vec<TasteTitle>,
         listening: Vec<ListeningSignal>,
         linked_sources: HashSet<String>,
         owned: OwnedIdentities,
@@ -192,9 +192,9 @@ impl SubjectTaste {
         let engagement = engagement_by_book(&self.listening);
         let ranked = select_taste_seeds(&self.books, &engagement);
         // Own books first: a blended household book never displaces one.
-        let (own, blended): (Vec<BookRecord>, Vec<BookRecord>) = ranked
+        let (own, blended): (Vec<TasteTitle>, Vec<TasteTitle>) = ranked
             .into_iter()
-            .partition(|b| !self.weights.contains_key(&b.uuid));
+            .partition(|b| !self.weights.contains_key(&b.work_id));
         own.iter()
             .chain(blended.iter())
             .take(limit)
@@ -230,8 +230,10 @@ pub async fn load_subject_taste(
     subject: &DiscoverSubject,
     opts: &RecommendOptions,
 ) -> Result<SubjectTaste> {
-    let household = library.list_books(None).await?;
+    let mut household = library.taste_titles().await?;
     let owned = OwnedIdentities::of(&household);
+    let work_ids: Vec<String> = household.iter().map(|t| t.work_id.clone()).collect();
+    let states = library.user_title_states_for_works(&work_ids).await?;
     let all_listening = if opts.include_listening {
         let mut rows = library.list_listening_progress(None).await?;
         if !opts.listening_providers.is_empty() {
@@ -255,6 +257,8 @@ pub async fn load_subject_taste(
             .collect(),
     };
     if identities.is_empty() {
+        // The household's taste: everyone's finishes, ratings and tags.
+        bookclerk_library::apply_user_states(&mut household, &states, &[]);
         // The operator compares prices as a member of every store the
         // household has an account with.
         let linked = library
@@ -298,12 +302,30 @@ pub async fn load_subject_taste(
     // book they have listened to (a member may listen without owning).
     let listened: HashSet<&str> = listening
         .iter()
-        .filter_map(|r| r.book_uuid.as_deref())
+        .filter_map(|r| r.work_id.as_deref())
         .collect();
-    let (own, rest): (Vec<BookRecord>, Vec<BookRecord>) = household.into_iter().partition(|b| {
-        held.contains(&(b.plugin_key.clone(), b.account_id.clone()))
-            || listened.contains(b.uuid.as_str())
-    });
+    let users: Vec<i64> = identities
+        .iter()
+        .filter_map(|i| i.user_id)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let (mut own, mut rest): (Vec<TasteTitle>, Vec<TasteTitle>) =
+        household.into_iter().partition(|b| {
+            b.holders
+                .iter()
+                .any(|h| held.contains(&(h.plugin_key.clone(), h.account_id.clone())))
+                || listened.contains(b.work_id.as_str())
+        });
+    // The rest of the household's books carry the household's state, as
+    // they do in a household taste.
+    bookclerk_library::apply_user_states(&mut rest, &states, &[]);
+    // Their own finishes, ratings and tags. A subject with no user (a
+    // portal visitor) has none stored, so their books keep the empty
+    // default (an empty user list would mean everyone's).
+    if !users.is_empty() {
+        bookclerk_library::apply_user_states(&mut own, &states, &users);
+    }
     let wishes: Vec<_> = library
         .list_title_requests(Some(RequestStatus::Open))
         .await?
@@ -336,17 +358,17 @@ pub async fn load_subject_taste(
     let mut listening = listening;
     if own_signal < OWN_TASTE_THRESHOLD {
         for book in rest {
-            weights.insert(book.uuid.clone(), HOUSEHOLD_BLEND_WEIGHT);
+            weights.insert(book.work_id.clone(), HOUSEHOLD_BLEND_WEIGHT);
             books.push(book);
         }
         // The household's listening to the blended books blends in with
         // them, at their weight. The subject's own rows are for books in
         // `own`, which carry no weight, so they still count in full.
-        listening.extend(all_listening.into_iter().filter(|r| {
-            r.book_uuid
-                .as_ref()
-                .is_some_and(|u| weights.contains_key(u))
-        }));
+        listening.extend(
+            all_listening
+                .into_iter()
+                .filter(|r| r.work_id.as_ref().is_some_and(|u| weights.contains_key(u))),
+        );
     }
     Ok(SubjectTaste {
         scope: SeedScope::Own,
@@ -1376,9 +1398,9 @@ mod tests {
         // it at half weight.
         let titles: Vec<&str> = own.books.iter().map(|b| b.title.as_str()).collect();
         assert_eq!(titles, vec!["Alice Book", "Bob Book"]);
-        assert!(!own.weights.contains_key(&own.books[0].uuid));
+        assert!(!own.weights.contains_key(&own.books[0].work_id));
         assert_eq!(
-            own.weights.get(&own.books[1].uuid),
+            own.weights.get(&own.books[1].work_id),
             Some(&HOUSEHOLD_BLEND_WEIGHT)
         );
         assert_eq!(own.linked_sources, HashSet::from([String::from("libro")]));
@@ -1476,13 +1498,13 @@ mod tests {
         assert_eq!(taste.books.len(), 2, "both household books blend in");
         assert_eq!(taste.listening.len(), 1, "household listening blends in");
         assert_eq!(
-            taste.listening[0].book_uuid.as_deref(),
-            Some(alice_book.as_str())
+            taste.listening[0].work_id.as_deref(),
+            Some(work_of(&library, &alice_book).await.as_str())
         );
         assert!(taste
             .books
             .iter()
-            .all(|b| taste.weights.get(&b.uuid) == Some(&HOUSEHOLD_BLEND_WEIGHT)));
+            .all(|b| taste.weights.get(&b.work_id) == Some(&HOUSEHOLD_BLEND_WEIGHT)));
         assert_eq!(taste.wish_titles, vec!["Hail Mary"]);
         assert_eq!(taste.wishlist.len(), 1);
     }
@@ -1513,6 +1535,83 @@ mod tests {
             is_finished: false,
             last_listened_at: None,
         }
+    }
+
+    /// A member's own books carry their own finishes and ratings, and the
+    /// household's blended books carry everyone's; another member's state
+    /// never lands on the member's own book.
+    #[tokio::test]
+    async fn a_members_own_books_carry_their_own_state() {
+        let (library, alice) = two_member_library().await;
+        let ana = alice.user_id.expect("a signed-in identity has a user");
+        let ben = library
+            .create_user(bookclerk_library::UserRole::Member, Some("Ben"), None)
+            .await
+            .unwrap();
+        let books = library.list_books(None).await.unwrap();
+        let work_titled = |title: &str| {
+            books
+                .iter()
+                .find(|b| b.title == title)
+                .map(|b| b.uuid.clone())
+                .unwrap()
+        };
+        let alice_work = work_of(&library, &work_titled("Alice Book")).await;
+        let bob_work = work_of(&library, &work_titled("Bob Book")).await;
+        let rate = |user: i64, work: String, finished: bool| {
+            let library = &library;
+            async move {
+                library
+                    .set_user_title_state(
+                        user,
+                        &work,
+                        &bookclerk_library::UserBookFields {
+                            is_finished: Some(finished),
+                            rating_overall: Some(if finished { 5.0 } else { 1.0 }),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+        };
+        rate(ben.id, alice_work.clone(), true).await;
+        rate(ben.id, bob_work.clone(), true).await;
+        let taste = load_subject_taste(
+            &library,
+            &DiscoverSubject::User(ana),
+            &RecommendOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(taste.scope, SeedScope::Own);
+        let own = taste
+            .books
+            .iter()
+            .find(|b| b.work_id == alice_work)
+            .unwrap();
+        assert!(!own.is_finished, "Ben's finish is not Ana's");
+        assert_eq!(own.rating_overall, None);
+        let blended = taste.books.iter().find(|b| b.work_id == bob_work).unwrap();
+        assert!(
+            blended.is_finished,
+            "a household book carries the household's state"
+        );
+
+        rate(ana, alice_work.clone(), false).await;
+        let taste = load_subject_taste(
+            &library,
+            &DiscoverSubject::User(ana),
+            &RecommendOptions::default(),
+        )
+        .await
+        .unwrap();
+        let own = taste
+            .books
+            .iter()
+            .find(|b| b.work_id == alice_work)
+            .unwrap();
+        assert_eq!(own.rating_overall, Some(1.0));
     }
 
     #[tokio::test]
@@ -1564,8 +1663,8 @@ mod tests {
             vec!["Bob Book", "Alice Book"],
             "her own listen first"
         );
-        assert!(!taste.weights.contains_key(&taste.books[0].uuid));
-        assert!(taste.weights.contains_key(&taste.books[1].uuid));
+        assert!(!taste.weights.contains_key(&taste.books[0].work_id));
+        assert!(taste.weights.contains_key(&taste.books[1].work_id));
     }
 
     #[tokio::test]

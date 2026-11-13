@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use bookclerk_library::{AcquireStatus, BookRecord, GlobalQueueEntry, LibraryStore};
+use bookclerk_library::{GlobalQueueEntry, LibraryStore, TasteTitle};
 use bookclerk_source::SourceRegistry;
 
 use crate::listening::ListeningSignal;
@@ -228,17 +228,17 @@ pub struct Recommendation {
 pub(crate) type TasteWeights = HashMap<String, f64>;
 
 /// The multiplier `weights` gives `book` (one when unlisted).
-fn taste_multiplier(weights: &TasteWeights, book: &BookRecord) -> f64 {
-    weights.get(&book.uuid).copied().unwrap_or(1.0)
+fn taste_multiplier(weights: &TasteWeights, book: &TasteTitle) -> f64 {
+    weights.get(&book.work_id).copied().unwrap_or(1.0)
 }
 
 /// The multiplier `weights` gives a listening `row`: its book's multiplier,
 /// so a blended household listen counts as much as the book it is for (one
 /// when the row names no listed book).
 fn listening_multiplier(weights: &TasteWeights, row: &ListeningSignal) -> f64 {
-    row.book_uuid
+    row.work_id
         .as_deref()
-        .and_then(|uuid| weights.get(uuid))
+        .and_then(|work| weights.get(work))
         .copied()
         .unwrap_or(1.0)
 }
@@ -378,6 +378,20 @@ struct SeriesAffinity {
     max_owned_index: Option<f64>,
 }
 
+/// Every work the household holds, with everyone's finishes, ratings and
+/// tags merged onto it.
+///
+/// # Errors
+///
+/// Returns the library read error.
+pub(crate) async fn household_taste(library: &LibraryStore) -> Result<Vec<TasteTitle>> {
+    let mut titles = library.taste_titles().await?;
+    let work_ids: Vec<String> = titles.iter().map(|t| t.work_id.clone()).collect();
+    let states = library.user_title_states_for_works(&work_ids).await?;
+    bookclerk_library::apply_user_states(&mut titles, &states, &[]);
+    Ok(titles)
+}
+
 /// Build ranked recommendations for the operator (or a specific external user).
 ///
 /// # Arguments
@@ -398,7 +412,7 @@ pub async fn recommend(
     registry: &SourceRegistry,
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
-    let books = library.list_books(None).await?;
+    let books = household_taste(library).await?;
     let mut recs = recommend_all(library, registry, &books, opts).await?;
     recs.truncate(opts.limit);
     Ok(recs)
@@ -425,7 +439,7 @@ pub async fn recommend_feed(
     opts: &RecommendOptions,
 ) -> Result<crate::shelves::DiscoverFeed> {
     // One library read serves both the candidates and the shelf taste.
-    let books = library.list_books(None).await?;
+    let books = household_taste(library).await?;
     let recs = recommend_all(library, registry, &books, opts).await?;
     let listening = load_listening(library, opts).await?;
     let taste = shelf_taste(&books, &TasteWeights::new(), &listening);
@@ -458,9 +472,8 @@ pub(crate) fn feed_from_recommendations(
 ///
 /// This ranking is **not** personalized: portal `external_user_id` filters are
 /// ignored so every viewer sees the same shared queue order (the household
-/// library and all listening progress). Wishlist rows keyed as ASIN vs ISBN
-/// for the same work are merged first, as the read merges them, so each
-/// ranking's [`crate::queue_entry_key`] matches the entry the read builds.
+/// library and all listening progress). Every wish names its work, so one
+/// ranking per work matches the entry the read builds.
 ///
 /// Only taste is ranked here: the wish-count boost and the wish reasons are
 /// added when the queue is read, from the live counts, so a new wish moves an
@@ -491,7 +504,7 @@ pub async fn rank_request_queue_taste(
         return Ok(Vec::new());
     }
 
-    let books = library.list_books(None).await?;
+    let books = household_taste(library).await?;
     let listening = load_listening(library, &opts).await?;
     let profile =
         build_taste_profile(library, &books, &TasteWeights::new(), &listening, &opts).await?;
@@ -514,8 +527,7 @@ pub async fn rank_request_queue_taste(
             )
         };
         ranks.push(bookclerk_library::QueueRank {
-            entry_key: crate::request_queue::queue_entry_key(&entry),
-            work_id: Some(entry.work_id),
+            work_id: entry.work_id,
             owned,
             taste_score,
             reasons,
@@ -551,7 +563,7 @@ async fn load_listening(
 async fn recommend_all(
     library: &LibraryStore,
     registry: &SourceRegistry,
-    books: &[BookRecord],
+    books: &[TasteTitle],
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
     let (owned_asins, owned_isbns, owned_product_keys) = owned_identity_sets(books);
@@ -598,7 +610,7 @@ pub(crate) fn engagement_by_book(listening: &[ListeningSignal]) -> HashMap<Strin
         if weight <= 0.0 {
             continue;
         }
-        if let Some(uuid) = &row.book_uuid {
+        if let Some(uuid) = &row.work_id {
             by_uuid
                 .entry(uuid.clone())
                 .and_modify(|e| *e = (*e).max(weight))
@@ -615,7 +627,7 @@ pub(crate) fn engagement_by_book(listening: &[ListeningSignal]) -> HashMap<Strin
 /// `(asins, isbns, product_keys)`; ASINs upper-cased, ISBNs canonicalized,
 /// product keys both as `source:product_id` and bare `product_id`.
 pub(crate) fn owned_identity_sets(
-    books: &[BookRecord],
+    books: &[TasteTitle],
 ) -> (HashSet<String>, HashSet<String>, HashSet<String>) {
     let owned_asins: HashSet<String> = books
         .iter()
@@ -666,7 +678,7 @@ pub(crate) fn owned_identity_sets(
 pub(crate) async fn rank_candidates(
     library: &LibraryStore,
     registry: &SourceRegistry,
-    taste_books: &[BookRecord],
+    taste_books: &[TasteTitle],
     taste_weights: &TasteWeights,
     listening: &[ListeningSignal],
     candidates: Vec<crate::candidates::StorefrontCandidate>,
@@ -894,7 +906,7 @@ struct TasteProfile {
 /// Accumulates liked people/categories, series affinity, and a seed embedding centroid.
 async fn build_taste_profile(
     library: &LibraryStore,
-    books: &[BookRecord],
+    books: &[TasteTitle],
     weights: &TasteWeights,
     listening: &[ListeningSignal],
     opts: &RecommendOptions,
@@ -903,7 +915,6 @@ async fn build_taste_profile(
     let mut liked_narrators: HashMap<String, f64> = HashMap::new();
     let mut liked_categories: HashMap<String, f64> = HashMap::new();
     let mut seed_work_ids: HashSet<String> = HashSet::new();
-    let mut seed_book_uuids: Vec<String> = Vec::new();
     let mut listening_engagement_by_uuid: HashMap<String, f64> = HashMap::new();
 
     for book in books {
@@ -918,14 +929,14 @@ async fn build_taste_profile(
                 weight += 1.0;
             }
         }
-        if book.acquire_status == AcquireStatus::Acquired {
+        if book.acquired {
             weight += 0.5;
         }
         weight *= taste_multiplier(weights, book);
         if weight <= 0.0 {
             continue;
         }
-        seed_book_uuids.push(book.uuid.clone());
+        seed_work_ids.insert(book.work_id.clone());
         if let Some(authors) = &book.authors {
             for a in split_tokens_display(authors) {
                 *liked_authors.entry(a.to_lowercase()).or_default() += weight;
@@ -943,19 +954,6 @@ async fn build_taste_profile(
         }
     }
 
-    // One bulk lookup for every liked title's work. If it fails, look each
-    // title up on its own, so a failed read only loses its own seed.
-    match library.work_ids_for_books(&seed_book_uuids).await {
-        Ok(works) => seed_work_ids.extend(works.into_values()),
-        Err(_) => {
-            for uuid in &seed_book_uuids {
-                if let Ok(Some(wid)) = library.work_id_for_book(uuid).await {
-                    seed_work_ids.insert(wid);
-                }
-            }
-        }
-    }
-
     for row in listening {
         let weight = listening_engagement(row) * listening_multiplier(weights, row);
         if weight <= 0.0 {
@@ -964,7 +962,7 @@ async fn build_taste_profile(
         if let Some(wid) = &row.work_id {
             seed_work_ids.insert(wid.clone());
         }
-        if let Some(uuid) = &row.book_uuid {
+        if let Some(uuid) = &row.work_id {
             listening_engagement_by_uuid
                 .entry(uuid.clone())
                 .and_modify(|e| *e = (*e).max(weight))
@@ -1136,7 +1134,7 @@ async fn attach_purchase_hints(
 /// Returns the library read error.
 async fn library_owns_work(library: &LibraryStore, entry: &GlobalQueueEntry) -> Result<bool> {
     Ok(!library
-        .book_uuids_for_work(&entry.work_id)
+        .held_works(std::slice::from_ref(&entry.work_id))
         .await?
         .is_empty())
 }
@@ -1152,7 +1150,7 @@ async fn library_owns_work(library: &LibraryStore, entry: &GlobalQueueEntry) -> 
 /// title-and-author match). A candidate whose work has a held title is
 /// dropped. A sequel that shares
 /// its series' name is its own work and stays. Whether the works are held
-/// is read for all of them at once ([`LibraryStore::book_uuids_for_works`]).
+/// is read for all of them at once ([`LibraryStore::held_works`]).
 ///
 /// # Arguments
 ///
@@ -1202,14 +1200,10 @@ pub(crate) async fn retain_unowned_works(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    let held = if works.is_empty() {
-        std::collections::BTreeMap::new()
-    } else {
-        library.book_uuids_for_works(&works).await?
-    };
+    let held = library.held_works(&works).await?;
     Ok(placed
         .into_iter()
-        .filter(|(_, work_id)| work_id.as_ref().is_none_or(|w| !held.contains_key(w)))
+        .filter(|(_, work_id)| work_id.as_ref().is_none_or(|w| !held.contains(w)))
         .map(|(c, _)| c)
         .collect())
 }
@@ -1225,7 +1219,7 @@ pub(crate) async fn retain_unowned_works(
 /// # Returns
 ///
 /// Normalized language codes (`en`, `es`, …), never empty.
-pub(crate) fn reader_languages(taste_books: &[BookRecord]) -> HashSet<String> {
+pub(crate) fn reader_languages(taste_books: &[TasteTitle]) -> HashSet<String> {
     let mut languages: HashSet<String> = taste_books
         .iter()
         .filter_map(|b| b.language.as_deref())
@@ -1311,7 +1305,7 @@ fn upsert_recommendation(map: &mut HashMap<String, Recommendation>, rec: Recomme
 /// * `weights` - How much each book counts (see [`TasteWeights`]).
 /// * `listening` - Listening rows that add to the liked authors.
 pub(crate) fn shelf_taste(
-    books: &[BookRecord],
+    books: &[TasteTitle],
     weights: &TasteWeights,
     listening: &[ListeningSignal],
 ) -> crate::shelves::ShelfTaste {
@@ -1382,13 +1376,13 @@ pub(crate) fn shelf_taste(
 
 /// Aggregates per-series ownership, finish counts, and in-progress listen depth.
 fn build_series_affinity(
-    books: &[BookRecord],
+    books: &[TasteTitle],
     listening: &[ListeningSignal],
     listening_engagement_by_uuid: &HashMap<String, f64>,
 ) -> HashMap<String, SeriesAffinity> {
     let mut by_series: HashMap<String, SeriesAffinity> = HashMap::new();
-    let book_by_uuid: HashMap<&str, &BookRecord> =
-        books.iter().map(|b| (b.uuid.as_str(), b)).collect();
+    let book_by_uuid: HashMap<&str, &TasteTitle> =
+        books.iter().map(|b| (b.work_id.as_str(), b)).collect();
 
     for book in books {
         let Some(series) = book
@@ -1405,7 +1399,7 @@ fn build_series_affinity(
         if book.is_finished {
             entry.finished_count += 1;
         }
-        if let Some(w) = listening_engagement_by_uuid.get(&book.uuid) {
+        if let Some(w) = listening_engagement_by_uuid.get(&book.work_id) {
             if *w > 0.0 {
                 entry.listening_count += 1;
                 entry.listen_engagement_sum += *w;
@@ -1429,7 +1423,7 @@ fn build_series_affinity(
             continue;
         }
         let series = row
-            .book_uuid
+            .work_id
             .as_deref()
             .and_then(|u| book_by_uuid.get(u))
             .and_then(|b| b.series.as_deref())
@@ -1806,7 +1800,7 @@ mod tests {
             embeddings_enabled: false,
             ..RecommendOptions::default()
         };
-        let ranked = |books: Vec<BookRecord>| {
+        let ranked = |books: Vec<TasteTitle>| {
             let store = &store;
             let opts = &opts;
             async move {
@@ -1847,8 +1841,9 @@ mod tests {
         );
     }
 
-    /// A store holding one unfinished book rated 5 by "Ada Author", and its rows.
-    async fn rated_library() -> (LibraryStore, Vec<BookRecord>) {
+    /// A store holding one unfinished book rated 5 by "Ada Author", and the
+    /// household's titles.
+    async fn rated_library() -> (LibraryStore, Vec<TasteTitle>) {
         let store = bookclerk_plugin_database_sqlite::open_store_memory()
             .await
             .unwrap();
@@ -1859,10 +1854,15 @@ mod tests {
         let mut book = bookclerk_library::NewBook::minimal("B000001", "acct", "us", "Liked");
         book.authors = Some("Ada Author".into());
         let book = store.upsert_book(&book).await.unwrap();
+        let ada = store
+            .create_user(bookclerk_library::UserRole::Owner, Some("Ada"), None)
+            .await
+            .unwrap();
+        let work = store.work_id_for_book(&book.uuid).await.unwrap().unwrap();
         store
-            .update_user_fields(
-                &book.uuid,
-                "acct",
+            .set_user_title_state(
+                ada.id,
+                &work,
                 &bookclerk_library::UserBookFields {
                     rating_overall: Some(5.0),
                     ..Default::default()
@@ -1870,7 +1870,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let books = store.list_books(None).await.unwrap();
+        let books = household_taste(&store).await.unwrap();
         (store, books)
     }
 
@@ -2071,12 +2071,11 @@ mod tests {
 
     #[test]
     fn a_blended_listen_counts_at_its_book_weight() {
-        let row = |book_uuid: &str| crate::listening::ListeningSignal {
+        let row = |work_id: &str| crate::listening::ListeningSignal {
             identity_id: None,
             provider: String::from("abs"),
             external_user_id: String::from("u1"),
-            book_uuid: Some(book_uuid.to_owned()),
-            work_id: None,
+            work_id: Some(work_id.to_owned()),
             authors: Some(String::from("Ann Author")),
             progress: Some(0.5),
             current_time_seconds: Some(3_600.0),
@@ -2170,7 +2169,6 @@ mod tests {
                 identity_id: None,
                 provider: String::from("abs"),
                 external_user_id: String::from("u1"),
-                book_uuid: None,
                 work_id: None,
                 authors: None,
                 progress,
