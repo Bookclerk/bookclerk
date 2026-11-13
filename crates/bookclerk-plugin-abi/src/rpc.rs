@@ -324,6 +324,7 @@ fn fill_describe(mut b: plugin_describe::Builder<'_>, d: &PluginDescribe) -> cap
     }
     write_cli_schema(b.reborrow().init_cli(), &d.cli)?;
     crate::generated::write_catalog_capabilities(b.reborrow().init_catalog(), &d.catalog)?;
+    crate::generated::write_media_support(b.reborrow().init_media(), &d.media)?;
     Ok(())
 }
 
@@ -427,6 +428,12 @@ fn read_describe(m: plugin_describe::Reader<'_>) -> Result<PluginDescribe> {
                 .map_err(from_capnp)?
         } else {
             crate::generated::CatalogCapabilities::default()
+        },
+        media: if m.has_media() {
+            crate::generated::read_media_support(m.get_media().map_err(from_capnp)?)
+                .map_err(from_capnp)?
+        } else {
+            crate::generated::MediaSupport::default()
         },
     })
 }

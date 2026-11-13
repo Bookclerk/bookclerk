@@ -189,42 +189,56 @@ pub fn normalize_identifier(scheme: IdentifierScheme, raw: &str) -> Option<Strin
 
 /// The flat `books.content_kind` value for a work kind.
 ///
-/// Drama has no flat kind of its own and reads as `book`.
+/// A podcast that names its show (`parent_product_id`) is an `episode`; a
+/// podcast without one is the show (`podcast`).
+///
+/// # Arguments
+///
+/// * `kind` - The record's work kind.
+/// * `has_parent` - Whether the record names a parent show.
+///
+/// # Returns
+///
+/// `None` for [`WorkKind::Unspecified`], which the host refuses.
 #[must_use]
-pub fn content_kind(kind: WorkKind) -> &'static str {
+pub fn content_kind(kind: WorkKind, has_parent: bool) -> Option<&'static str> {
     match kind {
-        WorkKind::Book | WorkKind::Drama => "book",
-        WorkKind::PodcastShow => "podcast",
-        WorkKind::PodcastEpisode => "episode",
+        WorkKind::Unspecified => None,
+        WorkKind::Book => Some("book"),
+        WorkKind::Podcast if has_parent => Some("episode"),
+        WorkKind::Podcast => Some("podcast"),
     }
 }
 
 /// The work kind for a store's own item-kind label (`episode`, `podcast`).
 ///
-/// Labels a storefront uses for podcast shows (`podcast`, `parent`,
-/// `podcastparent`, `season`) read as [`WorkKind::PodcastShow`]; anything
-/// else is a book.
+/// Labels a storefront uses for podcast episodes and shows (`episode`,
+/// `podcast`, `parent`, `podcastparent`, `season`) read as
+/// [`WorkKind::Podcast`]; anything else is a book. Whether a podcast is the
+/// show or an episode is then carried by `parent_product_id`.
 #[must_use]
 pub fn work_kind_from_label(label: &str) -> WorkKind {
-    if crate::content_kind::is_episode(label) {
-        WorkKind::PodcastEpisode
-    } else if crate::content_kind::is_podcast_parent(label) {
-        WorkKind::PodcastShow
+    if crate::content_kind::is_episode(label) || crate::content_kind::is_podcast_parent(label) {
+        WorkKind::Podcast
     } else {
         WorkKind::Book
     }
 }
 
 /// The expression and media kinds an audio storefront's item has, given its
-/// work kind: podcast shows and episodes are podcast audio, everything else
-/// is a narrated audiobook.
+/// work kind: a podcast is original audio, a book a narration, and both
+/// come as downloadable audio.
+///
+/// # Returns
+///
+/// [`ExpressionKind::Unspecified`] and [`MediaKind::Unspecified`] for an
+/// unspecified work kind, so the host refuses the record.
 #[must_use]
 pub fn audio_kinds(work: WorkKind) -> (ExpressionKind, MediaKind) {
     match work {
-        WorkKind::PodcastShow | WorkKind::PodcastEpisode => {
-            (ExpressionKind::PodcastAudio, MediaKind::PodcastAudio)
-        }
-        WorkKind::Book | WorkKind::Drama => (ExpressionKind::Narration, MediaKind::Audiobook),
+        WorkKind::Unspecified => (ExpressionKind::Unspecified, MediaKind::Unspecified),
+        WorkKind::Podcast => (ExpressionKind::OriginalAudio, MediaKind::Audio),
+        WorkKind::Book => (ExpressionKind::Narration, MediaKind::Audio),
     }
 }
 
@@ -360,15 +374,18 @@ mod tests {
 
     #[test]
     fn work_kinds_round_trip_through_the_flat_label() {
-        for kind in [
-            WorkKind::Book,
-            WorkKind::PodcastShow,
-            WorkKind::PodcastEpisode,
+        for (kind, parent) in [
+            (WorkKind::Book, false),
+            (WorkKind::Podcast, false),
+            (WorkKind::Podcast, true),
         ] {
-            assert_eq!(work_kind_from_label(content_kind(kind)), kind);
+            let label = content_kind(kind, parent).unwrap();
+            assert_eq!(work_kind_from_label(label), kind);
         }
-        assert_eq!(content_kind(WorkKind::Drama), "book");
-        assert_eq!(work_kind_from_label("season"), WorkKind::PodcastShow);
+        assert_eq!(content_kind(WorkKind::Podcast, true), Some("episode"));
+        assert_eq!(content_kind(WorkKind::Podcast, false), Some("podcast"));
+        assert_eq!(content_kind(WorkKind::Unspecified, false), None);
+        assert_eq!(work_kind_from_label("season"), WorkKind::Podcast);
         assert_eq!(work_kind_from_label("anything"), WorkKind::Book);
     }
 
@@ -431,19 +448,19 @@ mod tests {
     }
 
     #[test]
-    fn podcasts_are_podcast_audio() {
-        for work in [WorkKind::PodcastShow, WorkKind::PodcastEpisode] {
-            assert_eq!(
-                audio_kinds(work),
-                (ExpressionKind::PodcastAudio, MediaKind::PodcastAudio)
-            );
-        }
-        for work in [WorkKind::Book, WorkKind::Drama] {
-            assert_eq!(
-                audio_kinds(work),
-                (ExpressionKind::Narration, MediaKind::Audiobook)
-            );
-        }
+    fn podcasts_are_original_audio() {
+        assert_eq!(
+            audio_kinds(WorkKind::Podcast),
+            (ExpressionKind::OriginalAudio, MediaKind::Audio)
+        );
+        assert_eq!(
+            audio_kinds(WorkKind::Book),
+            (ExpressionKind::Narration, MediaKind::Audio)
+        );
+        assert_eq!(
+            audio_kinds(WorkKind::Unspecified),
+            (ExpressionKind::Unspecified, MediaKind::Unspecified)
+        );
     }
 
     #[test]

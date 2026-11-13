@@ -3,6 +3,7 @@
 mod cover_sink;
 mod database;
 mod destination;
+mod declared_media;
 mod destination_local;
 mod integration;
 mod plugin_backups;

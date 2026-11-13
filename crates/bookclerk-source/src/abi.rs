@@ -119,7 +119,8 @@ pub fn scanned_title(plugin_id: &str, book: abi::ScanBook) -> Option<ScannedTitl
 ///
 /// Credits join by role, the first ISBN and ASIN fill the identifier
 /// columns (normalised), the first series entry fills the series columns,
-/// and the work kind becomes `content_kind`. An episode with no store
+/// and the work kind (with whether the record names a parent show) becomes
+/// `content_kind`. An episode with no store
 /// series id names its show through `parent_product_id`, which fills
 /// `series_asin` so the episode is filed under the show.
 ///
@@ -129,16 +130,21 @@ pub fn scanned_title(plugin_id: &str, book: abi::ScanBook) -> Option<ScannedTitl
 /// # Returns
 ///
 /// `None` for a record with a blank product id, which would overwrite
-/// another blank row, and for an ebook or print edition: the flat table has
+/// another blank row, for a record that leaves a kind unspecified (the
+/// host refuses those), and for an ebook or print edition: the flat table has
 /// no way to keep those out of acquire, so they are not stored until the
 /// library keeps editions.
 #[must_use]
 pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> Option<NewBook> {
     use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
     match book.media_kind {
-        abi::MediaKind::Audiobook | abi::MediaKind::PodcastAudio => {}
-        abi::MediaKind::Ebook | abi::MediaKind::Print => return None,
+        abi::MediaKind::Audio => {}
+        abi::MediaKind::Unspecified | abi::MediaKind::Ebook | abi::MediaKind::Print => return None,
     }
+    if book.expression_kind == abi::ExpressionKind::Unspecified {
+        return None;
+    }
+    let content_kind = records::content_kind(book.work_kind, book.parent_product_id.is_some())?;
     if book.product_id.trim().is_empty() {
         return None;
     }
@@ -149,7 +155,7 @@ pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> Option<NewBook>
         .and_then(|entry| entry.store_series_id.clone())
         .filter(non_blank)
         .or_else(|| {
-            (book.work_kind == abi::WorkKind::PodcastEpisode)
+            (book.work_kind == abi::WorkKind::Podcast)
                 .then_some(book.parent_product_id)
                 .flatten()
                 .filter(non_blank)
@@ -173,7 +179,7 @@ pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> Option<NewBook>
         publisher: book.publisher,
         length_minutes: book.length_minutes,
         is_abridged: book.abridgement == abi::Abridgement::Abridged,
-        content_kind: records::content_kind(book.work_kind).to_string(),
+        content_kind: content_kind.to_string(),
         categories: book.categories,
         subtitle: book.subtitle,
         published_at: book.published_at.as_deref().and_then(parse_rfc3339),
@@ -185,13 +191,47 @@ pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> Option<NewBook>
 mod tests {
     use super::*;
 
+    /// A scan record with every kind named: a narrated audiobook.
+    fn audio_book() -> abi::ScanBook {
+        abi::ScanBook {
+            work_kind: abi::WorkKind::Book,
+            expression_kind: abi::ExpressionKind::Narration,
+            media_kind: abi::MediaKind::Audio,
+            ..abi::ScanBook::default()
+        }
+    }
+
+    #[test]
+    fn scan_book_refuses_unspecified_kinds() {
+        for book in [
+            abi::ScanBook {
+                work_kind: abi::WorkKind::Unspecified,
+                ..audio_book()
+            },
+            abi::ScanBook {
+                expression_kind: abi::ExpressionKind::Unspecified,
+                ..audio_book()
+            },
+            abi::ScanBook {
+                media_kind: abi::MediaKind::Unspecified,
+                ..audio_book()
+            },
+        ] {
+            let book = abi::ScanBook {
+                product_id: "p".into(),
+                ..book
+            };
+            assert!(scan_book_to_new("echo", book).is_none());
+        }
+    }
+
     #[test]
     fn scan_book_forces_plugin_source() {
         let book = abi::ScanBook {
             account_id: "a".into(),
             product_id: "p".into(),
             title: "T".into(),
-            ..abi::ScanBook::default()
+            ..audio_book()
         };
         let new = scan_book_to_new("echo", book).expect("audiobook row");
         assert_eq!(new.source, "echo");
@@ -222,12 +262,12 @@ mod tests {
                 position: Some("2".into()),
                 store_series_id: Some("B0SERIES".into()),
             }],
-            work_kind: WorkKind::PodcastEpisode,
+            work_kind: WorkKind::Podcast,
             abridgement: abi::Abridgement::Abridged,
             published_at: Some("2020-01-02T00:00:00Z".into()),
             purchased_at: Some("not a date".into()),
             categories: Some("Fantasy".into()),
-            ..abi::ScanBook::default()
+            ..audio_book()
         };
         let new = scan_book_to_new("echo", book).expect("audiobook row");
         assert_eq!(new.authors.as_deref(), Some("A One, A Two"));
@@ -254,14 +294,14 @@ mod tests {
             let book = abi::ScanBook {
                 product_id: "p".into(),
                 media_kind,
-                ..abi::ScanBook::default()
+                ..audio_book()
             };
             assert!(scan_book_to_new("echo", book).is_none());
         }
         let podcast = abi::ScanBook {
             product_id: "p".into(),
-            media_kind: abi::MediaKind::PodcastAudio,
-            ..abi::ScanBook::default()
+            media_kind: abi::MediaKind::Audio,
+            ..audio_book()
         };
         assert!(scan_book_to_new("echo", podcast).is_some());
     }
@@ -270,10 +310,10 @@ mod tests {
     fn episode_parent_fills_the_series_id_only_when_none_is_given() {
         let episode = |series_entries| abi::ScanBook {
             product_id: "ep".into(),
-            work_kind: abi::WorkKind::PodcastEpisode,
+            work_kind: abi::WorkKind::Podcast,
             parent_product_id: Some("B0SHOW".into()),
             series_entries,
-            ..abi::ScanBook::default()
+            ..audio_book()
         };
         let new = scan_book_to_new("echo", episode(Vec::new())).expect("episode row");
         assert_eq!(new.series_asin.as_deref(), Some("B0SHOW"));
@@ -287,7 +327,7 @@ mod tests {
         let book = abi::ScanBook {
             product_id: "b".into(),
             parent_product_id: Some("B0SHOW".into()),
-            ..abi::ScanBook::default()
+            ..audio_book()
         };
         let new = scan_book_to_new("echo", book).expect("book row");
         assert_eq!(new.series_asin, None);
@@ -297,7 +337,7 @@ mod tests {
     fn scan_book_skips_blank_product_ids() {
         let book = abi::ScanBook {
             product_id: "  ".into(),
-            ..abi::ScanBook::default()
+            ..audio_book()
         };
         assert!(scan_book_to_new("echo", book).is_none());
     }
@@ -306,22 +346,22 @@ mod tests {
     fn blank_series_ids_fall_back_to_the_episode_parent() {
         let book = abi::ScanBook {
             product_id: "ep".into(),
-            work_kind: abi::WorkKind::PodcastEpisode,
+            work_kind: abi::WorkKind::Podcast,
             parent_product_id: Some("B0SHOW".into()),
             series_entries: vec![abi::SeriesEntry {
                 name: "Show".into(),
                 position: None,
                 store_series_id: Some(" ".into()),
             }],
-            ..abi::ScanBook::default()
+            ..audio_book()
         };
         let new = scan_book_to_new("echo", book).expect("episode row");
         assert_eq!(new.series_asin.as_deref(), Some("B0SHOW"));
         let blank_parent = abi::ScanBook {
             product_id: "ep".into(),
-            work_kind: abi::WorkKind::PodcastEpisode,
+            work_kind: abi::WorkKind::Podcast,
             parent_product_id: Some(String::new()),
-            ..abi::ScanBook::default()
+            ..audio_book()
         };
         let new = scan_book_to_new("echo", blank_parent).expect("episode row");
         assert_eq!(new.series_asin, None);
@@ -340,7 +380,7 @@ mod tests {
             .into_iter()
             .flatten()
             .collect(),
-            ..abi::ScanBook::default()
+            ..audio_book()
         };
         let new = scan_book_to_new("echo", book).expect("book row");
         assert_eq!(new.asin.as_deref(), Some("B0UK"));

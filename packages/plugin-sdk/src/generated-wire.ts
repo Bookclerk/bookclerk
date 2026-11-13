@@ -1727,13 +1727,13 @@ export const CopyResultCodec: StructCodec<T.CopyResult> = {
 };
 
 /**
- * Wire codec for `PluginDescribe` (2 data words, 11 pointers).
+ * Wire codec for `PluginDescribe` (2 data words, 12 pointers).
  *
  * @internal
  */
 export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
   dataWords: 2,
-  pointerCount: 11,
+  pointerCount: 12,
   write(s, v, caps) {
     s.setUint32(0, v.apiVersion ?? 0);
     s.setText(0, v.id ?? "");
@@ -1767,6 +1767,9 @@ export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
     if (v.catalog != null) {
       CatalogCapabilitiesCodec.write(s.initStruct(10, 1, 0), v.catalog, caps);
     }
+    if (v.media != null) {
+      MediaSupportCodec.write(s.initStruct(11, 0, 3), v.media, caps);
+    }
   },
   read(s, caps) {
     const out: T.PluginDescribe = {
@@ -1783,6 +1786,7 @@ export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
       configOptions: s.getStructList(8, 0, 3).map((item) => ConfigOptionCodec.read(item, caps)),
       cli: CliSchemaCodec.read(s.getStruct(9, 0, 1), caps),
       catalog: CatalogCapabilitiesCodec.read(s.getStruct(10, 1, 0), caps),
+      media: MediaSupportCodec.read(s.getStruct(11, 0, 3), caps),
     };
     const passwordEnvVarValue = s.getText(5);
     if (!(passwordEnvVarValue === "")) {
@@ -3197,7 +3201,7 @@ export const DescribeReplyCodec: StructCodec<T.DescribeReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          PluginDescribeCodec.write(s.initStruct(0, 2, 11), v.value, caps);
+          PluginDescribeCodec.write(s.initStruct(0, 2, 12), v.value, caps);
         }
         break;
       case "err":
@@ -3214,7 +3218,7 @@ export const DescribeReplyCodec: StructCodec<T.DescribeReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: PluginDescribeCodec.read(s.getStruct(0, 2, 11), caps) };
+        return { kind: "ok", value: PluginDescribeCodec.read(s.getStruct(0, 2, 12), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -4337,6 +4341,30 @@ export const ScanParamsCodec: StructCodec<T.ScanParams> = {
       credential: AccountCredentialCodec.read(s.getStruct(2, 0, 2), caps),
       cursor: s.getText(3),
       syncToken: s.getText(4),
+    };
+  },
+};
+
+/**
+ * Wire codec for `MediaSupport` (0 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const MediaSupportCodec: StructCodec<T.MediaSupport> = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setUint16List(0, (v.workKinds ?? []).map((v) => ord(A.WORK_KINDS, v, "WorkKind")));
+    s.setUint16List(1, (v.lists ?? []).map((v) => ord(A.MEDIA_KINDS, v, "MediaKind")));
+    s.setUint16List(2, (v.fetches ?? []).map((v) => ord(A.MEDIA_KINDS, v, "MediaKind")));
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      workKinds: s.getUint16List(0).map((v) => fromOrd(A.WORK_KINDS, v, "WorkKind")),
+      lists: s.getUint16List(1).map((v) => fromOrd(A.MEDIA_KINDS, v, "MediaKind")),
+      fetches: s.getUint16List(2).map((v) => fromOrd(A.MEDIA_KINDS, v, "MediaKind")),
     };
   },
 };

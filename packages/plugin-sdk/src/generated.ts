@@ -213,6 +213,12 @@ export interface PluginDescribe {
    * for catalog search without naming it; all false for other kinds.
    */
   catalog: CatalogCapabilities;
+  /**
+   * Work kinds and edition carriers the plugin lists and fetches; required
+   * for storefronts and metadata providers, empty lists for every other
+   * kind (see `MediaSupport`).
+   */
+  media: MediaSupport;
 }
 
 /**
@@ -1753,6 +1759,28 @@ export interface ScanParams {
   syncToken: string;
 }
 
+/**
+ * Media a plugin works with, declared in `describe()` and in the manifest's
+ * `[media]` table. Required for plugins that export the storefront or
+ * metadata entrypoint: the host refuses to spawn one whose `workKinds` or
+ * `lists` is empty, holds `unspecified`, or is wider than its manifest, and
+ * refuses any record whose kinds fall outside the declaration.
+ */
+export interface MediaSupport {
+  /** Work kinds the plugin reports. */
+  workKinds: WorkKind[];
+  /**
+   * Edition carriers the plugin reports in scans, catalog search and
+   * metadata records.
+   */
+  lists: MediaKind[];
+  /**
+   * Edition carriers `ContentSource.fetchTitle` can deliver; a subset of
+   * `lists`. Empty for metadata providers and for stores that only list.
+   */
+  fetches: MediaKind[];
+}
+
 /** One external identifier a storefront or metadata provider reports. */
 export interface Identifier {
   /** Scheme the value belongs to; it decides the identifier's level. */
@@ -1828,7 +1856,7 @@ export interface ScanBook {
   workKind: WorkKind;
   /** How the work is realised in this edition. */
   expressionKind: ExpressionKind;
-  /** Form of this edition. */
+  /** Carrier of this edition. */
   mediaKind: MediaKind;
   /** External identifiers (ISBN, ASIN, OpenLibrary ids). */
   identifiers: Identifier[];
@@ -2263,7 +2291,7 @@ export interface CatalogHit {
   workKind: WorkKind;
   /** How the work is realised in this edition. */
   expressionKind: ExpressionKind;
-  /** Form of this edition; print and ebook hits are never acquired. */
+  /** Carrier of this edition. */
   mediaKind: MediaKind;
   /** External identifiers (ISBN, ASIN, OpenLibrary ids). */
   identifiers: Identifier[];
@@ -2880,7 +2908,7 @@ export interface MetadataRecord {
   workKind: WorkKind;
   /** How the work is realised in this edition. */
   expressionKind: ExpressionKind;
-  /** Form of this edition. */
+  /** Carrier of this edition. */
   mediaKind: MediaKind;
   /** External identifiers (ISBN, ASIN, OpenLibrary ids). */
   identifiers: Identifier[];

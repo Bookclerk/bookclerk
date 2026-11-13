@@ -54,46 +54,47 @@ macro_rules! stored_enum {
 }
 
 stored_enum! {
-    /// What kind of creative work a work is (`works.kind`).
+    /// What family of creative work a work is (`works.kind`).
+    ///
+    /// Whether a podcast work is a show or an episode is structural: an
+    /// episode has a parent work (`works.parent_work_id`), a show has none.
     WorkKind {
-        /// A book, fiction or non-fiction.
+        /// A book, in any expression and on any carrier.
         Book => "book",
-        /// A podcast show; its episodes are child works.
-        PodcastShow => "podcast_show",
-        /// One podcast episode, a child work of its show.
-        PodcastEpisode => "podcast_episode",
-        /// An original audio drama that adapts no book.
-        Drama => "drama",
+        /// A podcast: the show, or one episode of it when it has a parent.
+        Podcast => "podcast",
     }
 }
 
 stored_enum! {
     /// How a work is realised (`expressions.kind`).
+    ///
+    /// A translation is not a kind: the expression's language and its
+    /// translator credits say it.
     ExpressionKind {
+        /// The written text, as sold in print and ebook editions.
+        Text => "text",
         /// A reading of the text by one or more narrators.
         Narration => "narration",
-        /// The text itself, as sold in print and ebook editions.
-        Text => "text",
-        /// A translation of the text into another language.
-        Translation => "translation",
-        /// A full-cast dramatisation or adaptation.
+        /// A full-cast dramatisation or performance.
         Dramatisation => "dramatisation",
-        /// The recorded audio of a podcast episode.
-        PodcastAudio => "podcast_audio",
+        /// Sequential art: comics, graphic novels, manga.
+        Graphic => "graphic",
+        /// Audio that is itself the first realisation: podcast episodes,
+        /// lectures, single-voice originals.
+        OriginalAudio => "original_audio",
     }
 }
 
 stored_enum! {
-    /// Physical or digital form of an edition (`editions.media_kind`).
+    /// Carrier of an edition (`editions.media_kind`).
     MediaKind {
-        /// A downloadable audiobook.
-        Audiobook => "audiobook",
-        /// An ebook; never acquired.
+        /// Downloadable audio: audiobooks and podcast episodes.
+        Audio => "audio",
+        /// A downloadable document: EPUB, PDF, CBZ and similar.
         Ebook => "ebook",
-        /// A printed book; never acquired.
+        /// A printed edition.
         Print => "print",
-        /// Podcast episode audio.
-        PodcastAudio => "podcast_audio",
     }
 }
 
@@ -227,11 +228,11 @@ impl CreditRole {
 }
 
 impl MediaKind {
-    /// Whether editions of this form are ever acquired.
+    /// Whether the host acquires editions of this carrier today.
     #[must_use]
     pub const fn acquirable(self) -> bool {
         match self {
-            Self::Audiobook | Self::PodcastAudio => true,
+            Self::Audio => true,
             Self::Ebook | Self::Print => false,
         }
     }
@@ -298,7 +299,7 @@ mod tests {
         assert_eq!(CreditRole::Author.default_level(), Level::Work);
         assert_eq!(CreditRole::Narrator.default_level(), Level::Expression);
         assert_eq!(CreditRole::Publisher.default_level(), Level::Edition);
-        assert!(MediaKind::Audiobook.acquirable());
+        assert!(MediaKind::Audio.acquirable());
         assert!(!MediaKind::Print.acquirable());
     }
 

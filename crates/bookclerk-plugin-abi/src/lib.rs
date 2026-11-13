@@ -83,6 +83,7 @@ mod host_rpc;
 mod jobs;
 pub mod json_bytes;
 pub mod kind;
+pub mod media;
 mod limits;
 pub mod methods;
 pub mod package_version;
@@ -275,6 +276,10 @@ pub use rpc_types::{
     JobInvocationLease, JobOutcome, ListOptions, ListPage, ObjectInfo, ObjectMetadata,
     OidcClientTemplate, PluginDescribe, PutResult, QueryPage, ScalarLimitsDto, WriteOptions,
     JSON_MEDIA_TYPE, MAX_CHECKPOINT_BYTES,
+};
+pub use media::{
+    check_record_kinds, media_support_is_empty, same_media_support, validate_media_support,
+    MediaError,
 };
 pub use scan_page::{
     decode_scan_page_bytes, encode_scan_page_bytes, validate_scan_page, ScanPageError,

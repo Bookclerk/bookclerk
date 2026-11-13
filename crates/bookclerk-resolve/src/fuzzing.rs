@@ -12,7 +12,8 @@
 //! - strong identifiers that name different editions never merge them;
 //!   the listing reaches one and the conflict is recorded;
 //! - a work found by identifier or matcher has the listing's kind, and an
-//!   episode matched by text shares its parent show;
+//!   episode matched by text shares its parent show, while a book or a show
+//!   never matches an episode by text, and no work becomes its own parent;
 //! - a catalog listing (recorded with no holding) never gains a holding
 //!   and never announces a holding or its own new link;
 //! - resolving the same input twice changes nothing.
@@ -325,16 +326,26 @@ fn check_link(
                     return Err(format!("joined work {} of another kind", work.id));
                 }
                 Some(WorkReason::Matcher)
-                    if listing.work_kind == WorkKind::PodcastEpisode
+                    if listing.is_episode()
                         && (last.parent_work_id.is_none()
                             || work.parent_work_id != last.parent_work_id) =>
                 {
                     return Err(format!("episode matched work {} of another show", work.id));
                 }
+                Some(WorkReason::Matcher)
+                    if !listing.is_episode() && work.parent_work_id.is_some() =>
+                {
+                    return Err(format!("book or show matched episode work {}", work.id));
+                }
                 Some(WorkReason::Identifier | WorkReason::Matcher | WorkReason::New) | None => {}
             }
         }
         LinkReason::Pinned | LinkReason::Listing | LinkReason::StrongIdentifier => {}
+    }
+
+    // A work is never its own parent: an episode never becomes its show.
+    if work.parent_work_id.as_deref() == Some(work.id.as_str()) {
+        return Err(format!("work {} became its own parent", work.id));
     }
 
     // Strong identifiers naming another edition: never merged, always recorded.

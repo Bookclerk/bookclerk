@@ -23,6 +23,9 @@ fn dune(plugin: &str, product: &str) -> ListingDraft {
             ("Frank Herbert".into(), CreditRole::Author, None),
             ("Scott Brick".into(), CreditRole::Narrator, None),
         ],
+        work_kind: Some(WorkKind::Book),
+        expression_kind: Some(ExpressionKind::Narration),
+        media_kind: Some(MediaKind::Audio),
         ..ListingDraft::default()
     }
 }
@@ -201,16 +204,16 @@ fn episodes_match_only_within_their_show() {
         plugin_key: "audible".into(),
         product_id: product.into(),
         title: format!("Show {product}"),
-        work_kind: Some(WorkKind::PodcastShow),
-        expression_kind: Some(ExpressionKind::PodcastAudio),
-        media_kind: Some(MediaKind::PodcastAudio),
+        work_kind: Some(WorkKind::Podcast),
+        expression_kind: Some(ExpressionKind::OriginalAudio),
+        media_kind: Some(MediaKind::Audio),
         credits: vec![("Host Person".into(), CreditRole::Author, None)],
         ..ListingDraft::default()
     };
     let episode = |product: &str, parent: &str| ListingDraft {
         product_id: product.into(),
         title: "Trailer".into(),
-        work_kind: Some(WorkKind::PodcastEpisode),
+        work_kind: Some(WorkKind::Podcast),
         parent_product_id: Some(parent.into()),
         ..show(product)
     };
@@ -317,9 +320,9 @@ fn work_identifiers_join_works_of_the_same_kind_only() {
         work_of(&c, &a.listing.edition_id)
     );
 
-    let mut drama = with_id(dune("ga", "G1"), IdentifierScheme::OpenLibraryWork, "OL1W");
-    drama.work_kind = Some(WorkKind::Drama);
-    let d = record(&mut c, &drama, "g1");
+    let mut podcast_show = with_id(dune("ga", "G1"), IdentifierScheme::OpenLibraryWork, "OL1W");
+    podcast_show.work_kind = Some(WorkKind::Podcast);
+    let d = record(&mut c, &podcast_show, "g1");
     assert_eq!(d.work_reason, Some(WorkReason::New));
     assert!(d
         .conflicts
@@ -424,16 +427,16 @@ fn an_episode_seen_before_its_show_gains_it_later() {
         plugin_key: "audible".into(),
         product_id: "S1".into(),
         title: "Show".into(),
-        work_kind: Some(WorkKind::PodcastShow),
-        expression_kind: Some(ExpressionKind::PodcastAudio),
-        media_kind: Some(MediaKind::PodcastAudio),
+        work_kind: Some(WorkKind::Podcast),
+        expression_kind: Some(ExpressionKind::OriginalAudio),
+        media_kind: Some(MediaKind::Audio),
         credits: vec![("Host Person".into(), CreditRole::Author, None)],
         ..ListingDraft::default()
     };
     let episode = ListingDraft {
         product_id: "E1".into(),
         title: "Trailer".into(),
-        work_kind: Some(WorkKind::PodcastEpisode),
+        work_kind: Some(WorkKind::Podcast),
         parent_product_id: Some("S1".into()),
         ..show.clone()
     };
@@ -519,9 +522,9 @@ fn a_match_key_another_work_holds_is_not_copied() {
 #[test]
 fn a_later_work_identifier_of_the_listings_kind_still_joins() {
     let mut c = MemoryCatalog::default();
-    let mut drama = with_id(dune("ga", "G1"), IdentifierScheme::OpenLibraryWork, "OL2W");
-    drama.work_kind = Some(WorkKind::Drama);
-    let d = record(&mut c, &drama, "g1");
+    let mut podcast_show = with_id(dune("ga", "G1"), IdentifierScheme::OpenLibraryWork, "OL2W");
+    podcast_show.work_kind = Some(WorkKind::Podcast);
+    let d = record(&mut c, &podcast_show, "g1");
     let book = record(
         &mut c,
         &with_id(
@@ -548,15 +551,16 @@ fn a_later_work_identifier_of_the_listings_kind_still_joins() {
     }));
 }
 
-/// A podcast listing of `kind` sold as `product`, titled `title`.
+/// A listing of `kind` sold as `product`, titled `title`; with `parent`
+/// a podcast is an episode of that show.
 fn podcast(product: &str, title: &str, kind: WorkKind, parent: Option<&str>) -> ListingDraft {
     ListingDraft {
         plugin_key: "audible".into(),
         product_id: product.into(),
         title: title.into(),
         work_kind: Some(kind),
-        expression_kind: Some(ExpressionKind::PodcastAudio),
-        media_kind: Some(MediaKind::PodcastAudio),
+        expression_kind: Some(ExpressionKind::OriginalAudio),
+        media_kind: Some(MediaKind::Audio),
         credits: vec![("Host Person".into(), CreditRole::Author, None)],
         parent_product_id: parent.map(Into::into),
         ..ListingDraft::default()
@@ -568,11 +572,11 @@ fn an_episode_takes_only_a_show_as_its_parent() {
     let mut c = MemoryCatalog::default();
     let mut not_a_show = podcast("S1", "Show", WorkKind::Book, None);
     not_a_show.expression_kind = Some(ExpressionKind::Narration);
-    not_a_show.media_kind = Some(MediaKind::Audiobook);
+    not_a_show.media_kind = Some(MediaKind::Audio);
     record(&mut c, &not_a_show, "a1");
     let episode = record(
         &mut c,
-        &podcast("E1", "Trailer", WorkKind::PodcastEpisode, Some("S1")),
+        &podcast("E1", "Trailer", WorkKind::Podcast, Some("S1")),
         "a1",
     );
     assert!(episode.new_work.unwrap().parent_work_id.is_none());
@@ -583,18 +587,18 @@ fn a_shared_isbn_does_not_join_episodes_of_two_shows() {
     let mut c = MemoryCatalog::default();
     record(
         &mut c,
-        &podcast("S1", "One", WorkKind::PodcastShow, None),
+        &podcast("S1", "One", WorkKind::Podcast, None),
         "a1",
     );
     record(
         &mut c,
-        &podcast("S2", "Two", WorkKind::PodcastShow, None),
+        &podcast("S2", "Two", WorkKind::Podcast, None),
         "a1",
     );
     let first = record(
         &mut c,
         &with_id(
-            podcast("E1", "Trailer", WorkKind::PodcastEpisode, Some("S1")),
+            podcast("E1", "Trailer", WorkKind::Podcast, Some("S1")),
             IdentifierScheme::Isbn,
             "9780593288368",
         ),
@@ -603,7 +607,7 @@ fn a_shared_isbn_does_not_join_episodes_of_two_shows() {
     let second = record(
         &mut c,
         &with_id(
-            podcast("E2", "Trailer", WorkKind::PodcastEpisode, Some("S2")),
+            podcast("E2", "Trailer", WorkKind::Podcast, Some("S2")),
             IdentifierScheme::Isbn,
             "9780593288368",
         ),
@@ -702,4 +706,26 @@ fn a_catalog_listing_from_another_store_joins_the_held_work() {
         work_of(&c, &held.listing.edition_id)
     );
     assert_eq!(c.holdings.len(), 1);
+}
+
+#[test]
+fn a_show_never_matches_an_episode_waiting_for_its_show() {
+    let mut c = MemoryCatalog::default();
+    // The trailer carries the show's own title and host, and arrives first.
+    let first = record(
+        &mut c,
+        &podcast("E1", "Show", WorkKind::Podcast, Some("S1")),
+        "a1",
+    );
+    assert!(first.new_work.as_ref().unwrap().match_key.is_empty());
+    let show = record(&mut c, &podcast("S1", "Show", WorkKind::Podcast, None), "a1");
+    assert_eq!(show.work_reason, Some(WorkReason::New));
+    // Linked to its show on the next sight, the episode gains its key.
+    let linked = record(
+        &mut c,
+        &podcast("E1", "Show", WorkKind::Podcast, Some("S1")),
+        "a1",
+    );
+    assert!(linked.work_parent.is_some());
+    assert!(linked.work_match_key.is_some());
 }

@@ -116,7 +116,7 @@ pub use consent::{
     node_logical_cpus, overlay_host_implied_network, pending_structural, percent_to_cores,
     queue_consumer_grant, queue_producer_grant, reconcile_host_overlay_authority, require_binding,
     require_grant, spawn_config_for_grant, spawn_grant, validate_approved_grant,
-    validate_described_capabilities, validate_described_config_options,
+    validate_described_capabilities, validate_described_config_options, validate_described_media,
     windows_session_active_processes, GrantedEventConsumer, PendingStructural, PluginGrant,
     PluginGrantStore, GRANTS_FILE, GRANT_SCHEMA_VERSION, KNOWN_HOST_BINDINGS, PENDING_HEADER,
     PLUGIN_JAIL_ACTIVE_PROCESSES_MAX, PLUGIN_JAIL_CPU_CORES_DEFAULT, PLUGIN_JAIL_CPU_RATE_DEFAULT,

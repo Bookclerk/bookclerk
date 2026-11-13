@@ -590,19 +590,15 @@ fn edition_listing(node_id: &str, edition: &LookupEdition) -> CatalogListing {
         .content_kind
         .as_deref()
         .is_some_and(crate::models::is_episode);
-    let (work_kind, expression_kind, media_kind) = if episode {
-        (
-            resolve::WorkKind::PodcastEpisode,
-            resolve::ExpressionKind::PodcastAudio,
-            resolve::MediaKind::PodcastAudio,
-        )
+    // Branch answers name no parent show, so an episode is stored as a
+    // podcast without one; the answer is only kept when it lands on the
+    // asked work.
+    let (work_kind, expression_kind) = if episode {
+        (resolve::WorkKind::Podcast, resolve::ExpressionKind::OriginalAudio)
     } else {
-        (
-            resolve::WorkKind::Book,
-            resolve::ExpressionKind::Narration,
-            resolve::MediaKind::Audiobook,
-        )
+        (resolve::WorkKind::Book, resolve::ExpressionKind::Narration)
     };
+    let media_kind = resolve::MediaKind::Audio;
     CatalogListing {
         draft: resolve::ListingDraft {
             plugin_key: branch_listing_key(node_id),

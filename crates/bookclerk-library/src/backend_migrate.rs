@@ -291,11 +291,11 @@ mod tests {
             .unwrap();
         // The episode's row comes first in storage order, then gains its
         // parent once the show exists.
-        work("w_episode", "podcast_episode")
+        work("w_episode", "podcast")
             .insert(&source)
             .await
             .unwrap();
-        work("w_show", "podcast_show")
+        work("w_show", "podcast")
             .insert(&source)
             .await
             .unwrap();

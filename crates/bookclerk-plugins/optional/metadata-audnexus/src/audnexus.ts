@@ -346,7 +346,7 @@ export function recordFromBook(body: unknown, request: AsinRequest): MetadataRec
     abridgement: abridgement(b.formatType),
     workKind: "book",
     expressionKind: "narration",
-    mediaKind: "audiobook",
+    mediaKind: "audio",
     identifiers,
     credits,
     seriesEntries,

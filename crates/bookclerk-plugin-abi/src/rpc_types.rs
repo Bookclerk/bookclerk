@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::generated::{
-    Brand, CatalogCapabilities, CliSchema, ConfigOption, Entrypoint, PluginCapabilities,
+    Brand, CatalogCapabilities, CliSchema, ConfigOption, Entrypoint, MediaSupport, PluginCapabilities,
     PortalAuthMode,
 };
 use crate::limits::{ScalarLimits, PRODUCT_API_VERSION};
@@ -60,6 +60,11 @@ pub struct PluginDescribe {
     /// all false for other kinds and for storefronts that declare none.
     #[serde(default)]
     pub catalog: CatalogCapabilities,
+    /// The work kinds and carriers the plugin lists and fetches. Required
+    /// (non-empty) for storefronts and metadata providers and equal to the
+    /// manifest's `[media]` table; empty for every other plugin.
+    #[serde(default)]
+    pub media: MediaSupport,
 }
 
 impl Default for PluginDescribe {
@@ -79,6 +84,7 @@ impl Default for PluginDescribe {
             config_options: Vec::new(),
             cli: CliSchema::default(),
             catalog: CatalogCapabilities::default(),
+            media: MediaSupport::default(),
         }
     }
 }

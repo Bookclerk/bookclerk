@@ -64,7 +64,7 @@ pub use db_binding::{
 pub use error::{Result, SdkError};
 pub use fetch_dir::{fetch_work_dir, upload_file_path, FetchWorkDir, UploadFile};
 pub use json::{decode as decode_json, encode as encode_json, encode_atomic_result, page_rows};
-pub use manifest_caps::manifest_capabilities;
+pub use manifest_caps::{manifest_capabilities, manifest_media};
 pub use net::{
     connect as connect_socket, nested_native_jail_requested, ConnectOptions, PluginSocket,
     SecureTransport, SocketAddress, GUEST_IPC_DIR_ENV, NESTED_NATIVE_JAIL_ENV,
@@ -81,7 +81,7 @@ pub use protocol::{
     CliInvokeResult, CliSchema, ConfigOption, ConfigOptionValue, Credit, CreditLevel, CreditRole,
     EventPollResult, ExpandCandidatesParams, ExpressionKind, ExternalUser, FetchOptions,
     FetchTitleParams, Identifier, IdentifierScheme, ListDealsParams, ListeningProgress,
-    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MediaKind,
+    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MediaKind, MediaSupport,
     OutputLocalContextDto, OutputS3ContextDto, PlainFetch, PlainPart, PortalAuthMode, PurchaseHint,
     PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, PurchaseHintsResult,
     RevokeAccountParams, S3CredentialsDto, ScanBook, ScanLibraryParams, ScanPage, ScanParams,

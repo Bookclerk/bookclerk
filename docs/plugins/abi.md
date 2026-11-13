@@ -1020,6 +1020,43 @@ Both default to off. The first-party storefronts declare them as follows:
 Audible ranks its hits, Libro.fm answers ISBN lookups, and Chirp and
 GraphicAudio declare neither.
 
+#### Declaring media
+
+Storefronts and metadata providers must declare the media they work with,
+in `plugin.toml` and in `describe()`. There is no default:
+
+```toml
+[media]
+works = ["book", "podcast"]   # work kinds the plugin reports
+lists = ["audio"]             # carriers it reports in scans, search and records
+fetches = ["audio"]           # carriers fetchTitle can deliver (storefronts only)
+```
+
+`describe()` returns the same lists as `media: { workKinds, lists,
+fetches }`. The host refuses to spawn a storefront or metadata provider
+whose `works` or `lists` is empty or names `unspecified`, whose `fetches`
+names a carrier `lists` does not, or whose `describe()` disagrees with
+`plugin.toml`. Every other plugin leaves `[media]` out. Because the
+declaration is in the manifest, the host can tell what a sleeping plugin
+sells without starting it.
+
+The SDKs fill `media` from the manifest. A TypeScript or Python plugin gets
+it with the rest of the manifest projection, and a Rust plugin sets
+`media: manifest_media(include_str!("../plugin.toml"))?` beside
+`manifest_capabilities`.
+
+The host then checks each record against it: a scan page with a record
+whose kinds are unspecified or outside the declaration is refused whole,
+and such catalog hits and metadata records are dropped. The first-party
+plugins declare:
+
+| Plugin | `works` | `lists` | `fetches` |
+| --- | --- | --- | --- |
+| Audible | `book`, `podcast` | `audio` | `audio` |
+| Libro.fm, Chirp, GraphicAudio | `book` | `audio` | `audio` |
+| OpenLibrary (metadata) | `book` | `print` | none |
+| Audnexus (metadata) | `book` | `audio` | none |
+
 #### Book records
 
 `scan` returns `ScanBook` records, and the catalog methods (`searchCatalog`,
@@ -1029,14 +1066,21 @@ records. Both describe a title in structured fields, following the
 
 | Field | Meaning |
 | --- | --- |
-| `workKind` | `book` (the default), `podcastShow`, `podcastEpisode` or `drama` |
-| `expressionKind` | `narration` (the default), `text`, `translation`, `dramatisation` or `podcastAudio`. A full-cast production is a `dramatisation` |
-| `mediaKind` | `audiobook` (the default), `ebook`, `print` or `podcastAudio`. Ebook and print records show in Discover but are never acquired |
+| `workKind` | `book` or `podcast`. A podcast record that sets `parentProductId` is an episode of that show; one without it is the show |
+| `expressionKind` | `text`, `narration`, `dramatisation`, `graphic` (comics, graphic novels) or `originalAudio` (podcast episodes, lectures and other audio that reads no text). A full-cast production is a `dramatisation`. A translation is not a kind: set `language` and credit the translator |
+| `mediaKind` | `audio`, `ebook` (any downloadable document: EPUB, PDF, CBZ) or `print`. Whether the host acquires an edition depends on the storefront's [`fetches`](#declaring-media) and on what the host supports, not on this field alone |
 | `identifiers` | `{ scheme, value, marketplace? }` entries. `scheme` is `isbn` (ISBN-10 or ISBN-13), `asin` (set `marketplace`), `openLibraryEdition` or `openLibraryWork`. The host trims each value, upper-cases ASINs, and turns a valid ISBN-10 into its ISBN-13 |
 | `credits` | `{ name, role, level }` entries in billing order, one person or body per entry. `role` is `author` (the default), `narrator`, `translator`, `editor`, `illustrator`, `publisher`, `host`, `cast` or `adaptor`. Set `level` to `roleDefault` unless the credit sits somewhere unusual: by default authors and adaptors credit the work, narrators, translators, hosts and cast the expression, and editors, illustrators and publishers the edition |
 | `seriesEntries` | `{ name, position?, storeSeriesId? }` entries, one per series the work belongs to. `position` is the label as the store prints it (`1`, `2.5`, `1-3`) |
-| `parentProductId` | The show's product id, on a podcast episode |
+| `parentProductId` | The show's product id, on a podcast episode. Only podcasts keep it |
 | `language`, `abridgement` | Content language, and `unknown` (the default), `unabridged` or `abridged` |
+
+Every record names all three kinds. Each kind enum starts with
+`unspecified`, which is what a record that forgets the field sends, and
+the host refuses such a record rather than guessing. An audiobook is
+`book` + `narration` + `audio`, a podcast episode `podcast` +
+`originalAudio` + `audio`, and a digital comic `book` + `graphic` +
+`ebook`.
 
 `ScanBook` also carries `publishedAt` and `purchasedAt` (RFC 3339) and
 `categories`.
@@ -1052,7 +1096,7 @@ names, send one credit per name; split a display string such as
 > entry fills the series columns. An episode with no `storeSeriesId` is
 > filed under the show named by `parentProductId`. Ebook and print scan
 > records are not stored yet, since the flat row cannot keep them out of
-> acquire.
+> acquire, and records with an unspecified kind are never stored.
 
 ### Metadata providers
 

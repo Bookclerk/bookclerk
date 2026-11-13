@@ -7,6 +7,11 @@ runtime = "native"
 command = "./bookclerk-plugin-source-libro"
 entrypoints = ["storefront"]
 
+[media]
+works = ["book"]
+lists = ["audio"]
+fetches = ["audio"]
+
 [capabilities.network]
 mode = "outbound"
 tcp = [

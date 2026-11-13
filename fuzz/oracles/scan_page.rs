@@ -11,16 +11,27 @@
 //!
 //! - decoding and validation never panic;
 //! - [`validate_scan_page`] accepts the page exactly when the independent
-//!   recount below finds every bound and pass rule kept;
+//!   recount below finds every bound and pass rule kept, against a fixed
+//!   declaration of audio books and podcasts (every title names all three
+//!   kinds, its work kind is book or podcast and its carrier is audio);
 //! - an accepted page re-encodes, decodes back equal, and is accepted again.
 
 use bookclerk_plugin_abi::{
-    decode_scan_page_bytes, encode_scan_page_bytes, validate_scan_page, ScanPage,
-    MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
+    decode_scan_page_bytes, encode_scan_page_bytes, validate_scan_page, ExpressionKind,
+    MediaKind, MediaSupport, ScanPage, WorkKind, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
 };
 
 /// Largest input worth decoding; real pages at every cap are far smaller.
 pub const MAX_INPUT_BYTES: usize = 256 * 1024;
+
+/// The storefront declaration every input is checked against.
+fn declaration() -> MediaSupport {
+    MediaSupport {
+        work_kinds: vec![WorkKind::Book, WorkKind::Podcast],
+        lists: vec![MediaKind::Audio],
+        fetches: vec![MediaKind::Audio],
+    }
+}
 
 /// Splits one length-prefixed field off `data`.
 fn take(data: &[u8]) -> Option<(String, &[u8])> {
@@ -43,7 +54,11 @@ fn keeps_every_rule(page: &ScanPage, sent: &str, account: &str) -> bool {
         && page.sync_token.len() <= cursor_cap
         && (page.next_cursor.is_empty() || page.next_cursor != sent)
         && page.books.iter().all(|b| {
-            (b.account_id.is_empty() || b.account_id == account) && !b.product_id.trim().is_empty()
+            (b.account_id.is_empty() || b.account_id == account)
+                && !b.product_id.trim().is_empty()
+                && matches!(b.work_kind, WorkKind::Book | WorkKind::Podcast)
+                && b.expression_kind != ExpressionKind::Unspecified
+                && b.media_kind == MediaKind::Audio
         })
         && page.removed.iter().all(|id| !id.trim().is_empty())
 }
@@ -62,7 +77,8 @@ pub fn check(data: &[u8]) {
     let Ok(page) = decode_scan_page_bytes(message) else {
         return;
     };
-    let verdict = validate_scan_page(&page, &sent, &account);
+    let media = declaration();
+    let verdict = validate_scan_page(&page, &sent, &account, &media);
     assert_eq!(
         verdict.is_ok(),
         keeps_every_rule(&page, &sent, &account),
@@ -74,6 +90,6 @@ pub fn check(data: &[u8]) {
         let again = decode_scan_page_bytes(&bytes)
             .unwrap_or_else(|err| panic!("an encoded page must decode: {err}"));
         assert_eq!(again, page, "an accepted page round-trips");
-        assert!(validate_scan_page(&again, &sent, &account).is_ok());
+        assert!(validate_scan_page(&again, &sent, &account, &media).is_ok());
     }
 }

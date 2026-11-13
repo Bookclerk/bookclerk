@@ -22,7 +22,7 @@ pub use bookclerk_plugin_abi::{
     CliInvokeResult, CliSchema, ConfigOption, ConfigOptionValue, Credit, CreditLevel, CreditRole,
     EventPollResult, ExpandCandidatesParams, ExpressionKind, ExternalUser, FetchOptions,
     FetchTitleParams, Identifier, IdentifierScheme, ListDealsParams, ListeningProgress,
-    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MediaKind,
+    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MediaKind, MediaSupport,
     OutputLocalContextDto, OutputS3ContextDto, PlainFetch, PlainPart, PortalAuthMode, PurchaseHint,
     PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, PurchaseHintsResult,
     RevokeAccountParams, S3CredentialsDto, ScanBook, ScanLibraryParams, ScanPage, ScanParams,

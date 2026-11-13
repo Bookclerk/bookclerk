@@ -162,13 +162,13 @@ pub async fn lookup_by_metadata_with_client(
 
     let mut best: Option<ScoredMatch> = None;
     for asin in asins {
-        // Every provider's audiobook record for this ASIN is scored, so a
+        // Every provider's audio record for this ASIN is scored, so a
         // sparse first record cannot hide a complete later one. Ebook and
         // print records never describe the Audible edition being matched.
         let candidates = records_for_asin(providers, &asin, &region)
             .await
             .into_iter()
-            .filter(|record| record.media_kind == MediaKind::Audiobook)
+            .filter(|record| record.media_kind == MediaKind::Audio)
             .filter_map(|record| enrichment_from_record(&record, &asin));
         for enrichment in candidates {
             best = better_match(best, enrichment, query, min_confidence);

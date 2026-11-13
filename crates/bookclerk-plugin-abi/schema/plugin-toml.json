@@ -39,6 +39,28 @@
         "enum": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers"]
       }
     },
+    "media": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Work kinds and edition carriers the plugin works with. Required, with non-empty works and lists, for a plugin exporting the storefront or metadata entrypoint; forbidden for every other plugin. describe() must declare the same kinds.",
+      "properties": {
+        "works": {
+          "type": "array",
+          "description": "Work kinds the plugin reports.",
+          "items": { "type": "string", "enum": ["book", "podcast"] }
+        },
+        "lists": {
+          "type": "array",
+          "description": "Edition carriers the plugin reports in scans, catalog search and metadata records.",
+          "items": { "type": "string", "enum": ["audio", "ebook", "print"] }
+        },
+        "fetches": {
+          "type": "array",
+          "description": "Edition carriers fetchTitle can deliver; a subset of lists. Storefronts only.",
+          "items": { "type": "string", "enum": ["audio", "ebook", "print"] }
+        }
+      }
+    },
     "workerd": { "$ref": "#/$defs/WorkerdRuntime" },
     "modules": {
       "type": "array",
@@ -139,6 +161,26 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entrypoints": {
+            "anyOf": [{ "contains": { "const": "storefront" } }, { "contains": { "const": "metadata" } }]
+          }
+        },
+        "required": ["entrypoints"]
+      },
+      "then": {
+        "required": ["media"],
+        "properties": {
+          "media": {
+            "required": ["works", "lists"],
+            "properties": { "works": { "minItems": 1 }, "lists": { "minItems": 1 } }
+          }
+        }
+      },
+      "else": { "properties": { "media": false } }
     }
   ],
   "$defs": {

@@ -1,6 +1,6 @@
 # ADR: Library data model (works, expressions, editions, holdings)
 
-- **Status:** Accepted; steps 1 to 4 implemented, with file quality moved to step 5 and the naming discriminator replaced by a required `<library id>` tag (see [Status of the work](#status-of-the-work))
+- **Status:** Accepted; steps 1 to 4 implemented, with file quality moved to step 5 and the naming discriminator replaced by a required `<library id>` tag (see [Status of the work](#status-of-the-work)). Amended 2026-11-13: the kind enums were reshaped for mixed media and every kind became required (decisions 1 and 5)
 - **Date:** 2026-11-04
 - **Related:** [Schema versioning](schema-versioning.md),
   [SQL database contract](sql-database-contract.md),
@@ -75,21 +75,39 @@ for features that model already describes.
 | **Expression** | One realisation of a work: the text, a narration, a translation, a dramatisation, an abridgement | Work, `kind`, language, abridgement, narrator, translator and cast credits |
 | **Edition** | One release of an expression | Expression, `media_kind`, publisher credits, published date, duration or page count, cover, identifiers |
 
-`works.kind` is a closed enum: `book`, `podcast_show`, `podcast_episode`,
-`drama`. Podcasts use the parent link: the show is a work, each episode is a
-work whose `parent_work_id` is the show, and each episode has its own
-expression and edition. Naming's `podcast` and `podcastparent` conditions read
-the parent link.
+Each level answers one question, and no value repeats across levels:
 
-`expressions.kind` is a closed enum: `text`, `narration`, `translation`,
-`dramatisation`, `podcast_audio`. Abridgement (`unknown`, `unabridged`,
-`abridged`) lives on the expression, because an abridged text is a different
-realisation of the work.
+| Enum | Question | Values |
+| --- | --- | --- |
+| `works.kind` | What family of creative work is it? | `book`, `podcast` |
+| `expressions.kind` | How was the work realised? | `text`, `narration`, `dramatisation`, `graphic`, `original_audio` |
+| `editions.media_kind` | What carrier do you get? | `audio`, `ebook`, `print` |
 
-`editions.media_kind` is a closed enum: `audiobook`, `ebook`, `print`,
-`podcast_audio`. Print and ebook editions are stored, not dropped: they show
-in discover and their ISBNs help tie audio editions to a work. They are never
-acquire candidates.
+Podcasts use the parent link: the show is a `podcast` work with no parent,
+and each episode is a `podcast` work whose `parent_work_id` is the show,
+with its own expression and edition. Whether a podcast is a show or an
+episode is that link, not a separate kind. An episode whose show is not
+resolved yet is stored with an empty match key, so a show can never match
+it by text; it gains its key when it is linked to its show. Naming's
+`podcast` and `podcastparent` conditions read the parent link.
+
+`dramatisation` covers full-cast productions, whether they adapt a book
+(GraphicAudio) or are original audio dramas: both are `book` works.
+`graphic` is sequential art (comics, graphic novels, manga), so a digital
+comic is `book` + `graphic` + `ebook`. `original_audio` is audio that is
+itself the first realisation rather than a reading of a text: podcast
+episodes, lectures, single-voice originals. A translation is not a kind:
+the expression's language against the work's original language, plus
+translator credits, say it. Abridgement (`unknown`, `unabridged`,
+`abridged`) lives on the expression, because an abridged text is a
+different realisation of the work.
+
+`ebook` covers any downloadable document (EPUB, PDF, CBZ). Print and ebook
+editions are stored, not dropped: they show in discover and their ISBNs
+help tie audio editions to a work. Whether an edition is acquired depends
+on a storefront that declares it can fetch that carrier (see
+[Plugin ABI: declaring media](../plugins/abi.md#declaring-media)) and on
+what the host supports; today the host acquires `audio` only.
 
 Each enum is a Rust enum matched exhaustively, a capnp enum on the wire, and a
 `CHECK` constraint in SQL. A new variant is appended in all three at once.
@@ -167,7 +185,8 @@ expression and a work:
    (duration, narrator) and treats any ten-character alphanumeric title as an
    ASIN. A matcher hit joins the work when the kind is the same and, for a
    podcast episode, the parent show is the same, so two shows by one host
-   never share an episode called "Trailer". In the rare case that two
+   never share an episode called "Trailer". A book or a show only matches
+   works without a parent, so a show never joins one of its episodes. In the rare case that two
    existing works already match (an Administrator split them), the listing
    joins neither and the choice goes to the Administrator. A wrong
    automatic merge is undone by an override that splits the work.
@@ -179,7 +198,8 @@ and a replay test, with an oracle that checks: one strong identifier never
 maps to two editions, a weak identifier alone never merges two editions with
 incompatible expressions or media kinds, editions with conflicting strong
 identifiers are never merged, works of different kinds are never merged,
-and resolving the same input twice changes
+a book or show never matches an episode by text, no work becomes its own
+parent, and resolving the same input twice changes
 nothing
 ([fuzzing ADR](untrusted-input-fuzzing.md)).
 
@@ -209,22 +229,23 @@ queries go through SQL-v1.
   `categories`, which the scan path used to drop.
 
 Cap'n Proto reads an absent enum field as ordinal 0, so ordinal 0 is
-always the value a guest gets when it says nothing. The schema is
-unreleased, so there are no older guests to tell apart, and the new enums
-follow the rule the schema already uses (`CatalogSort`, `Entrypoint`):
+always the value a guest gets when it says nothing. Two rules decide what
+ordinal 0 means:
 
-- Ordinal 0 is the common case: `book` for `WorkKind`, `audiobook` for
-  `MediaKind`, `narration` for `ExpressionKind`, `isbn` for
-  `IdentifierScheme`, `author` for the credit role and `roleDefault` for
-  the credit level. A guest that returns anything else sets the field, and
-  each first-party storefront's tests check that it does.
-- `unknown @0` is used only where a source can honestly not know the
-  answer, and the resolver treats unknown differently from any known value.
-  Today that is `Abridgement`, which already works this way.
+- For the three kinds, ordinal 0 is `unspecified`, and the host refuses a
+  record that leaves any kind on it. Every record names all three, so a
+  guest that forgets a field fails loudly instead of describing an
+  audiobook by accident. The same holds for the media declaration in
+  `describe()` and `plugin.toml`, which has no default either.
+- Elsewhere ordinal 0 is the common case: `isbn` for `IdentifierScheme`,
+  `author` for the credit role and `roleDefault` for the credit level.
+  `unknown @0` is used only where a source can honestly not know the
+  answer, and the resolver treats unknown differently from any known
+  value. Today that is `Abridgement`.
 
-After the v1 freeze the same rule decides any enum field added later:
-ordinal 0 must then be the right answer for a guest built before the field
-existed.
+After the v1 freeze the same rules decide any enum field added later:
+either ordinal 0 is the right answer for a guest built before the field
+existed, or it is `unspecified` and the field is required from the start.
 
 The flat text fields they replace (`authors`, `narrators`, `asin`, `isbn`,
 `contentKind`, `series`, `seriesIndex`) are removed from both records, and

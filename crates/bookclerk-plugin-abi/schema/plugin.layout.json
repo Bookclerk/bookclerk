@@ -8046,6 +8046,55 @@
         }
       ]
     },
+    "MediaSupport": {
+      "name": "MediaSupport",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "workKinds",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "enum",
+              "name": "WorkKind"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "lists",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "enum",
+              "name": "MediaKind"
+            }
+          },
+          "offset": 1
+        },
+        {
+          "name": "fetches",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "enum",
+              "name": "MediaKind"
+            }
+          },
+          "offset": 2
+        }
+      ]
+    },
     "MetadataChapter": {
       "name": "MetadataChapter",
       "file": "plugin.capnp",
@@ -9542,7 +9591,7 @@
       "name": "PluginDescribe",
       "file": "plugin.capnp",
       "dataWords": 2,
-      "pointerCount": 11,
+      "pointerCount": 12,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -9687,6 +9736,16 @@
             "name": "CatalogCapabilities"
           },
           "offset": 10
+        },
+        {
+          "name": "media",
+          "codeOrder": 14,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MediaSupport"
+          },
+          "offset": 11
         }
       ]
     },
@@ -12804,11 +12863,12 @@
       "name": "ExpressionKind",
       "file": "plugin.capnp",
       "enumerants": [
-        "narration",
+        "unspecified",
         "text",
-        "translation",
+        "narration",
         "dramatisation",
-        "podcastAudio"
+        "graphic",
+        "originalAudio"
       ]
     },
     "IdentifierScheme": {
@@ -12844,10 +12904,10 @@
       "name": "MediaKind",
       "file": "plugin.capnp",
       "enumerants": [
-        "audiobook",
+        "unspecified",
+        "audio",
         "ebook",
-        "print",
-        "podcastAudio"
+        "print"
       ]
     },
     "PluginErrorCode": {
@@ -12895,10 +12955,9 @@
       "name": "WorkKind",
       "file": "plugin.capnp",
       "enumerants": [
+        "unspecified",
         "book",
-        "podcastShow",
-        "podcastEpisode",
-        "drama"
+        "podcast"
       ]
     }
   },

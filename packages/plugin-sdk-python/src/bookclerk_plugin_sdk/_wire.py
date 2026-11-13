@@ -272,6 +272,7 @@ def _write_plugin_describe(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _config_option_codec.write(item, elem, caps)
     _cli_schema_codec.write(s.init_struct(9, 0, 1), v["cli"], caps)
     _catalog_capabilities_codec.write(s.init_struct(10, 1, 0), v["catalog"], caps)
+    _media_support_codec.write(s.init_struct(11, 0, 3), v["media"], caps)
 
 
 def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
@@ -289,6 +290,7 @@ def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
         "configOptions": [_config_option_codec.read(item, caps) for item in s.get_struct_list(8, 0, 3)],
         "cli": _cli_schema_codec.read(s.get_struct(9, 0, 1), caps),
         "catalog": _catalog_capabilities_codec.read(s.get_struct(10, 1, 0), caps),
+        "media": _media_support_codec.read(s.get_struct(11, 0, 3), caps),
     }
     password_env_var = s.get_text(5)
     if not (password_env_var == ""):
@@ -296,8 +298,8 @@ def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
     return out
 
 
-_plugin_describe_codec = _Codec(2, 11, _write_plugin_describe, _read_plugin_describe)
-"""Wire codec for ``PluginDescribe`` (2 data words, 11 pointers)."""
+_plugin_describe_codec = _Codec(2, 12, _write_plugin_describe, _read_plugin_describe)
+"""Wire codec for ``PluginDescribe`` (2 data words, 12 pointers)."""
 
 
 def _write_oidc_client_template(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -1290,7 +1292,7 @@ def _write_describe_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _plugin_describe_codec.write(s.init_struct(0, 2, 11), v["value"], caps)
+        _plugin_describe_codec.write(s.init_struct(0, 2, 12), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -1301,7 +1303,7 @@ def _write_describe_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_describe_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _plugin_describe_codec.read(s.get_struct(0, 2, 11), caps)}
+        return {"kind": "ok", "value": _plugin_describe_codec.read(s.get_struct(0, 2, 12), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown DescribeReply union member: {disc}")
@@ -2110,6 +2112,24 @@ def _read_scan_params(s: _StructReader, caps: _CapTable) -> Any:
 
 _scan_params_codec = _Codec(1, 5, _write_scan_params, _read_scan_params)
 """Wire codec for ``ScanParams`` (1 data words, 5 pointers)."""
+
+
+def _write_media_support(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u16_list(0, [_ord(A.WORK_KINDS, v, "WorkKind") for v in v["workKinds"]])
+    s.set_u16_list(1, [_ord(A.MEDIA_KINDS, v, "MediaKind") for v in v["lists"]])
+    s.set_u16_list(2, [_ord(A.MEDIA_KINDS, v, "MediaKind") for v in v["fetches"]])
+
+
+def _read_media_support(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "workKinds": [_from_ord(A.WORK_KINDS, v, "WorkKind") for v in s.get_u16_list(0)],
+        "lists": [_from_ord(A.MEDIA_KINDS, v, "MediaKind") for v in s.get_u16_list(1)],
+        "fetches": [_from_ord(A.MEDIA_KINDS, v, "MediaKind") for v in s.get_u16_list(2)],
+    }
+
+
+_media_support_codec = _Codec(0, 3, _write_media_support, _read_media_support)
+"""Wire codec for ``MediaSupport`` (0 data words, 3 pointers)."""
 
 
 def _write_identifier(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

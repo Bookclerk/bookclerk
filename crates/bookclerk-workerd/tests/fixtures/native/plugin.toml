@@ -6,6 +6,11 @@ runtime = "native"
 command = "./bookclerk-workerd-native-fixture"
 entrypoints = ["storefront", "cli"]
 
+[media]
+works = ["book"]
+lists = ["audio"]
+fetches = ["audio"]
+
 [triggers]
 jobs = ["stream_copy"]
 

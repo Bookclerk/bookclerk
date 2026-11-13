@@ -3170,6 +3170,41 @@ pub fn validate_described_capabilities(
     Ok(())
 }
 
+/// Checks the `media` a guest's `describe()` returns against its manifest.
+///
+/// The manifest's `[media]` table is the authority: the host routes work to
+/// sleeping plugins from it without spawning them, so a guest may neither
+/// widen nor narrow it at runtime. The described declaration must name the
+/// same kinds (order and repeats ignored) and pass the same rules the
+/// manifest does.
+///
+/// # Arguments
+///
+/// * `manifest` - Installed manifest for the plugin.
+/// * `described` - The guest's `describe()` reply.
+///
+/// # Errors
+///
+/// Returns an error when the declaration differs from `[media]` or breaks a
+/// declaration rule (empty for a storefront or metadata provider, names
+/// `unspecified`, fetches a carrier it does not list).
+pub fn validate_described_media(
+    manifest: &PluginManifest,
+    described: &bookclerk_plugin_abi::PluginDescribe,
+) -> Result<()> {
+    let id = &manifest.id;
+    let storefront = described.has_entrypoint(bookclerk_plugin_abi::Entrypoint::Storefront);
+    let metadata = described.has_entrypoint(bookclerk_plugin_abi::Entrypoint::Metadata);
+    bookclerk_plugin_abi::validate_media_support(&described.media, storefront, metadata)
+        .map_err(|err| PluginError::message(format!("plugin `{id}` describe(): {err}")))?;
+    if !bookclerk_plugin_abi::same_media_support(&described.media, &manifest.media_support()) {
+        return Err(PluginError::message(format!(
+            "plugin `{id}` describe() media differs from plugin.toml [media]"
+        )));
+    }
+    Ok(())
+}
+
 /// Validates `describe().configOptions` against the manifest `[[settings]]`.
 ///
 /// The manifest is the authority for the settings a plugin takes. An empty

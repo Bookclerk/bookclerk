@@ -159,9 +159,9 @@ fn structured_scan_page() -> bookclerk_plugin_abi::ScanPage {
             product_id: "B0EPISODE".into(),
             title: "Trailer".into(),
             marketplace: Some("us".into()),
-            work_kind: WorkKind::PodcastEpisode,
-            expression_kind: ExpressionKind::PodcastAudio,
-            media_kind: MediaKind::PodcastAudio,
+            work_kind: WorkKind::Podcast,
+            expression_kind: ExpressionKind::OriginalAudio,
+            media_kind: MediaKind::Audio,
             identifiers: vec![Identifier {
                 scheme: IdentifierScheme::Asin,
                 value: "B0EPISODE".into(),
@@ -197,13 +197,14 @@ fn structured_scan_page() -> bookclerk_plugin_abi::ScanPage {
 fn structured_catalog_hits() -> bookclerk_plugin_abi::CatalogHits {
     use bookclerk_plugin_abi::{
         CatalogHit, CatalogHits, Credit, CreditRole, ExpressionKind, Identifier, IdentifierScheme,
-        MediaKind,
+        MediaKind, WorkKind,
     };
     CatalogHits {
         hits: vec![CatalogHit {
             product_id: "9780000000001".into(),
             title: "A Novel".into(),
             origin: "search".into(),
+            work_kind: WorkKind::Book,
             expression_kind: ExpressionKind::Text,
             media_kind: MediaKind::Print,
             identifiers: vec![

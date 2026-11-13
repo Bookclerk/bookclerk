@@ -54,25 +54,32 @@ PortalAuthMode = Literal["unspecified", "password", "oauth"]
 CliArgKind = Literal["string", "bool", "int", "path"]
 """Value kind for a `CliArgSpec`."""
 
-WorkKind = Literal["book", "podcastShow", "podcastEpisode", "drama"]
-"""What kind of creative work a record describes (FRBR work). Ordinal 0 is
-the common case, so a guest that leaves it unset describes a book.
+WorkKind = Literal["unspecified", "book", "podcast"]
+"""What family of creative work a record describes (FRBR work). Every record
+names one: `unspecified` is refused by the host, so a guest that forgets
+the field fails instead of silently describing a book. Whether a podcast
+work is a show or an episode is structural, not a kind: an episode names
+its show through `parentProductId`, a show names no parent.
 """
 
 ExpressionKind = Literal[
-    "narration",
+    "unspecified",
     "text",
-    "translation",
+    "narration",
     "dramatisation",
-    "podcastAudio",
+    "graphic",
+    "originalAudio",
 ]
-"""How a work is realised (FRBR expression). Ordinal 0 is the common case
-for a storefront that sells audiobooks.
+"""How a work is realised (FRBR expression): the kind of content you get,
+independent of the carrier. A translation is not a kind: the expression's
+language and its translator credits say it. `unspecified` is refused.
 """
 
-MediaKind = Literal["audiobook", "ebook", "print", "podcastAudio"]
-"""Physical or digital form of an edition (FRBR manifestation). Only
-`audiobook` and `podcastAudio` editions are acquire candidates.
+MediaKind = Literal["unspecified", "audio", "ebook", "print"]
+"""Carrier of an edition (FRBR manifestation): what form you receive.
+Whether the host acquires an edition depends on the storefront's
+`MediaSupport.fetches` and what the host supports, not on this value
+alone. `unspecified` is refused.
 """
 
 IdentifierScheme = Literal["isbn", "asin", "openLibraryEdition", "openLibraryWork"]
@@ -307,6 +314,9 @@ class PluginDescribe(TypedDict):
             unused.
         catalog: Catalog behaviours a storefront declares so the host can use any store
             for catalog search without naming it; all false for other kinds.
+        media: Work kinds and edition carriers the plugin lists and fetches; required
+            for storefronts and metadata providers, empty lists for every other kind
+            (see `MediaSupport`).
     """
 
     apiVersion: int
@@ -323,6 +333,7 @@ class PluginDescribe(TypedDict):
     configOptions: list[ConfigOption]
     cli: CliSchema
     catalog: CatalogCapabilities
+    media: MediaSupport
 
 
 class OidcClientTemplate(TypedDict):
@@ -2887,6 +2898,26 @@ class ScanParams(TypedDict):
     syncToken: str
 
 
+class MediaSupport(TypedDict):
+    """Media a plugin works with, declared in `describe()` and in the manifest's
+    `[media]` table. Required for plugins that export the storefront or
+    metadata entrypoint: the host refuses to spawn one whose `workKinds` or
+    `lists` is empty, holds `unspecified`, or is wider than its manifest, and
+    refuses any record whose kinds fall outside the declaration.
+
+    Attributes:
+        workKinds: Work kinds the plugin reports.
+        lists: Edition carriers the plugin reports in scans, catalog search and metadata
+            records.
+        fetches: Edition carriers `ContentSource.fetchTitle` can deliver; a subset of
+            `lists`. Empty for metadata providers and for stores that only list.
+    """
+
+    workKinds: list[WorkKind]
+    lists: list[MediaKind]
+    fetches: list[MediaKind]
+
+
 class Identifier(TypedDict):
     """One external identifier a storefront or metadata provider reports.
 
@@ -2950,7 +2981,7 @@ class ScanBook(TypedDict):
             value).
         workKind: Kind of work the title is.
         expressionKind: How the work is realised in this edition.
-        mediaKind: Form of this edition.
+        mediaKind: Carrier of this edition.
         identifiers: External identifiers (ISBN, ASIN, OpenLibrary ids).
         credits: Credited contributors in billing order.
         seriesEntries: Series the work belongs to.
@@ -3399,7 +3430,7 @@ class CatalogHit(TypedDict):
         abridgement: Whether the edition is abridged when the storefront says so.
         workKind: Kind of work the hit is.
         expressionKind: How the work is realised in this edition.
-        mediaKind: Form of this edition; print and ebook hits are never acquired.
+        mediaKind: Carrier of this edition.
         identifiers: External identifiers (ISBN, ASIN, OpenLibrary ids).
         credits: Credited contributors in billing order.
         seriesEntries: Series the work belongs to.
@@ -4486,7 +4517,7 @@ class MetadataRecord(TypedDict):
         abridgement: Whether the edition is abridged when the provider says so.
         workKind: Kind of work the record describes.
         expressionKind: How the work is realised in this edition.
-        mediaKind: Form of this edition.
+        mediaKind: Carrier of this edition.
         identifiers: External identifiers (ISBN, ASIN, OpenLibrary ids).
         credits: Credited contributors in billing order.
         seriesEntries: Series the work belongs to.
@@ -6274,6 +6305,7 @@ __all__ = [
     "LoginStartReply",
     "AccountCredential",
     "ScanParams",
+    "MediaSupport",
     "Identifier",
     "Credit",
     "SeriesEntry",

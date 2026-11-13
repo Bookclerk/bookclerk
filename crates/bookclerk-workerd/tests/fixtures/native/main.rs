@@ -42,6 +42,7 @@ impl PluginWorker for FixtureRoot {
             rpc_features: vec![FEATURE_SCALAR_LIMITS.into(), FEATURE_STREAMS.into()],
             scalar_limits: ScalarLimits::default().into(),
             capabilities: manifest.capabilities(),
+            media: manifest.media_support(),
             ..PluginDescribe::default()
         })
     }
