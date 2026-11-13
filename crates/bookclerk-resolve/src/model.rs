@@ -164,6 +164,11 @@ pub struct Snapshot {
     pub credited: Vec<(Level, String)>,
     /// Included works that have at least one series entry.
     pub works_with_series: Vec<String>,
+    /// Included works that are another work's parent: shows with episodes.
+    ///
+    /// Read only for an episode listing, which never moves such a work under
+    /// a show; empty otherwise.
+    pub works_with_episodes: Vec<String>,
 }
 
 impl Snapshot {
@@ -290,7 +295,9 @@ pub enum Conflict {
         /// The matching works.
         work_ids: Vec<String>,
     },
-    /// A work identifier names a work of a different kind; it was not joined.
+    /// A work identifier names a work of a different kind, or a podcast at
+    /// another level (a show for an episode, or an episode for a show or a
+    /// book); it was not joined.
     WorkKindMismatch {
         /// The work the identifier names.
         work_id: String,

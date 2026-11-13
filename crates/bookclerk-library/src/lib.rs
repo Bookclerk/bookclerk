@@ -123,14 +123,15 @@ pub use models::{
     JobState, JobTempPath, JobTrigger, ListeningProgressRecord, OidcClientRecord,
     OperatorSessionRecord, PendingWakeProgress, PortalIdentity, PortalSessionRecord,
     PublishDomainEventOutcome, PublishDomainEventSpec, QueueWisher, RequestStatus,
-    SecurityAuditEvent, StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord,
-    UserIntegrationHint, UserInviteRecord, UserListeningHint, UserPreferences, UserPresenceExtras,
-    UserRecord, UserRole, UserSsoPicture, UserStatus, UserTitleState, WishlistPurchaseHint,
-    WishlistStoreEdition, WorkRecord, CORE_EVENTS_QUEUE, EVENT_DELIVERY_DEFAULT_RETENTION_SECS,
-    EVENT_DELIVERY_MAX_ATTEMPTS, EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS,
-    HOST_CONSUMER_PREFIX, JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN,
-    MAX_QUEUE_WISHERS, NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES,
-    QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
+    SecurityAuditEvent, StoredPasskey, TasteHolder, TasteTitle, TitleRequestRecord,
+    TitleRequestSourceRecord, UserIntegrationHint, UserInviteRecord, UserListeningHint,
+    UserPreferences, UserPresenceExtras, UserRecord, UserRole, UserSsoPicture, UserStatus,
+    UserTitleState, WishlistPurchaseHint, WishlistStoreEdition, WorkRecord, CORE_EVENTS_QUEUE,
+    EVENT_DELIVERY_DEFAULT_RETENTION_SECS, EVENT_DELIVERY_MAX_ATTEMPTS,
+    EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, HOST_CONSUMER_PREFIX,
+    JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN, MAX_QUEUE_WISHERS,
+    NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES, QUEUE_CONTENT_TYPE_JSON,
+    QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
 };
 pub use named_atomic::{NamedAtomicBackend, NamedAtomicRunner};
 pub use operator_token::{
@@ -147,7 +148,7 @@ pub use proxy_txn::{
 };
 pub use schema_state::{SchemaState, SCHEMA_STATE_FROZEN, SCHEMA_STATE_UNRELEASED};
 pub use schema_walk::{plan_schema_walk, plan_schema_walk_from_state, SchemaWalk};
-pub use scope::SourceScope;
+pub use scope::{RefreshKeeping, SourceScope};
 pub use secrets::{
     b64_string_to_bytes, build_sealed_record, bytes_to_b64_string, delete_secret,
     delete_secrets_for_account, get_secret, list_secrets, secret_account_type, secret_kind,
@@ -163,6 +164,7 @@ pub use sql_plan::{
 };
 pub use store::event_outbox::{EVENT_STREAM_SCAN_FACTOR, EVENT_STREAM_SETTLE_SECS};
 pub use store::{
+    apply_user_states,
     catalog_listings::{
         CatalogListing, CatalogListingRecord, ListingDetail, ListingOffer, OfferAudience,
         RecordedListings, CATALOG_LISTING_REFRESH,
@@ -184,11 +186,12 @@ pub use store::{
     scan_state::{plan_pass, PassStart, ScanState, FULL_PASS_INTERVAL, RESUME_CURSOR_TTL},
     search_feed::ListingRef,
     set_dispatch_chunk_for_test, AcquiredBookKey, BookPage, CandidateRef, CatalogEnrichmentFields,
-    DiscoverSubject, EditionFile, FileOwner, FileRole, HoldingSelection, LibraryStore, NewBook,
-    NewListeningProgress, NewTitleRequest, NewTitleRequestSource, NodeHoldingSelection, QueueRank,
-    SavedFilterRecord, ScannedTitle, SeedScope, StoreCallHit, StoredCandidate, StoredFeed,
-    StoredQueueRank, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER,
-    BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT, HOLDING_REMOVED, MAX_QUEUE_REASONS,
+    DiscoverSubject, EditionFile, FileOwner, FileRole, HeldIdentifiers, HoldingSelection,
+    LibraryStore, NewBook, NewListeningProgress, NewTitleRequest, NewTitleRequestSource,
+    NodeHoldingSelection, QueueRank, SavedFilterRecord, ScannedTitle, SeedScope, StoreCallHit,
+    StoredCandidate, StoredDiscoverTaste, StoredFeed, StoredQueueRank, UserBookFields, WishWork,
+    ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
+    HOLDING_REMOVED, MAX_QUEUE_REASONS,
 };
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

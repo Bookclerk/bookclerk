@@ -5,6 +5,11 @@ version = "1.0.0"
 runtime = "workerd"
 entrypoints = ["storefront", "cli"]
 
+[media]
+works = ["book"]
+lists = ["audio"]
+fetches = ["audio"]
+
 [workerd]
 compatibility_date = "2026-08-01"
 compatibility_flags = []

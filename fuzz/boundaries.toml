@@ -119,6 +119,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.plain_fetch]
+crate = "bookclerk-plugin-abi"
+boundary = "A storefront's fetchTitle reply: the declared carrier, file roles, parts or one whole file, and at most one cover"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.event_read]
 crate = "bookclerk-plugin-abi"
 boundary = "A guest's EVENTS.read request: the /events/read JSON body, its opaque cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds"
@@ -214,6 +221,13 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-library"
 boundary = "A user's request for a book a branch listed, from POST /api/branch-requests"
 input_from = "signed-in user"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.members_books_request]
+crate = "bookclerk-library"
+boundary = "A library operator's \"Acquire all of this branch's members' books\" choice, from PUT /api/config/branches/members-books"
+input_from = "Owner or operator"
 side = "host"
 artifacts = ["bookclerk"]
 

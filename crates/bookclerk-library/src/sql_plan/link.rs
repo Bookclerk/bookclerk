@@ -167,14 +167,15 @@ fn new_rivals(p: &ListingLinkParams, w: &LinkWorkRow) -> (String, Vec<DbValue>) 
     let mut sql =
         "NOT EXISTS (SELECT 1 FROM works o WHERE o.match_key = ? AND o.kind = ?".to_string();
     let mut binds = vec![j_str(&w.match_key), j_str(&w.kind)];
-    match (w.kind.as_str(), &w.parent_work_id) {
-        // The matcher only joins episodes within one known show.
-        ("podcast_episode", None) => return ("1 = 1".to_string(), Vec::new()),
-        ("podcast_episode", Some(parent)) => {
+    // The matcher only joins an episode within its show, and a book or a
+    // show only among works without a parent. (An episode whose show is not
+    // known yet has no key, so it returned above.)
+    match &w.parent_work_id {
+        Some(parent) => {
             sql.push_str(" AND o.parent_work_id = ?");
             binds.push(j_str(parent));
         }
-        _ => {}
+        None => sql.push_str(" AND o.parent_work_id IS NULL"),
     }
     if !p.known_rivals.is_empty() {
         sql.push_str(&format!(
@@ -320,13 +321,20 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             j_str(now),
             j_str(&link.work_id),
             j_str(&link.parent_work_id),
+            j_str(&link.parent_work_id),
+            j_str(&link.work_id),
         ];
         binds.extend(unchanged_binds.clone());
+        // A work with episodes of its own is a show, not an episode: an
+        // episode listing that matched it by identifier never moves it
+        // under another show.
         out.push(sql(
             &format!(
                 "UPDATE works SET parent_work_id = ?, updated_at = ? \
-                 WHERE id = ? AND kind = 'podcast_episode' AND parent_work_id IS NULL \
-                   AND EXISTS (SELECT 1 FROM works p WHERE p.id = ? AND p.kind = 'podcast_show') \
+                 WHERE id = ? AND kind = 'podcast' AND parent_work_id IS NULL AND id <> ? \
+                   AND EXISTS (SELECT 1 FROM works p WHERE p.id = ? AND p.kind = 'podcast' \
+                   AND p.parent_work_id IS NULL) \
+                   AND NOT EXISTS (SELECT 1 FROM works c WHERE c.parent_work_id = ?) \
                    AND {unchanged}"
             ),
             binds,
@@ -341,14 +349,14 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             j_str(&fill.kind),
             j_str(&fill.work_id),
         ];
-        // Episodes only compete for a key within their show.
-        let same_show = match (&fill.parent_work_id, fill.kind.as_str()) {
-            (Some(parent), _) => {
+        // Episodes only compete for a key within their show; books and
+        // shows only among works without a parent.
+        let same_show = match &fill.parent_work_id {
+            Some(parent) => {
                 binds.push(j_str(parent));
                 " AND o.parent_work_id = ?"
             }
-            (None, "podcast_episode") => " AND o.parent_work_id IS NULL",
-            (None, _) => "",
+            None => " AND o.parent_work_id IS NULL",
         };
         binds.extend(unchanged_binds.clone());
         out.push(sql(

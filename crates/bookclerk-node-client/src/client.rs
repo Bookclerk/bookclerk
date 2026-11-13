@@ -72,11 +72,11 @@ use bookclerk_node_proto::{
     questions_problem, seal_account_offer, seal_secret_update, sign_artifact_request, sign_auth,
     validate_box_public_key, window_page_problem, AccountBundle, AcquireTarget, ArtifactRequest,
     AuthContext, Body, BranchRequest, CarriedAccount, CatalogRef, CatalogTitle, ClaimFilter,
-    ClaimScope, Frame, HeldFence, LookupAnswer, LookupWork, PlanDestination, RequestOutcome,
-    SealError, SecretEntry, SecretRef, SecretValue, SigningKey, UploadAnswer, UploadCommitRequest,
-    UploadFile, WindowWork, ACCOUNT_BUNDLE_VERSION, ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL,
-    CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS,
-    SEND_QUEUE_FRAMES, UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
+    ClaimScope, Frame, HeldFence, KeeperOutcome, LookupAnswer, LookupWork, PlanDestination,
+    RequestOutcome, SealError, SecretEntry, SecretRef, SecretValue, SigningKey, UploadAnswer,
+    UploadCommitRequest, UploadFile, WindowWork, ACCOUNT_BUNDLE_VERSION, ARTIFACTS_PATH,
+    CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS,
+    ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -991,6 +991,48 @@ impl HostClientHandle {
         }
     }
 
+    /// Pushes the newest sign-in of one single-keeper store account this
+    /// branch keeps up to the library (`accounts.update`), sealed like
+    /// [`Self::offer_accounts`], at the keeper's `revision`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError::Refused`] when the library refuses it, or
+    /// [`OwnerCallError::Unavailable`] when no connection answers.
+    pub async fn push_sign_in(
+        &self,
+        account: CarriedAccount,
+        revision: i64,
+    ) -> Result<KeeperOutcome, OwnerCallError> {
+        let conn = self
+            .shared
+            .wait_conn(Instant::now() + self.shared.timing.request_timeout)
+            .await
+            .ok_or(OwnerCallError::Unavailable)?;
+        let bundle = AccountBundle {
+            v: ACCOUNT_BUNDLE_VERSION,
+            cluster_id: self.shared.cluster_id.clone(),
+            node_id: self.shared.node_id.clone(),
+            accounts: vec![account],
+        };
+        let mut ephemeral = Zeroizing::new([0u8; 32]);
+        rand::rngs::OsRng.fill_bytes(ephemeral.as_mut_slice());
+        let sealed = seal_account_offer(&conn.owner_box_key, &ephemeral, &bundle)
+            .map_err(|_| OwnerCallError::Unavailable)?;
+        drop(ephemeral);
+        let answer = conn
+            .request(Body::AccountsUpdate { sealed, revision })
+            .await
+            .map_err(|Unavailable| OwnerCallError::Unavailable)?;
+        match answer.body {
+            Body::AccountsUpdated { outcome } => Ok(outcome),
+            Body::Error { code, message } if code == "refused" => {
+                Err(OwnerCallError::Refused(message))
+            }
+            _ => Err(OwnerCallError::Unavailable),
+        }
+    }
+
     /// Tells the library the person disconnected this store account
     /// everywhere; it removes their links to it there.
     ///
@@ -1099,6 +1141,9 @@ pub struct CatalogSession {
     pub destinations: Vec<String>,
     /// Titles whose files the library still wants.
     pub wanted: Vec<CatalogRef>,
+    /// The library's "Acquire all of this branch's members' books": send
+    /// the members' books this branch lists to it as well.
+    pub members_books: bool,
 }
 
 /// A recorded catalog batch ([`HostClientHandle::catalog_sync`]).
@@ -1159,12 +1204,14 @@ impl HostClientHandle {
                 ancestry,
                 destinations,
                 wanted,
+                members_books,
             } => Ok(CatalogSession {
                 fence,
                 cursor,
                 ancestry,
                 destinations,
                 wanted,
+                members_books,
             }),
             _ => Err(OwnerCallError::Unavailable),
         }

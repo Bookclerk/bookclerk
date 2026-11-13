@@ -1720,6 +1720,7 @@ dependencies = [
  "bookclerk-config",
  "bookclerk-enrich",
  "bookclerk-library",
+ "bookclerk-plugin-abi",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
  "bookclerk-resolve",
@@ -2159,6 +2160,7 @@ dependencies = [
  "bookclerk-db-exec",
  "bookclerk-integrations",
  "bookclerk-library",
+ "bookclerk-node-proto",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-catalog",
  "bookclerk-plugin-database-sqlite",
@@ -2296,6 +2298,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bookclerk-plugin-sdk",
+ "bookclerk-scan-delta",
  "bookclerk-storefront",
  "bytes",
  "chrono",
@@ -2315,6 +2318,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bookclerk-plugin-sdk",
+ "bookclerk-scan-delta",
  "bookclerk-storefront",
  "bytes",
  "chrono",
@@ -2338,7 +2342,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bookclerk-db-testkit",
  "bookclerk-plugin-sdk",
+ "bookclerk-scan-delta",
  "bookclerk-storefront",
  "bytes",
  "chrono",
@@ -2391,6 +2397,17 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "windows",
+]
+
+[[package]]
+name = "bookclerk-scan-delta"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-db-testkit",
+ "bookclerk-plugin-sdk",
+ "serde_json",
+ "sha2 0.11.1",
+ "tokio",
 ]
 
 [[package]]

@@ -120,7 +120,9 @@ async fn empty_library_scan_returns_no_books() {
         .await;
 
     let credentials = host_credentials("9", &stored_auth("9", "a@ex.com"));
-    let page = guest_scan_page(&server.uri(), &credentials).await.unwrap();
+    let page = guest_scan_page(&server.uri(), &credentials, None)
+        .await
+        .unwrap();
     assert!(page.books.is_empty());
     assert!(page.complete && page.next_cursor.is_empty());
 }
@@ -159,7 +161,9 @@ async fn library_scan_returns_scan_rows() {
         .await;
 
     let credentials = host_credentials("9", &stored_auth("9", "a@ex.com"));
-    let page = guest_scan_page(&server.uri(), &credentials).await.unwrap();
+    let page = guest_scan_page(&server.uri(), &credentials, None)
+        .await
+        .unwrap();
     // One item on a 20-item page is the last page.
     assert!(page.complete && page.next_cursor.is_empty());
     assert_eq!(page.books.len(), 1);
@@ -170,7 +174,7 @@ async fn library_scan_returns_scan_rows() {
         page_size: 1,
         ..credentials.clone()
     };
-    let first = guest_scan_page(&server.uri(), &full).await.unwrap();
+    let first = guest_scan_page(&server.uri(), &full, None).await.unwrap();
     assert_eq!(first.next_cursor, "sp1.0.2");
     assert!(!first.complete);
 
@@ -179,7 +183,9 @@ async fn library_scan_returns_scan_rows() {
         account_id: "someone-else".into(),
         ..credentials
     };
-    let err = guest_scan_page(&server.uri(), &foreign).await.unwrap_err();
+    let err = guest_scan_page(&server.uri(), &foreign, None)
+        .await
+        .unwrap_err();
     assert_eq!(err.code, bookclerk_plugin_sdk::PluginErrorCode::Internal);
 }
 

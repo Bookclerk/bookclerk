@@ -599,6 +599,9 @@ fn catalog_hit(book: &CatalogAudiobook, origin: String) -> CatalogHit {
             .filter(|s| !s.is_empty())
             .map(str::to_string),
         is_abridged: book.abridged,
+        work_kind: bookclerk_storefront::records::WorkKind::Book,
+        expression_kind: bookclerk_storefront::records::ExpressionKind::Narration,
+        media_kind: bookclerk_storefront::records::MediaKind::Audio,
         ..Default::default()
     }
 }

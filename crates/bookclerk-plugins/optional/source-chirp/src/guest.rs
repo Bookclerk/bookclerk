@@ -7,9 +7,11 @@
 use std::path::Path;
 
 use bookclerk_plugin_sdk::{
-    scan_page, FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch,
-    PluginError, ScanBook, ScanPage, ScanParams, SourceAccount, StorePage,
+    scan_page, DatabaseBinding, FetchTitleParams, LoginParams, LoginResult,
+    PlainFetch as AbiPlainFetch, PluginError, ScanBook, ScanPage, ScanParams, SourceAccount,
+    StorePage,
 };
+use bookclerk_scan_delta::ScanDelta;
 use bookclerk_storefront::abi::{
     credentials_from_bytes, credentials_to_bytes, scan_credential, store_page_cursor,
     store_page_from_cursor,
@@ -98,34 +100,46 @@ pub async fn guest_login_rpc(graphql_url: &str, params: LoginParams) -> Result<L
 
 /// RPC scan: one page of one account's full pass (the host upserts books).
 ///
-/// Chirp has no delta API, so every pass lists the whole library and ends
-/// `complete`. The SDK's [`scan_page`] helper pages the store's numbered
-/// library pages into scan replies.
+/// Chirp has no delta API, so every pass fetches the whole library. With
+/// the `SCAN_STATE` database, [`ScanDelta`] sends the host only titles that
+/// are new or changed since the last pass, and the product ids that
+/// disappeared; without it every pass is full and ends `complete`. The SDK's
+/// [`scan_page`] helper pages the store's numbered library pages into scan
+/// replies.
 ///
 /// # Arguments
 ///
 /// * `graphql_url` - Chirp GraphQL endpoint.
-/// * `params` - The pass's account, credential, page size and cursor.
+/// * `params` - The pass's account, credential, page size, cursor and sync
+///   token.
+/// * `scan_state` - The `SCAN_STATE` database, when granted.
 ///
 /// # Errors
 ///
-/// Returns `invalid_cursor` for a cursor this plugin did not write, and
+/// Returns `invalid_cursor` for a cursor or sync token this plugin cannot
+/// use, the database's error when scan state cannot be kept, and
 /// `internal` when the credential is missing or invalid or the page request
 /// fails.
 pub async fn guest_scan_page(
     graphql_url: &str,
     params: &ScanParams,
+    scan_state: Option<&DatabaseBinding>,
 ) -> std::result::Result<ScanPage, PluginError> {
+    let delta = &ScanDelta::open(scan_state, params).await?;
     scan_page(params, |store_cursor, _| async move {
         let page = store_page_from_cursor(&store_cursor)?;
         let (books, next) = fetch_scan_page(graphql_url, params, page)
             .await
             .map_err(|err| PluginError::internal(err.to_string()))?;
+        let next = store_page_cursor(next);
+        let page = delta.page(&store_cursor, books, next.is_empty()).await?;
         Ok(StorePage {
-            books,
-            next: store_page_cursor(next),
-            complete: true,
-            ..StorePage::default()
+            books: page.books,
+            removed: page.removed,
+            next,
+            sync_token: page.sync_token,
+            complete: page.complete,
+            store_pages: None,
         })
     })
     .await

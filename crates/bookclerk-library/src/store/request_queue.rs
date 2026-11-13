@@ -28,10 +28,9 @@ pub const MAX_QUEUE_REASONS: usize = 6;
 /// The taste ranking of one queue entry, as the ranking job computed it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueueRank {
-    /// The entry this ranks: the library work id its wishes are for.
-    pub entry_key: String,
-    /// Library work the entry's wishes resolved to, when any.
-    pub work_id: Option<String>,
+    /// The work (`works.id`) the entry's wishes are for, which identifies
+    /// the entry.
+    pub work_id: String,
     /// True when the library already holds the entry's work.
     pub owned: bool,
     /// Household taste score before the wish-count boost. A non-finite
@@ -68,32 +67,26 @@ fn rank_upsert(rank: &QueueRank, ranked_at: &str) -> Result<[TypedDbStatement; 2
     } else {
         0.0
     };
-    let work_id = match rank.work_id.as_deref() {
-        Some(id) => DbValue::Text(id.to_string()),
-        None => DbValue::Null(bookclerk_plugin_abi::DbType::Text),
-    };
     let owned = DbValue::Int64(i64::from(rank.owned));
     Ok([
         batch::exec(
             "UPDATE discover_request_queue \
-             SET work_id = ?, owned = ?, taste_score = ?, reasons_json = ?, ranked_at = ? \
-             WHERE entry_key = ?",
+             SET owned = ?, taste_score = ?, reasons_json = ?, ranked_at = ? \
+             WHERE work_id = ?",
             vec![
-                work_id.clone(),
                 owned.clone(),
                 DbValue::Float64(score),
                 batch::text(&reasons_json),
                 batch::text(ranked_at),
-                batch::text(&rank.entry_key),
+                batch::text(&rank.work_id),
             ],
         ),
         batch::exec(
             "INSERT OR IGNORE INTO discover_request_queue \
-             (entry_key, work_id, owned, taste_score, reasons_json, ranked_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+             (work_id, owned, taste_score, reasons_json, ranked_at) \
+             VALUES (?, ?, ?, ?, ?)",
             vec![
-                batch::text(&rank.entry_key),
-                work_id,
+                batch::text(&rank.work_id),
                 owned,
                 DbValue::Float64(score),
                 batch::text(&reasons_json),
@@ -115,7 +108,7 @@ impl LibraryStore {
     ///
     /// # Arguments
     ///
-    /// * `ranks` - One ranking per queue entry; a repeated `entry_key` keeps the last.
+    /// * `ranks` - One ranking per queue entry; a repeated `work_id` keeps the last.
     ///
     /// # Errors
     ///
@@ -125,7 +118,7 @@ impl LibraryStore {
         let now = now_str();
         let mut unique: Vec<&QueueRank> = Vec::with_capacity(ranks.len());
         for rank in ranks {
-            if let Some(pos) = unique.iter().position(|r| r.entry_key == rank.entry_key) {
+            if let Some(pos) = unique.iter().position(|r| r.work_id == rank.work_id) {
                 unique.remove(pos);
             }
             unique.push(rank);
@@ -163,7 +156,7 @@ impl LibraryStore {
 
     /// Lists every stored queue ranking row.
     ///
-    /// Rows are read in id pages of a bounded size; a page whose result
+    /// Rows are read in work id pages of a bounded size; a page whose result
     /// would exceed the plugin's `maxResultBytes` is halved and read again.
     /// A row whose reasons do not parse keeps its score with no reasons.
     ///
@@ -172,13 +165,13 @@ impl LibraryStore {
     /// Returns the database error.
     pub async fn list_request_queue_ranks(&self) -> Result<Vec<StoredQueueRank>> {
         let mut out = Vec::new();
-        let mut after: i64 = 0;
+        let mut after = String::new();
         let mut width = DISCOVER_READ_PAGE;
         loop {
             let rows = loop {
                 let read = discover_request_queue::Entity::find()
-                    .filter(discover_request_queue::Column::Id.gt(after))
-                    .order_by_asc(discover_request_queue::Column::Id)
+                    .filter(discover_request_queue::Column::WorkId.gt(after.as_str()))
+                    .order_by_asc(discover_request_queue::Column::WorkId)
                     .limit(width)
                     .all(&self.db)
                     .await
@@ -192,13 +185,12 @@ impl LibraryStore {
                 }
             };
             let Some(last) = rows.last() else { break };
-            after = last.id;
+            after.clone_from(&last.work_id);
             let full = u64::try_from(rows.len()).is_ok_and(|n| n >= width);
             out.extend(rows.into_iter().map(|m| StoredQueueRank {
                 ranked_at: parse_dt(&m.ranked_at),
                 rank: QueueRank {
                     reasons: serde_json::from_str(&m.reasons_json).unwrap_or_default(),
-                    entry_key: m.entry_key,
                     work_id: m.work_id,
                     owned: m.owned != 0,
                     taste_score: m.taste_score,
@@ -219,8 +211,7 @@ mod tests {
     /// A ranking of `key` with one reason.
     fn rank(key: &str, score: f64) -> QueueRank {
         QueueRank {
-            entry_key: key.into(),
-            work_id: key.strip_prefix("work:").map(str::to_string),
+            work_id: key.into(),
             owned: false,
             taste_score: score,
             reasons: vec![format!("reason for {key}")],
@@ -245,13 +236,13 @@ mod tests {
     async fn a_pass_replaces_the_previous_ranking() {
         let library = store().await;
         library
-            .replace_request_queue_ranks(&[rank("work:a", 0.5), rank("isbn:1", 0.2)])
+            .replace_request_queue_ranks(&[rank("work:a", 0.5), rank("work:b", 0.2)])
             .await
             .expect("first pass");
         let mut owned = rank("work:a", 0.9);
         owned.owned = true;
         library
-            .replace_request_queue_ranks(&[owned.clone(), rank("asin:B1", 0.1)])
+            .replace_request_queue_ranks(&[owned.clone(), rank("work:c", 0.1)])
             .await
             .expect("second pass");
         let mut rows: Vec<QueueRank> = library
@@ -261,8 +252,8 @@ mod tests {
             .into_iter()
             .map(|r| r.rank)
             .collect();
-        rows.sort_by(|a, b| a.entry_key.cmp(&b.entry_key));
-        assert_eq!(rows, vec![rank("asin:B1", 0.1), owned]);
+        rows.sort_by(|a, b| a.work_id.cmp(&b.work_id));
+        assert_eq!(rows, vec![owned, rank("work:c", 0.1)]);
     }
 
     #[tokio::test]
@@ -302,7 +293,7 @@ mod tests {
     async fn many_rows_span_several_batches_and_pages() {
         let library = store().await;
         let ranks: Vec<QueueRank> = (0..450)
-            .map(|i| rank(&format!("isbn:{i:04}"), f64::from(i)))
+            .map(|i| rank(&format!("work:{i:04}"), f64::from(i)))
             .collect();
         library
             .replace_request_queue_ranks(&ranks)

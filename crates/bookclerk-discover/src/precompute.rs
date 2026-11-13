@@ -28,8 +28,8 @@ use std::time::Duration;
 
 use crate::listening::ListeningSignal;
 use bookclerk_library::{
-    BookRecord, CandidateRef, DiscoverSubject, LibraryStore, ListingOffer, OfferAudience,
-    RequestStatus, SeedScope, StoreCallHit,
+    CandidateRef, DiscoverSubject, LibraryStore, ListingOffer, OfferAudience, RequestStatus,
+    SeedScope, StoreCallHit, TasteTitle,
 };
 use bookclerk_source::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, ContentSource,
@@ -49,12 +49,13 @@ use crate::pool::{
 };
 use crate::recommend::{
     engagement_by_book, feed_from_recommendations, owned_identity_sets, rank_candidates,
-    shelf_taste, RecommendOptions, TasteWeights,
+    RecommendOptions, TasteWeights,
 };
 use crate::shelves::{shelf_is_disabled, DiscoverFeed};
 use crate::stored_feed::{
     decode_stored_feed, encode_stored_feed, feed_needs_pool, join_feed, CandidatePool,
 };
+use crate::stored_taste::{is_fresh, taste_budget, StoredTaste};
 
 /// Longest one storefront call may take before its store moves on.
 pub const STORE_CALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -123,7 +124,7 @@ pub struct SubjectTaste {
     /// Books whose finishes, ratings, series and authors shape the taste:
     /// the subject's own, then the household's blended in while the
     /// subject's own are fewer than [`OWN_TASTE_THRESHOLD`].
-    pub books: Vec<BookRecord>,
+    pub books: Vec<TasteTitle>,
     /// How much each book in `books` counts; a blended household book is
     /// listed at [`HOUSEHOLD_BLEND_WEIGHT`], the subject's own count in full.
     pub weights: TasteWeights,
@@ -156,7 +157,7 @@ pub struct OwnedIdentities {
 
 impl OwnedIdentities {
     /// The identifiers of `books`.
-    fn of(books: &[BookRecord]) -> Self {
+    fn of(books: &[TasteTitle]) -> Self {
         let (asins, isbns, products) = owned_identity_sets(books);
         Self {
             asins,
@@ -169,7 +170,7 @@ impl OwnedIdentities {
 impl SubjectTaste {
     /// The whole household's taste, for a subject with no signal of their own.
     fn household(
-        books: Vec<BookRecord>,
+        books: Vec<TasteTitle>,
         listening: Vec<ListeningSignal>,
         linked_sources: HashSet<String>,
         owned: OwnedIdentities,
@@ -192,9 +193,9 @@ impl SubjectTaste {
         let engagement = engagement_by_book(&self.listening);
         let ranked = select_taste_seeds(&self.books, &engagement);
         // Own books first: a blended household book never displaces one.
-        let (own, blended): (Vec<BookRecord>, Vec<BookRecord>) = ranked
+        let (own, blended): (Vec<TasteTitle>, Vec<TasteTitle>) = ranked
             .into_iter()
-            .partition(|b| !self.weights.contains_key(&b.uuid));
+            .partition(|b| !self.weights.contains_key(&b.work_id));
         own.iter()
             .chain(blended.iter())
             .take(limit)
@@ -206,7 +207,9 @@ impl SubjectTaste {
 /// Loads one subject's taste.
 ///
 /// A user or portal identity uses the books held by store accounts linked to
-/// them plus the household books they have listened to, the listening rows
+/// them, the household books they have listened to, and the works they
+/// finished, rated or tagged (a local user with no portal identity has only
+/// these), the listening rows
 /// recorded for them (by identity id, or by provider and external user id on
 /// rows recorded before the identity was known), and their open wishlist.
 /// While they have fewer than [`OWN_TASTE_THRESHOLD`] books and listens of
@@ -230,8 +233,10 @@ pub async fn load_subject_taste(
     subject: &DiscoverSubject,
     opts: &RecommendOptions,
 ) -> Result<SubjectTaste> {
-    let household = library.list_books(None).await?;
+    let mut household = library.taste_titles().await?;
     let owned = OwnedIdentities::of(&household);
+    let work_ids: Vec<String> = household.iter().map(|t| t.work_id.clone()).collect();
+    let states = library.user_title_states_for_works(&work_ids).await?;
     let all_listening = if opts.include_listening {
         let mut rows = library.list_listening_progress(None).await?;
         if !opts.listening_providers.is_empty() {
@@ -254,7 +259,27 @@ pub async fn load_subject_taste(
             .into_iter()
             .collect(),
     };
-    if identities.is_empty() {
+    // The users whose stored finishes, ratings and tags are the subject's
+    // own: a user subject's own id (a local user may have no portal
+    // identity) and the users their identities are linked to.
+    let users: Vec<i64> = identities
+        .iter()
+        .filter_map(|i| i.user_id)
+        .chain(match subject {
+            DiscoverSubject::User(user_id) => Some(*user_id),
+            DiscoverSubject::Operator | DiscoverSubject::Portal(_) => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let stated: HashSet<&str> = states
+        .iter()
+        .filter(|s| users.contains(&s.user_id))
+        .map(|s| s.work_id.as_str())
+        .collect();
+    if identities.is_empty() && stated.is_empty() {
+        // The household's taste: everyone's finishes, ratings and tags.
+        bookclerk_library::apply_user_states(&mut household, &states, &[]);
         // The operator compares prices as a member of every store the
         // household has an account with.
         let linked = library
@@ -295,15 +320,31 @@ pub async fn load_subject_taste(
         .cloned()
         .collect();
     // Their books: those on store accounts linked to them, plus any household
-    // book they have listened to (a member may listen without owning).
+    // book they have listened to (a member may listen without owning) or
+    // hold state on.
     let listened: HashSet<&str> = listening
         .iter()
-        .filter_map(|r| r.book_uuid.as_deref())
+        .filter_map(|r| r.work_id.as_deref())
         .collect();
-    let (own, rest): (Vec<BookRecord>, Vec<BookRecord>) = household.into_iter().partition(|b| {
-        held.contains(&(b.plugin_key.clone(), b.account_id.clone()))
-            || listened.contains(b.uuid.as_str())
-    });
+    // A work they finished, rated or tagged is theirs too, even with no
+    // linked account holding it.
+    let (mut own, mut rest): (Vec<TasteTitle>, Vec<TasteTitle>) =
+        household.into_iter().partition(|b| {
+            b.holders
+                .iter()
+                .any(|h| held.contains(&(h.plugin_key.clone(), h.account_id.clone())))
+                || listened.contains(b.work_id.as_str())
+                || stated.contains(b.work_id.as_str())
+        });
+    // The rest of the household's books carry the household's state, as
+    // they do in a household taste.
+    bookclerk_library::apply_user_states(&mut rest, &states, &[]);
+    // Their own finishes, ratings and tags. A subject with no user (a
+    // portal visitor) has none stored, so their books keep the empty
+    // default (an empty user list would mean everyone's).
+    if !users.is_empty() {
+        bookclerk_library::apply_user_states(&mut own, &states, &users);
+    }
     let wishes: Vec<_> = library
         .list_title_requests(Some(RequestStatus::Open))
         .await?
@@ -336,17 +377,17 @@ pub async fn load_subject_taste(
     let mut listening = listening;
     if own_signal < OWN_TASTE_THRESHOLD {
         for book in rest {
-            weights.insert(book.uuid.clone(), HOUSEHOLD_BLEND_WEIGHT);
+            weights.insert(book.work_id.clone(), HOUSEHOLD_BLEND_WEIGHT);
             books.push(book);
         }
         // The household's listening to the blended books blends in with
         // them, at their weight. The subject's own rows are for books in
         // `own`, which carry no weight, so they still count in full.
-        listening.extend(all_listening.into_iter().filter(|r| {
-            r.book_uuid
-                .as_ref()
-                .is_some_and(|u| weights.contains_key(u))
-        }));
+        listening.extend(
+            all_listening
+                .into_iter()
+                .filter(|r| r.work_id.as_ref().is_some_and(|u| weights.contains_key(u))),
+        );
     }
     Ok(SubjectTaste {
         scope: SeedScope::Own,
@@ -403,6 +444,9 @@ pub async fn fetch_subject_candidates(
     opts: &RecommendOptions,
 ) -> Result<FetchReport> {
     let taste = load_subject_taste(library, subject, opts).await?;
+    // The ranking that follows reads the taste from here instead of the
+    // library.
+    store_taste(library, subject, &taste).await?;
     let owned = &taste.owned;
     let book_seeds = taste.book_seeds(opts.storefront_seed_limit, &opts.region);
     let wish_seeds: Vec<SeedTitle> = taste
@@ -1013,12 +1057,7 @@ pub async fn rank_subject_feed(
     subject: &DiscoverSubject,
     opts: &RecommendOptions,
 ) -> Result<RankReport> {
-    let taste = load_subject_taste(library, subject, opts).await?;
-    let OwnedIdentities {
-        asins,
-        isbns,
-        products,
-    } = &taste.owned;
+    let (scope, taste) = ranking_taste(library, subject, opts).await?;
     // With storefront candidates turned off, stored rows from before stay
     // out of the feed; rows fetched for another seed scope (before the
     // subject had taste of their own, or after they lost it) do too.
@@ -1031,34 +1070,38 @@ pub async fn rank_subject_feed(
     } else {
         Vec::new()
     };
-    let mut map: HashMap<String, StorefrontCandidate> = HashMap::new();
     let now = Utc::now();
-    for row in stored.iter().filter(|row| row.seed_scope == taste.scope) {
-        insert_candidate(
-            &mut map,
-            candidate_from_stored(row, now),
-            asins,
-            isbns,
-            products,
-        );
+    let rows: Vec<StorefrontCandidate> = stored
+        .iter()
+        .filter(|row| row.seed_scope == scope)
+        .map(|row| candidate_from_stored(row, now))
+        .collect();
+    // Titles the library already holds stay out, looked up for these
+    // candidates only.
+    let OwnedIdentities {
+        asins,
+        isbns,
+        products,
+    } = held_among(library, &rows).await?;
+    let mut map: HashMap<String, StorefrontCandidate> = HashMap::new();
+    for candidate in rows {
+        insert_candidate(&mut map, candidate, &asins, &isbns, &products);
     }
     let mut rank_opts = opts.clone();
     rank_opts.include_purchase_hints = false;
     rank_opts.disabled_shelves = Vec::new();
     let candidates: Vec<StorefrontCandidate> = map.into_values().collect();
+    let languages = taste.language_set();
     let recs = rank_candidates(
         library,
         registry,
-        &taste.books,
-        &taste.weights,
-        &taste.listening,
+        &languages,
+        taste.scores,
         candidates,
         &rank_opts,
     )
     .await?;
-    let mut shelf = shelf_taste(&taste.books, &taste.weights, &taste.listening);
-    shelf.wish_titles.clone_from(&taste.wish_titles);
-    shelf.linked_sources.clone_from(&taste.linked_sources);
+    let shelf = taste.shelf;
     let mut feed = feed_from_recommendations(&recs, &shelf, &rank_opts);
     // Cards keep only what is personal to the subject; catalog metadata the
     // pool holds is joined back when the page reads the feed.
@@ -1067,15 +1110,115 @@ pub async fn rank_subject_feed(
         crate::error::DiscoverError::message(format!("encode the discover feed: {e}"))
     })?;
     library
-        .put_discover_feed(subject, &json, taste.scope, newest)
+        .put_discover_feed(subject, &json, scope, newest)
         .await?;
     let stored_bytes = serde_json::to_string(&json).map_or(json.len(), |escaped| escaped.len());
     Ok(RankReport {
-        scope: taste.scope,
+        scope,
         shelves: feed.shelves.len(),
         candidates: stored.len(),
         cards: feed.shelves.iter().map(|s| s.items.len()).sum(),
         stored_bytes,
+    })
+}
+
+/// Loads `subject`'s taste from the library and stores it, so the next
+/// ranking reads it: what a candidate fetch does first, for a fetch that
+/// calls no storefront (`storefront_candidates = false`), whose taste
+/// events must still refresh the ranking.
+///
+/// # Errors
+///
+/// Returns the library read or write error.
+pub async fn refresh_subject_taste(
+    library: &LibraryStore,
+    subject: &DiscoverSubject,
+    opts: &RecommendOptions,
+) -> Result<()> {
+    let taste = load_subject_taste(library, subject, opts).await?;
+    store_taste(library, subject, &taste).await?;
+    Ok(())
+}
+
+/// Stores the ranking's part of `taste` as `subject`'s taste.
+///
+/// # Errors
+///
+/// Returns the library write error, or an encoding error.
+async fn store_taste(
+    library: &LibraryStore,
+    subject: &DiscoverSubject,
+    taste: &SubjectTaste,
+) -> Result<StoredTaste> {
+    let mut stored = StoredTaste::of(taste);
+    // One bind of one statement: sized to what the database's statements
+    // carry, so a database with small statements keeps the heaviest part.
+    let budget = taste_budget(library.db_capabilities().max_payload_bytes);
+    let json = stored.encode(budget).map_err(|e| {
+        crate::error::DiscoverError::message(format!("encode the discover taste: {e}"))
+    })?;
+    library
+        .put_discover_taste(subject, &json, taste.scope)
+        .await?;
+    Ok(stored)
+}
+
+/// The taste a ranking uses: the subject's stored taste while it is fresh
+/// and decodes, otherwise loaded from the library and stored again.
+///
+/// # Errors
+///
+/// Returns the library read or write error.
+async fn ranking_taste(
+    library: &LibraryStore,
+    subject: &DiscoverSubject,
+    opts: &RecommendOptions,
+) -> Result<(SeedScope, StoredTaste)> {
+    if let Some(row) = library.get_discover_taste(subject).await? {
+        if is_fresh(row.computed_at, Utc::now()) {
+            if let Some(taste) = StoredTaste::decode(&row.taste_json) {
+                return Ok((row.seed_scope, taste));
+            }
+        }
+    }
+    let taste = load_subject_taste(library, subject, opts).await?;
+    let stored = store_taste(library, subject, &taste).await?;
+    Ok((taste.scope, stored))
+}
+
+/// The identifiers among `candidates` that belong to titles the library
+/// holds, in the shape [`insert_candidate`] filters by.
+///
+/// # Errors
+///
+/// Returns the library read error.
+async fn held_among(
+    library: &LibraryStore,
+    candidates: &[StorefrontCandidate],
+) -> Result<OwnedIdentities> {
+    let mut asins: Vec<String> = Vec::new();
+    let mut isbns: Vec<String> = Vec::new();
+    let mut products: Vec<String> = Vec::new();
+    for c in candidates {
+        asins.extend(c.asin.clone());
+        if let Some(isbn) = c.isbn.as_deref() {
+            isbns.push(isbn.to_string());
+            let canonical = bookclerk_enrich::canonicalize_isbn(isbn);
+            if !canonical.is_empty() {
+                isbns.push(canonical);
+            }
+        }
+        // A product id is also checked as an ASIN and an ISBN, as
+        // `candidate_is_owned` does.
+        asins.push(c.product_id.clone());
+        isbns.push(c.product_id.clone());
+        products.push(c.product_id.clone());
+    }
+    let held = library.held_identifiers(&asins, &isbns, &products).await?;
+    Ok(OwnedIdentities {
+        asins: held.asins.into_iter().collect(),
+        isbns: held.isbns.into_iter().collect(),
+        products: held.product_ids.into_iter().collect(),
     })
 }
 
@@ -1282,6 +1425,9 @@ mod tests {
                     origin: String::from("deals"),
                     cover_url: Some(format!("https://covers.example/{id}.jpg")),
                     description: Some(format!("The long blurb of deal {id}. ").repeat(20)),
+                    work_kind: bookclerk_source::records::WorkKind::Book,
+                    expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+                    media_kind: bookclerk_source::records::MediaKind::Audio,
                     ..CatalogHit::default()
                 })
                 .collect())
@@ -1300,6 +1446,9 @@ mod tests {
                 product_id: format!("near-{}", seed.product_id),
                 title: format!("Near {}", seed.title),
                 origin: String::from("related"),
+                work_kind: bookclerk_source::records::WorkKind::Book,
+                expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+                media_kind: bookclerk_source::records::MediaKind::Audio,
                 ..CatalogHit::default()
             }])
         }
@@ -1376,9 +1525,9 @@ mod tests {
         // it at half weight.
         let titles: Vec<&str> = own.books.iter().map(|b| b.title.as_str()).collect();
         assert_eq!(titles, vec!["Alice Book", "Bob Book"]);
-        assert!(!own.weights.contains_key(&own.books[0].uuid));
+        assert!(!own.weights.contains_key(&own.books[0].work_id));
         assert_eq!(
-            own.weights.get(&own.books[1].uuid),
+            own.weights.get(&own.books[1].work_id),
             Some(&HOUSEHOLD_BLEND_WEIGHT)
         );
         assert_eq!(own.linked_sources, HashSet::from([String::from("libro")]));
@@ -1476,13 +1625,13 @@ mod tests {
         assert_eq!(taste.books.len(), 2, "both household books blend in");
         assert_eq!(taste.listening.len(), 1, "household listening blends in");
         assert_eq!(
-            taste.listening[0].book_uuid.as_deref(),
-            Some(alice_book.as_str())
+            taste.listening[0].work_id.as_deref(),
+            Some(work_of(&library, &alice_book).await.as_str())
         );
         assert!(taste
             .books
             .iter()
-            .all(|b| taste.weights.get(&b.uuid) == Some(&HOUSEHOLD_BLEND_WEIGHT)));
+            .all(|b| taste.weights.get(&b.work_id) == Some(&HOUSEHOLD_BLEND_WEIGHT)));
         assert_eq!(taste.wish_titles, vec!["Hail Mary"]);
         assert_eq!(taste.wishlist.len(), 1);
     }
@@ -1513,6 +1662,120 @@ mod tests {
             is_finished: false,
             last_listened_at: None,
         }
+    }
+
+    /// A member's own books carry their own finishes and ratings, and the
+    /// household's blended books carry everyone's; another member's state
+    /// never lands on the member's own book.
+    #[tokio::test]
+    async fn a_members_own_books_carry_their_own_state() {
+        let (library, alice) = two_member_library().await;
+        let ana = alice.user_id.expect("a signed-in identity has a user");
+        let ben = library
+            .create_user(bookclerk_library::UserRole::Member, Some("Ben"), None)
+            .await
+            .unwrap();
+        let books = library.list_books(None).await.unwrap();
+        let work_titled = |title: &str| {
+            books
+                .iter()
+                .find(|b| b.title == title)
+                .map(|b| b.uuid.clone())
+                .unwrap()
+        };
+        let alice_work = work_of(&library, &work_titled("Alice Book")).await;
+        let bob_work = work_of(&library, &work_titled("Bob Book")).await;
+        let rate = |user: i64, work: String, finished: bool| {
+            let library = &library;
+            async move {
+                library
+                    .set_user_title_state(
+                        user,
+                        &work,
+                        &bookclerk_library::UserBookFields {
+                            is_finished: Some(finished),
+                            rating_overall: Some(if finished { 5.0 } else { 1.0 }),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+        };
+        rate(ben.id, alice_work.clone(), true).await;
+        rate(ben.id, bob_work.clone(), true).await;
+        let taste = load_subject_taste(
+            &library,
+            &DiscoverSubject::User(ana),
+            &RecommendOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(taste.scope, SeedScope::Own);
+        let own = taste
+            .books
+            .iter()
+            .find(|b| b.work_id == alice_work)
+            .unwrap();
+        assert!(!own.is_finished, "Ben's finish is not Ana's");
+        assert_eq!(own.rating_overall, None);
+        let blended = taste.books.iter().find(|b| b.work_id == bob_work).unwrap();
+        assert!(
+            blended.is_finished,
+            "a household book carries the household's state"
+        );
+
+        rate(ana, alice_work.clone(), false).await;
+        let taste = load_subject_taste(
+            &library,
+            &DiscoverSubject::User(ana),
+            &RecommendOptions::default(),
+        )
+        .await
+        .unwrap();
+        let own = taste
+            .books
+            .iter()
+            .find(|b| b.work_id == alice_work)
+            .unwrap();
+        assert_eq!(own.rating_overall, Some(1.0));
+
+        // A local user with no portal identity still has their own state:
+        // the works Ben rated are his books, with his ratings alone.
+        let taste = load_subject_taste(
+            &library,
+            &DiscoverSubject::User(ben.id),
+            &RecommendOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(taste.scope, SeedScope::Own);
+        let his = taste
+            .books
+            .iter()
+            .find(|b| b.work_id == alice_work)
+            .unwrap();
+        assert!(his.is_finished);
+        assert_eq!(
+            his.rating_overall,
+            Some(5.0),
+            "Ana's 1.0 is not averaged in"
+        );
+        assert!(taste.weights.is_empty(), "both works are his own");
+
+        // One with no state and no identity gets the household's taste.
+        let cara = library
+            .create_user(bookclerk_library::UserRole::Member, Some("Cara"), None)
+            .await
+            .unwrap();
+        let taste = load_subject_taste(
+            &library,
+            &DiscoverSubject::User(cara.id),
+            &RecommendOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(taste.scope, SeedScope::Household);
     }
 
     #[tokio::test]
@@ -1564,8 +1827,8 @@ mod tests {
             vec!["Bob Book", "Alice Book"],
             "her own listen first"
         );
-        assert!(!taste.weights.contains_key(&taste.books[0].uuid));
-        assert!(taste.weights.contains_key(&taste.books[1].uuid));
+        assert!(!taste.weights.contains_key(&taste.books[0].work_id));
+        assert!(taste.weights.contains_key(&taste.books[1].work_id));
     }
 
     #[tokio::test]
@@ -1680,6 +1943,114 @@ mod tests {
             .is_none());
     }
 
+    #[tokio::test]
+    async fn a_fetch_without_storefronts_still_refreshes_the_taste() {
+        let (library, alice) = two_member_library().await;
+        let subject = DiscoverSubject::User(alice.user_id.unwrap());
+        let opts = RecommendOptions::default();
+        // A fresh but outdated taste, as a ranking stored it before an event.
+        library
+            .put_discover_taste(&subject, "{}", SeedScope::Household)
+            .await
+            .unwrap();
+        refresh_subject_taste(&library, &subject, &opts)
+            .await
+            .unwrap();
+        let row = library.get_discover_taste(&subject).await.unwrap().unwrap();
+        assert_eq!(row.seed_scope, SeedScope::Own);
+        let taste = StoredTaste::decode(&row.taste_json).unwrap();
+        assert!(taste.shelf.owned_sources.contains("libro"));
+    }
+
+    #[tokio::test]
+    async fn a_ranking_reads_the_taste_the_fetch_stored() {
+        let (library, alice) = two_member_library().await;
+        let subject = DiscoverSubject::User(alice.user_id.unwrap());
+        let mut registry = SourceRegistry::new();
+        registry.register(std::sync::Arc::new(FakeStore {
+            id: "up",
+            deals: Some(vec!["d1", "d2"]),
+            calls: std::sync::Arc::default(),
+            price_calls: std::sync::Arc::default(),
+        }));
+        let opts = RecommendOptions::default();
+        // With no stored taste, a ranking loads it and stores it.
+        assert!(library
+            .get_discover_taste(&subject)
+            .await
+            .unwrap()
+            .is_none());
+        rank_subject_feed(&library, &registry, &subject, &opts)
+            .await
+            .unwrap();
+        assert!(library
+            .get_discover_taste(&subject)
+            .await
+            .unwrap()
+            .is_some());
+
+        fetch_subject_candidates(&library, &registry, &subject, &opts)
+            .await
+            .unwrap();
+        let row = library.get_discover_taste(&subject).await.unwrap().unwrap();
+        assert_eq!(row.seed_scope, SeedScope::Own);
+        let taste = StoredTaste::decode(&row.taste_json).unwrap();
+        assert!(!taste.languages.is_empty());
+        assert!(taste.shelf.owned_sources.contains("libro"));
+
+        // The ranking takes the scope from the stored taste, not the library.
+        library
+            .put_discover_taste(&subject, &row.taste_json, SeedScope::Household)
+            .await
+            .unwrap();
+        let ranked = rank_subject_feed(&library, &registry, &subject, &opts)
+            .await
+            .unwrap();
+        assert_eq!(ranked.scope, SeedScope::Household);
+
+        // A stored taste that does not decode is loaded again and replaced.
+        library
+            .put_discover_taste(&subject, "not json", SeedScope::Household)
+            .await
+            .unwrap();
+        let ranked = rank_subject_feed(&library, &registry, &subject, &opts)
+            .await
+            .unwrap();
+        assert_eq!(ranked.scope, SeedScope::Own);
+        let row = library.get_discover_taste(&subject).await.unwrap().unwrap();
+        assert!(StoredTaste::decode(&row.taste_json).is_some());
+
+        // A title bought since the fetch drops out of the next ranking,
+        // found by its product id without reading the library.
+        let cards = |feed: &DiscoverFeed| -> Vec<String> {
+            feed.shelves
+                .iter()
+                .flat_map(|s| &s.items)
+                .filter_map(|c| c.candidate_product_id.clone())
+                .collect()
+        };
+        let before = stored_subject_feed(&library, &subject, &[])
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(cards(&before.feed).contains(&"d1".to_string()));
+        let mut book =
+            bookclerk_library::NewBook::minimal("d1", "alice@example.com", "us", "Deal d1");
+        book.source = "libro".into();
+        book.plugin_key = "libro".into();
+        book.asin = None;
+        library.upsert_book(&book).await.unwrap();
+        rank_subject_feed(&library, &registry, &subject, &opts)
+            .await
+            .unwrap();
+        let after = stored_subject_feed(&library, &subject, &[])
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!cards(&after.feed).contains(&"d1".to_string()));
+        assert!(cards(&after.feed).contains(&"d2".to_string()));
+    }
+
     /// Unpriced titles of store `store`, recorded into the pool and read
     /// back as the fetch reads them.
     async fn pooled_titles(
@@ -1694,6 +2065,9 @@ mod tests {
                 let hit = CatalogHit {
                     product_id: (*p).to_string(),
                     title: format!("Title {p}"),
+                    work_kind: bookclerk_source::records::WorkKind::Book,
+                    expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+                    media_kind: bookclerk_source::records::MediaKind::Audio,
                     ..CatalogHit::default()
                 };
                 catalog_listing(store, "us", &hit, now)

@@ -31,6 +31,7 @@ mod recommend;
 mod request_queue;
 mod shelves;
 mod stored_feed;
+mod stored_taste;
 mod title_meta;
 mod ttl_cache;
 mod wish_pool;
@@ -67,9 +68,9 @@ pub use metadata_enrich::{
     METADATA_ENRICH_SOURCE_PREFIX,
 };
 pub use precompute::{
-    fetch_subject_candidates, load_subject_taste, rank_subject_feed, stored_subject_feed,
-    stored_subject_feed_state, FetchReport, OwnedIdentities, RankReport, StoredSubjectFeed,
-    SubjectTaste, HOUSEHOLD_BLEND_WEIGHT, OWN_TASTE_THRESHOLD, STARTER_GENRES,
+    fetch_subject_candidates, load_subject_taste, rank_subject_feed, refresh_subject_taste,
+    stored_subject_feed, stored_subject_feed_state, FetchReport, OwnedIdentities, RankReport,
+    StoredSubjectFeed, SubjectTaste, HOUSEHOLD_BLEND_WEIGHT, OWN_TASTE_THRESHOLD, STARTER_GENRES,
     STARTER_GENRE_MIN_SEEDS, STORE_CALL_MAX_AGE, STORE_CALL_TIMEOUT, STORE_FETCH_DEADLINE,
 };
 pub use purchase::{
@@ -83,9 +84,7 @@ pub use recommend::{
     combine_wishlist_score, listening_engagement, rank_request_queue_taste, recommend,
     recommend_feed, RankedQueueEntry, RecommendOptions, Recommendation, WISH_COUNT_WEIGHT,
 };
-pub use request_queue::{
-    queue_entry_key, read_request_queue, StoredRequestQueue, REQUEST_QUEUE_MAX_AGE,
-};
+pub use request_queue::{read_request_queue, StoredRequestQueue, REQUEST_QUEUE_MAX_AGE};
 pub use shelves::{
     build_discover_feed, flatten_feed, shelf_is_disabled, shelf_kind_catalog, DiscoverFeed,
     DiscoverShelf, FeedState, ShelfKindInfo, ShelfTaste, SERIES_CAP,

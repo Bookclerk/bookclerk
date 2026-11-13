@@ -131,15 +131,37 @@ fn push_unique(out: &mut Vec<String>, items: impl IntoIterator<Item = String>) {
 /// The show work of an episode listing's parent listing, once the parent
 /// has been resolved to a podcast show.
 fn parent_show<'a>(snapshot: &'a Snapshot, listing: &Listing) -> Option<&'a WorkRow> {
-    match listing.work_kind {
-        WorkKind::PodcastEpisode => snapshot
-            .parent_listing
-            .as_ref()
-            .filter(|row| Some(&row.key) == listing.parent_key().as_ref())
-            .and_then(|row| snapshot.work_of_edition(&row.edition_id))
-            .filter(|w| w.kind == WorkKind::PodcastShow),
-        WorkKind::Book | WorkKind::PodcastShow | WorkKind::Drama => None,
+    if !listing.is_episode() {
+        return None;
     }
+    snapshot
+        .parent_listing
+        .as_ref()
+        .filter(|row| Some(&row.key) == listing.parent_key().as_ref())
+        .and_then(|row| snapshot.work_of_edition(&row.edition_id))
+        .filter(|w| w.kind == WorkKind::Podcast && w.parent_work_id.is_none())
+}
+
+/// Whether `work` sits at the listing's level of a podcast: an episode
+/// never joins its own show or an episode of another show, and a book or a
+/// show never joins an episode.
+///
+/// # Arguments
+///
+/// * `work` - The candidate work.
+/// * `listing` - The listing looking for a work.
+/// * `show` - The listing's resolved show, for an episode whose show is known.
+fn fits_level(work: &WorkRow, listing: &Listing, show: Option<&str>) -> bool {
+    if !listing.is_episode() {
+        return work.parent_work_id.is_none();
+    }
+    show.is_none_or(|show| {
+        work.id != show
+            && work
+                .parent_work_id
+                .as_deref()
+                .is_none_or(|parent| parent == show)
+    })
 }
 
 /// The edition a weak identifier proposes and the listing may join.
@@ -162,13 +184,9 @@ fn weak_candidate(snapshot: &Snapshot, listing: &Listing) -> Option<String> {
             let Some(work) = snapshot.work(&expression.work_id) else {
                 continue;
             };
-            let other_show = matches!(
-                (work.parent_work_id.as_deref(), show),
-                (Some(theirs), Some(ours)) if theirs != ours
-            );
             if edition.media_kind == listing.media_kind
                 && work.kind == listing.work_kind
-                && !other_show
+                && fits_level(work, listing, show)
                 && expression_compatible(expression, listing)
                 && !strong_clash(snapshot, edition_id, listing)
             {
@@ -198,7 +216,7 @@ fn find_work(
     let chosen = by_identifier.iter().position(|id| {
         snapshot
             .work(id)
-            .is_some_and(|w| w.kind == listing.work_kind)
+            .is_some_and(|w| w.kind == listing.work_kind && fits_level(w, listing, parent_work_id))
     });
     if by_identifier.len() > 1 {
         let mut work_ids = by_identifier.clone();
@@ -236,11 +254,12 @@ fn find_work(
             w.match_key == key
                 && w.kind == listing.work_kind
                 && !isolated.contains(w.id.as_str())
-                && match listing.work_kind {
-                    WorkKind::PodcastEpisode => {
-                        parent_work_id.is_some() && w.parent_work_id.as_deref() == parent_work_id
-                    }
-                    WorkKind::Book | WorkKind::PodcastShow | WorkKind::Drama => true,
+                && if listing.is_episode() {
+                    // An episode only matches an episode of its own show.
+                    parent_work_id.is_some() && w.parent_work_id.as_deref() == parent_work_id
+                } else {
+                    // A book or a show never matches an episode.
+                    w.parent_work_id.is_none()
                 }
         })
         .collect();
@@ -382,7 +401,15 @@ fn resolve_with(
                             id: ids.next_id(EntityKind::Work),
                             kind: listing.work_kind,
                             title: listing.title.clone(),
-                            match_key: listing.work_match_key(),
+                            // An episode whose show is not resolved yet
+                            // gets no key, so a show listing can never
+                            // match it by text; it gains one when it is
+                            // linked to its show.
+                            match_key: if listing.is_episode() && parent_work_id.is_none() {
+                                String::new()
+                            } else {
+                                listing.work_match_key()
+                            },
                             parent_work_id,
                         };
                         new_work = Some(work.clone());
@@ -653,12 +680,19 @@ fn resolve_with(
 
     // An episode first seen before its show is stored without one; link it
     // once the show's listing has been resolved.
-    let work_parent = if listing.work_kind == WorkKind::PodcastEpisode && new_work.is_none() {
+    let work_parent = if listing.is_episode() && new_work.is_none() {
         let show = parent_show(snapshot, listing);
         snapshot
             .work(&work_id)
-            .filter(|w| w.kind == WorkKind::PodcastEpisode && w.parent_work_id.is_none())
+            // A work with episodes of its own is a show the listing reached by
+            // identifier; it never moves under another show.
+            .filter(|w| {
+                w.kind == WorkKind::Podcast
+                    && w.parent_work_id.is_none()
+                    && !snapshot.works_with_episodes.contains(&w.id)
+            })
             .zip(show)
+            .filter(|(episode, show)| episode.id != show.id)
             .map(|(episode, show)| WorkParent {
                 work_id: episode.id.clone(),
                 parent_work_id: show.id.clone(),
@@ -684,24 +718,20 @@ fn resolve_with(
                 };
                 (w, parent)
             })
+            // An episode still waiting for its show stays keyless.
+            .filter(|(_, parent)| !listing.is_episode() || parent.is_some())
             .filter(|(w, parent)| {
                 !snapshot.works.iter().any(|other| {
                     other.id != w.id
                         && other.match_key == key
                         && other.kind == w.kind
-                        && match w.kind {
-                            WorkKind::PodcastEpisode => other.parent_work_id == *parent,
-                            WorkKind::Book | WorkKind::PodcastShow | WorkKind::Drama => true,
-                        }
+                        && other.parent_work_id == *parent
                 })
             })
             .map(|(w, parent)| WorkMatchKey {
                 work_id: w.id.clone(),
                 kind: w.kind,
-                parent_work_id: match w.kind {
-                    WorkKind::PodcastEpisode => parent,
-                    WorkKind::Book | WorkKind::PodcastShow | WorkKind::Drama => None,
-                },
+                parent_work_id: parent,
                 match_key: key,
             })
     } else {

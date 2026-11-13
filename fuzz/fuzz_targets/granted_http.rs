@@ -67,7 +67,10 @@ fn check_body_reader(framing: BodyFraming, body: &[u8]) {
             assert_eq!(Some(*c), cap, "cap tripped with a cap that was not set");
             assert!(used > c, "TooLarge reported used {used} within cap {c}");
             if let BodyFraming::Length(len) = framing {
-                assert_eq!(*used, len, "a declared-length body trips the cap at its length");
+                assert_eq!(
+                    *used, len,
+                    "a declared-length body trips the cap at its length"
+                );
             }
         }
     }

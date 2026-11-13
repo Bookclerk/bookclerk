@@ -117,6 +117,8 @@ pub fn product_to_scan_book(product: &Product, account_id: &str, marketplace: &s
         published_at: published_at.map(rfc3339),
         purchased_at: purchased_at.map(rfc3339),
         categories: product.genre.clone(),
+        work_kind: bookclerk_storefront::records::WorkKind::Book,
+        media_kind: bookclerk_storefront::records::MediaKind::Audio,
         ..ScanBook::default()
     }
 }
@@ -136,6 +138,8 @@ fn library_item_to_scan_book(item: &LibraryItem, account_id: &str, marketplace: 
         marketplace: Some(marketplace.to_string()),
         publisher: Some(String::from("GraphicAudio")),
         expression_kind: ExpressionKind::Dramatisation,
+        work_kind: bookclerk_storefront::records::WorkKind::Book,
+        media_kind: bookclerk_storefront::records::MediaKind::Audio,
         ..ScanBook::default()
     }
 }

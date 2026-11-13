@@ -321,6 +321,40 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 account_id: secret_ref.account_id,
                 name: secret_ref.name,
             };
+            // A single-keeper account a branch keeps for this library (and
+            // has pushed a sign-in for) takes only that branch's pushes
+            // (`accounts.update`): a job's write-back would overwrite them
+            // with an older login.
+            // Held through the write, so a keeper's first push (which takes
+            // the account over) can't land between the check and the write.
+            let _serialized =
+                if secret_ref.kind == bookclerk_library::secrets::secret_kind::SOURCE_AUTH {
+                    Some(super::host_accounts::ACCOUNTS_GATE.lock().await)
+                } else {
+                    None
+                };
+            if secret_ref.kind == bookclerk_library::secrets::secret_kind::SOURCE_AUTH {
+                match bookclerk_library::control_plane::confirmed_keeping_branch(
+                    library,
+                    &secret_ref.provider,
+                    &secret_ref.account_id,
+                )
+                .await
+                {
+                    Ok(None) => {}
+                    Ok(Some(_)) => {
+                        let shareable =
+                            super::branch::shareable_plugin_keys(&host.state, library).await;
+                        if !shareable.contains(&secret_ref.provider) {
+                            return error(id, "refused", "kept_by_branch");
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(node_id = %host.node_id, error = %err, "could not read who keeps a written-back account");
+                        return error(id, "unavailable", "try again");
+                    }
+                }
+            }
             match write_back_job_secret(
                 library,
                 &host.node_id,
@@ -471,6 +505,9 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             account_id,
         } => {
             super::host_accounts::remove(library, host, id.clone(), &plugin_key, &account_id).await
+        }
+        Body::AccountsUpdate { sealed, revision } => {
+            super::host_accounts::update(library, host, id.clone(), &sealed, revision).await
         }
         Body::CatalogQuestions {} => super::host_lookup::questions(library, host, id.clone()).await,
         Body::CatalogFound { answers, missing } => {

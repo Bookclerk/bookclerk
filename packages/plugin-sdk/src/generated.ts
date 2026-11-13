@@ -24,6 +24,7 @@ import type {
   IdentifierScheme,
   CreditRole,
   CreditLevel,
+  FetchedFileRole,
   CatalogSort,
   CatalogField,
   Abridgement,
@@ -46,6 +47,7 @@ export type {
   IdentifierScheme,
   CreditRole,
   CreditLevel,
+  FetchedFileRole,
   CatalogSort,
   CatalogField,
   Abridgement,
@@ -213,6 +215,12 @@ export interface PluginDescribe {
    * for catalog search without naming it; all false for other kinds.
    */
   catalog: CatalogCapabilities;
+  /**
+   * Work kinds and edition carriers the plugin lists and fetches; required
+   * for storefronts and metadata providers, empty lists for every other
+   * kind (see `MediaSupport`).
+   */
+  media: MediaSupport;
 }
 
 /**
@@ -1753,6 +1761,28 @@ export interface ScanParams {
   syncToken: string;
 }
 
+/**
+ * Media a plugin works with, declared in `describe()` and in the manifest's
+ * `[media]` table. Required for plugins that export the storefront or
+ * metadata entrypoint: the host refuses to spawn one whose `workKinds` or
+ * `lists` is empty, holds `unspecified`, or is wider than its manifest, and
+ * refuses any record whose kinds fall outside the declaration.
+ */
+export interface MediaSupport {
+  /** Work kinds the plugin reports. */
+  workKinds: WorkKind[];
+  /**
+   * Edition carriers the plugin reports in scans, catalog search and
+   * metadata records.
+   */
+  lists: MediaKind[];
+  /**
+   * Edition carriers `ContentSource.fetchTitle` can deliver; a subset of
+   * `lists`. Empty for metadata providers and for stores that only list.
+   */
+  fetches: MediaKind[];
+}
+
 /** One external identifier a storefront or metadata provider reports. */
 export interface Identifier {
   /** Scheme the value belongs to; it decides the identifier's level. */
@@ -1828,7 +1858,7 @@ export interface ScanBook {
   workKind: WorkKind;
   /** How the work is realised in this edition. */
   expressionKind: ExpressionKind;
-  /** Form of this edition. */
+  /** Carrier of this edition. */
   mediaKind: MediaKind;
   /** External identifiers (ISBN, ASIN, OpenLibrary ids). */
   identifiers: Identifier[];
@@ -1980,17 +2010,25 @@ export interface FetchTitleParams {
   fetch: FetchOptions;
 }
 
-/** One plain audio part written under the cache directory. */
-export interface PlainPart {
-  /** Absolute path to the part file under `cacheDir`. */
+/** One file `fetchTitle` wrote under the cache directory. */
+export interface FetchedFile {
+  /** Absolute path to the file under `cacheDir`. */
   path: string;
+  /** What the file is to the edition. */
+  role: FetchedFileRole;
   /**
-   * Part title (disc / chapter label).
+   * MIME type when the guest knows it (`audio/mp4`, `application/epub+zip`,
+   * `image/jpeg`); the host sniffs the file either way.
+   * Omitted when absent (wire zero value).
+   */
+  contentType?: string;
+  /**
+   * Part title (disc or chapter label), for a `part`.
    * Omitted when absent (wire zero value).
    */
   title?: string;
   /**
-   * Duration of this part in milliseconds when known.
+   * Playing time of the file in milliseconds, for audio, when known.
    * Omitted when absent (wire zero value).
    */
   durationMs?: number;
@@ -2009,22 +2047,21 @@ export interface ChapterMarker {
  * guests decrypt before responding.
  */
 export interface PlainFetch {
-  /** Ordered audio part files written under the cache directory. */
-  parts: PlainPart[];
   /**
-   * Single M4B path when the guest assembled one.
-   * Omitted when absent (wire zero value).
+   * Carrier of what was fetched. Must be one of the storefront's declared
+   * `MediaSupport.fetches`; `unspecified` is refused.
    */
-  m4bPath?: string;
+  mediaKind: MediaKind;
   /**
-   * Cover image path under the cache directory.
-   * Omitted when absent (wire zero value).
+   * The files the guest wrote under the cache directory: the edition's
+   * ordered `part`s or one `whole` file, plus an optional `cover`.
    */
-  coverPath?: string;
+  files: FetchedFile[];
   /** Chapter markers; empty when unknown. */
   chapters: ChapterMarker[];
   /**
-   * Companion PDF download URL when the store exposes one.
+   * Companion PDF download URL when the store exposes one; the host
+   * downloads it itself.
    * Omitted when absent (wire zero value).
    */
   pdfUrl?: string;
@@ -2280,7 +2317,7 @@ export interface CatalogHit {
   workKind: WorkKind;
   /** How the work is realised in this edition. */
   expressionKind: ExpressionKind;
-  /** Form of this edition; print and ebook hits are never acquired. */
+  /** Carrier of this edition. */
   mediaKind: MediaKind;
   /** External identifiers (ISBN, ASIN, OpenLibrary ids). */
   identifiers: Identifier[];
@@ -2897,7 +2934,7 @@ export interface MetadataRecord {
   workKind: WorkKind;
   /** How the work is realised in this edition. */
   expressionKind: ExpressionKind;
-  /** Form of this edition. */
+  /** Carrier of this edition. */
   mediaKind: MediaKind;
   /** External identifiers (ISBN, ASIN, OpenLibrary ids). */
   identifiers: Identifier[];

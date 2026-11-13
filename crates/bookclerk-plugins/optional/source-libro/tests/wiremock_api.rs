@@ -416,7 +416,7 @@ async fn guest_scan_and_fetch_title_use_host_credentials() {
         ..bookclerk_plugin_sdk::ScanParams::default()
     };
 
-    let page = guest_scan_page(&server.uri(), &params).await.unwrap();
+    let page = guest_scan_page(&server.uri(), &params, None).await.unwrap();
     assert!(page.complete);
     assert!(page.next_cursor.is_empty());
     assert_eq!(page.store_pages, 1);
@@ -469,7 +469,7 @@ async fn scan_pages_walk_the_library_and_complete_on_the_last_page() {
         ..bookclerk_plugin_sdk::ScanParams::default()
     };
 
-    let first = guest_scan_page(&server.uri(), &params).await.unwrap();
+    let first = guest_scan_page(&server.uri(), &params, None).await.unwrap();
     assert_eq!(first.books[0].product_id, "9780000000001");
     assert_eq!(first.next_cursor, "sp1.0.2");
     assert!(!first.complete);
@@ -477,7 +477,7 @@ async fn scan_pages_walk_the_library_and_complete_on_the_last_page() {
         cursor: first.next_cursor.clone(),
         ..params.clone()
     };
-    let last = guest_scan_page(&server.uri(), &second).await.unwrap();
+    let last = guest_scan_page(&server.uri(), &second, None).await.unwrap();
     assert_eq!(last.books[0].product_id, "9780000000002");
     assert!(last.next_cursor.is_empty());
     assert!(last.complete);
@@ -486,16 +486,96 @@ async fn scan_pages_walk_the_library_and_complete_on_the_last_page() {
         account_id: "someone-else".into(),
         ..params.clone()
     };
-    assert!(guest_scan_page(&server.uri(), &foreign).await.is_err());
+    assert!(guest_scan_page(&server.uri(), &foreign, None)
+        .await
+        .is_err());
 
     // The old page-number cursor of a pass in progress restarts the pass.
     let stale = bookclerk_plugin_sdk::ScanParams {
         cursor: "page:2".into(),
         ..params
     };
-    let err = guest_scan_page(&server.uri(), &stale).await.unwrap_err();
+    let err = guest_scan_page(&server.uri(), &stale, None)
+        .await
+        .unwrap_err();
     assert_eq!(
         err.code,
         bookclerk_plugin_sdk::PluginErrorCode::InvalidCursor
     );
+}
+
+/// A `SCAN_STATE` database like the one a host grants, under the shipped
+/// adapters' limits.
+async fn scan_state() -> bookclerk_plugin_sdk::DatabaseBinding {
+    let unit = bookclerk_db_testkit::BindingDatabase::open(
+        bookclerk_db_testkit::Profile::FirstParty,
+        bookclerk_scan_delta::migrations(),
+    )
+    .await
+    .unwrap();
+    bookclerk_plugin_sdk::DatabaseBinding::from_session(std::sync::Arc::new(unit))
+}
+
+#[tokio::test]
+async fn a_second_scan_sends_only_what_changed() {
+    let server = MockServer::start().await;
+    let library = |books: Vec<serde_json::Value>| {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "page": 1,
+            "total_pages": 1,
+            "audiobooks": books,
+        }))
+    };
+    Mock::given(method("GET"))
+        .and(path(LIBRARY_PATH))
+        .respond_with(library(vec![
+            sample_audiobook("9780000000001", "Kept"),
+            sample_audiobook("9780000000002", "Gone"),
+        ]))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(LIBRARY_PATH))
+        .respond_with(library(vec![
+            sample_audiobook("9780000000001", "Kept"),
+            sample_audiobook("9780000000003", "New"),
+        ]))
+        .mount(&server)
+        .await;
+    let auth = serde_json::json!({
+        "access_token": "tok",
+        "token_type": "Bearer",
+        "email": "delta@example.com",
+        "marketplace": "us",
+    });
+    let params = bookclerk_plugin_sdk::ScanParams {
+        account_id: "delta@example.com".into(),
+        credential: bookclerk_plugin_sdk::AccountCredential {
+            account_id: "delta@example.com".into(),
+            credentials: serde_json::to_vec(&auth).unwrap(),
+        },
+        ..bookclerk_plugin_sdk::ScanParams::default()
+    };
+    let db = scan_state().await;
+
+    let full = guest_scan_page(&server.uri(), &params, Some(&db))
+        .await
+        .unwrap();
+    assert_eq!(full.books.len(), 2);
+    assert!(full.complete);
+    assert!(full.sync_token.starts_with("hd1."));
+
+    let delta_params = bookclerk_plugin_sdk::ScanParams {
+        sync_token: full.sync_token.clone(),
+        ..params
+    };
+    let delta = guest_scan_page(&server.uri(), &delta_params, Some(&db))
+        .await
+        .unwrap();
+    let sent: Vec<&str> = delta.books.iter().map(|b| b.product_id.as_str()).collect();
+    assert_eq!(sent, ["9780000000003"]);
+    assert_eq!(delta.removed, ["9780000000002"]);
+    assert!(!delta.complete);
+    assert!(delta.sync_token.starts_with("hd1.") && delta.sync_token != full.sync_token);
 }

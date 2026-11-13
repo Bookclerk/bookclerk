@@ -107,6 +107,83 @@ where
     read_in_chunks(keys, width, fits, |part| query(part).all(&store.db)).await
 }
 
+/// Most rows read per page by [`find_chunked_paged`] when the backend sets
+/// no row cap.
+const PAGED_LOOKUP_PAGE: u64 = 500;
+
+/// Rows of `E` that `query` selects for `ids`, for a lookup that can return
+/// several rows per id (credits or series entries of a work, identifiers or
+/// files of an edition, listings of an edition, holdings of a listing).
+///
+/// Ids are chunked as [`find_chunked`] chunks them, so each statement fits
+/// the backend's bind and size caps, and each chunk's rows are then read in
+/// pages of at most the backend's `maxResultRows` with `LIMIT` / `OFFSET`;
+/// a page refused as over a negotiated limit is read again at half the
+/// size. One id with more rows than one result holds is therefore still
+/// read whole, where [`find_chunked`] would fail.
+///
+/// `query` must order its rows by a unique key, so consecutive pages
+/// neither skip nor repeat a row.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Orm`] when a read fails for another reason, or a
+/// single row is still over a limit.
+pub(crate) async fn find_chunked_paged<E, F>(
+    store: &LibraryStore,
+    ids: &[String],
+    query: F,
+) -> Result<Vec<E::Model>>
+where
+    E: EntityTrait,
+    F: Fn(&[String]) -> sea_orm::Select<E>,
+{
+    let fits = |part: &[String]| {
+        crate::control_plane::sea_exec(&query(part))
+            .map(|stmt| store.admits_read(&stmt))
+            .unwrap_or(true)
+    };
+    let caps = store.db_capabilities();
+    let mut page = if caps.max_result_rows > 0 {
+        PAGED_LOOKUP_PAGE.min(u64::from(caps.max_result_rows))
+    } else {
+        PAGED_LOOKUP_PAGE
+    };
+    let width = store.lookup_chunk().max(1);
+    let mut out = Vec::new();
+    let mut rest = ids;
+    while !rest.is_empty() {
+        let mut n = width.min(rest.len());
+        while n > 1 && !fits(&rest[..n]) {
+            n /= 2;
+        }
+        let (part, tail) = rest.split_at(n);
+        let mut offset: u64 = 0;
+        loop {
+            match query(part).limit(page).offset(offset).all(&store.db).await {
+                Ok(rows) => {
+                    let len = u64::try_from(rows.len()).unwrap_or(u64::MAX);
+                    out.extend(rows);
+                    if len < page {
+                        break;
+                    }
+                    offset = offset.saturating_add(len);
+                }
+                Err(err)
+                    if page > 1
+                        && bookclerk_plugin_abi::LimitExceeded::from_message(&err.to_string())
+                            .is_some() =>
+                {
+                    page /= 2;
+                }
+                Err(err) => return Err(LibraryError::Orm(err)),
+            }
+        }
+        rest = tail;
+    }
+    Ok(out)
+}
+
 /// Reads `keys` in chunks of at most `width`, halving a chunk until `fits`
 /// accepts it and again when its read is refused as over a negotiated limit
 /// (a reply too large for `maxResultRows` / `maxResultBytes`). Later chunks
@@ -523,14 +600,7 @@ fn link_params(
                         !w.match_key.is_empty()
                             && o.match_key == w.match_key
                             && o.kind == w.kind
-                            && match w.kind {
-                                resolve::WorkKind::PodcastEpisode => {
-                                    o.parent_work_id == w.parent_work_id
-                                }
-                                resolve::WorkKind::Book
-                                | resolve::WorkKind::PodcastShow
-                                | resolve::WorkKind::Drama => true,
-                            }
+                            && o.parent_work_id == w.parent_work_id
                     })
                     .map(|o| o.id.clone())
                     .collect()
@@ -665,25 +735,15 @@ pub fn listing_from_book(
     };
     let episode = crate::models::is_episode(&book.content_kind);
     let show = crate::models::is_podcast_parent(&book.content_kind);
-    let (work_kind, expression_kind, media_kind) = if episode {
+    let (work_kind, expression_kind) = if episode || show {
         (
-            resolve::WorkKind::PodcastEpisode,
-            resolve::ExpressionKind::PodcastAudio,
-            resolve::MediaKind::PodcastAudio,
-        )
-    } else if show {
-        (
-            resolve::WorkKind::PodcastShow,
-            resolve::ExpressionKind::PodcastAudio,
-            resolve::MediaKind::PodcastAudio,
+            resolve::WorkKind::Podcast,
+            resolve::ExpressionKind::OriginalAudio,
         )
     } else {
-        (
-            resolve::WorkKind::Book,
-            resolve::ExpressionKind::Narration,
-            resolve::MediaKind::Audiobook,
-        )
+        (resolve::WorkKind::Book, resolve::ExpressionKind::Narration)
     };
+    let media_kind = resolve::MediaKind::Audio;
     let mut credits = Vec::new();
     for (names, role) in [
         (&book.authors, resolve::CreditRole::Author),
@@ -737,7 +797,11 @@ pub fn listing_from_book(
             .filter(|s| !s.trim().is_empty())
             .map(|s| (s.clone(), book.series_index.clone()))
             .collect(),
-        parent_product_id: None,
+        // A flat episode row files its show's product id as the series id.
+        parent_product_id: book
+            .series_asin
+            .clone()
+            .filter(|show| episode && !show.trim().is_empty()),
     };
     resolve::Listing::from_draft(&draft)
 }
@@ -764,9 +828,9 @@ pub struct TitleQuery<'a> {
 /// names no plugin, so it never matches a stored listing.
 const TITLE_QUERY_PLUGIN: &str = "bookclerk-query";
 
-/// The listing the resolver sees for a [`TitleQuery`]: a book, with the
-/// query's identifiers, author credits and series. Kind, language and
-/// abridgement are left unknown, so the resolver only joins an existing
+/// The listing the resolver sees for a [`TitleQuery`]: a narrated audio
+/// book, with the query's identifiers, author credits and series. Language
+/// and abridgement are left unknown, so the resolver only joins an existing
 /// edition through a shared identifier and otherwise finds the work by its
 /// identifiers or its title-and-author match key.
 ///
@@ -801,8 +865,8 @@ fn listing_from_query(query: &TitleQuery<'_>) -> Option<resolve::Listing> {
         marketplace: None,
         product_id,
         work_kind: Some(resolve::WorkKind::Book),
-        expression_kind: None,
-        media_kind: None,
+        expression_kind: Some(resolve::ExpressionKind::Narration),
+        media_kind: Some(resolve::MediaKind::Audio),
         language: None,
         abridgement: None,
         title: query.title.to_string(),
@@ -1704,6 +1768,17 @@ impl LibraryStore {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
+        let works_with_episodes: Vec<String> = if listing.is_episode() {
+            reads
+                .works_with_episodes(&work_list)
+                .await?
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         // Both readers can return rows in any order; sort the lists so a
         // snapshot does not depend on which one answered.
@@ -1726,6 +1801,7 @@ impl LibraryStore {
             holding,
             credited: credited.into_iter().collect(),
             works_with_series,
+            works_with_episodes,
         };
         Ok((snapshot, stored_row))
     }
@@ -1909,84 +1985,77 @@ impl LibraryStore {
             return Ok(());
         }
         let ids: Vec<String> = works.iter().map(|w| w.id.clone()).collect();
-        let mut work_credits = Vec::new();
-        let mut entries = Vec::new();
-        for chunk in ids.chunks(self.lookup_chunk()) {
-            work_credits.extend(
-                credits::Entity::find()
-                    .filter(credits::Column::TargetKind.eq(resolve::Level::Work.as_str()))
-                    .filter(credits::Column::TargetId.is_in(chunk.iter().cloned()))
-                    .order_by_asc(credits::Column::Position)
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?,
-            );
-            entries.extend(
-                series_entries::Entity::find()
-                    .filter(series_entries::Column::WorkId.is_in(chunk.iter().cloned()))
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?,
-            );
-        }
+        // Every lookup but the names is one-to-many (several credits or
+        // series per work, several expressions per work), so each is read
+        // in pages that fit the backend's result cap. Ordering ends with
+        // the primary key so pages neither skip nor repeat a row.
+        let work_credits = find_chunked_paged(self, &ids, |part| {
+            credits::Entity::find()
+                .filter(credits::Column::TargetKind.eq(resolve::Level::Work.as_str()))
+                .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
+                .order_by_asc(credits::Column::TargetId)
+                .order_by_asc(credits::Column::Position)
+                .order_by_asc(credits::Column::ContributorId)
+                .order_by_asc(credits::Column::Role)
+        })
+        .await?;
+        let entries = find_chunked_paged(self, &ids, |part| {
+            series_entries::Entity::find()
+                .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
+                .order_by_asc(series_entries::Column::WorkId)
+                .order_by_asc(series_entries::Column::SeriesId)
+        })
+        .await?;
         // Narrators are credited on expressions, not on the work.
-        let mut expression_work: BTreeMap<String, String> = BTreeMap::new();
-        for chunk in ids.chunks(self.lookup_chunk()) {
-            expression_work.extend(
-                expressions::Entity::find()
-                    .filter(expressions::Column::WorkId.is_in(chunk.iter().cloned()))
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?
-                    .into_iter()
-                    .map(|x| (x.id, x.work_id)),
-            );
-        }
+        let expression_work: BTreeMap<String, String> = find_chunked_paged(self, &ids, |part| {
+            expressions::Entity::find()
+                .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
+                .order_by_asc(expressions::Column::Id)
+        })
+        .await?
+        .into_iter()
+        .map(|x| (x.id, x.work_id))
+        .collect();
         let expression_ids: Vec<String> = expression_work.keys().cloned().collect();
-        let mut narrator_credits = Vec::new();
-        for chunk in expression_ids.chunks(self.lookup_chunk()) {
-            narrator_credits.extend(
-                credits::Entity::find()
-                    .filter(credits::Column::TargetKind.eq(resolve::Level::Expression.as_str()))
-                    .filter(credits::Column::TargetId.is_in(chunk.iter().cloned()))
-                    .filter(credits::Column::Role.eq(resolve::CreditRole::Narrator.as_str()))
-                    .order_by_asc(credits::Column::Position)
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?,
-            );
-        }
-        let contributor_ids: BTreeSet<String> = work_credits
+        let narrator_credits = find_chunked_paged(self, &expression_ids, |part| {
+            credits::Entity::find()
+                .filter(credits::Column::TargetKind.eq(resolve::Level::Expression.as_str()))
+                .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
+                .filter(credits::Column::Role.eq(resolve::CreditRole::Narrator.as_str()))
+                .order_by_asc(credits::Column::TargetId)
+                .order_by_asc(credits::Column::Position)
+                .order_by_asc(credits::Column::ContributorId)
+        })
+        .await?;
+        let contributor_ids: Vec<String> = work_credits
             .iter()
             .chain(&narrator_credits)
             .map(|c| c.contributor_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect();
-        let series_ids: BTreeSet<String> = entries.iter().map(|e| e.series_id.clone()).collect();
-        let mut names: BTreeMap<String, String> = BTreeMap::new();
-        let contributor_ids: Vec<String> = contributor_ids.into_iter().collect();
-        for chunk in contributor_ids.chunks(self.lookup_chunk()) {
-            names.extend(
-                contributors::Entity::find()
-                    .filter(contributors::Column::Id.is_in(chunk.iter().cloned()))
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?
-                    .into_iter()
-                    .map(|c| (c.id, c.name)),
-            );
-        }
-        let series_ids: Vec<String> = series_ids.into_iter().collect();
-        for chunk in series_ids.chunks(self.lookup_chunk()) {
-            names.extend(
-                series::Entity::find()
-                    .filter(series::Column::Id.is_in(chunk.iter().cloned()))
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?
-                    .into_iter()
-                    .map(|s| (s.id, s.name)),
-            );
-        }
+        let series_ids: Vec<String> = entries
+            .iter()
+            .map(|e| e.series_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mut names: BTreeMap<String, String> = find_chunked(self, &contributor_ids, |part| {
+            contributors::Entity::find()
+                .filter(contributors::Column::Id.is_in(part.iter().cloned()))
+        })
+        .await?
+        .into_iter()
+        .map(|c| (c.id, c.name))
+        .collect();
+        names.extend(
+            find_chunked(self, &series_ids, |part| {
+                series::Entity::find().filter(series::Column::Id.is_in(part.iter().cloned()))
+            })
+            .await?
+            .into_iter()
+            .map(|s| (s.id, s.name)),
+        );
         for work in works.iter_mut() {
             work.credits = work_credits
                 .iter()
@@ -2547,7 +2616,7 @@ mod store_tests {
             product_id: product.into(),
             work_kind: Some(resolve::WorkKind::Book),
             expression_kind: Some(resolve::ExpressionKind::Narration),
-            media_kind: Some(resolve::MediaKind::Audiobook),
+            media_kind: Some(resolve::MediaKind::Audio),
             language: Some("en".into()),
             abridgement: Some(resolve::Abridgement::Unabridged),
             title: "Dune".into(),
@@ -3168,9 +3237,9 @@ mod store_tests {
         let show = resolve::ListingDraft {
             product_id: "S1".into(),
             title: "Show".into(),
-            work_kind: Some(resolve::WorkKind::PodcastShow),
-            expression_kind: Some(resolve::ExpressionKind::PodcastAudio),
-            media_kind: Some(resolve::MediaKind::PodcastAudio),
+            work_kind: Some(resolve::WorkKind::Podcast),
+            expression_kind: Some(resolve::ExpressionKind::OriginalAudio),
+            media_kind: Some(resolve::MediaKind::Audio),
             identifiers: Vec::new(),
             series: Vec::new(),
             ..dune("audible", "S1")
@@ -3178,7 +3247,7 @@ mod store_tests {
         let episode = resolve::ListingDraft {
             product_id: "E1".into(),
             title: "Trailer".into(),
-            work_kind: Some(resolve::WorkKind::PodcastEpisode),
+            work_kind: Some(resolve::WorkKind::Podcast),
             parent_product_id: Some("S1".into()),
             ..show.clone()
         };
@@ -3217,9 +3286,9 @@ mod store_tests {
         let show = resolve::ListingDraft {
             product_id: "S1".into(),
             title: "Show".into(),
-            work_kind: Some(resolve::WorkKind::PodcastShow),
-            expression_kind: Some(resolve::ExpressionKind::PodcastAudio),
-            media_kind: Some(resolve::MediaKind::PodcastAudio),
+            work_kind: Some(resolve::WorkKind::Podcast),
+            expression_kind: Some(resolve::ExpressionKind::OriginalAudio),
+            media_kind: Some(resolve::MediaKind::Audio),
             identifiers: Vec::new(),
             series: Vec::new(),
             ..dune("audible", "S1")
@@ -3227,7 +3296,7 @@ mod store_tests {
         let episode = resolve::ListingDraft {
             product_id: "E1".into(),
             title: "Trailer".into(),
-            work_kind: Some(resolve::WorkKind::PodcastEpisode),
+            work_kind: Some(resolve::WorkKind::Podcast),
             parent_product_id: Some("S1".into()),
             ..show.clone()
         };
@@ -4019,7 +4088,7 @@ mod store_tests {
         let listing = listing_from_book(&book).unwrap();
         assert_eq!(listing.title, "Dune & More");
         assert_eq!(listing.key.marketplace, "us");
-        assert_eq!(listing.work_kind, resolve::WorkKind::PodcastEpisode);
+        assert_eq!(listing.work_kind, resolve::WorkKind::Podcast);
         assert_eq!(listing.identifiers.len(), 2);
         assert_eq!(listing.credits.len(), 2);
         assert_eq!(holding_from_book(&book).holder.stored(), "account:a1");
@@ -4047,13 +4116,13 @@ mod store_tests {
         drafts.push(children);
         let mut show = dune("audible", "SHOW1");
         show.title = "Spice Talk".into();
-        show.work_kind = Some(resolve::WorkKind::PodcastShow);
+        show.work_kind = Some(resolve::WorkKind::Podcast);
         show.identifiers.clear();
         show.series.clear();
         let mut episode = show.clone();
         episode.product_id = "EP1".into();
         episode.title = "Spice Talk 1".into();
-        episode.work_kind = Some(resolve::WorkKind::PodcastEpisode);
+        episode.work_kind = Some(resolve::WorkKind::Podcast);
         episode.parent_product_id = Some("SHOW1".into());
         drafts.push(show);
         drafts.push(episode);

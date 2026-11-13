@@ -758,4 +758,20 @@ impl SnapshotReader<'_> {
         );
         Ok(out)
     }
+
+    /// The works among `work_ids` that are another work's parent: podcast
+    /// shows with at least one episode stored under them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when a read fails.
+    pub(crate) async fn works_with_episodes(&self, work_ids: &[String]) -> Result<Vec<String>> {
+        Ok(find_chunked(self.store, work_ids, |part| {
+            works::Entity::find().filter(works::Column::ParentWorkId.is_in(part.iter().cloned()))
+        })
+        .await?
+        .into_iter()
+        .filter_map(|w| w.parent_work_id)
+        .collect())
+    }
 }

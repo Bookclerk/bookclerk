@@ -10,6 +10,7 @@
 mod artifacts;
 pub(crate) mod batch;
 mod branch_catalog;
+mod branch_members_books;
 mod branch_requests;
 mod cache;
 mod carried_accounts;
@@ -25,6 +26,7 @@ mod identity;
 mod instance_config;
 mod instances;
 mod job_routing;
+mod keeper;
 mod leases;
 mod link_imports;
 mod live;
@@ -62,6 +64,9 @@ pub use branch_catalog::{
     BranchTitleCounts, CatalogAccept, CatalogBegin, CatalogSessionOpened, ForwardableBranchKey,
     ForwardableBranchTitle, DETACHED_LEFT, DETACHED_STOPPED_SHARING, DETACHED_WITHDRAWN,
     FORWARDABLE_KEYS_MAX_PAGE, FULL_CATALOG_PASS_EVERY,
+};
+pub use branch_members_books::{
+    parse_members_books_request, set_branch_members_books, MembersBooksBody, MembersBooksChoice,
 };
 pub use branch_requests::{
     books_requested_by_link, claim_branch_requests, finish_branch_request, notify_requests_queued,
@@ -161,6 +166,10 @@ pub use job_routing::{
     job_source_plugin_key, node_can_run_job, resolve_job_requirements, JobClaimFilter,
     JobClaimLimits, JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT,
     ROUTED_CLAIM_CANDIDATES,
+};
+pub use keeper::{
+    apply_keeper_update, confirmed_keeping_branch, keeping_branch, keeps_for_link, kept_shares,
+    record_pushed_revision, sign_in_revision, KeeperUpdate, KeptShare, SignIn,
 };
 pub use leases::{
     acquire_lease, acquire_lease_on, list_leases, load_lease, load_lease_on, release_lease,
@@ -924,6 +933,8 @@ mod enrollment_tests;
 mod instance_tests;
 #[cfg(test)]
 mod job_routing_tests;
+#[cfg(test)]
+mod keeper_tests;
 #[cfg(test)]
 mod leases_tests;
 #[cfg(test)]

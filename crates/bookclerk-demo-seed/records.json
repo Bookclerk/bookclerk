@@ -20,7 +20,7 @@
     "is_abridged": false,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [
       {
         "scheme": "isbn",
@@ -63,7 +63,7 @@
     "is_abridged": null,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [
       {
         "scheme": "asin",
@@ -167,7 +167,7 @@
     "is_abridged": false,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [],
     "credits": [
       {
@@ -205,7 +205,7 @@
     "is_abridged": null,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [
       {
         "scheme": "asin",
@@ -259,7 +259,7 @@
     "is_abridged": false,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [
       {
         "scheme": "isbn",
@@ -312,7 +312,7 @@
     "is_abridged": null,
     "work_kind": "book",
     "expression_kind": "dramatisation",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [],
     "credits": [],
     "series_entries": [
@@ -343,7 +343,7 @@
     "is_abridged": null,
     "work_kind": "book",
     "expression_kind": "dramatisation",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [],
     "credits": [],
     "series_entries": [
@@ -374,7 +374,7 @@
     "is_abridged": null,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [
       {
         "scheme": "asin",
@@ -417,7 +417,7 @@
     "is_abridged": null,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [
       {
         "scheme": "asin",
@@ -466,7 +466,7 @@
     "is_abridged": false,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [
       {
         "scheme": "isbn",
@@ -513,7 +513,7 @@
     "is_abridged": false,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [],
     "credits": [
       {
@@ -556,7 +556,7 @@
     "is_abridged": null,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [
       {
         "scheme": "asin",
@@ -609,7 +609,7 @@
     "is_abridged": false,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [
       {
         "scheme": "isbn",
@@ -657,7 +657,7 @@
     "is_abridged": false,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [],
     "credits": [
       {
@@ -695,7 +695,7 @@
     "is_abridged": null,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [
       {
         "scheme": "asin",
@@ -749,7 +749,7 @@
     "is_abridged": null,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [
       {
         "scheme": "asin",
@@ -792,7 +792,7 @@
     "is_abridged": null,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [
       {
         "scheme": "asin",
@@ -840,7 +840,7 @@
     "is_abridged": null,
     "work_kind": "book",
     "expression_kind": "narration",
-    "media_kind": "audiobook",
+    "media_kind": "audio",
     "identifiers": [
       {
         "scheme": "asin",

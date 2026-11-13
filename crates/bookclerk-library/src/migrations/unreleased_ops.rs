@@ -295,7 +295,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS works (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN ('book', 'podcast_show', 'podcast_episode', 'drama')),
+        kind TEXT NOT NULL CHECK (kind IN ('book', 'podcast')),
         title TEXT NOT NULL,
         match_key TEXT NOT NULL DEFAULT '',
         parent_work_id TEXT REFERENCES works(id) ON DELETE SET NULL,
@@ -326,7 +326,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE TABLE IF NOT EXISTS expressions (
         id TEXT PRIMARY KEY,
         work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
-        kind TEXT NOT NULL CHECK (kind IN ('narration', 'text', 'translation', 'dramatisation', 'podcast_audio')),
+        kind TEXT NOT NULL CHECK (kind IN ('text', 'narration', 'dramatisation', 'graphic', 'original_audio')),
         language TEXT,
         abridgement TEXT NOT NULL CHECK (abridgement IN ('unknown', 'unabridged', 'abridged')),
         credit_key TEXT NOT NULL DEFAULT '',
@@ -339,7 +339,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE TABLE IF NOT EXISTS editions (
         id TEXT PRIMARY KEY,
         expression_id TEXT NOT NULL REFERENCES expressions(id) ON DELETE CASCADE,
-        media_kind TEXT NOT NULL CHECK (media_kind IN ('audiobook', 'ebook', 'print', 'podcast_audio')),
+        media_kind TEXT NOT NULL CHECK (media_kind IN ('audio', 'ebook', 'print')),
         title TEXT NOT NULL,
         subtitle TEXT,
         published_at TEXT,
@@ -705,6 +705,17 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         computed_at TEXT NOT NULL
     )",
     ),
+    // One subject's stored taste: what their books, listening and wishes say
+    // they like, written by each candidate fetch and read by each ranking,
+    // so a ranking never reads the whole library. Derived data.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS discover_tastes (
+        subject_key TEXT PRIMARY KEY NOT NULL,
+        taste_json TEXT NOT NULL,
+        seed_scope TEXT NOT NULL,
+        computed_at TEXT NOT NULL
+    )",
+    ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS discover_fetches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -712,14 +723,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         fetched_at TEXT NOT NULL
     )",
     ),
-    // Stored taste ranking of the shared request queue: one row per queue
-    // entry, refreshed by the `discover_request_queue` job. Entry metadata
+    // Stored taste ranking of the shared request queue: one row per wished-for
+    // work, refreshed by the `discover_request_queue` job (which deletes rows
+    // for works no longer wished for, so no foreign key is needed). Entry metadata
     // and wish counts stay on `title_requests` and are joined at read time.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS discover_request_queue (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        entry_key TEXT NOT NULL UNIQUE,
-        work_id TEXT,
+        work_id TEXT PRIMARY KEY NOT NULL,
         owned INTEGER NOT NULL DEFAULT 0,
         taste_score REAL NOT NULL DEFAULT 0,
         reasons_json TEXT NOT NULL DEFAULT '[]',
@@ -1107,7 +1117,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         catalog_cursor TEXT NOT NULL DEFAULT '',
         catalog_pass_started_at TEXT,
         catalog_synced_at TEXT,
-        catalog_full_pass_at TEXT
+        catalog_full_pass_at TEXT,
+        acquire_members_books INTEGER NOT NULL DEFAULT 0 CHECK (acquire_members_books IN (0, 1))
     )",
     ),
     // Who holds a store listing (docs/adr/library-data-model.md): a store
@@ -1690,6 +1701,23 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"INSERT OR IGNORE INTO live_topic_revisions (topic, revision) VALUES
         ('library', 0), ('jobs', 0), ('deliveries', 0), ('nodes', 0), ('config', 0),
         ('consents', 0), ('clusters', 0), ('users', 0), ('discover', 0)",
+    ),
+    // The newest sign-in of a single-keeper store account that crossed
+    // each share (`control_plane::keeper`): on a library, the revision its
+    // keeper branch (`peer = node:<id>`) last pushed and this library
+    // applied; on the keeper branch, the revision it last pushed up the
+    // link (`peer = link:<cluster_id>`). A push applies only above it.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_credential_revisions (
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        peer TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        observed INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (plugin_key, account_id, peer),
+        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
+    )",
     ),
 ];
 

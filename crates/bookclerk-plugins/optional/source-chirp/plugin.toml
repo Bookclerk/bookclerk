@@ -10,6 +10,11 @@ entrypoints = ["storefront"]
 # the person connects may hold a copy.
 credentials = "shareable"
 
+[media]
+works = ["book"]
+lists = ["audio"]
+fetches = ["audio"]
+
 [capabilities.network]
 mode = "outbound"
 tcp = [
@@ -34,3 +39,8 @@ description = "Override the Chirp GraphQL endpoint (testing only)."
 [secrets]
 
 [work_fs]
+
+# Fingerprints of the titles the last scan listed, so a scan sends the host
+# only what changed (see the `bookclerk-scan-delta` crate).
+[[databases]]
+binding = "SCAN_STATE"

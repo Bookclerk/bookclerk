@@ -61,12 +61,12 @@ use axum::{Extension, Json};
 use bookclerk_config::DatabasePluginKind;
 use bookclerk_config::NodeApiMode;
 use bookclerk_library::control_plane::{
-    accounts_to_carry, authorized_enrollment_link, branch_title_counts, check_redeem_request,
+    accounts_to_carry_where, authorized_enrollment_link, branch_title_counts, check_redeem_request,
     enrollment_link_brings_accounts, library_ancestry, list_nodes, load_cluster_row,
     load_host_enrollment, load_node_credential, member_accounts, record_accounts_sent,
     record_authorized_enrollment_link, redeem_enrollment_link_as, remove_detached_branch_titles,
-    set_host_enrollment_enabled, verify_cluster_owner, ConfigActor, EnrolledNode, NodeKind,
-    RedeemRequest,
+    set_branch_members_books, set_host_enrollment_enabled, verify_cluster_owner, ConfigActor,
+    EnrolledNode, NodeKind, RedeemRequest,
 };
 use bookclerk_library::{hash_token, LibraryError, UserStatus};
 use bookclerk_node_proto::{
@@ -75,6 +75,7 @@ use bookclerk_node_proto::{
     OAuthEnrollAnswer, OAuthEnrollRequest, OwnerInfo, SecretValue, ACCOUNT_BUNDLE_VERSION,
     BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS, BRANCH_SCOPE, CLERK_BOOTSTRAP_VERSION,
 };
+use bookclerk_plugin_host::CredentialSharing;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use zeroize::Zeroizing;
@@ -377,17 +378,32 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
 /// Plugin keys whose storefront declares `credentials = "shareable"` in
 /// every `plugin.toml` this node knows for it: the plugins discovered on
 /// disk and the active installed versions. Any other plugin counts as a
-/// single keeper, whose accounts do not travel.
+/// single keeper, whose accounts have one keeping node.
 pub(crate) async fn shareable_plugin_keys(
     state: &Arc<AppState>,
     library: &bookclerk_library::LibraryStore,
 ) -> BTreeSet<String> {
-    use bookclerk_plugin_host::{CredentialSharing, PluginManifest};
-    /// Records one manifest's declaration for `key`; `None` is a manifest
-    /// that could not be read, which is not a declaration.
-    fn note(seen: &mut BTreeMap<String, bool>, key: String, manifest: Option<&PluginManifest>) {
-        let shareable = manifest
-            .is_some_and(|manifest| manifest.credential_sharing() == CredentialSharing::Shareable);
+    credential_sharing(state, library)
+        .await
+        .into_iter()
+        .filter_map(|(key, sharing)| (sharing == CredentialSharing::Shareable).then_some(key))
+        .collect()
+}
+
+/// How each plugin this node knows shares its store credentials: shareable
+/// only when every `plugin.toml` known for it (discovered on disk or an
+/// active installed version) declares `credentials = "shareable"`, else
+/// single keeper. A plugin missing from the map is not installed here.
+/// When a declaration cannot be read the map is empty, so nothing travels
+/// and nothing is kept.
+pub(crate) async fn credential_sharing(
+    state: &Arc<AppState>,
+    library: &bookclerk_library::LibraryStore,
+) -> BTreeMap<String, CredentialSharing> {
+    use bookclerk_plugin_host::PluginManifest;
+    /// Records one manifest's declaration for `key`.
+    fn note(seen: &mut BTreeMap<String, bool>, key: String, manifest: &PluginManifest) {
+        let shareable = manifest.credential_sharing() == CredentialSharing::Shareable;
         let entry = seen.entry(key).or_insert(true);
         *entry = *entry && shareable;
     }
@@ -399,18 +415,18 @@ pub(crate) async fn shareable_plugin_keys(
                 note(
                     &mut seen,
                     plugin.identity.plugin_key.to_string(),
-                    Some(&plugin.manifest),
+                    &plugin.manifest,
                 );
             }
         }
         // Without every declaration, nothing travels.
         Ok(Err(err)) => {
             tracing::warn!(error = %err, "plugin discovery failed; no connections travel");
-            return BTreeSet::new();
+            return BTreeMap::new();
         }
         Err(err) => {
             tracing::warn!(error = %err, "plugin discovery stopped; no connections travel");
-            return BTreeSet::new();
+            return BTreeMap::new();
         }
     }
     match bookclerk_library::control_plane::list_installs(library).await {
@@ -429,21 +445,90 @@ pub(crate) async fn shareable_plugin_keys(
                             error = %err,
                             "an installed plugin could not be read; no connections travel"
                         );
-                        return BTreeSet::new();
+                        return BTreeMap::new();
                     }
                 };
-                let manifest = PluginManifest::parse(&version.manifest_toml).ok();
-                note(&mut seen, install.plugin_key, manifest.as_ref());
+                // An unreadable declaration is no declaration: nothing
+                // travels rather than guess the plugin's policy.
+                let manifest = match PluginManifest::parse(&version.manifest_toml) {
+                    Ok(manifest) => manifest,
+                    Err(err) => {
+                        tracing::warn!(
+                            plugin_key = %install.plugin_key,
+                            error = %err,
+                            "an installed plugin's manifest does not parse; no connections travel"
+                        );
+                        return BTreeMap::new();
+                    }
+                };
+                note(&mut seen, install.plugin_key, &manifest);
             }
         }
         Err(err) => {
             tracing::warn!(error = %err, "installed plugins could not be read; no connections travel");
-            return BTreeSet::new();
+            return BTreeMap::new();
         }
     }
     seen.into_iter()
-        .filter_map(|(key, shareable)| shareable.then_some(key))
+        .map(|(key, shareable)| {
+            let sharing = if shareable {
+                CredentialSharing::Shareable
+            } else {
+                CredentialSharing::SingleKeeper
+            };
+            (key, sharing)
+        })
         .collect()
+}
+
+/// The `(plugin_key, account_id)` of `user_id`'s store accounts that may
+/// travel to the branch `node_id` (`None` before the branch exists): every
+/// account of a shareable storefront installed here, and a single-keeper account unless
+/// another branch already keeps it for this library (one keeper per
+/// account; [`bookclerk_library::control_plane::keeping_branch`]). A read
+/// failure leaves that account here.
+pub(crate) async fn travelling_accounts(
+    state: &Arc<AppState>,
+    library: &bookclerk_library::LibraryStore,
+    user_id: i64,
+    node_id: Option<&str>,
+) -> BTreeSet<(String, String)> {
+    let accounts = match member_accounts(library, user_id).await {
+        Ok(accounts) => accounts,
+        Err(err) => {
+            tracing::warn!(error = %err, "could not list the store connections that may travel");
+            return BTreeSet::new();
+        }
+    };
+    let sharing = credential_sharing(state, library).await;
+    let mut travelling = BTreeSet::new();
+    for account in accounts {
+        let travels = match sharing.get(&account.plugin_key) {
+            Some(CredentialSharing::Shareable) => true,
+            // Not installed here: nothing to keep it fresh with.
+            None => false,
+            Some(CredentialSharing::SingleKeeper) => {
+                match bookclerk_library::control_plane::keeping_branch(
+                    library,
+                    &account.plugin_key,
+                    &account.account_id,
+                )
+                .await
+                {
+                    Ok(None) => true,
+                    Ok(Some(keeper)) => node_id == Some(keeper.as_str()),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "could not read who keeps a store connection; it stays here");
+                        false
+                    }
+                }
+            }
+        };
+        if travels {
+            travelling.insert((account.plugin_key, account.account_id));
+        }
+    }
+    travelling
 }
 
 /// The answer to a branch redeem: its cluster and node ids, and when the
@@ -508,9 +593,19 @@ async fn sealed_connections(
             return None;
         }
     }
-    let shareable = shareable_plugin_keys(state, library).await;
-    let is_shareable = move |key: &str| shareable.contains(key);
-    let accounts = match accounts_to_carry(library, enrolled.owner_user_id, &is_shareable).await {
+    // One at a time with branch offers and other joins, from choosing what
+    // travels to recording where it went: two branches joining at once
+    // must not both become an account's keeper.
+    let _serialized = super::host_accounts::ACCOUNTS_GATE.lock().await;
+    let travelling = travelling_accounts(
+        state,
+        library,
+        enrolled.owner_user_id,
+        Some(&enrolled.node_id),
+    )
+    .await;
+    let travels = move |key: &str, id: &str| travelling.contains(&(key.to_owned(), id.to_owned()));
+    let accounts = match accounts_to_carry_where(library, enrolled.owner_user_id, &travels).await {
         Ok(accounts) if accounts.is_empty() => return None,
         Ok(accounts) => accounts,
         Err(err) => {
@@ -972,9 +1067,10 @@ pub struct ConsentConnection {
     /// The account's display label, when it has one.
     #[schema(example = "Sam")]
     pub label: Option<String>,
-    /// True when the storefront lets its login be used in more than one
-    /// place, so the connection travels; false when it keeps one login
-    /// that only this library refreshes.
+    /// True when the connection travels: a shareable storefront's, or a
+    /// single-keeper one's that no other branch keeps yet (the branch then
+    /// keeps its login fresh for this library). False when another branch
+    /// already keeps it, or it does not fit one join's bundle.
     #[schema(example = true)]
     pub travels: bool,
 }
@@ -1126,6 +1222,11 @@ pub struct BranchView {
     /// "Include books from my own branches" as it last reported it; `null` until its first catalog sync.
     #[schema(example = true)]
     pub include_branches: Option<bool>,
+    /// This library's "Acquire all of this branch's members' books": the
+    /// branch also sends the books its members acquired that it lists here,
+    /// not only its owner's.
+    #[schema(example = false)]
+    pub acquire_members_books: bool,
     /// Counts of the titles it shared.
     pub titles: bookclerk_library::control_plane::BranchTitleCounts,
 }
@@ -1358,9 +1459,9 @@ async fn consent_connections(state: &Arc<AppState>, user_id: i64) -> Vec<Consent
     }
     // The same selection a redeem makes, so a listed connection travels
     // exactly when it would be sent.
-    let shareable = shareable_plugin_keys(state, &library).await;
-    let is_shareable = move |key: &str| shareable.contains(key);
-    let carried: BTreeSet<(String, String)> = accounts_to_carry(&library, user_id, &is_shareable)
+    let travelling = travelling_accounts(state, &library, user_id, None).await;
+    let travels = move |key: &str, id: &str| travelling.contains(&(key.to_owned(), id.to_owned()));
+    let carried: BTreeSet<(String, String)> = accounts_to_carry_where(&library, user_id, &travels)
         .await
         .map(|carried| {
             carried
@@ -1854,6 +1955,7 @@ async fn branches_json(
             joined,
             share_books: node.share_books,
             include_branches: node.include_branches,
+            acquire_members_books: node.acquire_members_books,
             titles,
         });
     }
@@ -1910,6 +2012,105 @@ pub async fn post_remove_branch_titles(
             );
             Json(BranchTitlesRemoved { removed }).into_response()
         }
+        Err(err) => crate::config_authority::events_error(err),
+    }
+}
+
+/// JSON body after `PUT /api/config/branches/members-books`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct BranchMembersBooks {
+    /// The branch.
+    #[schema(example = "2b7e1c4d-9f3a-4e8b-a6c5-0d1e2f3a4b5c")]
+    pub node_id: String,
+    /// "Acquire all of this branch's members' books", as stored.
+    #[schema(example = true)]
+    pub acquire_members_books: bool,
+}
+
+/// The audit actor of a branch administrator ([`require_branch_admin`]).
+fn admin_audit_actor(actor: &ConfigActor) -> String {
+    match actor {
+        ConfigActor::ClusterOwner(owner) => format!("user:{}", owner.user_id()),
+        ConfigActor::Operator { id } => id.clone(),
+        ConfigActor::Administrator { id } | ConfigActor::Member { id } => format!("user:{id}"),
+        ConfigActor::NodeOwner(_) | ConfigActor::Bootstrap | ConfigActor::Scheduler => {
+            "operator".into()
+        }
+    }
+}
+
+/// `PUT /api/config/branches/members-books`: turn this library's "Acquire
+/// all of this branch's members' books" on or off for one branch.
+///
+/// While on, the branch's catalog sync also sends the books its members
+/// acquired that it lists to this library (its "List my members' books"
+/// setting and each member's opt-out still decide), not only its owner's.
+/// A change restarts the branch's catalog pass, so books it no longer sends
+/// are withdrawn when that pass ends; files already delivered stay.
+#[utoipa::path(
+    put,
+    path = "/api/config/branches/members-books",
+    request_body = bookclerk_library::control_plane::MembersBooksBody,
+    responses(
+        (status = 200, description = "The setting after the change.", body = BranchMembersBooks),
+        (status = 400, description = "The node id is malformed.", body = crate::http_error::ErrorMessage, example = json!({"error": "invalid node_id"})),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
+            ("forbidden" = (summary = "The user is not an active Owner.", value = json!({"error": "forbidden"}))),
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 404, description = "No branch of this library has that node id.", body = crate::http_error::ErrorMessage, example = json!({"error": "not_a_branch"})),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
+        (status = 503, description = "The branch's catalog sync kept changing under the write; retry.", body = crate::http_error::ErrorMessage, example = json!({"error": "service unavailable: the branch's catalog fence kept changing"})),
+    ),
+)]
+pub async fn put_branch_members_books(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+    Json(body): Json<bookclerk_library::control_plane::MembersBooksBody>,
+) -> Response {
+    let actor = match require_branch_admin(&state, caller).await {
+        Ok(actor) => actor,
+        Err(refused) => return refused,
+    };
+    // The same parse the fuzz target drives (`parse_members_books_request`).
+    let choice = match body.validate() {
+        Ok(choice) => choice,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(crate::http_error::ErrorMessage::new(err)),
+            )
+                .into_response()
+        }
+    };
+    let library = state.library_snapshot().await;
+    let node_id = choice.node_id.as_str();
+    match set_branch_members_books(&library, node_id, choice.acquire).await {
+        Ok(Some(acquire)) => {
+            let detail = json!({ "node_id": node_id, "acquire": acquire }).to_string();
+            if let Err(err) = library
+                .insert_security_audit_event(
+                    &admin_audit_actor(&actor),
+                    "branch_members_books_set",
+                    Some(&detail),
+                )
+                .await
+            {
+                tracing::warn!(error = %err, "could not audit a branch's members' books setting");
+            }
+            Json(BranchMembersBooks {
+                node_id: node_id.to_string(),
+                acquire_members_books: acquire,
+            })
+            .into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(crate::http_error::ErrorMessage::new("not_a_branch")),
+        )
+            .into_response(),
         Err(err) => crate::config_authority::events_error(err),
     }
 }

@@ -212,9 +212,11 @@ accounts and which of them would travel.
 - **What travels.** The user's own connected store accounts whose
   storefront declares `credentials = "shareable"` in every `plugin.toml`
   the library knows for it, discovered or installed (see
-  [`credentials`](../plugins/manifest.md#credentials-storefronts)).
-  Accounts of a single-keeper store, such as Audible, never travel. At
-  most 64 accounts go with one join.
+  [`credentials`](../plugins/manifest.md#credentials-storefronts)), and
+  those of a single-keeper store, such as Audible, that no other branch
+  keeps yet. The branch then keeps that account fresh for the library
+  (see [One refresh keeper](#one-refresh-keeper)). At most 64 accounts go
+  with one join.
 - **How.** The choice is kept on the enrollment link. The redeem answer
   carries the accounts and their secrets as one bundle sealed to the
   branch's X25519 box key (the same sealed box as a clerk's bootstrap,
@@ -264,8 +266,8 @@ gone.
 - **Add to a library.** On the branch, **Accounts** shows **Add to
   *library*** beside each connection
   (`POST /api/config/join/connections` with `{cluster_id, accounts}`, at
-  most 64). The branch picks the person's own connected accounts of
-  shareable storefronts, records each as sent to `link:<cluster id>` in
+  most 64). The branch picks the person's own connected accounts, records
+  each as sent to `link:<cluster id>` in
   `account_shares`, and sends them over the link's socket as
   `accounts.add`: one bundle sealed to the connection's owner box key from
   `welcome`, bound to the cluster and node ids under its own
@@ -275,10 +277,13 @@ gone.
   under its own per-member rule, exactly as a branch keeps a joining
   bundle: one guarded atomic batch per account, a `received` row against
   `node:<node id>`, and an audit row `branch_connections_added`. Accounts
-  of storefronts that are not shareable there are not kept. The answer,
+  of storefronts not installed there are not kept, nor single-keeper
+  accounts another branch already keeps. The answer,
   `accounts.added`, counts what was added, already there, taken, or not
   kept, and whether the rule refused them all. The library handles
-  `accounts.add` and `accounts.remove` one at a time, and refuses either
+  `accounts.add`, `accounts.remove`, `accounts.update` and the
+  connections a join sends one at a time, so two branches never both
+  become an account's keeper. It refuses a branch's request
   (`superseded`) unless the connection it came on is still the branch's
   live one, so a request the branch gave up on can't land after a later
   one.
@@ -297,6 +302,48 @@ gone.
   in the answer's `unreached`, and the account stays connected there.
   **Revoke here** (or `everywhere: false`) disconnects it on the branch
   only.
+
+### One refresh keeper
+
+A single-keeper store (Audible) breaks a sign-in that two places refresh
+on their own, so each such account has one keeper per library. Which side
+keeps it follows from `account_shares`: the library sees the branch it
+first recorded the account against (`node:<id>`), and that branch sees a
+share with `link:<cluster id>`. A library with no such share keeps the
+account itself.
+
+- **On the branch.** The branch's copy is the one that refreshes: Accounts
+  sign-ins, refreshes its own scans hand back, and refreshes a job for
+  that library hands back are all saved there. Once a minute, and each
+  time the link connects, the branch looks for accounts whose secrets
+  changed since what it last pushed, and sends each up the link as
+  `accounts.update`: one account sealed to the connection's owner box key
+  like an offer, with a revision above the last one it sent there. Any
+  secret write counts as a new sign-in (the branch compares a fingerprint
+  of the secrets, not their times), so neither a clock that went back nor
+  two writes in one millisecond can hide one. A push the library applies
+  is recorded so it isn't sent again; one it already had a revision for
+  (`stale`, as after a lost answer) is sent again above it.
+- **On the library.** The library applies a push only from the account's
+  keeper, for the person who owns the branch, and only when its revision
+  is newer than the last one applied (`account_credential_revisions`), in
+  one guarded atomic batch, and audits `branch_sign_in_applied`. A push
+  retried or overtaken by a newer one changes nothing. Once the keeper's
+  first push is applied, the library doesn't save its own scans' refreshes
+  of the account, and refuses a job's write-back of it (`kept_by_branch`),
+  so neither overwrites the keeper's newer sign-in. Until then the library
+  keeps refreshing it itself, so a branch that was sent the account but
+  couldn't keep it (no Owner to keep it for, or its member rule refused it)
+  never leaves it stale.
+- **Elsewhere.** A kept account travels back only to its keeper, never to
+  a second branch, and a second branch's offer of it is not kept.
+- **A new keeper.** When the account is disconnected everywhere on the
+  library (no member's link holds it), the library forgets its keeper, so
+  the branch the person adds it from next keeps it. Adding it again
+  from a branch makes that branch push its current sign-in again, even
+  an unchanged one, so the library takes it as keeper anew. A push the library
+  doesn't take from the branch yet (`not_shared`, as when it overtook the
+  branch's offer) is sent again on the next pass.
 
 Disconnecting on a library does not yet reach its branches.
 
@@ -718,9 +765,10 @@ C is B's.
 - **Books flow up.** B shares its owner's books with A: those acquired on
   B on a store account connected there to B's Owner, and (when "Include
   books from my own branches" is on) those C shared with B. B's other
-  members' books stay on B. Each title carries its store, product id,
-  marketplace, metadata (with its ASIN, ISBN and kind) and file list,
-  nothing else. A matches each one to the edition it already knows, as a
+  members' books stay on B, unless A requests one or A's operator turns on
+  **Acquire all of this branch's members' books** (see below). Each title
+  carries its store, product id, marketplace, metadata (with its ASIN,
+  ISBN and kind) and file list, nothing else. A matches each one to the edition it already knows, as a
   store scan would, and records B as holding it, so C's books are simply
   B's books there, belonging to the A user who owns B. A title B got from
   A, or acquired for A and added to its own library, isn't sent back.
@@ -791,8 +839,10 @@ The same people may change them, through the same routes:
 ### Branch titles on the library
 
 **Settings → Branches** on A lists each branch with its owner, what it
-shares (read-only, because B's operator or an Owner of B sets it), and
-counts of its titles.
+shares (read-only, because B's operator or an Owner of B sets it), counts
+of its titles, and A's **Acquire all of this branch's members' books**
+(see [Acquiring all of a branch's members'
+books](#acquiring-all-of-a-branchs-members-books)).
 
 When a branch stops sharing, withdraws a title or leaves, A no longer
 counts it as holding those titles. Files it already delivered are kept.
@@ -830,8 +880,9 @@ through B", and nothing is fetched until someone asks for it.
    search page is read, each card or hit is matched to its work (the
    card's own work, or the work of a store listing A's pool holds for one
    of its store editions) and gets `available_through`: one entry per
-   current listing from a trusted branch, with the branch's node id, its
-   owner's display name, and the store and product id. The field is never
+   current listing from a trusted branch, with A's work id (what a
+   request names), the branch's node id, its owner's display name, and the
+   store and product id. The field is never
    stored with the ranked feed, so it is current on every read.
 
 Questions name works by identifier only, because work ids differ between
@@ -874,9 +925,11 @@ missing.
 ### Requesting a book from a branch
 
 When a work is available through a branch, any signed-in user of A can ask
-for it with `POST /api/branch-requests` `{"work_id": "...", "node_id": "..."}`.
-`node_id` is one of the work's `available_through` entries; leave it out
-to ask the first branch that lists the work.
+for it. In the app, the title's details show **Available through Riley's
+branch** with a **Request from Riley's branch** button. The API is
+`POST /api/branch-requests` `{"work_id": "...", "node_id": "..."}`, where
+`work_id` and `node_id` come from one of the work's `available_through`
+entries; leave `node_id` out to ask the first branch that lists the work.
 
 1. **A queues the request.** It becomes a `branch_request` job on A,
    pinned to B and naming the edition B listed (store, marketplace and
@@ -918,6 +971,28 @@ are answered "not listed".
 > still lists it: turning off **Share this branch's books** or **List my
 > members' books**, or the member opting out, stops it at the next sync
 > pass. Files A already received stay there.
+
+### Acquiring all of a branch's members' books
+
+By default A receives B's owner's books, plus the books A requests. To
+receive every book B lists instead, A's operator (or an Owner) turns on
+**Acquire all of this branch's members' books** for B in **Settings →
+Branches**. The API is `PUT /api/config/branches/members-books`
+`{"node_id": "...", "acquire": true}`.
+
+- **B still decides what it lists.** B sends a member's books only while
+  **Share this branch's books with <library>** and **List my members'
+  books to <library>** are on and the member has not opted out, the same
+  rules as its catalog answers.
+- **Only books already downloaded on B are sent.** B doesn't download
+  anything for this setting. A book a member downloads later goes up with
+  the next sync pass.
+- **A change restarts B's sync.** B picks up the new setting within one
+  sync interval (5 minutes) and starts a full pass. Turned off, the
+  members' books B stops sending are withdrawn when that pass ends. Files
+  A already received stay there.
+- Each change is written to A's security audit log
+  (`branch_members_books_set`).
 
 ### Window mode
 
@@ -1030,9 +1105,11 @@ shared stay in the library, marked as from a branch that left (see
   bindings over the node socket, aren't served to hosts. Instance
   `SECRETS` reach only a node trusted with every job.
 - Pebble (ACME) doesn't run in CI.
-- Store connections travel only with a sign-in join, not an invite, and
-  only shareable stores' accounts. One refresh keeper for single-keeper
-  stores such as Audible is still to come.
+- Store connections travel only with a sign-in join, not an invite.
+- A library keeps a branch-kept account's sign-in only as fresh as the
+  branch's last push: while the branch is offline, a token the branch
+  refreshed is not yet there. Moving the keeper to another branch means
+  disconnecting the account everywhere and adding it again.
 - Adding connections later and disconnecting everywhere work only
   through links the join could bind to a person.
 

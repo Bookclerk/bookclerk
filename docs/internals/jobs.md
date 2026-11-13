@@ -229,8 +229,8 @@ on Hosts owned by members. See
 The two Discover kinds carry a subject key (`operator`, `user:{id}` or
 `portal:{id}`) and build that person's stored shelves. Reads, the daily
 scheduler and Discover's host event consumer (`host:discover`, which
-consumes `wishlist_changed`, `listening_synced` and `book_acquired` and
-admits jobs with a 30 s `run_after`) queue them. See
+consumes `wishlist_changed`, `listening_synced`, `book_acquired`,
+`holding_added` and `holding_removed` and admits jobs with a 30 s `run_after`) queue them. See
 [Precomputed shelves](discovery.md#precomputed-shelves) and
 [Taste events](discovery.md#taste-events).
 
@@ -244,8 +244,9 @@ Its answer completes the job (accepted), fails it without a retry
 [Requesting a book from a branch](../server/cluster-hosts.md#requesting-a-book-from-a-branch).
 
 `discover_request_queue` carries no subject: one ranking of the shared
-request queue serves everyone. Discover's event consumer queues it on the
-same three events, and a read of `GET /api/request-queue` queues it when
+request queue serves everyone. Discover's event consumer queues it on
+every one of those five events (a holding event too, since a new holding
+can hide an entry), and a read of `GET /api/request-queue` queues it when
 the stored ranking is missing an entry or older than a day. See
 [Request queue](discovery.md#request-queue).
 

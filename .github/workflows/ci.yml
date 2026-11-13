@@ -44,6 +44,13 @@ env:
   # Line tables keep file:line in panics and backtraces at a fraction of the
   # link time and cache size of full debuginfo (dev and test profiles only).
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # A digest of the `[profile]` tables in the workspace Cargo.toml. rust-cache
+  # keys hash the manifests' dependencies but not their profiles, so without
+  # it a profile change keeps the old key and every job rebuilds all
+  # dependencies without ever saving them. Each cache step lists it in
+  # env-vars; test_ci_contract.py fails until it matches Cargo.toml
+  # (docs/contributing/ci.md#caches).
+  CI_CARGO_PROFILES: "8feea116acfe4449"
   # A failing test's panic prints its backtrace. Library backtraces stay off:
   # with RUST_BACKTRACE alone, every error built by an error library such as
   # anyhow would capture a backtrace, slowing tests that create many errors.
@@ -84,6 +91,7 @@ jobs:
       job_confinement: ${{ steps.resolve.outputs.job_confinement }}
       job_native_gateway: ${{ steps.resolve.outputs.job_native_gateway }}
       job_tray: ${{ steps.resolve.outputs.job_tray }}
+      job_desktop: ${{ steps.resolve.outputs.job_desktop }}
       job_postgres: ${{ steps.resolve.outputs.job_postgres }}
       job_windows_cluster: ${{ steps.resolve.outputs.job_windows_cluster }}
       job_site: ${{ steps.resolve.outputs.job_site }}
@@ -400,7 +408,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: lint
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           lookup-only: true
           save-if: false
@@ -415,7 +423,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: lint
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
 
@@ -591,7 +599,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           lookup-only: true
           save-if: false
@@ -607,7 +615,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && matrix.part == 1 && !inputs.private-head }}
 
@@ -729,7 +737,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: false
 
@@ -823,7 +831,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: release
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           lookup-only: true
           save-if: false
@@ -838,7 +846,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: release
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
 
@@ -926,7 +934,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: false
 
@@ -998,7 +1006,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           lookup-only: true
           save-if: false
@@ -1013,7 +1021,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && matrix.os != 'ubuntu-latest' && !inputs.private-head }}
 
@@ -1104,12 +1112,81 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: false
 
       - name: Tray clippy + tests
         run: python scripts/ci-exec.py run tray
+
+  # The desktop window's Tauri code, which only builds with the
+  # `window` feature and the WebKitGTK development files; every other job
+  # builds `bookclerk-desktop` without it (docs/contributing/ci.md#desktop-job).
+  desktop:
+    name: desktop window${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('desktop-{0}', strategy.job-index)].label }}
+    # Pull request runs wait in the lane the plan picked, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-lanes).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && (fromJSON(needs.plan.outputs.lanes || '{}')[format('desktop-{0}', strategy.job-index)].group || 'ci-pr-lane-0') || format('ci-{0}-{1}-desktop-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      queue: max
+    needs: plan
+    timeout-minutes: 45
+    if: needs.plan.outputs.job_desktop == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/contributing/automation.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+
+      - name: Validate CI plan
+        run: python scripts/ci-exec.py validate
+
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ steps.pins.outputs.rust }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: debug
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
+          cache-on-failure: true
+          save-if: false
+
+      # capnproto for the plugin ABI the host links; the rest is the
+      # webview stack docs/contributing/ui/README.md#the-desktop-window lists.
+      - name: Install capnproto and the webview's development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev
+
+      - name: Desktop window clippy
+        run: python scripts/ci-exec.py run desktop
 
   # The macOS legs of `confinement`, `native-gateway` and `tray`, one step
   # each, on one runner: a run asks GitHub for one macOS runner instead of
@@ -1174,7 +1251,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           lookup-only: true
           save-if: false
@@ -1189,7 +1266,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
 
@@ -1290,7 +1367,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: false
 
@@ -1346,7 +1423,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: false
 
@@ -1556,6 +1633,7 @@ jobs:
       - confinement
       - native-gateway
       - tray
+      - desktop
       - macos
       - postgres
       - windows-cluster

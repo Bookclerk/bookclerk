@@ -730,6 +730,9 @@ mod tests {
                         None,
                     ),
                 ],
+                work_kind: Some(resolve::WorkKind::Book),
+                expression_kind: Some(resolve::ExpressionKind::Narration),
+                media_kind: Some(resolve::MediaKind::Audio),
                 ..resolve::ListingDraft::default()
             },
             detail: ListingDetail {

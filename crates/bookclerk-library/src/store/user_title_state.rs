@@ -199,7 +199,7 @@ fn user_title_state_upsert(
 }
 
 /// Maps a stored row; `is_finished` is stored as 0/1.
-fn map_state(m: user_title_state::Model) -> UserTitleState {
+pub(super) fn map_state(m: user_title_state::Model) -> UserTitleState {
     UserTitleState {
         user_id: m.user_id,
         work_id: m.work_id,

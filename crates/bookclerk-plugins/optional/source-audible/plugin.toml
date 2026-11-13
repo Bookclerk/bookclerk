@@ -10,6 +10,11 @@ entrypoints = ["storefront"]
 # one instance keeps the login fresh and the others receive each new token.
 credentials = "single_keeper"
 
+[media]
+works = ["book", "podcast"]
+lists = ["audio"]
+fetches = ["audio"]
+
 [capabilities.network]
 mode = "outbound"
 tcp = [

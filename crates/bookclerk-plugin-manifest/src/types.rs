@@ -168,6 +168,40 @@ impl CredentialSharing {
     }
 }
 
+/// `[media]`: the work kinds and edition carriers a storefront or metadata
+/// provider reports, and the carriers a storefront can download.
+///
+/// Spellings are the wire names (`book`, `podcast`; `audio`, `ebook`,
+/// `print`). There is no default: a storefront or metadata provider
+/// without this table, or with an empty `works` or `lists`, is refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaManifest {
+    /// Work kinds the plugin reports.
+    #[serde(default)]
+    pub works: Vec<bookclerk_plugin_abi::WorkKind>,
+    /// Edition carriers the plugin reports in scans, catalog search and
+    /// metadata records.
+    #[serde(default)]
+    pub lists: Vec<bookclerk_plugin_abi::MediaKind>,
+    /// Edition carriers `fetchTitle` can deliver; a subset of `lists`.
+    /// Storefronts only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fetches: Vec<bookclerk_plugin_abi::MediaKind>,
+}
+
+impl MediaManifest {
+    /// The declaration in its wire shape, as `describe()` returns it.
+    #[must_use]
+    pub fn to_wire(&self) -> bookclerk_plugin_abi::MediaSupport {
+        bookclerk_plugin_abi::MediaSupport {
+            work_kinds: self.works.clone(),
+            lists: self.lists.clone(),
+            fetches: self.fetches.clone(),
+        }
+    }
+}
+
 /// Network mode declared in `[capabilities.network]`.
 ///
 /// Defaults to [`NetworkMode::Deny`]. See `docs/plugins/README.md` for native vs
@@ -1041,6 +1075,12 @@ pub struct PluginManifest {
     /// plugin with the `storefront` entrypoint may set it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<CredentialSharing>,
+    /// Media the plugin works with (`[media]`): required for plugins that
+    /// export the `storefront` or `metadata` entrypoint and forbidden for
+    /// every other plugin. `describe()` must return the same lists; see
+    /// [`MediaManifest`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<MediaManifest>,
     /// Declared network capability (consent has no Wrangler analogue).
     pub capabilities: CapabilitiesManifest,
     /// Optional CLI schema advertised to `bookclerk plugins <id>` (from
@@ -1101,6 +1141,17 @@ fn default_true() -> bool {
 }
 
 impl PluginManifest {
+    /// The declared `[media]` in its wire shape; empty lists when the table
+    /// is left out (only valid for plugins that are neither storefronts
+    /// nor metadata providers).
+    #[must_use]
+    pub fn media_support(&self) -> bookclerk_plugin_abi::MediaSupport {
+        self.media
+            .as_ref()
+            .map(MediaManifest::to_wire)
+            .unwrap_or_default()
+    }
+
     /// How this plugin's store credentials may be shared between
     /// instances: the declared `credentials`, or
     /// [`CredentialSharing::SingleKeeper`] when it is left out.
@@ -1623,6 +1674,75 @@ impl PluginManifest {
         .map_err(|detail| Error::message(format!("plugin.toml: {detail}")))
     }
 
+    /// Checks the `[media]` table against the plugin's entrypoints.
+    ///
+    /// The same rules, with the same messages, run in the TypeScript and
+    /// Python author tools (`manifest-cases.json`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Message`] when a storefront or metadata provider has
+    /// no table or an empty `works` or `lists`, when another plugin has one,
+    /// when a list names `unspecified`, or when `fetches` is declared by a
+    /// metadata provider or names a carrier `lists` does not.
+    fn validate_media(&self) -> Result<()> {
+        let storefront = self.has_entrypoint(Entrypoint::Storefront);
+        let metadata = self.has_entrypoint(Entrypoint::Metadata);
+        let Some(media) = &self.media else {
+            if storefront || metadata {
+                return Err(Error::message(
+                    "plugin.toml: `[media]` is required for a plugin with the `storefront` or \
+                     `metadata` entrypoint (declare `works` and `lists`)",
+                ));
+            }
+            return Ok(());
+        };
+        if !storefront && !metadata {
+            return Err(Error::message(
+                "plugin.toml: `[media]` needs the `storefront` or `metadata` entrypoint",
+            ));
+        }
+        if media.works.is_empty() {
+            return Err(Error::message("plugin.toml: `[media].works` is empty"));
+        }
+        if media.lists.is_empty() {
+            return Err(Error::message("plugin.toml: `[media].lists` is empty"));
+        }
+        if media
+            .works
+            .contains(&bookclerk_plugin_abi::WorkKind::Unspecified)
+        {
+            return Err(Error::message(
+                "plugin.toml: `[media].works` names `unspecified`",
+            ));
+        }
+        let unspecified = bookclerk_plugin_abi::MediaKind::Unspecified;
+        if media.lists.contains(&unspecified) {
+            return Err(Error::message(
+                "plugin.toml: `[media].lists` names `unspecified`",
+            ));
+        }
+        if media.fetches.contains(&unspecified) {
+            return Err(Error::message(
+                "plugin.toml: `[media].fetches` names `unspecified`",
+            ));
+        }
+        if !storefront && !media.fetches.is_empty() {
+            return Err(Error::message(
+                "plugin.toml: `[media].fetches` needs the `storefront` entrypoint",
+            ));
+        }
+        if let Some(kind) = media.fetches.iter().find(|k| !media.lists.contains(k)) {
+            return Err(Error::message(format!(
+                "plugin.toml: `[media].fetches` names `{}`, which `lists` does not",
+                kind.wire_name()
+            )));
+        }
+        // The wire rules are the same; run them so the two cannot drift.
+        bookclerk_plugin_abi::validate_media_support(&media.to_wire(), storefront, metadata)
+            .map_err(|err| Error::message(format!("plugin.toml: `[media]`: {err}")))
+    }
+
     /// Checks id grammar, `api_version`, logo, runtime-specific required
     /// fields, and network domain rules (native forbid / workerd outbound
     /// require / IDNA).
@@ -1650,6 +1770,7 @@ impl PluginManifest {
         if let Some(logo) = self.logo.as_deref() {
             let _ = crate::validate_logo(logo)?;
         }
+        self.validate_media()?;
         if self.credentials.is_some() && !self.has_entrypoint(Entrypoint::Storefront) {
             return Err(Error::message(
                 "plugin.toml: `credentials` needs the `storefront` entrypoint (only storefronts connect store accounts)",
@@ -2101,6 +2222,18 @@ pub enum JailNetworkNeed {
 mod tests {
     use super::*;
 
+    /// The `media` line a test manifest with `entrypoints` needs: storefronts
+    /// and metadata providers must declare their media; other plugins must not.
+    fn media_line(entrypoints: &str) -> &'static str {
+        if entrypoints.contains("storefront") {
+            "media = { works = [\"book\"], lists = [\"audio\"], fetches = [\"audio\"] }"
+        } else if entrypoints.contains("metadata") {
+            "media = { works = [\"book\"], lists = [\"audio\"] }"
+        } else {
+            ""
+        }
+    }
+
     #[test]
     fn every_entrypoint_maps_to_its_family() {
         let families: Vec<PluginFamily> = ALL_ENTRYPOINTS.map(entrypoint_family).to_vec();
@@ -2144,10 +2277,12 @@ id = "echo"
 runtime = "native"
 command = "./echo"
 entrypoints = ["{entrypoint}"]
+{media}
 {line}
 [capabilities.network]
 mode = "deny"
-"#
+"#,
+            media = media_line(entrypoint)
         )
     }
 
@@ -2361,6 +2496,7 @@ id = "shop"
 runtime = "native"
 command = "./shop"
 entrypoints = ["storefront", "cli"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 [capabilities.network]
 mode = "outbound"
 "#,
@@ -2396,6 +2532,7 @@ id = "sqlite"
 runtime = "native"
 command = "./sqlite"
 entrypoints = ["databaseAdapter", "storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 [capabilities.network]
 mode = "deny"
 "#,
@@ -2479,8 +2616,9 @@ mode = "deny"
         let manifest = |entrypoints: &str| {
             PluginManifest::parse(&format!(
                 "api_version = 3\nid = \"echo\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
-                 entrypoints = [{entrypoints}]\n[triggers]\njobs = [\"stream_copy\"]\n\
-                 [capabilities.network]\nmode = \"deny\"\n"
+                 entrypoints = [{entrypoints}]\n{media}\n[triggers]\njobs = [\"stream_copy\"]\n\
+                 [capabilities.network]\nmode = \"deny\"\n",
+                media = media_line(entrypoints)
             ))
             .expect(entrypoints)
         };
@@ -2537,8 +2675,9 @@ mode = "deny"
         for entrypoint in ["storefront", "storage", "databaseAdapter"] {
             let err = PluginManifest::parse(&format!(
                 "api_version = 3\nid = \"echo\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
-                 entrypoints = [\"{entrypoint}\"]\n[triggers]\ncrons = [\"0 0 * * *\"]\n\
-                 [capabilities.network]\nmode = \"deny\"\n"
+                 entrypoints = [\"{entrypoint}\"]\n{media}\n[triggers]\ncrons = [\"0 0 * * *\"]\n\
+                 [capabilities.network]\nmode = \"deny\"\n",
+                media = media_line(entrypoint)
             ))
             .expect_err(entrypoint);
             assert!(
@@ -2818,6 +2957,7 @@ api_version = 3
 id = "xx"
 runtime = "workerd"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 [workerd]
 compatibility_date = "2026-08-01"
 main_module = "index.js"
@@ -2931,6 +3071,7 @@ id = "audible"
 runtime = "native"
 command = "./bookclerk-plugin-source-audible"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 [capabilities.network]
 mode = "outbound"
 domains = ["api.audible.com", "www.amazon.com"]
@@ -2951,6 +3092,7 @@ id = "audible"
 runtime = "native"
 command = "./bookclerk-plugin-source-audible"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 [capabilities.network]
 mode = "outbound"
 [oauth]
@@ -2975,6 +3117,7 @@ id = "audible"
 runtime = "native"
 command = "./bookclerk-plugin-source-audible"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 [capabilities.network]
 mode = "outbound"
 tcp = [{ host = "api.audible.com", ports = [443] }]
@@ -2994,6 +3137,7 @@ id = "audible"
 runtime = "native"
 command = "./bookclerk-plugin-source-audible"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 [capabilities.network]
 mode = "outbound"
 tcp = [{ host = "*", ports = [443] }]
@@ -3043,6 +3187,7 @@ id = "audible"
 runtime = "native"
 command = "./bin"
 entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
 logo = "https://www.google.com/s2/favicons?domain=audible.com&sz=128"
 [capabilities.network]
 mode = "outbound"

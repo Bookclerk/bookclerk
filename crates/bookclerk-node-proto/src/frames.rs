@@ -473,6 +473,12 @@ pub enum Body {
         /// Titles recorded earlier whose files have not arrived yet.
         #[serde(default)]
         wanted: Vec<crate::catalog::CatalogRef>,
+        /// The library's "Acquire all of this branch's members' books":
+        /// when true, the branch also sends the books its members acquired
+        /// that it lists to this library, not only its owner's. Absent
+        /// (older libraries) reads as false.
+        #[serde(default)]
+        members_books: bool,
     },
     /// Branch → library: one batch of shared titles (no account or user
     /// fields; see [`crate::CatalogTitle`]). Answered with
@@ -569,6 +575,29 @@ pub enum Body {
         plugin_key: String,
         /// Store account id.
         account_id: String,
+    },
+    /// Branch → library: the newest sign-in of one single-keeper store
+    /// account this branch keeps ("one refresh keeper" in the library
+    /// catalog network ADR). `sealed` is an [`crate::AccountBundle`] of
+    /// exactly that account, sealed and bound like [`Body::AccountsAdd`];
+    /// `revision` is the keeper's revision of the sign-in (milliseconds
+    /// since the Unix epoch of its newest secret write there, above 0).
+    /// The library replaces its copy only when the account is its
+    /// branch owner's, shared with this branch, and `revision` is above
+    /// the last one it applied from it. Answered with
+    /// [`Body::AccountsUpdated`] or `error`.
+    #[serde(rename = "accounts.update")]
+    AccountsUpdate {
+        /// The sealed one-account bundle, base64url without padding.
+        sealed: String,
+        /// The keeper's revision of the sign-in.
+        revision: i64,
+    },
+    /// Library → branch: what became of an [`Body::AccountsUpdate`].
+    #[serde(rename = "accounts.updated")]
+    AccountsUpdated {
+        /// What the library did with the sign-in.
+        outcome: KeeperOutcome,
     },
     /// Branch → library: send the catalog questions waiting for this
     /// branch (see [`crate::LookupWork`]). Answered with
@@ -804,6 +833,20 @@ pub struct WorkJob {
     /// that. Absent means false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub for_node_owner: bool,
+}
+
+/// What a library did with a keeper's [`Body::AccountsUpdate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeeperOutcome {
+    /// The library's copy now holds the pushed sign-in.
+    Applied,
+    /// The library already applied this revision or a newer one from the
+    /// branch; nothing changed.
+    Stale,
+    /// The account is not the branch owner's here, or not shared with
+    /// this branch; nothing changed. The keeper stops pushing it here.
+    NotShared,
 }
 
 /// The owner's library import settings a host scan runs with.
@@ -1565,6 +1608,7 @@ mod tests {
                         store: "audible".into(),
                         product_id: "B1".into(),
                     }],
+                    members_books: true,
                 },
                 "catalog.session",
             ),
@@ -1626,6 +1670,17 @@ mod tests {
             "x".repeat(MAX_FRAME_BYTES)
         );
         assert_eq!(Frame::parse(&huge), Err(FrameError::TooLarge));
+    }
+
+    #[test]
+    fn a_catalog_session_from_an_older_library_asks_for_no_members_books() {
+        let older =
+            Frame::parse(r#"{"v":1,"id":"1","type":"catalog.session","fence":2,"cursor":"c"}"#)
+                .unwrap();
+        let Body::CatalogSession { members_books, .. } = older.body else {
+            panic!("expected a catalog session: {older:?}");
+        };
+        assert!(!members_books);
     }
 
     #[test]

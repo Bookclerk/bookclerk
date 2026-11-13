@@ -1,9 +1,11 @@
 # ADR: Library catalog network
 
 - **Status:** Accepted (2026-11-11). Step 1, per-library plugin state on a
-  branch, step 2, own library first, step 4, catalog lookup, and step 7,
-  capacity shares, are implemented. Step 5's requests are implemented; its
-  "acquire all of this branch's members' books" setting is planned. The other steps are planned and listed under
+  branch, step 2, own library first, step 3, accounts that follow the
+  person (with one refresh keeper per single-keeper account), step 4,
+  catalog lookup, and step 7, capacity shares, are implemented. Step 5,
+  interlibrary requests and the "acquire all of this branch's members'
+  books" setting, is implemented. The other steps are planned and listed under
   [Consequences](#consequences).
 - **Date:** 2026-11-11
 - **Related:** [Control plane](control-plane.md) (H-4 branches, branches of
@@ -163,9 +165,11 @@ view and refuses their work: no jobs, no catalog answers, no requests.
 A window can be turned into a branch. Being a desktop window has nothing
 to do with it; any install can be a window.
 
-Today the per-link setting "Use this computer to download" is what marks
-a link as a window. Separating the window from that setting, so a
-branch can contribute without downloading, is still open.
+For now the per-link setting "Use this computer to download" is what
+marks a link as a window. A window is to become a pure client that
+never enrolls as a node, so it refuses work by having no node to give
+it to. That setting then only decides whether a branch keeps copies,
+and a branch with it off keeps contributing.
 
 ## Consequences
 
@@ -175,9 +179,10 @@ branch can contribute without downloading, is still open.
      import of the owner's own books, and sharing only the owner's books.
   3. Accounts that follow the person, with the `credentials` declaration.
   4. Catalog lookup by strong identifiers into the listing pool.
-  5. Interlibrary requests (implemented), including the library
-     operator's "acquire all of this branch's members' books" setting
-     (planned).
+  5. Interlibrary requests, including the library operator's "acquire
+     all of this branch's members' books" setting (implemented). The
+     setting reaches the branch with its catalog session, and the branch
+     then sends every book it lists to that library.
   6. Window mode.
   7. Capacity shares between a branch's own work and each link
      (implemented).

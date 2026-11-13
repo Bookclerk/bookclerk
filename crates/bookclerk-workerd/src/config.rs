@@ -1132,6 +1132,7 @@ pub fn manifest_describe_json(manifest: &PluginManifest) -> Result<String> {
         capabilities: manifest.capabilities(),
         config_options: manifest.config_options(),
         cli: manifest.cli.clone().unwrap_or_default(),
+        media: manifest.media_support(),
         ..PluginDescribe::default()
     };
     serde_json::to_string(&describe).context("serialize PLUGIN_DESCRIBE")
