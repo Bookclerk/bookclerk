@@ -1,3 +1,5 @@
+# Pinned with `rust` in .tool-versions, which scripts/tool_versions.py and the
+# bump workflow keep in step with this channel (docs/contributing/ci.md#tool-versions).
 [toolchain]
-channel = "stable"
+channel = "1.100.0"
 components = ["rustfmt", "clippy"]

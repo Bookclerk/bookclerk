@@ -159,6 +159,7 @@ fn start_configured<R: HostJobRunner>(
         share_books: true,
         include_branches: true,
         list_members_books: true,
+        person_user_id: None,
         ancestry: Vec::new(),
         work_for_members: false,
         keep_member_copies: false,

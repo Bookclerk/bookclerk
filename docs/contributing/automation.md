@@ -44,7 +44,7 @@ cover every lockfile of a shipped artifact or its build:
 Tool versions that several workflows, images and scripts share live in
 [`.tool-versions`](ci.md#tool-versions) instead. Dependabot leaves the uv
 image and Node.js majors alone; the
-[tool versions bump](ci.md#tool-versions) moves uv and cargo-nextest, and a
+[tool versions bump](ci.md#tool-versions) moves uv, cargo-nextest and Rust, and a
 Node.js major moves by hand. Dependabot still updates the `node` image's
 digest within the pinned major.
 

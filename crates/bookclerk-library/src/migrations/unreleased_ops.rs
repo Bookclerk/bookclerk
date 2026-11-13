@@ -1432,7 +1432,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         work_for_members INTEGER NOT NULL DEFAULT 0 CHECK (work_for_members IN (0, 1)),
         keep_member_copies INTEGER NOT NULL DEFAULT 0 CHECK (keep_member_copies IN (0, 1)),
         max_jobs INTEGER CHECK (max_jobs IS NULL OR (max_jobs >= 0 AND max_jobs <= 16)),
-        list_members_books INTEGER NOT NULL DEFAULT 1 CHECK (list_members_books IN (0, 1))
+        list_members_books INTEGER NOT NULL DEFAULT 1 CHECK (list_members_books IN (0, 1)),
+        person_user_id INTEGER
     )",
     ),
     MigrationOp::Schema(
