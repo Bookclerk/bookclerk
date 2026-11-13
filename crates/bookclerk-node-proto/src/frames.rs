@@ -527,6 +527,49 @@ pub enum Body {
         /// destination of the session under its manifest key.
         files: Vec<UploadFile>,
     },
+    /// Branch → library: add the branch person's store connections to this
+    /// library ("Add my connections to *library*"). `sealed` is an
+    /// [`crate::AccountBundle`] sealed to the connection's owner box key
+    /// ([`Body::Welcome`]) and bound to the cluster and node ids
+    /// ([`crate::seal_account_offer`]). The library keeps them for the
+    /// user its node row names as the branch's owner, under that user's
+    /// account rule. Answered with [`Body::AccountsAdded`] or `error`.
+    #[serde(rename = "accounts.add")]
+    AccountsAdd {
+        /// The sealed bundle, base64url without padding.
+        sealed: String,
+    },
+    /// Library → branch: what became of an [`Body::AccountsAdd`].
+    #[serde(rename = "accounts.added")]
+    AccountsAdded {
+        /// Accounts now connected here for the person.
+        added: u64,
+        /// Accounts the person had already connected here.
+        #[serde(default)]
+        already_here: u64,
+        /// Accounts connected to someone else here; left as they are.
+        #[serde(default)]
+        taken: u64,
+        /// Accounts that could not be kept.
+        #[serde(default)]
+        failed: u64,
+        /// The library's operator does not let the person connect store
+        /// accounts there; nothing was kept.
+        #[serde(default)]
+        not_allowed: bool,
+    },
+    /// Branch → library: the person disconnected this store account
+    /// everywhere. The library unlinks it from the branch owner's
+    /// identities when it came from this branch's person, and takes it
+    /// back once no link holds it. Answered with [`Body::Accepted`] or
+    /// `error`.
+    #[serde(rename = "accounts.remove")]
+    AccountsRemove {
+        /// Provenance-qualified plugin key of the storefront.
+        plugin_key: String,
+        /// Store account id.
+        account_id: String,
+    },
     /// Branch → library: send the catalog questions waiting for this
     /// branch (see [`crate::LookupWork`]). Answered with
     /// [`Body::CatalogAsk`], or `error {code: "refused"}` when the node is

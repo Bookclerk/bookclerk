@@ -5,7 +5,8 @@
 #   for Dependabot and the workerd pin).
 # - scripts/tool_versions.py reads the releases listing and the image digest
 #   (both untrusted) and rewrites .tool-versions and, for a tool with an
-#   image, every Dockerfile FROM line that builds from it.
+#   image, every Dockerfile FROM line that builds from it; for Rust, also the
+#   channel in rust-toolchain.toml.
 # - Open one PR for every tool due that day (one branch, so two bumps never
 #   conflict on .tool-versions) with the automation App token and turn on
 #   auto-merge, so the merge queue lands it once the PR's required checks pass.
@@ -123,7 +124,7 @@ jobs:
           title: "build(deps): bump ${{ steps.bump.outputs.summary }}"
           body: |
             ## Summary
-            - Bump `.tool-versions` to ${{ steps.bump.outputs.summary }} (and a tool's image in every Dockerfile that builds from it)
+            - Bump `.tool-versions` to ${{ steps.bump.outputs.summary }} (and a tool's image in every Dockerfile that builds from it, and `rust-toolchain.toml` for Rust)
             - Cooldown: releases must be published ≥ **${{ env.TOOL_VERSIONS_COOLDOWN_DAYS }} days** ago
 
             ## Test plan
@@ -137,6 +138,7 @@ jobs:
           # Git pathspec wildcards cross directories: every Dockerfile.
           add-paths: |
             .tool-versions
+            rust-toolchain.toml
             *Dockerfile
 
       # Runs even when the branch was already up to date, so a run whose

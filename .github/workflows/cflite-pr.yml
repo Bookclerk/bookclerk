@@ -31,6 +31,7 @@ on:
       - "crates/bookclerk-plugins/optional/source-graphicaudio/**"
       - "crates/bookclerk-library/**"
       - "crates/bookclerk-plugins/platform/database-sqlite/**"
+      - "crates/bookclerk-window-policy/**"
       - ".clusterfuzzlite/**"
       - ".github/workflows/cflite-*.yml"
   workflow_dispatch:

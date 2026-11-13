@@ -43,7 +43,7 @@ boundary extends it.
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
-| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person | `bookclerk-node-proto::parse_account_bundle` |
+| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, and a branch offers its library (`accounts.add`) | `bookclerk-node-proto::parse_account_bundle` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
@@ -51,6 +51,8 @@ boundary extends it.
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
+| `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
+| `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, and the URLs the window is asked to open | `bookclerk-window-policy` |
 
 Some boundaries need more than a cell:
 
@@ -265,6 +267,30 @@ only that. The others check:
   an absent or `null` setting left unset (kept as stored) rather than read
   as `false`, and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/sharing_request.rs`, replayed from `bookclerk-library`.
+- **`connections_request`**: feeds each input to both parsers and reads it
+  as an untyped JSON value. An add body is accepted exactly when it is one
+  object with no repeated keys anywhere and only `cluster_id` (a string)
+  and `accounts`, an array of 1 to 64 objects that each hold exactly a
+  string `plugin_key` and a string `account_id`; the parser then returns
+  the trimmed id and the accounts as sent. A disconnect body is accepted
+  exactly when it is one object with no repeated keys, string
+  `plugin_key` and `account_id`, and `everywhere` absent (read as `false`)
+  or a boolean, and nothing else. Anything else is refused as `Invalid`.
+  The shared oracle is `fuzz/oracles/connections_request.rs`, replayed
+  from `bookclerk-library`.
+- **`window_policy`**: restates the policy from the bytes. A request is
+  refused as foreign exactly when its `Origin` is not byte for byte one of
+  the two app origins, or when it has no `Origin`, is a write, and its
+  `Referer` is not a URL on an app origin; otherwise it is refused exactly
+  when its path is the node API or the live socket, by whole segments. The
+  headers the router sees never hold the page's cookies, credentials,
+  `Referer` or forwarding headers, always hold one `Host: localhost` and
+  one `Origin: http://localhost`, carry `Bearer <token>` only when a token
+  was given, and keep every other header unchanged. Navigation allows app
+  pages always and, only while a join is open, `https` and loopback `http`
+  sign-in pages, with the return to the join callback kept on its path. The
+  shared oracle is `fuzz/oracles/window_policy.rs`, replayed from
+  `bookclerk-window-policy`.
 
 ## Boundaries outside the Rust workspace
 

@@ -947,6 +947,7 @@ async fn host_context(
         },
         owner_node_id: "owner-node".into(),
         state: Arc::clone(state),
+        serial: 0,
     }
 }
 

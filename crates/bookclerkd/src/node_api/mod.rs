@@ -31,6 +31,7 @@
 
 mod artifacts;
 pub mod branch;
+mod host_accounts;
 mod host_catalog;
 mod host_interlibrary;
 mod host_lookup;

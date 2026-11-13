@@ -1,4 +1,8 @@
 //! `bookclerkd` — long-running scan / acquire daemon with HTTP control plane.
+//!
+//! The library holds the whole host. The `bookclerkd` binary runs it behind
+//! the HTTP listeners ([`run`]); the desktop window runs the same host with
+//! no listener and hands it requests in-process ([`embedded`]).
 
 // Axum `Response` as handler `Err` exceeds Clippy's 128-byte `result_large_err` cap.
 #![allow(clippy::result_large_err)]
@@ -55,13 +59,14 @@ mod search_index;
 mod totp;
 mod tray_companion;
 
+pub mod embedded;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_config::{init_tracing_with, Config, ListenAddrs, LogFormat, TracingOptions};
-use clap::Parser;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 
 use crate::api::{
@@ -73,38 +78,38 @@ use crate::event_worker::start_event_runtime;
 use crate::job_worker::start_job_runtime;
 use crate::scheduler::spawn_scheduler;
 
-#[derive(Debug, Parser)]
+#[derive(Debug, clap::Parser)]
 #[command(name = "bookclerkd", version, about = "Bookclerk background daemon")]
 /// `bookclerkd` CLI flags (files dir, config path, listen overrides).
-struct Args {
+pub struct Args {
     /// Bookclerk files directory.
     #[arg(
         long = "bookclerk-files",
         visible_alias = "bookclerkFiles",
         env = "BOOKCLERK_FILES_DIR"
     )]
-    bookclerk_files: Option<PathBuf>,
+    pub bookclerk_files: Option<PathBuf>,
 
     /// Path to config.toml.
     #[arg(long, env = "BOOKCLERK_CONFIG")]
-    config: Option<PathBuf>,
+    pub config: Option<PathBuf>,
 
     /// Override HTTP listen address(es), comma-separated
     /// (`127.0.0.1:8787,[::1]:8787`).
     #[arg(long, env = "BOOKCLERK_DAEMON_LISTEN")]
-    listen: Option<String>,
+    pub listen: Option<String>,
 
     /// Print the HTTP API's OpenAPI document (JSON) to stdout and exit,
     /// without reading any configuration. `3.1` (the default) is the
     /// document the daemon serves at `/api/openapi.json`; `3.0` is the same
     /// API restated for tools that only read OpenAPI 3.0.
     #[arg(long, value_name = "VERSION", num_args = 0..=1, default_missing_value = "3.1")]
-    print_openapi: Option<OpenApiVersion>,
+    pub print_openapi: Option<OpenApiVersion>,
 }
 
 /// Which OpenAPI version `--print-openapi` writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-enum OpenApiVersion {
+pub enum OpenApiVersion {
     /// OpenAPI 3.1, the document the daemon serves at `/api/openapi.json`.
     #[value(name = "3.1")]
     V31,
@@ -117,9 +122,19 @@ enum OpenApiVersion {
 /// library's database before undoing the join.
 const CLERK_JOIN_OPEN_RETRIES: u32 = 3;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+/// Runs the daemon behind its HTTP listeners until the process is asked to
+/// stop (Ctrl+C, SIGTERM) or to restart onto new bootstrap files.
+///
+/// # Arguments
+///
+/// * `args` - The parsed command line.
+///
+/// # Errors
+///
+/// Returns an error when the configuration cannot be loaded, the host cannot
+/// start (the control plane, an interrupted clerk join, operator auth),
+/// `daemon.listen` is invalid, or a restart cannot re-exec the binary.
+pub async fn run(args: Args) -> anyhow::Result<()> {
     if let Some(version) = args.print_openapi {
         let text = match version {
             OpenApiVersion::V31 => openapi::document_json()?,
@@ -134,6 +149,19 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|err| anyhow::anyhow!("invalid --listen / BOOKCLERK_DAEMON_LISTEN: {err}"))?;
     }
 
+    init_logging(&config, "bookclerkd");
+    serve_listeners(start_host(config, HostMode::Listening).await?).await
+}
+
+/// Installs the process-wide tracing subscriber for `config` and logs where
+/// output goes, then prepares the confined codec pool.
+///
+/// # Arguments
+///
+/// * `config` - The loaded configuration (log format, diagnostics, media).
+/// * `syslog_identifier` - The name the OS log facility records
+///   (`bookclerkd`, or the desktop window's binary name).
+fn init_logging(config: &Config, syslog_identifier: &str) {
     let log_format = if config.daemon.json_logs {
         LogFormat::Json
     } else {
@@ -142,7 +170,7 @@ async fn main() -> anyhow::Result<()> {
     let logging = init_tracing_with(TracingOptions {
         format: log_format,
         default_level: "bookclerk=info,warn".into(),
-        syslog_identifier: "bookclerkd".into(),
+        syslog_identifier: syslog_identifier.into(),
         diagnostics: config.diagnostics.clone(),
         version: env!("CARGO_PKG_VERSION").into(),
         enable_journald: true,
@@ -168,7 +196,47 @@ async fn main() -> anyhow::Result<()> {
             "diagnostics.share_reports=true — redacted reports POST to Worker /submit (B2 via Cloudflare)"
         );
     }
+}
 
+/// Whether the host serves HTTP listeners or runs embedded in a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostMode {
+    /// `bookclerkd`: `daemon.listen` is validated and bound.
+    Listening,
+    /// The desktop window: no listener, so `daemon.listen` is not checked.
+    Embedded,
+}
+
+/// What [`start_host`] hands back: the running host and its router.
+struct HostParts {
+    /// Shared daemon state the background runtimes already hold.
+    state: Arc<AppState>,
+    /// The web app and API router (without the node API gate extension).
+    app: axum::Router,
+    /// Live configuration, also held by `state`.
+    config: Arc<RwLock<Config>>,
+    /// Notified when `daemon.listen` changes and listeners must rebind.
+    listen_reload: Arc<Notify>,
+    /// Set once the process is shutting down.
+    process_shutdown: Arc<AtomicBool>,
+}
+
+/// Opens the control plane and starts every background runtime (deployment
+/// reconcile, jobs, events, heartbeat, cluster links, scheduler), then builds
+/// the router. Binds nothing: the caller decides how requests reach it.
+///
+/// # Arguments
+///
+/// * `config` - The loaded configuration; logging is already installed.
+/// * `mode` - Whether `daemon.listen` will be bound (and so must be valid).
+///
+/// # Errors
+///
+/// Returns an error when the files directory cannot be prepared, a clerk join
+/// was interrupted or had to be undone, the control plane does not open,
+/// `daemon.listen` is invalid in [`HostMode::Listening`], or operator auth
+/// cannot be built.
+async fn start_host(config: Config, mode: HostMode) -> anyhow::Result<HostParts> {
     let paths = config.paths().clone();
     paths.ensure_dirs()?;
     // Before the node identity, master key or database is opened: a
@@ -268,7 +336,9 @@ async fn main() -> anyhow::Result<()> {
     let sources = bookclerk_source::SourceRegistry::new();
     let library = Arc::new(RwLock::new(library_store));
     let database_registry = Arc::new(RwLock::new(database_registry));
-    validate_daemon_listen(&config)?;
+    if mode == HostMode::Listening {
+        validate_daemon_listen(&config)?;
+    }
     let operator_auth = {
         let lib = library.read().await.clone();
         build_operator_auth(&config, &lib).await?
@@ -325,6 +395,34 @@ async fn main() -> anyhow::Result<()> {
 
     let ui_dist = resolve_ui_dist();
     let app = router(state.clone(), ui_dist);
+    Ok(HostParts {
+        state,
+        app,
+        config,
+        listen_reload,
+        process_shutdown,
+    })
+}
+
+/// Binds `daemon.listen` and serves the host's router on every address until
+/// the process shuts down, rebinding when the address changes and re-executing
+/// the binary when a restart was requested.
+///
+/// # Arguments
+///
+/// * `host` - The running host from [`start_host`].
+///
+/// # Errors
+///
+/// Returns an error when a requested restart cannot re-exec the binary.
+async fn serve_listeners(host: HostParts) -> anyhow::Result<()> {
+    let HostParts {
+        state,
+        app,
+        config,
+        listen_reload,
+        process_shutdown,
+    } = host;
     // The node API's TLS listener (acme / self_signed). Until it serves a
     // certificate the node API stays unmounted on every listener.
     let node_api_gate = {

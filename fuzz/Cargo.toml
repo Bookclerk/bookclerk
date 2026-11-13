@@ -34,6 +34,9 @@ bookclerk-plugin-source-graphicaudio = { path = "../crates/bookclerk-plugins/opt
 bookclerk-library = { path = "../crates/bookclerk-library" }
 bookclerk-plugin-database-sqlite = { path = "../crates/bookclerk-plugins/platform/database-sqlite", features = ["host-helpers"] }
 bookclerk-storefront = { path = "../crates/bookclerk-storefront" }
+# window_policy drives the desktop window's custom-scheme policy.
+bookclerk-window-policy = { path = "../crates/bookclerk-window-policy" }
+http = "1"
 # Independent re-signing oracle for cover_token.
 base64 = "0.23"
 hmac = "0.13"
@@ -238,6 +241,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "connections_request"
+path = "fuzz_targets/connections_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "cache_settings"
 path = "fuzz_targets/cache_settings.rs"
 test = false
@@ -261,6 +271,13 @@ bench = false
 [[bin]]
 name = "plan_authz"
 path = "fuzz_targets/plan_authz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "window_policy"
+path = "fuzz_targets/window_policy.rs"
 test = false
 doc = false
 bench = false

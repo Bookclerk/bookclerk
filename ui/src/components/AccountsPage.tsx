@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Link2, RefreshCw, Unlink } from "lucide-react";
+import { Link2, RefreshCw, Share2, Unlink } from "lucide-react";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,28 @@ import {
   type PortalConnection,
   type PortalSource,
 } from "@/lib/api";
+import {
+  addConnectionsToLibrary,
+  connectionsAddedLine,
+  disconnectConnection,
+  fetchBranchSharing,
+  type BranchLinkView,
+} from "@/lib/join";
 import { cn, pageWidthClass } from "@/lib/utils";
+
+/**
+ * The host name of a library's origin, for buttons and messages.
+ *
+ * @param link - A library this server is a branch of.
+ * @returns Its host name, or the origin when it does not parse.
+ */
+function libraryName(link: BranchLinkView): string {
+  try {
+    return new URL(link.owner_origin).host;
+  } catch {
+    return link.owner_origin;
+  }
+}
 
 /**
  * Storefront Accounts page — connect and revoke linked sources.
@@ -41,6 +62,11 @@ export function AccountsPage({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [oauthUrl, setOauthUrl] = useState<string | null>(null);
+  // The libraries this server is a branch of, for "Add to <library>" and
+  // "Revoke everywhere"; empty when it is nobody's branch or the session
+  // may not read them (only the person a branch belongs to may use them).
+  const [libraries, setLibraries] = useState<BranchLinkView[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
   // Every library user links their own store accounts; only the operator
   // (a token, not a user) cannot.
   const canConnect =
@@ -52,6 +78,16 @@ export function AccountsPage({
     try {
       const src = await portalSources();
       setSources(src);
+      if (role === "owner") {
+        try {
+          const links = await fetchBranchSharing();
+          setLibraries(links.clusters.filter((link) => link.state === "active"));
+        } catch {
+          setLibraries([]);
+        }
+      } else {
+        setLibraries([]);
+      }
       try {
         const conns = await portalConnections();
         setConnections(conns);
@@ -133,6 +169,57 @@ export function AccountsPage({
     }
   }
 
+  async function onAddTo(link: BranchLinkView, connection: PortalConnection) {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const report = await addConnectionsToLibrary(link.cluster_id, [
+        {
+          plugin_key: connection.plugin_key || connection.source,
+          account_id: connection.account_id,
+        },
+      ]);
+      setNotice(connectionsAddedLine(libraryName(link), report));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Adding the connection failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRevokeEverywhere(connection: PortalConnection) {
+    if (
+      !window.confirm(
+        "Revoke this store connection here and in every library it was added to? Acquired books are kept.",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await disconnectConnection(
+        connection.plugin_key || connection.source,
+        connection.account_id,
+        true,
+      );
+      if (result.unreached.length > 0) {
+        const names = libraries
+          .filter((link) => result.unreached.includes(link.cluster_id))
+          .map(libraryName);
+        setNotice(
+          `Revoked here. Couldn't reach ${names.join(", ") || "some libraries"}; revoke it there too.`,
+        );
+      }
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Revoke failed");
+      setBusy(false);
+    }
+  }
+
   async function onSignOut() {
     await signOut(role);
     onLogout();
@@ -169,6 +256,11 @@ export function AccountsPage({
           {error ? (
             <p className="text-sm font-medium text-brick" role="alert">
               {error}
+            </p>
+          ) : null}
+          {notice ? (
+            <p className="text-sm text-ink/70" role="status">
+              {notice}
             </p>
           ) : null}
 
@@ -302,10 +394,33 @@ export function AccountsPage({
                         available: a revoke whose cleanup failed leaves the
                         account marked revoked but linked, and retrying it
                         finishes the cleanup. */}
-                    <Button variant="ghost" disabled={busy} onClick={() => void onRevoke(c)}>
-                      <Unlink className="h-4 w-4" />
-                      Revoke
-                    </Button>
+                    <div className="flex flex-wrap items-center gap-1">
+                      {libraries.map((link) => (
+                        <Button
+                          key={link.cluster_id}
+                          variant="secondary"
+                          disabled={busy}
+                          onClick={() => void onAddTo(link, c)}
+                        >
+                          <Share2 className="h-4 w-4" />
+                          Add to {libraryName(link)}
+                        </Button>
+                      ))}
+                      <Button variant="ghost" disabled={busy} onClick={() => void onRevoke(c)}>
+                        <Unlink className="h-4 w-4" />
+                        {libraries.length > 0 ? "Revoke here" : "Revoke"}
+                      </Button>
+                      {libraries.length > 0 ? (
+                        <Button
+                          variant="ghost"
+                          disabled={busy}
+                          onClick={() => void onRevokeEverywhere(c)}
+                        >
+                          <Unlink className="h-4 w-4" />
+                          Revoke everywhere
+                        </Button>
+                      ) : null}
+                    </div>
                   </li>
                 ))}
               </ul>

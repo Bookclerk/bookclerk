@@ -472,6 +472,7 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
             keep_member_copies: Set(0),
             max_jobs: Set(None),
             list_members_books: Set(1),
+            person_user_id: Set(None),
         }
         .insert(store.db())
         .await

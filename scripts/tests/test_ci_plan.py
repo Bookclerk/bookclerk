@@ -472,6 +472,18 @@ class ScenarioTests(unittest.TestCase):
                 self.assertLess(build, run)
                 self.assertTrue(cmds[run].env["BOOKCLERK_DB_TESTKIT"].endswith("bookclerk-db-testkit"))
 
+    def test_all_features_doctests_leave_out_the_desktop_window(self) -> None:
+        # `--all-features` would turn on its `window` feature, which needs
+        # WebKitGTK development files the runners don't install.
+        full = plan("rust-toolchain.toml")
+        self.assertTrue(full.full_suite)
+        self.assertEqual(
+            check_argv(full, "doctest"),
+            [["cargo", "test", "--workspace", "--exclude", "bookclerk-desktop", "--doc", "--all-features"]],
+        )
+        host = plan("crates/bookclerkd/src/embedded.rs")
+        self.assertEqual(check_argv(host, "doctest"), [["cargo", "test", "-p", "bookclerkd", "--doc", "--all-features"]])
+
     def test_dev_edge_selects_consumer_tests_and_doctests_not_its_consumers(self) -> None:
         p = plan("crates/bookclerk-plugins/platform/database-sqlite/src/plugin.rs")
         lib = p.packages["bookclerk-library"]

@@ -98,7 +98,14 @@ paths = [
     "fuzz/oracles/branch_request.rs",
     "fuzz/corpus/sharing_request/**",
     "fuzz/oracles/sharing_request.rs",
+    "fuzz/corpus/connections_request/**",
+    "fuzz/oracles/connections_request.rs",
 ]
+
+# The desktop window's custom-scheme oracle, shared the same way.
+[[test_input]]
+package = "bookclerk-window-policy"
+paths = ["fuzz/corpus/window_policy/**", "fuzz/oracles/window_policy.rs"]
 
 # The mux peer oracle is shared the same way with the plugin-sdk replay test.
 [[test_input]]
