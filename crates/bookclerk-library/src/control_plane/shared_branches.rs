@@ -1,12 +1,12 @@
-//! Clerks: owner nodes (`kind = owner`) that joined a library with a
+//! Shared branches: owner nodes (`kind = owner`) that joined a library with a
 //! sign-in an Owner approved as such, sharing its database and DEK.
 //!
 //! - [`library_contents`] is what a joining install checks before it may
-//!   join as a clerk: a clerk's own database is replaced by the library's,
+//!   join as a shared branch: a shared branch's own database is replaced by the library's,
 //!   so the install must hold no library data of its own (no users, store
 //!   accounts, books, or libraries it is a branch of).
 //! - [`owner_nodes_visible_to`] lists the owner nodes a caller may see
-//!   (Settings → Clerks), by the same rule [`remove_owner_node`] removes
+//!   (Settings → Shared branches), by the same rule [`remove_owner_node`] removes
 //!   them.
 //! - [`remove_owner_node`] removes an owner node that is no longer running
 //!   from the library's node list, the way any owner node leaves.
@@ -38,7 +38,7 @@ pub struct LibraryContents {
 }
 
 impl LibraryContents {
-    /// True when the install holds no library data: it may join as a clerk.
+    /// True when the install holds no library data: it may join as a shared branch.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
@@ -92,7 +92,7 @@ pub async fn library_contents(store: &LibraryStore) -> Result<LibraryContents> {
     })
 }
 
-/// The owner nodes (`kind = owner`: this one and its clerks) `actor` may
+/// The owner nodes (`kind = owner`: this one and its shared branches) `actor` may
 /// see, by the rule [`remove_owner_node`] removes them: the operator or an
 /// active Owner sees every one; another active user only the ones they own;
 /// an unknown or disabled user none.

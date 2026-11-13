@@ -441,7 +441,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_owner_lists_every_clerk_and_a_member_only_its_own() {
+    async fn an_owner_lists_every_shared_branch_and_a_member_only_its_own() {
         let _dek = crate::auth::tests::process_dek_lock().await;
         let files = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
@@ -463,13 +463,13 @@ mod tests {
         .unwrap()
         .node
         .node_id;
-        // A stopped clerk sharing the database and `master.key`.
+        // A stopped shared branch sharing the database and `master.key`.
         std::fs::copy(
             bookclerk_library::master_key_path(files_path),
             bookclerk_library::master_key_path(other.path()),
         )
         .unwrap();
-        let clerk = bootstrap_control_plane(
+        let shared_branch = bootstrap_control_plane(
             &store,
             other.path(),
             &other.path().join("cache"),
@@ -505,8 +505,8 @@ mod tests {
             axum::Router::new()
                 .route("/api/config/nodes", get(crate::config_authority::get_nodes))
                 .route(
-                    "/api/config/clerks",
-                    get(crate::config_authority::get_clerks),
+                    "/api/config/shared-branches",
+                    get(crate::config_authority::get_shared_branches),
                 )
                 .route(
                     "/api/config/nodes/{node_id}",
@@ -523,11 +523,11 @@ mod tests {
         let as_owner = routes(crate::auth::NodeAdminCaller::NodeOwner { user_id: owner.id });
         let as_member = routes(crate::auth::NodeAdminCaller::NodeOwner { user_id: member.id });
         let as_host = routes(crate::auth::NodeAdminCaller::NodeOwner { user_id: host.id });
-        // The member owns the clerk; the Owner owns neither node.
+        // The member owns the shared branch; the Owner owns neither node.
         let (status, assigned) = send(
             &operator,
             "PUT",
-            &format!("/api/config/nodes/{clerk}/owner"),
+            &format!("/api/config/nodes/{shared_branch}/owner"),
             json!({ "user_id": member.id }),
         )
         .await;
@@ -543,11 +543,12 @@ mod tests {
             ids.sort();
             ids
         };
-        let mut both = vec![mine.clone(), clerk.clone()];
+        let mut both = vec![mine.clone(), shared_branch.clone()];
         both.sort();
-        // The operator and the Owner see this node and the clerk.
+        // The operator and the Owner see this node and the shared branch.
         for app in [&operator, &as_owner] {
-            let (status, listed) = send(app, "GET", "/api/config/clerks", Value::Null).await;
+            let (status, listed) =
+                send(app, "GET", "/api/config/shared-branches", Value::Null).await;
             assert_eq!(status, StatusCode::OK, "{listed}");
             assert_eq!(ids(&listed), both);
             assert_eq!(listed["node_id"], json!(mine));
@@ -555,25 +556,31 @@ mod tests {
         // The nodes listing stays scoped to owned nodes for the Owner.
         let (_, listed) = send(&as_owner, "GET", "/api/config/nodes", Value::Null).await;
         assert_eq!(listed["nodes"], json!([]));
-        // A member sees only the clerk it owns, as the nodes listing does;
+        // A member sees only the shared branch it owns, as the nodes listing does;
         // a host owning nothing sees none.
-        let (_, listed) = send(&as_member, "GET", "/api/config/clerks", Value::Null).await;
-        assert_eq!(ids(&listed), std::slice::from_ref(&clerk));
+        let (_, listed) = send(
+            &as_member,
+            "GET",
+            "/api/config/shared-branches",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(ids(&listed), std::slice::from_ref(&shared_branch));
         let (_, nodes) = send(&as_member, "GET", "/api/config/nodes", Value::Null).await;
-        assert_eq!(ids(&nodes), std::slice::from_ref(&clerk));
-        let (_, listed) = send(&as_host, "GET", "/api/config/clerks", Value::Null).await;
+        assert_eq!(ids(&nodes), std::slice::from_ref(&shared_branch));
+        let (_, listed) = send(&as_host, "GET", "/api/config/shared-branches", Value::Null).await;
         assert_eq!(listed["nodes"], json!([]));
 
-        // The Owner removes the stopped clerk it sees there.
+        // The Owner removes the stopped shared branch it sees there.
         let (status, removed) = send(
             &as_owner,
             "DELETE",
-            &format!("/api/config/nodes/{clerk}"),
+            &format!("/api/config/nodes/{shared_branch}"),
             Value::Null,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{removed}");
-        let (_, listed) = send(&as_owner, "GET", "/api/config/clerks", Value::Null).await;
+        let (_, listed) = send(&as_owner, "GET", "/api/config/shared-branches", Value::Null).await;
         assert_eq!(ids(&listed), [mine]);
     }
 }

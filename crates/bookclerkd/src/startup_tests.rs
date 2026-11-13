@@ -135,17 +135,17 @@ async fn the_desktop_host_answers_as_the_owner_on_an_assembled_host() {
 }
 
 #[tokio::test]
-async fn the_desktop_host_refuses_to_start_on_an_interrupted_clerk_join() {
+async fn the_desktop_host_refuses_to_start_on_an_interrupted_shared_branch_join() {
     let files = tempfile::tempdir().unwrap();
-    // A copy beside `config.toml` is what a clerk join that died while
+    // A copy beside `config.toml` is what a shared branch join that died while
     // replacing the bootstrap files leaves behind.
-    std::fs::write(files.path().join("config.toml.pre-clerk"), "").unwrap();
+    std::fs::write(files.path().join("config.toml.pre-shared-branch"), "").unwrap();
     let options = EmbeddedOptions {
         bookclerk_files: Some(files.path().to_path_buf()),
         config: None,
     };
     let Err(err) = EmbeddedHost::start(options, "bookclerk-desktop-test").await else {
-        panic!("an interrupted clerk join must stop the start");
+        panic!("an interrupted shared branch join must stop the start");
     };
     assert!(err.to_string().contains("interrupted"), "{err}");
     assert!(!files.path().join("library.db").exists());

@@ -590,7 +590,7 @@ async fn login_verify(
 }
 
 /// Checks `code` against `user`'s confirmed authenticator secret: the
-/// step-up a clerk join asks for on the consent page. False when the user
+/// step-up a shared branch join asks for on the consent page. False when the user
 /// has no confirmed TOTP or the code is wrong.
 ///
 /// # Errors

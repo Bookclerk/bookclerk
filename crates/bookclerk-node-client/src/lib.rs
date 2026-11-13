@@ -4,9 +4,9 @@
 //! cluster with a single-use link ([`join_cluster`]) or a sign-in at the
 //! owner ([`inspect_library`], [`authorize_branch`],
 //! [`redeem_branch_code`]); it tells the owner when it leaves
-//! ([`announce_leaving`]). An empty install may instead join as a clerk, an
+//! ([`announce_leaving`]). An empty install may instead join as a shared branch, an
 //! owner node that shares the library's database and DEK
-//! ([`redeem_clerk_code`], [`apply_clerk_bootstrap`]). Its node keys are
+//! ([`redeem_shared_branch_code`], [`apply_shared_branch_bootstrap`]). Its node keys are
 //! sealed in its own database
 //! (`bookclerk_library::control_plane::record_cluster_link`). For every
 //! active link, [`HostClient`] keeps one socket to the owner's
@@ -43,21 +43,16 @@
 //! job runs its guest are the daemon's.
 
 mod branch;
-mod clerk;
 mod client;
 mod endpoint;
 mod enroll;
 mod jobs;
+mod shared_branch;
 
 pub use branch::{
     announce_leaving, authorize_branch, authorize_join, bind_join_person, inspect_library,
     keep_brought_connections, library_origin, redeem_branch_code, BranchAuthorization,
     BranchRedeem, BroughtConnections, InspectedLibrary, RedeemedBranch,
-};
-pub use clerk::{
-    apply_clerk_bootstrap, bootstrap_database_kind, checked_d1_api_base, database_guest_installed,
-    install_problem, interrupted_clerk_join, pending_clerk_join, redeem_clerk_code, AppliedClerk,
-    ClerkJoined, PendingClerkJoin, RevertFailed, CLERK_POSTGRES_URL_FILE, DATABASE_ENV_OVERRIDES,
 };
 pub use client::{
     CatalogBatchAccepted, CatalogSession, ClientExit, ClientTiming, HeartbeatSource, HostClient,
@@ -72,4 +67,11 @@ pub use enroll::{check_join_ancestry, join_cluster, refuse_cycle, JoinError};
 pub use jobs::{
     HandedSecrets, HostJob, HostJobCtx, HostJobError, HostJobRunner, HostUpload, OwnerCallError,
     WriteBackError,
+};
+pub use shared_branch::{
+    apply_shared_branch_bootstrap, bootstrap_database_kind, checked_d1_api_base,
+    database_guest_installed, install_problem, interrupted_shared_branch_join,
+    pending_shared_branch_join, redeem_shared_branch_code, AppliedSharedBranch,
+    PendingSharedBranchJoin, RevertFailed, SharedBranchJoined, DATABASE_ENV_OVERRIDES,
+    SHARED_BRANCH_POSTGRES_URL_FILE,
 };

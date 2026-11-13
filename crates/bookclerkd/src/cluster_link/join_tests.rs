@@ -4,7 +4,7 @@
 //! at once (no restart); Leave library tells the owner (`node.leaving`),
 //! which revokes the node. Also the "I have an invite" tab, who may
 //! change Settings → Library's sharing settings (the operator or an Owner),
-//! and a clerk join (the owner's database is simulated: its config names
+//! and a shared branch join (the owner's database is simulated: its config names
 //! Postgres while the store is SQLite, since no Postgres runs in tests).
 
 use std::net::SocketAddr;
@@ -641,8 +641,8 @@ async fn an_invite_joins_and_starts_at_once_and_a_closed_library_refuses() {
 }
 
 #[tokio::test]
-async fn an_empty_install_joins_as_a_clerk_and_takes_the_librarys_bootstrap() {
-    use crate::node_api::branch::clerk_tests::{owner_with_totp, totp, POSTGRES_CONFIG};
+async fn an_empty_install_joins_as_a_shared_branch_and_takes_the_librarys_bootstrap() {
+    use crate::node_api::branch::shared_branch_tests::{owner_with_totp, totp, POSTGRES_CONFIG};
     let _dek = crate::auth::tests::process_dek_lock().await;
     ASSUME_DATABASE_GUESTS.store(true, std::sync::atomic::Ordering::SeqCst);
     let owner_files = tempfile::tempdir().unwrap();
@@ -658,12 +658,15 @@ async fn an_empty_install_joins_as_a_clerk_and_takes_the_librarys_bootstrap() {
         .unwrap();
     let busy = host_routes(&busy_state);
     let (_, _, status_busy) = call(&busy, "GET", "/api/config/join", None).await;
-    assert_eq!(status_busy["clerk_eligible"], false, "{status_busy}");
+    assert_eq!(
+        status_busy["shared_branch_eligible"], false,
+        "{status_busy}"
+    );
     let (status, _, refused) = call(
         &busy,
         "POST",
         "/api/config/join/start",
-        Some(json!({ "address": origin, "clerk": true })),
+        Some(json!({ "address": origin, "shared_branch": true })),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{refused}");
@@ -673,7 +676,7 @@ async fn an_empty_install_joins_as_a_clerk_and_takes_the_librarys_bootstrap() {
     let (host_state, _host_store) = crate::node_api::tests::test_state(&host_files).await;
     let host = host_routes(&host_state);
     let (_, _, status_now) = call(&host, "GET", "/api/config/join", None).await;
-    assert_eq!(status_now["clerk_eligible"], true, "{status_now}");
+    assert_eq!(status_now["shared_branch_eligible"], true, "{status_now}");
     let master_key = bookclerk_library::master_key_path(host_files.path());
     let before = std::fs::read(&master_key).ok();
     let config_file = host_state.config.read().await.paths().config_file.clone();
@@ -682,22 +685,27 @@ async fn an_empty_install_joins_as_a_clerk_and_takes_the_librarys_bootstrap() {
     let dek = bookclerk_library::require_master_key(None).unwrap();
     let (owner_user, secret) = owner_with_totp(&owner_store).await;
 
-    // Approved as a branch, a code cannot be redeemed as a clerk: the
+    // Approved as a branch, a code cannot be redeemed as a shared branch: the
     // callback's `connection` is only a hint, the code carries the choice.
-    let start = json!({ "address": origin, "branch_name": "Rack 2", "clerk": true });
+    let start = json!({ "address": origin, "branch_name": "Rack 2", "shared_branch": true });
     let (status, _, started) =
         call(&host, "POST", "/api/config/join/start", Some(start.clone())).await;
     assert_eq!(status, StatusCode::OK, "{started}");
-    assert_eq!(started["clerk_offered"], true);
+    assert_eq!(started["shared_branch_offered"], true);
     let authorize_url = started["authorize_url"].as_str().unwrap();
-    assert!(authorize_url.contains("clerk_offer=1"), "{authorize_url}");
+    assert!(
+        authorize_url.contains("shared_branch_offer=1"),
+        "{authorize_url}"
+    );
     let back = consent(&owner_state, owner_user, authorize_url, true).await;
     assert!(!back.contains_key("connection"));
     let (status, _, tampered) = call(
         &host,
         "POST",
         "/api/config/join/callback",
-        Some(json!({ "code": back["code"], "state": back["state"], "connection": "clerk" })),
+        Some(
+            json!({ "code": back["code"], "state": back["state"], "connection": "shared_branch" }),
+        ),
     )
     .await;
     assert_ne!(status, StatusCode::OK, "{tampered}");
@@ -708,29 +716,31 @@ async fn an_empty_install_joins_as_a_clerk_and_takes_the_librarys_bootstrap() {
     );
     assert!(!host_files
         .path()
-        .join(bookclerk_node_client::CLERK_POSTGRES_URL_FILE)
+        .join(bookclerk_node_client::SHARED_BRANCH_POSTGRES_URL_FILE)
         .exists());
 
-    // Approved as a clerk with a fresh code: the bootstrap is applied.
+    // Approved as a shared branch with a fresh code: the bootstrap is applied.
     let (_, _, started) = call(&host, "POST", "/api/config/join/start", Some(start)).await;
     let back = consent_with(
         &owner_state,
         owner_user,
         started["authorize_url"].as_str().unwrap(),
         true,
-        json!({ "connection": "clerk", "step_up": totp(&secret) }),
+        json!({ "connection": "shared_branch", "step_up": totp(&secret) }),
     )
     .await;
-    assert_eq!(back["connection"], "clerk");
+    assert_eq!(back["connection"], "shared_branch");
     let (status, _, joined) = call(
         &host,
         "POST",
         "/api/config/join/callback",
-        Some(json!({ "code": back["code"], "state": back["state"], "connection": "clerk" })),
+        Some(
+            json!({ "code": back["code"], "state": back["state"], "connection": "shared_branch" }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{joined}");
-    assert_eq!(joined["connection"], "clerk");
+    assert_eq!(joined["connection"], "shared_branch");
     assert_eq!(joined["database"], "postgres");
     assert_eq!(joined["restarting"], true);
     assert!(!joined.to_string().contains("pg-secret"), "{joined}");
@@ -783,10 +793,13 @@ async fn an_empty_install_joins_as_a_clerk_and_takes_the_librarys_bootstrap() {
         .map(|event| event.action)
         .collect();
     assert!(
-        actions.iter().any(|a| a == "clerk_authorize"),
+        actions.iter().any(|a| a == "shared_branch_authorize"),
         "{actions:?}"
     );
-    assert!(actions.iter().any(|a| a == "clerk_enrolled"), "{actions:?}");
+    assert!(
+        actions.iter().any(|a| a == "shared_branch_enrolled"),
+        "{actions:?}"
+    );
     ASSUME_DATABASE_GUESTS.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 

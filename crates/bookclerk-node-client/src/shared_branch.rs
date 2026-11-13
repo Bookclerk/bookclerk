@@ -1,14 +1,14 @@
-//! Joining a library as a clerk (an owner node that shares the library's
+//! Joining a library as a shared branch (an owner node that shares the library's
 //! database and DEK), the joining side.
 //!
-//! 1. The sign-in starts with [`crate::authorize_join`] offering a clerk;
-//!    an Owner of the library chooses clerk on its consent page (after a
+//! 1. The sign-in starts with [`crate::authorize_join`] offering a shared branch;
+//!    an Owner of the library chooses shared branch on its consent page (after a
 //!    fresh MFA or passkey step).
-//! 2. [`redeem_clerk_code`] redeems the code as a clerk. The answer carries
+//! 2. [`redeem_shared_branch_code`] redeems the code as a shared branch. The answer carries
 //!    the `[database]` bootstrap and the DEK sealed to this node's X25519
 //!    box key; only this process can open it, and it never passes through
 //!    the browser or a log.
-//! 3. [`apply_clerk_bootstrap`] writes them as this install's own
+//! 3. [`apply_shared_branch_bootstrap`] writes them as this install's own
 //!    bootstrap: the database connection into `config.toml` (a Postgres URL
 //!    into a `0600` file named by `url_file`), the DEK into `master.key`
 //!    (wrapped with this install's own `BOOKCLERK_AUTH_PASSWORD` or
@@ -17,7 +17,7 @@
 //!    again on it as an owner node.
 //!
 //! [`install_problem`] is what the joining side checks first: only an
-//! empty install (no library data of its own) may join as a clerk, and no
+//! empty install (no library data of its own) may join as a shared branch, and no
 //! database environment override may outrank the new bootstrap.
 
 use std::path::{Path, PathBuf};
@@ -28,20 +28,22 @@ use bookclerk_library::control_plane::{
     LibraryContents,
 };
 use bookclerk_library::LibraryStore;
-use bookclerk_node_proto::{open_clerk_bootstrap, ClerkBootstrap, ClerkDatabase, ConnectionType};
+use bookclerk_node_proto::{
+    open_shared_branch_bootstrap, ConnectionType, SharedBranchBootstrap, SharedBranchDatabase,
+};
 use zeroize::Zeroizing;
 
 use crate::branch::{post_redeem, BranchRedeem};
 use crate::enroll::JoinError;
 
-/// File under the files directory that holds a clerk's Postgres URL, mode
+/// File under the files directory that holds a shared branch's Postgres URL, mode
 /// `0600`. `[database.postgres].url_file` names it by its absolute path
 /// (a relative `url_file` would be read from the daemon's working
 /// directory).
-pub const CLERK_POSTGRES_URL_FILE: &str = "database-postgres.url";
+pub const SHARED_BRANCH_POSTGRES_URL_FILE: &str = "database-postgres.url";
 
-/// Environment variables that would outrank a clerk's `[database]`
-/// bootstrap; a clerk join is refused while one is set.
+/// Environment variables that would outrank a shared branch's `[database]`
+/// bootstrap; a shared branch join is refused while one is set.
 pub const DATABASE_ENV_OVERRIDES: &[&str] = &[
     "BOOKCLERK_DATABASE_PLUGIN",
     "BOOKCLERK_DATABASE_SQLITE_PATH",
@@ -52,18 +54,18 @@ pub const DATABASE_ENV_OVERRIDES: &[&str] = &[
     "BOOKCLERK_D1_API_BASE",
 ];
 
-/// A redeemed clerk sign-in. `Debug` prints no secret.
+/// A redeemed shared branch sign-in. `Debug` prints no secret.
 #[derive(Debug)]
-pub struct ClerkJoined {
+pub struct SharedBranchJoined {
     /// The library's cluster id.
     pub cluster_id: String,
     /// The node id the library recorded (`kind = owner`).
     pub node_id: String,
     /// The opened bootstrap.
-    pub bootstrap: ClerkBootstrap,
+    pub bootstrap: SharedBranchBootstrap,
 }
 
-/// Why this install may not join as a clerk now, or `None`.
+/// Why this install may not join as a shared branch now, or `None`.
 ///
 /// # Errors
 ///
@@ -74,24 +76,24 @@ pub async fn install_problem(store: &LibraryStore) -> Result<Option<String>, Joi
         .map_err(|err| JoinError::Record(err.to_string()))?;
     if !contents.is_empty() {
         return Ok(Some(format!(
-            "this server already holds library data of its own ({}); only an empty server can join as a clerk",
+            "this server already holds library data of its own ({}); only an empty server can join as a shared branch",
             contents.reasons().join(", ")
         )));
     }
     if let Some(name) = active_database_override(|name| std::env::var(name).ok()) {
         return Ok(Some(format!(
-            "{name} is set here and would override the library's database; unset it to join as a clerk"
+            "{name} is set here and would override the library's database; unset it to join as a shared branch"
         )));
     }
     Ok(None)
 }
 
-/// The `[database].plugin` a clerk's bootstrap configures.
+/// The `[database].plugin` a shared branch's bootstrap configures.
 #[must_use]
-pub fn bootstrap_database_kind(database: &ClerkDatabase) -> DatabasePluginKind {
+pub fn bootstrap_database_kind(database: &SharedBranchDatabase) -> DatabasePluginKind {
     match database {
-        ClerkDatabase::Postgres { .. } => DatabasePluginKind::Postgres,
-        ClerkDatabase::D1 { .. } => DatabasePluginKind::D1,
+        SharedBranchDatabase::Postgres { .. } => DatabasePluginKind::Postgres,
+        SharedBranchDatabase::D1 { .. } => DatabasePluginKind::D1,
     }
 }
 
@@ -116,7 +118,7 @@ pub fn database_guest_installed(config: &Config, kind: DatabasePluginKind) -> bo
 }
 
 /// True when `Config::apply_env_overrides` applies database override
-/// `name` set to `value`, so it would outrank a clerk's bootstrap. The D1
+/// `name` set to `value`, so it would outrank a shared branch's bootstrap. The D1
 /// account and database ids apply whatever they hold (an empty value
 /// clears the configured id); every other override applies only when it is
 /// not blank after trimming.
@@ -138,7 +140,7 @@ fn active_database_override(lookup: impl Fn(&str) -> Option<String>) -> Option<&
         .find(|name| lookup(name).is_some_and(|value| database_override_applies(name, &value)))
 }
 
-/// Redeems an approved clerk sign-in and opens the bootstrap with the
+/// Redeems an approved shared branch sign-in and opens the bootstrap with the
 /// node's box secret. The code and verifier go once in the request body,
 /// and are registered for redaction (the caller unregisters them).
 ///
@@ -152,13 +154,13 @@ fn active_database_override(lookup: impl Fn(&str) -> Option<String>) -> Option<&
 /// it. [`JoinError::is_retryable`] tells which failures a repeat of the
 /// same exchange can fix (the library answers it with the same node and a
 /// freshly sealed bootstrap).
-pub async fn redeem_clerk_code(
+pub async fn redeem_shared_branch_code(
     redeem: &BranchRedeem<'_>,
     keys: &ClusterLinkKeys,
-) -> Result<ClerkJoined, JoinError> {
-    let (_endpoint, enrolled) = post_redeem(redeem, keys, ConnectionType::Clerk).await?;
+) -> Result<SharedBranchJoined, JoinError> {
+    let (_endpoint, enrolled) = post_redeem(redeem, keys, ConnectionType::SharedBranch).await?;
     // The library has enrolled the node by now: a failure names it, so the
-    // operator knows which clerk to have removed there.
+    // operator knows which shared branch to have removed there.
     let unsaved = |reason: &str| JoinError::Unsaved {
         node_id: Some(enrolled.node_id.clone()),
         reason: reason.into(),
@@ -166,30 +168,30 @@ pub async fn redeem_clerk_code(
     let sealed = enrolled
         .bootstrap
         .as_deref()
-        .ok_or_else(|| unsaved("the library sent no clerk bootstrap"))?;
-    let bootstrap = open_clerk_bootstrap(
+        .ok_or_else(|| unsaved("the library sent no shared branch bootstrap"))?;
+    let bootstrap = open_shared_branch_bootstrap(
         keys.box_secret(),
         &enrolled.cluster_id,
         &enrolled.node_id,
         sealed,
     )
-    .map_err(|_| unsaved("the library's clerk bootstrap does not open here"))?;
+    .map_err(|_| unsaved("the library's shared branch bootstrap does not open here"))?;
     tracing::info!(
         cluster_id = %enrolled.cluster_id,
         node_id = %enrolled.node_id,
         database = bootstrap.database.plugin(),
-        "redeemed a clerk sign-in"
+        "redeemed a shared branch sign-in"
     );
-    Ok(ClerkJoined {
+    Ok(SharedBranchJoined {
         cluster_id: enrolled.cluster_id,
         node_id: enrolled.node_id,
         bootstrap,
     })
 }
 
-/// What [`apply_clerk_bootstrap`] wrote.
+/// What [`apply_shared_branch_bootstrap`] wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AppliedClerk {
+pub struct AppliedSharedBranch {
     /// The `[database].plugin` now configured.
     pub database: DatabasePluginKind,
     /// True when `master.key` is wrapped with this install's password.
@@ -198,12 +200,12 @@ pub struct AppliedClerk {
     pub config_file: PathBuf,
 }
 
-/// Suffix of the copy [`apply_clerk_bootstrap`] keeps of each file it
-/// replaces (`master.key.pre-clerk` beside `master.key`), until the apply
+/// Suffix of the copy [`apply_shared_branch_bootstrap`] keeps of each file it
+/// replaces (`master.key.pre-shared-branch` beside `master.key`), until the apply
 /// has replaced them all.
-const CLERK_BACKUP_SUFFIX: &str = ".pre-clerk";
+const SHARED_BRANCH_BACKUP_SUFFIX: &str = ".pre-shared-branch";
 
-/// One file [`apply_clerk_bootstrap`] writes.
+/// One file [`apply_shared_branch_bootstrap`] writes.
 struct NewFile<'a> {
     /// What the file is, for errors (`master.key`).
     what: &'static str,
@@ -232,12 +234,15 @@ fn staging_path(target: &Path) -> PathBuf {
     let mut suffix = [0u8; 8];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut suffix);
     let hex: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
-    target.with_file_name(format!(".{}.clerk-{hex}", file_name(target)))
+    target.with_file_name(format!(".{}.shared-branch-{hex}", file_name(target)))
 }
 
-/// Where [`apply_clerk_bootstrap`] keeps the original of `target`.
+/// Where [`apply_shared_branch_bootstrap`] keeps the original of `target`.
 fn backup_path(target: &Path) -> PathBuf {
-    target.with_file_name(format!("{}{CLERK_BACKUP_SUFFIX}", file_name(target)))
+    target.with_file_name(format!(
+        "{}{SHARED_BRANCH_BACKUP_SUFFIX}",
+        file_name(target)
+    ))
 }
 
 /// `path`'s file name, for the names of the files kept beside it.
@@ -279,7 +284,7 @@ fn back_up(target: &Path, backup: &Path) -> std::io::Result<()> {
         return Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
             format!(
-                "{} is left from an earlier clerk join (pending, or interrupted): start bookclerkd to finish or undo it, \
+                "{} is left from an earlier shared branch join (pending, or interrupted): start bookclerkd to finish or undo it, \
                  or follow the instructions it gives; the original of {} is in it",
                 backup.display(),
                 target.display()
@@ -349,12 +354,12 @@ fn sync_dirs(staged: &[Staged]) {
 }
 
 /// Replaces every target of `files` with its new contents, in order, as one
-/// recoverable step (see [`apply_clerk_bootstrap`]): stages all of them,
+/// recoverable step (see [`apply_shared_branch_bootstrap`]): stages all of them,
 /// backs up the originals, replaces them with
 /// [`bookclerk_config::replace_file`] (atomic per file, on Windows too),
 /// rolls the earlier ones back when a later one fails, and once all are in
 /// place records the join at `marker`, keeping the backups for the next
-/// start to drop or restore ([`PendingClerkJoin`]).
+/// start to drop or restore ([`PendingSharedBranchJoin`]).
 ///
 /// # Errors
 ///
@@ -362,7 +367,7 @@ fn sync_dirs(staged: &[Staged]) {
 /// backed up or replaced, and any file the rollback could not restore.
 fn replace_files(files: &[NewFile<'_>], marker: &Path) -> Result<(), JoinError> {
     let failed = |what: &str, err: &dyn std::fmt::Display| {
-        JoinError::Record(format!("could not write the clerk's {what}: {err}"))
+        JoinError::Record(format!("could not write this server's {what}: {err}"))
     };
     // 1. Stage every new file beside its target. Nothing is replaced yet,
     //    so a failure here (a full disk, a missing permission) changes
@@ -416,7 +421,7 @@ fn replace_files(files: &[NewFile<'_>], marker: &Path) -> Result<(), JoinError> 
                 format!("could not restore {}", not_restored.join("; "))
             };
             return Err(JoinError::Record(format!(
-                "could not write the clerk's {}: {err}; {outcome}",
+                "could not write this server's {}: {err}; {outcome}",
                 file.what
             )));
         }
@@ -444,7 +449,7 @@ fn replace_files(files: &[NewFile<'_>], marker: &Path) -> Result<(), JoinError> 
             format!("could not restore {}", not_restored.join("; "))
         };
         return Err(JoinError::Record(format!(
-            "could not record the clerk join at {}: {err}; {outcome}",
+            "could not record the shared branch join at {}: {err}; {outcome}",
             marker.display()
         )));
     }
@@ -452,14 +457,14 @@ fn replace_files(files: &[NewFile<'_>], marker: &Path) -> Result<(), JoinError> 
     Ok(())
 }
 
-/// The only host a clerk bootstrap may name as its D1 API origin.
+/// The only host a shared branch bootstrap may name as its D1 API origin.
 const D1_API_HOST: &str = "api.cloudflare.com";
 
 /// Checks the D1 API origin a library's bootstrap names, and returns it
 /// normalized. Every D1 query carries the joining server's own API token
-/// to that origin, so a clerk may only be pointed at Cloudflare's API over
+/// to that origin, so a shared branch may only be pointed at Cloudflare's API over
 /// HTTPS. The library checks its own origin the same way before it offers
-/// a clerk join, so a library on another D1 endpoint cannot take clerks.
+/// a shared branch join, so a library on another D1 endpoint cannot take shared branches.
 ///
 /// # Errors
 ///
@@ -468,7 +473,7 @@ const D1_API_HOST: &str = "api.cloudflare.com";
 pub fn checked_d1_api_base(api_base: &str) -> Result<String, JoinError> {
     let refused = || {
         JoinError::Record(format!(
-            "the library's D1 API origin is not https://{D1_API_HOST}, and a clerk only sends its D1 token to Cloudflare"
+            "the library's D1 API origin is not https://{D1_API_HOST}, and a shared branch only sends its D1 token to Cloudflare"
         ))
     };
     let parsed = url::Url::parse(api_base.trim()).map_err(|_| refused())?;
@@ -483,11 +488,11 @@ pub fn checked_d1_api_base(api_base: &str) -> Result<String, JoinError> {
     Ok(parsed.to_string().trim_end_matches('/').to_string())
 }
 
-/// The file, in the install's files directory, that records a clerk join
+/// The file, in the install's files directory, that records a shared branch join
 /// whose files are all in place but whose database has not yet opened.
-const CLERK_JOIN_MARKER: &str = "clerk-join.json";
+const SHARED_BRANCH_JOIN_MARKER: &str = "shared-branch-join.json";
 
-/// One bootstrap file a clerk join replaced, as [`CLERK_JOIN_MARKER`]
+/// One bootstrap file a shared branch join replaced, as [`SHARED_BRANCH_JOIN_MARKER`]
 /// records it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct JoinedFile {
@@ -497,7 +502,7 @@ struct JoinedFile {
     backup: Option<PathBuf>,
 }
 
-/// Where a recorded clerk join stands.
+/// Where a recorded shared branch join stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum JoinPhase {
@@ -508,7 +513,7 @@ enum JoinPhase {
     Reverting,
 }
 
-/// What [`CLERK_JOIN_MARKER`] holds: every file the join replaced.
+/// What [`SHARED_BRANCH_JOIN_MARKER`] holds: every file the join replaced.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct AppliedJoin {
     /// Where the join stands.
@@ -547,20 +552,20 @@ fn remove_if_present(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// A clerk join whose files are all in place but whose first start has not
+/// A shared branch join whose files are all in place but whose first start has not
 /// opened the library's database yet, or whose undoing was cut short. The
 /// daemon [`confirm`](Self::confirm)s it once the database opens, or
 /// [`revert`](Self::revert)s it when it cannot, so a join to an unreachable
 /// database does not leave the server unable to start.
 #[derive(Debug)]
-pub struct PendingClerkJoin {
+pub struct PendingSharedBranchJoin {
     /// Where the record is.
     marker: PathBuf,
     /// What it records.
     applied: AppliedJoin,
 }
 
-impl PendingClerkJoin {
+impl PendingSharedBranchJoin {
     /// Whether an earlier start began putting the originals back and did not
     /// finish: the daemon then finishes the [`revert`](Self::revert) before
     /// anything else, and does not try the library's database again.
@@ -572,7 +577,7 @@ impl PendingClerkJoin {
     /// The library's database opened: drops the record, then the copies of
     /// the originals. The record goes first, so a crash part way leaves
     /// copies with no record, which the next start refuses on with
-    /// [`interrupted_clerk_join`]'s instructions (its `config.toml` is the
+    /// [`interrupted_shared_branch_join`]'s instructions (its `config.toml` is the
     /// library's, so the copies are to be deleted). A copy that cannot be
     /// removed is logged, since it stops the next start.
     pub fn confirm(self) {
@@ -580,7 +585,7 @@ impl PendingClerkJoin {
             tracing::warn!(
                 record = %self.marker.display(),
                 error = %err,
-                "could not delete the clerk join record; delete it before the next start"
+                "could not delete the shared branch join record; delete it before the next start"
             );
             return;
         }
@@ -591,7 +596,7 @@ impl PendingClerkJoin {
                     tracing::warn!(
                         copy = %backup.display(),
                         error = %err,
-                        "the clerk join finished but could not delete this copy of the original; delete it before the next start"
+                        "the shared branch join finished but could not delete this copy of the original; delete it before the next start"
                     );
                 }
             }
@@ -637,7 +642,7 @@ impl PendingClerkJoin {
                 return Err(RevertFailed {
                     started: false,
                     detail: format!(
-                        "the copies of the originals at {} are gone or cannot be read, so the join cannot be undone automatically; move each remaining `.pre-clerk` copy back over its file, put the missing originals back by hand, then delete {}",
+                        "the copies of the originals at {} are gone or cannot be read, so the join cannot be undone automatically; move each remaining `.pre-shared-branch` copy back over its file, put the missing originals back by hand, then delete {}",
                         missing.join(", "),
                         self.marker.display()
                     ),
@@ -647,7 +652,7 @@ impl PendingClerkJoin {
             write_join_record(&self.marker, &self.applied).map_err(|err| RevertFailed {
                 started: false,
                 detail: format!(
-                    "could not mark the clerk join at {} as being undone: {err}",
+                    "could not mark the shared branch join at {} as being undone: {err}",
                     self.marker.display()
                 ),
             })?;
@@ -678,7 +683,7 @@ impl PendingClerkJoin {
         remove_if_present(&self.marker).map_err(|err| RevertFailed {
             started: true,
             detail: format!(
-                "the originals are back, but the clerk join record at {} could not be deleted: {err}",
+                "the originals are back, but the shared branch join record at {} could not be deleted: {err}",
                 self.marker.display()
             ),
         })?;
@@ -687,7 +692,7 @@ impl PendingClerkJoin {
     }
 }
 
-/// Why [`PendingClerkJoin::revert`] did not finish.
+/// Why [`PendingSharedBranchJoin::revert`] did not finish.
 #[derive(Debug)]
 pub struct RevertFailed {
     /// Whether the undo had begun: when true the record is marked
@@ -704,30 +709,34 @@ impl std::fmt::Display for RevertFailed {
     }
 }
 
-/// The bootstrap files a clerk join may replace, in the order it writes
+/// The bootstrap files a shared branch join may replace, in the order it writes
 /// them.
-fn clerk_join_targets(files_dir: &Path, config_file: &Path) -> [PathBuf; 4] {
+fn shared_branch_join_targets(files_dir: &Path, config_file: &Path) -> [PathBuf; 4] {
     [
-        files_dir.join(CLERK_POSTGRES_URL_FILE),
+        files_dir.join(SHARED_BRANCH_POSTGRES_URL_FILE),
         node_identity_path(files_dir),
         bookclerk_library::master_key_path(files_dir),
         config_file.to_path_buf(),
     ]
 }
 
-/// The clerk join this install applied but has not yet started on (or
+/// The shared branch join this install applied but has not yet started on (or
 /// began undoing), if any. A record that cannot be read, or that names any
 /// file other than this install's own bootstrap files and their copies, is
 /// not used: copies left beside those files then stop the start (see
-/// [`interrupted_clerk_join`]).
+/// [`interrupted_shared_branch_join`]).
 #[must_use]
-pub fn pending_clerk_join(files_dir: &Path, config_file: &Path) -> Option<PendingClerkJoin> {
-    let marker = files_dir.join(CLERK_JOIN_MARKER);
+pub fn pending_shared_branch_join(
+    files_dir: &Path,
+    config_file: &Path,
+) -> Option<PendingSharedBranchJoin> {
+    let marker = files_dir.join(SHARED_BRANCH_JOIN_MARKER);
     let applied: AppliedJoin = serde_json::from_slice(&std::fs::read(&marker).ok()?).ok()?;
     // Compared as absolute paths, so a record written with another spelling
     // of the same files (relative or not) is still recognised.
     let absolute = |path: &Path| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let targets = clerk_join_targets(files_dir, config_file).map(|target| absolute(&target));
+    let targets =
+        shared_branch_join_targets(files_dir, config_file).map(|target| absolute(&target));
     let recognised = !applied.files.is_empty()
         && applied.files.iter().all(|file| {
             targets.contains(&absolute(&file.target))
@@ -736,22 +745,22 @@ pub fn pending_clerk_join(files_dir: &Path, config_file: &Path) -> Option<Pendin
                     .as_ref()
                     .is_none_or(|backup| absolute(backup) == absolute(&backup_path(&file.target)))
         });
-    recognised.then_some(PendingClerkJoin { marker, applied })
+    recognised.then_some(PendingSharedBranchJoin { marker, applied })
 }
 
-/// Names the copies an interrupted clerk join left beside this install's
+/// Names the copies an interrupted shared branch join left beside this install's
 /// bootstrap files, or `None` when there are none. The daemon refuses to
 /// start while any is there: a process that died while replacing the files
 /// leaves some new and some old, and starting on that mix would pair a
 /// database with the wrong node identity or key. The message says how to
-/// finish or undo the join by hand (see [`apply_clerk_bootstrap`]).
+/// finish or undo the join by hand (see [`apply_shared_branch_bootstrap`]).
 #[must_use]
-pub fn interrupted_clerk_join(files_dir: &Path, config_file: &Path) -> Option<String> {
-    let targets = clerk_join_targets(files_dir, config_file);
+pub fn interrupted_shared_branch_join(files_dir: &Path, config_file: &Path) -> Option<String> {
+    let targets = shared_branch_join_targets(files_dir, config_file);
     if !targets
         .iter()
         .any(|target| backup_path(target).try_exists().unwrap_or(true))
-        || pending_clerk_join(files_dir, config_file).is_some()
+        || pending_shared_branch_join(files_dir, config_file).is_some()
     {
         return None;
     }
@@ -771,12 +780,12 @@ pub fn interrupted_clerk_join(files_dir: &Path, config_file: &Path) -> Option<St
         })
         .collect();
     Some(format!(
-        "a clerk join was interrupted while replacing this server's bootstrap files ({CLERK_BACKUP_SUFFIX} copies of the originals are still beside them): {}. \
+        "a shared branch join was interrupted while replacing this server's bootstrap files ({SHARED_BRANCH_BACKUP_SUFFIX} copies of the originals are still beside them): {}. \
          If {} is already the joined library's (its [database] names the library's database), the join finished: delete the copies. \
-         Otherwise undo it: move each copy back over its file (dropping the {CLERK_BACKUP_SUFFIX} suffix), and delete each file listed as existing with no copy unless it was there before the join, then delete {} if it is there and start again",
+         Otherwise undo it: move each copy back over its file (dropping the {SHARED_BRANCH_BACKUP_SUFFIX} suffix), and delete each file listed as existing with no copy unless it was there before the join, then delete {} if it is there and start again",
         state.join("; "),
         config_file.display(),
-        files_dir.join(CLERK_JOIN_MARKER).display()
+        files_dir.join(SHARED_BRANCH_JOIN_MARKER).display()
     ))
 }
 
@@ -793,38 +802,38 @@ pub fn interrupted_clerk_join(files_dir: &Path, config_file: &Path) -> Option<St
 ///   environment-only bootstrap).
 ///
 /// The files go in as one recoverable step. All the new contents are first
-/// written and synced beside their targets (hidden `.<name>.clerk-<hex>`
-/// files), and each existing target is copied to `<name>.pre-clerk`; a
+/// written and synced beside their targets (hidden `.<name>.shared-branch-<hex>`
+/// files), and each existing target is copied to `<name>.pre-shared-branch`; a
 /// failure up to here changes no target. The targets are then replaced
 /// atomically one by one, in the order above. If one fails, the ones
 /// already replaced are put back from their copies (a target that did not
 /// exist before is removed), so the install keeps its own bootstrap; the
 /// error names any file that could not be put back. On success the copies
-/// stay, and `clerk-join.json` in `files_dir` records the join: the next start drops
-/// them once the library's database opens ([`PendingClerkJoin::confirm`])
-/// and puts the originals back if it does not ([`PendingClerkJoin::revert`]).
+/// stay, and `shared-branch-join.json` in `files_dir` records the join: the next start drops
+/// them once the library's database opens ([`PendingSharedBranchJoin::confirm`])
+/// and puts the originals back if it does not ([`PendingSharedBranchJoin::revert`]).
 /// The caller restarts the daemon afterwards.
 ///
 /// A process that dies while replacing leaves the files before that point
 /// in the list new and the rest old, with every original still beside its
-/// file as `<name>.pre-clerk` and no record; a later apply refuses while a
-/// copy is there, and so does the daemon ([`interrupted_clerk_join`]), with
+/// file as `<name>.pre-shared-branch` and no record; a later apply refuses while a
+/// copy is there, and so does the daemon ([`interrupted_shared_branch_join`]), with
 /// instructions to finish the join by hand (when `config_file` is already
-/// new) or undo it. Staged `.<name>.clerk-<hex>` files left by such a crash
+/// new) or undo it. Staged `.<name>.shared-branch-<hex>` files left by such a crash
 /// are unused and can be deleted.
 ///
 /// # Errors
 ///
 /// Returns [`JoinError::Record`] when a file cannot be written or the
 /// existing `config.toml` does not parse.
-pub fn apply_clerk_bootstrap(
+pub fn apply_shared_branch_bootstrap(
     files_dir: &Path,
     config_file: &Path,
-    bootstrap: &ClerkBootstrap,
+    bootstrap: &SharedBranchBootstrap,
     password: Option<&str>,
-) -> Result<AppliedClerk, JoinError> {
+) -> Result<AppliedSharedBranch, JoinError> {
     let record = |what: &str, err: &dyn std::fmt::Display| {
-        JoinError::Record(format!("could not write the clerk's {what}: {err}"))
+        JoinError::Record(format!("could not write this server's {what}: {err}"))
     };
     let mut cfg = if config_file.is_file() {
         Config::from_toml_file(config_file).map_err(|err| record("config.toml", &err))?
@@ -833,7 +842,7 @@ pub fn apply_clerk_bootstrap(
     };
     let mut url: Option<Zeroizing<String>> = None;
     let database = match &bootstrap.database {
-        ClerkDatabase::Postgres { url: secret } => {
+        SharedBranchDatabase::Postgres { url: secret } => {
             let text = Zeroizing::new(
                 std::str::from_utf8(secret.expose())
                     .map_err(|_| JoinError::Record("malformed database URL".into()))?
@@ -844,7 +853,7 @@ pub fn apply_clerk_bootstrap(
                 return Err(JoinError::Record("empty database URL".into()));
             }
             bookclerk_config::register_secret(&text);
-            let url_file = std::path::absolute(files_dir.join(CLERK_POSTGRES_URL_FILE))
+            let url_file = std::path::absolute(files_dir.join(SHARED_BRANCH_POSTGRES_URL_FILE))
                 .map_err(|err| record("database URL file", &err))?;
             cfg.database.plugin = DatabasePluginKind::Postgres.as_str().into();
             cfg.database.postgres.url = None;
@@ -852,7 +861,7 @@ pub fn apply_clerk_bootstrap(
             url = Some(text);
             DatabasePluginKind::Postgres
         }
-        ClerkDatabase::D1 {
+        SharedBranchDatabase::D1 {
             account_id,
             database_id,
             api_base,
@@ -878,11 +887,11 @@ pub fn apply_clerk_bootstrap(
     let mut files = Vec::with_capacity(4);
     if let Some(text) = &url {
         // Recorded in the caller's form, as the other targets are, so the
-        // next start's `clerk_join_targets` names the same path; only the
+        // next start's `shared_branch_join_targets` names the same path; only the
         // config holds the absolute one.
         files.push(NewFile {
             what: "database URL file",
-            target: files_dir.join(CLERK_POSTGRES_URL_FILE),
+            target: files_dir.join(SHARED_BRANCH_POSTGRES_URL_FILE),
             bytes: text.as_bytes(),
             private: true,
         });
@@ -906,7 +915,7 @@ pub fn apply_clerk_bootstrap(
         bytes: config_text.as_bytes(),
         private: false,
     });
-    replace_files(&files, &files_dir.join(CLERK_JOIN_MARKER))?;
+    replace_files(&files, &files_dir.join(SHARED_BRANCH_JOIN_MARKER))?;
     if password.is_none() {
         bookclerk_library::warn_unwrapped_master_key(&bookclerk_library::master_key_path(
             files_dir,
@@ -917,9 +926,9 @@ pub fn apply_clerk_bootstrap(
         node_id = %bootstrap.node_id,
         database = database.as_str(),
         wrapped = password.is_some(),
-        "wrote the clerk bootstrap; this install starts as an owner node of the library"
+        "wrote the shared branch bootstrap; this install starts as an owner node of the library"
     );
-    Ok(AppliedClerk {
+    Ok(AppliedSharedBranch {
         database,
         wrapped: password.is_some(),
         config_file: config_file.to_path_buf(),
@@ -929,11 +938,11 @@ pub fn apply_clerk_bootstrap(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bookclerk_node_proto::{SecretValue, CLERK_BOOTSTRAP_VERSION};
+    use bookclerk_node_proto::{SecretValue, SHARED_BRANCH_BOOTSTRAP_VERSION};
 
-    fn bootstrap(database: ClerkDatabase) -> ClerkBootstrap {
-        ClerkBootstrap {
-            v: CLERK_BOOTSTRAP_VERSION,
+    fn bootstrap(database: SharedBranchDatabase) -> SharedBranchBootstrap {
+        SharedBranchBootstrap {
+            v: SHARED_BRANCH_BOOTSTRAP_VERSION,
             cluster_id: "cluster-1".into(),
             node_id: "0b5c3d52-6f1e-4f39-9a3c-1b7f0a2c9e11".into(),
             database,
@@ -943,15 +952,15 @@ mod tests {
 
     /// A copy left beside a bootstrap file names the interrupted join.
     #[test]
-    fn a_left_copy_marks_an_interrupted_clerk_join() {
+    fn a_left_copy_marks_an_interrupted_shared_branch_join() {
         let files = tempfile::tempdir().unwrap();
         let config = files.path().join("config.toml");
-        assert!(interrupted_clerk_join(files.path(), &config).is_none());
+        assert!(interrupted_shared_branch_join(files.path(), &config).is_none());
         let key = bookclerk_library::master_key_path(files.path());
         std::fs::write(backup_path(&key), b"old").unwrap();
         let identity = node_identity_path(files.path());
         std::fs::write(&identity, b"new").unwrap();
-        let problem = interrupted_clerk_join(files.path(), &config).unwrap();
+        let problem = interrupted_shared_branch_join(files.path(), &config).unwrap();
         assert!(
             problem.contains(&format!("{} (has a copy)", key.display())),
             "{problem}"
@@ -975,10 +984,10 @@ mod tests {
         let key = bookclerk_library::master_key_path(files.path());
         std::fs::write(&config, "[daemon]\n").unwrap();
         std::fs::write(&key, b"original key").unwrap();
-        apply_clerk_bootstrap(
+        apply_shared_branch_bootstrap(
             files.path(),
             &config,
-            &bootstrap(ClerkDatabase::D1 {
+            &bootstrap(SharedBranchDatabase::D1 {
                 account_id: "acct".into(),
                 database_id: "db-uuid".into(),
                 api_base: "https://api.cloudflare.com/client/v4".into(),
@@ -992,11 +1001,11 @@ mod tests {
         std::fs::remove_file(&identity).unwrap();
         std::fs::create_dir(&identity).unwrap();
         std::fs::write(identity.join("x"), b"x").unwrap();
-        assert!(pending_clerk_join(files.path(), &config)
+        assert!(pending_shared_branch_join(files.path(), &config)
             .unwrap()
             .revert()
             .is_err());
-        let pending = pending_clerk_join(files.path(), &config).unwrap();
+        let pending = pending_shared_branch_join(files.path(), &config).unwrap();
         assert!(pending.reverting());
         // Already restored files stay restored.
         assert_eq!(std::fs::read(&key).unwrap(), b"original key");
@@ -1004,8 +1013,8 @@ mod tests {
         pending.revert().unwrap();
         assert_eq!(std::fs::read_to_string(&config).unwrap(), "[daemon]\n");
         assert_eq!(std::fs::read(&key).unwrap(), b"original key");
-        assert!(pending_clerk_join(files.path(), &config).is_none());
-        assert!(interrupted_clerk_join(files.path(), &config).is_none());
+        assert!(pending_shared_branch_join(files.path(), &config).is_none());
+        assert!(interrupted_shared_branch_join(files.path(), &config).is_none());
     }
 
     /// A copy removed by hand before the undo began stops the undo, so the
@@ -1017,10 +1026,10 @@ mod tests {
         let key = bookclerk_library::master_key_path(files.path());
         std::fs::write(&config, "[daemon]\n").unwrap();
         std::fs::write(&key, b"original key").unwrap();
-        apply_clerk_bootstrap(
+        apply_shared_branch_bootstrap(
             files.path(),
             &config,
-            &bootstrap(ClerkDatabase::D1 {
+            &bootstrap(SharedBranchDatabase::D1 {
                 account_id: "acct".into(),
                 database_id: "db-uuid".into(),
                 api_base: "https://api.cloudflare.com/client/v4".into(),
@@ -1030,12 +1039,12 @@ mod tests {
         .unwrap();
         let joined_config = std::fs::read_to_string(&config).unwrap();
         std::fs::remove_file(backup_path(&key)).unwrap();
-        let failed = pending_clerk_join(files.path(), &config)
+        let failed = pending_shared_branch_join(files.path(), &config)
             .unwrap()
             .revert()
             .unwrap_err();
         assert!(!failed.started);
-        let pending = pending_clerk_join(files.path(), &config).unwrap();
+        let pending = pending_shared_branch_join(files.path(), &config).unwrap();
         assert!(!pending.reverting());
         assert_eq!(std::fs::read_to_string(&config).unwrap(), joined_config);
     }
@@ -1048,7 +1057,7 @@ mod tests {
         let config = files.path().join("config.toml");
         let elsewhere = files.path().join("elsewhere.txt");
         write_join_record(
-            &files.path().join(CLERK_JOIN_MARKER),
+            &files.path().join(SHARED_BRANCH_JOIN_MARKER),
             &AppliedJoin {
                 phase: JoinPhase::Applied,
                 files: vec![JoinedFile {
@@ -1058,7 +1067,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(pending_clerk_join(files.path(), &config).is_none());
+        assert!(pending_shared_branch_join(files.path(), &config).is_none());
     }
 
     /// A bootstrap may only name Cloudflare's D1 API over HTTPS.
@@ -1085,10 +1094,10 @@ mod tests {
         let files = tempfile::tempdir().unwrap();
         let config = files.path().join("config.toml");
         std::fs::write(&config, "[daemon]\ntray = false\n").unwrap();
-        let applied = apply_clerk_bootstrap(
+        let applied = apply_shared_branch_bootstrap(
             files.path(),
             &config,
-            &bootstrap(ClerkDatabase::Postgres {
+            &bootstrap(SharedBranchDatabase::Postgres {
                 url: SecretValue::new(b"postgres://u:pw-1@db/lib".to_vec()),
             }),
             Some("joiner-pass"),
@@ -1101,7 +1110,7 @@ mod tests {
         let cfg = Config::from_toml_file(&config).unwrap();
         assert_eq!(cfg.database.plugin, "postgres");
         assert!(!cfg.daemon.tray, "other settings are kept");
-        let url_file = files.path().join(CLERK_POSTGRES_URL_FILE);
+        let url_file = files.path().join(SHARED_BRANCH_POSTGRES_URL_FILE);
         assert_eq!(
             cfg.database.postgres.url_file.as_deref(),
             Some(url_file.as_path())
@@ -1125,15 +1134,17 @@ mod tests {
         assert_eq!(identity.cluster_id.as_deref(), Some("cluster-1"));
         // The join is recorded as pending, which is not an interrupted one;
         // confirming it drops the copies and the record.
-        assert!(interrupted_clerk_join(files.path(), &config).is_none());
-        pending_clerk_join(files.path(), &config).unwrap().confirm();
-        assert!(pending_clerk_join(files.path(), &config).is_none());
+        assert!(interrupted_shared_branch_join(files.path(), &config).is_none());
+        pending_shared_branch_join(files.path(), &config)
+            .unwrap()
+            .confirm();
+        assert!(pending_shared_branch_join(files.path(), &config).is_none());
         for entry in std::fs::read_dir(files.path()).unwrap() {
             let name = entry.unwrap().file_name().to_string_lossy().into_owned();
             assert!(
-                !name.ends_with(CLERK_BACKUP_SUFFIX)
-                    && !name.contains(".clerk-")
-                    && name != CLERK_JOIN_MARKER,
+                !name.ends_with(SHARED_BRANCH_BACKUP_SUFFIX)
+                    && !name.contains(".shared-branch-")
+                    && name != SHARED_BRANCH_JOIN_MARKER,
                 "{name}"
             );
         }
@@ -1148,10 +1159,10 @@ mod tests {
         let key = bookclerk_library::master_key_path(files.path());
         std::fs::write(&config, "[daemon]\n").unwrap();
         std::fs::write(&key, b"original key").unwrap();
-        apply_clerk_bootstrap(
+        apply_shared_branch_bootstrap(
             files.path(),
             &config,
-            &bootstrap(ClerkDatabase::D1 {
+            &bootstrap(SharedBranchDatabase::D1 {
                 account_id: "acct".into(),
                 database_id: "db-uuid".into(),
                 api_base: "https://api.cloudflare.com/client/v4".into(),
@@ -1159,18 +1170,18 @@ mod tests {
             None,
         )
         .unwrap();
-        pending_clerk_join(files.path(), &config)
+        pending_shared_branch_join(files.path(), &config)
             .unwrap()
             .revert()
             .unwrap();
         assert_eq!(std::fs::read_to_string(&config).unwrap(), "[daemon]\n");
         assert_eq!(std::fs::read(&key).unwrap(), b"original key");
         assert!(!node_identity_path(files.path()).exists());
-        assert!(pending_clerk_join(files.path(), &config).is_none());
-        assert!(interrupted_clerk_join(files.path(), &config).is_none());
+        assert!(pending_shared_branch_join(files.path(), &config).is_none());
+        assert!(interrupted_shared_branch_join(files.path(), &config).is_none());
         for entry in std::fs::read_dir(files.path()).unwrap() {
             let name = entry.unwrap().file_name().to_string_lossy().into_owned();
-            assert!(!name.ends_with(CLERK_BACKUP_SUFFIX), "{name}");
+            assert!(!name.ends_with(SHARED_BRANCH_BACKUP_SUFFIX), "{name}");
         }
     }
 
@@ -1178,10 +1189,10 @@ mod tests {
     fn a_d1_bootstrap_without_a_password_writes_an_unwrapped_key() {
         let files = tempfile::tempdir().unwrap();
         let config = files.path().join("config.toml");
-        let applied = apply_clerk_bootstrap(
+        let applied = apply_shared_branch_bootstrap(
             files.path(),
             &config,
-            &bootstrap(ClerkDatabase::D1 {
+            &bootstrap(SharedBranchDatabase::D1 {
                 account_id: "acct".into(),
                 database_id: "db-uuid".into(),
                 api_base: "https://api.cloudflare.com/client/v4".into(),
@@ -1209,10 +1220,10 @@ mod tests {
         // fails after node-identity.json and master.key were replaced.
         let config = files.path().join("config.toml");
         std::fs::create_dir(&config).unwrap();
-        let err = apply_clerk_bootstrap(
+        let err = apply_shared_branch_bootstrap(
             files.path(),
             &config,
-            &bootstrap(ClerkDatabase::Postgres {
+            &bootstrap(SharedBranchDatabase::Postgres {
                 url: SecretValue::new(b"postgres://u:pw-1@db/lib".to_vec()),
             }),
             None,
@@ -1242,10 +1253,10 @@ mod tests {
         let backup = backup_path(&key);
         std::fs::write(&backup, b"original key").unwrap();
         let config = files.path().join("config.toml");
-        let err = apply_clerk_bootstrap(
+        let err = apply_shared_branch_bootstrap(
             files.path(),
             &config,
-            &bootstrap(ClerkDatabase::D1 {
+            &bootstrap(SharedBranchDatabase::D1 {
                 account_id: "acct".into(),
                 database_id: "db-uuid".into(),
                 api_base: "https://api.cloudflare.com/client/v4".into(),

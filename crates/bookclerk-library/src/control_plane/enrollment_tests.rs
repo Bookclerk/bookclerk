@@ -771,7 +771,7 @@ async fn event_subscriber_nodes_for(store: &LibraryStore) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_clerk_redeem_records_an_owner_node_with_no_socket_credential() {
+async fn a_shared_branch_redeem_records_an_owner_node_with_no_socket_credential() {
     let _guard = master_key_test_lock_async().await;
     let (store, dir) = cluster().await;
     let this_node = load_or_create_node_identity(dir.path()).unwrap().node_id;
@@ -843,7 +843,7 @@ async fn a_clerk_redeem_records_an_owner_node_with_no_socket_credential() {
     let instance = create_plugin_instance(
         &store,
         &config_operator,
-        "path:file:///tmp/clerk-removal#removal",
+        "path:file:///tmp/shared-branch-removal#removal",
         "",
     )
     .await

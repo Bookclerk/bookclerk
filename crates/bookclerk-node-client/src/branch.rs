@@ -28,8 +28,8 @@ use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{
     canonical_origin, is_branch_name, is_branch_redirect_uri, is_library_name, open_account_bundle,
     pkce_challenge, AccountBundle, Body, ConnectionType, OAuthEnrollAnswer, OAuthEnrollRequest,
-    OwnerInfo, AUTHORIZE_PATH, BRANCH_CLIENT_ID, BRANCH_SCOPE, CLERK_OFFER_PARAM,
-    ENROLL_OAUTH_PATH, INFO_PATH, MAX_ACCOUNT_BUNDLE_BYTES,
+    OwnerInfo, AUTHORIZE_PATH, BRANCH_CLIENT_ID, BRANCH_SCOPE, ENROLL_OAUTH_PATH, INFO_PATH,
+    MAX_ACCOUNT_BUNDLE_BYTES, SHARED_BRANCH_OFFER_PARAM,
 };
 use rand::RngCore as _;
 use tokio::sync::watch;
@@ -177,9 +177,9 @@ pub fn authorize_branch(
     authorize_join(library, redirect_uri, branch_name, false)
 }
 
-/// [`authorize_branch`], optionally offering to join as a clerk
-/// (`offer_clerk`, [`CLERK_OFFER_PARAM`]): the consent page then lets an
-/// Owner of the library choose a clerk instead of a branch. Offer it only
+/// [`authorize_branch`], optionally offering to join as a shared branch
+/// (`offer_shared_branch`, [`SHARED_BRANCH_OFFER_PARAM`]): the consent page then lets an
+/// Owner of the library choose a shared branch instead of a branch. Offer it only
 /// for an install that holds no library data of its own.
 ///
 /// # Errors
@@ -189,7 +189,7 @@ pub fn authorize_join(
     library: &InspectedLibrary,
     redirect_uri: &str,
     branch_name: &str,
-    offer_clerk: bool,
+    offer_shared_branch: bool,
 ) -> Result<BranchAuthorization, JoinError> {
     if !is_branch_redirect_uri(redirect_uri) {
         return Err(JoinError::Link(
@@ -215,8 +215,9 @@ pub fn authorize_join(
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", &state)
         .append_pair("branch_name", branch_name);
-    if offer_clerk {
-        url.query_pairs_mut().append_pair(CLERK_OFFER_PARAM, "1");
+    if offer_shared_branch {
+        url.query_pairs_mut()
+            .append_pair(SHARED_BRANCH_OFFER_PARAM, "1");
     }
     Ok(BranchAuthorization {
         authorize_url: url.into(),
@@ -527,7 +528,7 @@ pub(crate) async fn post_redeem(
     // JSON limit, base64url of the sealed box (4/3), and room for its tag.
     let extra = match connection {
         ConnectionType::Branch => MAX_ACCOUNT_BUNDLE_BYTES.saturating_mul(2),
-        ConnectionType::Clerk => 0,
+        ConnectionType::SharedBranch => 0,
     };
     let (status, answer) = endpoint
         .post_json_within(ENROLL_OAUTH_PATH, &body, extra)
@@ -713,7 +714,7 @@ mod tests {
         assert!(!format!("{auth:?}").contains(auth.verifier.as_str()));
         assert!(authorize_branch(&library, "http://192.168.1.2/join/callback", "den").is_err());
         assert!(authorize_branch(&library, "https://h.example/join/callback", "").is_err());
-        assert!(!auth.authorize_url.contains(CLERK_OFFER_PARAM));
+        assert!(!auth.authorize_url.contains(SHARED_BRANCH_OFFER_PARAM));
         let offered =
             authorize_join(&library, "http://localhost:8787/join/callback", "den", true).unwrap();
         let pairs: std::collections::BTreeMap<_, _> = url::Url::parse(&offered.authorize_url)
@@ -721,6 +722,6 @@ mod tests {
             .query_pairs()
             .into_owned()
             .collect();
-        assert_eq!(pairs[CLERK_OFFER_PARAM], "1");
+        assert_eq!(pairs[SHARED_BRANCH_OFFER_PARAM], "1");
     }
 }

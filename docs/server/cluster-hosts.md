@@ -2,9 +2,9 @@
 
 This page is the operator's guide to joining Bookclerk installs together:
 letting branches in on a library, joining one from a branch, adding a
-clerk, and what each side runs and shares.
+branch on the library's own database, and what each side runs and shares.
 
-## Libraries, branches and clerks
+## Libraries and branches
 
 - A **library** is one library database and the daemons that share it.
 - A **branch** is a separate Bookclerk install, with its own database and
@@ -13,9 +13,10 @@ clerk, and what each side runs and shares.
   back. A branch never holds the library's database credentials or DEK,
   and it runs one of the library's plugins only after its own operator
   approves it.
-- A **clerk** is the other way to join: an empty install that shares the
-  library's database and keys and serves the same library. See
-  [Clerks](#clerks).
+- A **shared branch** is the other way to join: an empty install that
+  shares the library's database and keys and serves the same library. Its
+  operator is the library's operator. See
+  [Shared branches](#shared-branches).
 
 The web UI says *library* and *branch*. The code, the API and the CLI keep
 the older names:
@@ -23,7 +24,7 @@ the older names:
 | Web UI | Code, API and CLI |
 | --- | --- |
 | Library | Owner cluster (`clusters`) |
-| The library's own daemons, clerks included | Owner nodes (`kind = owner`) |
+| The library's own daemons, shared branches included | Owner nodes (`kind = owner`) |
 | Branch | Host node (`nodes`, `kind = host`) |
 | Branch invite | Enrollment link |
 | "Let new branches join" | `core.host_enrollment` |
@@ -219,7 +220,7 @@ accounts and which of them would travel.
   with one join.
 - **How.** The choice is kept on the enrollment link. The redeem answer
   carries the accounts and their secrets as one bundle sealed to the
-  branch's X25519 box key (the same sealed box as a clerk's bootstrap,
+  branch's X25519 box key (the same sealed box as the bootstrap for a shared branch,
   with its own associated-data domain). A retried redeem answers it
   again, but only while the user is still active and the branch has not
   been revoked. The library records each account as sent to that node in
@@ -382,22 +383,22 @@ seconds. From then on the daemon connects to the library, heartbeats every
 15 s, and reconnects with backoff (1 s up to 60 s) whenever the connection
 drops, resuming any job it still holds.
 
-## Clerks
+## Shared branches
 
-A clerk is a second (or third) server for the **same** library. It is an
-owner node that opens the library's database with the library's key,
-serves the web UI, plans jobs, and can take over maintenance leases when
-another owner node goes down. A branch keeps its own database; a clerk has
-none of its own.
+A shared branch is a second (or third) server for the
+**same** library. It is an owner node that opens the library's database
+with the library's key, serves the web UI, plans jobs, and can take over
+maintenance leases when another owner node goes down. Any other branch
+keeps its own database; a shared branch has none of its own.
 
 ### Who can add one
 
 Only an **Owner** of the library. When an Owner signs in from the Join
 wizard, the consent page asks "How should it join?", with **Join as a
-branch** (the default) and **Join as a clerk of this library**. Everyone
-else sees only the branch page.
+branch with its own database** (the default) and **Join as a branch on
+this library's database**. Everyone else sees only the branch page.
 
-Clerk is shown but disabled, with the reason, when:
+The second choice is shown but disabled, with the reason, when:
 
 - the library's database is the default SQLite file (only PostgreSQL or
   Cloudflare D1 can be opened by more than one server);
@@ -406,7 +407,7 @@ Clerk is shown but disabled, with the reason, when:
 
 ### On the joining server
 
-The Join wizard shows **Offer to join as a clerk** only on an empty
+The Join wizard shows **Offer to join as a shared branch** only on an empty
 install. That means no users, store accounts, books or joined libraries of
 its own, and no `BOOKCLERK_DATABASE_*` or `BOOKCLERK_D1_*` environment
 override of the database settings. (`BOOKCLERK_D1_API_TOKEN` isn't one: it
@@ -418,15 +419,15 @@ when it comes back.
 
 > [!NOTE]
 > For a D1 library, set this server's own `BOOKCLERK_D1_API_TOKEN` (the
-> token is never sent between servers). For any clerk, install the
-> library's database plugin (`postgres` or `d1`) first.
+> token is never sent between servers). For any branch on the library's
+> database, install the library's database plugin (`postgres` or `d1`) first.
 
 ### Approving
 
-Choosing clerk needs a fresh second factor on the consent page: the
+Joining as a shared branch needs a fresh second factor on the consent page: the
 6-digit code from your authenticator app, or your passkey. The code the
 library issues is bound to the choice, so a code approved for a branch can
-never be redeemed as a clerk. Consent and redeem need TLS (or loopback
+never be redeemed for the library's database. Consent and redeem need TLS (or loopback
 with both ends on one machine), as for a branch.
 
 ### What is handed over
@@ -452,8 +453,8 @@ node of the library. Sign in there with your library account.
 
 ### If the first start fails
 
-The originals of those files are kept, as `<name>.pre-clerk` with a
-`clerk-join.json` record, until that first start opens the library's
+The originals of those files are kept, as `<name>.pre-shared-branch` with a
+`shared-branch-join.json` record, until that first start opens the library's
 database.
 
 If it can't (for example the PostgreSQL address only works on the
@@ -462,7 +463,7 @@ start tries a few more times. Then it puts this server's own settings,
 node identity and key back and stops. To recover:
 
 1. Start it again to run as before.
-2. Remove the clerk under **Settings → Clerks** on the library before
+2. Remove the branch under **Settings → Shared branches** on the library before
    joining again.
 
 If a join or its undoing is cut short (a crash, a power cut), the next
@@ -471,30 +472,30 @@ start finishes undoing it, or refuses with instructions naming each file.
 ### On the command line
 
 ```sh
-bookclerk clusters join --url https://library.example --as clerk
+bookclerk clusters join --url https://library.example --as shared branch
 ```
 
-`--as` is `branch` by default. With `--as clerk` the CLI writes the same
+`--as` is `branch` by default. With `--as shared-branch` the CLI writes the same
 bootstrap files and asks you to restart `bookclerkd`.
 
 ### Listing and removing
 
-**Settings → Clerks** on the library (operator or Owner) lists every owner
-node, this server first, and who approved it (`GET /api/config/clerks`).
+**Settings → Shared branches** on the library (operator or Owner) lists every owner
+node, this server first, and who approved it (`GET /api/config/shared-branches`).
 Another user sees only the ones they own.
 
-A clerk that isn't running can be removed there
+A shared branch that isn't running can be removed there
 (`DELETE /api/config/nodes/{node_id}`). Stop Bookclerk on it first.
 
 > [!WARNING]
-> Removing a clerk doesn't take back the database credentials or key it
+> Removing a shared branch doesn't take back the database credentials or key it
 > held. Rotate them if it is no longer trusted.
 
 Audit events:
 
-- On the library: `clerk_authorize`, `clerk_authorize_refused`,
-  `clerk_enroll_refused` and `clerk_enrolled`.
-- On the joining server: `clerk_joined`.
+- On the library: `shared_branch_authorize`, `shared_branch_authorize_refused`,
+  `shared_branch_enroll_refused` and `shared_branch_enrolled`.
+- On the joining server: `shared_branch_joined`.
 - When one is removed: `owner_node_removed`.
 
 ## Consent: what the library may run here
@@ -1057,8 +1058,8 @@ and every library above it.
   the joining install's ancestry past that is refused
   (`409 ancestry_too_deep`).
 
-A clerk shares its library's database, so it is the same point in the
-tree.
+A shared branch is the same point in the tree as its
+library.
 
 ## Leaving
 

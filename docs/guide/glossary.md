@@ -40,10 +40,10 @@ The words Bookclerk uses, in plain language.
   allowed to.
 - **Branch**: Another Bookclerk install that joins a library to do work for
   it. See [Join a library as a branch](branches.md).
-- **Clerk**: An extra copy of the library itself on another machine, sharing
-  its database.
+- **Shared branch**: A branch that is an extra copy of the library itself
+  on another machine, sharing its database.
 - **Node**: Any computer running Bookclerk for a library: the library's own,
-  its clerks and its branches.
+  and its branches.
 - **Daemon**: `bookclerkd`, the Bookclerk program that keeps running and
   serves the web app.
 - **Files folder**: The folder where Bookclerk keeps its settings, database

@@ -2179,9 +2179,11 @@ async fn node_runtime_or_default(
     }
 }
 
-/// The clerk actor for a node-administration `caller`: the library's
-/// clerk rules (an Owner reaches every owner node) are checked on it.
-fn clerk_actor(caller: NodeAdminCaller) -> bookclerk_library::control_plane::EnrollmentActor {
+/// The shared branch actor for a node-administration `caller`: the library's
+/// shared branch rules (an Owner reaches every owner node) are checked on it.
+fn shared_branch_actor(
+    caller: NodeAdminCaller,
+) -> bookclerk_library::control_plane::EnrollmentActor {
     match caller {
         NodeAdminCaller::Operator => bookclerk_library::control_plane::EnrollmentActor::Operator {
             id: "operator".into(),
@@ -2192,46 +2194,48 @@ fn clerk_actor(caller: NodeAdminCaller) -> bookclerk_library::control_plane::Enr
     }
 }
 
-/// `GET /api/config/clerks`: the owner nodes (this one and its clerks) for
-/// Settings → Clerks, shaped like `GET /api/config/nodes`. The operator or
+/// `GET /api/config/shared-branches`: the owner nodes (this one and its shared branches) for
+/// Settings → Shared branches, shaped like `GET /api/config/nodes`. The operator or
 /// an Owner sees every one, as `DELETE /api/config/nodes/{node_id}` lets
 /// them remove any; another user only the ones they own, which the nodes
 /// listing already shows them. Branches are not listed.
 #[utoipa::path(
     get,
-    path = "/api/config/clerks",
+    path = "/api/config/shared-branches",
     responses(
-        (status = 200, description = "This node and its clerks.", body = ClerksResponse),
+        (status = 200, description = "This node and its shared branches.", body = SharedBranchesResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 500, description = "The configuration could not be read.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
-pub async fn get_clerks(
+pub async fn get_shared_branches(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<NodeAdminCaller>,
-) -> Result<Json<ClerksResponse>, Response> {
+) -> Result<Json<SharedBranchesResponse>, Response> {
     let cfg = state.config.read().await.clone();
     let this_node = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
-    let nodes =
-        bookclerk_library::control_plane::owner_nodes_visible_to(&library, &clerk_actor(caller))
-            .await
-            .map_err(events_error)?;
+    let nodes = bookclerk_library::control_plane::owner_nodes_visible_to(
+        &library,
+        &shared_branch_actor(caller),
+    )
+    .await
+    .map_err(events_error)?;
     let nodes = node_views(&library, &this_node, &nodes).await?;
-    Ok(Json(ClerksResponse {
+    Ok(Json(SharedBranchesResponse {
         node_id: this_node,
         nodes,
     }))
 }
 
-/// `GET /api/config/clerks` body.
+/// `GET /api/config/shared-branches` body.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-pub(crate) struct ClerksResponse {
+pub(crate) struct SharedBranchesResponse {
     /// Id of the node that answered.
     #[schema(example = "node-7f3a9c")]
     node_id: String,
-    /// This node and the clerks the caller may see.
+    /// This node and the shared branches the caller may see.
     nodes: Vec<NodeView>,
 }
 
@@ -2246,7 +2250,7 @@ pub(crate) struct OwnerNodeRemoved {
     removed: bool,
 }
 
-/// `DELETE /api/config/nodes/{node_id}`: remove an owner node (a clerk, or
+/// `DELETE /api/config/nodes/{node_id}`: remove an owner node (a shared branch, or
 /// any node sharing this database) that is no longer running from the
 /// library's node list. The operator or an Owner may remove any; another
 /// user only one they own. A running node, this node, or a branch is
@@ -2273,7 +2277,7 @@ pub async fn delete_owner_node(
     let cfg = state.config.read().await.clone();
     let this_node = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
-    let actor = clerk_actor(caller);
+    let actor = shared_branch_actor(caller);
     let node_id = node_id.trim().to_string();
     bookclerk_library::control_plane::remove_owner_node(&library, &actor, &node_id, &this_node)
         .await
@@ -2918,7 +2922,10 @@ mod tests {
                 "/api/config/plugin-instances/{id}/config",
                 get(super::get_plugin_instance_config).put(super::put_plugin_instance_config),
             )
-            .route("/api/config/clerks", get(super::get_clerks))
+            .route(
+                "/api/config/shared-branches",
+                get(super::get_shared_branches),
+            )
             .route(
                 "/api/config/nodes/{node_id}",
                 axum::routing::delete(super::delete_owner_node),
@@ -3045,15 +3052,16 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad_id}");
 
-        // Clerks: this node, with no owner; removing it is refused and an
+        // Shared branches: this node, with no owner; removing it is refused and an
         // unknown node is 404.
-        let (status, clerks) = send(&app, "GET", "/api/config/clerks", Value::Null).await;
-        assert_eq!(status, StatusCode::OK, "{clerks}");
-        assert_eq!(clerks["node_id"], json!(node));
-        assert_eq!(clerks["nodes"][0]["node_id"], json!(node));
-        assert_eq!(clerks["nodes"][0]["this_node"], true);
-        assert_eq!(clerks["nodes"][0]["owner"], Value::Null);
-        assert_eq!(clerks["nodes"][0]["kind"], "owner");
+        let (status, shared_branches) =
+            send(&app, "GET", "/api/config/shared-branches", Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{shared_branches}");
+        assert_eq!(shared_branches["node_id"], json!(node));
+        assert_eq!(shared_branches["nodes"][0]["node_id"], json!(node));
+        assert_eq!(shared_branches["nodes"][0]["this_node"], true);
+        assert_eq!(shared_branches["nodes"][0]["owner"], Value::Null);
+        assert_eq!(shared_branches["nodes"][0]["kind"], "owner");
         let (status, refused) = send(
             &app,
             "DELETE",

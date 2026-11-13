@@ -1,36 +1,41 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { isApiError, type ConfigNodeView } from "@/lib/api";
-import { clerkNodes, joinErrorMessage, listClerks, removeClerk } from "@/lib/join";
+import {
+  sharedBranchNodes,
+  joinErrorMessage,
+  listSharedBranches,
+  removeSharedBranch,
+} from "@/lib/join";
 
-/** Props for {@link ClerksPanel}. */
-export interface ClerksPanelProps {
+/** Props for {@link SharedBranchesPanel}. */
+export interface SharedBranchesPanelProps {
   /** Called on a 401 so the page can sign out. */
   onSessionExpired: () => void;
 }
 
 /**
- * Settings → Clerks on the library (operator or Owner): the servers that
+ * Settings → Shared branches on the library (operator or Owner): the servers that
  * share this library's database and keys (owner nodes), including this one.
- * A clerk that no longer runs can be removed here; a running one is stopped
+ * A shared branch that no longer runs can be removed here; a running one is stopped
  * on its own server first. Branches are listed under Branches, not here.
  */
-export function ClerksPanel({ onSessionExpired }: ClerksPanelProps) {
+export function SharedBranchesPanel({ onSessionExpired }: SharedBranchesPanelProps) {
   const [nodes, setNodes] = useState<ConfigNodeView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const body = await listClerks();
-      setNodes(clerkNodes(body.nodes));
+      const body = await listSharedBranches();
+      setNodes(sharedBranchNodes(body.nodes));
       setError(null);
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
         onSessionExpired();
         return;
       }
-      setError(joinErrorMessage(err, "Could not load the clerks."));
+      setError(joinErrorMessage(err, "Could not load the shared branches."));
     }
   }, [onSessionExpired]);
 
@@ -39,17 +44,17 @@ export function ClerksPanel({ onSessionExpired }: ClerksPanelProps) {
   }, [refresh]);
 
   async function onRemove(nodeId: string) {
-    if (!window.confirm(`Remove clerk ${nodeId} from this library?`)) return;
+    if (!window.confirm(`Remove shared branch ${nodeId} from this library?`)) return;
     setBusy(nodeId);
     try {
-      await removeClerk(nodeId);
+      await removeSharedBranch(nodeId);
       await refresh();
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
         onSessionExpired();
         return;
       }
-      setError(joinErrorMessage(err, "Could not remove that clerk."));
+      setError(joinErrorMessage(err, "Could not remove that shared branch."));
     } finally {
       setBusy(null);
     }
@@ -58,13 +63,12 @@ export function ClerksPanel({ onSessionExpired }: ClerksPanelProps) {
   return (
     <section className="space-y-6">
       <div className="space-y-1">
-        <h2 className="text-lg font-semibold text-ink">Clerks</h2>
+        <h2 className="text-lg font-semibold text-ink">Shared branches</h2>
         <p className="text-sm text-ink/55">
-          A clerk is a Bookclerk server that shares this library's database and keys, so it serves
-          the same library as this one. Only an Owner can let a server join as a clerk, and only
-          when the database is PostgreSQL or Cloudflare D1. To add one, choose{" "}
-          <strong>Join a library</strong> on an empty server and pick <strong>clerk</strong> when
-          you approve it here.
+          Shared branches share this library's database and keys, so they serve the same library as
+          this server. Only an Owner can let a server join this way, and only when the database is
+          PostgreSQL or Cloudflare D1. To add one, choose <strong>Join a library</strong> on an
+          empty server and pick <strong>shared branch</strong> when you approve it here.
         </p>
       </div>
       {error ? (
@@ -77,7 +81,7 @@ export function ClerksPanel({ onSessionExpired }: ClerksPanelProps) {
           <p className="text-sm text-ink/50">Loading…</p>
         )
       ) : nodes.length === 0 ? (
-        <p className="text-sm text-ink/50">No clerks.</p>
+        <p className="text-sm text-ink/50">No shared branches.</p>
       ) : (
         <ul className="divide-y divide-ink/10 rounded-md border border-ink/10">
           {nodes.map((node) => (

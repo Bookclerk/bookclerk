@@ -150,8 +150,9 @@ On the branch, open **Settings → Library → Leave library**.
 The library's operator or an Owner can also remove a branch from
 **Settings → Nodes**.
 
-## Clerks
+## Shared branches
 
-A **clerk** is different from a branch. It is an extra copy of the library
-itself, sharing the library's database, so the library runs on more than
-one machine. Setting up clerks is an operator task; see [Libraries and branches](../server/cluster-hosts.md#clerks).
+A branch can also share the library's own database instead of keeping one
+of its own. It is then an extra copy of the library itself, so the library
+runs on more than one machine. Setting one up is an operator task; see
+[Shared branches](../server/cluster-hosts.md#shared-branches).

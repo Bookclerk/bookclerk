@@ -6,7 +6,7 @@ import { isDesktopWindow } from "@/lib/desktop";
 import {
   broughtConnectionsSummary,
   finishJoin,
-  isClerkJoined,
+  isSharedBranchJoined,
   joinErrorMessage,
   makeWindowOf,
   parseJoinCallback,
@@ -27,7 +27,7 @@ type Phase =
       connections: string | null;
       window: boolean | null;
     }
-  | { kind: "clerk"; library: string; wrapped: boolean }
+  | { kind: "shared_branch"; library: string; wrapped: boolean }
   /** `retry`: the daemon kept the sign-in, so the same code can be sent again. */
   | { kind: "failed"; message: string; retry: boolean };
 
@@ -47,10 +47,10 @@ export interface JoinCallbackPageProps {
  * The query is removed from the address bar before the request, so the
  * code is not kept in history; it stays in memory only so a failure the
  * daemon marks retryable (`join_retry`: the library unreachable; or a
- * clerk's missing database plugin or D1 token, once fixed), or a request
+ * shared branch's missing database plugin or D1 token, once fixed), or a request
  * that got no answer at all, can offer Try again.
  *
- * For a clerk join (`connection=clerk`) the daemon receives the library's
+ * For a shared branch join (`connection=shared_branch`) the daemon receives the library's
  * database settings and keys sealed to this node, writes them as its own,
  * and restarts; this page only says so (no key ever reaches the browser).
  *
@@ -75,9 +75,9 @@ export function JoinCallbackPage({
       setPhase({ kind: "working" });
       void finishJoin(callback)
         .then(async (joined) => {
-          if (isClerkJoined(joined)) {
+          if (isSharedBranchJoined(joined)) {
             setPhase({
-              kind: "clerk",
+              kind: "shared_branch",
               library: joined.library_name || joined.cluster_id,
               wrapped: joined.master_key_wrapped,
             });
@@ -98,7 +98,7 @@ export function JoinCallbackPage({
             message: joinErrorMessage(err, "Could not join the library."),
             // A request that never got an answer may be tried again: the
             // pending join stays until the library's answer is recorded. So
-            // may a clerk join this server could not use yet (a missing
+            // may a shared branch join this server could not use yet (a missing
             // database plugin or D1 token): the daemon keeps the sign-in.
             retry:
               !isApiError(err) ||
@@ -162,10 +162,10 @@ export function JoinCallbackPage({
     );
   }
 
-  if (phase.kind === "clerk") {
+  if (phase.kind === "shared_branch") {
     return (
       <JoinShell
-        title={`Joined ${phase.library} as a clerk`}
+        title={`Joined ${phase.library} as a shared branch`}
         lead={
           <>
             This server now shares <strong>{phase.library}</strong>'s database and keys. It is

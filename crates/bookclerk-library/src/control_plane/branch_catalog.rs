@@ -133,7 +133,7 @@ async fn branch_owner(store: &LibraryStore, node_id: &str) -> Result<Option<(nod
     else {
         return Ok(None);
     };
-    // A clerk (owner node) shares this library's database: it is this
+    // A shared branch (owner node) shares this library's database: it is this
     // library, not a branch, and shares nothing over the socket.
     if row.kind != "host" {
         return Ok(None);
