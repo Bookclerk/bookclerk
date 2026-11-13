@@ -65,7 +65,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bookclerk_config::{init_tracing_with, Config, ListenAddrs, LogFormat, TracingOptions};
+use bookclerk_config::{
+    init_tracing_with, Config, ListenAddrs, LogFormat, LoggingHandle, TracingOptions,
+};
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 
 use crate::api::{
@@ -148,7 +150,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             .map_err(|err| anyhow::anyhow!("invalid --listen / BOOKCLERK_DAEMON_LISTEN: {err}"))?;
     }
 
-    init_logging(&config, "bookclerkd");
+    // Held until the daemon exits: dropping it stops stderr logging.
+    let _logging = init_logging(&config, "bookclerkd");
     serve_listeners(start_host(config, HostMode::Listening).await?).await
 }
 
@@ -160,7 +163,13 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 /// * `config` - The loaded configuration (log format, diagnostics, media).
 /// * `syslog_identifier` - The name the OS log facility records
 ///   (`bookclerkd`, or the desktop window's binary name).
-fn init_logging(config: &Config, syslog_identifier: &str) {
+///
+/// # Returns
+///
+/// The logging handle. Keep it for as long as the process logs: it owns
+/// the non-blocking stderr writer, which stops when it is dropped.
+#[must_use = "dropping the handle stops stderr logging"]
+fn init_logging(config: &Config, syslog_identifier: &str) -> LoggingHandle {
     let log_format = if config.daemon.json_logs {
         LogFormat::Json
     } else {
@@ -195,6 +204,7 @@ fn init_logging(config: &Config, syslog_identifier: &str) {
             "diagnostics.share_reports=true — redacted reports POST to Worker /submit (B2 via Cloudflare)"
         );
     }
+    logging
 }
 
 /// Whether the host serves HTTP listeners or runs embedded in a window.

@@ -48,6 +48,7 @@ use std::time::{Duration, Instant};
 use axum::body::Body;
 use axum::http::{header, Request, Response, StatusCode};
 use axum::Router;
+use bookclerk_config::LoggingHandle;
 use bookclerk_window_policy::{
     classify_navigation, join_sign_in_ttl, refusal, rewrite_request_headers, Refusal,
     JOIN_START_PATH,
@@ -87,6 +88,9 @@ pub struct EmbeddedHost {
     /// Until when the window may show the library's sign-in pages: set by a
     /// successful join start, cleared when the library sends it back.
     join_open_until: Mutex<Option<Instant>>,
+    /// The process's logging, kept for as long as the host runs: dropping
+    /// it stops stderr logging. `None` in tests, which log nothing.
+    _logging: Option<LoggingHandle>,
 }
 
 impl std::fmt::Debug for EmbeddedHost {
@@ -118,13 +122,14 @@ impl EmbeddedHost {
     /// not open, or operator auth that cannot be built).
     pub async fn start(options: EmbeddedOptions, syslog_identifier: &str) -> anyhow::Result<Self> {
         let config = bookclerk_config::Config::load(options.bookclerk_files, options.config)?;
-        init_logging(&config, syslog_identifier);
+        let logging = init_logging(&config, syslog_identifier);
         let HostParts { state, app, .. } = start_host(config, HostMode::Embedded).await?;
         tracing::info!("host started embedded in the desktop window; no listener is bound");
         Ok(Self {
             state,
             app,
             join_open_until: Mutex::new(None),
+            _logging: Some(logging),
         })
     }
 
@@ -416,6 +421,7 @@ mod tests {
             state,
             app,
             join_open_until: Mutex::new(None),
+            _logging: None,
         };
         assert!(format!("{host:?}").starts_with("EmbeddedHost"));
         let sign_in = "https://library.example/join/approve";
