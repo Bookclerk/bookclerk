@@ -239,8 +239,12 @@ only that. The others check:
   and a positive generation. A
   `window.page` that passes its validator carries at most 100 works, each
   once, with plain identifiers, 1 to 8 distinct owned editions with a
-  title, and a next cursor past the one asked with. Seeds cover
-  `accounts.update` and `accounts.updated`. The shared oracle is `fuzz/oracles/node_frame.rs`,
+  title, and a next cursor past the one asked with. A `scan.removed` or
+  `scan.pass_end` that passes its validator names an account and carries
+  at most 500 product ids, each non-blank, at most 512 bytes and free of
+  control characters, or a sync token of at most 4096 bytes with no
+  control characters. Seeds cover `accounts.update`, `accounts.updated`,
+  `scan.removed`, `scan.pass_end` and a `work` frame with scan tokens. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
   has the bundle version and names the cluster and node it was opened

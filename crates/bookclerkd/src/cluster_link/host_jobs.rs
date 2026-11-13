@@ -14,7 +14,11 @@
 //!   owner in fenced `scan.results` batches of at most
 //!   [`MAX_SCAN_BATCH_ROWS`] rows and [`MAX_BATCH_BYTES`] (a row larger
 //!   than [`MAX_SCAN_ROW_BYTES`] is skipped). The owner validates and
-//!   writes them (decision 6); the scan completes with `complete`.
+//!   writes them (decision 6). Each account's pass starts from the sync
+//!   token the owner handed ([`bookclerk_node_proto::WorkJob::scan_tokens`])
+//!   and then reports the ids a delta pass found gone and how it ended
+//!   (`scan.removed`, `scan.pass_end`), so the owner keeps the token and
+//!   prunes after a complete full pass. The scan completes with `complete`.
 //! - **Acquire.** The host asks the owner for the job's titles
 //!   (`acquire.plan`, again until no new title comes back), acquires each
 //!   into a per-title outbox under this host's files dir with one outbox
@@ -47,7 +51,7 @@
 //! The guest work itself sits behind [`HostGuests`], so tests can stand in
 //! a guest without spawning one; [`GuestHost`] is the daemon's.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,11 +64,10 @@ use bookclerk_library::control_plane::LinkImportOutcome;
 use bookclerk_library::{BookRecord, JobKind, LibraryStore, NewBook};
 use bookclerk_node_client::{HostJobCtx, OwnerCallError};
 use bookclerk_node_proto::{
-    AcquireTarget, FileCopy, PlanDestination, UploadFile, MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES,
-    MAX_UPLOAD_FILES,
+    AcquireTarget, FileCopy, PlanDestination, UploadFile, MAX_SCAN_BATCH_ROWS,
+    MAX_SCAN_REMOVED_IDS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
 };
-use bookclerk_plugin_abi::ScanBook;
-use bookclerk_plugin_host::RefreshedCredentialSink;
+use bookclerk_plugin_host::{HandedScan, RefreshedCredentialSink};
 use bookclerk_source::DownloadOptions;
 use bookclerk_storage::{ObjectMeta, StorageBackend};
 use sha2::Digest as _;
@@ -127,6 +130,9 @@ pub struct HostScan {
     pub import_episodes: bool,
     /// Import subscription (Plus) titles (the owner's setting).
     pub import_plus_titles: bool,
+    /// The owner's sync token per account, from its last complete pass;
+    /// an account without one runs a full pass.
+    pub sync_tokens: HashMap<String, String>,
 }
 
 /// One output destination of the owner node an acquire was planned with.
@@ -213,7 +219,7 @@ pub trait HostGuests: Send + Sync + 'static {
         refreshed: Arc<dyn RefreshedCredentialSink>,
         scan: HostScan,
         cancel: Arc<AtomicBool>,
-    ) -> impl Future<Output = anyhow::Result<Vec<ScanBook>>> + Send;
+    ) -> impl Future<Output = anyhow::Result<HandedScan>> + Send;
 
     /// Acquires `title` with the job's guest into `outbox`: destination
     /// `i`'s files, named with its options, under
@@ -419,18 +425,21 @@ impl HostGuests for GuestHost {
         refreshed: Arc<dyn RefreshedCredentialSink>,
         scan: HostScan,
         cancel: Arc<AtomicBool>,
-    ) -> anyhow::Result<Vec<ScanBook>> {
+    ) -> anyhow::Result<HandedScan> {
         let source = self.open_source(bindings, refreshed).await?;
         // The owner's import settings, not this host's: the owner writes
         // every row into its library.
         Ok(source
-            .scan_handed(bookclerk_source::ScanOptions {
-                accounts: scan.accounts,
-                page_size: 50,
-                import_episodes: scan.import_episodes,
-                import_plus_titles: scan.import_plus_titles,
-                cancel: Some(cancel),
-            })
+            .scan_handed(
+                bookclerk_source::ScanOptions {
+                    accounts: scan.accounts,
+                    page_size: 50,
+                    import_episodes: scan.import_episodes,
+                    import_plus_titles: scan.import_plus_titles,
+                    cancel: Some(cancel),
+                },
+                &scan.sync_tokens,
+            )
             .await?)
     }
 
@@ -792,6 +801,13 @@ impl<G: HostGuests> JobTransport for HostJobTransport<G> {
                     accounts: cmd.payload.account.clone().into_iter().collect(),
                     import_episodes: import.import_episodes,
                     import_plus_titles: import.import_plus_titles,
+                    sync_tokens: host
+                        .job
+                        .job
+                        .scan_tokens
+                        .iter()
+                        .map(|t| (t.account_id.clone(), t.sync_token.clone()))
+                        .collect(),
                 };
                 host_scan(&self.guests, &host, &bindings, scan, &ctx).await
             }
@@ -1116,7 +1132,7 @@ async fn host_scan<G: HostGuests>(
     .await;
     // The guest is done refreshing, whether or not the scan finished.
     refreshed.flush().await;
-    let rows = rows?;
+    let HandedScan { rows, passes } = rows?;
     let mut batch = Vec::new();
     let mut batch_bytes = 0usize;
     let mut written = 0u64;
@@ -1148,6 +1164,43 @@ async fn host_scan<G: HostGuests>(
     if !batch.is_empty() {
         written += send(batch).await?;
     }
+    // Then each account's pass: the ids a delta pass found gone, and how it
+    // ended. When a row was skipped (too large to send), no pass reports
+    // itself complete, which would remove the skipped title from the
+    // owner's library, nor hands on its token, which would leave the
+    // owner's copy of it stale until a full pass: the next pass is full.
+    let mut removed = 0u64;
+    for pass in passes {
+        for ids in pass.removed.chunks(MAX_SCAN_REMOVED_IDS) {
+            if ctx.is_cancelled() {
+                anyhow::bail!("cancelled");
+            }
+            removed += with_retries(|| {
+                host.send_scan_removed(&bindings.plugin_key, &pass.account_id, ids.to_vec())
+            })
+            .await
+            .map_err(|err| owner_error("the scan removals", &err))?;
+        }
+        if ctx.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let (sync_token, complete) = if skipped == 0 {
+            (pass.sync_token.as_str(), pass.complete)
+        } else {
+            ("", false)
+        };
+        removed += with_retries(|| {
+            host.send_scan_pass_end(
+                &bindings.plugin_key,
+                &pass.account_id,
+                sync_token,
+                complete,
+                pass.full,
+            )
+        })
+        .await
+        .map_err(|err| owner_error("the scan pass end", &err))?;
+    }
     // A scan cancelled while its last batch went out did not finish: its
     // rows so far stay written, but it never reports success.
     if ctx.is_cancelled() {
@@ -1162,7 +1215,7 @@ async fn host_scan<G: HostGuests>(
         "host scan returned its rows to the owner"
     );
     Ok(format!(
-        "{written} book upsert(s) from a host scan ({skipped} skipped)"
+        "{written} book upsert(s) and {removed} removal(s) from a host scan ({skipped} skipped)"
     ))
 }
 

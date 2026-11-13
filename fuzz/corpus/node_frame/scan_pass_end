@@ -1,0 +1,1 @@
+{"v":1,"id":"r9","type":"scan.pass_end","job_id":"scan-1","fence":4,"plugin_key":"bookclerk:source-libro","account_id":"me@example.com","sync_token":"hd1.0123456789abcdef","complete":false,"full":false}

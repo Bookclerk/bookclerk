@@ -374,10 +374,15 @@ impl ExternalSource {
     }
 
     /// Scans with the handed credentials and answers the guest's rows
-    /// unwritten (the owner validates and writes them).
+    /// unwritten, with how each account's pass ended (the owner validates
+    /// and writes them, removes what a pass found gone, and keeps the sync
+    /// tokens).
     ///
     /// `opts.accounts` narrows the scan to those account ids; empty means
-    /// every handed account.
+    /// every handed account. An account with a token in `sync_tokens` (the
+    /// owner's, from its last complete pass) runs a delta pass from it; the
+    /// others run full passes. A pass whose token the guest refuses
+    /// restarts once as a full pass, and its report says so.
     ///
     /// # Errors
     ///
@@ -386,7 +391,8 @@ impl ExternalSource {
     pub async fn scan_handed(
         &self,
         opts: ScanOptions,
-    ) -> bookclerk_source::Result<Vec<bookclerk_plugin_sdk::ScanBook>> {
+        sync_tokens: &std::collections::HashMap<String, String>,
+    ) -> bookclerk_source::Result<HandedScan> {
         let Some(handed) = self.handed.as_ref() else {
             return Err(bookclerk_source::SourceError::Auth(
                 "no credentials were handed with this job".into(),
@@ -406,9 +412,9 @@ impl ExternalSource {
         if !credentials.is_empty() {
             self.session.require_binding("secrets")?;
         }
-        // The owner keeps no sync state for a handed scan yet, so each
-        // account runs one full pass and every row goes back to the owner.
-        let mut rows = Vec::new();
+        // The owner keeps each account's sync state: it handed the token of
+        // its last complete pass, and records how this pass ends.
+        let mut scan = HandedScan::default();
         for (account_id, credential) in credentials {
             let mut io = CollectPass {
                 source: self,
@@ -416,17 +422,32 @@ impl ExternalSource {
                 account_id: account_id.clone(),
                 credential,
                 rows: Vec::new(),
+                removed: Vec::new(),
+                end: None,
+            };
+            let start = bookclerk_library::PassStart {
+                sync_token: sync_tokens.get(&account_id).cloned().unwrap_or_default(),
+                ..full_pass()
             };
             run_pass(
                 &mut io,
                 &account_id,
-                full_pass(),
+                start,
                 &self.session.describe_snapshot().media,
             )
             .await?;
-            rows.append(&mut io.rows);
+            scan.rows.append(&mut io.rows);
+            if let Some(end) = io.end {
+                scan.passes.push(HandedPass {
+                    account_id,
+                    removed: io.removed,
+                    sync_token: end.sync_token,
+                    complete: end.complete,
+                    full: end.full,
+                });
+            }
         }
-        Ok(rows)
+        Ok(scan)
     }
 
     /// Asks the guest for one page of one account's pass.
@@ -1373,6 +1394,47 @@ struct CollectPass<'a> {
     credential: Vec<u8>,
     /// Rows collected so far.
     rows: Vec<bookclerk_plugin_sdk::ScanBook>,
+    /// Product ids the pass reported gone so far.
+    removed: Vec<String>,
+    /// How the pass ended, once its last page came back.
+    end: Option<PassEnd>,
+}
+
+/// How a collected pass ended.
+struct PassEnd {
+    /// The plugin's token for the account's next pass.
+    sync_token: String,
+    /// The pass listed every title the account holds.
+    complete: bool,
+    /// The pass sent no sync token.
+    full: bool,
+}
+
+/// What a scan with handed credentials found ([`ExternalSource::scan_handed`]).
+#[derive(Debug, Default)]
+pub struct HandedScan {
+    /// Every account's rows, unwritten.
+    pub rows: Vec<bookclerk_plugin_sdk::ScanBook>,
+    /// How each account's pass ended, in the order the accounts ran.
+    pub passes: Vec<HandedPass>,
+}
+
+/// How one account's pass of a handed scan ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandedPass {
+    /// The account.
+    pub account_id: String,
+    /// Product ids the pass reported gone from the account (a delta pass's
+    /// removals).
+    pub removed: Vec<String>,
+    /// The plugin's token for the account's next pass; empty when it keeps
+    /// none.
+    pub sync_token: String,
+    /// The pass listed every title the account holds.
+    pub complete: bool,
+    /// The pass was full (sent no token, or restarted after its token was
+    /// refused), so with `complete` its rows are all the account holds.
+    pub full: bool,
 }
 
 impl PassIo for CollectPass<'_> {
@@ -1423,25 +1485,38 @@ impl PassIo for CollectPass<'_> {
         Ok(())
     }
 
-    async fn remove(&mut self, _product_ids: &[String]) -> bookclerk_source::Result<()> {
-        // The owner keeps no holdings state for a handed scan yet.
+    async fn remove(&mut self, product_ids: &[String]) -> bookclerk_source::Result<()> {
+        // The owner removes them after it wrote the rows.
+        self.removed.extend_from_slice(product_ids);
         Ok(())
     }
 
     async fn finish(
         &mut self,
-        _sync_token: &str,
-        _complete: bool,
-        _full: bool,
+        sync_token: &str,
+        complete: bool,
+        full: bool,
     ) -> bookclerk_source::Result<()> {
+        self.end = Some(PassEnd {
+            sync_token: sync_token.to_string(),
+            complete,
+            full,
+        });
         Ok(())
     }
 
     async fn reset(&mut self) -> bookclerk_source::Result<()> {
+        // The owner's stored token is replaced when this pass ends.
         Ok(())
     }
 
-    fn restart(&mut self) {}
+    fn restart(&mut self) {
+        // A restarted pass starts over: what the abandoned attempt listed
+        // or found gone must not reach the owner, since a full pass's end
+        // would otherwise keep or remove titles on its word.
+        self.rows.clear();
+        self.removed.clear();
+    }
 
     fn cancelled(&self) -> bool {
         self.opts.is_cancelled()

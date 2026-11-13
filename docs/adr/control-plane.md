@@ -1510,6 +1510,24 @@ the handed credentials only. There is no in-process fallback.
   node's trust (with its owner's accounts) are confirmed again before each
   row is written, so a lease lost or trust withdrawn mid-batch stops the
   rows not yet written.
+- **Scan passes.** A Host's scan keeps the owner's sync state, so a Host
+  pass is a delta pass whenever a local one would be. The `work` frame
+  carries `scan_tokens`: the owner's token per handed account whose last
+  complete pass is under 7 days old (`handed_sync_token`). After the
+  rows, each account's pass sends the ids a delta pass found gone
+  (`scan.removed`, at most 500 per frame) and how it ended
+  (`scan.pass_end {sync_token, complete, full}`). Both pass the same
+  checks as a row naming that account. Every row stamps its holding with
+  a pass id derived from the job and fence (`handed_pass_id`), so a
+  complete full pass's end removes the account's holdings no row of that
+  attempt listed, and then stores the token as a local pass's end does.
+  A Host that skipped a row too large to send reports no complete pass
+  and no token, so the next pass is full rather than pruning or skipping
+  that title. Plugin databases are not granted on a Host, so a plugin
+  whose tokens name state in its own database (the hash-delta
+  storefronts) refuses the owner's token there and the pass restarts
+  once as a full pass; tokens that name only store state (Audible's)
+  carry over.
 - **Acquire plan.** `acquire.plan` answers `acquire.targets {targets,
   destinations}`: the owner's pending titles the job covers and every
   output destination deployed on the answering owner node, each with an

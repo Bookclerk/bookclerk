@@ -41,13 +41,20 @@
 //!   title, and a next cursor past the one asked with, so a window's paging
 //!   always moves forward. Checked byte by byte here, since the window
 //!   stores them.
+//! - a `scan.removed` or `scan.pass_end` frame the owner would accept
+//!   (`scan_removed_problem` / `scan_pass_end_problem` find nothing) names
+//!   a non-blank account and carries at most 500 product ids, each
+//!   non-blank, at most 512 bytes and free of control characters, or a
+//!   sync token of at most 4096 bytes with no control characters. Checked
+//!   character by character here, since the owner removes holdings by
+//!   those ids and stores the token for the account's next pass.
 
 use std::collections::BTreeSet;
 
 use bookclerk_node_proto::{
-    claimed_problem, finish_problem, found_problem, questions_problem, window_page_problem,
-    Availability, Body, Frame, LookupScheme, LookupWork, FRAME_VERSION, MAX_FRAME_BYTES,
-    MAX_LIBRARY_ID_BYTES,
+    claimed_problem, finish_problem, found_problem, questions_problem, scan_pass_end_problem,
+    scan_removed_problem, window_page_problem, Availability, Body, Frame, LookupScheme, LookupWork,
+    FRAME_VERSION, MAX_FRAME_BYTES, MAX_LIBRARY_ID_BYTES,
 };
 use serde_json::Value;
 
@@ -93,6 +100,7 @@ pub fn check(data: &[u8]) {
     check_lookup(&frame.body);
     check_requests(&frame.body);
     check_window(&frame.body);
+    check_scan_reports(&frame.body);
     let text_again = frame.to_text();
     // Serializing can lengthen an opaque JSON field (`1e9` is written out
     // in full), past the limit the parser enforces: such a frame is never
@@ -108,6 +116,45 @@ pub fn check(data: &[u8]) {
         same(&json(&again), &json(&frame)),
         "a frame changed across a round trip: {frame:?} became {again:?}"
     );
+}
+
+/// The rules of a `scan.removed` or `scan.pass_end` the owner would accept.
+fn check_scan_reports(body: &Body) {
+    let named = |account: &str| account.chars().any(|c| !c.is_whitespace());
+    let clean = |text: &str| text.chars().all(|c| !c.is_control());
+    match body {
+        Body::ScanRemoved {
+            account_id,
+            product_ids,
+            ..
+        } if scan_removed_problem(account_id, product_ids).is_none() => {
+            assert!(named(account_id), "account {account_id:?} accepted");
+            assert!(
+                product_ids.len() <= 500,
+                "{} removed ids accepted",
+                product_ids.len()
+            );
+            for id in product_ids {
+                assert!(
+                    named(id) && id.len() <= 512 && clean(id),
+                    "removed id {id:?} accepted"
+                );
+            }
+        }
+        Body::ScanPassEnd {
+            account_id,
+            sync_token,
+            ..
+        } if scan_pass_end_problem(account_id, sync_token).is_none() => {
+            assert!(named(account_id), "account {account_id:?} accepted");
+            assert!(
+                sync_token.len() <= 4096 && clean(sync_token),
+                "sync token of {} bytes accepted",
+                sync_token.len()
+            );
+        }
+        _ => {}
+    }
 }
 
 /// True for a plain token: 1 to `max` ASCII letters, digits and `-`.

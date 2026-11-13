@@ -34,7 +34,11 @@
 //! [`ARTIFACTS_PATH`] with a request signed by [`sign_artifact_request`].
 //!
 //! A scan run on a host returns its rows in fenced [`Body::ScanResults`]
-//! batches; the owner validates and writes them. An acquire asks
+//! batches; the owner validates and writes them. Each account's pass then
+//! reports the ids a delta pass found gone ([`Body::ScanRemoved`]) and how
+//! it ended ([`Body::ScanPassEnd`]), so the owner keeps the account's sync
+//! token ([`WorkJob::scan_tokens`] hands it back) and prunes after a
+//! complete full pass. An acquire asks
 //! [`Body::AcquirePlan`] for its titles, then for each title asks
 //! [`Body::UploadGrant`] and streams the files over HTTP at
 //! [`UPLOADS_PATH`] with the token sealed in [`Body::UploadGranted`]; the
@@ -103,12 +107,14 @@ pub use catalog::{
 };
 pub use ed25519_dalek::SigningKey;
 pub use frames::{
-    is_destination_id, is_storage_key, AcquireTarget, Body, ClaimFilter, ClaimScope, FileCopy,
-    Frame, FrameError, HeldFence, JobStatusEntry, KeeperOutcome, LibraryId, PlanDestination,
-    RemoteArtifact, RemoteDeployment, RemoteVersion, ScanImport, UploadAnswer, UploadCommitRequest,
-    UploadFile, WorkJob, ITEM_JOB, MAX_DESTINATION_ID_BYTES, MAX_LIBRARY_ID_BYTES,
-    MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_STATUS_JOBS, MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES,
-    MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_KEY_BYTES,
+    is_destination_id, is_storage_key, scan_pass_end_problem, scan_removed_problem, AcquireTarget,
+    Body, ClaimFilter, ClaimScope, FileCopy, Frame, FrameError, HeldFence, JobStatusEntry,
+    KeeperOutcome, LibraryId, PlanDestination, RemoteArtifact, RemoteDeployment, RemoteVersion,
+    ScanImport, ScanToken, UploadAnswer, UploadCommitRequest, UploadFile, WorkJob, ITEM_JOB,
+    MAX_DESTINATION_ID_BYTES, MAX_LIBRARY_ID_BYTES, MAX_SCAN_BATCH_ROWS, MAX_SCAN_PRODUCT_ID_BYTES,
+    MAX_SCAN_REMOVED_IDS, MAX_SCAN_ROW_BYTES, MAX_SCAN_SYNC_TOKEN_BYTES, MAX_SCAN_TOKENS,
+    MAX_STATUS_JOBS, MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_BYTES,
+    MAX_UPLOAD_KEY_BYTES,
 };
 pub use join::{
     is_branch_name, is_branch_redirect_uri, is_library_name, pkce_challenge, OAuthEnrollAnswer,

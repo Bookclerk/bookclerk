@@ -323,13 +323,60 @@ pub enum Body {
         /// at most [`MAX_SCAN_BATCH_ROWS`].
         books: Vec<serde_json::Value>,
     },
-    /// Owner → host: a results batch was written.
+    /// Owner → host: a results batch was written, or a
+    /// [`Body::ScanRemoved`] or [`Body::ScanPassEnd`] was applied.
     #[serde(rename = "scan.accepted")]
     ScanAccepted {
-        /// The batch number.
+        /// The batch number (`0` for a pass end).
         batch: u64,
-        /// Rows written.
+        /// Rows written, or for a removals batch or a pass end the holdings
+        /// removed.
         upserted: u64,
+    },
+    /// Host → owner: product ids a delta pass reported gone from one
+    /// account, sent after the job's rows and before that account's
+    /// [`Body::ScanPassEnd`]. The owner checks the fence, the node's trust
+    /// and the account as for a row naming it, then removes those
+    /// holdings. Answered with [`Body::ScanAccepted`], [`Body::Lost`], or
+    /// `error {code: "refused"}`.
+    #[serde(rename = "scan.removed")]
+    ScanRemoved {
+        /// Job the pass belongs to.
+        job_id: String,
+        /// Lease generation the host holds.
+        fence: i64,
+        /// The job's source plugin key.
+        plugin_key: String,
+        /// The account the titles left.
+        account_id: String,
+        /// Batch number, from 1, for the logs.
+        batch: u64,
+        /// At most [`MAX_SCAN_REMOVED_IDS`] product ids.
+        product_ids: Vec<String>,
+    },
+    /// Host → owner: how one account's pass ended, after all its rows and
+    /// removals. The owner stores the sync token for the account's next
+    /// pass and, after a complete full pass, removes the account's
+    /// holdings this job's rows did not list. Answered with
+    /// [`Body::ScanAccepted`], [`Body::Lost`], or `error {code: "refused"}`.
+    #[serde(rename = "scan.pass_end")]
+    ScanPassEnd {
+        /// Job the pass belongs to.
+        job_id: String,
+        /// Lease generation the host holds.
+        fence: i64,
+        /// The job's source plugin key.
+        plugin_key: String,
+        /// The account the pass scanned.
+        account_id: String,
+        /// The plugin's token for the account's next pass, at most
+        /// [`MAX_SCAN_SYNC_TOKEN_BYTES`]; empty when it keeps none.
+        sync_token: String,
+        /// The pass listed every title the account holds.
+        complete: bool,
+        /// The pass was full: it was sent no sync token, or restarted as a
+        /// full pass after its token was refused.
+        full: bool,
     },
     /// Host → owner: what an acquire job should fetch here. Answered with
     /// [`Body::AcquireTargets`], [`Body::Lost`], or `error`.
@@ -833,6 +880,21 @@ pub struct WorkJob {
     /// that. Absent means false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub for_node_owner: bool,
+    /// For a scan: the sync token the owner holds for each handed account
+    /// whose last complete pass is recent enough to build on. The host's
+    /// guest runs a delta pass from it; an account without one runs a full
+    /// pass. At most [`MAX_SCAN_TOKENS`] entries. Absent means none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scan_tokens: Vec<ScanToken>,
+}
+
+/// The sync token an owner holds for one account a host scan covers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanToken {
+    /// The store account.
+    pub account_id: String,
+    /// The token, at most [`MAX_SCAN_SYNC_TOKEN_BYTES`].
+    pub sync_token: String,
 }
 
 /// What a library did with a keeper's [`Body::AccountsUpdate`].
@@ -863,6 +925,58 @@ pub const MAX_SCAN_BATCH_ROWS: usize = 200;
 
 /// Largest serialized row in a [`Body::ScanResults`] batch.
 pub const MAX_SCAN_ROW_BYTES: usize = 32 * 1024;
+
+/// Most product ids one [`Body::ScanRemoved`] batch may carry (a scan
+/// page's own cap).
+pub const MAX_SCAN_REMOVED_IDS: usize = 500;
+
+/// Longest sync token a [`Body::ScanPassEnd`] or [`ScanToken`] may carry
+/// (a scan page's own cap).
+pub const MAX_SCAN_SYNC_TOKEN_BYTES: usize = 4096;
+
+/// Most [`ScanToken`]s one [`WorkJob`] may carry.
+pub const MAX_SCAN_TOKENS: usize = 256;
+
+/// Longest product id a [`Body::ScanRemoved`] batch may carry.
+pub const MAX_SCAN_PRODUCT_ID_BYTES: usize = 512;
+
+/// Why a [`Body::ScanRemoved`] the owner received is malformed, or `None`
+/// when it is one a host could send: a non-blank account id, at most
+/// [`MAX_SCAN_REMOVED_IDS`] product ids, each non-blank, at most
+/// [`MAX_SCAN_PRODUCT_ID_BYTES`] and free of control characters.
+#[must_use]
+pub fn scan_removed_problem(account_id: &str, product_ids: &[String]) -> Option<&'static str> {
+    if account_id.trim().is_empty() {
+        return Some("invalid_account");
+    }
+    if product_ids.len() > MAX_SCAN_REMOVED_IDS {
+        return Some("batch_too_large");
+    }
+    let bad = |id: &String| {
+        id.trim().is_empty()
+            || id.len() > MAX_SCAN_PRODUCT_ID_BYTES
+            || id.chars().any(char::is_control)
+    };
+    if product_ids.iter().any(bad) {
+        return Some("invalid_product_id");
+    }
+    None
+}
+
+/// Why a [`Body::ScanPassEnd`] the owner received is malformed, or `None`
+/// when it is one a host could send: a non-blank account id and a sync
+/// token of at most [`MAX_SCAN_SYNC_TOKEN_BYTES`] with no control
+/// characters.
+#[must_use]
+pub fn scan_pass_end_problem(account_id: &str, sync_token: &str) -> Option<&'static str> {
+    if account_id.trim().is_empty() {
+        return Some("invalid_account");
+    }
+    if sync_token.len() > MAX_SCAN_SYNC_TOKEN_BYTES || sync_token.chars().any(char::is_control) {
+        return Some("invalid_token");
+    }
+    None
+}
 
 /// Most files one upload may declare.
 pub const MAX_UPLOAD_FILES: usize = 512;
@@ -1432,6 +1546,10 @@ mod tests {
                             import_plus_titles: true,
                         }),
                         for_node_owner: true,
+                        scan_tokens: vec![ScanToken {
+                            account_id: "a".into(),
+                            sync_token: "t".into(),
+                        }],
                     },
                     fence: 2,
                     lease_secs: 60,
@@ -1538,6 +1656,29 @@ mod tests {
                     upserted: 1,
                 },
                 "scan.accepted",
+            ),
+            (
+                Body::ScanRemoved {
+                    job_id: job_id(),
+                    fence: 2,
+                    plugin_key: "store".into(),
+                    account_id: "a".into(),
+                    batch: 1,
+                    product_ids: vec!["p".into()],
+                },
+                "scan.removed",
+            ),
+            (
+                Body::ScanPassEnd {
+                    job_id: job_id(),
+                    fence: 2,
+                    plugin_key: "store".into(),
+                    account_id: "a".into(),
+                    sync_token: "hd1.abc".into(),
+                    complete: false,
+                    full: false,
+                },
+                "scan.pass_end",
             ),
             (
                 Body::AcquirePlan {

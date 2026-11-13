@@ -4,13 +4,18 @@
 //! | Frame | Answer |
 //! |---|---|
 //! | `scan.results` | `scan.accepted {batch, upserted}`, `lost`, or `error {code: "refused"}` |
+//! | `scan.removed` | `scan.accepted {batch, upserted}` (holdings removed), `lost`, or `error {code: "refused"}` |
+//! | `scan.pass_end` | `scan.accepted {batch: 0, upserted}` (holdings removed), `lost`, or `error {code: "refused"}` |
 //! | `acquire.plan` | `acquire.targets {targets, destinations}`, `lost`, or `error` |
 //! | `upload.grant` | `upload.granted {upload_id, sealed_token, expires_in_secs}`, `lost`, or `error` |
 //!
 //! A scan's rows are parsed as the guest's `ScanBook` and handed to
 //! [`accept_scan_results`], which checks the fence, the node's trust and
 //! every row's account on each batch before it writes any row; the host
-//! never writes library SQL. An acquire asks for its titles (the owner's
+//! never writes library SQL. After its rows, each account's pass reports
+//! the ids a delta pass found gone ([`accept_scan_removed`]) and how it
+//! ended ([`accept_scan_pass_end`]: its sync token, and the prune after a
+//! complete full pass), under the same checks. An acquire asks for its titles (the owner's
 //! pending rows the job covers, with every destination deployed on this
 //! node and that destination's own options, so the host names each
 //! destination's files as a local acquire would), then for each title asks
@@ -21,8 +26,9 @@
 //! and upload, so it is never frame text.
 
 use bookclerk_library::control_plane::{
-    accept_scan_results, grant_upload, job_titles, live_remote_job, ScanAccept, TitleNames,
-    UploadDestination, UploadGrant, UploadGrantRequest,
+    accept_scan_pass_end, accept_scan_removed, accept_scan_results, grant_upload, job_titles,
+    live_remote_job, HandedPassEnd, ScanAccept, TitleNames, UploadDestination, UploadGrant,
+    UploadGrantRequest,
 };
 use bookclerk_library::{JobKind, LibraryStore};
 use bookclerk_node_proto::{
@@ -104,6 +110,89 @@ pub(super) async fn scan_results(
             }
         },
     )
+}
+
+/// One account's report after a host scan's rows: removals or its end.
+pub(super) enum PassReport<'a> {
+    /// `scan.removed`: product ids a delta pass found gone.
+    Removed {
+        /// The host's batch counter, echoed in the answer.
+        batch: u64,
+        /// The ids.
+        product_ids: &'a [String],
+    },
+    /// `scan.pass_end`: how the pass ended.
+    End(HandedPassEnd<'a>),
+}
+
+/// One account's report as the host sent it.
+pub(super) struct ScanPass<'a> {
+    /// The job's source plugin.
+    pub plugin_key: &'a str,
+    /// The account the report is about.
+    pub account_id: &'a str,
+    /// What it reports.
+    pub report: PassReport<'a>,
+}
+
+/// `scan.removed` / `scan.pass_end`: applies one account's report.
+pub(super) async fn scan_pass_report(
+    library: &LibraryStore,
+    host: &HostContext,
+    id: String,
+    job_id: String,
+    fence: i64,
+    pass: ScanPass<'_>,
+) -> bookclerk_library::Result<Frame> {
+    let ScanPass {
+        plugin_key,
+        account_id,
+        report,
+    } = pass;
+    let (batch, accepted) = match report {
+        PassReport::Removed { batch, product_ids } => (
+            batch,
+            accept_scan_removed(
+                library,
+                &host.node_id,
+                &job_id,
+                fence,
+                plugin_key,
+                account_id,
+                product_ids,
+            )
+            .await?,
+        ),
+        PassReport::End(end) => (
+            0,
+            accept_scan_pass_end(library, &host.node_id, &job_id, fence, plugin_key, end).await?,
+        ),
+    };
+    Ok(match accepted {
+        ScanAccept::Accepted { upserted } => {
+            tracing::info!(
+                node_id = %host.node_id,
+                job_id = %job_id,
+                fence,
+                batch,
+                removed = upserted,
+                "applied a host scan's pass report"
+            );
+            Frame::new(id, Body::ScanAccepted { batch, upserted })
+        }
+        ScanAccept::Lost => lost(id, job_id, fence),
+        ScanAccept::Refused(reason) => {
+            tracing::warn!(
+                node_id = %host.node_id,
+                job_id = %job_id,
+                fence,
+                batch,
+                reason,
+                "refused a host scan's pass report"
+            );
+            error(id, "refused", reason)
+        }
+    })
 }
 
 /// The library row of `book`'s podcast parent, when `book` is an episode

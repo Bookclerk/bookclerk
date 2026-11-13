@@ -1295,6 +1295,181 @@ async fn a_members_host_writes_scan_rows_only_for_its_own_accounts() {
     assert!(book_row(&w.store, "riley-acct", "p5").await.is_none());
 }
 
+/// A Host's pass reports go through the same checks as its rows: a
+/// removals batch or pass end for another user's account, a malformed one,
+/// or one under a stale fence changes nothing, while the job's own account
+/// gets its removals, its token and, after a complete full pass, the prune
+/// of what no row of this attempt listed.
+#[tokio::test]
+async fn a_hosts_pass_reports_keep_the_accounts_sync_state() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let rows = ["p1", "p2", "p3"]
+        .map(|p| scanned("riley-acct", p))
+        .to_vec();
+    accept_scan_results(&w.store, HOST, &job_id, fence, PLUGIN, rows)
+        .await
+        .unwrap();
+    let end = |account_id, sync_token, complete, full| HandedPassEnd {
+        account_id,
+        sync_token,
+        complete,
+        full,
+    };
+
+    // Refused or lost: nothing changes.
+    let ids = |list: &[&str]| list.iter().map(|id| (*id).to_string()).collect::<Vec<_>>();
+    for (account, product_ids, generation, answer) in [
+        (
+            "sam-acct",
+            ids(&["p1"]),
+            fence,
+            ScanAccept::Refused("account_not_in_job"),
+        ),
+        (
+            "riley-acct",
+            ids(&[" "]),
+            fence,
+            ScanAccept::Refused("invalid_product_id"),
+        ),
+        ("riley-acct", ids(&["p1"]), fence + 1, ScanAccept::Lost),
+    ] {
+        assert_eq!(
+            accept_scan_removed(
+                &w.store,
+                HOST,
+                &job_id,
+                generation,
+                PLUGIN,
+                account,
+                &product_ids
+            )
+            .await
+            .unwrap(),
+            answer
+        );
+    }
+    assert_eq!(
+        accept_scan_pass_end(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            PLUGIN,
+            end("riley-acct", "bad\ntoken", true, true)
+        )
+        .await
+        .unwrap(),
+        ScanAccept::Refused("invalid_token")
+    );
+    assert_eq!(
+        accept_scan_pass_end(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            "path:file:///tmp/other#other",
+            end("riley-acct", "t", true, true)
+        )
+        .await
+        .unwrap(),
+        ScanAccept::Refused("plugin_not_in_job")
+    );
+    assert!(w
+        .store
+        .scan_state(PLUGIN, "riley-acct")
+        .await
+        .unwrap()
+        .is_none());
+
+    // The job's account: one removal, then a delta pass end keeps the rest.
+    assert_eq!(
+        accept_scan_removed(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            PLUGIN,
+            "riley-acct",
+            &ids(&["p3"])
+        )
+        .await
+        .unwrap(),
+        ScanAccept::Accepted { upserted: 1 }
+    );
+    assert_eq!(
+        accept_scan_pass_end(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            PLUGIN,
+            end("riley-acct", "t1", false, false)
+        )
+        .await
+        .unwrap(),
+        ScanAccept::Accepted { upserted: 0 }
+    );
+    let state = w
+        .store
+        .scan_state(PLUGIN, "riley-acct")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.sync_token, "t1");
+    assert!(state.last_complete_at.is_none());
+    assert_eq!(
+        handed_sync_token(&w.store, PLUGIN, "riley-acct")
+            .await
+            .unwrap(),
+        "",
+        "no complete pass yet, so the next Host pass is full"
+    );
+
+    // A complete full pass under a new fence that listed only p1 prunes p2.
+    expire_lease(&w.store, &job_id).await;
+    let next = claim(&w.store).await.unwrap().job.lease_generation;
+    accept_scan_results(
+        &w.store,
+        HOST,
+        &job_id,
+        next,
+        PLUGIN,
+        vec![scanned("riley-acct", "p1")],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        accept_scan_pass_end(
+            &w.store,
+            HOST,
+            &job_id,
+            next,
+            PLUGIN,
+            end("riley-acct", "t2", true, true)
+        )
+        .await
+        .unwrap(),
+        ScanAccept::Accepted { upserted: 1 }
+    );
+    assert_eq!(
+        handed_sync_token(&w.store, PLUGIN, "riley-acct")
+            .await
+            .unwrap(),
+        "t2"
+    );
+    assert_eq!(
+        w.store
+            .remove_account_holdings(PLUGIN, "riley-acct", crate::HoldingSelection::All)
+            .await
+            .unwrap(),
+        1,
+        "only p1 is still held"
+    );
+}
+
 /// A results batch or an upload grant under a fence that expired and was
 /// reclaimed is refused, and writes nothing.
 #[tokio::test]

@@ -20,7 +20,7 @@ pub(crate) use destination::spawn_deployed_storage;
 pub use destination::DestinationRegistry;
 pub use integration::ExternalIntegration;
 pub use plugin_backups::{export_registered_plugin_units, restore_plugin_backup_units};
-pub use source::{ExternalSource, RefreshedCredentialSink};
+pub use source::{ExternalSource, HandedPass, HandedScan, RefreshedCredentialSink};
 
 #[cfg(test)]
 mod rpc_proxy_insert;
