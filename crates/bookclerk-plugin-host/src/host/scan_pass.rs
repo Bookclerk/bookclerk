@@ -20,6 +20,10 @@ pub(crate) const MAX_PASS_PAGES: u32 = 10_000;
 
 /// What a pass needs from the guest and the library.
 pub(crate) trait PassIo {
+    /// Keeps credentials the guest handed back after refreshing the pass's
+    /// credentials (already checked with the page); later pages are sent
+    /// them.
+    async fn refreshed(&mut self, credentials: Vec<u8>) -> bookclerk_source::Result<()>;
     /// Asks the guest for the page at `cursor` of a pass sent `sync_token`.
     async fn page(&mut self, cursor: &str, sync_token: &str) -> Result<ScanPage, PluginError>;
     /// Writes a validated page's titles and marks them listed by this pass;
@@ -144,6 +148,12 @@ pub(crate) async fn run_pass(
         };
         bookclerk_plugin_abi::validate_scan_page(&page, &cursor, account_id, media)
             .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
+        let mut page = page;
+        if let Some(refreshed) = page.refreshed_credentials.take().filter(|b| !b.is_empty()) {
+            // Kept before the page's titles: the store already issued them,
+            // so a later write failing must not lose them.
+            io.refreshed(refreshed).await?;
+        }
         asked.insert(cursor_hash(&cursor));
         if !page.next_cursor.is_empty() && asked.contains(&cursor_hash(&page.next_cursor)) {
             return Err(bookclerk_source::SourceError::api(format!(
@@ -214,9 +224,16 @@ mod tests {
         restarts: usize,
         /// Cancel after this many guest calls.
         cancel_after: Option<usize>,
+        /// Refreshed credentials kept, each with how many titles had been
+        /// written when it was kept.
+        refreshed: Vec<(Vec<u8>, usize)>,
     }
 
     impl PassIo for Script {
+        async fn refreshed(&mut self, credentials: Vec<u8>) -> bookclerk_source::Result<()> {
+            self.refreshed.push((credentials, self.written.len()));
+            Ok(())
+        }
         async fn page(&mut self, cursor: &str, token: &str) -> Result<ScanPage, PluginError> {
             self.calls.push((cursor.into(), token.into()));
             self.pages
@@ -331,6 +348,39 @@ mod tests {
             io.accounts.iter().all(|a| a == "a"),
             "empty accounts are filled"
         );
+    }
+
+    #[tokio::test]
+    async fn refreshed_credentials_are_kept_before_the_page_is_written() {
+        let refreshed = |blob: &[u8]| ScanPage {
+            refreshed_credentials: Some(blob.to_vec()),
+            ..page(&["2"], "c3")
+        };
+        let mut io = Script {
+            pages: [
+                Ok(page(&["1"], "c2")),
+                Ok(refreshed(br#"{"token":"new"}"#)),
+                Ok(ScanPage {
+                    refreshed_credentials: Some(Vec::new()),
+                    ..last(&["3"], "t1", true)
+                }),
+            ]
+            .into(),
+            ..Script::default()
+        };
+        run_pass(&mut io, "a", start("", "", false), &audio()).await.unwrap();
+        assert_eq!(
+            io.refreshed,
+            [(br#"{"token":"new"}"#.to_vec(), 1)],
+            "kept once, before page two's title; empty means unchanged"
+        );
+
+        let mut io = Script {
+            pages: [Ok(refreshed(b"[1]"))].into(),
+            ..Script::default()
+        };
+        assert!(run_pass(&mut io, "a", start("", "", false), &audio()).await.is_err());
+        assert!(io.refreshed.is_empty() && io.written.is_empty());
     }
 
     #[tokio::test]

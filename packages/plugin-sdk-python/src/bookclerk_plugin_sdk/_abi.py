@@ -27,6 +27,11 @@ MAX_SCAN_PAGE_BOOKS: int = 500
 MAX_SCAN_CURSOR_BYTES: int = 4096
 """Maximum bytes of a scan cursor or sync token."""
 
+MAX_REFRESHED_CREDENTIAL_BYTES: int = 65536
+"""Maximum bytes of refreshed credentials a storefront hands back
+(`ScanPage.refreshedCredentials`, `PlainFetch.refreshedCredentials`).
+"""
+
 MAX_EVENT_CURSOR_BYTES: int = 512
 """Maximum bytes of an `EventReadRequest.after` / `EventReadPage.cursor`."""
 
@@ -221,6 +226,7 @@ __all__ = [
     "MAX_CHECKPOINT_BYTES",
     "MAX_SCAN_PAGE_BOOKS",
     "MAX_SCAN_CURSOR_BYTES",
+    "MAX_REFRESHED_CREDENTIAL_BYTES",
     "MAX_EVENT_CURSOR_BYTES",
     "MAX_IDENTIFIER_BYTES",
     "MAX_CRON_BYTES",

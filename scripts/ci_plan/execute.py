@@ -62,6 +62,9 @@ CLIPPY_LINTS = (
     "-D",
     "clippy::missing_panics_doc",
 )
+# Cargo's `build.warnings`: turns Cargo's own lint warnings into a failure the
+# way RUSTFLAGS="-D warnings" does for rustc and Clippy.
+CARGO_DENY_WARNINGS = {"CARGO_BUILD_WARNINGS": "deny"}
 PUBLISH_CRATES_ARGS = (
     "-p",
     "bookclerk-plugin-abi",
@@ -968,7 +971,10 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         return [Command("rustfmt", ["cargo", "fmt", "--all", "--", "--check"])]
     if check == "clippy":
         scope = ["--workspace"] if params.get("workspace") else _pkg_args(params["packages"])
-        return [Command("clippy", ["cargo", "clippy", *scope, "--all-targets", "--", *CLIPPY_LINTS])]
+        # RUSTFLAGS="-D warnings" denies only rustc and Clippy lints. Cargo's
+        # own warnings (unused dependencies, unused workspace entries and
+        # fields) go through build.warnings, so the lint check denies those too.
+        return [Command("clippy", ["cargo", "clippy", *scope, "--all-targets", "--", *CLIPPY_LINTS], env=CARGO_DENY_WARNINGS)]
     if check == "clippy_publish":
         return [
             Command(

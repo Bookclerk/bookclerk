@@ -11,14 +11,18 @@
 //!
 //! - decoding and validation never panic;
 //! - [`validate_scan_page`] accepts the page exactly when the independent
-//!   recount below finds every bound and pass rule kept, against a fixed
+//!   recount below finds every bound and pass rule kept, including that any
+//!   `refreshedCredentials` the guest handed back is at most
+//!   `maxRefreshedCredentialBytes` and reads as one JSON object (read here
+//!   as a typed map rather than an untyped value), against a fixed
 //!   declaration of audio books and podcasts (every title names all three
 //!   kinds, its work kind is book or podcast and its carrier is audio);
 //! - an accepted page re-encodes, decodes back equal, and is accepted again.
 
 use bookclerk_plugin_abi::{
     decode_scan_page_bytes, encode_scan_page_bytes, validate_scan_page, ExpressionKind,
-    MediaKind, MediaSupport, ScanPage, WorkKind, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
+    MediaKind, MediaSupport, ScanPage, WorkKind, MAX_REFRESHED_CREDENTIAL_BYTES,
+    MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
 };
 
 /// Largest input worth decoding; real pages at every cap are far smaller.
@@ -61,6 +65,12 @@ fn keeps_every_rule(page: &ScanPage, sent: &str, account: &str) -> bool {
                 && b.media_kind == MediaKind::Audio
         })
         && page.removed.iter().all(|id| !id.trim().is_empty())
+        && page.refreshed_credentials.as_deref().is_none_or(|blob| {
+            blob.is_empty()
+                || (u32::try_from(blob.len()).is_ok_and(|n| n <= MAX_REFRESHED_CREDENTIAL_BYTES)
+                    && serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(blob)
+                        .is_ok())
+        })
 }
 
 /// Runs every invariant on one input; panics on a violation.

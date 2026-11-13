@@ -154,6 +154,7 @@ fn structured_scan_page() -> bookclerk_plugin_abi::ScanPage {
         sync_token: "purchased_after=2026-01-01".into(),
         complete: false,
         store_pages: 1,
+        refreshed_credentials: None,
         books: vec![ScanBook {
             account_id: "acct".into(),
             product_id: "B0EPISODE".into(),
@@ -770,8 +771,8 @@ fn fuzz_corpus_scan_page_holds_invariants() {
     assert!(checked > 0, "no scan_page seed");
 }
 
-/// Seeds for `scan_page`: an accepted first page, a last delta page, and one
-/// page breaking each pass rule. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+/// Seeds for `scan_page`: an accepted first page, a last delta page, a page
+/// handing back refreshed credentials, and one page breaking each pass rule. Refresh with `UPDATE_FUZZ_SEEDS=1`.
 // Test code: failed I/O or encoding is the test failing.
 #[allow(clippy::expect_used)]
 #[test]
@@ -827,6 +828,25 @@ fn scan_page_seeds_are_current() {
             ScanPage {
                 books: vec![book("acct", " ")],
                 removed: vec![String::new()],
+                ..ScanPage::default()
+            },
+        ),
+        (
+            "refreshed_credentials.bin",
+            "",
+            "acct",
+            ScanPage {
+                books: vec![book("acct", "B01")],
+                refreshed_credentials: Some(br#"{"authfile_b64":"e30="}"#.to_vec()),
+                ..ScanPage::default()
+            },
+        ),
+        (
+            "refreshed_not_object.bin",
+            "",
+            "acct",
+            ScanPage {
+                refreshed_credentials: Some(b"[\"token\"]".to_vec()),
                 ..ScanPage::default()
             },
         ),

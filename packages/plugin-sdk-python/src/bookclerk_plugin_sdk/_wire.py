@@ -2290,10 +2290,12 @@ def _write_scan_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(3, v["syncToken"])
     s.set_bool(0, v["complete"])
     s.set_u32(1, v["storePages"])
+    if v.get("refreshedCredentials") is not None:
+        s.set_data(4, v["refreshedCredentials"])
 
 
 def _read_scan_page(s: _StructReader, caps: _CapTable) -> Any:
-    return {
+    out: dict[str, Any] = {
         "books": [_scan_book_codec.read(item, caps) for item in s.get_struct_list(0, 2, 14)],
         "removed": s.get_text_list(1),
         "nextCursor": s.get_text(2),
@@ -2301,17 +2303,21 @@ def _read_scan_page(s: _StructReader, caps: _CapTable) -> Any:
         "complete": s.get_bool(0),
         "storePages": s.get_u32(1),
     }
+    refreshed_credentials = s.get_data(4)
+    if not (len(refreshed_credentials) == 0):
+        out["refreshedCredentials"] = refreshed_credentials
+    return out
 
 
-_scan_page_codec = _Codec(1, 4, _write_scan_page, _read_scan_page)
-"""Wire codec for ``ScanPage`` (1 data words, 4 pointers)."""
+_scan_page_codec = _Codec(1, 5, _write_scan_page, _read_scan_page)
+"""Wire codec for ``ScanPage`` (1 data words, 5 pointers)."""
 
 
 def _write_scan_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _scan_page_codec.write(s.init_struct(0, 1, 4), v["value"], caps)
+        _scan_page_codec.write(s.init_struct(0, 1, 5), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -2322,7 +2328,7 @@ def _write_scan_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_scan_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _scan_page_codec.read(s.get_struct(0, 1, 4), caps)}
+        return {"kind": "ok", "value": _scan_page_codec.read(s.get_struct(0, 1, 5), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown ScanReply union member: {disc}")
@@ -2461,6 +2467,8 @@ def _write_plain_fetch(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _chapter_marker_codec.write(item, elem, caps)
     if v.get("pdfUrl") is not None:
         s.set_text(4, v["pdfUrl"])
+    if v.get("refreshedCredentials") is not None:
+        s.set_data(5, v["refreshedCredentials"])
 
 
 def _read_plain_fetch(s: _StructReader, caps: _CapTable) -> Any:
@@ -2477,18 +2485,21 @@ def _read_plain_fetch(s: _StructReader, caps: _CapTable) -> Any:
     pdf_url = s.get_text(4)
     if not (pdf_url == ""):
         out["pdfUrl"] = pdf_url
+    refreshed_credentials = s.get_data(5)
+    if not (len(refreshed_credentials) == 0):
+        out["refreshedCredentials"] = refreshed_credentials
     return out
 
 
-_plain_fetch_codec = _Codec(0, 5, _write_plain_fetch, _read_plain_fetch)
-"""Wire codec for ``PlainFetch`` (0 data words, 5 pointers)."""
+_plain_fetch_codec = _Codec(0, 6, _write_plain_fetch, _read_plain_fetch)
+"""Wire codec for ``PlainFetch`` (0 data words, 6 pointers)."""
 
 
 def _write_fetch_title_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _plain_fetch_codec.write(s.init_struct(0, 0, 5), v["value"], caps)
+        _plain_fetch_codec.write(s.init_struct(0, 0, 6), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -2499,7 +2510,7 @@ def _write_fetch_title_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_fetch_title_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _plain_fetch_codec.read(s.get_struct(0, 0, 5), caps)}
+        return {"kind": "ok", "value": _plain_fetch_codec.read(s.get_struct(0, 0, 6), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown FetchTitleReply union member: {disc}")

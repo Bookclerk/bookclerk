@@ -400,7 +400,6 @@ dependencies = [
 name = "bookclerk-config"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bookclerk-tls",
  "directories",
  "getrandom 0.4.3",

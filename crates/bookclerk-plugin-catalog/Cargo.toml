@@ -10,9 +10,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-anyhow.workspace = true
 bookclerk-plugin-manifest.workspace = true
-bookclerk-sandbox.workspace = true
 chrono.workspace = true
 fs4.workspace = true
 flate2.workspace = true

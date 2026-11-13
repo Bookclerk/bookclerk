@@ -6,7 +6,7 @@
 //! reaches the library. The `scan_page` fuzz target drives this function
 //! (`fuzz/oracles/scan_page.rs`) with the same code the host runs.
 
-use crate::limits::{MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS};
+use crate::limits::{MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS};
 use crate::media::{check_record_kinds, MediaError};
 use crate::{MediaSupport, PluginError, ScanPage};
 
@@ -59,6 +59,14 @@ pub enum ScanPageError {
         /// The rule the title broke.
         error: MediaError,
     },
+    /// `refreshedCredentials` was longer than `maxRefreshedCredentialBytes`.
+    RefreshedCredentialsTooLarge {
+        /// Length of the blob in bytes.
+        bytes: usize,
+    },
+    /// `refreshedCredentials` was not one JSON object, the encoding the host
+    /// stores credentials in.
+    RefreshedCredentialsNotObject,
 }
 
 impl std::fmt::Display for ScanPageError {
@@ -92,6 +100,13 @@ impl std::fmt::Display for ScanPageError {
                 write!(f, "scan page removed id {index} is empty")
             }
             Self::Media { index, error } => write!(f, "scan page title {index}: {error}"),
+            Self::RefreshedCredentialsTooLarge { bytes } => write!(
+                f,
+                "refreshed credentials are {bytes} bytes, more than {MAX_REFRESHED_CREDENTIAL_BYTES}"
+            ),
+            Self::RefreshedCredentialsNotObject => {
+                f.write_str("refreshed credentials are not a JSON object")
+            }
         }
     }
 }
@@ -169,7 +184,39 @@ pub fn validate_scan_page(
             return Err(ScanPageError::EmptyRemovedId { index });
         }
     }
+    if let Some(refreshed) = &page.refreshed_credentials {
+        validate_refreshed_credentials(refreshed)?;
+    }
     Ok(())
+}
+
+/// Checks credentials a storefront handed back after refreshing them
+/// (`ScanPage.refreshedCredentials`, `PlainFetch.refreshedCredentials`)
+/// before the host stores them: at most `maxRefreshedCredentialBytes`, and
+/// one JSON object, the encoding login credentials are stored in. An empty
+/// blob is the wire's "nothing changed" and is accepted; the host stores
+/// nothing for it.
+///
+/// # Arguments
+///
+/// * `bytes` - The blob the guest answered (untrusted).
+///
+/// # Errors
+///
+/// Returns [`ScanPageError::RefreshedCredentialsTooLarge`] or
+/// [`ScanPageError::RefreshedCredentialsNotObject`].
+pub fn validate_refreshed_credentials(bytes: &[u8]) -> Result<(), ScanPageError> {
+    let cap = usize::try_from(MAX_REFRESHED_CREDENTIAL_BYTES).unwrap_or(usize::MAX);
+    if bytes.len() > cap {
+        return Err(ScanPageError::RefreshedCredentialsTooLarge { bytes: bytes.len() });
+    }
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    match serde_json::from_slice::<serde_json::Value>(bytes) {
+        Ok(serde_json::Value::Object(_)) => Ok(()),
+        _ => Err(ScanPageError::RefreshedCredentialsNotObject),
+    }
 }
 
 /// Decodes an unpacked single-segment Cap'n Proto message whose root is a
@@ -265,6 +312,48 @@ mod tests {
             ..ScanPage::default()
         };
         assert_eq!(validate_scan_page(&page, "", "a", &audio_books()), Ok(()));
+    }
+
+    #[test]
+    fn refreshed_credentials_are_a_bounded_json_object() {
+        let cap = usize::try_from(MAX_REFRESHED_CREDENTIAL_BYTES).unwrap_or(usize::MAX);
+        let object_of = |len: usize| {
+            // `{"k":"…"}` padded to exactly `len` bytes.
+            let mut blob = br#"{"k":""#.to_vec();
+            blob.resize(len - 2, b'x');
+            blob.extend_from_slice(br#""}"#);
+            blob
+        };
+        assert_eq!(validate_refreshed_credentials(b""), Ok(()));
+        assert_eq!(validate_refreshed_credentials(&object_of(cap)), Ok(()));
+        assert_eq!(
+            validate_refreshed_credentials(&object_of(cap + 1)),
+            Err(ScanPageError::RefreshedCredentialsTooLarge { bytes: cap + 1 })
+        );
+        for refused in [&b"[]"[..], b"\"token\"", b"{", b"null"] {
+            assert_eq!(
+                validate_refreshed_credentials(refused),
+                Err(ScanPageError::RefreshedCredentialsNotObject),
+                "{}",
+                String::from_utf8_lossy(refused)
+            );
+        }
+        let page = ScanPage {
+            refreshed_credentials: Some(b"[]".to_vec()),
+            ..ScanPage::default()
+        };
+        assert_eq!(
+            validate_scan_page(&page, "", "a", &audio_books()),
+            Err(ScanPageError::RefreshedCredentialsNotObject)
+        );
+        assert!(ScanPageError::RefreshedCredentialsNotObject
+            .to_string()
+            .contains("JSON object"));
+        assert!(
+            ScanPageError::RefreshedCredentialsTooLarge { bytes: cap + 1 }
+                .to_string()
+                .contains("more than")
+        );
     }
 
     #[test]
@@ -387,6 +476,7 @@ mod tests {
             sync_token: "s".into(),
             complete: true,
             store_pages: 3,
+            refreshed_credentials: Some(b"{}".to_vec()),
         };
         let bytes = encode_scan_page_bytes(&page).expect("encode");
         assert_eq!(decode_scan_page_bytes(&bytes).expect("decode"), page);

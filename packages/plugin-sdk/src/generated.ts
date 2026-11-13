@@ -1926,6 +1926,16 @@ export interface ScanPage {
   complete: boolean;
   /** Storefront requests this page took. */
   storePages: number;
+  /**
+   * The account's credentials as the guest holds them after refreshing them
+   * while producing this page (for example a renewed access token): the
+   * same encoding login returned, a JSON object of at most
+   * `maxRefreshedCredentialBytes`. The host stores them in place of the
+   * credentials it sent, unless the account was signed in again meanwhile,
+   * and sends them on the pass's later pages. Empty when nothing changed.
+   * Omitted when absent (wire zero value).
+   */
+  refreshedCredentials?: Uint8Array;
 }
 
 /** Result union of `ContentSource.scan`. */
@@ -2046,6 +2056,13 @@ export interface PlainFetch {
    * Omitted when absent (wire zero value).
    */
   pdfUrl?: string;
+  /**
+   * The account's credentials as the guest holds them after refreshing them
+   * during the fetch, as in `ScanPage.refreshedCredentials`. Empty when
+   * nothing changed.
+   * Omitted when absent (wire zero value).
+   */
+  refreshedCredentials?: Uint8Array;
 }
 
 /** Result union of `ContentSource.fetchTitle`. */
