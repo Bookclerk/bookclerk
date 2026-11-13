@@ -18920,9 +18920,12 @@
           },
           {
             "portalSession": []
+          },
+          {
+            "clientToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session."
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token."
       }
     },
     "/api/auth/logout": {
