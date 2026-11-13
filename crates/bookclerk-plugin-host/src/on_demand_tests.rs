@@ -68,7 +68,9 @@ impl Integration for FakeGuest {
     ) -> bookclerk_integrations::Result<EventResult> {
         tokio::time::sleep(self.delivery_time).await;
         if self.held.load(Ordering::SeqCst) {
-            let _ = tokio::time::timeout(GATE_LIMIT, self.release.notified()).await;
+            tokio::time::timeout(GATE_LIMIT, self.release.notified())
+                .await
+                .expect("the test releases a held delivery");
         }
         if !self.running.load(Ordering::SeqCst) {
             self.stopped_mid_delivery.store(true, Ordering::SeqCst);
@@ -256,6 +258,7 @@ async fn a_call_in_flight_keeps_the_guest_past_the_idle_timeout() {
     // Past the idle timeout, an idle check with the call still pending must
     // leave the guest running.
     tokio::time::sleep(Duration::from_millis(60)).await;
+    assert_eq!(proxy.activity().in_flight, 1, "the call is still pending");
     assert!(!proxy.sleep_if_idle().await, "slept with a call in flight");
     assert!(first.guest_running());
     first.release.notify_one();
