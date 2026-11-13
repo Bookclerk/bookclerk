@@ -110,7 +110,7 @@ a self-signed certificate does not work from the window yet: the webview does
 not trust that certificate for the sign-in pages. Links the host writes for other
 people, such as invite links, still name `integrations.public_origin` or the
 `daemon.listen` address, which the window does not serve. Joining a library
-as a clerk finishes the next time the app starts, where `bookclerkd` restarts
+as a shared branch finishes the next time the app starts, where `bookclerkd` restarts
 itself.
 
 To build and run it:

@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 
-use crate::clerk::ConnectionType;
+use crate::shared_branch::ConnectionType;
 
 /// The built-in public OAuth client a joining branch signs in through. It
 /// is never stored in the owner's clients table.
@@ -145,10 +145,10 @@ pub struct OAuthEnrollAnswer {
     pub node_id: String,
     /// The connection type recorded (`branch` when left out).
     #[serde(default, skip_serializing_if = "ConnectionType::is_branch")]
-    #[schema(example = "clerk")]
+    #[schema(example = "shared_branch")]
     pub connection: ConnectionType,
-    /// For a clerk: the [`crate::ClerkBootstrap`] sealed to the node's box
-    /// key ([`crate::seal_clerk_bootstrap`]), as base64url without padding.
+    /// For a shared branch: the [`crate::SharedBranchBootstrap`] sealed to the node's box
+    /// key ([`crate::seal_shared_branch_bootstrap`]), as base64url without padding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(
         example = "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0"

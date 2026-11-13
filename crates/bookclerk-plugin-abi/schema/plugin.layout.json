@@ -6016,6 +6016,62 @@
         }
       ]
     },
+    "FetchedFile": {
+      "name": "FetchedFile",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "path",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "role",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "FetchedFileRole"
+          },
+          "offset": 0
+        },
+        {
+          "name": "contentType",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "title",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        },
+        {
+          "name": "durationMs",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        }
+      ]
+    },
     "ForeignKeyConstraint": {
       "name": "ForeignKeyConstraint",
       "file": "plugin.capnp",
@@ -8046,6 +8102,55 @@
         }
       ]
     },
+    "MediaSupport": {
+      "name": "MediaSupport",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "workKinds",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "enum",
+              "name": "WorkKind"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "lists",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "enum",
+              "name": "MediaKind"
+            }
+          },
+          "offset": 1
+        },
+        {
+          "name": "fetches",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "enum",
+              "name": "MediaKind"
+            }
+          },
+          "offset": 2
+        }
+      ]
+    },
     "MetadataChapter": {
       "name": "MetadataChapter",
       "file": "plugin.capnp",
@@ -9252,45 +9357,37 @@
     "PlainFetch": {
       "name": "PlainFetch",
       "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 6,
+      "dataWords": 1,
+      "pointerCount": 4,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
         {
-          "name": "parts",
+          "name": "mediaKind",
           "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "MediaKind"
+          },
+          "offset": 0
+        },
+        {
+          "name": "files",
+          "codeOrder": 1,
           "discriminantValue": null,
           "type": {
             "kind": "list",
             "element": {
               "kind": "struct",
-              "name": "PlainPart"
+              "name": "FetchedFile"
             }
           },
           "offset": 0
         },
         {
-          "name": "m4bPath",
-          "codeOrder": 1,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 1
-        },
-        {
-          "name": "coverPath",
-          "codeOrder": 2,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 2
-        },
-        {
           "name": "chapters",
-          "codeOrder": 3,
+          "codeOrder": 2,
           "discriminantValue": null,
           "type": {
             "kind": "list",
@@ -9299,62 +9396,25 @@
               "name": "ChapterMarker"
             }
           },
-          "offset": 3
+          "offset": 1
         },
         {
           "name": "pdfUrl",
-          "codeOrder": 4,
+          "codeOrder": 3,
           "discriminantValue": null,
           "type": {
             "kind": "text"
           },
-          "offset": 4
+          "offset": 2
         },
         {
           "name": "refreshedCredentials",
-          "codeOrder": 5,
+          "codeOrder": 4,
           "discriminantValue": null,
           "type": {
             "kind": "data"
           },
-          "offset": 5
-        }
-      ]
-    },
-    "PlainPart": {
-      "name": "PlainPart",
-      "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 2,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "path",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 0
-        },
-        {
-          "name": "title",
-          "codeOrder": 1,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 1
-        },
-        {
-          "name": "durationMs",
-          "codeOrder": 2,
-          "discriminantValue": null,
-          "type": {
-            "kind": "uint64"
-          },
-          "offset": 0
+          "offset": 3
         }
       ]
     },
@@ -9551,7 +9611,7 @@
       "name": "PluginDescribe",
       "file": "plugin.capnp",
       "dataWords": 2,
-      "pointerCount": 11,
+      "pointerCount": 12,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -9696,6 +9756,16 @@
             "name": "CatalogCapabilities"
           },
           "offset": 10
+        },
+        {
+          "name": "media",
+          "codeOrder": 14,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MediaSupport"
+          },
+          "offset": 11
         }
       ]
     },
@@ -12822,11 +12892,22 @@
       "name": "ExpressionKind",
       "file": "plugin.capnp",
       "enumerants": [
-        "narration",
+        "unspecified",
         "text",
-        "translation",
+        "narration",
         "dramatisation",
-        "podcastAudio"
+        "graphic",
+        "originalAudio"
+      ]
+    },
+    "FetchedFileRole": {
+      "name": "FetchedFileRole",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "unspecified",
+        "part",
+        "whole",
+        "cover"
       ]
     },
     "IdentifierScheme": {
@@ -12862,10 +12943,10 @@
       "name": "MediaKind",
       "file": "plugin.capnp",
       "enumerants": [
-        "audiobook",
+        "unspecified",
+        "audio",
         "ebook",
-        "print",
-        "podcastAudio"
+        "print"
       ]
     },
     "PluginErrorCode": {
@@ -12913,10 +12994,9 @@
       "name": "WorkKind",
       "file": "plugin.capnp",
       "enumerants": [
+        "unspecified",
         "book",
-        "podcastShow",
-        "podcastEpisode",
-        "drama"
+        "podcast"
       ]
     }
   },

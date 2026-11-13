@@ -1156,7 +1156,7 @@ pub async fn set_cluster_link_ancestry(
 /// ancestry later, the list is cut at exactly the limit, which in turn
 /// refuses every join under it.
 ///
-/// A clerk shares its library's database, so it reports the same ancestry:
+/// A shared branch shares its library's database, so it reports the same ancestry:
 /// it is the same node of the tree.
 ///
 /// # Errors

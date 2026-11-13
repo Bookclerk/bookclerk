@@ -9,36 +9,49 @@ use bookclerk_plugin_abi as abi;
 use bookclerk_resolve as resolve;
 
 /// The resolver's work kind for a wire work kind.
+///
+/// # Returns
+///
+/// `None` for `unspecified`, so [`bookclerk_resolve::Listing::from_draft`]
+/// refuses the record.
 #[must_use]
-pub fn work_kind(kind: abi::WorkKind) -> resolve::WorkKind {
+pub fn work_kind(kind: abi::WorkKind) -> Option<resolve::WorkKind> {
     match kind {
-        abi::WorkKind::Book => resolve::WorkKind::Book,
-        abi::WorkKind::PodcastShow => resolve::WorkKind::PodcastShow,
-        abi::WorkKind::PodcastEpisode => resolve::WorkKind::PodcastEpisode,
-        abi::WorkKind::Drama => resolve::WorkKind::Drama,
+        abi::WorkKind::Unspecified => None,
+        abi::WorkKind::Book => Some(resolve::WorkKind::Book),
+        abi::WorkKind::Podcast => Some(resolve::WorkKind::Podcast),
     }
 }
 
 /// The resolver's expression kind for a wire expression kind.
+///
+/// # Returns
+///
+/// `None` for `unspecified`, so the record is refused.
 #[must_use]
-pub fn expression_kind(kind: abi::ExpressionKind) -> resolve::ExpressionKind {
+pub fn expression_kind(kind: abi::ExpressionKind) -> Option<resolve::ExpressionKind> {
     match kind {
-        abi::ExpressionKind::Narration => resolve::ExpressionKind::Narration,
-        abi::ExpressionKind::Text => resolve::ExpressionKind::Text,
-        abi::ExpressionKind::Translation => resolve::ExpressionKind::Translation,
-        abi::ExpressionKind::Dramatisation => resolve::ExpressionKind::Dramatisation,
-        abi::ExpressionKind::PodcastAudio => resolve::ExpressionKind::PodcastAudio,
+        abi::ExpressionKind::Unspecified => None,
+        abi::ExpressionKind::Text => Some(resolve::ExpressionKind::Text),
+        abi::ExpressionKind::Narration => Some(resolve::ExpressionKind::Narration),
+        abi::ExpressionKind::Dramatisation => Some(resolve::ExpressionKind::Dramatisation),
+        abi::ExpressionKind::Graphic => Some(resolve::ExpressionKind::Graphic),
+        abi::ExpressionKind::OriginalAudio => Some(resolve::ExpressionKind::OriginalAudio),
     }
 }
 
 /// The resolver's media kind for a wire media kind.
+///
+/// # Returns
+///
+/// `None` for `unspecified`, so the record is refused.
 #[must_use]
-pub fn media_kind(kind: abi::MediaKind) -> resolve::MediaKind {
+pub fn media_kind(kind: abi::MediaKind) -> Option<resolve::MediaKind> {
     match kind {
-        abi::MediaKind::Audiobook => resolve::MediaKind::Audiobook,
-        abi::MediaKind::Ebook => resolve::MediaKind::Ebook,
-        abi::MediaKind::Print => resolve::MediaKind::Print,
-        abi::MediaKind::PodcastAudio => resolve::MediaKind::PodcastAudio,
+        abi::MediaKind::Unspecified => None,
+        abi::MediaKind::Audio => Some(resolve::MediaKind::Audio),
+        abi::MediaKind::Ebook => Some(resolve::MediaKind::Ebook),
+        abi::MediaKind::Print => Some(resolve::MediaKind::Print),
     }
 }
 
@@ -132,9 +145,9 @@ pub fn scan_book_draft(book: &abi::ScanBook) -> resolve::ListingDraft {
         plugin_key: String::new(),
         marketplace: book.marketplace.clone(),
         product_id: book.product_id.clone(),
-        work_kind: Some(work_kind(book.work_kind)),
-        expression_kind: Some(expression_kind(book.expression_kind)),
-        media_kind: Some(media_kind(book.media_kind)),
+        work_kind: work_kind(book.work_kind),
+        expression_kind: expression_kind(book.expression_kind),
+        media_kind: media_kind(book.media_kind),
         language: book.language.clone(),
         abridgement: Some(abridgement(book.abridgement)),
         title: decode(&book.title),
@@ -200,9 +213,9 @@ pub fn catalog_hit_draft(hit: &crate::CatalogHit, marketplace: &str) -> resolve:
         plugin_key: String::new(),
         marketplace: Some(marketplace.to_string()),
         product_id: hit.product_id.clone(),
-        work_kind: Some(work_kind(hit.work_kind)),
-        expression_kind: Some(expression_kind(hit.expression_kind)),
-        media_kind: Some(media_kind(hit.media_kind)),
+        work_kind: work_kind(hit.work_kind),
+        expression_kind: expression_kind(hit.expression_kind),
+        media_kind: media_kind(hit.media_kind),
         language: hit.language.clone(),
         abridgement: Some(match hit.is_abridged {
             Some(true) => resolve::Abridgement::Abridged,
@@ -241,12 +254,22 @@ mod tests {
 
     #[test]
     fn every_wire_variant_maps() {
-        assert_eq!(work_kind(abi::WorkKind::Drama), resolve::WorkKind::Drama);
         assert_eq!(
-            expression_kind(abi::ExpressionKind::Translation),
-            resolve::ExpressionKind::Translation
+            work_kind(abi::WorkKind::Podcast),
+            Some(resolve::WorkKind::Podcast)
         );
-        assert_eq!(media_kind(abi::MediaKind::Print), resolve::MediaKind::Print);
+        assert_eq!(
+            expression_kind(abi::ExpressionKind::Graphic),
+            Some(resolve::ExpressionKind::Graphic)
+        );
+        assert_eq!(
+            media_kind(abi::MediaKind::Print),
+            Some(resolve::MediaKind::Print)
+        );
+        // Unspecified kinds leave the draft without one, so it is refused.
+        assert_eq!(work_kind(abi::WorkKind::Unspecified), None);
+        assert_eq!(expression_kind(abi::ExpressionKind::Unspecified), None);
+        assert_eq!(media_kind(abi::MediaKind::Unspecified), None);
         assert_eq!(
             abridgement(abi::Abridgement::Abridged),
             resolve::Abridgement::Abridged
@@ -283,6 +306,9 @@ mod tests {
                 value: "9780441172719".into(),
                 marketplace: None,
             }],
+            work_kind: abi::WorkKind::Book,
+            expression_kind: abi::ExpressionKind::Text,
+            media_kind: abi::MediaKind::Print,
             ..crate::CatalogHit::default()
         };
         let draft = catalog_hit_draft(&hit, "us");

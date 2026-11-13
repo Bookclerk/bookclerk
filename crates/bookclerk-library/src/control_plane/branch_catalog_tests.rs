@@ -221,8 +221,8 @@ async fn only_a_trusted_branch_may_share() {
     let _lock = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let (store, member) = world(dir.path()).await;
-    add_node(&store, "clerk", "owner", Some(member)).await;
-    for node in ["clerk", "nobody"] {
+    add_node(&store, "shared_branch", "owner", Some(member)).await;
+    for node in ["shared_branch", "nobody"] {
         assert_eq!(
             begin_catalog(&store, node, true, true).await.unwrap(),
             CatalogBegin::Refused("not_a_branch"),

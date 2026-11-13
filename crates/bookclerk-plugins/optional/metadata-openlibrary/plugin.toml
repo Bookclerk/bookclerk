@@ -5,6 +5,10 @@ version = "0.1.0"
 runtime = "workerd"
 entrypoints = ["metadata"]
 
+[media]
+works = ["book"]
+lists = ["print"]
+
 [workerd]
 compatibility_date = "2026-08-01"
 compatibility_flags = []

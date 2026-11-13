@@ -2,9 +2,9 @@
 
 This page is the operator's guide to joining Bookclerk installs together:
 letting branches in on a library, joining one from a branch, adding a
-clerk, and what each side runs and shares.
+branch on the library's own database, and what each side runs and shares.
 
-## Libraries, branches and clerks
+## Libraries and branches
 
 - A **library** is one library database and the daemons that share it.
 - A **branch** is a separate Bookclerk install, with its own database and
@@ -13,9 +13,10 @@ clerk, and what each side runs and shares.
   back. A branch never holds the library's database credentials or DEK,
   and it runs one of the library's plugins only after its own operator
   approves it.
-- A **clerk** is the other way to join: an empty install that shares the
-  library's database and keys and serves the same library. See
-  [Clerks](#clerks).
+- A **shared branch** is the other way to join: an empty install that
+  shares the library's database and keys and serves the same library. Its
+  operator is the library's operator. See
+  [Shared branches](#shared-branches).
 - A **client app** signs in to a library as its person with a **library
   card** and shows that person's books. It isn't a node: the library
   never sends it work, and it holds no node key. See
@@ -27,7 +28,7 @@ the older names:
 | Web UI | Code, API and CLI |
 | --- | --- |
 | Library | Owner cluster (`clusters`) |
-| The library's own daemons, clerks included | Owner nodes (`kind = owner`) |
+| The library's own daemons, shared branches included | Owner nodes (`kind = owner`) |
 | Branch | Host node (`nodes`, `kind = host`) |
 | Branch invite | Enrollment link |
 | "Let new branches join" | `core.host_enrollment` |
@@ -222,12 +223,14 @@ accounts and which of them would travel.
 - **What travels.** The user's own connected store accounts whose
   storefront declares `credentials = "shareable"` in every `plugin.toml`
   the library knows for it, discovered or installed (see
-  [`credentials`](../plugins/manifest.md#credentials-storefronts)).
-  Accounts of a single-keeper store, such as Audible, never travel. At
-  most 64 accounts go with one join.
+  [`credentials`](../plugins/manifest.md#credentials-storefronts)), and
+  those of a single-keeper store, such as Audible, that no other branch
+  keeps yet. The branch then keeps that account fresh for the library
+  (see [One refresh keeper](#one-refresh-keeper)). At most 64 accounts go
+  with one join.
 - **How.** The choice is kept on the enrollment link. The redeem answer
   carries the accounts and their secrets as one bundle sealed to the
-  branch's X25519 box key (the same sealed box as a clerk's bootstrap,
+  branch's X25519 box key (the same sealed box as the bootstrap for a shared branch,
   with its own associated-data domain). A retried redeem answers it
   again, but only while the user is still active and the branch has not
   been revoked. The library records each account as sent to that node in
@@ -274,8 +277,8 @@ gone.
 - **Add to a library.** On the branch, **Accounts** shows **Add to
   *library*** beside each connection
   (`POST /api/config/join/connections` with `{cluster_id, accounts}`, at
-  most 64). The branch picks the person's own connected accounts of
-  shareable storefronts, records each as sent to `link:<cluster id>` in
+  most 64). The branch picks the person's own connected accounts, records
+  each as sent to `link:<cluster id>` in
   `account_shares`, and sends them over the link's socket as
   `accounts.add`: one bundle sealed to the connection's owner box key from
   `welcome`, bound to the cluster and node ids under its own
@@ -285,10 +288,13 @@ gone.
   under its own per-member rule, exactly as a branch keeps a joining
   bundle: one guarded atomic batch per account, a `received` row against
   `node:<node id>`, and an audit row `branch_connections_added`. Accounts
-  of storefronts that are not shareable there are not kept. The answer,
+  of storefronts not installed there are not kept, nor single-keeper
+  accounts another branch already keeps. The answer,
   `accounts.added`, counts what was added, already there, taken, or not
   kept, and whether the rule refused them all. The library handles
-  `accounts.add` and `accounts.remove` one at a time, and refuses either
+  `accounts.add`, `accounts.remove`, `accounts.update` and the
+  connections a join sends one at a time, so two branches never both
+  become an account's keeper. It refuses a branch's request
   (`superseded`) unless the connection it came on is still the branch's
   live one, so a request the branch gave up on can't land after a later
   one.
@@ -307,6 +313,48 @@ gone.
   in the answer's `unreached`, and the account stays connected there.
   **Revoke here** (or `everywhere: false`) disconnects it on the branch
   only.
+
+### One refresh keeper
+
+A single-keeper store (Audible) breaks a sign-in that two places refresh
+on their own, so each such account has one keeper per library. Which side
+keeps it follows from `account_shares`: the library sees the branch it
+first recorded the account against (`node:<id>`), and that branch sees a
+share with `link:<cluster id>`. A library with no such share keeps the
+account itself.
+
+- **On the branch.** The branch's copy is the one that refreshes: Accounts
+  sign-ins, refreshes its own scans hand back, and refreshes a job for
+  that library hands back are all saved there. Once a minute, and each
+  time the link connects, the branch looks for accounts whose secrets
+  changed since what it last pushed, and sends each up the link as
+  `accounts.update`: one account sealed to the connection's owner box key
+  like an offer, with a revision above the last one it sent there. Any
+  secret write counts as a new sign-in (the branch compares a fingerprint
+  of the secrets, not their times), so neither a clock that went back nor
+  two writes in one millisecond can hide one. A push the library applies
+  is recorded so it isn't sent again; one it already had a revision for
+  (`stale`, as after a lost answer) is sent again above it.
+- **On the library.** The library applies a push only from the account's
+  keeper, for the person who owns the branch, and only when its revision
+  is newer than the last one applied (`account_credential_revisions`), in
+  one guarded atomic batch, and audits `branch_sign_in_applied`. A push
+  retried or overtaken by a newer one changes nothing. Once the keeper's
+  first push is applied, the library doesn't save its own scans' refreshes
+  of the account, and refuses a job's write-back of it (`kept_by_branch`),
+  so neither overwrites the keeper's newer sign-in. Until then the library
+  keeps refreshing it itself, so a branch that was sent the account but
+  couldn't keep it (no Owner to keep it for, or its member rule refused it)
+  never leaves it stale.
+- **Elsewhere.** A kept account travels back only to its keeper, never to
+  a second branch, and a second branch's offer of it is not kept.
+- **A new keeper.** When the account is disconnected everywhere on the
+  library (no member's link holds it), the library forgets its keeper, so
+  the branch the person adds it from next keeps it. Adding it again
+  from a branch makes that branch push its current sign-in again, even
+  an unchanged one, so the library takes it as keeper anew. A push the library
+  doesn't take from the branch yet (`not_shared`, as when it overtook the
+  branch's offer) is sent again on the next pass.
 
 Disconnecting on a library does not yet reach its branches.
 
@@ -345,22 +393,22 @@ seconds. From then on the daemon connects to the library, heartbeats every
 15 s, and reconnects with backoff (1 s up to 60 s) whenever the connection
 drops, resuming any job it still holds.
 
-## Clerks
+## Shared branches
 
-A clerk is a second (or third) server for the **same** library. It is an
-owner node that opens the library's database with the library's key,
-serves the web UI, plans jobs, and can take over maintenance leases when
-another owner node goes down. A branch keeps its own database; a clerk has
-none of its own.
+A shared branch is a second (or third) server for the
+**same** library. It is an owner node that opens the library's database
+with the library's key, serves the web UI, plans jobs, and can take over
+maintenance leases when another owner node goes down. Any other branch
+keeps its own database; a shared branch has none of its own.
 
 ### Who can add one
 
 Only an **Owner** of the library. When an Owner signs in from the Join
 wizard, the consent page asks "How should it join?", with **Join as a
-branch** (the default) and **Join as a clerk of this library**. Everyone
-else sees only the branch page.
+branch with its own database** (the default) and **Join as a branch on
+this library's database**. Everyone else sees only the branch page.
 
-Clerk is shown but disabled, with the reason, when:
+The second choice is shown but disabled, with the reason, when:
 
 - the library's database is the default SQLite file (only PostgreSQL or
   Cloudflare D1 can be opened by more than one server);
@@ -369,7 +417,7 @@ Clerk is shown but disabled, with the reason, when:
 
 ### On the joining server
 
-The Join wizard shows **Offer to join as a clerk** only on an empty
+The Join wizard shows **Offer to join as a shared branch** only on an empty
 install. That means no users, store accounts, books or joined libraries of
 its own, and no `BOOKCLERK_DATABASE_*` or `BOOKCLERK_D1_*` environment
 override of the database settings. (`BOOKCLERK_D1_API_TOKEN` isn't one: it
@@ -381,15 +429,15 @@ when it comes back.
 
 > [!NOTE]
 > For a D1 library, set this server's own `BOOKCLERK_D1_API_TOKEN` (the
-> token is never sent between servers). For any clerk, install the
-> library's database plugin (`postgres` or `d1`) first.
+> token is never sent between servers). For any branch on the library's
+> database, install the library's database plugin (`postgres` or `d1`) first.
 
 ### Approving
 
-Choosing clerk needs a fresh second factor on the consent page: the
+Joining as a shared branch needs a fresh second factor on the consent page: the
 6-digit code from your authenticator app, or your passkey. The code the
 library issues is bound to the choice, so a code approved for a branch can
-never be redeemed as a clerk. Consent and redeem need TLS (or loopback
+never be redeemed for the library's database. Consent and redeem need TLS (or loopback
 with both ends on one machine), as for a branch.
 
 ### What is handed over
@@ -415,8 +463,8 @@ node of the library. Sign in there with your library account.
 
 ### If the first start fails
 
-The originals of those files are kept, as `<name>.pre-clerk` with a
-`clerk-join.json` record, until that first start opens the library's
+The originals of those files are kept, as `<name>.pre-shared-branch` with a
+`shared-branch-join.json` record, until that first start opens the library's
 database.
 
 If it can't (for example the PostgreSQL address only works on the
@@ -425,7 +473,7 @@ start tries a few more times. Then it puts this server's own settings,
 node identity and key back and stops. To recover:
 
 1. Start it again to run as before.
-2. Remove the clerk under **Settings → Clerks** on the library before
+2. Remove the branch under **Settings → Shared branches** on the library before
    joining again.
 
 If a join or its undoing is cut short (a crash, a power cut), the next
@@ -434,30 +482,30 @@ start finishes undoing it, or refuses with instructions naming each file.
 ### On the command line
 
 ```sh
-bookclerk clusters join --url https://library.example --as clerk
+bookclerk clusters join --url https://library.example --as shared branch
 ```
 
-`--as` is `branch` by default. With `--as clerk` the CLI writes the same
+`--as` is `branch` by default. With `--as shared-branch` the CLI writes the same
 bootstrap files and asks you to restart `bookclerkd`.
 
 ### Listing and removing
 
-**Settings → Clerks** on the library (operator or Owner) lists every owner
-node, this server first, and who approved it (`GET /api/config/clerks`).
+**Settings → Shared branches** on the library (operator or Owner) lists every owner
+node, this server first, and who approved it (`GET /api/config/shared-branches`).
 Another user sees only the ones they own.
 
-A clerk that isn't running can be removed there
+A shared branch that isn't running can be removed there
 (`DELETE /api/config/nodes/{node_id}`). Stop Bookclerk on it first.
 
 > [!WARNING]
-> Removing a clerk doesn't take back the database credentials or key it
+> Removing a shared branch doesn't take back the database credentials or key it
 > held. Rotate them if it is no longer trusted.
 
 Audit events:
 
-- On the library: `clerk_authorize`, `clerk_authorize_refused`,
-  `clerk_enroll_refused` and `clerk_enrolled`.
-- On the joining server: `clerk_joined`.
+- On the library: `shared_branch_authorize`, `shared_branch_authorize_refused`,
+  `shared_branch_enroll_refused` and `shared_branch_enrolled`.
+- On the joining server: `shared_branch_joined`.
 - When one is removed: `owner_node_removed`.
 
 ## Consent: what the library may run here
@@ -1020,8 +1068,8 @@ and every library above it.
   the joining install's ancestry past that is refused
   (`409 ancestry_too_deep`).
 
-A clerk shares its library's database, so it is the same point in the
-tree.
+A shared branch is the same point in the tree as its
+library.
 
 ## Leaving
 
@@ -1068,9 +1116,11 @@ shared stay in the library, marked as from a branch that left (see
   bindings over the node socket, aren't served to hosts. Instance
   `SECRETS` reach only a node trusted with every job.
 - Pebble (ACME) doesn't run in CI.
-- Store connections travel only with a sign-in join, not an invite, and
-  only shareable stores' accounts. One refresh keeper for single-keeper
-  stores such as Audible is still to come.
+- Store connections travel only with a sign-in join, not an invite.
+- A library keeps a branch-kept account's sign-in only as fresh as the
+  branch's last push: while the branch is offline, a token the branch
+  refreshed is not yet there. Moving the keeper to another branch means
+  disconnecting the account everywhere and adding it again.
 - Adding connections later and disconnecting everywhere work only
   through links the join could bind to a person.
 

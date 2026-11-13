@@ -1769,6 +1769,9 @@ mod tests {
                 title: "Adventure".into(),
                 description: Some("A long blurb.".into()),
                 length_minutes: Some(600),
+                work_kind: bookclerk_source::records::WorkKind::Book,
+                expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+                media_kind: bookclerk_source::records::MediaKind::Audio,
                 ..CatalogHit::default()
             }),
         );
@@ -1823,6 +1826,9 @@ mod tests {
                 product_id: "beta-9".into(),
                 title: "Adventure".into(),
                 description: Some("From beta.".into()),
+                work_kind: bookclerk_source::records::WorkKind::Book,
+                expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+                media_kind: bookclerk_source::records::MediaKind::Audio,
                 ..CatalogHit::default()
             }),
         );

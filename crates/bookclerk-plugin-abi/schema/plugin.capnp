@@ -244,6 +244,10 @@ struct PluginDescribe {
   # Catalog behaviours a storefront declares so the host can use any store
   # for catalog search without naming it; all false for other kinds.
   catalog @13 :CatalogCapabilities;
+  # Work kinds and edition carriers the plugin lists and fetches; required
+  # for storefronts and metadata providers, empty lists for every other
+  # kind (see `MediaSupport`).
+  media @14 :MediaSupport;
 }
 
 # Marks a scalar field whose zero value (empty `Text` / `Data`, numeric `0`)
@@ -1598,45 +1602,70 @@ struct ScanParams {
   syncToken @7 :Text;
 }
 
-# What kind of creative work a record describes (FRBR work). Ordinal 0 is
-# the common case, so a guest that leaves it unset describes a book.
+# What family of creative work a record describes (FRBR work). Every record
+# names one: `unspecified` is refused by the host, so a guest that forgets
+# the field fails instead of silently describing a book. Whether a podcast
+# work is a show or an episode is structural, not a kind: an episode names
+# its show through `parentProductId`, a show names no parent.
 enum WorkKind {
-  # A book: fiction or non-fiction, read or narrated.
-  book @0;
-  # A podcast show; its episodes name it through `parentProductId`.
-  podcastShow @1;
-  # One podcast episode, a child work of its show.
-  podcastEpisode @2;
-  # An original audio drama that is not an adaptation of a book.
-  drama @3;
+  # Not set; the host refuses the record.
+  unspecified @0;
+  # A book: fiction or non-fiction, in any expression (read, narrated,
+  # dramatised, illustrated) and on any carrier.
+  book @1;
+  # A podcast: the show, or one episode of it when the record names a
+  # parent.
+  podcast @2;
 }
 
-# How a work is realised (FRBR expression). Ordinal 0 is the common case
-# for a storefront that sells audiobooks.
+# How a work is realised (FRBR expression): the kind of content you get,
+# independent of the carrier. A translation is not a kind: the expression's
+# language and its translator credits say it. `unspecified` is refused.
 enum ExpressionKind {
-  # A reading of the text by one or more narrators.
-  narration @0;
-  # The text itself, as sold in print and ebook editions.
+  # Not set; the host refuses the record.
+  unspecified @0;
+  # The written text, as sold in print and ebook editions.
   text @1;
-  # A translation of the text into another language.
-  translation @2;
-  # A full-cast dramatisation or adaptation of the work.
+  # A reading of the text by one or more narrators.
+  narration @2;
+  # A full-cast dramatisation or performance of the work.
   dramatisation @3;
-  # The recorded audio of a podcast episode.
-  podcastAudio @4;
+  # Sequential art: comics, graphic novels, manga.
+  graphic @4;
+  # Audio that is itself the first realisation rather than a reading of a
+  # text: podcast episodes, lectures, single-voice originals.
+  originalAudio @5;
 }
 
-# Physical or digital form of an edition (FRBR manifestation). Only
-# `audiobook` and `podcastAudio` editions are acquire candidates.
+# Carrier of an edition (FRBR manifestation): what form you receive.
+# Whether the host acquires an edition depends on the storefront's
+# `MediaSupport.fetches` and what the host supports, not on this value
+# alone. `unspecified` is refused.
 enum MediaKind {
-  # A downloadable audiobook.
-  audiobook @0;
-  # An ebook; shown in discover but never acquired.
-  ebook @1;
-  # A printed book; shown in discover but never acquired.
-  print @2;
-  # Podcast episode audio.
-  podcastAudio @3;
+  # Not set; the host refuses the record.
+  unspecified @0;
+  # Downloadable audio: audiobooks and podcast episodes.
+  audio @1;
+  # A downloadable document: EPUB, PDF, CBZ and similar.
+  ebook @2;
+  # A printed edition.
+  print @3;
+}
+
+# Media a plugin works with, declared in `describe()` and in the manifest's
+# `[media]` table. Required for plugins that export the storefront or
+# metadata entrypoint: the host refuses to spawn one whose `workKinds` or
+# `lists` is empty, holds `unspecified`, or is wider than its manifest, and
+# refuses any record whose kinds fall outside the declaration.
+struct MediaSupport {
+  # Work kinds the plugin reports.
+  workKinds @0 :List(WorkKind);
+  # Edition carriers the plugin reports in scans, catalog search and
+  # metadata records.
+  lists @1 :List(MediaKind);
+  # Edition carriers `ContentSource.fetchTitle` can deliver; a subset of
+  # `lists`. Empty for metadata providers and for stores that only list.
+  fetches @2 :List(MediaKind);
 }
 
 # Scheme of an external identifier. The scheme fixes whether the id names a
@@ -1742,7 +1771,7 @@ struct ScanBook {
   workKind @7 :WorkKind;
   # How the work is realised in this edition.
   expressionKind @8 :ExpressionKind;
-  # Form of this edition.
+  # Carrier of this edition.
   mediaKind @9 :MediaKind;
   # External identifiers (ISBN, ASIN, OpenLibrary ids).
   identifiers @10 :List(Identifier);
@@ -1858,14 +1887,32 @@ struct FetchTitleParams {
   fetch @6 :FetchOptions;
 }
 
-# One plain audio part written under the cache directory.
-struct PlainPart {
-  # Absolute path to the part file under `cacheDir`.
+# What one fetched file is to the edition it belongs to.
+enum FetchedFileRole {
+  # Not set; the host refuses a file without a role.
+  unspecified @0;
+  # One ordered piece of the edition (an audio part or chapter file, one
+  # volume of a set). The host joins parts in list order.
+  part @1;
+  # The whole edition in one file (an assembled M4B, an EPUB, a PDF).
+  whole @2;
+  # The edition's cover image.
+  cover @3;
+}
+
+# One file `fetchTitle` wrote under the cache directory.
+struct FetchedFile {
+  # Absolute path to the file under `cacheDir`.
   path @0 :Text;
-  # Part title (disc / chapter label).
-  title @1 :Text $optional;
-  # Duration of this part in milliseconds when known.
-  durationMs @2 :UInt64 $optional;
+  # What the file is to the edition.
+  role @1 :FetchedFileRole;
+  # MIME type when the guest knows it (`audio/mp4`, `application/epub+zip`,
+  # `image/jpeg`); the host sniffs the file either way.
+  contentType @2 :Text $optional;
+  # Part title (disc or chapter label), for a `part`.
+  title @3 :Text $optional;
+  # Playing time of the file in milliseconds, for audio, when known.
+  durationMs @4 :UInt64 $optional;
 }
 
 # One chapter marker of a fetched title.
@@ -1879,20 +1926,21 @@ struct ChapterMarker {
 # Plain (DRM-free) fetch result. Sources always return decrypted media; DRM
 # guests decrypt before responding.
 struct PlainFetch {
-  # Ordered audio part files written under the cache directory.
-  parts @0 :List(PlainPart);
-  # Single M4B path when the guest assembled one.
-  m4bPath @1 :Text $optional;
-  # Cover image path under the cache directory.
-  coverPath @2 :Text $optional;
+  # Carrier of what was fetched. Must be one of the storefront's declared
+  # `MediaSupport.fetches`; `unspecified` is refused.
+  mediaKind @0 :MediaKind;
+  # The files the guest wrote under the cache directory: the edition's
+  # ordered `part`s or one `whole` file, plus an optional `cover`.
+  files @1 :List(FetchedFile);
   # Chapter markers; empty when unknown.
-  chapters @3 :List(ChapterMarker);
-  # Companion PDF download URL when the store exposes one.
-  pdfUrl @4 :Text $optional;
+  chapters @2 :List(ChapterMarker);
+  # Companion PDF download URL when the store exposes one; the host
+  # downloads it itself.
+  pdfUrl @3 :Text $optional;
   # The account's credentials as the guest holds them after refreshing them
   # during the fetch, as in `ScanPage.refreshedCredentials`. Empty when
   # nothing changed.
-  refreshedCredentials @5 :Data $optional;
+  refreshedCredentials @4 :Data $optional;
 }
 
 # Result union of `ContentSource.fetchTitle`.
@@ -2091,7 +2139,7 @@ struct CatalogHit {
   workKind @18 :WorkKind;
   # How the work is realised in this edition.
   expressionKind @19 :ExpressionKind;
-  # Form of this edition; print and ebook hits are never acquired.
+  # Carrier of this edition.
   mediaKind @20 :MediaKind;
   # External identifiers (ISBN, ASIN, OpenLibrary ids).
   identifiers @21 :List(Identifier);
@@ -2637,7 +2685,7 @@ struct MetadataRecord {
   workKind @11 :WorkKind;
   # How the work is realised in this edition.
   expressionKind @12 :ExpressionKind;
-  # Form of this edition.
+  # Carrier of this edition.
   mediaKind @13 :MediaKind;
   # External identifiers (ISBN, ASIN, OpenLibrary ids).
   identifiers @14 :List(Identifier);

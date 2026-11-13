@@ -576,6 +576,29 @@ pub enum Body {
         /// Store account id.
         account_id: String,
     },
+    /// Branch → library: the newest sign-in of one single-keeper store
+    /// account this branch keeps ("one refresh keeper" in the library
+    /// catalog network ADR). `sealed` is an [`crate::AccountBundle`] of
+    /// exactly that account, sealed and bound like [`Body::AccountsAdd`];
+    /// `revision` is the keeper's revision of the sign-in (milliseconds
+    /// since the Unix epoch of its newest secret write there, above 0).
+    /// The library replaces its copy only when the account is its
+    /// branch owner's, shared with this branch, and `revision` is above
+    /// the last one it applied from it. Answered with
+    /// [`Body::AccountsUpdated`] or `error`.
+    #[serde(rename = "accounts.update")]
+    AccountsUpdate {
+        /// The sealed one-account bundle, base64url without padding.
+        sealed: String,
+        /// The keeper's revision of the sign-in.
+        revision: i64,
+    },
+    /// Library → branch: what became of an [`Body::AccountsUpdate`].
+    #[serde(rename = "accounts.updated")]
+    AccountsUpdated {
+        /// What the library did with the sign-in.
+        outcome: KeeperOutcome,
+    },
     /// Branch → library: send the catalog questions waiting for this
     /// branch (see [`crate::LookupWork`]). Answered with
     /// [`Body::CatalogAsk`], or `error {code: "refused"}` when the node is
@@ -810,6 +833,20 @@ pub struct WorkJob {
     /// that. Absent means false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub for_node_owner: bool,
+}
+
+/// What a library did with a keeper's [`Body::AccountsUpdate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeeperOutcome {
+    /// The library's copy now holds the pushed sign-in.
+    Applied,
+    /// The library already applied this revision or a newer one from the
+    /// branch; nothing changed.
+    Stale,
+    /// The account is not the branch owner's here, or not shared with
+    /// this branch; nothing changed. The keeper stops pushing it here.
+    NotShared,
 }
 
 /// The owner's library import settings a host scan runs with.

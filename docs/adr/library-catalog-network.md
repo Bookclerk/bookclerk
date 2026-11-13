@@ -2,7 +2,9 @@
 
 - **Status:** Accepted (2026-11-11), amended 2026-11-13 (client apps are
   not nodes; see [Kinds of install](#kinds-of-install)). Step 1,
-  per-library plugin state on a branch, step 2, own library first, step 4,
+  per-library plugin state on a branch, step 2, own library first, step 3,
+  accounts that follow the person (with one refresh keeper per
+  single-keeper account), step 4,
   catalog lookup, and step 7, capacity shares, are implemented. Step 5,
   interlibrary requests and the "acquire all of this branch's members'
   books" setting, is implemented. The other steps are planned and listed under

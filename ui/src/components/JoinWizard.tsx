@@ -46,7 +46,7 @@ export interface JoinWizardProps {
  * Nothing secret is kept here: the daemon holds the PKCE verifier and the
  * node keys, and an invite goes straight to it in a POST body.
  *
- * An empty install may also offer to join **as a clerk**: it then shares
+ * An empty install may also offer to join **as a shared branch**: it then shares
  * the library's database and keys, and what it holds now is replaced. The
  * library's Owner makes the final choice on the consent page; the daemon
  * checks again that this install is empty before it applies anything.
@@ -66,18 +66,18 @@ export function JoinWizard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [suggested, setSuggested] = useState<string | null>(null);
-  const [clerkEligible, setClerkEligible] = useState(false);
-  const [asClerk, setAsClerk] = useState(false);
+  const [sharedBranchEligible, setSharedBranchEligible] = useState(false);
+  const [asSharedBranch, setAsSharedBranch] = useState(false);
   const [replaceConfirmed, setReplaceConfirmed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void fetchJoinStatus()
       .then((status) => {
-        if (!cancelled) setClerkEligible(status.clerk_eligible === true);
+        if (!cancelled) setSharedBranchEligible(status.shared_branch_eligible === true);
       })
       .catch(() => {
-        // Branch only; the daemon refuses a clerk offer anyway.
+        // Branch only; the daemon refuses a shared branch offer anyway.
       });
     return () => {
       cancelled = true;
@@ -115,7 +115,7 @@ export function JoinWizard({
         address: library.origin,
         fingerprint: library.needs_fingerprint ? library.fingerprint : null,
         branch_name: branchName,
-        clerk: clerkEligible && asClerk,
+        shared_branch: sharedBranchEligible && asSharedBranch,
       });
       // The library signs the user in and sends the browser back to
       // this install's /join/callback.
@@ -152,7 +152,7 @@ export function JoinWizard({
     library != null &&
     library.enrollment &&
     (!library.needs_fingerprint || confirmed) &&
-    (!asClerk || replaceConfirmed);
+    (!asSharedBranch || replaceConfirmed);
 
   return (
     <div className="space-y-5">
@@ -257,29 +257,30 @@ export function JoinWizard({
                 />
                 <p className="text-xs text-ink/50">The library's users see this name.</p>
               </div>
-              {clerkEligible ? (
+              {sharedBranchEligible ? (
                 <div className="space-y-2">
                   <label className="flex items-start gap-2 text-sm text-ink">
                     <input
                       type="checkbox"
                       className="mt-0.5"
-                      checked={asClerk}
+                      checked={asSharedBranch}
                       disabled={busy}
                       onChange={(e) => {
-                        setAsClerk(e.target.checked);
+                        setAsSharedBranch(e.target.checked);
                         setReplaceConfirmed(false);
                       }}
                     />
                     <span>
-                      <span className="block font-medium">Offer to join as a clerk</span>
+                      <span className="block font-medium">Offer to join as a shared branch</span>
                       <span className="block text-ink/55">
-                        A clerk shares the library's database and keys instead of keeping its own.
-                        Only an Owner of the library can choose it, and only when the library uses
-                        PostgreSQL or Cloudflare D1. Otherwise this server joins as a branch.
+                        This server would share the library's database and keys instead of keeping
+                        its own. Only an Owner of the library can choose it, and only when the
+                        library uses PostgreSQL or Cloudflare D1. Otherwise this server joins as a
+                        branch with its own database.
                       </span>
                     </span>
                   </label>
-                  {asClerk ? (
+                  {asSharedBranch ? (
                     <label
                       className="flex items-start gap-2 rounded border border-brick/30 bg-brick/5 p-3 text-sm text-ink"
                       role="alert"
@@ -292,9 +293,9 @@ export function JoinWizard({
                         onChange={(e) => setReplaceConfirmed(e.target.checked)}
                       />
                       <span>
-                        As a clerk, this server's own database settings and keys are replaced by the
-                        library's, and it restarts. I understand that whatever it holds now is
-                        replaced.
+                        As a shared branch, this server's own database settings and keys are
+                        replaced by the library's, and it restarts. I understand that whatever it
+                        holds now is replaced.
                       </span>
                     </label>
                   ) : null}

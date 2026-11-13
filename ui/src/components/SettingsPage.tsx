@@ -6,7 +6,7 @@ import { AppTopBar } from "@/components/AppTopBar";
 import { ErrorStatePage } from "@/components/ErrorStatePage";
 import { BranchesPanel } from "@/components/BranchesPanel";
 import { canChangeBranchSharing } from "@/lib/join";
-import { ClerksPanel } from "@/components/ClerksPanel";
+import { SharedBranchesPanel } from "@/components/SharedBranchesPanel";
 import { ClusterConsentsPanel } from "@/components/ClusterConsentsPanel";
 import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
@@ -76,7 +76,7 @@ export type SettingsTab =
   | "output"
   | "nodes"
   | "branches"
-  | "clerks"
+  | "shared_branches"
   | "clusters";
 
 const ISOLATION_OPTIONS = [
@@ -535,7 +535,7 @@ export function SettingsPage({
     }
     if (
       !showSignInSettings &&
-      (activeTab === "signin" || activeTab === "branches" || activeTab === "clerks")
+      (activeTab === "signin" || activeTab === "branches" || activeTab === "shared_branches")
     ) {
       setActiveTab("account");
     }
@@ -1445,16 +1445,16 @@ export function SettingsPage({
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={activeTab === "clerks"}
+                  aria-selected={activeTab === "shared_branches"}
                   className={cn(
                     "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                    activeTab === "clerks"
+                    activeTab === "shared_branches"
                       ? "bg-ink text-paper shadow-sm"
                       : "text-ink/60 hover:text-ink",
                   )}
-                  onClick={() => selectTab("clerks")}
+                  onClick={() => selectTab("shared_branches")}
                 >
-                  Clerks
+                  Shared branches
                 </button>
               ) : null}
             </div>
@@ -1542,8 +1542,8 @@ export function SettingsPage({
             />
           ) : null}
 
-          {activeTab === "clerks" && showSignInSettings ? (
-            <ClerksPanel onSessionExpired={onSessionExpired} />
+          {activeTab === "shared_branches" && showSignInSettings ? (
+            <SharedBranchesPanel onSessionExpired={onSessionExpired} />
           ) : null}
 
           {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (

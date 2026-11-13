@@ -37,13 +37,14 @@ boundary extends it.
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
-| `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
+| `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
+| `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
-| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, and a branch offers its library (`accounts.add`) | `bookclerk-node-proto::parse_account_bundle` |
+| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
@@ -174,12 +175,21 @@ only that. The others check:
   `MAX_SCAN_PAGE_BOOKS` books and as many removed ids, a cursor and token
   within `MAX_SCAN_CURSOR_BYTES`, a next cursor that is empty or differs
   from the one sent, books for that account only, no blank product or
-  removed id, and refreshed credentials that are absent, empty, or one
+  removed id, every book naming its three kinds with a work kind and
+  carrier inside a fixed audio declaration, and refreshed credentials that are absent, empty, or one
   JSON object within `MAX_REFRESHED_CREDENTIAL_BYTES` (the same
   `validate_refreshed_credentials` check the host runs on a
   `PlainFetch` reply's refreshed credentials). An accepted
   page round-trips through the codec and is accepted again. The shared
   oracle is `fuzz/oracles/scan_page.rs`, replayed from
+  `bookclerk-plugin-abi`.
+- **`plain_fetch`**: the input is a `PlainFetch` message. The host accepts
+  it exactly when an independent check agrees, against a fixed declaration
+  that fetches audio: the carrier is audio, every file has a role and a
+  non-blank path, there is at most one `whole` file and one `cover`, and
+  the reply lists `part`s or a `whole` file but not both. An accepted
+  reply round-trips through the codec and is accepted again. The shared
+  oracle is `fuzz/oracles/plain_fetch.rs`, replayed from
   `bookclerk-plugin-abi`.
 - **`event_read`**: byte 0 modulo 4 picks a `/events/read` JSON body (0),
   a bare cursor (1), or a Cap'n Proto `EventReadRequest` (2) or
@@ -232,7 +242,8 @@ only that. The others check:
   and a positive generation. A
   `window.page` that passes its validator carries at most 100 works, each
   once, with plain identifiers, 1 to 8 distinct owned editions with a
-  title, and a next cursor past the one asked with. The shared oracle is `fuzz/oracles/node_frame.rs`,
+  title, and a next cursor past the one asked with. Seeds cover
+  `accounts.update` and `accounts.updated`. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
   has the bundle version and names the cluster and node it was opened

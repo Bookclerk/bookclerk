@@ -328,7 +328,7 @@ function checkBook(body: unknown): void {
   assert.ok(["unabridged", "abridged", "unknown"].includes(record.abridgement));
   assert.equal(record.workKind, "book");
   assert.equal(record.expressionKind, "narration");
-  assert.equal(record.mediaKind, "audiobook");
+  assert.equal(record.mediaKind, "audio");
 
   const [first, ...rest] = record.identifiers;
   assert.deepEqual(first, { scheme: "asin", value: asin, marketplace: "uk" });

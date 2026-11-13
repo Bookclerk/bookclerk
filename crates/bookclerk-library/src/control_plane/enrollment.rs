@@ -787,7 +787,7 @@ pub const AUTHORIZED_LINK_CREATED_BY: &str = "oauth:";
 /// request, so it only has to outlive a retry.
 const AUTHORIZED_LINK_TTL: Duration = Duration::minutes(10);
 
-/// The link a branch or clerk sign-in redeems through: its id and secret are
+/// The link a branch or shared branch sign-in redeems through: its id and secret are
 /// derived from the authorization code and the PKCE verifier, so a retry of
 /// the same exchange (same code, verifier and keys) finds the same link and
 /// answers from its receipt, and a wrong verifier can never redeem it.
@@ -1083,10 +1083,10 @@ pub async fn redeem_enrollment_link(
 /// [`redeem_enrollment_link`] for a node of `kind`: the same canonical
 /// batch, recording `kind` on the `nodes` row.
 ///
-/// A [`super::NodeKind::Owner`] node (a clerk, which joined with a sign-in
+/// A [`super::NodeKind::Owner`] node (a shared branch, which joined with a sign-in
 /// an Owner approved as such) shares the library's database, so it gets no
 /// `node_credentials` row: it never dials the node socket. The kind is part
-/// of the request hash, so a retry of a branch redeem as a clerk (or the
+/// of the request hash, so a retry of a branch redeem as a shared branch (or the
 /// other way round) is refused as a spent link.
 ///
 /// # Errors

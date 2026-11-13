@@ -368,10 +368,31 @@ class WorkflowContractTests(unittest.TestCase):
                 with self.subTest(job=name):
                     self.assertIn(step["with"].get("shared-key"), {"lint", "debug", "release"})
                     self.assertIn("CARGO_PROFILE_DEV_DEBUG", step["with"]["env-vars"].split())
+                    self.assertIn("CI_CARGO_PROFILES", step["with"]["env-vars"].split())
                     if step["with"]["save-if"] is not False and step["with"]["save-if"] != "false":
                         self.assertIn("refs/heads/main", step["with"]["save-if"])
                         savers.add(name)
         self.assertEqual(savers, set(BUILD_ONLY_JOBS) | {"macos"})
+
+    def test_cache_keys_follow_the_cargo_profiles(self) -> None:
+        """CI_CARGO_PROFILES is the digest of the workspace Cargo.toml's profile tables.
+
+        rust-cache keys hash the manifests' dependencies but not their
+        profiles, so a profile change must change this value, or every job
+        restores dependencies built under the old profile and rebuilds them.
+        """
+        import hashlib
+        import json
+
+        with (REPO / "Cargo.toml").open("rb") as manifest:
+            profiles = tomllib.load(manifest).get("profile", {})
+        canonical = json.dumps(profiles, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(canonical.encode()).hexdigest()[:16]
+        self.assertEqual(
+            self.wf["env"]["CI_CARGO_PROFILES"],
+            digest,
+            f"Cargo.toml's [profile] tables changed: set CI_CARGO_PROFILES to \"{digest}\" in ci.yml",
+        )
 
     def test_build_only_jobs_skip_when_their_saved_cache_is_current(self) -> None:
         """Each cache-saving job looks its own key up first and skips the build on a hit."""

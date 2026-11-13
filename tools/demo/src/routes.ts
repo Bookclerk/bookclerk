@@ -89,7 +89,7 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/auth/tray-handoff", "deny"],
   ["POST", "/api/auth/tray-handoff/prepare", "deny"],
 
-  // Clusters, branches, clerks and nodes: read-only views, no links.
+  // Clusters, branches, shared branches and nodes: read-only views, no links.
   ["GET", "/api/cluster/status", "allow"],
   ["GET", "/api/config/branches", "allow"],
   ["PUT", "/api/config/branches", "deny"],
@@ -98,7 +98,7 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   // Asking a branch for a book acquires it there: never from the demo.
   ["POST", "/api/branch-requests", "deny"],
   ["POST", "/api/client/v1/token", "deny"],
-  ["GET", "/api/config/clerks", "allow"],
+  ["GET", "/api/config/shared-branches", "allow"],
   ["GET", "/api/config/cluster-consents", "allow"],
   ["POST", "/api/config/cluster-consents/approve", "deny"],
   ["POST", "/api/config/cluster-consents/revoke", "deny"],

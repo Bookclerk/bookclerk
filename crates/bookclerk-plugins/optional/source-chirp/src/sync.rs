@@ -98,6 +98,9 @@ pub fn audiobook_to_scan_book(book: &Audiobook, account_id: &str, marketplace: &
         credits,
         abridgement: abridgement_from_flag(book.abridged),
         published_at: published_at.map(rfc3339),
+        work_kind: bookclerk_storefront::records::WorkKind::Book,
+        expression_kind: bookclerk_storefront::records::ExpressionKind::Narration,
+        media_kind: bookclerk_storefront::records::MediaKind::Audio,
         ..ScanBook::default()
     }
 }

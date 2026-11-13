@@ -124,7 +124,7 @@ test("recordFromBook maps an Audnexus book", () => {
     abridgement: "unabridged",
     workKind: "book",
     expressionKind: "narration",
-    mediaKind: "audiobook",
+    mediaKind: "audio",
     identifiers: [
       { scheme: "asin", value: "B002V0QK4C", marketplace: "us" },
       { scheme: "isbn", value: "9781423377962" },

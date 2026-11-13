@@ -148,7 +148,7 @@ pub use proxy_txn::{
 };
 pub use schema_state::{SchemaState, SCHEMA_STATE_FROZEN, SCHEMA_STATE_UNRELEASED};
 pub use schema_walk::{plan_schema_walk, plan_schema_walk_from_state, SchemaWalk};
-pub use scope::SourceScope;
+pub use scope::{RefreshKeeping, SourceScope};
 pub use secrets::{
     b64_string_to_bytes, build_sealed_record, bytes_to_b64_string, delete_secret,
     delete_secrets_for_account, get_secret, list_secrets, secret_account_type, secret_kind,
@@ -186,11 +186,12 @@ pub use store::{
     scan_state::{plan_pass, PassStart, ScanState, FULL_PASS_INTERVAL, RESUME_CURSOR_TTL},
     search_feed::ListingRef,
     set_dispatch_chunk_for_test, AcquiredBookKey, BookPage, CandidateRef, CatalogEnrichmentFields,
-    DiscoverSubject, EditionFile, FileOwner, FileRole, HoldingSelection, LibraryStore, NewBook,
-    NewListeningProgress, NewTitleRequest, NewTitleRequestSource, NodeHoldingSelection, QueueRank,
-    SavedFilterRecord, ScannedTitle, SeedScope, StoreCallHit, StoredCandidate, StoredFeed,
-    StoredQueueRank, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER,
-    BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT, HOLDING_REMOVED, MAX_QUEUE_REASONS,
+    DiscoverSubject, EditionFile, FileOwner, FileRole, HeldIdentifiers, HoldingSelection,
+    LibraryStore, NewBook, NewListeningProgress, NewTitleRequest, NewTitleRequestSource,
+    NodeHoldingSelection, QueueRank, SavedFilterRecord, ScannedTitle, SeedScope, StoreCallHit,
+    StoredCandidate, StoredDiscoverTaste, StoredFeed, StoredQueueRank, UserBookFields, WishWork,
+    ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
+    HOLDING_REMOVED, MAX_QUEUE_REASONS,
 };
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

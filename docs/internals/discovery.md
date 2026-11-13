@@ -103,22 +103,38 @@ operator, a household user, or a portal identity) has a **subject key**
    for the person's current seeds (their own, or the household's), and none
    when `discovery.storefront_candidates` is off.
 
-   Each job reads the library once: the taste and the set of titles the
+   The fetch reads the library once: the taste and the set of titles the
    library already holds (by ASIN, ISBN and store product id, used to keep
-   owned titles out of the candidates and the feed) come from the same
-   read. The read is one title per **work** the library holds, built from
-   holdings, listings, editions and works (a book held on two accounts or
-   from two stores counts once), so it never touches the `books` table.
-   Finished flags, ratings and tags come from each user's own state on the
-   work (`user_title_state`): a person's own books carry theirs, and
-   household books carry everyone's merged (finished when anyone finished
-   it, each rating the mean of those who gave one). A work a person
-   finished, rated or tagged counts as one of their own books, so a user
-   with no portal identity or linked store account still gets a taste of
-   their own once they have any. A portal visitor with no user has no
-   stored state. A per-person taste profile stored between
-   jobs, so a job no longer reads the whole library at all, is planned for
-   the rest of the book model's step 6.
+   owned titles out of the candidates) come from the same read. The read
+   is one title per **work** the library holds, built from holdings,
+   listings, editions and works (a book held on two accounts or from two
+   stores counts once), so it never touches the `books` table. Finished
+   flags, ratings and tags come from each user's own state on the work
+   (`user_title_state`): a person's own books carry theirs, and household
+   books carry everyone's merged (finished when anyone finished it, each
+   rating the mean of those who gave one). A work a person finished, rated
+   or tagged counts as one of their own books, so a user with no portal
+   identity or linked store account still gets a taste of their own once
+   they have any. A portal visitor with no user has no stored state.
+
+   The fetch then stores what the ranking needs from that taste in
+   `discover_tastes`, one row per person: the languages they listen in,
+   the authors, narrators, categories and series they like with their
+   weights, the works whose embeddings make up the similarity centroid,
+   and the shelf titles' context (wish titles and the stores they have an
+   account with included). The ranking reads that row instead of the
+   library, so its cost follows the person's candidates, not the size of
+   the library. It checks the candidates it ranks against the library by
+   their ASINs, ISBNs and product ids only. Like a stored feed, the row is
+   one cell, written as one bind of one statement: a taste whose JSON would
+   pass 128 KiB, or what the database's statements carry less 1 KiB for
+   the rest of the upsert (about 2.6 KiB on D1), keeps only its heaviest
+   entries, which move a score the most, and its first wish titles. A ranking with no stored taste,
+   or one more than a day old, loads the taste from the library and stores
+   it again. Every [taste event](#taste-events) queues a fetch, which
+   stores a fresh taste (also with `discovery.storefront_candidates`
+   off, when the fetch calls no store), so the day only matters for finishes, ratings and
+   tags, which send no event.
 
    Both steps read through the database plugin's streamed result path
    ([SQL contract](../plugins/sql-contract/v1.md#streamed-results)), so a
@@ -258,7 +274,7 @@ and queues nothing, and the page shows the error.
 
 Shelves also refresh when someone's taste changes, without waiting for a
 read or the daily fetch. The daemon registers one host consumer,
-`host:discover`, on the [durable event outbox](jobs.md) for three host
+`host:discover`, on the [durable event outbox](jobs.md) for five host
 events:
 
 | Event | Published when | Discover queues |
@@ -266,8 +282,10 @@ events:
 | `wishlist_changed` | A wishlist entry is added or changes status, or an open one is deleted with its user. | A fetch for the person who wished (their seeds changed), and a ranking for everyone else with shelves (wish counts changed). |
 | `listening_synced` | A listening sync changed, for some stored row, whose it is, which owned book or work it matched, its authors, whether they started it, which quarter they are in, or whether they finished it. | A fetch for everyone with shelves. |
 | `book_acquired` | The household acquires a book. | A fetch for everyone with shelves. |
+| `holding_added` | An account or a branch comes to hold a listing. | A fetch for everyone with shelves. |
+| `holding_removed` | An account or a branch stops holding a listing. | A fetch for everyone with shelves. |
 
-Every one of the three events also queues one ranking of the shared
+Every one of the five events also queues one ranking of the shared
 [request queue](#request-queue).
 
 Each job it queues may only run 30 seconds later, so the changes of one
@@ -522,7 +540,8 @@ held the Discover gate and slowed every Wishlist load as libraries grew.
    a listing of one of its editions). It copies no title, cover or price:
    those stay with the wishes.
 2. Discover's consumer (see [Taste events](#taste-events)) queues the job
-   on every `wishlist_changed`, `book_acquired` and `listening_synced`,
+   on every taste event (`wishlist_changed`, `listening_synced`,
+   `book_acquired`, `holding_added` and `holding_removed`),
    after the same 30-second debounce. The queue is not personalized, so one
    job serves everyone, and its dedup key folds a burst of events into one
    pass.

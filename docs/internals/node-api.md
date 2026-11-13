@@ -1,7 +1,7 @@
 # Node API and the live socket
 
 The wire protocols between the hosts of one library, and between the web app
-and its daemon. Setting up branches and clerks is in
+and its daemon. Setting up branches (including shared branches) is in
 [Libraries and branches](../server/cluster-hosts.md); the decision
 record is the [control-plane ADR](../adr/control-plane.md).
 
@@ -14,7 +14,7 @@ operator-auth layers, and every request first passes the transport policy.
 | --- | --- |
 | `GET info` | The library: `{cluster_id, library_name, origin, transport, enrollment, spki_fingerprint?, software_version, ancestry}` |
 | `POST enroll` | Redeem an invite: `{link_id, secret, sign_pk, box_pk, software_version}` → `{cluster_id, node_id}` |
-| `POST enroll/oauth` | Redeem an approved sign-in: `{code, code_verifier, redirect_uri, sign_pk, box_pk, branch_name, software_version, connection?}` → `{cluster_id, node_id}`; for `connection: "clerk"` also `{connection, bootstrap}` (sealed to `box_pk`); for a branch whose user chose to bring their store connections, also `accounts`, the user's shareable store accounts and secrets sealed to `box_pk` |
+| `POST enroll/oauth` | Redeem an approved sign-in: `{code, code_verifier, redirect_uri, sign_pk, box_pk, branch_name, software_version, connection?}` → `{cluster_id, node_id}`; for `connection: "shared_branch"` also `{connection, bootstrap}` (sealed to `box_pk`); for a branch whose user chose to bring their store connections, also `accounts`, the user's shareable store accounts and secrets sealed to `box_pk` |
 | `GET connect` | The node socket (WebSocket, subprotocol `bookclerk-node.v1`) |
 | `GET artifacts/{sha256}` | An owner plugin archive, for a request signed `Authorization: Bookclerk-Node <node_id> <issued_at> <sig>` |
 | `PUT uploads/{id}/files/{n}`, `POST uploads/{id}/commit` | Uploads (see [Uploads](../server/cluster-hosts.md#uploads)) |
@@ -40,7 +40,8 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `deployments.list` | `deployments` (what targets this node, with versions and the requested grant) |
 | `instance.config` | `CONFIG`, and `SECRETS` sealed to the node only for a node trusted with every job |
 | `observation` | `ok` (`materialized` or `error` for its own deployments) |
-| `secret.update` | `ok` (a refreshed store token, sealed to the owner, only for a ref handed with a live job) |
+| `secret.update` | `ok` (a refreshed store token, sealed to the owner, only for a ref handed with a live job), or `error` `refused` `kept_by_branch` for a single-keeper account a branch keeps and has pushed a sign-in for |
+| `accounts.update {sealed, revision}` | `accounts.updated {outcome}`: `applied`, `stale` (not newer than the last one applied) or `not_shared` (not an account this branch keeps there); see [One refresh keeper](../server/cluster-hosts.md#one-refresh-keeper) |
 | `scan.results` | `scan.accepted {batch, upserted}` |
 | `acquire.plan` | `acquire.targets {targets, destinations}` |
 | `upload.grant` | `upload.granted {upload_id, sealed_token, expires_in_secs}` |
@@ -73,7 +74,9 @@ belong to; a write-back is sealed to the owner's box key. A host job's
 storefront guest that renews an account's tokens mid-job hands them back
 ([Refreshed credentials](../plugins/abi.md#refreshed-credentials)), and
 the host writes them back to the owner this way, as the account row the
-job was handed.
+job was handed. A single-keeper account the branch keeps for that library
+is the exception: the branch saves the refresh in its own library, and
+its link pushes it up as `accounts.update`.
 
 ## The live socket (`/api/live`)
 

@@ -4,12 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   answerBranchConsent,
-  beginClerkStepUp,
+  beginSharedBranchStepUp,
   fetchBranchConsent,
   isConsentRedirect,
   joinErrorMessage,
   type BranchConsentView,
-  type ClerkStepUp,
+  type SharedBranchStepUp,
   type ConnectionType,
 } from "@/lib/join";
 import { assertPasskey, passkeysSupported } from "@/lib/webauthn";
@@ -30,9 +30,9 @@ export interface JoinApprovePageProps {
  * request's own redirect URI.
  *
  * An Owner of the library may instead let an empty server join **as a
- * clerk** (it shares this library's database and keys). The daemon decides
+ * shared branch** (it shares this library's database and keys). The daemon decides
  * whether to offer it; choosing it needs a fresh authenticator code or
- * passkey, and the code it answers can only be redeemed as a clerk.
+ * passkey, and the code it answers can only be redeemed as a shared branch.
  */
 export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
   const [search] = useState(() => window.location.search);
@@ -64,8 +64,10 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
     };
   }, [search]);
 
-  /** The second factor for a clerk approval, or `null` to stop. */
-  async function clerkStepUp(method: "totp" | "passkey"): Promise<ClerkStepUp | null> {
+  /** The second factor for a shared branch approval, or `null` to stop. */
+  async function sharedBranchStepUp(
+    method: "totp" | "passkey",
+  ): Promise<SharedBranchStepUp | null> {
     if (method === "totp") {
       const code = totpCode.replace(/\s+/g, "");
       if (!/^\d{6}$/.test(code)) {
@@ -74,7 +76,7 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
       }
       return { method: "totp", code };
     }
-    const assertion = await assertPasskey(await beginClerkStepUp());
+    const assertion = await assertPasskey(await beginSharedBranchStepUp());
     return { method: "passkey", ...assertion };
   }
 
@@ -82,16 +84,21 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
     setBusy(true);
     setError(null);
     try {
-      let clerk: { step_up: ClerkStepUp } | undefined;
-      if (approve && connection === "clerk" && method) {
-        const stepUp = await clerkStepUp(method);
+      let sharedBranch: { step_up: SharedBranchStepUp } | undefined;
+      if (approve && connection === "shared_branch" && method) {
+        const stepUp = await sharedBranchStepUp(method);
         if (!stepUp) {
           setBusy(false);
           return;
         }
-        clerk = { step_up: stepUp };
+        sharedBranch = { step_up: stepUp };
       }
-      const { redirect } = await answerBranchConsent(search, approve, clerk, bringConnections);
+      const { redirect } = await answerBranchConsent(
+        search,
+        approve,
+        sharedBranch,
+        bringConnections,
+      );
       if (!isConsentRedirect(redirect, search)) {
         setError("The answer pointed somewhere unexpected; nothing was sent.");
         setBusy(false);
@@ -118,9 +125,10 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
 
   const who = view.user.display_name?.trim() || `user #${view.user.id}`;
   const choice = view.connection?.choice ? view.connection : null;
-  const asClerk = choice != null && choice.clerk_available && connection === "clerk";
-  const canTotp = asClerk && choice.step_up.includes("totp");
-  const canPasskey = asClerk && choice.step_up.includes("passkey") && passkeysSupported();
+  const asSharedBranch =
+    choice != null && choice.shared_branch_available && connection === "shared_branch";
+  const canTotp = asSharedBranch && choice.step_up.includes("totp");
+  const canPasskey = asSharedBranch && choice.step_up.includes("passkey") && passkeysSupported();
   const connections = view.connections ?? [];
   const travelling = connections.filter((c) => c.travels);
   const staying = connections.filter((c) => !c.travels);
@@ -146,30 +154,30 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
               checked={connection === "branch"}
               onChange={() => setConnection("branch")}
             />
-            <span>Join as a branch</span>
+            <span>Join as a branch with its own database</span>
           </label>
           <label className="flex items-start gap-2">
             <input
               type="radio"
               name="connection"
               className="mt-0.5"
-              checked={connection === "clerk"}
-              disabled={!choice.clerk_available}
-              onChange={() => setConnection("clerk")}
+              checked={connection === "shared_branch"}
+              disabled={!choice.shared_branch_available}
+              onChange={() => setConnection("shared_branch")}
             />
             <span>
-              <span className="block">Join as a clerk of this library</span>
-              {!choice.clerk_available && choice.clerk_reason ? (
-                <span className="block text-xs text-ink/55">{choice.clerk_reason}</span>
+              <span className="block">Join as a shared branch of this library</span>
+              {!choice.shared_branch_available && choice.shared_branch_reason ? (
+                <span className="block text-xs text-ink/55">{choice.shared_branch_reason}</span>
               ) : null}
             </span>
           </label>
         </fieldset>
       ) : null}
-      {asClerk ? (
+      {asSharedBranch ? (
         <div className="space-y-2 text-sm text-ink/75">
           <p>
-            It joins as a <strong>clerk</strong>. That means:
+            It joins as a <strong>shared branch</strong>, on this library's database. That means:
           </p>
           <ul className="list-disc space-y-1 pl-5">
             <li>
@@ -177,16 +185,18 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
               this server, for every user.
             </li>
             <li>Whatever it held before is replaced.</li>
-            <li>It shows under Settings → Clerks here, where it can be removed once stopped.</li>
+            <li>
+              It shows under Settings → Shared branches here, where it can be removed once stopped.
+            </li>
           </ul>
           <p className="font-medium text-ink">Confirm it's you to continue.</p>
           {canTotp ? (
             <div className="space-y-1">
-              <label className="block text-sm font-medium text-ink" htmlFor="clerk-totp">
+              <label className="block text-sm font-medium text-ink" htmlFor="shared-branch-totp">
                 Authenticator code
               </label>
               <Input
-                id="clerk-totp"
+                id="shared-branch-totp"
                 inputMode="numeric"
                 autoComplete="one-time-code"
                 maxLength={8}
@@ -263,7 +273,7 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
         </p>
       ) : null}
       <div className="flex flex-wrap gap-2">
-        {asClerk ? (
+        {asSharedBranch ? (
           <>
             {canTotp ? (
               <Button
@@ -271,7 +281,7 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
                 disabled={busy || !view.enrollment || !totpCode.trim()}
                 onClick={() => void answer(true, "totp")}
               >
-                Allow as a clerk
+                Allow as a shared branch
               </Button>
             ) : null}
             {canPasskey ? (
@@ -281,7 +291,7 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
                 disabled={busy || !view.enrollment}
                 onClick={() => void answer(true, "passkey")}
               >
-                Allow as a clerk with a passkey
+                Allow as a shared branch with a passkey
               </Button>
             ) : null}
           </>

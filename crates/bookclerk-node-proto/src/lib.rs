@@ -65,8 +65,8 @@
 //! node at once. Joining with a sign-in instead of a link is the OAuth
 //! code + PKCE flow of the built-in client [`BRANCH_CLIENT_ID`] ([`OwnerInfo`],
 //! [`OAuthEnrollRequest`]). An Owner of the library may instead let the
-//! install join as a clerk (an owner node, [`ConnectionType::Clerk`]): its
-//! redeem answer carries a [`ClerkBootstrap`] sealed to the node's box key.
+//! install join as a shared branch (an owner node, [`ConnectionType::SharedBranch`]): its
+//! redeem answer carries a [`SharedBranchBootstrap`] sealed to the node's box key.
 //! A branch's redeem answer may carry the signing-in user's own store
 //! accounts as an [`AccountBundle`] sealed the same way, when the user
 //! chose to bring them.
@@ -82,7 +82,6 @@
 
 mod accounts;
 mod catalog;
-mod clerk;
 mod client;
 mod frames;
 mod join;
@@ -90,6 +89,7 @@ mod keys;
 mod lookup;
 mod requests;
 mod sealed;
+mod shared_branch;
 mod signature;
 mod window;
 
@@ -107,11 +107,6 @@ pub use catalog::{
     MAX_CATALOG_BATCH_TITLES, MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_TITLE_BYTES,
     MAX_CATALOG_WANTED, MAX_MARKETPLACE_BYTES,
 };
-pub use clerk::{
-    clerk_bootstrap_aad, open_clerk_bootstrap, seal_clerk_bootstrap, ClerkBootstrap, ClerkDatabase,
-    ConnectionType, CLERK_BOOTSTRAP_AAD_DOMAIN, CLERK_BOOTSTRAP_VERSION, CLERK_GRANTED_SCOPE,
-    CLERK_OFFER_PARAM, DEK_LEN,
-};
 pub use client::{
     client_exchange_matches, client_request_problem, is_client_name, is_client_token,
     is_s256_challenge, parse_client_authorization, parse_client_query, parse_client_token_request,
@@ -122,10 +117,10 @@ pub use client::{
 pub use ed25519_dalek::SigningKey;
 pub use frames::{
     is_destination_id, is_storage_key, AcquireTarget, Body, ClaimFilter, ClaimScope, FileCopy,
-    Frame, FrameError, HeldFence, JobStatusEntry, LibraryId, PlanDestination, RemoteArtifact,
-    RemoteDeployment, RemoteVersion, ScanImport, UploadAnswer, UploadCommitRequest, UploadFile,
-    WorkJob, ITEM_JOB, MAX_DESTINATION_ID_BYTES, MAX_LIBRARY_ID_BYTES, MAX_SCAN_BATCH_ROWS,
-    MAX_SCAN_ROW_BYTES, MAX_STATUS_JOBS, MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES,
+    Frame, FrameError, HeldFence, JobStatusEntry, KeeperOutcome, LibraryId, PlanDestination,
+    RemoteArtifact, RemoteDeployment, RemoteVersion, ScanImport, UploadAnswer, UploadCommitRequest,
+    UploadFile, WorkJob, ITEM_JOB, MAX_DESTINATION_ID_BYTES, MAX_LIBRARY_ID_BYTES,
+    MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_STATUS_JOBS, MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES,
     MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_KEY_BYTES,
 };
 pub use join::{
@@ -153,6 +148,12 @@ pub use sealed::{
     seal_upload_token, secret_update_aad, secrets_aad, upload_token_aad, SealError, SecretEntry,
     SecretRef, SecretValue, INSTANCE_SECRETS_AAD_DOMAIN, SEALED_BOX_INFO, SEALED_BOX_OVERHEAD,
     SECRETS_AAD_DOMAIN, SECRET_UPDATE_AAD_DOMAIN, UPLOAD_TOKEN_AAD_DOMAIN,
+};
+pub use shared_branch::{
+    open_shared_branch_bootstrap, seal_shared_branch_bootstrap, shared_branch_bootstrap_aad,
+    ConnectionType, SharedBranchBootstrap, SharedBranchDatabase, DEK_LEN,
+    SHARED_BRANCH_BOOTSTRAP_AAD_DOMAIN, SHARED_BRANCH_BOOTSTRAP_VERSION,
+    SHARED_BRANCH_GRANTED_SCOPE, SHARED_BRANCH_OFFER_PARAM,
 };
 pub use signature::{
     artifact_transcript, auth_transcript, canonical_origin, decode_nonce, encode_nonce,

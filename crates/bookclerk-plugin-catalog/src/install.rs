@@ -1606,6 +1606,18 @@ fn rename_retry(from: &Path, to: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `media` line a test manifest with `entrypoints` needs: storefronts
+    /// and metadata providers must declare their media; other plugins must not.
+    fn media_line(entrypoints: &str) -> &'static str {
+        if entrypoints.contains("storefront") {
+            "media = { works = [\"book\"], lists = [\"audio\"], fetches = [\"audio\"] }"
+        } else if entrypoints.contains("metadata") {
+            "media = { works = [\"book\"], lists = [\"audio\"] }"
+        } else {
+            ""
+        }
+    }
     use crate::extract::sha256_bytes;
     use crate::kind::{PluginKind, RuntimeIdentity};
     use crate::manifest::ArtifactTarget;
@@ -3046,7 +3058,8 @@ mod tests {
     fn echo_toml(command: &str, network_mode: &str, entrypoints: &str) -> String {
         format!(
             "api_version = 3\nid = \"echo\"\ncommand = \"{command}\"\n\
-             entrypoints = [{entrypoints}]\n[capabilities.network]\nmode = \"{network_mode}\"\n"
+             entrypoints = [{entrypoints}]\n{media}\n[capabilities.network]\nmode = \"{network_mode}\"\n",
+            media = media_line(entrypoints)
         )
     }
 

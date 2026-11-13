@@ -585,6 +585,9 @@ fn product_to_hit(p: CatalogProduct, origin: String) -> CatalogHit {
         price_label: p.price_label,
         rating_overall: p.rating_overall,
         rating_count: p.rating_count,
+        work_kind: bookclerk_storefront::records::WorkKind::Book,
+        expression_kind: bookclerk_storefront::records::ExpressionKind::Narration,
+        media_kind: bookclerk_storefront::records::MediaKind::Audio,
         ..Default::default()
     }
 }

@@ -389,6 +389,7 @@ function bindingMessage(manifest) {
       ...cronOnly,
       entrypoints: [registry],
       triggers: { crons: ["0 0 * * *"] },
+      ...(registry === "storefront" ? { media: { works: ["book"], lists: ["audio"] } } : {}),
     });
     if (!message.includes("cannot be combined")) {
       console.error("FAIL crons beside", registry, "->", message || "(accepted)");

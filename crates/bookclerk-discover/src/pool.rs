@@ -224,6 +224,9 @@ mod tests {
             price_cents: Some(1499),
             currency: Some("USD".into()),
             description: Some("A &amp; B".into()),
+            work_kind: bookclerk_source::records::WorkKind::Book,
+            expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+            media_kind: bookclerk_source::records::MediaKind::Audio,
             ..CatalogHit::default()
         };
         let l = catalog_listing("audible", "us", &hit, Utc::now());
@@ -235,6 +238,9 @@ mod tests {
         let unpriced = CatalogHit {
             product_id: "B1".into(),
             title: "X".into(),
+            work_kind: bookclerk_source::records::WorkKind::Book,
+            expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+            media_kind: bookclerk_source::records::MediaKind::Audio,
             ..CatalogHit::default()
         };
         assert!(catalog_listing("audible", "us", &unpriced, Utc::now())

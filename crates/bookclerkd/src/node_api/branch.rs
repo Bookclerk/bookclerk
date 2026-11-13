@@ -34,19 +34,19 @@
 //!   titles from a branch that stopped sharing or left (of one branch, or
 //!   all). Files already delivered stay in this library's outputs.
 //!
-//! **Clerks.** When the joining install offers it ([`bookclerk_node_proto::CLERK_OFFER_PARAM`]:
+//! **Shared branches.** When the joining install offers it ([`bookclerk_node_proto::SHARED_BRANCH_OFFER_PARAM`]:
 //! it is empty) and the signed-in user is an Owner (the stored role, read
 //! at consent and again at redeem), the consent page also offers "Join as
-//! a clerk of this library": an owner node (`kind = owner`) that shares
+//! a shared branch of this library": an owner node (`kind = owner`) that shares
 //! this library's database and DEK. That needs a database more than one
 //! server can open (PostgreSQL or D1, never the SQLite file:
 //! [`shared_database`]) and a fresh second factor on the consent page
 //! (TOTP or a user-verified passkey, [`post_branch_consent_step_up`]); an
 //! Owner with neither is refused. The code is bound to the type chosen (the
 //! granted scope, [`ConnectionType::granted_scope`], stored with the
-//! consented branch name), so a branch code is never redeemed as a clerk. A clerk's redeem answer carries the
+//! consented branch name), so a branch code is never redeemed as a shared branch. A shared branch's redeem answer carries the
 //! `[database]` bootstrap and the DEK sealed to the joining node's box key
-//! ([`seal_clerk_bootstrap`]); never the `master.key` file, never through
+//! ([`seal_shared_branch_bootstrap`]); never the `master.key` file, never through
 //! the browser, never logged. Both the consent and the redeem run under the
 //! node API transport policy: TLS, or loopback when both ends are on this
 //! machine.
@@ -61,7 +61,7 @@ use axum::{Extension, Json};
 use bookclerk_config::DatabasePluginKind;
 use bookclerk_config::NodeApiMode;
 use bookclerk_library::control_plane::{
-    accounts_to_carry, authorized_enrollment_link, branch_title_counts, check_redeem_request,
+    accounts_to_carry_where, authorized_enrollment_link, branch_title_counts, check_redeem_request,
     enrollment_link_brings_accounts, library_ancestry, list_nodes, load_cluster_row,
     load_host_enrollment, load_node_credential, member_accounts, record_accounts_sent,
     record_authorized_enrollment_link, redeem_enrollment_link_as, remove_detached_branch_titles,
@@ -71,10 +71,12 @@ use bookclerk_library::control_plane::{
 use bookclerk_library::{hash_token, LibraryError, UserStatus};
 use bookclerk_node_proto::{
     canonical_origin, is_branch_name, is_branch_redirect_uri, pkce_challenge, seal_account_bundle,
-    seal_clerk_bootstrap, AccountBundle, ClerkBootstrap, ClerkDatabase, ConnectionType,
-    OAuthEnrollAnswer, OAuthEnrollRequest, OwnerInfo, SecretValue, ACCOUNT_BUNDLE_VERSION,
-    BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS, BRANCH_SCOPE, CLERK_BOOTSTRAP_VERSION,
+    seal_shared_branch_bootstrap, AccountBundle, ConnectionType, OAuthEnrollAnswer,
+    OAuthEnrollRequest, OwnerInfo, SecretValue, SharedBranchBootstrap, SharedBranchDatabase,
+    ACCOUNT_BUNDLE_VERSION, BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS, BRANCH_SCOPE,
+    SHARED_BRANCH_BOOTSTRAP_VERSION,
 };
+use bookclerk_plugin_host::CredentialSharing;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use zeroize::Zeroizing;
@@ -93,7 +95,7 @@ pub(crate) fn library_name(origin: &str) -> String {
         .unwrap_or_else(|| "Bookclerk library".into())
 }
 
-/// This library's database as a clerk would connect to it, or why it
+/// This library's database as a shared branch would connect to it, or why it
 /// cannot be shared: only PostgreSQL and Cloudflare D1 can be opened by
 /// more than one server. The D1 API token is never included (it is
 /// environment-only bootstrap on every node).
@@ -101,33 +103,35 @@ pub(crate) fn library_name(origin: &str) -> String {
 /// # Errors
 ///
 /// Returns the reason shown on the consent page.
-pub(crate) fn shared_database(cfg: &bookclerk_config::Config) -> Result<ClerkDatabase, String> {
+pub(crate) fn shared_database(
+    cfg: &bookclerk_config::Config,
+) -> Result<SharedBranchDatabase, String> {
     match bookclerk_config::DatabasePluginKind::parse(&cfg.database.plugin) {
         Some(DatabasePluginKind::Postgres) => bookclerk_config::resolve_postgres_url(cfg)
-            .map(|url| ClerkDatabase::Postgres {
+            .map(|url| SharedBranchDatabase::Postgres {
                 url: SecretValue::new(url.into_bytes()),
             })
             .map_err(|_| "This library's PostgreSQL connection is not readable here.".into()),
-        // A clerk sends its own D1 token only to Cloudflare's API, so a
-        // library on another D1 endpoint is not offered as a clerk's.
+        // A shared branch sends its own D1 token only to Cloudflare's API, so a
+        // library on another D1 endpoint is not offered as a shared branch's.
         Some(DatabasePluginKind::D1) => {
             bookclerk_node_client::checked_d1_api_base(&cfg.database.d1.api_base)
-                .map(|api_base| ClerkDatabase::D1 {
+                .map(|api_base| SharedBranchDatabase::D1 {
                     account_id: cfg.database.d1.account_id.clone(),
                     database_id: cfg.database.d1.database_id.clone(),
                     api_base,
                 })
                 .map_err(|_| {
                     "This library's Cloudflare D1 API origin is not https://api.cloudflare.com, \
-             and a clerk only sends its D1 token there."
+             and a shared branch only sends its D1 token there."
                         .into()
                 })
         }
         Some(DatabasePluginKind::Sqlite) => Err("This library keeps its database in a SQLite \
-             file that only this server can open. A clerk needs a PostgreSQL or Cloudflare D1 \
+             file that only this server can open. Sharing it needs a PostgreSQL or Cloudflare D1 \
              database."
             .into()),
-        None => Err("This library's database plugin cannot be shared with a clerk.".into()),
+        None => Err("This library's database plugin cannot be shared with another server.".into()),
     }
 }
 
@@ -197,7 +201,7 @@ const MAX_OAUTH_ENROLL_BODY_BYTES: usize = 16 * 1024;
 
 /// `POST /api/node/v1/enroll/oauth`: redeem an approved branch sign-in.
 /// Answers `{cluster_id, node_id}` for a branch, plus `connection` and the
-/// sealed `bootstrap` for a clerk; 403 `transport_insecure` for a refused
+/// sealed `bootstrap` for a shared branch; 403 `transport_insecure` for a refused
 /// connection, 403 `enrollment_refused` for a code that does not redeem
 /// (unknown, used, expired, another client's, a wrong verifier or
 /// redirect URI, enrollment off, or the user no longer active).
@@ -206,20 +210,20 @@ const MAX_OAUTH_ENROLL_BODY_BYTES: usize = 16 * 1024;
     path = "/api/node/v1/enroll/oauth",
     request_body = bookclerk_node_proto::OAuthEnrollRequest,
     responses(
-        (status = 200, description = "The install is enrolled: its cluster and node ids for a branch, and for a clerk also `connection` and the clerk bootstrap sealed to its box key.", body = bookclerk_node_proto::OAuthEnrollAnswer, examples(
+        (status = 200, description = "The install is enrolled: its cluster and node ids for a branch, and for a shared branch join also `connection` and the bootstrap sealed to its box key.", body = bookclerk_node_proto::OAuthEnrollAnswer, examples(
             ("branch" = (summary = "A branch joined.", value = json!({"cluster_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"}))),
-            ("clerk" = (summary = "A clerk joined; its bootstrap is sealed to its box key.", value = json!({"cluster_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c", "connection": "clerk", "bootstrap": "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0"}))),
+            ("shared_branch" = (summary = "A shared branch joined; its bootstrap is sealed to its box key.", value = json!({"cluster_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c", "connection": "shared_branch", "bootstrap": "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0"}))),
         )),
         (status = 400, description = "The body is not an enroll request, or its keys are not base64url.", body = crate::http_error::ErrorMessage, examples(
             ("malformed" = (summary = "The body does not parse as an enroll request.", value = json!({"error": "invalid enroll request"}))),
             ("bad_keys" = (summary = "A public key is not base64url.", value = json!({"error": "sign_pk and box_pk must be base64url"}))),
         )),
-        (status = 403, description = "The connection failed the transport policy (`transport_insecure`, with the check in `reason`), or the code does not redeem: blank, unknown, used, expired, wrong verifier, or the user may no longer let a clerk join (`enrollment_refused`).", body = crate::http_error::NodeRefusal, examples(
+        (status = 403, description = "The connection failed the transport policy (`transport_insecure`, with the check in `reason`), or the code does not redeem: blank, unknown, used, expired, wrong verifier, or the user may no longer let a shared branch join (`enrollment_refused`).", body = crate::http_error::NodeRefusal, examples(
             ("transport_insecure" = (summary = "Plain HTTP from another machine.", value = json!({"error": "transport_insecure", "reason": "plain_http"}))),
             ("enrollment_refused" = (summary = "The code does not redeem.", value = json!({"error": "enrollment_refused"}))),
         )),
         (status = 404, description = "The node API is not mounted on this listener (`node_api_unmounted`).", body = crate::http_error::ErrorMessage, example = json!({"error": "node_api_unmounted"})),
-        (status = 409, description = "This library's database cannot be shared with a clerk (`database_not_shareable`).", body = crate::http_error::ErrorMessage, example = json!({"error": "database_not_shareable"})),
+        (status = 409, description = "This library's database cannot be shared with another server (`database_not_shareable`).", body = crate::http_error::ErrorMessage, example = json!({"error": "database_not_shareable"})),
         (status = 413, description = "The body is larger than 16 KiB.", body = crate::http_error::ErrorMessage, example = json!({"error": "request too large"})),
         (status = 415, description = "The request is not `application/json`.", body = crate::http_error::ErrorMessage, example = json!({"error": "expected application/json"})),
         (status = 503, description = "The enrollment could not be read or recorded; try again (`enrollment_unavailable`).", body = crate::http_error::ErrorMessage, example = json!({"error": "enrollment_unavailable"})),
@@ -254,10 +258,10 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
     let connection = body.connection;
     let kind = match connection {
         ConnectionType::Branch => NodeKind::Host,
-        ConnectionType::Clerk => NodeKind::Owner,
+        ConnectionType::SharedBranch => NodeKind::Owner,
     };
     // The link's secret binds the kind, so a link recorded for a branch
-    // never redeems as a clerk (or the other way round), even after a
+    // never redeems as a shared branch (or the other way round), even after a
     // first redeem that failed.
     let (link_id, secret) = authorized_enrollment_link(code, verifier, kind);
     let request = RedeemRequest {
@@ -282,7 +286,7 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
         Ok(Some((client_id, user_id, redirect_uri, challenge, method, scope))) => {
             // The scope holds the connection type and the branch name
             // chosen at consent: a code approved for a branch never redeems
-            // as a clerk (or the other way round).
+            // as a shared branch (or the other way round).
             let consented = consented_branch(&scope, connection);
             let matches = client_id == BRANCH_CLIENT_ID
                 && redirect_uri == body.redirect_uri
@@ -305,8 +309,8 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
                 let _ = library
                     .insert_security_audit_event(
                         &format!("user:{user_id}"),
-                        if connection == ConnectionType::Clerk {
-                            "clerk_enroll_refused"
+                        if connection == ConnectionType::SharedBranch {
+                            "shared_branch_enroll_refused"
                         } else {
                             "branch_enroll_refused"
                         },
@@ -315,9 +319,9 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
                     .await;
                 return enroll_error(StatusCode::FORBIDDEN, "enrollment_refused");
             };
-            if connection == ConnectionType::Clerk {
-                if let Err(refused) = clerk_still_allowed(&state, &library, user_id).await {
-                    // A refused clerk spends the code, as a mismatch does.
+            if connection == ConnectionType::SharedBranch {
+                if let Err(refused) = shared_branch_still_allowed(&state, &library, user_id).await {
+                    // A refused shared branch spends the code, as a mismatch does.
                     let _ = library.consume_oidc_auth_code(&code_hash).await;
                     return refused;
                 }
@@ -367,27 +371,44 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
             Ok(enrolled) => branch_answer(&state, &library, enrolled, &request).await,
             Err(err) => redeem_answer(Err(err)),
         },
-        ConnectionType::Clerk => match redeem_enrollment_link_as(&library, &request, kind).await {
-            Ok(enrolled) => clerk_answer(&state, &library, &enrolled, &request).await,
-            Err(err) => redeem_answer(Err(err)),
-        },
+        ConnectionType::SharedBranch => {
+            match redeem_enrollment_link_as(&library, &request, kind).await {
+                Ok(enrolled) => shared_branch_answer(&state, &library, &enrolled, &request).await,
+                Err(err) => redeem_answer(Err(err)),
+            }
+        }
     }
 }
 
 /// Plugin keys whose storefront declares `credentials = "shareable"` in
 /// every `plugin.toml` this node knows for it: the plugins discovered on
 /// disk and the active installed versions. Any other plugin counts as a
-/// single keeper, whose accounts do not travel.
+/// single keeper, whose accounts have one keeping node.
 pub(crate) async fn shareable_plugin_keys(
     state: &Arc<AppState>,
     library: &bookclerk_library::LibraryStore,
 ) -> BTreeSet<String> {
-    use bookclerk_plugin_host::{CredentialSharing, PluginManifest};
-    /// Records one manifest's declaration for `key`; `None` is a manifest
-    /// that could not be read, which is not a declaration.
-    fn note(seen: &mut BTreeMap<String, bool>, key: String, manifest: Option<&PluginManifest>) {
-        let shareable = manifest
-            .is_some_and(|manifest| manifest.credential_sharing() == CredentialSharing::Shareable);
+    credential_sharing(state, library)
+        .await
+        .into_iter()
+        .filter_map(|(key, sharing)| (sharing == CredentialSharing::Shareable).then_some(key))
+        .collect()
+}
+
+/// How each plugin this node knows shares its store credentials: shareable
+/// only when every `plugin.toml` known for it (discovered on disk or an
+/// active installed version) declares `credentials = "shareable"`, else
+/// single keeper. A plugin missing from the map is not installed here.
+/// When a declaration cannot be read the map is empty, so nothing travels
+/// and nothing is kept.
+pub(crate) async fn credential_sharing(
+    state: &Arc<AppState>,
+    library: &bookclerk_library::LibraryStore,
+) -> BTreeMap<String, CredentialSharing> {
+    use bookclerk_plugin_host::PluginManifest;
+    /// Records one manifest's declaration for `key`.
+    fn note(seen: &mut BTreeMap<String, bool>, key: String, manifest: &PluginManifest) {
+        let shareable = manifest.credential_sharing() == CredentialSharing::Shareable;
         let entry = seen.entry(key).or_insert(true);
         *entry = *entry && shareable;
     }
@@ -399,18 +420,18 @@ pub(crate) async fn shareable_plugin_keys(
                 note(
                     &mut seen,
                     plugin.identity.plugin_key.to_string(),
-                    Some(&plugin.manifest),
+                    &plugin.manifest,
                 );
             }
         }
         // Without every declaration, nothing travels.
         Ok(Err(err)) => {
             tracing::warn!(error = %err, "plugin discovery failed; no connections travel");
-            return BTreeSet::new();
+            return BTreeMap::new();
         }
         Err(err) => {
             tracing::warn!(error = %err, "plugin discovery stopped; no connections travel");
-            return BTreeSet::new();
+            return BTreeMap::new();
         }
     }
     match bookclerk_library::control_plane::list_installs(library).await {
@@ -429,21 +450,90 @@ pub(crate) async fn shareable_plugin_keys(
                             error = %err,
                             "an installed plugin could not be read; no connections travel"
                         );
-                        return BTreeSet::new();
+                        return BTreeMap::new();
                     }
                 };
-                let manifest = PluginManifest::parse(&version.manifest_toml).ok();
-                note(&mut seen, install.plugin_key, manifest.as_ref());
+                // An unreadable declaration is no declaration: nothing
+                // travels rather than guess the plugin's policy.
+                let manifest = match PluginManifest::parse(&version.manifest_toml) {
+                    Ok(manifest) => manifest,
+                    Err(err) => {
+                        tracing::warn!(
+                            plugin_key = %install.plugin_key,
+                            error = %err,
+                            "an installed plugin's manifest does not parse; no connections travel"
+                        );
+                        return BTreeMap::new();
+                    }
+                };
+                note(&mut seen, install.plugin_key, &manifest);
             }
         }
         Err(err) => {
             tracing::warn!(error = %err, "installed plugins could not be read; no connections travel");
-            return BTreeSet::new();
+            return BTreeMap::new();
         }
     }
     seen.into_iter()
-        .filter_map(|(key, shareable)| shareable.then_some(key))
+        .map(|(key, shareable)| {
+            let sharing = if shareable {
+                CredentialSharing::Shareable
+            } else {
+                CredentialSharing::SingleKeeper
+            };
+            (key, sharing)
+        })
         .collect()
+}
+
+/// The `(plugin_key, account_id)` of `user_id`'s store accounts that may
+/// travel to the branch `node_id` (`None` before the branch exists): every
+/// account of a shareable storefront installed here, and a single-keeper account unless
+/// another branch already keeps it for this library (one keeper per
+/// account; [`bookclerk_library::control_plane::keeping_branch`]). A read
+/// failure leaves that account here.
+pub(crate) async fn travelling_accounts(
+    state: &Arc<AppState>,
+    library: &bookclerk_library::LibraryStore,
+    user_id: i64,
+    node_id: Option<&str>,
+) -> BTreeSet<(String, String)> {
+    let accounts = match member_accounts(library, user_id).await {
+        Ok(accounts) => accounts,
+        Err(err) => {
+            tracing::warn!(error = %err, "could not list the store connections that may travel");
+            return BTreeSet::new();
+        }
+    };
+    let sharing = credential_sharing(state, library).await;
+    let mut travelling = BTreeSet::new();
+    for account in accounts {
+        let travels = match sharing.get(&account.plugin_key) {
+            Some(CredentialSharing::Shareable) => true,
+            // Not installed here: nothing to keep it fresh with.
+            None => false,
+            Some(CredentialSharing::SingleKeeper) => {
+                match bookclerk_library::control_plane::keeping_branch(
+                    library,
+                    &account.plugin_key,
+                    &account.account_id,
+                )
+                .await
+                {
+                    Ok(None) => true,
+                    Ok(Some(keeper)) => node_id == Some(keeper.as_str()),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "could not read who keeps a store connection; it stays here");
+                        false
+                    }
+                }
+            }
+        };
+        if travels {
+            travelling.insert((account.plugin_key, account.account_id));
+        }
+    }
+    travelling
 }
 
 /// The answer to a branch redeem: its cluster and node ids, and when the
@@ -508,9 +598,19 @@ async fn sealed_connections(
             return None;
         }
     }
-    let shareable = shareable_plugin_keys(state, library).await;
-    let is_shareable = move |key: &str| shareable.contains(key);
-    let accounts = match accounts_to_carry(library, enrolled.owner_user_id, &is_shareable).await {
+    // One at a time with branch offers and other joins, from choosing what
+    // travels to recording where it went: two branches joining at once
+    // must not both become an account's keeper.
+    let _serialized = super::host_accounts::ACCOUNTS_GATE.lock().await;
+    let travelling = travelling_accounts(
+        state,
+        library,
+        enrolled.owner_user_id,
+        Some(&enrolled.node_id),
+    )
+    .await;
+    let travels = move |key: &str, id: &str| travelling.contains(&(key.to_owned(), id.to_owned()));
+    let accounts = match accounts_to_carry_where(library, enrolled.owner_user_id, &travels).await {
         Ok(accounts) if accounts.is_empty() => return None,
         Ok(accounts) => accounts,
         Err(err) => {
@@ -569,22 +669,22 @@ async fn sealed_connections(
     Some(sealed)
 }
 
-/// Refuses a clerk redeem unless the code's user is still an active Owner
+/// Refuses a shared branch redeem unless the code's user is still an active Owner
 /// and this library's database can still be shared.
-async fn clerk_still_allowed(
+async fn shared_branch_still_allowed(
     state: &Arc<AppState>,
     library: &bookclerk_library::LibraryStore,
     user_id: i64,
-) -> Result<ClerkDatabase, Response> {
+) -> Result<SharedBranchDatabase, Response> {
     if verify_cluster_owner(library, user_id).await.is_err() {
         tracing::warn!(
             user_id,
-            "clerk enrollment refused: the user is not an Owner"
+            "shared branch enrollment refused: the user is not an Owner"
         );
         let _ = library
             .insert_security_audit_event(
                 &format!("user:{user_id}"),
-                "clerk_enroll_refused",
+                "shared_branch_enroll_refused",
                 Some(r#"{"reason":"not_owner"}"#),
             )
             .await;
@@ -594,23 +694,23 @@ async fn clerk_still_allowed(
     database.map_err(|_| {
         tracing::warn!(
             user_id,
-            "clerk enrollment refused: this library's database cannot be shared"
+            "shared branch enrollment refused: this library's database cannot be shared"
         );
         enroll_error(StatusCode::CONFLICT, "database_not_shareable")
     })
 }
 
-/// The answer to a clerk redeem: the `[database]` bootstrap and this
+/// The answer to a shared branch redeem: the `[database]` bootstrap and this
 /// process's DEK sealed to the node's enrolled box key, bound to the
 /// cluster and node ids. Re-checked on every answer (a retry too): the
 /// node's owner must still be an Owner and the database shareable.
-async fn clerk_answer(
+async fn shared_branch_answer(
     state: &Arc<AppState>,
     library: &bookclerk_library::LibraryStore,
     enrolled: &EnrolledNode,
     request: &RedeemRequest,
 ) -> Response {
-    let database = match clerk_still_allowed(state, library, enrolled.owner_user_id).await {
+    let database = match shared_branch_still_allowed(state, library, enrolled.owner_user_id).await {
         Ok(database) => database,
         Err(refused) => return refused,
     };
@@ -618,12 +718,12 @@ async fn clerk_answer(
     let dek = match bookclerk_library::require_master_key(Some(&files_dir)) {
         Ok(dek) => dek,
         Err(err) => {
-            tracing::warn!(error = %err, "clerk enrollment: the data-encryption key is unavailable");
+            tracing::warn!(error = %err, "shared branch enrollment: the data-encryption key is unavailable");
             return enroll_error(StatusCode::SERVICE_UNAVAILABLE, "enrollment_unavailable");
         }
     };
-    let bootstrap = ClerkBootstrap {
-        v: CLERK_BOOTSTRAP_VERSION,
+    let bootstrap = SharedBranchBootstrap {
+        v: SHARED_BRANCH_BOOTSTRAP_VERSION,
         cluster_id: enrolled.cluster_id.clone(),
         node_id: enrolled.node_id.clone(),
         database,
@@ -636,7 +736,8 @@ async fn clerk_answer(
         rand::rngs::OsRng.fill_bytes(raw.as_mut_slice());
         raw
     };
-    let sealed = match seal_clerk_bootstrap(&request.box_public_key, &ephemeral, &bootstrap) {
+    let sealed = match seal_shared_branch_bootstrap(&request.box_public_key, &ephemeral, &bootstrap)
+    {
         Ok(sealed) => sealed,
         Err(_) => return enroll_error(StatusCode::BAD_REQUEST, "invalid box_pk"),
     };
@@ -652,21 +753,21 @@ async fn clerk_answer(
         let _ = library
             .insert_security_audit_event(
                 &format!("user:{}", enrolled.owner_user_id),
-                "clerk_enrolled",
+                "shared_branch_enrolled",
                 Some(&detail),
             )
             .await;
         tracing::info!(
             node_id = %enrolled.node_id,
             owner_user_id = enrolled.owner_user_id,
-            "a clerk joined the library (owner node); its bootstrap was sealed to its node key"
+            "a server joined the library as a shared branch (owner node); its bootstrap was sealed to its node key"
         );
     }
     no_store(
         Json(OAuthEnrollAnswer {
             cluster_id: enrolled.cluster_id.clone(),
             node_id: enrolled.node_id.clone(),
-            connection: ConnectionType::Clerk,
+            connection: ConnectionType::SharedBranch,
             bootstrap: Some(sealed),
             accounts: None,
         })
@@ -683,7 +784,7 @@ const BRING_CONNECTIONS_MARK: &str = " bring:connections";
 
 /// The scope stored with a sign-in's authorization code: the connection
 /// type's granted scope ([`BRANCH_SCOPE`] for a branch,
-/// [`bookclerk_node_proto::CLERK_GRANTED_SCOPE`] for a clerk), then the
+/// [`bookclerk_node_proto::SHARED_BRANCH_GRANTED_SCOPE`] for a shared branch), then the
 /// branch name the user consented to (base64url), then
 /// [`BRING_CONNECTIONS_MARK`] when the user chose to bring their store
 /// connections (a branch only). The redeem enrolls the node under that
@@ -717,7 +818,7 @@ struct Consented {
 fn consented_branch(scope: &str, connection: ConnectionType) -> Option<Consented> {
     use base64::Engine as _;
     // The granted scopes contain no `name:` token and base64url has no
-    // space, so a branch scope never parses as a clerk one or back.
+    // space, so a branch scope never parses as a shared branch one or back.
     let rest = scope
         .strip_prefix(connection.granted_scope())?
         .strip_prefix(CONSENTED_NAME_MARK)?;
@@ -747,24 +848,33 @@ mod scope_tests {
 
     #[test]
     fn the_scope_carries_the_type_and_the_consented_name() {
-        for connection in [ConnectionType::Branch, ConnectionType::Clerk] {
+        for connection in [ConnectionType::Branch, ConnectionType::SharedBranch] {
             let scope = consented_scope(connection, "Den PC", false);
             assert_eq!(name(&scope, connection).as_deref(), Some("Den PC"));
         }
         let branch = consented_scope(ConnectionType::Branch, "Den PC", false);
-        let clerk = consented_scope(ConnectionType::Clerk, "Den PC", false);
+        let shared_branch = consented_scope(ConnectionType::SharedBranch, "Den PC", false);
         assert_eq!(branch, "node:enroll name:RGVuIFBD");
-        assert_eq!(clerk, "node:enroll node:clerk name:RGVuIFBD");
-        // A branch-approved code never redeems as a clerk, nor the reverse.
-        assert_eq!(name(&branch, ConnectionType::Clerk), None);
-        assert_eq!(name(&clerk, ConnectionType::Branch), None);
+        assert_eq!(
+            shared_branch,
+            "node:enroll node:shared_branch name:RGVuIFBD"
+        );
+        // A branch-approved code never redeems as a shared branch, nor the reverse.
+        assert_eq!(name(&branch, ConnectionType::SharedBranch), None);
+        assert_eq!(name(&shared_branch, ConnectionType::Branch), None);
         // The bare scopes (no consented name) and an invalid name refuse.
         assert_eq!(name("node:enroll", ConnectionType::Branch), None);
-        assert_eq!(name("node:enroll node:clerk", ConnectionType::Clerk), None);
         assert_eq!(
             name(
-                &consented_scope(ConnectionType::Clerk, "", false),
-                ConnectionType::Clerk
+                "node:enroll node:shared_branch",
+                ConnectionType::SharedBranch
+            ),
+            None
+        );
+        assert_eq!(
+            name(
+                &consented_scope(ConnectionType::SharedBranch, "", false),
+                ConnectionType::SharedBranch
             ),
             None
         );
@@ -781,13 +891,16 @@ mod scope_tests {
                 bring_connections: true,
             })
         );
-        // A clerk shares the library's database: nothing to bring.
-        let clerk = consented_scope(ConnectionType::Clerk, "Den PC", true);
-        assert_eq!(clerk, "node:enroll node:clerk name:RGVuIFBD");
+        // A shared branch shares the library's database: nothing to bring.
+        let shared_branch = consented_scope(ConnectionType::SharedBranch, "Den PC", true);
+        assert_eq!(
+            shared_branch,
+            "node:enroll node:shared_branch name:RGVuIFBD"
+        );
         assert_eq!(
             consented_branch(
-                "node:enroll node:clerk name:RGVuIFBD bring:connections",
-                ConnectionType::Clerk
+                "node:enroll node:shared_branch name:RGVuIFBD bring:connections",
+                ConnectionType::SharedBranch
             ),
             None
         );
@@ -834,18 +947,18 @@ pub struct BranchAuthorizeParams {
     #[serde(default)]
     #[schema(example = "study-mini")]
     pub branch_name: Option<String>,
-    /// `1` when the joining install offers to join as a clerk
-    /// ([`bookclerk_node_proto::CLERK_OFFER_PARAM`]).
+    /// `1` when the joining install offers to join as a shared branch
+    /// ([`bookclerk_node_proto::SHARED_BRANCH_OFFER_PARAM`]).
     #[serde(default)]
     #[schema(example = "1")]
-    pub clerk_offer: Option<String>,
+    pub shared_branch_offer: Option<String>,
 }
 
 impl BranchAuthorizeParams {
-    /// True when the joining install offered to join as a clerk.
+    /// True when the joining install offered to join as a shared branch.
     #[must_use]
-    pub fn clerk_offered(&self) -> bool {
-        self.clerk_offer.as_deref() == Some("1")
+    pub fn shared_branch_offered(&self) -> bool {
+        self.shared_branch_offer.as_deref() == Some("1")
     }
 }
 
@@ -905,11 +1018,11 @@ pub(crate) fn branch_request_problem(params: &BranchAuthorizeParams) -> Option<&
         return Some("malformed state");
     }
     if params
-        .clerk_offer
+        .shared_branch_offer
         .as_deref()
         .is_some_and(|offer| offer != "1")
     {
-        return Some("malformed clerk_offer");
+        return Some("malformed shared_branch_offer");
     }
     None
 }
@@ -972,9 +1085,10 @@ pub struct ConsentConnection {
     /// The account's display label, when it has one.
     #[schema(example = "Sam")]
     pub label: Option<String>,
-    /// True when the storefront lets its login be used in more than one
-    /// place, so the connection travels; false when it keeps one login
-    /// that only this library refreshes.
+    /// True when the connection travels: a shareable storefront's, or a
+    /// single-keeper one's that no other branch keeps yet (the branch then
+    /// keeps its login fresh for this library). False when another branch
+    /// already keeps it, or it does not fit one join's bundle.
     #[schema(example = true)]
     pub travels: bool,
 }
@@ -991,7 +1105,7 @@ pub struct ConsentingUser {
 }
 
 /// What the consent page may offer: branch only, or a choice between
-/// branch and clerk for an Owner.
+/// branch and shared branch for an Owner.
 ///
 /// The schema is written by hand as an `anyOf`: an Owner's answer also
 /// satisfies [`BranchOnlyChoice`] (that schema admits extra properties),
@@ -1001,7 +1115,7 @@ pub struct ConsentingUser {
 pub enum ConnectionChoice {
     /// Only a branch (the user is not an Owner).
     BranchOnly(BranchOnlyChoice),
-    /// An Owner may pick clerk, when it is available.
+    /// An Owner may pick shared branch, when it is available.
     Owner(OwnerChoice),
 }
 
@@ -1017,10 +1131,10 @@ impl utoipa::PartialSchema for ConnectionChoice {
             .item(
                 RefBuilder::new()
                     .ref_location_from_schema_name("OwnerChoice")
-                    .description(Some("An Owner may pick clerk, when it is available.")),
+                    .description(Some("An Owner may pick shared_branch, when it is available.")),
             )
             .description(Some(
-                "What the consent page may offer: branch only, or a choice between branch and clerk for an Owner.",
+                "What the consent page may offer: branch only, or a choice between branch and shared_branch for an Owner.",
             ))
             .into()
     }
@@ -1051,7 +1165,7 @@ pub struct BranchOnlyChoice {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-/// The consent page's connection block for an Owner, who may pick clerk.
+/// The consent page's connection block for an Owner, who may pick shared branch.
 pub struct OwnerChoice {
     /// Always `true`.
     #[schema(example = true)]
@@ -1059,14 +1173,14 @@ pub struct OwnerChoice {
     /// Always `branch`.
     #[schema(example = "branch")]
     pub default: &'static str,
-    /// Whether clerk may be chosen right now.
+    /// Whether shared branch may be chosen right now.
     #[schema(example = false)]
-    pub clerk_available: bool,
-    /// Why clerk is shown disabled, when it is.
+    pub shared_branch_available: bool,
+    /// Why shared branch is shown disabled, when it is.
     #[schema(
         example = "The joining server already holds library data of its own (or did not offer it), so it can only join as a branch."
     )]
-    pub clerk_reason: Option<String>,
+    pub shared_branch_reason: Option<String>,
     /// The second factors the Owner can step up with (`totp`, `passkey`).
     #[schema(example = json!(["passkey"]))]
     pub step_up: Vec<&'static str>,
@@ -1268,8 +1382,8 @@ async fn step_up_methods(
     Ok(methods)
 }
 
-/// What the consent page may offer: a choice between branch and clerk for
-/// an Owner (the stored role), branch only for everyone else. Clerk is
+/// What the consent page may offer: a choice between branch and shared branch for
+/// an Owner (the stored role), branch only for everyone else. Shared branch is
 /// shown disabled, with the reason, when the joining install did not offer
 /// it, the database is not shareable, or the user has no second factor.
 async fn connection_view(
@@ -1286,7 +1400,7 @@ async fn connection_view(
         }));
     }
     let methods = step_up_methods(&library, user).await?;
-    let reason = if !params.clerk_offered() {
+    let reason = if !params.shared_branch_offered() {
         Some(
             "The joining server already holds library data of its own (or did not offer it), so \
              it can only join as a branch."
@@ -1296,7 +1410,7 @@ async fn connection_view(
         Some(reason)
     } else if methods.is_empty() {
         Some(
-            "Joining as a clerk needs a fresh second factor. Set up an authenticator app or a \
+            "Joining as a shared branch needs a fresh second factor. Set up an authenticator app or a \
              passkey on your account first."
                 .to_string(),
         )
@@ -1306,13 +1420,13 @@ async fn connection_view(
     Ok(ConnectionChoice::Owner(OwnerChoice {
         choice: true,
         default: "branch",
-        clerk_available: reason.is_none(),
-        clerk_reason: reason,
+        shared_branch_available: reason.is_none(),
+        shared_branch_reason: reason,
         step_up: methods,
     }))
 }
 
-/// A fresh second factor for a clerk consent. `Debug` prints no code.
+/// A fresh second factor for a shared branch consent. `Debug` prints no code.
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(tag = "method", rename_all = "lowercase")]
 pub enum StepUp {
@@ -1363,9 +1477,9 @@ async fn consent_connections(state: &Arc<AppState>, user_id: i64) -> Vec<Consent
     }
     // The same selection a redeem makes, so a listed connection travels
     // exactly when it would be sent.
-    let shareable = shareable_plugin_keys(state, &library).await;
-    let is_shareable = move |key: &str| shareable.contains(key);
-    let carried: BTreeSet<(String, String)> = accounts_to_carry(&library, user_id, &is_shareable)
+    let travelling = travelling_accounts(state, &library, user_id, None).await;
+    let travels = move |key: &str, id: &str| travelling.contains(&(key.to_owned(), id.to_owned()));
+    let carried: BTreeSet<(String, String)> = accounts_to_carry_where(&library, user_id, &travels)
         .await
         .map(|carried| {
             carried
@@ -1385,8 +1499,8 @@ async fn consent_connections(state: &Arc<AppState>, user_id: i64) -> Vec<Consent
         .collect()
 }
 
-/// WebAuthn challenge kind of a clerk step-up.
-pub(crate) const CLERK_STEP_UP_KIND: &str = "clerk_step_up";
+/// WebAuthn challenge kind of a shared branch step-up.
+pub(crate) const SHARED_BRANCH_STEP_UP_KIND: &str = "shared_branch_step_up";
 
 /// `POST /api/auth/branch-consent` body.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -1397,15 +1511,15 @@ pub struct BranchConsentBody {
     /// True to let the branch join; false to deny.
     #[schema(example = true)]
     pub approve: bool,
-    /// `branch` (default) or `clerk`.
+    /// `branch` (default) or `shared_branch`.
     #[serde(default)]
     #[schema(example = "branch")]
     pub connection: Option<String>,
-    /// The fresh second factor a clerk needs.
+    /// The fresh second factor a shared branch needs.
     #[serde(default)]
     pub step_up: Option<StepUp>,
     /// True to send the user's store connections that may travel to the
-    /// branch when it joins. Ignored for a clerk. Defaults to false.
+    /// branch when it joins. Ignored for a shared branch. Defaults to false.
     #[serde(default)]
     #[schema(example = false)]
     pub bring_connections: bool,
@@ -1422,27 +1536,27 @@ pub struct BranchConsentBody {
     security(("portalSession" = []), ("operatorSession" = [])),
     responses(
         (status = 200, description = "`{redirect}` back to the branch.", body = ConsentRedirect),
-        (status = 400, description = "The body or its authorize parameters are invalid (`invalid_request`), or the joining server did not offer a clerk join (`clerk_not_offered`).", body = crate::http_error::ErrorDetail, examples(
+        (status = 400, description = "The body or its authorize parameters are invalid (`invalid_request`), or the joining server did not offer a shared branch join (`shared_branch_not_offered`).", body = crate::http_error::ErrorDetail, examples(
             ("malformed" = (summary = "The body does not parse.", value = json!({"error": "invalid_request", "detail": "malformed consent"}))),
-            ("bad_connection" = (summary = "The connection type is not branch or clerk.", value = json!({"error": "invalid_request", "detail": "connection must be branch or clerk"}))),
+            ("bad_connection" = (summary = "The connection type is not branch or shared_branch.", value = json!({"error": "invalid_request", "detail": "connection must be branch or shared_branch"}))),
             ("bad_redirect" = (summary = "The redirect URI cannot carry the answer.", value = json!({"error": "invalid_request", "detail": "bad redirect"}))),
-            ("clerk_not_offered" = (summary = "The joining server did not offer to join as a clerk.", value = json!({"error": "clerk_not_offered", "detail": "the joining server did not offer to join as a clerk; it can join as a branch"}))),
+            ("shared_branch_not_offered" = (summary = "The joining server did not offer to join as a shared branch.", value = json!({"error": "shared_branch_not_offered", "detail": "the joining server did not offer to join as a shared branch; it can join as a branch"}))),
             ("unknown_client" = (summary = "The client id is not the branch client.", value = json!({"error": "invalid_request", "detail": "unknown client"}))),
         )),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller is not an active library user (`user_required`, `user_inactive`), this library is not accepting branches (`enrollment_disabled`), a clerk join needs an Owner (`owner_required`) with a second factor (`step_up_unavailable`) that was confirmed (`step_up_required`) and passed (`step_up_failed`), the connection failed the transport policy (`transport_insecure`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::NodeRefusal, examples(
+        (status = 403, description = "The caller is not an active library user (`user_required`, `user_inactive`), this library is not accepting branches (`enrollment_disabled`), a shared branch join needs an Owner (`owner_required`) with a second factor (`step_up_unavailable`) that was confirmed (`step_up_required`) and passed (`step_up_failed`), the connection failed the transport policy (`transport_insecure`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::NodeRefusal, examples(
             ("user_required" = (summary = "The session is not a library user.", value = json!({"error": "user_required", "detail": "a branch belongs to a user: sign in with your account on this library"}))),
             ("user_inactive" = (summary = "The account is not active.", value = json!({"error": "user_inactive", "detail": "this account is not active"}))),
             ("enrollment_disabled" = (summary = "This library has host enrollment switched off.", value = json!({"error": "enrollment_disabled", "detail": "this library isn't accepting new branches"}))),
-            ("owner_required" = (summary = "Only an Owner can let a clerk join.", value = json!({"error": "owner_required", "detail": "only an Owner of this library can let a server join as a clerk"}))),
-            ("step_up_unavailable" = (summary = "The Owner has no second factor to confirm with.", value = json!({"error": "step_up_unavailable", "detail": "joining as a clerk needs a fresh second factor: set up an authenticator app or a passkey on your account first"}))),
-            ("step_up_required" = (summary = "The clerk join was not confirmed with a second factor.", value = json!({"error": "step_up_required", "detail": "confirm with your authenticator app or a passkey to let a clerk join"}))),
+            ("owner_required" = (summary = "Only an Owner can let a shared branch join.", value = json!({"error": "owner_required", "detail": "only an Owner of this library can let a shared branch join"}))),
+            ("step_up_unavailable" = (summary = "The Owner has no second factor to confirm with.", value = json!({"error": "step_up_unavailable", "detail": "joining as a shared branch needs a fresh second factor: set up an authenticator app or a passkey on your account first"}))),
+            ("step_up_required" = (summary = "The shared branch join was not confirmed with a second factor.", value = json!({"error": "step_up_required", "detail": "confirm with your authenticator app or a passkey to let a shared branch join"}))),
             ("transport_insecure" = (summary = "Plain HTTP from another machine.", value = json!({"error": "transport_insecure", "reason": "plain_http"}))),
             ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
         (status = 404, description = "The node API is not mounted on this listener (`node_api_unmounted`).", body = crate::http_error::ErrorMessage, example = json!({"error": "node_api_unmounted"})),
-        (status = 409, description = "This library's database cannot be shared with a clerk (`database_not_shareable`).", body = crate::http_error::ErrorDetail, example = json!({"error": "database_not_shareable", "detail": "This library keeps its database in a SQLite file that only this server can open. A clerk needs a PostgreSQL or Cloudflare D1 database."})),
+        (status = 409, description = "This library's database cannot be shared with another server (`database_not_shareable`).", body = crate::http_error::ErrorDetail, example = json!({"error": "database_not_shareable", "detail": "This library keeps its database in a SQLite file that only this server can open. Sharing it needs a PostgreSQL or Cloudflare D1 database."})),
         (status = 413, description = "The body is larger than 8 KiB.", body = crate::http_error::ErrorMessage, example = json!({"error": "request too large"})),
         (status = 415, description = "The request is not `application/json`.", body = crate::http_error::ErrorMessage, example = json!({"error": "expected application/json"})),
         (status = 429, description = "Too many wrong step-up codes; wait a few minutes (`step_up_locked`).", body = crate::http_error::ErrorDetail, example = json!({"error": "step_up_locked", "detail": "too many wrong codes; wait a few minutes"})),
@@ -1484,7 +1598,7 @@ pub async fn post_branch_consent(
             return consent_error(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
-                "connection must be branch or clerk",
+                "connection must be branch or shared_branch",
             )
         }
     };
@@ -1520,9 +1634,9 @@ pub async fn post_branch_consent(
             return consent_error(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "try again");
         }
     }
-    if connection == ConnectionType::Clerk {
+    if connection == ConnectionType::SharedBranch {
         if let Err(refused) =
-            check_clerk_consent(&state, &parts.headers, &user, &params, body.step_up).await
+            check_shared_branch_consent(&state, &parts.headers, &user, &params, body.step_up).await
         {
             return refused;
         }
@@ -1567,8 +1681,8 @@ pub async fn post_branch_consent(
     let _ = library
         .insert_security_audit_event(
             &format!("user:{}", user.id),
-            if connection == ConnectionType::Clerk {
-                "clerk_authorize"
+            if connection == ConnectionType::SharedBranch {
+                "shared_branch_authorize"
             } else {
                 "branch_authorize"
             },
@@ -1579,8 +1693,8 @@ pub async fn post_branch_consent(
     if !state_param.is_empty() {
         pairs.push(("state", &state_param));
     }
-    if connection == ConnectionType::Clerk {
-        pairs.push(("connection", ConnectionType::Clerk.as_str()));
+    if connection == ConnectionType::SharedBranch {
+        pairs.push(("connection", ConnectionType::SharedBranch.as_str()));
     }
     match redirect_with(&params.redirect_uri, &pairs) {
         Some(redirect) => no_store(Json(ConsentRedirect { redirect }).into_response()),
@@ -1588,12 +1702,12 @@ pub async fn post_branch_consent(
     }
 }
 
-/// The checks a clerk approval adds: the joining install offered it, the
+/// The checks a shared branch approval adds: the joining install offered it, the
 /// signed-in user is an Owner (the stored role), the database can be
 /// shared, and a fresh second factor verifies now (TOTP, or a passkey
 /// assertion with user verification). An Owner with neither factor is
 /// refused with how to set one up.
-async fn check_clerk_consent(
+async fn check_shared_branch_consent(
     state: &Arc<AppState>,
     headers: &HeaderMap,
     user: &bookclerk_library::UserRecord,
@@ -1610,18 +1724,18 @@ async fn check_clerk_consent(
             let _ = library
                 .insert_security_audit_event(
                     &format!("user:{user_id}"),
-                    "clerk_authorize_refused",
+                    "shared_branch_authorize_refused",
                     Some(&audit),
                 )
                 .await;
             response
         }
     };
-    if !params.clerk_offered() {
+    if !params.shared_branch_offered() {
         return Err(refuse(
             StatusCode::BAD_REQUEST,
-            "clerk_not_offered",
-            "the joining server did not offer to join as a clerk; it can join as a branch",
+            "shared_branch_not_offered",
+            "the joining server did not offer to join as a shared branch; it can join as a branch",
         )
         .await);
     }
@@ -1629,7 +1743,7 @@ async fn check_clerk_consent(
         return Err(refuse(
             StatusCode::FORBIDDEN,
             "owner_required",
-            "only an Owner of this library can let a server join as a clerk",
+            "only an Owner of this library can let a shared branch join",
         )
         .await);
     }
@@ -1641,11 +1755,11 @@ async fn check_clerk_consent(
         return Err(refuse(
             StatusCode::FORBIDDEN,
             "step_up_unavailable",
-            "joining as a clerk needs a fresh second factor: set up an authenticator app or a passkey on your account first",
+            "joining as a shared branch needs a fresh second factor: set up an authenticator app or a passkey on your account first",
         )
         .await);
     }
-    let throttle_key = format!("clerk-step-up:{}", user.id);
+    let throttle_key = format!("shared-branch-step-up:{}", user.id);
     let auth = state.auth_snapshot().await;
     if auth.login_throttle_check(&throttle_key).await.is_some() {
         return Err(consent_error(
@@ -1659,7 +1773,7 @@ async fn check_clerk_consent(
             return Err(consent_error(
                 StatusCode::FORBIDDEN,
                 "step_up_required",
-                "confirm with your authenticator app or a passkey to let a clerk join",
+                "confirm with your authenticator app or a passkey to let a shared branch join",
             ))
         }
         Some(StepUp::Totp { code }) => {
@@ -1677,7 +1791,7 @@ async fn check_clerk_consent(
             state,
             headers,
             user.id,
-            CLERK_STEP_UP_KIND,
+            SHARED_BRANCH_STEP_UP_KIND,
             &challenge_id,
             credential,
         )
@@ -1698,7 +1812,7 @@ async fn check_clerk_consent(
 }
 
 /// `POST /api/auth/branch-consent/step-up`: starts a passkey step-up for a
-/// clerk consent (an Owner with a passkey). Answers the WebAuthn request
+/// shared branch consent (an Owner with a passkey). Answers the WebAuthn request
 /// options with a `challenge_id` to send back in the consent's `step_up`.
 #[utoipa::path(
     post,
@@ -1711,7 +1825,7 @@ async fn check_clerk_consent(
         (status = 403, description = "The caller is not an active library user (`user_required`, `user_inactive`), not an Owner (`owner_required`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
             ("user_required" = (summary = "The session is not a library user.", value = json!({"error": "user_required", "detail": "a branch belongs to a user: sign in with your account on this library"}))),
             ("user_inactive" = (summary = "The account is not active.", value = json!({"error": "user_inactive", "detail": "this account is not active"}))),
-            ("owner_required" = (summary = "Only an Owner can let a clerk join.", value = json!({"error": "owner_required", "detail": "only an Owner of this library can let a server join as a clerk"}))),
+            ("owner_required" = (summary = "Only an Owner can let a shared branch join.", value = json!({"error": "owner_required", "detail": "only an Owner of this library can let a shared branch join"}))),
             ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
@@ -1734,10 +1848,12 @@ pub async fn post_branch_consent_step_up(
         return consent_error(
             StatusCode::FORBIDDEN,
             "owner_required",
-            "only an Owner of this library can let a server join as a clerk",
+            "only an Owner of this library can let a shared branch join",
         );
     }
-    match crate::passkeys::begin_step_up(&state, &headers, user.id, CLERK_STEP_UP_KIND).await {
+    match crate::passkeys::begin_step_up(&state, &headers, user.id, SHARED_BRANCH_STEP_UP_KIND)
+        .await
+    {
         Ok(options) => no_store(options.into_response()),
         Err(StatusCode::NOT_FOUND) => consent_error(
             StatusCode::NOT_FOUND,
@@ -2082,5 +2198,5 @@ pub(crate) fn is_json(headers: &HeaderMap) -> bool {
 pub(crate) mod tests;
 
 #[cfg(test)]
-#[path = "clerk_tests.rs"]
-pub(crate) mod clerk_tests;
+#[path = "shared_branch_tests.rs"]
+pub(crate) mod shared_branch_tests;

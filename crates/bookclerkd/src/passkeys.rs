@@ -870,7 +870,7 @@ async fn elevate_finish(
 }
 
 /// Starts a user-verified passkey step-up for `user_id` (its own challenge
-/// `kind`, five minutes): the clerk consent's fresh second factor. 404 when
+/// `kind`, five minutes): the shared branch consent's fresh second factor. 404 when
 /// the user has no passkey.
 ///
 /// # Errors

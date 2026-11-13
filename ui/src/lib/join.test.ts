@@ -5,7 +5,7 @@ import {
   answerClientConsent,
   rememberApproveReturn,
   takeApproveReturn,
-  clerkNodes,
+  sharedBranchNodes,
   authorizeParams,
   branchSharingSummary,
   broughtConnectionsSummary,
@@ -14,12 +14,12 @@ import {
   branchTitlesNote,
   fingerprintGroups,
   formatCountdown,
-  isClerkJoined,
+  isSharedBranchJoined,
   isConsentRedirect,
   jobShareSummary,
   JoinApiError,
   joinErrorMessage,
-  listClerks,
+  listSharedBranches,
   looksLikeBranchInvite,
   parseJoinCallback,
   windowEntryFormats,
@@ -125,8 +125,10 @@ describe("parseJoinCallback", () => {
     });
   });
 
-  it("relays a clerk approval, and nothing else as one", () => {
-    expect(parseJoinCallback("?code=c1&state=s1&connection=clerk")?.connection).toBe("clerk");
+  it("relays a shared_branch approval, and nothing else as one", () => {
+    expect(parseJoinCallback("?code=c1&state=s1&connection=shared_branch")?.connection).toBe(
+      "shared_branch",
+    );
     expect(parseJoinCallback("?code=c1&state=s1&connection=owner")?.connection).toBe("branch");
   });
 
@@ -302,12 +304,12 @@ describe("answerBranchConsent", () => {
     expect(bodies[2]).not.toHaveProperty("bring_connections");
   });
 
-  it("sends a clerk approval with its step-up, and never on a denial", async () => {
+  it("sends a shared_branch approval with its step-up, and never on a denial", async () => {
     const fetchMock = stubFetch();
     const stepUp = { method: "totp" as const, code: "123456" };
     await answerBranchConsent(AUTHORIZE, true, { step_up: stepUp });
     const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
-    expect(body.connection).toBe("clerk");
+    expect(body.connection).toBe("shared_branch");
     expect(body.step_up).toEqual(stepUp);
     await answerBranchConsent(AUTHORIZE, false, { step_up: stepUp });
     const denied = JSON.parse(String(fetchMock.mock.calls[1][1].body));
@@ -346,11 +348,11 @@ describe("setBranchSharing", () => {
   });
 });
 
-describe("isClerkJoined", () => {
-  it("tells a clerk answer from a branch's", () => {
+describe("isSharedBranchJoined", () => {
+  it("tells a shared_branch answer from a branch's", () => {
     expect(
-      isClerkJoined({
-        connection: "clerk",
+      isSharedBranchJoined({
+        connection: "shared_branch",
         cluster_id: "c",
         node_id: "n",
         library_name: "Home",
@@ -360,7 +362,7 @@ describe("isClerkJoined", () => {
       }),
     ).toBe(true);
     expect(
-      isClerkJoined({
+      isSharedBranchJoined({
         cluster: {
           cluster_id: "c",
           owner_origin: "https://library.example",
@@ -376,29 +378,29 @@ describe("isClerkJoined", () => {
   });
 });
 
-describe("clerkNodes", () => {
+describe("sharedBranchNodes", () => {
   it("lists owner nodes only, this server first", () => {
     const node = (node_id: string, kind: "owner" | "host", this_node = false) =>
       ({ node_id, kind, this_node }) as ConfigNodeView;
     expect(
-      clerkNodes([node("b", "owner"), node("h", "host"), node("a", "owner", true)]).map(
+      sharedBranchNodes([node("b", "owner"), node("h", "host"), node("a", "owner", true)]).map(
         (n) => n.node_id,
       ),
     ).toEqual(["a", "b"]);
   });
 });
 
-describe("listClerks", () => {
+describe("listSharedBranches", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("reads the Owner-wide clerk listing, not the owned-nodes one", async () => {
+  it("reads the Owner-wide shared_branch listing, not the owned-nodes one", async () => {
     const fetchMock = vi.fn(
       async (_url: string, _init: RequestInit) =>
         new Response(JSON.stringify({ node_id: "a", nodes: [] }), { status: 200 }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    await expect(listClerks()).resolves.toEqual({ node_id: "a", nodes: [] });
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/config/clerks");
+    await expect(listSharedBranches()).resolves.toEqual({ node_id: "a", nodes: [] });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/config/shared-branches");
   });
 });
 

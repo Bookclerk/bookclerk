@@ -701,6 +701,9 @@ mod tests {
             CatalogHit {
                 product_id: String::from("p9"),
                 title: String::from("Children of Dune"),
+                work_kind: bookclerk_source::records::WorkKind::Book,
+                expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+                media_kind: bookclerk_source::records::MediaKind::Audio,
                 ..CatalogHit::default()
             },
         );

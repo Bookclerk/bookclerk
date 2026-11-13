@@ -8,6 +8,7 @@
 //! at the record boundary and uses these entities (`Entity::find`,
 //! `ActiveModel`) for the majority of CRUD.
 
+pub mod account_credential_revisions;
 pub mod account_links;
 pub mod account_scan_state;
 pub mod account_shares;
@@ -31,6 +32,7 @@ pub mod discover_fetches;
 pub mod discover_request_queue;
 pub mod discover_store_call_hits;
 pub mod discover_store_calls;
+pub mod discover_tastes;
 pub mod domain_events;
 pub mod edition_files;
 pub mod edition_identifiers;

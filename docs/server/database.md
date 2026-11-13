@@ -19,7 +19,7 @@ Bookclerk stores library state (accounts, books, portal, discovery) in a
 | Backend | When to use it |
 | --- | --- |
 | SQLite (`sqlite`, the default) | One server. A local file, `$BOOKCLERK_FILES_DIR/library.db` |
-| PostgreSQL (`postgres`) | A shared database, for example for [clerks](cluster-hosts.md#clerks) |
+| PostgreSQL (`postgres`) | A shared database, for example for [shared branches](cluster-hosts.md#shared-branches) |
 | Cloudflare D1 (`d1`) | Remote SQLite through the Cloudflare HTTP API |
 
 Which backend to open is **bootstrap** configuration: `[database]` and the
@@ -669,9 +669,9 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `accounts`, `books`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
 `operator_sessions`, `account_links`, `member_account_rules`,
-`account_shares`, `listening_progress`, `title_requests`, `title_request_sources`,
+`account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `discover_candidates`, `discover_store_calls`,
-`discover_store_call_hits`, `discover_feeds`, `discover_fetches`,
+`discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
 `user_preferences`, `encrypted_secrets`, `jobs`,
 `job_temp_paths`, `domain_events`, `event_deliveries`,
@@ -684,7 +684,13 @@ accounts: a row with `may_connect = 0` stops that user from connecting
 store accounts here, and no row allows it. `account_shares` records each
 account a person's join sent to a branch (`sent`, peer `node:<id>`) or
 received from a library (`received`, peer `link:<cluster id>`); it is
-removed with the account.
+removed with the account. `account_credential_revisions` holds, per account
+and peer, the newest sign-in revision of a single-keeper account: on a
+library the last one applied from its keeper branch, on that branch the
+last one sent to each library, with a fingerprint of the sign-in sent
+(`observed`). It is removed with the account. When an
+account is taken back with no link left, its `node:` rows in both tables
+go too, so the library picks its next keeper afresh.
 
 The library model ([ADR](../adr/library-data-model.md)) stores what the
 library holds as works, expressions and editions:
@@ -860,4 +866,4 @@ let plain = unseal_secret(&record)?;
 - [ADR: SQL database contract](../adr/sql-database-contract.md) and the
   [SQL-v1 contract](../plugins/sql-contract/v1.md): the SQL every adapter accepts.
 - [Libraries and branches](cluster-hosts.md): sharing one database between
-  clerks.
+  a library and its branches.

@@ -203,16 +203,16 @@ async fn scan_rows_carry_structured_records() {
     assert_eq!(rows.len(), 2);
 
     let episode = &rows[0];
-    assert_eq!(episode.work_kind, WorkKind::PodcastEpisode);
-    assert_eq!(episode.expression_kind, ExpressionKind::PodcastAudio);
-    assert_eq!(episode.media_kind, MediaKind::PodcastAudio);
+    assert_eq!(episode.work_kind, WorkKind::Podcast);
+    assert_eq!(episode.expression_kind, ExpressionKind::OriginalAudio);
+    assert_eq!(episode.media_kind, MediaKind::Audio);
     assert_eq!(episode.parent_product_id.as_deref(), Some("B0SHOW"));
     assert_eq!(episode.abridgement, Abridgement::Unknown);
 
     let book = &rows[1];
     assert_eq!(book.work_kind, WorkKind::Book);
     assert_eq!(book.expression_kind, ExpressionKind::Narration);
-    assert_eq!(book.media_kind, MediaKind::Audiobook);
+    assert_eq!(book.media_kind, MediaKind::Audio);
     assert_eq!(book.parent_product_id, None);
     assert_eq!(book.abridgement, Abridgement::Unabridged);
     assert_eq!(book.language.as_deref(), Some("english"));

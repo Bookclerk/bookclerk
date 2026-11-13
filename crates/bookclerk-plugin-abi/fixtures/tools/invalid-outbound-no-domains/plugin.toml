@@ -4,6 +4,11 @@ version = "0.1.0"
 runtime = "workerd"
 entrypoints = ["storefront"]
 
+[media]
+works = ["book"]
+lists = ["audio"]
+fetches = ["audio"]
+
 [workerd]
 compatibility_date = "2026-08-01"
 main_module = "index.js"
