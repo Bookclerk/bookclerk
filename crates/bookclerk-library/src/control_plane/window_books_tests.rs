@@ -937,4 +937,25 @@ async fn a_book_wider_than_one_reply_is_left_out_of_the_window() {
         .map(|edition| edition.product_id)
         .collect();
     assert_eq!(listed, vec!["B0NARROW01", "B0NARROW02"]);
+
+    // One book per read (the Minimum profile's `maxResultRows`): the page
+    // that only skips the wide book still moves the cursor past it.
+    let mut after = 0;
+    let mut listed = Vec::new();
+    loop {
+        let (page, next) = window_books_page_by(&store, BRANCH, after, 1)
+            .await
+            .unwrap()
+            .unwrap();
+        listed.extend(
+            page.into_iter()
+                .flat_map(|work| work.editions)
+                .map(|edition| edition.product_id),
+        );
+        match next {
+            Some(next) => after = next,
+            None => break,
+        }
+    }
+    assert_eq!(listed, vec!["B0NARROW01", "B0NARROW02"]);
 }

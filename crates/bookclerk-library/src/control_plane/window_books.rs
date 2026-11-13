@@ -242,6 +242,22 @@ pub async fn window_books_page(
     node_id: &str,
     after: i64,
 ) -> Result<Option<(Vec<WindowWork>, Option<i64>)>> {
+    let page = u64::try_from(result_page(store)).unwrap_or(1);
+    window_books_page_by(store, node_id, after, page).await
+}
+
+/// [`window_books_page`] reading at most `page` books per database read
+/// (at least 1; never more than [`WINDOW_BOOKS_READ`]).
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn window_books_page_by(
+    store: &LibraryStore,
+    node_id: &str,
+    after: i64,
+    page: u64,
+) -> Result<Option<(Vec<WindowWork>, Option<i64>)>> {
     let Some(node) = nodes::Entity::find_by_id(node_id.to_string())
         .one(store.db())
         .await
@@ -271,8 +287,11 @@ pub async fn window_books_page(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let limit = WINDOW_BOOKS_READ.min(u64::try_from(result_page(store)).unwrap_or(1));
+    let limit = WINDOW_BOOKS_READ.min(page.max(1));
     let mut read: Vec<books::Model> = Vec::new();
+    // Every id examined, including books too wide to read, so the cursor
+    // moves past a skipped book like any other.
+    let mut examined: Vec<i64> = Vec::new();
     let mut boundary: Option<i64> = None;
     for part in account_ids.chunks(width.max(1)) {
         let select = books::Entity::find()
@@ -287,16 +306,20 @@ pub async fn window_books_page(
             }
         }
         read.extend(rows);
+        examined.extend(seen);
     }
-    read.sort_by_key(|b| b.id);
-    read.dedup_by_key(|b| b.id);
+    examined.sort_unstable();
+    examined.dedup();
     if let Some(boundary) = boundary {
-        read.retain(|b| b.id <= boundary);
+        examined.retain(|id| *id <= boundary);
     }
     let cap = usize::try_from(limit).unwrap_or(usize::MAX);
-    let full = boundary.is_some() || read.len() > cap;
-    read.truncate(cap);
-    let read_last = read.last().map_or(after, |b| b.id);
+    let full = boundary.is_some() || examined.len() > cap;
+    examined.truncate(cap);
+    let read_last = examined.last().copied().unwrap_or(after);
+    read.sort_by_key(|b| b.id);
+    read.dedup_by_key(|b| b.id);
+    read.retain(|b| b.id <= read_last);
     let rows: Vec<books::Model> = read
         .into_iter()
         .filter(|b| accounts.contains(&(b.plugin_key.clone(), b.account_id.clone())))
