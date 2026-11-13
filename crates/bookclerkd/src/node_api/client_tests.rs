@@ -545,3 +545,101 @@ fn the_built_in_client_id_cannot_be_registered() {
     assert!(crate::oidc::validate_client_id(&format!(" {CLIENT_CLIENT_ID} ")).is_err());
     assert!(crate::oidc::validate_client_id("bookclerk-clients").is_ok());
 }
+
+#[test]
+fn the_stored_scope_carries_the_name_and_the_approving_identity() {
+    for identity_id in [None, Some(42)] {
+        let scope = super::consented_scope("Riley's laptop", identity_id);
+        assert_eq!(
+            super::consented(&scope),
+            Some(super::Consent {
+                name: "Riley's laptop".to_string(),
+                identity_id,
+            }),
+            "{scope}"
+        );
+    }
+    assert_eq!(super::consented(CLIENT_SCOPE), None);
+    assert_eq!(
+        super::consented(&format!("{CLIENT_SCOPE} identity:x name:QQ")),
+        None
+    );
+}
+
+#[tokio::test]
+async fn a_card_joins_the_sign_in_that_approved_it() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store, member) = library(&files).await;
+    // The user has a local identity and signs in through an integration.
+    store
+        .ensure_local_portal_identity(member, Some("Riley"))
+        .await
+        .unwrap();
+    let integration = store
+        .link_portal_identity_to_user("audiobookshelf", "riley-abs", member, Some("Riley"))
+        .await
+        .unwrap();
+    let cookie = "c".repeat(43);
+    store
+        .insert_portal_session(
+            &hash_token(&cookie),
+            integration.id,
+            chrono::Utc::now() + chrono::Duration::days(1),
+        )
+        .await
+        .unwrap();
+    let app = routes(&state, UserCaller::User { user_id: member }, LOOPBACK);
+
+    let verifier = verifier('d');
+    let mut body = params(&verifier);
+    body["approve"] = json!(true);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/client-consent")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(
+                    header::COOKIE,
+                    format!("{}={cookie}", crate::auth::PORTAL_SESSION_COOKIE),
+                )
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let answer: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let redirect = url::Url::parse(answer["redirect"].as_str().unwrap()).unwrap();
+    let code = redirect
+        .query_pairs()
+        .find(|(name, _)| name == "code")
+        .map(|(_, value)| value.into_owned())
+        .unwrap();
+    let (status, _, answer) = call(
+        &app,
+        "POST",
+        "/api/client/v1/token",
+        Some(redeem(&code, &verifier)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+
+    // The card sits beside the browser session, where its Sessions list
+    // shows it and sign-out reaches it.
+    let token = answer["token"].as_str().unwrap();
+    let identity = store
+        .get_client_session_identity(&hash_token(token), chrono::Duration::days(90))
+        .await
+        .unwrap()
+        .expect("a client session");
+    assert_eq!(identity.id, integration.id);
+    let rows = store
+        .list_portal_session_records_for_identity(integration.id)
+        .await
+        .unwrap();
+    assert!(rows.iter().any(|row| row.kind == PortalSessionKind::Client));
+}

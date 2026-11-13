@@ -58,29 +58,114 @@ const MAX_CONSENT_BODY_BYTES: usize = 8 * 1024;
 /// Largest `POST /api/client/v1/token` body.
 const MAX_TOKEN_BODY_BYTES: usize = 8 * 1024;
 
-/// What the stored scope of an approved code adds after [`CLIENT_SCOPE`]:
-/// the consented client name, base64url, so the session is labelled with
-/// the name the user saw whatever the redeem says.
+/// What the stored scope of an approved code adds after [`CLIENT_SCOPE`]
+/// for the approving sign-in: the portal identity id, so the card's session
+/// sits beside the browser session that approved it (an integration user's
+/// Sessions list shows and revokes it there).
+const CONSENTED_IDENTITY_MARK: &str = " identity:";
+
+/// What the stored scope of an approved code adds after the identity: the
+/// consented client name, base64url, so the session is labelled with the
+/// name the user saw whatever the redeem says.
 const CONSENTED_NAME_MARK: &str = " name:";
 
-/// The scope stored with an approved code: [`CLIENT_SCOPE`] and the
-/// consented client name.
-fn consented_scope(client_name: &str) -> String {
-    let name = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(client_name.as_bytes());
-    format!("{CLIENT_SCOPE}{CONSENTED_NAME_MARK}{name}")
+/// What an approved code was consented for: the client name and the portal
+/// identity the card's session belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Consent {
+    /// The client name the user approved.
+    name: String,
+    /// The approving portal identity, or `None` when the card gets the
+    /// user's local identity.
+    identity_id: Option<i64>,
 }
 
-/// The consented client name in a stored scope, or `None` when the scope is
-/// not a client consent.
-fn consented_name(scope: &str) -> Option<String> {
-    let encoded = scope
-        .strip_prefix(CLIENT_SCOPE)?
-        .strip_prefix(CONSENTED_NAME_MARK)?;
+/// The scope stored with an approved code: [`CLIENT_SCOPE`], the approving
+/// portal identity when there is one, and the consented client name.
+fn consented_scope(client_name: &str, identity_id: Option<i64>) -> String {
+    let name = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(client_name.as_bytes());
+    let identity = identity_id
+        .map(|id| format!("{CONSENTED_IDENTITY_MARK}{id}"))
+        .unwrap_or_default();
+    format!("{CLIENT_SCOPE}{identity}{CONSENTED_NAME_MARK}{name}")
+}
+
+/// What [`consented_scope`] wrote, or `None` when the scope is not a client
+/// consent.
+fn consented(scope: &str) -> Option<Consent> {
+    let rest = scope.strip_prefix(CLIENT_SCOPE)?;
+    let (identity_id, rest) = match rest.strip_prefix(CONSENTED_IDENTITY_MARK) {
+        Some(tail) => {
+            let (id, tail) = tail.split_once(' ')?;
+            (Some(id.parse::<i64>().ok()?), format!(" {tail}"))
+        }
+        None => (None, rest.to_string()),
+    };
+    let encoded = rest.strip_prefix(CONSENTED_NAME_MARK)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(encoded)
         .ok()?;
     let name = String::from_utf8(bytes).ok()?;
-    is_client_name(&name).then_some(name)
+    is_client_name(&name).then_some(Consent { name, identity_id })
+}
+
+/// The portal identity a card approved by this request belongs to: the
+/// browser session's own identity when it is the user's, else (an operator
+/// impersonating the user) the identity the Sessions list shows for them.
+/// `None` leaves the card on the user's local identity.
+///
+/// # Arguments
+///
+/// * `library` - The library store.
+/// * `headers` - The consent request's headers (its session cookie).
+/// * `user_id` - The approving user.
+async fn approving_identity(
+    library: &bookclerk_library::LibraryStore,
+    headers: &axum::http::HeaderMap,
+    user_id: i64,
+) -> Option<i64> {
+    if let Some(identity) = crate::auth::timed_portal_identity_from_headers(library, headers).await
+    {
+        if identity.user_id == Some(user_id) {
+            return Some(identity.id);
+        }
+    }
+    library
+        .first_portal_identity_for_user(user_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|identity| identity.id)
+}
+
+/// The portal identity a redeemed card's session is stored under: the
+/// consented identity while it still belongs to the user, otherwise the
+/// user's local identity.
+///
+/// # Arguments
+///
+/// * `library` - The library store.
+/// * `user` - The user the code was approved for.
+/// * `identity_id` - The identity recorded at consent.
+///
+/// # Errors
+///
+/// When the library cannot be read.
+async fn card_identity(
+    library: &bookclerk_library::LibraryStore,
+    user: &bookclerk_library::UserRecord,
+    identity_id: Option<i64>,
+) -> bookclerk_library::Result<bookclerk_library::PortalIdentity> {
+    if let Some(id) = identity_id {
+        if let Some(identity) = library.get_portal_identity_by_id(id).await? {
+            if identity.user_id == Some(user.id) {
+                return Ok(identity);
+            }
+        }
+    }
+    library
+        .ensure_local_portal_identity(user.id, user.display_name.as_deref())
+        .await
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -236,10 +321,11 @@ pub async fn post_client_consent(
         return refused;
     }
     let client_name = params.client_name.as_deref().unwrap_or("").trim();
+    let library = state.library_snapshot().await;
+    let identity_id = approving_identity(&library, &parts.headers, user.id).await;
     let code = random_token();
     bookclerk_config::register_secret(code.as_str());
     let expires = chrono::Utc::now() + chrono::Duration::seconds(CLIENT_CODE_TTL_SECS);
-    let library = state.library_snapshot().await;
     if let Err(err) = library
         .insert_oidc_auth_code(
             &hash_token(&code),
@@ -248,7 +334,7 @@ pub async fn post_client_consent(
             &params.redirect_uri,
             &params.code_challenge,
             "S256",
-            &consented_scope(client_name),
+            &consented_scope(client_name, identity_id),
             expires,
         )
         .await
@@ -339,13 +425,13 @@ pub async fn post_client_token(State(state): State<Arc<AppState>>, request: Requ
     let Some((client_id, user_id, redirect_uri, challenge, method, scope)) = consumed else {
         return token_error(StatusCode::FORBIDDEN, "sign_in_refused");
     };
-    let name = consented_name(&scope);
+    let consent = consented(&scope);
     let matches = client_id == CLIENT_CLIENT_ID
         && redirect_uri == body.redirect_uri
         && method == "S256"
-        && name.is_some()
+        && consent.is_some()
         && constant_time_eq(pkce_challenge(verifier).as_bytes(), challenge.as_bytes());
-    let Some(name) = name.filter(|_| matches) else {
+    let Some(Consent { name, identity_id }) = consent.filter(|_| matches) else {
         // Another client's code is spent too, as any failed exchange is: the
         // branch client's codes are redeemed only at enroll/oauth, and a
         // registered client's only at the token endpoint.
@@ -374,10 +460,7 @@ pub async fn post_client_token(State(state): State<Arc<AppState>>, request: Requ
         Ok(info) => info,
         Err(response) => return response,
     };
-    let identity = match library
-        .ensure_local_portal_identity(user.id, user.display_name.as_deref())
-        .await
-    {
+    let identity = match card_identity(&library, &user, identity_id).await {
         Ok(identity) => identity,
         Err(err) => {
             tracing::warn!(error = %err, "client sign-in could not read the identity");

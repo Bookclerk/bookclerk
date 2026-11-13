@@ -199,6 +199,9 @@ The client app then sends `Authorization: Bookclerk-Client <token>`:
 - Each use keeps it signed in for another 90 days. Sign-out
   (`POST /api/auth/logout`) ends it, and so does **Revoke** in the
   person's sessions or disabling the user.
+- It belongs to the sign-in that approved it, so it is listed and revoked
+  beside that browser session, including a sign-in through an integration
+  such as Audiobookshelf.
 
 `bookclerk-client` codes are never redeemed at `/oidc/token`, and
 `bookclerk-client` can't be registered as a client.
