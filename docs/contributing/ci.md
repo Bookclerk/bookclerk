@@ -276,7 +276,8 @@ which no cache holds, so the cached dependencies match. The build-only
 The workspace `Cargo.toml` builds every dependency at `opt-level = 1` in the
 dev and test profiles, for local builds and CI alike. Workspace crates stay
 at `opt-level = 0`, so they rebuild quickly, debug fully and carry the
-coverage instrumentation. Measured on the `bookclerk-library` unit tests
+coverage instrumentation. `fdk-aac-sys` is the one exception: GCC refuses
+libfdk-aac's forced inlines at `-O1`, so it stays at `opt-level = 0`. Measured on the `bookclerk-library` unit tests
 (4 cores), the suite ran in 432 s instead of 573 s, for a cold dependency
 build 67 s longer; `opt-level = 2` gained only 8 s more for another 100 s of
 cold build. The cost is paid once per cache key, since the caches hold the
