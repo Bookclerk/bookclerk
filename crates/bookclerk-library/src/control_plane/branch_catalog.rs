@@ -779,11 +779,14 @@ async fn apply_catalog_batch(
 }
 
 /// True when `edition_id` already has audio in this library's outputs
-/// that `node_id` did not deliver: an acquire's, another account's upload,
-/// or another branch's delivery. Such a title's files are not asked for
-/// again. The branch's own catalog uploads never count against it, also
-/// those of an earlier holding of the same title (one removed when the
-/// branch stopped sharing and held again since, under a new id).
+/// that this holding did not deliver: an acquire's, another account's
+/// upload, another branch's delivery, or this branch's delivery for
+/// another title it still shares (two listings of one edition are
+/// delivered once). Such a title's files are not asked for again. The
+/// holding's own uploads never count against it, nor do the branch's
+/// uploads for a holding that is gone (an earlier holding of the same
+/// title, removed when the branch stopped sharing and held again since
+/// under a new id).
 async fn edition_has_other_audio(
     store: &LibraryStore,
     node_id: &str,
@@ -803,7 +806,22 @@ async fn edition_has_other_audio(
                     .to_owned(),
             ),
         )
-        .filter(edition_files::Column::Writer.not_in_subquery(catalog_uploads_of(node_id)))
+        .filter(
+            edition_files::Column::Writer.not_in_subquery(
+                catalog_uploads_of(node_id)
+                    .and_where(
+                        node_upload_sessions::Column::BookUuid.not_in_subquery(
+                            Query::select()
+                                .column(holdings::Column::Id)
+                                .from(holdings::Entity)
+                                .and_where(holdings::Column::NodeId.eq(node_id))
+                                .and_where(holdings::Column::Id.ne(holding_id))
+                                .to_owned(),
+                        ),
+                    )
+                    .to_owned(),
+            ),
+        )
         .count(store.db())
         .await
         .map_err(LibraryError::Orm)?;

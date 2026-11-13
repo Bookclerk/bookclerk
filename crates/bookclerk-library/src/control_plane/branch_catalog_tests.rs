@@ -2141,3 +2141,53 @@ async fn a_catalog_upload_is_refused_once_its_listing_sells_another_edition() {
         .iter()
         .all(|row| !row.delivered));
 }
+
+/// Two shared titles of one edition are delivered once: the branch's
+/// delivery for one title it still shares counts as the edition's audio
+/// for the other.
+#[tokio::test]
+async fn a_branchs_two_listings_of_one_edition_are_delivered_once() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let fence = open_branch(
+        &store,
+        BRANCH,
+        &[
+            title_with("p1", "Author/p1/p1.m4b", &[]),
+            title_with("p2", "Author/p2/p2.m4b", &[]),
+        ],
+    )
+    .await;
+    deliver_local(&store, BRANCH, fence, "p1", &["Author/p1/p1.m4b"]).await;
+    let listing = |product: &str| {
+        let store = store.clone();
+        let product = product.to_string();
+        async move {
+            store_listings::Entity::find()
+                .filter(store_listings::Column::ProductId.eq(product))
+                .one(store.db())
+                .await
+                .unwrap()
+                .unwrap()
+        }
+    };
+    let p1 = listing("p1").await;
+    let p2 = listing("p2").await;
+    store_listings::Entity::update_many()
+        .col_expr(
+            store_listings::Column::EditionId,
+            sea_orm::sea_query::Expr::value(p1.edition_id.clone()),
+        )
+        .filter(store_listings::Column::Id.eq(p2.id.clone()))
+        .exec(store.db())
+        .await
+        .unwrap();
+    assert!(
+        pending_deliveries(&store, BRANCH, 10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "p2's edition already has p1's audio"
+    );
+}
