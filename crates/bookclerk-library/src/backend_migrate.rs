@@ -7,14 +7,15 @@
 use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, TransactionTrait};
 
 use crate::entities::{
-    account_links, account_shares, accounts, books, claim_tickets, contributors, credits,
-    edition_files, edition_identifiers, editions, embeddings, encrypted_secrets, expressions,
-    holdings, ignored_titles, job_temp_paths, jobs, listening_progress, listing_offers,
-    member_account_rules, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states,
-    operator_sessions, portal_identities, portal_sessions, resolution_conflicts,
-    resolution_overrides, saved_filters, security_audit_events, series, series_entries,
-    store_listings, title_request_sources, title_requests, user_invites, user_preferences,
-    user_title_state, users, webauthn_challenges, webauthn_credentials, work_identifiers, works,
+    account_credential_revisions, account_links, account_shares, accounts, books, claim_tickets,
+    contributors, credits, edition_files, edition_identifiers, editions, embeddings,
+    encrypted_secrets, expressions, holdings, ignored_titles, job_temp_paths, jobs,
+    listening_progress, listing_offers, member_account_rules, oidc_auth_codes, oidc_clients,
+    oidc_refresh_tokens, oidc_rp_states, operator_sessions, portal_identities, portal_sessions,
+    resolution_conflicts, resolution_overrides, saved_filters, security_audit_events, series,
+    series_entries, store_listings, title_request_sources, title_requests, user_invites,
+    user_preferences, user_title_state, users, webauthn_challenges, webauthn_credentials,
+    work_identifiers, works,
 };
 use crate::error::{LibraryError, Result};
 
@@ -131,6 +132,7 @@ pub async fn migrate_library_backend(
     copy!(operator_sessions, "operator_sessions");
     copy!(account_links, "account_links");
     copy!(account_shares, "account_shares");
+    copy!(account_credential_revisions, "account_credential_revisions");
     copy!(listening_progress, "listening_progress");
     copy!(title_requests, "title_requests");
     copy!(title_request_sources, "title_request_sources");
@@ -239,6 +241,7 @@ async fn dry_run_counts(
     count!(operator_sessions, "operator_sessions");
     count!(account_links, "account_links");
     count!(account_shares, "account_shares");
+    count!(account_credential_revisions, "account_credential_revisions");
     count!(listening_progress, "listening_progress");
     count!(title_requests, "title_requests");
     count!(title_request_sources, "title_request_sources");
@@ -291,14 +294,8 @@ mod tests {
             .unwrap();
         // The episode's row comes first in storage order, then gains its
         // parent once the show exists.
-        work("w_episode", "podcast_episode")
-            .insert(&source)
-            .await
-            .unwrap();
-        work("w_show", "podcast_show")
-            .insert(&source)
-            .await
-            .unwrap();
+        work("w_episode", "podcast").insert(&source).await.unwrap();
+        work("w_show", "podcast").insert(&source).await.unwrap();
         let mut episode = works::Entity::find_by_id("w_episode")
             .one(&source)
             .await

@@ -19,9 +19,9 @@
 //! only Owner), because the library attributes what arrives to the user its
 //! node row names as the branch's owner. Another Owner is refused on add
 //! and their disconnect stays on this install. Each call to a library is
-//! bounded by [`LIBRARY_CALL_TIMEOUT`], inside the routes' API deadline. Only accounts of
-//! storefronts every installed copy declares `credentials = "shareable"`
-//! travel.
+//! bounded by [`LIBRARY_CALL_TIMEOUT`], inside the routes' API deadline. An
+//! account of a single-keeper storefront travels too: this branch then keeps
+//! its login fresh in the library ([`super::keeper`]).
 
 use std::sync::Arc;
 
@@ -183,14 +183,16 @@ pub async fn post_join_connections(
     if link.person_user_id != Some(person) {
         return not_branch_person();
     }
-    let shareable = crate::node_api::branch::shareable_plugin_keys(&state, &store).await;
+    // Every picked account may go: a shareable storefront's copies each
+    // refresh on their own, and this branch keeps a single-keeper one's
+    // login fresh there ([`super::keeper`]). The library refuses one that
+    // another branch already keeps.
     let named = picked.len();
     let picked = &picked;
     let keep = move |plugin_key: &str, account_id: &str| {
-        shareable.contains(plugin_key)
-            && picked
-                .iter()
-                .any(|pick| pick.plugin_key == plugin_key && pick.account_id == account_id)
+        picked
+            .iter()
+            .any(|pick| pick.plugin_key == plugin_key && pick.account_id == account_id)
     };
     // The pick is applied before the bundle's limits, so the accounts
     // named are the ones that fill it.

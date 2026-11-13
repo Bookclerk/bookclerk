@@ -57,6 +57,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+bookclerk-node-proto.workspace = true
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 tempfile.workspace = true
 wiremock.workspace = true

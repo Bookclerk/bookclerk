@@ -295,7 +295,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS works (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN ('book', 'podcast_show', 'podcast_episode', 'drama')),
+        kind TEXT NOT NULL CHECK (kind IN ('book', 'podcast')),
         title TEXT NOT NULL,
         match_key TEXT NOT NULL DEFAULT '',
         parent_work_id TEXT REFERENCES works(id) ON DELETE SET NULL,
@@ -326,7 +326,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE TABLE IF NOT EXISTS expressions (
         id TEXT PRIMARY KEY,
         work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
-        kind TEXT NOT NULL CHECK (kind IN ('narration', 'text', 'translation', 'dramatisation', 'podcast_audio')),
+        kind TEXT NOT NULL CHECK (kind IN ('text', 'narration', 'dramatisation', 'graphic', 'original_audio')),
         language TEXT,
         abridgement TEXT NOT NULL CHECK (abridgement IN ('unknown', 'unabridged', 'abridged')),
         credit_key TEXT NOT NULL DEFAULT '',
@@ -339,7 +339,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE TABLE IF NOT EXISTS editions (
         id TEXT PRIMARY KEY,
         expression_id TEXT NOT NULL REFERENCES expressions(id) ON DELETE CASCADE,
-        media_kind TEXT NOT NULL CHECK (media_kind IN ('audiobook', 'ebook', 'print', 'podcast_audio')),
+        media_kind TEXT NOT NULL CHECK (media_kind IN ('audio', 'ebook', 'print')),
         title TEXT NOT NULL,
         subtitle TEXT,
         published_at TEXT,
@@ -1690,6 +1690,23 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"INSERT OR IGNORE INTO live_topic_revisions (topic, revision) VALUES
         ('library', 0), ('jobs', 0), ('deliveries', 0), ('nodes', 0), ('config', 0),
         ('consents', 0), ('clusters', 0), ('users', 0), ('discover', 0)",
+    ),
+    // The newest sign-in of a single-keeper store account that crossed
+    // each share (`control_plane::keeper`): on a library, the revision its
+    // keeper branch (`peer = node:<id>`) last pushed and this library
+    // applied; on the keeper branch, the revision it last pushed up the
+    // link (`peer = link:<cluster_id>`). A push applies only above it.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_credential_revisions (
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        peer TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        observed INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (plugin_key, account_id, peer),
+        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
+    )",
     ),
 ];
 

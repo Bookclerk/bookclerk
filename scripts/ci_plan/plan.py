@@ -302,6 +302,10 @@ JOB_CHECKS: dict[str, tuple[str, ...]] = {
     "confinement": ("confinement",),
     "native-gateway": ("native_gateway",),
     "tray": ("tray",),
+    # The desktop window (`bookclerk-desktop --features window`), Linux
+    # only: the workspace checks build it without the feature, so the
+    # Tauri code is compiled nowhere else.
+    "desktop": ("desktop",),
     "postgres": ("postgres",),
     # Ubuntu `rust_test` does not run on windows-latest. This job is the
     # Windows execution of the enrolled CLI startup target and the identity
@@ -405,6 +409,7 @@ class Relations:
     native_gateway_packages: frozenset[str]
     native_gateway_paths: tuple[str, ...]
     windows_cluster_paths: tuple[str, ...]
+    desktop_paths: tuple[str, ...]
     envelope_packages: frozenset[str]
     envelope_paths: tuple[str, ...]
     release_shipped: tuple[str, ...]
@@ -425,6 +430,7 @@ def load_relations(path: str | Path | None = None) -> Relations:
     jobs = raw.get("platform_jobs", {})
     gateway = raw.get("native_gateway", {})
     windows_cluster = raw.get("windows_cluster", {})
+    desktop = raw.get("desktop", {})
     envelope = raw.get("envelope", {})
     return Relations(
         embeds=list(raw.get("embed", [])),
@@ -442,6 +448,7 @@ def load_relations(path: str | Path | None = None) -> Relations:
         native_gateway_packages=frozenset(gateway.get("packages", [])),
         native_gateway_paths=tuple(gateway.get("paths", [])),
         windows_cluster_paths=tuple(windows_cluster.get("paths", [])),
+        desktop_paths=tuple(desktop.get("paths", [])),
         envelope_packages=frozenset(envelope.get("packages", [])),
         envelope_paths=tuple(envelope.get("paths", [])),
         release_shipped=tuple(release.get("shipped", [])),
@@ -859,6 +866,7 @@ class _Surfaces:
         self.release_full: list[str] = []
         self.native_gateway: list[str] = []
         self.windows_cluster: list[str] = []
+        self.desktop: list[str] = []
         self.envelope: list[str] = []
         self.fixture_checks: dict[str, list[str]] = {}
         self.check_input_checks: dict[str, list[str]] = {}
@@ -1030,6 +1038,8 @@ def build_plan(
             surf.native_gateway.append(path)
         if any(glob_match(path, p) for p in rel.windows_cluster_paths):
             surf.windows_cluster.append(path)
+        if any(glob_match(path, p) for p in rel.desktop_paths):
+            surf.desktop.append(path)
         if any(glob_match(path, p) for p in rel.envelope_paths):
             surf.envelope.append(path)
             # scripts/bench is not a Cargo package. Classifying it here keeps a
@@ -1265,6 +1275,9 @@ def _select_checks(
     gateway_why += [f"smoke input {p}" for p in surf.native_gateway]
     if gateway_why:
         _select(plan, "native_gateway", gateway_why)
+
+    if surf.desktop:
+        _select(plan, "desktop", [f"desktop window input {p}" for p in surf.desktop])
 
     if surf.windows_cluster:
         _select(

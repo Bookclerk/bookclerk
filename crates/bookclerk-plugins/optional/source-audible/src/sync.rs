@@ -168,7 +168,13 @@ fn item_to_scan_book(
         })
         .collect();
 
-    let work_kind = records::work_kind_from_label(lib_model::item_kind(item));
+    let label = lib_model::item_kind(item);
+    let work_kind = records::work_kind_from_label(label);
+    // Only an episode names its show: a season also carries a `parent`
+    // relationship, and keeping it would file the season as an episode.
+    let parent = bookclerk_storefront::content_kind::is_episode(label)
+        .then(|| parent_product_id(item))
+        .flatten();
     let (expression_kind, media_kind) = records::audio_kinds(work_kind);
     let subtitle = item
         .get("subtitle")
@@ -247,7 +253,7 @@ fn item_to_scan_book(
         identifiers,
         credits,
         series_entries,
-        parent_product_id: parent_product_id(item),
+        parent_product_id: parent,
         language,
         abridgement,
         published_at: published_at.map(rfc3339),

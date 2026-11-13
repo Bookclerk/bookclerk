@@ -136,7 +136,8 @@ To build and run it:
 
 The window is behind the crate's `window` feature, off by default, so
 `cargo build --workspace` and CI's workspace checks don't need the webview's
-development files. Without it the binary only says how to build it.
+development files. Without it the binary only says how to build it. CI's
+[desktop job](../ci.md#desktop-job) runs Clippy with the feature on Linux.
 
 ### Advisories the desktop window brings in
 

@@ -11,6 +11,11 @@ entrypoints = ["storefront"]
 # copy.
 credentials = "shareable"
 
+[media]
+works = ["book"]
+lists = ["audio"]
+fetches = ["audio"]
+
 [capabilities.network]
 mode = "outbound"
 tcp = [

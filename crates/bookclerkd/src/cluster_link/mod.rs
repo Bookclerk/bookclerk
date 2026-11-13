@@ -60,6 +60,7 @@ pub mod connections;
 pub mod consent;
 pub mod host_jobs;
 pub mod join;
+pub mod keeper;
 pub mod remote_bindings;
 pub mod requests;
 pub mod window;
@@ -795,6 +796,17 @@ async fn start_clients(
                 cluster_id: cluster_id.clone(),
                 handle: handle.clone(),
             }
+            .run(link_shutdown.clone()),
+        )));
+        // The link's sign-in pusher (this branch keeping its person's
+        // single-keeper accounts fresh there) stops with its client too.
+        let sign_ins = AbortOnDrop(Some(tokio::spawn(
+            keeper::SignInPusher {
+                state: Arc::clone(state),
+                library: library.clone(),
+                cluster_id: cluster_id.clone(),
+                handle: handle.clone(),
+            }
             .run(link_shutdown),
         )));
         // The client stops on a swap (forwarded from `shutdown`), once its
@@ -833,11 +845,24 @@ async fn start_clients(
             let _ = link_stop.send(true);
             // All exit before a client for a new enrollment can start, so
             // one cluster never has two consent supervisors (or two catalog
-            // syncs, answerers, request takers or window readers). They wind
-            // down side by side, so the client's exit waits for the slowest of
-            // them only.
-            let (mut supervisor, mut catalog_sync, mut catalog_answers, mut request_taker, mut window_reader) =
-                (supervisor, catalog_sync, catalog_answers, request_taker, window_reader);
+            // syncs, answerers, request takers, window readers or sign-in
+            // pushers). They wind down side by side, so the client's exit
+            // waits for the slowest of them only.
+            let (
+                mut supervisor,
+                mut catalog_sync,
+                mut catalog_answers,
+                mut request_taker,
+                mut window_reader,
+                mut sign_ins,
+            ) = (
+                supervisor,
+                catalog_sync,
+                catalog_answers,
+                request_taker,
+                window_reader,
+                sign_ins,
+            );
             tokio::join!(
                 async {
                     if let Some(supervisor) = supervisor.0.take() {
@@ -862,6 +887,11 @@ async fn start_clients(
                 async {
                     if let Some(window_reader) = window_reader.0.take() {
                         join_or_abort(window_reader).await;
+                    }
+                },
+                async {
+                    if let Some(sign_ins) = sign_ins.0.take() {
+                        join_or_abort(sign_ins).await;
                     }
                 },
             );

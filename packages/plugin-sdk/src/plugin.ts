@@ -195,9 +195,10 @@ function errorMessage(err: unknown): string {
  * The launcher derives the full wire `PluginDescribe` from `plugin.toml`
  * (`apiVersion`, `id`, `capabilities`, `configOptions`, `cli`, …); an author
  * `describe()` may add or override presentation fields such as
- * `displayName`, `brand`, or `rpcFeatures`. Identity, capabilities, and the
- * `[[settings]]`-derived `configOptions` always come from the manifest: a
- * guest list that differs from the manifest fails the spawn on the host.
+ * `displayName`, `brand`, or `rpcFeatures`. Identity, capabilities, the
+ * `[media]` declaration, and the `[[settings]]`-derived `configOptions`
+ * always come from the manifest: a guest list that differs from the
+ * manifest fails the spawn on the host.
  */
 export type PluginDescribe = Partial<WirePluginDescribe>;
 
@@ -3581,7 +3582,7 @@ export function allowedEntrypointFamilies(
 
 /**
  * Merges a guest's `describe()` under the manifest projection: identity,
- * `apiVersion`, and `capabilities` always come from the manifest; the guest's
+ * `apiVersion`, `capabilities`, and `media` always come from the manifest; the guest's
  * presentation fields, features, and limits are kept. The guest's `cli`
  * schema wins only when it declares commands.
  *
@@ -3611,6 +3612,8 @@ function mergeDescribe(
     apiVersion: base.apiVersion ?? guest.apiVersion ?? 3,
     id: base.id ?? guest.id,
     capabilities: base.capabilities ?? guest.capabilities,
+    // `[media]` is the authority for the declared media, like capabilities.
+    media: base.media ?? guest.media,
     ...(cli === undefined ? {} : { cli }),
     ...(configOptions === undefined ? {} : { configOptions }),
   } as WirePluginDescribe;

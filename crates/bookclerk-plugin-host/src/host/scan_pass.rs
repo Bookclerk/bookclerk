@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
 use bookclerk_library::PassStart;
-use bookclerk_plugin_sdk::{PluginError, PluginErrorCode, ScanBook, ScanPage};
+use bookclerk_plugin_sdk::{MediaSupport, PluginError, PluginErrorCode, ScanBook, ScanPage};
 
 /// Most pages one pass may take before the host gives up on it, so a guest
 /// that keeps returning new cursors cannot hold a scan job forever.
@@ -74,6 +74,9 @@ pub(crate) struct PassOutcome {
 /// becomes full), or after the first page of a resumed pass fails (its store
 /// cursor may have expired).
 ///
+/// Every page is checked against `media`, the storefront's declaration: a
+/// page with a title of an unspecified or undeclared kind is refused whole.
+///
 /// # Errors
 ///
 /// Returns an error when the guest fails, a page breaks the ABI rules, a
@@ -83,6 +86,7 @@ pub(crate) async fn run_pass(
     io: &mut impl PassIo,
     account_id: &str,
     start: PassStart,
+    media: &MediaSupport,
 ) -> bookclerk_source::Result<PassOutcome> {
     let mut cursor = start.cursor;
     let mut token = start.sync_token;
@@ -142,7 +146,7 @@ pub(crate) async fn run_pass(
             }
             Err(err) => return Err(bookclerk_source::SourceError::api(err.to_string())),
         };
-        bookclerk_plugin_abi::validate_scan_page(&page, &cursor, account_id)
+        bookclerk_plugin_abi::validate_scan_page(&page, &cursor, account_id, media)
             .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
         let mut page = page;
         if let Some(refreshed) = page.refreshed_credentials.take().filter(|b| !b.is_empty()) {
@@ -195,6 +199,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
+    use bookclerk_plugin_sdk::{ExpressionKind, MediaKind, WorkKind};
 
     /// Scripted guest and recording library.
     #[derive(Default)]
@@ -272,6 +277,14 @@ mod tests {
         }
     }
 
+    fn audio() -> MediaSupport {
+        MediaSupport {
+            work_kinds: vec![WorkKind::Book],
+            lists: vec![MediaKind::Audio],
+            fetches: vec![MediaKind::Audio],
+        }
+    }
+
     fn page(products: &[&str], next: &str) -> ScanPage {
         ScanPage {
             books: products
@@ -279,6 +292,9 @@ mod tests {
                 .map(|p| ScanBook {
                     product_id: (*p).into(),
                     title: "T".into(),
+                    work_kind: WorkKind::Book,
+                    expression_kind: ExpressionKind::Narration,
+                    media_kind: MediaKind::Audio,
                     ..ScanBook::default()
                 })
                 .collect(),
@@ -312,7 +328,9 @@ mod tests {
             pages: [Ok(page(&["1", "2"], "c2")), Ok(last(&["3"], "t1", true))].into(),
             ..Script::default()
         };
-        let outcome = run_pass(&mut io, "a", start("", "", false)).await.unwrap();
+        let outcome = run_pass(&mut io, "a", start("", "", false), &audio())
+            .await
+            .unwrap();
         assert_eq!(
             outcome,
             PassOutcome {
@@ -352,7 +370,9 @@ mod tests {
             .into(),
             ..Script::default()
         };
-        run_pass(&mut io, "a", start("", "", false)).await.unwrap();
+        run_pass(&mut io, "a", start("", "", false), &audio())
+            .await
+            .unwrap();
         assert_eq!(
             io.refreshed,
             [(br#"{"token":"new"}"#.to_vec(), 1)],
@@ -363,7 +383,9 @@ mod tests {
             pages: [Ok(refreshed(b"[1]"))].into(),
             ..Script::default()
         };
-        assert!(run_pass(&mut io, "a", start("", "", false)).await.is_err());
+        assert!(run_pass(&mut io, "a", start("", "", false), &audio())
+            .await
+            .is_err());
         assert!(io.refreshed.is_empty() && io.written.is_empty());
     }
 
@@ -373,7 +395,7 @@ mod tests {
             pages: [Ok(page(&["1"], "c2")), Ok(last(&[], "t2", false))].into(),
             ..Script::default()
         };
-        let outcome = run_pass(&mut io, "a", start("", "t1", false))
+        let outcome = run_pass(&mut io, "a", start("", "t1", false), &audio())
             .await
             .unwrap();
         assert!(!outcome.complete);
@@ -396,7 +418,7 @@ mod tests {
             .into(),
             ..Script::default()
         };
-        run_pass(&mut io, "a", start("c5", "t1", true))
+        run_pass(&mut io, "a", start("c5", "t1", true), &audio())
             .await
             .unwrap();
         assert_eq!(io.resets, 1);
@@ -416,7 +438,7 @@ mod tests {
             .into(),
             ..Script::default()
         };
-        assert!(run_pass(&mut io, "a", start("", "t1", false))
+        assert!(run_pass(&mut io, "a", start("", "t1", false), &audio())
             .await
             .is_err());
     }
@@ -431,7 +453,7 @@ mod tests {
             .into(),
             ..Script::default()
         };
-        run_pass(&mut io, "a", start("c5", "t1", true))
+        run_pass(&mut io, "a", start("c5", "t1", true), &audio())
             .await
             .unwrap();
         assert_eq!(io.calls[1], ("".into(), "t1".into()));
@@ -448,7 +470,9 @@ mod tests {
             pages: [Err(PluginError::unavailable("down"))].into(),
             ..Script::default()
         };
-        assert!(run_pass(&mut io, "a", start("", "", false)).await.is_err());
+        assert!(run_pass(&mut io, "a", start("", "", false), &audio())
+            .await
+            .is_err());
         // Nor does a resumed pass after its first page landed.
         let mut io = Script {
             pages: [
@@ -458,7 +482,7 @@ mod tests {
             .into(),
             ..Script::default()
         };
-        assert!(run_pass(&mut io, "a", start("c5", "t1", true))
+        assert!(run_pass(&mut io, "a", start("c5", "t1", true), &audio())
             .await
             .is_err());
         assert_eq!(io.calls.len(), 2);
@@ -472,7 +496,9 @@ mod tests {
             pages: [Ok(foreign)].into(),
             ..Script::default()
         };
-        assert!(run_pass(&mut io, "a", start("", "", false)).await.is_err());
+        assert!(run_pass(&mut io, "a", start("", "", false), &audio())
+            .await
+            .is_err());
         assert!(io.written.is_empty());
         assert!(io.finished.is_none());
 
@@ -480,7 +506,9 @@ mod tests {
             pages: [Ok(page(&["1"], "c1")), Ok(page(&["2"], "c1"))].into(),
             ..Script::default()
         };
-        assert!(run_pass(&mut io, "a", start("", "", false)).await.is_err());
+        assert!(run_pass(&mut io, "a", start("", "", false), &audio())
+            .await
+            .is_err());
         assert_eq!(io.written, ["1"], "the repeating page is not written");
     }
 
@@ -491,7 +519,9 @@ mod tests {
             cancel_after: Some(1),
             ..Script::default()
         };
-        assert!(run_pass(&mut io, "a", start("", "", false)).await.is_err());
+        assert!(run_pass(&mut io, "a", start("", "", false), &audio())
+            .await
+            .is_err());
         assert_eq!(io.checkpoints, [("c2".into(), "".into())]);
         assert!(io.finished.is_none());
     }
@@ -505,7 +535,7 @@ mod tests {
             pages,
             ..Script::default()
         };
-        let err = run_pass(&mut io, "a", start("", "", false))
+        let err = run_pass(&mut io, "a", start("", "", false), &audio())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("pages"));
@@ -522,7 +552,7 @@ mod tests {
             .into(),
             ..Script::default()
         };
-        let outcome = run_pass(&mut io, "a", start("", "t1", false))
+        let outcome = run_pass(&mut io, "a", start("", "t1", false), &audio())
             .await
             .unwrap();
         assert!(outcome.complete);
@@ -542,7 +572,7 @@ mod tests {
             .into(),
             ..Script::default()
         };
-        assert!(run_pass(&mut io, "a", start("", "t1", false))
+        assert!(run_pass(&mut io, "a", start("", "t1", false), &audio())
             .await
             .is_err());
         assert_eq!(io.calls.len(), 2);
@@ -559,7 +589,7 @@ mod tests {
             .into(),
             ..Script::default()
         };
-        let err = run_pass(&mut io, "acct", start("", "", false))
+        let err = run_pass(&mut io, "acct", start("", "", false), &audio())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("already returned"), "{err}");
@@ -572,7 +602,7 @@ mod tests {
             cancel_after: Some(0),
             ..Script::default()
         };
-        let err = run_pass(&mut io, "a", start("", "", false))
+        let err = run_pass(&mut io, "a", start("", "", false), &audio())
             .await
             .unwrap_err();
         assert!(

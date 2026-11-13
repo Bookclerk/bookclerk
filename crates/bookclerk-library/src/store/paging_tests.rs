@@ -601,6 +601,9 @@ async fn discover_candidates_are_read_whole_under_every_profile() {
                     marketplace: Some(String::from("us")),
                     product_id: format!("cand-{i:03}"),
                     title: format!("Candidate {i}"),
+                    work_kind: Some(bookclerk_resolve::WorkKind::Book),
+                    expression_kind: Some(bookclerk_resolve::ExpressionKind::Narration),
+                    media_kind: Some(bookclerk_resolve::MediaKind::Audio),
                     ..bookclerk_resolve::ListingDraft::default()
                 },
                 detail: crate::ListingDetail {

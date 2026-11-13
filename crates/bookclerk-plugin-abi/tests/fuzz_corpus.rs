@@ -1,5 +1,5 @@
 //! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
-//! `cover_sink_key`, `db_stream`, `scan_page` and `event_read` fuzz corpora in PR CI
+//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch` and `event_read` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -130,17 +130,17 @@ fn fuzz_corpus_abi_roundtrip_is_identity() {
 
 /// `read_any_message` selectors of the structured book records, whose seeds
 /// live in `fuzz/corpus/{abi_decode,abi_roundtrip}/structured_*.bin`.
-const SCAN_PAGE_SELECTOR: u8 = 30;
+const SCAN_PAGE_SELECTOR: u8 = 31;
 /// See [`SCAN_PAGE_SELECTOR`].
-const CATALOG_HITS_SELECTOR: u8 = 47;
+const CATALOG_HITS_SELECTOR: u8 = 48;
 /// See [`SCAN_PAGE_SELECTOR`].
-const METADATA_RECORDS_SELECTOR: u8 = 95;
+const METADATA_RECORDS_SELECTOR: u8 = 96;
 /// See [`SCAN_PAGE_SELECTOR`].
-const METADATA_CHAPTERS_SELECTOR: u8 = 98;
+const METADATA_CHAPTERS_SELECTOR: u8 = 99;
 /// See [`SCAN_PAGE_SELECTOR`].
-const COVER_FETCH_PARAMS_SELECTOR: u8 = 100;
+const COVER_FETCH_PARAMS_SELECTOR: u8 = 101;
 /// See [`SCAN_PAGE_SELECTOR`].
-const COVER_IMAGES_SELECTOR: u8 = 103;
+const COVER_IMAGES_SELECTOR: u8 = 104;
 
 /// A scan page with every structured book record and paging field filled.
 fn structured_scan_page() -> bookclerk_plugin_abi::ScanPage {
@@ -160,9 +160,9 @@ fn structured_scan_page() -> bookclerk_plugin_abi::ScanPage {
             product_id: "B0EPISODE".into(),
             title: "Trailer".into(),
             marketplace: Some("us".into()),
-            work_kind: WorkKind::PodcastEpisode,
-            expression_kind: ExpressionKind::PodcastAudio,
-            media_kind: MediaKind::PodcastAudio,
+            work_kind: WorkKind::Podcast,
+            expression_kind: ExpressionKind::OriginalAudio,
+            media_kind: MediaKind::Audio,
             identifiers: vec![Identifier {
                 scheme: IdentifierScheme::Asin,
                 value: "B0EPISODE".into(),
@@ -198,13 +198,14 @@ fn structured_scan_page() -> bookclerk_plugin_abi::ScanPage {
 fn structured_catalog_hits() -> bookclerk_plugin_abi::CatalogHits {
     use bookclerk_plugin_abi::{
         CatalogHit, CatalogHits, Credit, CreditRole, ExpressionKind, Identifier, IdentifierScheme,
-        MediaKind,
+        MediaKind, WorkKind,
     };
     CatalogHits {
         hits: vec![CatalogHit {
             product_id: "9780000000001".into(),
             title: "A Novel".into(),
             origin: "search".into(),
+            work_kind: WorkKind::Book,
             expression_kind: ExpressionKind::Text,
             media_kind: MediaKind::Print,
             identifiers: vec![
@@ -782,6 +783,9 @@ fn scan_page_seeds_are_current() {
         account_id: account.into(),
         product_id: product.into(),
         title: "Title".into(),
+        work_kind: bookclerk_plugin_abi::WorkKind::Book,
+        expression_kind: bookclerk_plugin_abi::ExpressionKind::Narration,
+        media_kind: bookclerk_plugin_abi::MediaKind::Audio,
         ..ScanBook::default()
     };
     let seeds: Vec<(&str, &str, &str, ScanPage)> = vec![
@@ -837,6 +841,18 @@ fn scan_page_seeds_are_current() {
             ScanPage {
                 books: vec![book("acct", "B01")],
                 refreshed_credentials: Some(br#"{"authfile_b64":"e30="}"#.to_vec()),
+                ..ScanPage::default()
+            },
+        ),
+        (
+            "undeclared_carrier.bin",
+            "",
+            "acct",
+            ScanPage {
+                books: vec![ScanBook {
+                    media_kind: bookclerk_plugin_abi::MediaKind::Print,
+                    ..book("acct", "B01")
+                }],
                 ..ScanPage::default()
             },
         ),
@@ -997,6 +1013,107 @@ fn event_read_seeds_are_current() {
     for (name, seed) in seeds {
         let path = dir.join(name);
         if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
+}
+
+#[path = "../../../fuzz/oracles/plain_fetch.rs"]
+mod plain_fetch_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/plain_fetch.rs` with the shared oracle.
+#[test]
+fn fuzz_corpus_plain_fetch_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("plain_fetch") {
+        plain_fetch_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no plain_fetch seed");
+}
+
+/// Seeds for `plain_fetch`: accepted part and whole replies, and one reply
+/// breaking each rule. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O or encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn plain_fetch_seeds_are_current() {
+    use bookclerk_plugin_abi::{
+        encode_plain_fetch_bytes, ChapterMarker, FetchedFile, FetchedFileRole, MediaKind,
+        PlainFetch,
+    };
+
+    let file = |path: &str, role: FetchedFileRole| FetchedFile {
+        path: path.into(),
+        role,
+        ..FetchedFile::default()
+    };
+    let audio = |files: Vec<FetchedFile>| PlainFetch {
+        media_kind: MediaKind::Audio,
+        files,
+        ..PlainFetch::default()
+    };
+    let seeds: Vec<(&str, PlainFetch)> = vec![
+        (
+            "parts.bin",
+            PlainFetch {
+                chapters: vec![ChapterMarker {
+                    title: "One".into(),
+                    start_ms: 0,
+                }],
+                pdf_url: Some("https://cdn.example/book.pdf".into()),
+                refreshed_credentials: Some(br#"{"token":"t"}"#.to_vec()),
+                ..audio(vec![
+                    FetchedFile {
+                        title: Some("Part 1".into()),
+                        duration_ms: Some(60_000),
+                        content_type: Some("audio/mpeg".into()),
+                        ..file("/c/1.mp3", FetchedFileRole::Part)
+                    },
+                    file("/c/2.mp3", FetchedFileRole::Part),
+                    file("/c/cover.jpg", FetchedFileRole::Cover),
+                ])
+            },
+        ),
+        (
+            "whole.bin",
+            audio(vec![file("/c/book.m4b", FetchedFileRole::Whole)]),
+        ),
+        (
+            "parts_and_whole.bin",
+            audio(vec![
+                file("/c/1.mp3", FetchedFileRole::Part),
+                file("/c/book.m4b", FetchedFileRole::Whole),
+            ]),
+        ),
+        (
+            "no_role.bin",
+            audio(vec![file("/c/book.m4b", FetchedFileRole::Unspecified)]),
+        ),
+        (
+            "no_content.bin",
+            audio(vec![file("/c/cover.jpg", FetchedFileRole::Cover)]),
+        ),
+        (
+            "undeclared_carrier.bin",
+            PlainFetch {
+                media_kind: MediaKind::Ebook,
+                ..audio(vec![file("/c/book.epub", FetchedFileRole::Whole)])
+            },
+        ),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/plain_fetch");
+    for (name, fetch) in seeds {
+        let seed = encode_plain_fetch_bytes(&fetch).expect("encode");
+        let path = dir.join(name);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::create_dir_all(&dir).expect("corpus dir");
             std::fs::write(&path, &seed).expect("write seed");
         }
         assert_eq!(

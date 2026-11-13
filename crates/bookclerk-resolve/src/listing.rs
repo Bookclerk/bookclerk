@@ -165,7 +165,7 @@ pub struct ListingDraft {
     pub work_kind: Option<WorkKind>,
     /// How the work is realised.
     pub expression_kind: Option<ExpressionKind>,
-    /// Form of the edition.
+    /// Carrier of the edition.
     pub media_kind: Option<MediaKind>,
     /// Content language code when known.
     pub language: Option<String>,
@@ -188,7 +188,8 @@ pub struct ListingDraft {
     pub credits: Vec<(String, CreditRole, Option<Level>)>,
     /// Series entries: name and position label.
     pub series: Vec<(String, Option<String>)>,
-    /// Parent show's product id, for a podcast episode.
+    /// Parent show's product id, for a podcast episode (a podcast that names
+    /// its show).
     pub parent_product_id: Option<String>,
 }
 
@@ -203,6 +204,9 @@ pub enum ListingError {
     TooMany(&'static str),
     /// The runtime is negative.
     NegativeDuration,
+    /// A kind (work, expression or media) is absent: every record names
+    /// all three, so a plugin that leaves one unspecified is refused.
+    MissingKind(&'static str),
 }
 
 impl std::fmt::Display for ListingError {
@@ -214,6 +218,7 @@ impl std::fmt::Display for ListingError {
             }
             Self::TooMany(field) => write!(f, "listing has too many `{field}` entries"),
             Self::NegativeDuration => f.write_str("listing runtime is negative"),
+            Self::MissingKind(field) => write!(f, "listing field `{field}` is unspecified"),
         }
     }
 }
@@ -229,7 +234,7 @@ pub struct Listing {
     pub work_kind: WorkKind,
     /// How the work is realised.
     pub expression_kind: ExpressionKind,
-    /// Form of the edition.
+    /// Carrier of the edition.
     pub media_kind: MediaKind,
     /// Lower-cased language code; `None` when unknown.
     pub language: Option<String>,
@@ -280,14 +285,14 @@ impl Listing {
     ///
     /// # Returns
     ///
-    /// The normalised listing. Absent kinds take their common value
-    /// (`book`, `narration`, `audiobook`); an episode keeps its parent id,
-    /// and any other kind drops it.
+    /// The normalised listing. A podcast keeps its parent id (an episode
+    /// names its show); a book drops it.
     ///
     /// # Errors
     ///
-    /// Returns [`ListingError`] when the plugin key, product id or title is
-    /// blank, a text field is too long, or a list is over its limit.
+    /// Returns [`ListingError`] when a kind is absent, the plugin key,
+    /// product id or title is blank, a text field is too long, or a list is
+    /// over its limit.
     pub fn from_draft(draft: &ListingDraft) -> Result<Self, ListingError> {
         let plugin_key = clean_text(&draft.plugin_key, "plugin_key")?;
         if plugin_key.is_empty() {
@@ -368,12 +373,20 @@ impl Listing {
             }
         }
 
-        let work_kind = draft.work_kind.unwrap_or(WorkKind::Book);
+        let work_kind = draft
+            .work_kind
+            .ok_or(ListingError::MissingKind("work_kind"))?;
+        let expression_kind = draft
+            .expression_kind
+            .ok_or(ListingError::MissingKind("expression_kind"))?;
+        let media_kind = draft
+            .media_kind
+            .ok_or(ListingError::MissingKind("media_kind"))?;
         let parent_product_id = match work_kind {
-            WorkKind::PodcastEpisode => {
+            WorkKind::Podcast => {
                 clean_optional(draft.parent_product_id.as_deref(), "parent_product_id")?
             }
-            WorkKind::Book | WorkKind::PodcastShow | WorkKind::Drama => None,
+            WorkKind::Book => None,
         };
         Ok(Self {
             key: ListingKey {
@@ -382,8 +395,8 @@ impl Listing {
                 product_id,
             },
             work_kind,
-            expression_kind: draft.expression_kind.unwrap_or(ExpressionKind::Narration),
-            media_kind: draft.media_kind.unwrap_or(MediaKind::Audiobook),
+            expression_kind,
+            media_kind,
             language: clean_optional(draft.language.as_deref(), "language")?
                 .map(|l| l.to_ascii_lowercase()),
             abridgement: draft.abridgement.unwrap_or(Abridgement::Unknown),
@@ -397,6 +410,13 @@ impl Listing {
             series,
             parent_product_id,
         })
+    }
+
+    /// Whether this listing is a podcast episode: a podcast that names its
+    /// show. A podcast without a parent is the show.
+    #[must_use]
+    pub fn is_episode(&self) -> bool {
+        self.work_kind == WorkKind::Podcast && self.parent_product_id.is_some()
     }
 
     /// The listing of this one's parent show, for an episode with a parent id.
@@ -520,6 +540,9 @@ mod tests {
             ],
             series: vec![("Dune".into(), Some("1".into())), ("dune".into(), None)],
             parent_product_id: Some("P1".into()),
+            work_kind: Some(WorkKind::Book),
+            expression_kind: Some(ExpressionKind::Narration),
+            media_kind: Some(MediaKind::Audio),
             ..ListingDraft::default()
         }
     }
@@ -543,9 +566,31 @@ mod tests {
     #[test]
     fn episodes_keep_their_parent() {
         let mut d = draft();
-        d.work_kind = Some(WorkKind::PodcastEpisode);
+        d.work_kind = Some(WorkKind::Podcast);
         let l = Listing::from_draft(&d).unwrap();
+        assert!(l.is_episode());
         assert_eq!(l.parent_key().unwrap().product_id, "P1");
+        d.parent_product_id = None;
+        assert!(!Listing::from_draft(&d).unwrap().is_episode());
+    }
+
+    #[test]
+    fn drafts_without_a_kind_are_refused() {
+        for (field, clear) in [
+            (
+                "work_kind",
+                (|d: &mut ListingDraft| d.work_kind = None) as fn(&mut ListingDraft),
+            ),
+            ("expression_kind", |d| d.expression_kind = None),
+            ("media_kind", |d| d.media_kind = None),
+        ] {
+            let mut d = draft();
+            clear(&mut d);
+            assert_eq!(
+                Listing::from_draft(&d),
+                Err(ListingError::MissingKind(field))
+            );
+        }
     }
 
     #[test]

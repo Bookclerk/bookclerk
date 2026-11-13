@@ -302,8 +302,66 @@
       "error": "plugin.toml: `[cli]` requires `\"cli\"` in `entrypoints`"
     },
     {
-      "name": "crons with storefront",
+      "name": "storefront with media",
       "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[media]\nworks = [\"book\", \"podcast\"]\nlists = [\"audio\"]\nfetches = [\"audio\"]\n",
+      "error": null
+    },
+    {
+      "name": "metadata provider with media",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadata\"]\n",
+      "tables": "[media]\nworks = [\"book\"]\nlists = [\"print\"]\n",
+      "error": null
+    },
+    {
+      "name": "storefront without media",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "error": "plugin.toml: `[media]` is required for a plugin with the `storefront` or `metadata` entrypoint (declare `works` and `lists`)"
+    },
+    {
+      "name": "metadata provider without media",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadata\"]\n",
+      "error": "plugin.toml: `[media]` is required for a plugin with the `storefront` or `metadata` entrypoint (declare `works` and `lists`)"
+    },
+    {
+      "name": "media without a storefront or metadata entrypoint",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\n",
+      "error": "plugin.toml: `[media]` needs the `storefront` or `metadata` entrypoint"
+    },
+    {
+      "name": "media with empty works",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[media]\nworks = []\nlists = [\"audio\"]\n",
+      "error": "plugin.toml: `[media].works` is empty"
+    },
+    {
+      "name": "media with empty lists",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[media]\nworks = [\"book\"]\nlists = []\n",
+      "error": "plugin.toml: `[media].lists` is empty"
+    },
+    {
+      "name": "media naming unspecified",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[media]\nworks = [\"unspecified\"]\nlists = [\"audio\"]\n",
+      "error": "plugin.toml: `[media].works` names `unspecified`"
+    },
+    {
+      "name": "metadata provider declaring fetches",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"metadata\"]\n",
+      "tables": "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\nfetches = [\"audio\"]\n",
+      "error": "plugin.toml: `[media].fetches` needs the `storefront` entrypoint"
+    },
+    {
+      "name": "media fetching a carrier it does not list",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\nfetches = [\"ebook\"]\n",
+      "error": "plugin.toml: `[media].fetches` names `ebook`, which `lists` does not"
+    },
+    {
+      "name": "crons with storefront",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\nmedia = { works = [\"book\"], lists = [\"audio\"] }\n",
       "tables": "[triggers]\ncrons = [\"0 * * * *\"]\n",
       "error": "plugin.toml: `[triggers].crons` cannot be combined with the `storefront` entrypoint; put the schedule in a separate integration plugin"
     },

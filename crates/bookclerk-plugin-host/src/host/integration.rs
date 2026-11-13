@@ -53,6 +53,23 @@ pub struct ExternalIntegration {
 }
 
 impl ExternalIntegration {
+    /// Keeps the metadata records whose kinds are inside this provider's
+    /// declared media; the rest are logged and dropped.
+    fn declared_records(&self, records: Vec<MetadataRecord>) -> Vec<MetadataRecord> {
+        let media = &self.session.describe_snapshot().media;
+        records
+            .into_iter()
+            .filter(|r| {
+                super::declared_media::declared(
+                    self.session.id(),
+                    media,
+                    "metadata record",
+                    (r.work_kind, r.expression_kind, r.media_kind),
+                )
+            })
+            .collect()
+    }
+
     /// Spawn with bindings already resolved for one plugin instance.
     ///
     /// Does not look up an instance by plugin key.
@@ -568,20 +585,22 @@ impl Integration for ExternalIntegration {
         &self,
         params: MetadataLookupParams,
     ) -> bookclerk_integrations::Result<Vec<MetadataRecord>> {
-        Ok(self
+        let records = self
             .session
             .metadata(move |provider| async move { provider.lookup(params).await })
-            .await?)
+            .await?;
+        Ok(self.declared_records(records))
     }
 
     async fn metadata_search(
         &self,
         params: MetadataSearchParams,
     ) -> bookclerk_integrations::Result<Vec<MetadataRecord>> {
-        Ok(self
+        let records = self
             .session
             .metadata(move |provider| async move { provider.search(params).await })
-            .await?)
+            .await?;
+        Ok(self.declared_records(records))
     }
 
     async fn metadata_chapters(

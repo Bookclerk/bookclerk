@@ -5,6 +5,11 @@ runtime = "native"
 command = "./bad"
 entrypoints = ["storefront"]
 
+[media]
+works = ["book"]
+lists = ["audio"]
+fetches = ["audio"]
+
 [capabilities.network]
 mode = "outbound"
 domains = ["api.example.com"]

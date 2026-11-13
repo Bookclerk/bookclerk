@@ -338,15 +338,30 @@ async fn account_secrets(
     plugin_key: &str,
     account_id: &str,
 ) -> Result<Vec<CarriedSecret>> {
-    let rows = encrypted_secrets::Entity::find()
-        .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
-        .filter(encrypted_secrets::Column::Provider.eq(plugin_key))
-        .filter(encrypted_secrets::Column::AccountId.eq(account_id))
-        .order_by_asc(encrypted_secrets::Column::Kind)
-        .order_by_asc(encrypted_secrets::Column::Name)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    // Read in pages under the database plugin's result limit, ordered by
+    // the rest of the primary key so pages don't overlap.
+    let page = super::keeper::read_page(store);
+    let mut rows = Vec::new();
+    let mut offset = 0_u64;
+    loop {
+        let batch = encrypted_secrets::Entity::find()
+            .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
+            .filter(encrypted_secrets::Column::Provider.eq(plugin_key))
+            .filter(encrypted_secrets::Column::AccountId.eq(account_id))
+            .order_by_asc(encrypted_secrets::Column::Kind)
+            .order_by_asc(encrypted_secrets::Column::Name)
+            .offset(offset)
+            .limit(page)
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        let full = u64::try_from(batch.len()).unwrap_or(u64::MAX) >= page;
+        rows.extend(batch);
+        if !full {
+            break;
+        }
+        offset = offset.saturating_add(page);
+    }
     let mut secrets = Vec::new();
     for row in rows {
         let Some(record) = get_secret(
@@ -376,7 +391,7 @@ async fn account_secrets(
 
 /// Records that `accounts` were sent to the branch `node_id`
 /// (`account_shares`, direction [`SHARE_SENT`]), in atomic batches of at
-/// most 20 accounts; a repeat refreshes the time.
+/// most 13 accounts; a repeat refreshes the time.
 ///
 /// # Errors
 ///
@@ -393,6 +408,13 @@ pub async fn record_accounts_sent(
 /// branch, [`link_peer`] for a library this install offered them to), as
 /// [`record_accounts_sent`] does.
 ///
+/// Sending an account to a library again also forgets which sign-in this
+/// install last pushed there (`account_credential_revisions.observed`),
+/// keeping the revision: the library may have forgotten its keeper in
+/// between (the account was disconnected everywhere there), so the next
+/// push pass sends the current sign-in again even when it hasn't changed,
+/// which confirms this install as the keeper anew.
+///
 /// # Errors
 ///
 /// Returns the write error.
@@ -404,10 +426,10 @@ pub async fn record_accounts_sent_to(
     if accounts.is_empty() {
         return Ok(());
     }
-    /// Accounts per batch: two statements each, so a batch stays within
+    /// Accounts per batch: three statements each, so a batch stays within
     /// the 40-statement minimum every database guest must accept
     /// (`HOST_MIN_STATEMENTS`).
-    const ACCOUNTS_PER_BATCH: usize = 20;
+    const ACCOUNTS_PER_BATCH: usize = 13;
     let now = Utc::now().to_rfc3339();
     for chunk in accounts.chunks(ACCOUNTS_PER_BATCH) {
         let mut statements = Vec::new();
@@ -419,6 +441,15 @@ pub async fn record_accounts_sent_to(
                 SHARE_SENT,
                 &now,
                 None,
+            ));
+            statements.push(batch::exec(
+                "UPDATE account_credential_revisions SET observed = 0 \
+                 WHERE plugin_key = ? AND account_id = ? AND peer = ? AND peer LIKE 'link:%'",
+                vec![
+                    batch::text(&account.plugin_key),
+                    batch::text(&account.account_id),
+                    batch::text(peer),
+                ],
             ));
         }
         let operation_id = format!("accounts-sent-{}", uuid::Uuid::new_v4());
@@ -917,12 +948,33 @@ pub async fn withdraw_person_account(
 }
 
 /// Deletes the account's secrets and marks it `revoked` with scans off,
-/// each statement guarded on no link holding the account.
+/// each statement guarded on no link holding the account. It also forgets
+/// which branch kept it for this library (its `node:` shares and their
+/// sign-in revisions), so a later connection picks its keeper afresh; the
+/// shares this install recorded with libraries it joined (`link:`) stay,
+/// so a disconnect-everywhere retried later still reaches them.
 fn revoke_unlinked_statements(plugin_key: &str, account_id: &str) -> Vec<TypedDbStatement> {
     const UNLINKED: &str = "NOT EXISTS (SELECT 1 FROM account_links \
                             WHERE plugin_key = ? AND account_id = ?)";
     let now = Utc::now().to_rfc3339();
+    let forget_keeper = |table: &str| {
+        batch::exec(
+            &format!(
+                "DELETE FROM {table} \
+                 WHERE plugin_key = ? AND account_id = ? AND peer LIKE ? AND {UNLINKED}"
+            ),
+            vec![
+                text(plugin_key),
+                text(account_id),
+                text("node:%"),
+                text(plugin_key),
+                text(account_id),
+            ],
+        )
+    };
     vec![
+        forget_keeper("account_credential_revisions"),
+        forget_keeper("account_shares"),
         batch::exec(
             &format!(
                 "DELETE FROM encrypted_secrets \

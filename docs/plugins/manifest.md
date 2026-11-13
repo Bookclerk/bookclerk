@@ -174,9 +174,9 @@ supports_suspend = true
 
 ### `credentials` (storefronts)
 
-A storefront says whether its store sign-in may be held in more than one
-place. A person's store connections follow them to the branches they join
-only when every copy of the plugin there says `shareable`.
+A storefront says whether its store sign-in may be refreshed in more than
+one place. A person's store connections follow them to the branches they
+join either way; the declaration decides who refreshes them.
 
 ```toml
 entrypoints = ["storefront"]
@@ -187,10 +187,40 @@ credentials = "shareable"   # or "single_keeper" (the default)
   copies may refresh it on their own. Libro.fm, Chirp and GraphicAudio
   declare it.
 - `single_keeper` (the default, also when the key is left out): one place
-  keeps and refreshes the sign-in, so a copy elsewhere would break it.
-  Audible is a single keeper. Its accounts stay where they were connected.
+  keeps and refreshes the sign-in, so a copy refreshing on its own would
+  break it. Audible is a single keeper. A branch keeps such an account for
+  each library it shares it with and pushes its newer sign-ins there (see
+  [One refresh keeper](../server/cluster-hosts.md#one-refresh-keeper)).
+
+A plugin counts as shareable only when every copy of it the install knows
+says `shareable`.
 
 The key is refused on a plugin without the `storefront` entrypoint.
+
+### `[media]` (storefronts and metadata providers)
+
+A storefront or metadata provider says which kinds of work and which
+edition carriers it works with. The table is required for those plugins
+and has no default: one without it, or with an empty `works` or `lists`,
+is refused at install and at spawn. Every other plugin must leave it out.
+
+```toml
+entrypoints = ["storefront"]
+
+[media]
+works = ["book", "podcast"]   # book | podcast
+lists = ["audio"]             # audio | ebook | print
+fetches = ["audio"]           # what fetchTitle can deliver
+```
+
+- `works`: the work kinds the plugin reports.
+- `lists`: the carriers its scans, catalog search and metadata records
+  report.
+- `fetches`: the carriers it can download, a subset of `lists`.
+  Storefronts only; a metadata provider leaves it out.
+
+`describe()` returns the same declaration, and the host refuses records
+outside it. See [Declaring media](abi.md#declaring-media) for the rules.
 
 ### `command` (native)
 

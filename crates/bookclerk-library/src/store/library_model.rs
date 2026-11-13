@@ -600,14 +600,7 @@ fn link_params(
                         !w.match_key.is_empty()
                             && o.match_key == w.match_key
                             && o.kind == w.kind
-                            && match w.kind {
-                                resolve::WorkKind::PodcastEpisode => {
-                                    o.parent_work_id == w.parent_work_id
-                                }
-                                resolve::WorkKind::Book
-                                | resolve::WorkKind::PodcastShow
-                                | resolve::WorkKind::Drama => true,
-                            }
+                            && o.parent_work_id == w.parent_work_id
                     })
                     .map(|o| o.id.clone())
                     .collect()
@@ -742,25 +735,15 @@ pub fn listing_from_book(
     };
     let episode = crate::models::is_episode(&book.content_kind);
     let show = crate::models::is_podcast_parent(&book.content_kind);
-    let (work_kind, expression_kind, media_kind) = if episode {
+    let (work_kind, expression_kind) = if episode || show {
         (
-            resolve::WorkKind::PodcastEpisode,
-            resolve::ExpressionKind::PodcastAudio,
-            resolve::MediaKind::PodcastAudio,
-        )
-    } else if show {
-        (
-            resolve::WorkKind::PodcastShow,
-            resolve::ExpressionKind::PodcastAudio,
-            resolve::MediaKind::PodcastAudio,
+            resolve::WorkKind::Podcast,
+            resolve::ExpressionKind::OriginalAudio,
         )
     } else {
-        (
-            resolve::WorkKind::Book,
-            resolve::ExpressionKind::Narration,
-            resolve::MediaKind::Audiobook,
-        )
+        (resolve::WorkKind::Book, resolve::ExpressionKind::Narration)
     };
+    let media_kind = resolve::MediaKind::Audio;
     let mut credits = Vec::new();
     for (names, role) in [
         (&book.authors, resolve::CreditRole::Author),
@@ -814,7 +797,11 @@ pub fn listing_from_book(
             .filter(|s| !s.trim().is_empty())
             .map(|s| (s.clone(), book.series_index.clone()))
             .collect(),
-        parent_product_id: None,
+        // A flat episode row files its show's product id as the series id.
+        parent_product_id: book
+            .series_asin
+            .clone()
+            .filter(|show| episode && !show.trim().is_empty()),
     };
     resolve::Listing::from_draft(&draft)
 }
@@ -841,9 +828,9 @@ pub struct TitleQuery<'a> {
 /// names no plugin, so it never matches a stored listing.
 const TITLE_QUERY_PLUGIN: &str = "bookclerk-query";
 
-/// The listing the resolver sees for a [`TitleQuery`]: a book, with the
-/// query's identifiers, author credits and series. Kind, language and
-/// abridgement are left unknown, so the resolver only joins an existing
+/// The listing the resolver sees for a [`TitleQuery`]: a narrated audio
+/// book, with the query's identifiers, author credits and series. Language
+/// and abridgement are left unknown, so the resolver only joins an existing
 /// edition through a shared identifier and otherwise finds the work by its
 /// identifiers or its title-and-author match key.
 ///
@@ -878,8 +865,8 @@ fn listing_from_query(query: &TitleQuery<'_>) -> Option<resolve::Listing> {
         marketplace: None,
         product_id,
         work_kind: Some(resolve::WorkKind::Book),
-        expression_kind: None,
-        media_kind: None,
+        expression_kind: Some(resolve::ExpressionKind::Narration),
+        media_kind: Some(resolve::MediaKind::Audio),
         language: None,
         abridgement: None,
         title: query.title.to_string(),
@@ -1781,6 +1768,17 @@ impl LibraryStore {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
+        let works_with_episodes: Vec<String> = if listing.is_episode() {
+            reads
+                .works_with_episodes(&work_list)
+                .await?
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         // Both readers can return rows in any order; sort the lists so a
         // snapshot does not depend on which one answered.
@@ -1803,6 +1801,7 @@ impl LibraryStore {
             holding,
             credited: credited.into_iter().collect(),
             works_with_series,
+            works_with_episodes,
         };
         Ok((snapshot, stored_row))
     }
@@ -2617,7 +2616,7 @@ mod store_tests {
             product_id: product.into(),
             work_kind: Some(resolve::WorkKind::Book),
             expression_kind: Some(resolve::ExpressionKind::Narration),
-            media_kind: Some(resolve::MediaKind::Audiobook),
+            media_kind: Some(resolve::MediaKind::Audio),
             language: Some("en".into()),
             abridgement: Some(resolve::Abridgement::Unabridged),
             title: "Dune".into(),
@@ -3238,9 +3237,9 @@ mod store_tests {
         let show = resolve::ListingDraft {
             product_id: "S1".into(),
             title: "Show".into(),
-            work_kind: Some(resolve::WorkKind::PodcastShow),
-            expression_kind: Some(resolve::ExpressionKind::PodcastAudio),
-            media_kind: Some(resolve::MediaKind::PodcastAudio),
+            work_kind: Some(resolve::WorkKind::Podcast),
+            expression_kind: Some(resolve::ExpressionKind::OriginalAudio),
+            media_kind: Some(resolve::MediaKind::Audio),
             identifiers: Vec::new(),
             series: Vec::new(),
             ..dune("audible", "S1")
@@ -3248,7 +3247,7 @@ mod store_tests {
         let episode = resolve::ListingDraft {
             product_id: "E1".into(),
             title: "Trailer".into(),
-            work_kind: Some(resolve::WorkKind::PodcastEpisode),
+            work_kind: Some(resolve::WorkKind::Podcast),
             parent_product_id: Some("S1".into()),
             ..show.clone()
         };
@@ -3287,9 +3286,9 @@ mod store_tests {
         let show = resolve::ListingDraft {
             product_id: "S1".into(),
             title: "Show".into(),
-            work_kind: Some(resolve::WorkKind::PodcastShow),
-            expression_kind: Some(resolve::ExpressionKind::PodcastAudio),
-            media_kind: Some(resolve::MediaKind::PodcastAudio),
+            work_kind: Some(resolve::WorkKind::Podcast),
+            expression_kind: Some(resolve::ExpressionKind::OriginalAudio),
+            media_kind: Some(resolve::MediaKind::Audio),
             identifiers: Vec::new(),
             series: Vec::new(),
             ..dune("audible", "S1")
@@ -3297,7 +3296,7 @@ mod store_tests {
         let episode = resolve::ListingDraft {
             product_id: "E1".into(),
             title: "Trailer".into(),
-            work_kind: Some(resolve::WorkKind::PodcastEpisode),
+            work_kind: Some(resolve::WorkKind::Podcast),
             parent_product_id: Some("S1".into()),
             ..show.clone()
         };
@@ -4089,7 +4088,7 @@ mod store_tests {
         let listing = listing_from_book(&book).unwrap();
         assert_eq!(listing.title, "Dune & More");
         assert_eq!(listing.key.marketplace, "us");
-        assert_eq!(listing.work_kind, resolve::WorkKind::PodcastEpisode);
+        assert_eq!(listing.work_kind, resolve::WorkKind::Podcast);
         assert_eq!(listing.identifiers.len(), 2);
         assert_eq!(listing.credits.len(), 2);
         assert_eq!(holding_from_book(&book).holder.stored(), "account:a1");
@@ -4117,13 +4116,13 @@ mod store_tests {
         drafts.push(children);
         let mut show = dune("audible", "SHOW1");
         show.title = "Spice Talk".into();
-        show.work_kind = Some(resolve::WorkKind::PodcastShow);
+        show.work_kind = Some(resolve::WorkKind::Podcast);
         show.identifiers.clear();
         show.series.clear();
         let mut episode = show.clone();
         episode.product_id = "EP1".into();
         episode.title = "Spice Talk 1".into();
-        episode.work_kind = Some(resolve::WorkKind::PodcastEpisode);
+        episode.work_kind = Some(resolve::WorkKind::Podcast);
         episode.parent_product_id = Some("SHOW1".into());
         drafts.push(show);
         drafts.push(episode);

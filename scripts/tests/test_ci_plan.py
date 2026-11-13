@@ -1342,6 +1342,56 @@ class NativeGatewayTests(unittest.TestCase):
                     self.assertTrue(any(x.startswith("native-gateway:") for x in gate(art, bad)))
 
 
+class DesktopTests(unittest.TestCase):
+    """Clippy on the desktop window's `window` feature, Linux only."""
+
+    def test_window_paths_select_the_job_without_full_suite(self) -> None:
+        for path in (
+            "crates/bookclerk-desktop/src/main.rs",
+            "crates/bookclerk-window-policy/src/lib.rs",
+            "crates/bookclerkd/src/embedded.rs",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue((REPO / path).is_file(), path)
+                p = plan(path)
+                self.assertFalse(p.full_suite, p.reasons)
+                self.assertTrue(p.selected("desktop"), p.checks.keys())
+                self.assertTrue(p.jobs["desktop"])
+                self.assertEqual(p.prereqs("desktop"), [])
+
+    def test_other_host_code_does_not_select_it(self) -> None:
+        for path in ("crates/bookclerkd/src/jobs.rs", "docs/plugins/README.md"):
+            with self.subTest(path=path):
+                p = plan(path)
+                self.assertFalse(p.selected("desktop"))
+                self.assertFalse(p.jobs["desktop"])
+
+    def test_every_listed_path_names_something_in_the_repository(self) -> None:
+        for pattern in RELATIONS.desktop_paths:
+            with self.subTest(pattern=pattern):
+                self.assertTrue(list(REPO.glob(pattern)), pattern)
+
+    def test_runs_clippy_with_the_window_feature(self) -> None:
+        argv = check_argv(plan("crates/bookclerk-desktop/src/main.rs"), "desktop")
+        self.assertEqual(
+            argv,
+            [
+                [
+                    "cargo",
+                    "clippy",
+                    "-p",
+                    "bookclerk-desktop",
+                    "--features",
+                    "window",
+                    "--all-targets",
+                    "--",
+                    "-D",
+                    "warnings",
+                ]
+            ],
+        )
+
+
 class WindowsClusterTests(unittest.TestCase):
     """windows-latest run of cluster_secret_startup and the identity library tests."""
 

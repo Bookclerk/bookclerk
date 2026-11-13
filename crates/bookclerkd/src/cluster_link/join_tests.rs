@@ -812,7 +812,7 @@ pub(crate) fn stage_storefront(
         dir.join("plugin.toml"),
         format!(
             "api_version = 3\nid = \"libro\"\nname = \"Libro.fm\"\nversion = \"0.1.0\"\n\
-             runtime = \"native\"\ncommand = \"./guest\"\nentrypoints = [\"storefront\"]\n\
+             runtime = \"native\"\ncommand = \"./guest\"\nentrypoints = [\"storefront\"]\nmedia = {{ works = [\"book\"], lists = [\"audio\"], fetches = [\"audio\"] }}\n\
              credentials = \"{credentials}\"\n\n[capabilities.network]\nmode = \"deny\"\n"
         ),
     )
@@ -1074,6 +1074,21 @@ async fn a_branch_adds_a_connection_to_its_library_and_disconnects_it_everywhere
         .unwrap()
         .iter()
         .any(|link| link.account_id == "den@example.com"));
+    // A shareable account's refresh in a job for the library is not kept
+    // here instead: it goes back to the library as a write-back.
+    {
+        use super::super::host_jobs::{DaemonKeeper, LocalKeeper as _};
+        let keeper = DaemonKeeper {
+            state: Arc::clone(&host_state),
+            cluster_id: cluster_id.clone(),
+        };
+        assert_eq!(
+            keeper
+                .keep(&plugin_key, "den@example.com", b"{}", br#"{"t":"2"}"#)
+                .await,
+            None
+        );
+    }
 
     // Disconnect everywhere: gone on the branch and on the library.
     let (status, _, gone) = call(
@@ -1125,4 +1140,197 @@ async fn a_branch_adds_a_connection_to_its_library_and_disconnects_it_everywhere
         gone,
         json!({ "here": false, "libraries": [], "unreached": [] })
     );
+}
+
+/// The branch keeps a single-keeper account it added for its library: a
+/// job's refresh is saved on the branch, the branch's link pushes that
+/// newer sign-in up to the library, and a pass with nothing newer sends
+/// nothing.
+#[tokio::test]
+async fn a_keeping_branch_pushes_its_newer_sign_ins_up_the_link() {
+    use super::super::host_jobs::{DaemonKeeper, KeptHere, LocalKeeper as _};
+    use super::super::keeper::{PushPass, SignInPusher};
+    use bookclerk_library::control_plane::keeping_branch;
+    use bookclerk_library::secrets::{get_secret, secret_account_type, secret_kind, unseal_secret};
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let (owner_state, owner_store, origin, member) = owner(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let (host_state, host_store) = crate::node_api::tests::test_state(&host_files).await;
+    let plugin_key = stage_storefront(&owner_files, &owner_state, "single_keeper");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        owner_files.path().join("plugins"),
+        host_files.path().join("plugins"),
+    )
+    .unwrap();
+    #[cfg(not(unix))]
+    return;
+    let me = host_store
+        .create_user(UserRole::Owner, Some("Riley"), None)
+        .await
+        .unwrap();
+    super::super::spawn_cluster_links(Arc::clone(&host_state));
+    let host = host_routes(&host_state);
+    let start = json!({ "address": origin, "branch_name": "Den PC" });
+    let (status, _, started) = call(&host, "POST", "/api/config/join/start", Some(start)).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let authorize_url = started["authorize_url"].as_str().unwrap().to_string();
+    let back = consent(&owner_state, member, &authorize_url, true).await;
+    let callback = json!({ "code": back["code"], "state": back["state"] });
+    let (status, _, joined) =
+        call(&host, "POST", "/api/config/join/callback", Some(callback)).await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    let link = bookclerk_library::control_plane::list_cluster_links(&host_store)
+        .await
+        .unwrap()
+        .remove(0);
+    let cluster_id = link.owner_cluster_id.clone();
+
+    // The branch's person adds a single-keeper account: the library keeps
+    // it, and this branch keeps it fresh there.
+    let account = "den@example.com";
+    connect_account(&host_store, me.id, &plugin_key, account, b"legacy").await;
+    // The credentials blob a plugin storefront is handed and hands back.
+    let blob = format!("{account}.plugin.auth");
+    {
+        use bookclerk_library::secrets::{build_sealed_record, upsert_secret};
+        let record = build_sealed_record(
+            br#"{"t":"1"}"#,
+            secret_kind::SOURCE_AUTH,
+            &plugin_key,
+            secret_account_type::INTEGRATION,
+            account,
+            &blob,
+        )
+        .unwrap();
+        upsert_secret(host_store.db(), &record).await.unwrap();
+    }
+    let as_person = host_routes_as(&host_state, UserCaller::User { user_id: me.id });
+    let add = json!({
+        "cluster_id": cluster_id,
+        "accounts": [{ "plugin_key": plugin_key, "account_id": account }],
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let added = loop {
+        let (status, _, answer) = call(
+            &as_person,
+            "POST",
+            "/api/config/join/connections",
+            Some(add.clone()),
+        )
+        .await;
+        if status == StatusCode::OK {
+            break answer;
+        }
+        assert!(
+            status == StatusCode::SERVICE_UNAVAILABLE && Instant::now() < deadline,
+            "{status} {answer}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(added["added"], 1, "{added}");
+    assert_eq!(
+        keeping_branch(&owner_store, &plugin_key, account)
+            .await
+            .unwrap(),
+        Some(link.remote_node_id.clone())
+    );
+    let secret_in = |store: LibraryStore| {
+        let plugin_key = plugin_key.clone();
+        let blob = blob.clone();
+        async move {
+            let record = get_secret(
+                store.db(),
+                secret_kind::SOURCE_AUTH,
+                Some(&plugin_key),
+                secret_account_type::INTEGRATION,
+                Some(account),
+                &blob,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            unseal_secret(&record).unwrap()
+        }
+    };
+
+    let pusher = SignInPusher {
+        state: Arc::clone(&host_state),
+        library: host_store.clone(),
+        cluster_id: cluster_id.clone(),
+        handle: super::super::link_handle(&cluster_id, &link.remote_node_id).unwrap(),
+    };
+    // Whatever the link's own pusher already sent, the library now holds
+    // the branch's sign-in and nothing is left to retry.
+    let first = pusher.push_once().await.unwrap();
+    assert_eq!(first.retry, 0, "{first:?}");
+    assert_eq!(secret_in(owner_store.clone()).await, br#"{"t":"1"}"#);
+
+    // A job on this branch refreshes the account: the branch saves it here
+    // (a write-back would be refused by the library) ...
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let keeper = DaemonKeeper {
+        state: Arc::clone(&host_state),
+        cluster_id: cluster_id.clone(),
+    };
+    assert_eq!(
+        keeper
+            .keep(&plugin_key, account, br#"{"t":"1"}"#, br#"{"t":"2"}"#)
+            .await,
+        Some(KeptHere::Saved)
+    );
+    // A refresh of a copy that is no longer the one here loses to it.
+    assert_eq!(
+        keeper
+            .keep(&plugin_key, account, br#"{"t":"1"}"#, br#"{"t":"9"}"#)
+            .await,
+        Some(KeptHere::Superseded)
+    );
+    assert_eq!(secret_in(host_store.clone()).await, br#"{"t":"2"}"#);
+    // ... and an account this branch does not keep is not its to save.
+    assert_eq!(
+        keeper
+            .keep(&plugin_key, "other@example.com", b"{}", br#"{"t":"x"}"#)
+            .await,
+        None
+    );
+
+    // The next pass pushes the newer sign-in, and the library applies it.
+    let pass = pusher.push_once().await.unwrap();
+    assert_eq!(pass.applied + pass.settled, 1, "{pass:?}");
+    assert_eq!(pass.retry, 0, "{pass:?}");
+    assert_eq!(secret_in(owner_store.clone()).await, br#"{"t":"2"}"#);
+    // Nothing newer: nothing is sent.
+    assert_eq!(pusher.push_once().await.unwrap(), PushPass::default());
+
+    // A share recorded here before the library took the offer (still on
+    // its way, or to be retried): the library doesn't take its sign-in
+    // from this branch yet, and the next pass sends it again.
+    let later = "later@example.com";
+    connect_account(&host_store, me.id, &plugin_key, later, b"later").await;
+    bookclerk_library::control_plane::record_accounts_sent_to(
+        &host_store,
+        &bookclerk_library::control_plane::link_peer(&cluster_id),
+        &[bookclerk_node_proto::CarriedAccount {
+            plugin_key: plugin_key.clone(),
+            account_id: later.into(),
+            source: "libro".into(),
+            marketplace: "us".into(),
+            label: None,
+            secrets: Vec::new(),
+        }],
+    )
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        let pass = pusher.push_once().await.unwrap();
+        assert_eq!(
+            pass,
+            PushPass {
+                not_kept: 1,
+                ..PushPass::default()
+            }
+        );
+    }
 }

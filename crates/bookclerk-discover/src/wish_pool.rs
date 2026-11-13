@@ -296,6 +296,9 @@ mod tests {
             description: Some(format!("The store's blurb for {title}.")),
             price_cents: Some(price_cents),
             currency: Some(String::from("USD")),
+            work_kind: bookclerk_source::records::WorkKind::Book,
+            expression_kind: bookclerk_source::records::ExpressionKind::Narration,
+            media_kind: bookclerk_source::records::MediaKind::Audio,
             ..CatalogHit::default()
         }
     }

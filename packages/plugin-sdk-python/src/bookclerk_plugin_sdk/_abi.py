@@ -116,23 +116,29 @@ CLI_ARG_KINDS: tuple[str, ...] = ("string", "bool", "int", "path")
 Ordinal-ordered ``CliArgKind`` wire names (index = Cap'n Proto ordinal).
 """
 
-WORK_KINDS: tuple[str, ...] = ("book", "podcastShow", "podcastEpisode", "drama")
-"""What kind of creative work a record describes (FRBR work). Ordinal 0 is
-the common case, so a guest that leaves it unset describes a book.
+WORK_KINDS: tuple[str, ...] = ("unspecified", "book", "podcast")
+"""What family of creative work a record describes (FRBR work). Every record
+names one: `unspecified` is refused by the host, so a guest that forgets
+the field fails instead of silently describing a book. Whether a podcast
+work is a show or an episode is structural, not a kind: an episode names
+its show through `parentProductId`, a show names no parent.
 
 Ordinal-ordered ``WorkKind`` wire names (index = Cap'n Proto ordinal).
 """
 
-EXPRESSION_KINDS: tuple[str, ...] = ("narration", "text", "translation", "dramatisation", "podcastAudio")
-"""How a work is realised (FRBR expression). Ordinal 0 is the common case
-for a storefront that sells audiobooks.
+EXPRESSION_KINDS: tuple[str, ...] = ("unspecified", "text", "narration", "dramatisation", "graphic", "originalAudio")
+"""How a work is realised (FRBR expression): the kind of content you get,
+independent of the carrier. A translation is not a kind: the expression's
+language and its translator credits say it. `unspecified` is refused.
 
 Ordinal-ordered ``ExpressionKind`` wire names (index = Cap'n Proto ordinal).
 """
 
-MEDIA_KINDS: tuple[str, ...] = ("audiobook", "ebook", "print", "podcastAudio")
-"""Physical or digital form of an edition (FRBR manifestation). Only
-`audiobook` and `podcastAudio` editions are acquire candidates.
+MEDIA_KINDS: tuple[str, ...] = ("unspecified", "audio", "ebook", "print")
+"""Carrier of an edition (FRBR manifestation): what form you receive.
+Whether the host acquires an edition depends on the storefront's
+`MediaSupport.fetches` and what the host supports, not on this value
+alone. `unspecified` is refused.
 
 Ordinal-ordered ``MediaKind`` wire names (index = Cap'n Proto ordinal).
 """
@@ -155,6 +161,12 @@ CREDIT_LEVELS: tuple[str, ...] = ("roleDefault", "work", "expression", "edition"
 a guest sets this only when a credit departs from it.
 
 Ordinal-ordered ``CreditLevel`` wire names (index = Cap'n Proto ordinal).
+"""
+
+FETCHED_FILE_ROLES: tuple[str, ...] = ("unspecified", "part", "whole", "cover")
+"""What one fetched file is to the edition it belongs to.
+
+Ordinal-ordered ``FetchedFileRole`` wire names (index = Cap'n Proto ordinal).
 """
 
 CATALOG_SORTS: tuple[str, ...] = ("relevance", "popularity", "rating", "title", "author")
@@ -248,6 +260,7 @@ __all__ = [
     "IDENTIFIER_SCHEMES",
     "CREDIT_ROLES",
     "CREDIT_LEVELS",
+    "FETCHED_FILE_ROLES",
     "CATALOG_SORTS",
     "CATALOG_FIELDS",
     "ABRIDGEMENTS",

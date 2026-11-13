@@ -1010,3 +1010,233 @@ async fn a_branch_adds_and_withdraws_its_persons_connections() {
         .iter()
         .any(|link| link.account_id == "stale@example.com"));
 }
+
+/// One account of `plugin_key` whose one secret holds `value`, for an offer
+/// or a pushed sign-in.
+fn offered_with(
+    plugin_key: &str,
+    account_id: &str,
+    value: &[u8],
+) -> bookclerk_node_proto::CarriedAccount {
+    let mut account = offered(plugin_key, account_id);
+    account.secrets[0].value = bookclerk_node_proto::SecretValue::new(value.to_vec());
+    account
+}
+
+/// A single-keeper account travels to one branch only; that branch's newer
+/// sign-ins replace the library's copy and older or repeated ones do not;
+/// a push for an account the branch does not keep changes nothing; and a
+/// job's write-back of a branch-kept sign-in is refused.
+#[tokio::test]
+async fn a_keeping_branch_pushes_newer_sign_ins_to_the_library() {
+    use crate::cluster_link::join::tests::{connect_account, stage_storefront};
+    use bookclerk_library::control_plane::{keeping_branch, load_cluster_row};
+    use bookclerk_library::secrets::{get_secret, secret_account_type, secret_kind, unseal_secret};
+    use bookclerk_node_proto::{
+        seal_account_offer, seal_secret_update, AccountBundle, Body, Frame, KeeperOutcome,
+        SecretRef, ACCOUNT_BUNDLE_VERSION,
+    };
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store, member) = owner(&files).await;
+    let plugin_key = stage_storefront(&files, &state, "single_keeper");
+    connect_account(&store, member, &plugin_key, "here@example.com", b"token").await;
+    // Before any branch keeps it, the account may travel to a new one.
+    let travelling = super::travelling_accounts(&state, &store, member, None).await;
+    assert!(travelling.contains(&(plugin_key.clone(), "here@example.com".into())));
+
+    let app = routes(&state, UserCaller::User { user_id: member }, LOOPBACK);
+    let v = verifier('k');
+    let code = approve(&app, &v).await;
+    let (status, _, enrolled) = call(
+        &app,
+        "POST",
+        "/api/node/v1/enroll/oauth",
+        Some(redeem(&code, &v, 41)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{enrolled}");
+    let node_id = enrolled["node_id"].as_str().unwrap().to_string();
+    let cluster_id = load_cluster_row(&store).await.unwrap().unwrap().cluster_id;
+    let host = branch_context(&state, &node_id).await;
+    let owner_key = bookclerk_node_proto::box_public_key(&[3; 32]);
+    let seal = |accounts| {
+        seal_account_offer(
+            &owner_key,
+            &[8; 32],
+            &AccountBundle {
+                v: ACCOUNT_BUNDLE_VERSION,
+                cluster_id: cluster_id.clone(),
+                node_id: node_id.clone(),
+                accounts,
+            },
+        )
+        .unwrap()
+    };
+
+    // The branch brings a single-keeper account: it is kept here, and the
+    // branch keeps it fresh.
+    let kept = "kept@example.com";
+    let answer = super::super::host_accounts::add(
+        &store,
+        &host,
+        "a1".into(),
+        &seal(vec![offered_with(&plugin_key, kept, b"first")]),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            answer.body,
+            Body::AccountsAdded {
+                added: 1,
+                failed: 0,
+                ..
+            }
+        ),
+        "{answer:?}"
+    );
+    assert_eq!(
+        keeping_branch(&store, &plugin_key, kept).await.unwrap(),
+        Some(node_id.clone())
+    );
+    // It travels back to its keeper only, never to a second branch.
+    let key = (plugin_key.clone(), kept.to_string());
+    assert!(
+        super::travelling_accounts(&state, &store, member, Some(&node_id))
+            .await
+            .contains(&key)
+    );
+    let elsewhere = super::travelling_accounts(&state, &store, member, Some("other-node")).await;
+    assert!(!elsewhere.contains(&key));
+    assert!(elsewhere.contains(&(plugin_key.clone(), "here@example.com".into())));
+    assert!(!super::travelling_accounts(&state, &store, member, None)
+        .await
+        .contains(&key));
+
+    let stored = || async {
+        let record = get_secret(
+            store.db(),
+            secret_kind::SOURCE_AUTH,
+            Some(&plugin_key),
+            secret_account_type::INTEGRATION,
+            Some(kept),
+            &format!("{kept}.libro"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        unseal_secret(&record).unwrap()
+    };
+    let update = |id: &str, accounts, revision| {
+        let sealed = seal(accounts);
+        let host = &host;
+        let store = &store;
+        let id = id.to_string();
+        async move {
+            super::super::host_accounts::update(store, host, id, &sealed, revision)
+                .await
+                .unwrap()
+                .body
+        }
+    };
+
+    // A revision that is not a time is refused before anything opens.
+    assert!(matches!(
+        update("u0", vec![offered_with(&plugin_key, kept, b"x")], 0).await,
+        Body::Error { message, .. } if message == "invalid_revision"
+    ));
+    // A newer sign-in is applied.
+    assert_eq!(
+        update("u1", vec![offered_with(&plugin_key, kept, b"second")], 10).await,
+        Body::AccountsUpdated {
+            outcome: KeeperOutcome::Applied
+        }
+    );
+    assert_eq!(stored().await, b"second");
+    // The same revision again, or an older one, changes nothing.
+    for (id, revision) in [("u2", 10), ("u3", 5)] {
+        assert_eq!(
+            update(
+                id,
+                vec![offered_with(&plugin_key, kept, b"older")],
+                revision
+            )
+            .await,
+            Body::AccountsUpdated {
+                outcome: KeeperOutcome::Stale
+            }
+        );
+    }
+    assert_eq!(stored().await, b"second");
+    // An account this branch does not keep is not taken from it.
+    assert_eq!(
+        update(
+            "u4",
+            vec![offered_with(&plugin_key, "here@example.com", b"stolen")],
+            20
+        )
+        .await,
+        Body::AccountsUpdated {
+            outcome: KeeperOutcome::NotShared
+        }
+    );
+    // Nor is a storefront that is not installed here.
+    assert_eq!(
+        update(
+            "u5",
+            vec![offered_with("platform:other/other#other", kept, b"other")],
+            20
+        )
+        .await,
+        Body::AccountsUpdated {
+            outcome: KeeperOutcome::NotShared
+        }
+    );
+    // A push holds exactly one account.
+    assert!(matches!(
+        update(
+            "u6",
+            vec![
+                offered_with(&plugin_key, kept, b"a"),
+                offered_with(&plugin_key, "here@example.com", b"b"),
+            ],
+            30
+        )
+        .await,
+        Body::Error { message, .. } if message == "one_account"
+    ));
+
+    // A job's write-back of the kept sign-in would overwrite the keeper's
+    // newer one: it is refused.
+    let secret = SecretRef {
+        kind: secret_kind::SOURCE_AUTH.into(),
+        provider: plugin_key.clone(),
+        account_id: kept.into(),
+        name: format!("{kept}.libro"),
+    };
+    let frame = Frame::new(
+        "w1",
+        Body::SecretUpdate {
+            job_id: "job-1".into(),
+            fence: 1,
+            secret_ref: secret.clone(),
+            sealed_value: seal_secret_update(
+                &owner_key,
+                &[9; 32],
+                &node_id,
+                "job-1",
+                1,
+                &secret,
+                b"from-a-job",
+            )
+            .unwrap(),
+        },
+    );
+    let answer = super::super::work::answer(&store, &host, frame).await;
+    assert!(
+        matches!(&answer.body, Body::Error { code, message } if code == "refused" && message == "kept_by_branch"),
+        "{answer:?}"
+    );
+    assert_eq!(stored().await, b"second");
+}
