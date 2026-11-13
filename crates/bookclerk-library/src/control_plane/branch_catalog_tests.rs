@@ -2017,9 +2017,11 @@ async fn a_stop_sharing_cleanup_keeps_a_newer_sharing_sessions_titles() {
         .is_empty());
 }
 
-/// Titles moved to new listings in one batch replace their earlier
+/// Twenty titles moved to new listings in one batch replace their earlier
 /// holdings under every database profile: the replaced read is chunked and
-/// paged to the backend's limits.
+/// paged to the backend's limits, and the replaced holdings' share state is
+/// retired in a few statements, so the batch stays within the minimum
+/// profile's statement count.
 #[tokio::test]
 async fn replaced_holdings_are_found_under_every_profile() {
     let _lock = master_key_test_lock_async().await;
@@ -2039,7 +2041,7 @@ async fn replaced_holdings_are_found_under_every_profile() {
             CatalogBegin::Opened(opened) => opened,
             other => panic!("{name}: expected a session: {other:?}"),
         };
-        let us: Vec<CatalogTitle> = (0..3).map(|n| title(&format!("p{n}"), 1)).collect();
+        let us: Vec<CatalogTitle> = (0..20).map(|n| title(&format!("p{n}"), 1)).collect();
         accepted(&store, opened.fence, "a", false, &us).await;
         let uk: Vec<CatalogTitle> = us
             .iter()
@@ -2054,8 +2056,8 @@ async fn replaced_holdings_are_found_under_every_profile() {
             .count(store.db())
             .await
             .unwrap();
-        assert_eq!(held, 3, "{name}: one holding per title");
-        assert_eq!(removed_events(&store).await, 3, "{name}");
+        assert_eq!(held, 20, "{name}: one holding per title");
+        assert_eq!(removed_events(&store).await, 20, "{name}");
     }
 }
 

@@ -630,14 +630,26 @@ async fn prepare_catalog_batch(
     // A replaced holding stops being shared in the batch that advances the
     // cursor, so it is never chosen for the title again even when its
     // removal below is skipped (a newer connection raised the fence first);
-    // with no share state it is then left to the unshared sweep.
-    for id in &replaced {
-        statements.push(gated(
-            "UPDATE holdings SET share_ref = NULL, share_title = NULL, share_digest = NULL, \
-               updated_at = ? \
-              WHERE id = ? AND node_id = ?",
-            vec![text(&now), text(id), text(node_id)],
-        ));
+    // with no share state it is then left to the unshared sweep. The ids
+    // go in as few statements as fit the backend's binds and statement
+    // size (usually one), so a batch that replaces many titles adds about
+    // one statement rather than one per title.
+    let retire = |ids: &[String]| {
+        let marks = vec!["?"; ids.len()].join(", ");
+        let mut binds = vec![text(&now), text(node_id)];
+        binds.extend(ids.iter().map(|id| text(id)));
+        gated(
+            &format!(
+                "UPDATE holdings SET share_ref = NULL, share_title = NULL, share_digest = NULL, \
+                   updated_at = ? \
+                  WHERE node_id = ? AND id IN ({marks})"
+            ),
+            binds,
+        )
+    };
+    let fits = |ids: &[String]| store.admits_read(&retire(ids));
+    for chunk in crate::store::holdings::fitting_chunks(&replaced, store.lookup_chunk(), fits) {
+        statements.push(retire(chunk));
     }
     Ok(Ok(PreparedCatalogBatch {
         operation_id: format!("catalog-batch:{node_id}:{fence}:{now}"),
