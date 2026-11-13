@@ -2230,3 +2230,43 @@ async fn an_abandoned_claim_does_not_suppress_another_branchs_delivery() {
         vec![reference("p1")]
     );
 }
+
+/// The batch that replaces a title's holding also stops sharing the old
+/// one, so it is never chosen for the title again even when its removal
+/// after the batch is skipped.
+#[tokio::test]
+async fn a_replaced_holding_stops_being_shared_in_the_replacing_batch() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let session = open(&store, true, true).await;
+    accepted(&store, session.fence, "a", false, &[title("p1", 1)]).await;
+    let moved = CatalogTitle {
+        marketplace: "uk".into(),
+        ..title("p1", 1)
+    };
+    let prepared = match prepare_catalog_batch(&store, BRANCH, session.fence, "b", false, &[moved])
+        .await
+        .unwrap()
+    {
+        Ok(prepared) => prepared,
+        Err(other) => panic!("expected a prepared batch: {other:?}"),
+    };
+    assert_eq!(prepared.replaced.len(), 1);
+    // Only the batch is written; the removal after it never runs.
+    let reply = batch::execute_host_batch(
+        &store,
+        batch::request(&prepared.operation_id, prepared.statements),
+    )
+    .await
+    .unwrap();
+    assert_eq!(batch::rows_affected(&reply, 0), 1);
+    let shared = holdings::Entity::find()
+        .filter(holdings::Column::NodeId.eq(BRANCH))
+        .filter(holdings::Column::ShareDigest.is_not_null())
+        .count(store.db())
+        .await
+        .unwrap();
+    assert_eq!(shared, 1, "only the replacing holding is shared");
+    assert_eq!(list_branch_titles(&store, None, 10).await.unwrap().len(), 1);
+}

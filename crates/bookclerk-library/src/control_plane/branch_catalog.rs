@@ -627,6 +627,18 @@ async fn prepare_catalog_batch(
     let recorded = statements.len() - 1;
     statements.extend(held_seen);
     let replaced = replaced_holdings(store, node_id, &linked).await?;
+    // A replaced holding stops being shared in the batch that advances the
+    // cursor, so it is never chosen for the title again even when its
+    // removal below is skipped (a newer connection raised the fence first);
+    // with no share state it is then left to the unshared sweep.
+    for id in &replaced {
+        statements.push(gated(
+            "UPDATE holdings SET share_ref = NULL, share_title = NULL, share_digest = NULL, \
+               updated_at = ? \
+              WHERE id = ? AND node_id = ?",
+            vec![text(&now), text(id), text(node_id)],
+        ));
+    }
     Ok(Ok(PreparedCatalogBatch {
         operation_id: format!("catalog-batch:{node_id}:{fence}:{now}"),
         statements,
@@ -932,10 +944,13 @@ async fn shared_holding(
     else {
         return Ok(None);
     };
-    let Some(title) = share_title_of(store, &row.id)
-        .await?
-        .and_then(|text| serde_json::from_str::<CatalogTitle>(&text).ok())
-    else {
+    let Some(title) = share_title_of(
+        store,
+        &row.id,
+        row.share_digest.as_deref().unwrap_or_default(),
+    )
+    .await?
+    .and_then(|text| serde_json::from_str::<CatalogTitle>(&text).ok()) else {
         return Ok(None);
     };
     let Some(listing) = store_listings::Entity::find_by_id(row.listing_id.clone())
@@ -1586,9 +1601,11 @@ pub async fn list_branch_titles(
                 owner
             }
         };
-        let shared: Option<CatalogTitle> = share_title_of(store, &row.id)
-            .await?
-            .and_then(|text| serde_json::from_str(&text).ok());
+        let shared: Option<CatalogTitle> = match row.share_digest.as_deref() {
+            Some(digest) => share_title_of(store, &row.id, digest).await?,
+            None => None,
+        }
+        .and_then(|text| serde_json::from_str(&text).ok());
         let (store_id, product_id) = split_share_ref(row.share_ref.as_deref().unwrap_or_default());
         out.push(BranchTitle {
             delivered: row.delivered_digest.is_some() && row.delivered_digest == row.share_digest,
@@ -1814,10 +1831,13 @@ pub async fn forwardable_branch_title(
     else {
         return Ok(None);
     };
-    if row.share_digest.is_none() || row.delivered_digest != row.share_digest {
+    let Some(digest) = row.share_digest.as_deref() else {
+        return Ok(None);
+    };
+    if row.delivered_digest.as_deref() != Some(digest) {
         return Ok(None);
     }
-    Ok(share_title_of(store, &row.id)
+    Ok(share_title_of(store, &row.id, digest)
         .await?
         .and_then(|text| serde_json::from_str::<CatalogTitle>(&text).ok())
         .map(|title| ForwardableBranchTitle {

@@ -170,12 +170,13 @@ struct SharePiece {
 
 /// Reads holding `holding_id`'s `share_title` in pieces that each fit one
 /// cell the database plugin may return, so a title of any accepted size is
-/// readable under every profile.
+/// readable under every profile. Every piece is read only while the
+/// holding's `share_digest` is still `digest`, the one the caller checked.
 ///
 /// # Returns
 ///
 /// The title as the branch shared it, or `None` when the holding or its
-/// title is gone.
+/// title is gone, or was shared again under another digest meanwhile.
 ///
 /// # Errors
 ///
@@ -183,6 +184,7 @@ struct SharePiece {
 pub(crate) async fn share_title_of(
     store: &LibraryStore,
     holding_id: &str,
+    digest: &str,
 ) -> Result<Option<String>> {
     use sea_orm::sea_query::Expr;
     // `substr` counts characters; a character is at most four bytes.
@@ -201,13 +203,16 @@ pub(crate) async fn share_title_of(
                 "piece",
             )
             .filter(holdings::Column::Id.eq(holding_id))
+            .filter(holdings::Column::ShareDigest.eq(digest))
             .into_model::<SharePiece>()
             .one(store.db())
             .await
             .map_err(LibraryError::Orm)?
             .and_then(|row| row.piece);
+        // Every piece requires the digest the caller read, so a title
+        // rewritten (or removed) part way is not stitched from two versions.
         let Some(piece) = piece else {
-            return Ok(out);
+            return Ok(None);
         };
         let read = i64::try_from(piece.chars().count()).unwrap_or(i64::MAX);
         out.get_or_insert_with(String::new).push_str(&piece);
@@ -216,6 +221,16 @@ pub(crate) async fn share_title_of(
         }
         start = start.saturating_add(read);
     }
+}
+
+/// A listing's id and plugin, the source a node holding's removal event
+/// names.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct ListingSource {
+    /// The listing (`store_listings.id`).
+    id: String,
+    /// The plugin that sells it.
+    plugin_key: String,
 }
 
 /// Whose holdings a removal reads: one account, or one branch node.
@@ -525,10 +540,22 @@ impl LibraryStore {
             Scope::Account { .. } => std::collections::BTreeMap::new(),
             Scope::Node(_) => {
                 let ids: Vec<String> = rows.iter().map(|m| m.listing_id.clone()).collect();
+                let query = |part: &[String]| {
+                    store_listings::Entity::find()
+                        .select_only()
+                        .column(store_listings::Column::Id)
+                        .column(store_listings::Column::PluginKey)
+                        .filter(store_listings::Column::Id.is_in(part.iter().cloned()))
+                };
+                let fits = |part: &[String]| {
+                    crate::control_plane::sea_exec(&query(part))
+                        .map(|stmt| self.admits_read(&stmt))
+                        .unwrap_or(true)
+                };
                 let mut out = std::collections::BTreeMap::new();
-                for chunk in ids.chunks(self.lookup_chunk().max(1)) {
-                    for listing in store_listings::Entity::find()
-                        .filter(store_listings::Column::Id.is_in(chunk.iter().cloned()))
+                for chunk in fitting_chunks(&ids, self.lookup_chunk(), fits) {
+                    for listing in query(chunk)
+                        .into_model::<ListingSource>()
                         .all(&self.db)
                         .await
                         .map_err(LibraryError::Orm)?
