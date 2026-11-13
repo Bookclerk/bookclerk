@@ -3164,6 +3164,8 @@ export interface Recommendation {
  * catalog lookup for the title's work).
  */
 export interface BranchAvailability {
+  /** This library's work the branch supplies; what {@link requestFromBranch} asks for. */
+  work_id: string;
   /** The branch node id. */
   node_id: string;
   /** The branch owner's display name, when the owner has one. */
@@ -3194,6 +3196,68 @@ export function availableThroughLabel(through: BranchAvailability[] | undefined)
   if (branches.length === 1) return `Available through ${branches[0]}`;
   if (branches.length === 2) return `Available through ${branches[0]} and ${branches[1]}`;
   return `Available through ${branches[0]} and ${branches.length - 1} other branches`;
+}
+
+/** `POST /api/branch-requests` answer. */
+export interface BranchRequestQueued {
+  /** The request's job, as `/api/jobs` lists it. */
+  job_id: string;
+  /** The branch the request went to. */
+  node_id: string;
+  /** `true` when a request for this work to this branch was already waiting. */
+  already_queued: boolean;
+}
+
+/**
+ * Asks a branch for a book it lists. The branch takes it automatically;
+ * the book arrives with the branch's next catalog sync.
+ *
+ * @param workId - The title's work (`BranchAvailability.work_id`).
+ * @param nodeId - The branch to ask.
+ * @returns The queued request.
+ * @throws {ApiError} 404 when the branch no longer lists the title.
+ */
+export async function requestFromBranch(
+  workId: string,
+  nodeId: string,
+): Promise<BranchRequestQueued> {
+  const res = await fetchWithTimeout(
+    "/api/branch-requests",
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ work_id: workId, node_id: nodeId }),
+    },
+    8_000,
+    "Branch request",
+  );
+  return parseJson(res);
+}
+
+/**
+ * The distinct branches a title is available through, one entry per
+ * branch, in the order given, with the label to ask each by.
+ *
+ * @param through - The title's branch availability.
+ * @returns For example `[{ node_id, work_id, label: "Riley's branch" }]`.
+ */
+export function branchesToAsk(
+  through: BranchAvailability[] | undefined,
+): { node_id: string; work_id: string; label: string }[] {
+  const out: { node_id: string; work_id: string; label: string }[] = [];
+  const seen = new Set<string>();
+  for (const b of through ?? []) {
+    if (!b.work_id || seen.has(b.node_id)) continue;
+    seen.add(b.node_id);
+    const owner = b.owner_name?.trim();
+    out.push({
+      node_id: b.node_id,
+      work_id: b.work_id,
+      label: owner ? `${owner}'s branch` : "the branch",
+    });
+  }
+  return out;
 }
 
 /** The signed-in user's catalog listing choice. */

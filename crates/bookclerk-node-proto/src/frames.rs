@@ -473,6 +473,12 @@ pub enum Body {
         /// Titles recorded earlier whose files have not arrived yet.
         #[serde(default)]
         wanted: Vec<crate::catalog::CatalogRef>,
+        /// The library's "Acquire all of this branch's members' books":
+        /// when true, the branch also sends the books its members acquired
+        /// that it lists to this library, not only its owner's. Absent
+        /// (older libraries) reads as false.
+        #[serde(default)]
+        members_books: bool,
     },
     /// Branch → library: one batch of shared titles (no account or user
     /// fields; see [`crate::CatalogTitle`]). Answered with
@@ -1565,6 +1571,7 @@ mod tests {
                         store: "audible".into(),
                         product_id: "B1".into(),
                     }],
+                    members_books: true,
                 },
                 "catalog.session",
             ),
@@ -1626,6 +1633,17 @@ mod tests {
             "x".repeat(MAX_FRAME_BYTES)
         );
         assert_eq!(Frame::parse(&huge), Err(FrameError::TooLarge));
+    }
+
+    #[test]
+    fn a_catalog_session_from_an_older_library_asks_for_no_members_books() {
+        let older =
+            Frame::parse(r#"{"v":1,"id":"1","type":"catalog.session","fence":2,"cursor":"c"}"#)
+                .unwrap();
+        let Body::CatalogSession { members_books, .. } = older.body else {
+            panic!("expected a catalog session: {older:?}");
+        };
+        assert!(!members_books);
     }
 
     #[test]

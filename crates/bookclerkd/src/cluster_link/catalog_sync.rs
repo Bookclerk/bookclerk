@@ -341,13 +341,19 @@ impl<S: BranchShelf> CatalogSync<S> {
     ///
     /// Reads identity columns only, in keyset pages, so the pass's memory
     /// and every read stay small however large the library is.
-    async fn entries(&self, include_branches: bool) -> anyhow::Result<Vec<Entry>> {
+    async fn entries(
+        &self,
+        include_branches: bool,
+        members_books: bool,
+    ) -> anyhow::Result<Vec<Entry>> {
         let mut seen = BTreeSet::new();
         let mut out = Vec::new();
         let mut after = None;
-        // Only the branch owner's own books go up, never one the library
-        // acquired itself and this install imported.
-        let owners = OwnerShareFilter::load(&self.library, &self.cluster_id).await?;
+        // The branch owner's own books go up (and, when the library
+        // acquires all of this branch's members' books, every book this
+        // branch lists to it), never one the library acquired itself and
+        // this install imported.
+        let owners = OwnerShareFilter::load(&self.library, &self.cluster_id, members_books).await?;
         loop {
             let page = self
                 .library
@@ -512,7 +518,9 @@ impl<S: BranchShelf> CatalogSync<S> {
             tracing::debug!(cluster_id = %self.cluster_id, "no output destination here; nothing to share");
             return Ok(report);
         };
-        let entries = self.entries(link.include_branches).await?;
+        let entries = self
+            .entries(link.include_branches, session.members_books)
+            .await?;
         let by_ref: BTreeMap<CatalogRef, &Entry> = entries
             .iter()
             .map(|entry| (entry.reference.clone(), entry))

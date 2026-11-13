@@ -65,8 +65,8 @@ use bookclerk_library::control_plane::{
     enrollment_link_brings_accounts, library_ancestry, list_nodes, load_cluster_row,
     load_host_enrollment, load_node_credential, member_accounts, record_accounts_sent,
     record_authorized_enrollment_link, redeem_enrollment_link_as, remove_detached_branch_titles,
-    set_host_enrollment_enabled, verify_cluster_owner, ConfigActor, EnrolledNode, NodeKind,
-    RedeemRequest,
+    set_branch_members_books, set_host_enrollment_enabled, verify_cluster_owner, ConfigActor,
+    EnrolledNode, NodeKind, RedeemRequest,
 };
 use bookclerk_library::{hash_token, LibraryError, UserStatus};
 use bookclerk_node_proto::{
@@ -1126,6 +1126,11 @@ pub struct BranchView {
     /// "Include books from my own branches" as it last reported it; `null` until its first catalog sync.
     #[schema(example = true)]
     pub include_branches: Option<bool>,
+    /// This library's "Acquire all of this branch's members' books": the
+    /// branch also sends the books its members acquired that it lists here,
+    /// not only its owner's.
+    #[schema(example = false)]
+    pub acquire_members_books: bool,
     /// Counts of the titles it shared.
     pub titles: bookclerk_library::control_plane::BranchTitleCounts,
 }
@@ -1854,6 +1859,7 @@ async fn branches_json(
             joined,
             share_books: node.share_books,
             include_branches: node.include_branches,
+            acquire_members_books: node.acquire_members_books,
             titles,
         });
     }
@@ -1910,6 +1916,105 @@ pub async fn post_remove_branch_titles(
             );
             Json(BranchTitlesRemoved { removed }).into_response()
         }
+        Err(err) => crate::config_authority::events_error(err),
+    }
+}
+
+/// `PUT /api/config/branches/members-books` body.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PutBranchMembersBooks {
+    /// The branch.
+    #[schema(example = "2b7e1c4d-9f3a-4e8b-a6c5-0d1e2f3a4b5c")]
+    pub node_id: String,
+    /// "Acquire all of this branch's members' books".
+    #[schema(example = true)]
+    pub acquire: bool,
+}
+
+/// JSON body after `PUT /api/config/branches/members-books`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct BranchMembersBooks {
+    /// The branch.
+    #[schema(example = "2b7e1c4d-9f3a-4e8b-a6c5-0d1e2f3a4b5c")]
+    pub node_id: String,
+    /// "Acquire all of this branch's members' books", as stored.
+    #[schema(example = true)]
+    pub acquire_members_books: bool,
+}
+
+/// The audit actor of a branch administrator ([`require_branch_admin`]).
+fn admin_audit_actor(actor: &ConfigActor) -> String {
+    match actor {
+        ConfigActor::ClusterOwner(owner) => format!("user:{}", owner.user_id()),
+        ConfigActor::Operator { id } => id.clone(),
+        ConfigActor::Administrator { id } | ConfigActor::Member { id } => format!("user:{id}"),
+        ConfigActor::NodeOwner(_) | ConfigActor::Bootstrap | ConfigActor::Scheduler => {
+            "operator".into()
+        }
+    }
+}
+
+/// `PUT /api/config/branches/members-books`: turn this library's "Acquire
+/// all of this branch's members' books" on or off for one branch.
+///
+/// While on, the branch's catalog sync also sends the books its members
+/// acquired that it lists to this library (its "List my members' books"
+/// setting and each member's opt-out still decide), not only its owner's.
+/// A change restarts the branch's catalog pass, so books it no longer sends
+/// are withdrawn when that pass ends; files already delivered stay.
+#[utoipa::path(
+    put,
+    path = "/api/config/branches/members-books",
+    request_body = PutBranchMembersBooks,
+    responses(
+        (status = 200, description = "The setting after the change.", body = BranchMembersBooks),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
+            ("forbidden" = (summary = "The user is not an active Owner.", value = json!({"error": "forbidden"}))),
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 404, description = "No branch of this library has that node id.", body = crate::http_error::ErrorMessage, example = json!({"error": "not_a_branch"})),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
+        (status = 503, description = "The branch's catalog sync kept changing under the write; retry.", body = crate::http_error::ErrorMessage, example = json!({"error": "service unavailable: the branch's catalog fence kept changing"})),
+    ),
+)]
+pub async fn put_branch_members_books(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+    Json(body): Json<PutBranchMembersBooks>,
+) -> Response {
+    let actor = match require_branch_admin(&state, caller).await {
+        Ok(actor) => actor,
+        Err(refused) => return refused,
+    };
+    let library = state.library_snapshot().await;
+    let node_id = body.node_id.trim();
+    match set_branch_members_books(&library, node_id, body.acquire).await {
+        Ok(Some(acquire)) => {
+            let detail = json!({ "node_id": node_id, "acquire": acquire }).to_string();
+            if let Err(err) = library
+                .insert_security_audit_event(
+                    &admin_audit_actor(&actor),
+                    "branch_members_books_set",
+                    Some(&detail),
+                )
+                .await
+            {
+                tracing::warn!(error = %err, "could not audit a branch's members' books setting");
+            }
+            Json(BranchMembersBooks {
+                node_id: node_id.to_string(),
+                acquire_members_books: acquire,
+            })
+            .into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(crate::http_error::ErrorMessage::new("not_a_branch")),
+        )
+            .into_response(),
         Err(err) => crate::config_authority::events_error(err),
     }
 }

@@ -72,6 +72,7 @@ pub(super) async fn begin(
                     ancestry: library_ancestry(library).await?,
                     destinations,
                     wanted,
+                    members_books: opened.members_books,
                 },
             ))
         }

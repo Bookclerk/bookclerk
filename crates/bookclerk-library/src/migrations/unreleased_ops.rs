@@ -1107,7 +1107,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         catalog_cursor TEXT NOT NULL DEFAULT '',
         catalog_pass_started_at TEXT,
         catalog_synced_at TEXT,
-        catalog_full_pass_at TEXT
+        catalog_full_pass_at TEXT,
+        acquire_members_books INTEGER NOT NULL DEFAULT 0 CHECK (acquire_members_books IN (0, 1))
     )",
     ),
     // Who holds a store listing (docs/adr/library-data-model.md): a store

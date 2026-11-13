@@ -351,7 +351,7 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
         shelf: DirShelf(b_out.path().to_path_buf()),
     };
     // What crosses the link: store, product id, marketplace, metadata, files only.
-    for entry in b_sync.entries(true).await.unwrap() {
+    for entry in b_sync.entries(true, false).await.unwrap() {
         let shelf = b_sync.shelf.primary().await.unwrap();
         let loaded = b_sync.load(&entry).await.unwrap().unwrap();
         let title = b_sync.title(shelf.as_ref(), &entry, &loaded).await.unwrap();
@@ -481,7 +481,7 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
         panic!("expected a session");
     };
     assert_eq!(cut.cursor, "", "the new settings restart the pass");
-    let first = b_sync.entries(false).await.unwrap().remove(0);
+    let first = b_sync.entries(false, false).await.unwrap().remove(0);
     let shelf = b_sync.shelf.primary().await.unwrap();
     let first_loaded = b_sync.load(&first).await.unwrap().unwrap();
     let first_title = b_sync
@@ -517,7 +517,7 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
     assert!(list_branch_titles(&a, None, 10).await.unwrap().is_empty());
     assert!(a_out.path().join("Author/b1/b1.m4b").exists());
 
-    let listed = b_sync.entries(true).await.unwrap();
+    let listed = b_sync.entries(true, false).await.unwrap();
     // C leaves B: B no longer holds its title.
     assert!(record_node_left(&b, &c_link.remote_node_id).await.unwrap());
     assert!(!shares(&b, "c1").await);
@@ -681,7 +681,7 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
         },
     };
     let listed: Vec<String> = b_sync
-        .entries(false)
+        .entries(false, false)
         .await
         .unwrap()
         .into_iter()
