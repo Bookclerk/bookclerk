@@ -705,6 +705,17 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         computed_at TEXT NOT NULL
     )",
     ),
+    // One subject's stored taste: what their books, listening and wishes say
+    // they like, written by each candidate fetch and read by each ranking,
+    // so a ranking never reads the whole library. Derived data.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS discover_tastes (
+        subject_key TEXT PRIMARY KEY NOT NULL,
+        taste_json TEXT NOT NULL,
+        seed_scope TEXT NOT NULL,
+        computed_at TEXT NOT NULL
+    )",
+    ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS discover_fetches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

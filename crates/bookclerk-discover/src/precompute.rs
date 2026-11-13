@@ -49,12 +49,13 @@ use crate::pool::{
 };
 use crate::recommend::{
     engagement_by_book, feed_from_recommendations, owned_identity_sets, rank_candidates,
-    shelf_taste, RecommendOptions, TasteWeights,
+    RecommendOptions, TasteWeights,
 };
 use crate::shelves::{shelf_is_disabled, DiscoverFeed};
 use crate::stored_feed::{
     decode_stored_feed, encode_stored_feed, feed_needs_pool, join_feed, CandidatePool,
 };
+use crate::stored_taste::{is_fresh, StoredTaste, STORED_TASTE_MAX_BYTES};
 
 /// Longest one storefront call may take before its store moves on.
 pub const STORE_CALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -443,6 +444,9 @@ pub async fn fetch_subject_candidates(
     opts: &RecommendOptions,
 ) -> Result<FetchReport> {
     let taste = load_subject_taste(library, subject, opts).await?;
+    // The ranking that follows reads the taste from here instead of the
+    // library.
+    store_taste(library, subject, &taste).await?;
     let owned = &taste.owned;
     let book_seeds = taste.book_seeds(opts.storefront_seed_limit, &opts.region);
     let wish_seeds: Vec<SeedTitle> = taste
@@ -1053,12 +1057,7 @@ pub async fn rank_subject_feed(
     subject: &DiscoverSubject,
     opts: &RecommendOptions,
 ) -> Result<RankReport> {
-    let taste = load_subject_taste(library, subject, opts).await?;
-    let OwnedIdentities {
-        asins,
-        isbns,
-        products,
-    } = &taste.owned;
+    let (scope, taste) = ranking_taste(library, subject, opts).await?;
     // With storefront candidates turned off, stored rows from before stay
     // out of the feed; rows fetched for another seed scope (before the
     // subject had taste of their own, or after they lost it) do too.
@@ -1071,34 +1070,38 @@ pub async fn rank_subject_feed(
     } else {
         Vec::new()
     };
-    let mut map: HashMap<String, StorefrontCandidate> = HashMap::new();
     let now = Utc::now();
-    for row in stored.iter().filter(|row| row.seed_scope == taste.scope) {
-        insert_candidate(
-            &mut map,
-            candidate_from_stored(row, now),
-            asins,
-            isbns,
-            products,
-        );
+    let rows: Vec<StorefrontCandidate> = stored
+        .iter()
+        .filter(|row| row.seed_scope == scope)
+        .map(|row| candidate_from_stored(row, now))
+        .collect();
+    // Titles the library already holds stay out, looked up for these
+    // candidates only.
+    let OwnedIdentities {
+        asins,
+        isbns,
+        products,
+    } = held_among(library, &rows).await?;
+    let mut map: HashMap<String, StorefrontCandidate> = HashMap::new();
+    for candidate in rows {
+        insert_candidate(&mut map, candidate, &asins, &isbns, &products);
     }
     let mut rank_opts = opts.clone();
     rank_opts.include_purchase_hints = false;
     rank_opts.disabled_shelves = Vec::new();
     let candidates: Vec<StorefrontCandidate> = map.into_values().collect();
+    let languages = taste.language_set();
     let recs = rank_candidates(
         library,
         registry,
-        &taste.books,
-        &taste.weights,
-        &taste.listening,
+        &languages,
+        taste.scores,
         candidates,
         &rank_opts,
     )
     .await?;
-    let mut shelf = shelf_taste(&taste.books, &taste.weights, &taste.listening);
-    shelf.wish_titles.clone_from(&taste.wish_titles);
-    shelf.linked_sources.clone_from(&taste.linked_sources);
+    let shelf = taste.shelf;
     let mut feed = feed_from_recommendations(&recs, &shelf, &rank_opts);
     // Cards keep only what is personal to the subject; catalog metadata the
     // pool holds is joined back when the page reads the feed.
@@ -1107,15 +1110,94 @@ pub async fn rank_subject_feed(
         crate::error::DiscoverError::message(format!("encode the discover feed: {e}"))
     })?;
     library
-        .put_discover_feed(subject, &json, taste.scope, newest)
+        .put_discover_feed(subject, &json, scope, newest)
         .await?;
     let stored_bytes = serde_json::to_string(&json).map_or(json.len(), |escaped| escaped.len());
     Ok(RankReport {
-        scope: taste.scope,
+        scope,
         shelves: feed.shelves.len(),
         candidates: stored.len(),
         cards: feed.shelves.iter().map(|s| s.items.len()).sum(),
         stored_bytes,
+    })
+}
+
+/// Stores the ranking's part of `taste` as `subject`'s taste.
+///
+/// # Errors
+///
+/// Returns the library write error, or an encoding error.
+async fn store_taste(
+    library: &LibraryStore,
+    subject: &DiscoverSubject,
+    taste: &SubjectTaste,
+) -> Result<StoredTaste> {
+    let mut stored = StoredTaste::of(taste);
+    let json = stored.encode(STORED_TASTE_MAX_BYTES).map_err(|e| {
+        crate::error::DiscoverError::message(format!("encode the discover taste: {e}"))
+    })?;
+    library
+        .put_discover_taste(subject, &json, taste.scope)
+        .await?;
+    Ok(stored)
+}
+
+/// The taste a ranking uses: the subject's stored taste while it is fresh
+/// and decodes, otherwise loaded from the library and stored again.
+///
+/// # Errors
+///
+/// Returns the library read or write error.
+async fn ranking_taste(
+    library: &LibraryStore,
+    subject: &DiscoverSubject,
+    opts: &RecommendOptions,
+) -> Result<(SeedScope, StoredTaste)> {
+    if let Some(row) = library.get_discover_taste(subject).await? {
+        if is_fresh(row.computed_at, Utc::now()) {
+            if let Some(taste) = StoredTaste::decode(&row.taste_json) {
+                return Ok((row.seed_scope, taste));
+            }
+        }
+    }
+    let taste = load_subject_taste(library, subject, opts).await?;
+    let stored = store_taste(library, subject, &taste).await?;
+    Ok((taste.scope, stored))
+}
+
+/// The identifiers among `candidates` that belong to titles the library
+/// holds, in the shape [`insert_candidate`] filters by.
+///
+/// # Errors
+///
+/// Returns the library read error.
+async fn held_among(
+    library: &LibraryStore,
+    candidates: &[StorefrontCandidate],
+) -> Result<OwnedIdentities> {
+    let mut asins: Vec<String> = Vec::new();
+    let mut isbns: Vec<String> = Vec::new();
+    let mut products: Vec<String> = Vec::new();
+    for c in candidates {
+        asins.extend(c.asin.clone());
+        if let Some(isbn) = c.isbn.as_deref() {
+            isbns.push(isbn.to_string());
+            let canonical = bookclerk_enrich::canonicalize_isbn(isbn);
+            if !canonical.is_empty() {
+                isbns.push(canonical);
+            }
+        }
+        // A product id is also checked as an ASIN and an ISBN, as
+        // `candidate_is_owned` does.
+        asins.push(c.product_id.clone());
+        isbns.push(c.product_id.clone());
+        products.push(c.product_id.clone());
+    }
+    let held = library.held_identifiers(&asins, &isbns, &products).await?;
+    Ok(OwnedIdentities {
+        asins: held.asins.into_iter().collect(),
+        isbns: held.isbns.into_iter().collect(),
+        products: held.product_ids.into_iter().collect(),
     })
 }
 
@@ -1832,6 +1914,95 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_ranking_reads_the_taste_the_fetch_stored() {
+        let (library, alice) = two_member_library().await;
+        let subject = DiscoverSubject::User(alice.user_id.unwrap());
+        let mut registry = SourceRegistry::new();
+        registry.register(std::sync::Arc::new(FakeStore {
+            id: "up",
+            deals: Some(vec!["d1", "d2"]),
+            calls: std::sync::Arc::default(),
+            price_calls: std::sync::Arc::default(),
+        }));
+        let opts = RecommendOptions::default();
+        // With no stored taste, a ranking loads it and stores it.
+        assert!(library
+            .get_discover_taste(&subject)
+            .await
+            .unwrap()
+            .is_none());
+        rank_subject_feed(&library, &registry, &subject, &opts)
+            .await
+            .unwrap();
+        assert!(library
+            .get_discover_taste(&subject)
+            .await
+            .unwrap()
+            .is_some());
+
+        fetch_subject_candidates(&library, &registry, &subject, &opts)
+            .await
+            .unwrap();
+        let row = library.get_discover_taste(&subject).await.unwrap().unwrap();
+        assert_eq!(row.seed_scope, SeedScope::Own);
+        let taste = StoredTaste::decode(&row.taste_json).unwrap();
+        assert!(!taste.languages.is_empty());
+        assert!(taste.shelf.owned_sources.contains("libro"));
+
+        // The ranking takes the scope from the stored taste, not the library.
+        library
+            .put_discover_taste(&subject, &row.taste_json, SeedScope::Household)
+            .await
+            .unwrap();
+        let ranked = rank_subject_feed(&library, &registry, &subject, &opts)
+            .await
+            .unwrap();
+        assert_eq!(ranked.scope, SeedScope::Household);
+
+        // A stored taste that does not decode is loaded again and replaced.
+        library
+            .put_discover_taste(&subject, "not json", SeedScope::Household)
+            .await
+            .unwrap();
+        let ranked = rank_subject_feed(&library, &registry, &subject, &opts)
+            .await
+            .unwrap();
+        assert_eq!(ranked.scope, SeedScope::Own);
+        let row = library.get_discover_taste(&subject).await.unwrap().unwrap();
+        assert!(StoredTaste::decode(&row.taste_json).is_some());
+
+        // A title bought since the fetch drops out of the next ranking,
+        // found by its product id without reading the library.
+        let cards = |feed: &DiscoverFeed| -> Vec<String> {
+            feed.shelves
+                .iter()
+                .flat_map(|s| &s.items)
+                .filter_map(|c| c.candidate_product_id.clone())
+                .collect()
+        };
+        let before = stored_subject_feed(&library, &subject, &[])
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(cards(&before.feed).contains(&"d1".to_string()));
+        let mut book =
+            bookclerk_library::NewBook::minimal("d1", "alice@example.com", "us", "Deal d1");
+        book.source = "libro".into();
+        book.plugin_key = "libro".into();
+        book.asin = None;
+        library.upsert_book(&book).await.unwrap();
+        rank_subject_feed(&library, &registry, &subject, &opts)
+            .await
+            .unwrap();
+        let after = stored_subject_feed(&library, &subject, &[])
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!cards(&after.feed).contains(&"d1".to_string()));
+        assert!(cards(&after.feed).contains(&"d2".to_string()));
     }
 
     /// Unpriced titles of store `store`, recorded into the pool and read

@@ -360,10 +360,10 @@ pub fn combine_wishlist_score(taste_score: f64, wish_count: i64) -> f64 {
 }
 
 /// Per-series local signal used for completion / listening heuristics.
-#[derive(Debug, Clone, Default)]
-struct SeriesAffinity {
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct SeriesAffinity {
     /// Owned titles in this series (any acquire status).
-    owned_count: usize,
+    pub(crate) owned_count: usize,
     /// Owned titles in this series marked finished.
     finished_count: usize,
     /// Owned books in this series that have listening activity.
@@ -373,7 +373,7 @@ struct SeriesAffinity {
     /// Max continuous engagement among in-progress titles (≈0–6).
     active_listen_weight: f64,
     /// Sum of continuous engagement across listened titles in the series.
-    listen_engagement_sum: f64,
+    pub(crate) listen_engagement_sum: f64,
     /// Highest parsed series index among owned titles, used to boost the next book.
     max_owned_index: Option<f64>,
 }
@@ -593,9 +593,8 @@ async fn recommend_all(
     rank_candidates(
         library,
         registry,
-        books,
-        &TasteWeights::new(),
-        &listening,
+        &reader_languages(books),
+        build_taste_scores(books, &TasteWeights::new(), &listening),
         candidates,
         opts,
     )
@@ -658,11 +657,11 @@ pub(crate) fn owned_identity_sets(
 ///
 /// * `library` - Library store (wishlist queue, stored embeddings).
 /// * `registry` - Storefronts, used only for live purchase hints when asked.
-/// * `taste_books` - Books whose finishes, ratings and series shape the taste
-///   (the subject's own books, with the household's blended in while the
-///   subject's own are few).
-/// * `taste_weights` - How much each taste book counts (see [`TasteWeights`]).
-/// * `listening` - The subject's listening rows.
+/// * `languages` - Normalized codes the reader listens in
+///   ([`reader_languages`] of the taste books); candidates in another
+///   language are dropped.
+/// * `scores` - What the taste likes ([`build_taste_scores`] of the
+///   subject's books, weights and listening).
 /// * `candidates` - Unowned storefront candidates, already merged by identity;
 ///   those for a work the library holds are dropped here
 ///   ([`retain_unowned_works`]).
@@ -678,15 +677,14 @@ pub(crate) fn owned_identity_sets(
 pub(crate) async fn rank_candidates(
     library: &LibraryStore,
     registry: &SourceRegistry,
-    taste_books: &[TasteTitle],
-    taste_weights: &TasteWeights,
-    listening: &[ListeningSignal],
+    languages: &HashSet<String>,
+    scores: TasteScores,
     candidates: Vec<crate::candidates::StorefrontCandidate>,
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
-    let candidates = retain_reader_languages(candidates, &reader_languages(taste_books));
+    let candidates = retain_reader_languages(candidates, languages);
     let candidates = retain_unowned_works(library, candidates).await?;
-    let profile = build_taste_profile(library, taste_books, taste_weights, listening, opts).await?;
+    let profile = TasteProfile::from_scores(library, scores, opts).await?;
     let mut embedder = open_candidate_embedder(opts)?;
     let mut scored: HashMap<String, Recommendation> = HashMap::new();
 
@@ -889,6 +887,24 @@ pub(crate) async fn rank_candidates(
     Ok(recs)
 }
 
+/// What a taste likes, without the embedding centroid: the part of a
+/// [`TasteProfile`] that is stored with a subject's taste
+/// ([`crate::stored_taste::StoredTaste`]) so a ranking need not read the
+/// library again.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TasteScores {
+    /// Lowercased author → finish/rating/listen weight.
+    pub(crate) liked_authors: HashMap<String, f64>,
+    /// Lowercased narrator → finish/rating weight.
+    pub(crate) liked_narrators: HashMap<String, f64>,
+    /// Lowercased category/subject → finish/rating weight.
+    pub(crate) liked_categories: HashMap<String, f64>,
+    /// Lowercased series name → ownership and listening affinity.
+    pub(crate) series_affinity: HashMap<String, SeriesAffinity>,
+    /// Works whose stored embeddings make up the seed centroid.
+    pub(crate) seed_work_ids: std::collections::BTreeSet<String>,
+}
+
 /// Weighted author/narrator/category likes, series affinity, and optional embedding centroid.
 struct TasteProfile {
     /// Lowercased author → finish/rating/listen weight.
@@ -903,6 +919,26 @@ struct TasteProfile {
     seed_centroid: Option<Vec<f32>>,
 }
 
+impl TasteProfile {
+    /// The profile of `scores`, with the centroid of their seed works'
+    /// stored embeddings.
+    async fn from_scores(
+        library: &LibraryStore,
+        scores: TasteScores,
+        opts: &RecommendOptions,
+    ) -> Result<Self> {
+        let seed_centroid =
+            seed_embedding_centroid(library, &scores.seed_work_ids, &opts.embedding_model).await?;
+        Ok(Self {
+            liked_authors: scores.liked_authors,
+            liked_narrators: scores.liked_narrators,
+            liked_categories: scores.liked_categories,
+            series_affinity: scores.series_affinity,
+            seed_centroid,
+        })
+    }
+}
+
 /// Accumulates liked people/categories, series affinity, and a seed embedding centroid.
 async fn build_taste_profile(
     library: &LibraryStore,
@@ -911,10 +947,26 @@ async fn build_taste_profile(
     listening: &[ListeningSignal],
     opts: &RecommendOptions,
 ) -> Result<TasteProfile> {
+    TasteProfile::from_scores(library, build_taste_scores(books, weights, listening), opts).await
+}
+
+/// Accumulates liked people/categories, series affinity and the seed works
+/// of one taste.
+///
+/// # Arguments
+///
+/// * `books` - Books whose finishes, ratings and series shape the taste.
+/// * `weights` - How much each book counts (see [`TasteWeights`]).
+/// * `listening` - Listening rows that add to the liked authors and series.
+pub(crate) fn build_taste_scores(
+    books: &[TasteTitle],
+    weights: &TasteWeights,
+    listening: &[ListeningSignal],
+) -> TasteScores {
     let mut liked_authors: HashMap<String, f64> = HashMap::new();
     let mut liked_narrators: HashMap<String, f64> = HashMap::new();
     let mut liked_categories: HashMap<String, f64> = HashMap::new();
-    let mut seed_work_ids: HashSet<String> = HashSet::new();
+    let mut seed_work_ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut listening_engagement_by_uuid: HashMap<String, f64> = HashMap::new();
 
     for book in books {
@@ -976,15 +1028,13 @@ async fn build_taste_profile(
     }
 
     let series_affinity = build_series_affinity(books, listening, &listening_engagement_by_uuid);
-    let seed_centroid =
-        seed_embedding_centroid(library, &seed_work_ids, &opts.embedding_model).await?;
-    Ok(TasteProfile {
+    TasteScores {
         liked_authors,
         liked_narrators,
         liked_categories,
         series_affinity,
-        seed_centroid,
-    })
+        seed_work_ids,
+    }
 }
 
 /// Scores a candidate against liked people, series completion, and embedding similarity.
@@ -1572,7 +1622,7 @@ pub use crate::identity::parse_series_index;
 /// Averages stored work embeddings for seed ids; returns `None` when none are stored.
 async fn seed_embedding_centroid(
     library: &LibraryStore,
-    seed_work_ids: &HashSet<String>,
+    seed_work_ids: &std::collections::BTreeSet<String>,
     model: &str,
 ) -> Result<Option<Vec<f32>>> {
     let mut query: Option<Vec<f32>> = None;
@@ -1739,9 +1789,8 @@ mod tests {
         let recs = rank_candidates(
             &store,
             &SourceRegistry::new(),
-            &books,
-            &TasteWeights::new(),
-            &[],
+            &reader_languages(&books),
+            build_taste_scores(&books, &TasteWeights::new(), &[]),
             vec![
                 candidate("audible", "B0AUDIBLE1", "Audible Pick"),
                 candidate("chirp", "chirp-42", "Chirp Pick"),
@@ -1807,9 +1856,8 @@ mod tests {
                 let mut ids: Vec<String> = rank_candidates(
                     store,
                     &SourceRegistry::new(),
-                    &books,
-                    &TasteWeights::new(),
-                    &[],
+                    &reader_languages(&books),
+                    build_taste_scores(&books, &TasteWeights::new(), &[]),
                     pool(),
                     opts,
                 )

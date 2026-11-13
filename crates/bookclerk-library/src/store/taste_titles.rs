@@ -701,6 +701,133 @@ impl LibraryStore {
     }
 }
 
+/// Which of a set of store identifiers belong to titles the library holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeldIdentifiers {
+    /// Upper-cased ASINs of held editions.
+    pub asins: BTreeSet<String>,
+    /// ISBNs of held editions, as stored (canonical ISBN-13).
+    pub isbns: BTreeSet<String>,
+    /// Store product ids of held listings.
+    pub product_ids: BTreeSet<String>,
+}
+
+impl LibraryStore {
+    /// Which of `asins`, `isbns` and `product_ids` belong to a title the
+    /// library holds, so a ranking can drop candidates the library already
+    /// has without reading the whole library.
+    ///
+    /// An ASIN or ISBN is held when it identifies an edition one of whose
+    /// listings an account or a branch holds; a product id is held when a
+    /// held listing carries it, on any store.
+    ///
+    /// # Arguments
+    ///
+    /// * `asins` - ASINs to check, in any case.
+    /// * `isbns` - ISBNs to check, as stored (canonical ISBN-13).
+    /// * `product_ids` - Store product ids to check.
+    ///
+    /// # Returns
+    ///
+    /// The held ones; ASINs upper-cased.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn held_identifiers(
+        &self,
+        asins: &[String],
+        isbns: &[String],
+        product_ids: &[String],
+    ) -> Result<HeldIdentifiers> {
+        let distinct = |values: &mut dyn Iterator<Item = String>| -> Vec<String> {
+            values
+                .filter(|v| !v.trim().is_empty())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        };
+        let asins = distinct(&mut asins.iter().map(|a| a.to_ascii_uppercase()));
+        let isbns = distinct(&mut isbns.iter().cloned());
+        let product_ids = distinct(&mut product_ids.iter().cloned());
+        let mut identified: Vec<edition_identifiers::Model> = Vec::new();
+        for (scheme, values) in [
+            (resolve::IdentifierScheme::Asin, &asins),
+            (resolve::IdentifierScheme::Isbn, &isbns),
+        ] {
+            identified.extend(
+                find_chunked_paged(self, values, |part| {
+                    edition_identifiers::Entity::find()
+                        .filter(edition_identifiers::Column::Scheme.eq(scheme.as_str()))
+                        .filter(edition_identifiers::Column::Value.is_in(part.iter().cloned()))
+                        .order_by_asc(edition_identifiers::Column::EditionId)
+                        .order_by_asc(edition_identifiers::Column::Value)
+                        .order_by_asc(edition_identifiers::Column::Marketplace)
+                })
+                .await?,
+            );
+        }
+        let edition_ids: Vec<String> = identified
+            .iter()
+            .map(|i| i.edition_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mut listings = find_chunked_paged(self, &edition_ids, |part| {
+            store_listings::Entity::find()
+                .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
+                .order_by_asc(store_listings::Column::Id)
+        })
+        .await?;
+        listings.extend(
+            find_chunked_paged(self, &product_ids, |part| {
+                store_listings::Entity::find()
+                    .filter(store_listings::Column::ProductId.is_in(part.iter().cloned()))
+                    .order_by_asc(store_listings::Column::Id)
+            })
+            .await?,
+        );
+        let listing_ids: Vec<String> = listings
+            .iter()
+            .map(|l| l.id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let held_listings: BTreeSet<String> = find_chunked_paged(self, &listing_ids, |part| {
+            super::holdings::find_holdings()
+                .filter(holdings::Column::ListingId.is_in(part.iter().cloned()))
+                .order_by_asc(holdings::Column::Id)
+        })
+        .await?
+        .into_iter()
+        .map(|h| h.listing_id)
+        .collect();
+        let mut out = HeldIdentifiers::default();
+        let mut held_editions: BTreeSet<String> = BTreeSet::new();
+        let wanted: BTreeSet<&str> = product_ids.iter().map(String::as_str).collect();
+        for listing in listings {
+            if !held_listings.contains(&listing.id) {
+                continue;
+            }
+            if wanted.contains(listing.product_id.as_str()) {
+                out.product_ids.insert(listing.product_id.clone());
+            }
+            held_editions.insert(listing.edition_id);
+        }
+        for id in identified {
+            if !held_editions.contains(&id.edition_id) {
+                continue;
+            }
+            if id.scheme == resolve::IdentifierScheme::Asin.as_str() {
+                out.asins.insert(id.value.to_ascii_uppercase());
+            } else {
+                out.isbns.insert(id.value);
+            }
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -919,6 +1046,41 @@ mod tests {
             assert!(
                 narrators.contains("Adjoa Andoh") && narrators.contains("Second Narrator"),
                 "{name}: {narrators}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn held_identifiers_name_only_what_the_library_holds() {
+        for profile in Profile::ALL {
+            let kit = sqlite::memory(profile).await;
+            let store = kit.store();
+            let name = profile.name();
+            store
+                .upsert_account("audible", "a1", "us", None, true, "audible")
+                .await
+                .unwrap();
+            let none = store.held_identifiers(&[], &[], &[]).await.unwrap();
+            assert_eq!(none, HeldIdentifiers::default(), "{name}");
+            scan(store, "B0JUSTICE", "a1", "Ancillary Justice").await;
+            let held = store
+                .held_identifiers(
+                    &["b0justice".into(), "B0OTHER".into()],
+                    &["9780000000000".into()],
+                    &["B0JUSTICE".into(), "B0OTHER".into(), " ".into()],
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                held.asins,
+                BTreeSet::from(["B0JUSTICE".to_string()]),
+                "{name}"
+            );
+            assert!(held.isbns.is_empty(), "{name}");
+            assert_eq!(
+                held.product_ids,
+                BTreeSet::from(["B0JUSTICE".to_string()]),
+                "{name}"
             );
         }
     }

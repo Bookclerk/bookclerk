@@ -48,7 +48,16 @@ pub const OWNER_DEBOUNCE: Duration = Duration::from_secs(5);
 const MAX_RETRIES: u32 = 20;
 
 /// The event types that change what Discover shows someone.
-pub const TASTE_EVENT_TYPES: [&str; 3] = [WISHLIST_CHANGED, LISTENING_SYNCED, "book_acquired"];
+///
+/// A holding added or removed changes which works the household holds,
+/// so it moves seeds and owned titles like an acquire does.
+pub const TASTE_EVENT_TYPES: [&str; 5] = [
+    WISHLIST_CHANGED,
+    LISTENING_SYNCED,
+    "book_acquired",
+    "holding_added",
+    "holding_removed",
+];
 
 /// True when `plugin_id` is Discover's consumer.
 #[must_use]
@@ -100,8 +109,8 @@ enum Taste {
         identity_id: Option<i64>,
     },
     /// Something the whole household reads (`listening_synced`,
-    /// `book_acquired`): seeds and owned books for anyone, including the
-    /// household fallback.
+    /// `book_acquired`, `holding_added`, `holding_removed`): seeds and
+    /// owned books for anyone, including the household fallback.
     Household,
 }
 
@@ -130,7 +139,9 @@ fn parse_taste(event: &DomainEventRecord) -> Result<Taste, String> {
                 identity_id: p.identity_id,
             })
             .map_err(|err| format!("bad wishlist_changed payload: {err}")),
-        LISTENING_SYNCED | "book_acquired" => Ok(Taste::Household),
+        LISTENING_SYNCED | "book_acquired" | "holding_added" | "holding_removed" => {
+            Ok(Taste::Household)
+        }
         other => Err(format!("not a taste event: {other}")),
     }
 }
@@ -419,10 +430,13 @@ mod tests {
             parse_taste(&event(LISTENING_SYNCED, "not json")),
             Ok(Taste::Household)
         );
-        assert_eq!(
-            parse_taste(&event("book_acquired", "{}")),
-            Ok(Taste::Household)
-        );
+        for household in ["book_acquired", "holding_added", "holding_removed"] {
+            assert_eq!(
+                parse_taste(&event(household, "{}")),
+                Ok(Taste::Household),
+                "{household}"
+            );
+        }
         assert!(parse_taste(&event("edition_linked", "{}")).is_err());
     }
 

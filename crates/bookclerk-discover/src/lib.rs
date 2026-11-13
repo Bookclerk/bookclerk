@@ -31,6 +31,7 @@ mod recommend;
 mod request_queue;
 mod shelves;
 mod stored_feed;
+mod stored_taste;
 mod title_meta;
 mod ttl_cache;
 mod wish_pool;
