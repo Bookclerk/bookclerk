@@ -105,7 +105,16 @@ A change takes effect at your branch's next answer, so the library can
 show your branch as a source for up to two days afterwards.
 
 The library sees the book and that your branch can supply it. It never
-sees whose account it's on. Nothing is copied until someone asks for it.
+sees whose account it's on. Nothing is copied until someone asks for it:
+someone on the library requests the book, and your branch sends it
+automatically while it still lists it.
+
+The library's operator can also choose to receive all of your branch's
+listed books, not only yours. Your branch then also sends the books your
+members downloaded on it, under the same settings: nothing while **Share
+this branch's books** is off, no member's book while **List my members'
+books** is off, and nothing of a member who opted out. Your branch doesn't
+download anything extra for this.
 
 ## See your books without downloading them
 

@@ -154,7 +154,7 @@ async fn only_the_owners_own_books_are_shared_upward() {
         let store = kit(profile).await;
         let name = profile.name();
         assert!(
-            OwnerShareFilter::load(&store, "lib-a")
+            OwnerShareFilter::load(&store, "lib-a", false)
                 .await
                 .unwrap()
                 .accounts
@@ -213,13 +213,17 @@ async fn only_the_owners_own_books_are_shared_upward() {
                 .map(|key| key.product_id.clone())
                 .collect()
         };
-        let to_a = OwnerShareFilter::load(&store, "lib-a").await.unwrap();
+        let to_a = OwnerShareFilter::load(&store, "lib-a", false)
+            .await
+            .unwrap();
         assert_eq!(
             sent(&to_a),
             BTreeSet::from(["OWN".into(), "OWN2".into()]),
             "{name}"
         );
-        let to_b = OwnerShareFilter::load(&store, "lib-b").await.unwrap();
+        let to_b = OwnerShareFilter::load(&store, "lib-b", false)
+            .await
+            .unwrap();
         assert_eq!(
             sent(&to_b),
             BTreeSet::from(["OWN".into(), "OWN2".into(), "FROM-A".into()]),

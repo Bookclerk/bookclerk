@@ -55,6 +55,10 @@ pub(crate) fn routes(
             post(super::post_remove_branch_titles),
         )
         .route(
+            "/api/config/branches/members-books",
+            axum::routing::put(super::put_branch_members_books),
+        )
+        .route(
             "/api/config/node-invites",
             post(super::super::post_node_invite),
         )
@@ -668,6 +672,56 @@ async fn branches_show_their_sharing_and_the_owner_removes_what_a_branch_left() 
         branch["titles"],
         json!({ "shared": 1, "delivered": 0, "detached": 0 })
     );
+    assert_eq!(branch["acquire_members_books"], false);
+
+    // "Acquire all of this branch's members' books": the operator (or an
+    // Owner) sets it per branch, never a member; the branch's catalog
+    // session then carries it.
+    let ask = json!({ "node_id": node_id, "acquire": true });
+    let (status, _, _) = call(
+        &app,
+        "PUT",
+        "/api/config/branches/members-books",
+        Some(ask.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, set) = call(
+        &operator,
+        "PUT",
+        "/api/config/branches/members-books",
+        Some(ask),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{set}");
+    assert_eq!(
+        set,
+        json!({ "node_id": node_id, "acquire_members_books": true })
+    );
+    let (_, _, view) = call(&operator, "GET", "/api/config/branches", None).await;
+    assert_eq!(view["branches"][0]["acquire_members_books"], true);
+    let CatalogBegin::Opened(again) = begin_catalog(&store, &node_id, true, false).await.unwrap()
+    else {
+        panic!("a branch opens a catalog session");
+    };
+    assert!(again.members_books);
+    assert_eq!(again.cursor, "", "the pass restarts from the start");
+    let (status, _, missing) = call(
+        &operator,
+        "PUT",
+        "/api/config/branches/members-books",
+        Some(json!({ "node_id": "no-such-node", "acquire": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    let (status, _, _) = call(
+        &operator,
+        "PUT",
+        "/api/config/branches/members-books",
+        Some(json!({ "node_id": node_id, "acquire": true, "extra": 1 })),
+    )
+    .await;
+    assert!(status.is_client_error(), "unknown fields are refused");
 
     // A member cannot remove entries; nothing is removed while shared.
     let (status, _, _) = call(

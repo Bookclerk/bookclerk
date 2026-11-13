@@ -3064,6 +3064,33 @@ mod tests {
         assert!(err.contains("does not match the physical table"), "{err}");
     }
 
+    /// The physical check reads only the table the CREATE names: it still
+    /// finds that table under another letter case, and other tables, however
+    /// they are shaped, do not affect it.
+    #[tokio::test]
+    async fn guest_ledger_create_checks_only_its_own_physical_table_on_sqlite() {
+        let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
+            .await
+            .expect("memory");
+        db.execute_unprepared("CREATE TABLE unrelated_table (only_one INTEGER)")
+            .await
+            .expect("unrelated table");
+        guest_ledger_create(&db)
+            .await
+            .expect("an unrelated table does not block the ledger");
+
+        let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
+            .await
+            .expect("memory");
+        db.execute_unprepared("CREATE TABLE Bookclerk_Schema_Migrations (only_one INTEGER)")
+            .await
+            .expect("wrong physical ledger in another case");
+        let err = guest_ledger_create(&db)
+            .await
+            .expect_err("physical mismatch in another case must fail");
+        assert!(err.contains("does not match the physical table"), "{err}");
+    }
+
     #[tokio::test]
     #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL"]
     async fn postgres_repeated_guest_ledger_create_is_idempotent() {

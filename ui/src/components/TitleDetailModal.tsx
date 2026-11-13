@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Bookmark, Download, ExternalLink, Trash2, X } from "lucide-react";
+import { BranchRequestButtons } from "@/components/BranchRequestButtons";
 import { StarRating } from "@/components/StarRating";
 import { Badge } from "@/components/ui/badge";
 import { storeBadgeSources } from "@/lib/storeBadges";
@@ -7,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import {
   coverSrc,
   coverUrl,
-  availableThroughLabel,
   fetchBooks,
   fetchPurchaseHints,
   fetchTitleMeta,
@@ -925,14 +925,7 @@ export function TitleDetailModal({
                 <MetaRow label="Added" value={formatDate(detail.created_at ?? null)} />
                 <MetaRow label="Updated" value={formatDate(detail.updated_at ?? null)} />
               </dl>
-              {(() => {
-                const through = availableThroughLabel(detail.available_through);
-                return through ? (
-                  <p className="rounded-md bg-teal/10 px-3 py-2 text-sm font-medium text-teal">
-                    {through}
-                  </p>
-                ) : null;
-              })()}
+              <BranchRequestButtons through={detail.available_through} />
               {(() => {
                 const reason = displayReasons(detail.reasons)[0];
                 return reason ? (

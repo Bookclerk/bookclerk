@@ -1141,6 +1141,9 @@ pub struct CatalogSession {
     pub destinations: Vec<String>,
     /// Titles whose files the library still wants.
     pub wanted: Vec<CatalogRef>,
+    /// The library's "Acquire all of this branch's members' books": send
+    /// the members' books this branch lists to it as well.
+    pub members_books: bool,
 }
 
 /// A recorded catalog batch ([`HostClientHandle::catalog_sync`]).
@@ -1201,12 +1204,14 @@ impl HostClientHandle {
                 ancestry,
                 destinations,
                 wanted,
+                members_books,
             } => Ok(CatalogSession {
                 fence,
                 cursor,
                 ancestry,
                 destinations,
                 wanted,
+                members_books,
             }),
             _ => Err(OwnerCallError::Unavailable),
         }

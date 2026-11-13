@@ -765,9 +765,10 @@ C is B's.
 - **Books flow up.** B shares its owner's books with A: those acquired on
   B on a store account connected there to B's Owner, and (when "Include
   books from my own branches" is on) those C shared with B. B's other
-  members' books stay on B. Each title carries its store, product id,
-  marketplace, metadata (with its ASIN, ISBN and kind) and file list,
-  nothing else. A matches each one to the edition it already knows, as a
+  members' books stay on B, unless A requests one or A's operator turns on
+  **Acquire all of this branch's members' books** (see below). Each title
+  carries its store, product id, marketplace, metadata (with its ASIN,
+  ISBN and kind) and file list, nothing else. A matches each one to the edition it already knows, as a
   store scan would, and records B as holding it, so C's books are simply
   B's books there, belonging to the A user who owns B. A title B got from
   A, or acquired for A and added to its own library, isn't sent back.
@@ -838,8 +839,10 @@ The same people may change them, through the same routes:
 ### Branch titles on the library
 
 **Settings → Branches** on A lists each branch with its owner, what it
-shares (read-only, because B's operator or an Owner of B sets it), and
-counts of its titles.
+shares (read-only, because B's operator or an Owner of B sets it), counts
+of its titles, and A's **Acquire all of this branch's members' books**
+(see [Acquiring all of a branch's members'
+books](#acquiring-all-of-a-branchs-members-books)).
 
 When a branch stops sharing, withdraws a title or leaves, A no longer
 counts it as holding those titles. Files it already delivered are kept.
@@ -877,8 +880,9 @@ through B", and nothing is fetched until someone asks for it.
    search page is read, each card or hit is matched to its work (the
    card's own work, or the work of a store listing A's pool holds for one
    of its store editions) and gets `available_through`: one entry per
-   current listing from a trusted branch, with the branch's node id, its
-   owner's display name, and the store and product id. The field is never
+   current listing from a trusted branch, with A's work id (what a
+   request names), the branch's node id, its owner's display name, and the
+   store and product id. The field is never
    stored with the ranked feed, so it is current on every read.
 
 Questions name works by identifier only, because work ids differ between
@@ -921,9 +925,11 @@ missing.
 ### Requesting a book from a branch
 
 When a work is available through a branch, any signed-in user of A can ask
-for it with `POST /api/branch-requests` `{"work_id": "...", "node_id": "..."}`.
-`node_id` is one of the work's `available_through` entries; leave it out
-to ask the first branch that lists the work.
+for it. In the app, the title's details show **Available through Riley's
+branch** with a **Request from Riley's branch** button. The API is
+`POST /api/branch-requests` `{"work_id": "...", "node_id": "..."}`, where
+`work_id` and `node_id` come from one of the work's `available_through`
+entries; leave `node_id` out to ask the first branch that lists the work.
 
 1. **A queues the request.** It becomes a `branch_request` job on A,
    pinned to B and naming the edition B listed (store, marketplace and
@@ -965,6 +971,28 @@ are answered "not listed".
 > still lists it: turning off **Share this branch's books** or **List my
 > members' books**, or the member opting out, stops it at the next sync
 > pass. Files A already received stay there.
+
+### Acquiring all of a branch's members' books
+
+By default A receives B's owner's books, plus the books A requests. To
+receive every book B lists instead, A's operator (or an Owner) turns on
+**Acquire all of this branch's members' books** for B in **Settings →
+Branches**. The API is `PUT /api/config/branches/members-books`
+`{"node_id": "...", "acquire": true}`.
+
+- **B still decides what it lists.** B sends a member's books only while
+  **Share this branch's books with <library>** and **List my members'
+  books to <library>** are on and the member has not opted out, the same
+  rules as its catalog answers.
+- **Only books already downloaded on B are sent.** B doesn't download
+  anything for this setting. A book a member downloads later goes up with
+  the next sync pass.
+- **A change restarts B's sync.** B picks up the new setting within one
+  sync interval (5 minutes) and starts a full pass. Turned off, the
+  members' books B stops sending are withdrawn when that pass ends. Files
+  A already received stay there.
+- Each change is written to A's security audit log
+  (`branch_members_books_set`).
 
 ### Window mode
 

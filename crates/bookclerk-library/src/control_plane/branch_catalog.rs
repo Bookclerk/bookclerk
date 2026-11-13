@@ -161,6 +161,9 @@ pub struct CatalogSessionOpened {
     pub cursor: String,
     /// Titles recorded earlier whose files have not arrived.
     pub wanted: Vec<CatalogRef>,
+    /// This library's "Acquire all of this branch's members' books"
+    /// ([`super::set_branch_members_books`]).
+    pub members_books: bool,
 }
 
 /// Outcome of [`begin_catalog`].
@@ -264,6 +267,7 @@ pub async fn begin_catalog(
             fence,
             cursor,
             wanted,
+            members_books: row.acquire_members_books == 1,
         }));
     }
     Err(LibraryError::Unavailable(

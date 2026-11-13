@@ -65,6 +65,11 @@ search results and in its details. Bookclerk matches the book by its store
 listing, never by title, so search shows it for books your library already
 knows about, such as ones you own, wish for or see on Discover.
 
+To get the book, open its details and choose **Request from Riley's
+branch**. The branch sends it automatically if it still has it, downloading
+it first if needed, and it appears in your library after the branch's next
+sync. If the branch no longer lists the book, the details say so.
+
 A branch drops off a book within two days of no longer listing it.
 
 ## Wishlist

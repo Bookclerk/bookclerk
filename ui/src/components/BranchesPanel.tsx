@@ -8,6 +8,7 @@ import {
   fetchBranchSettings,
   fingerprintGroups,
   joinErrorMessage,
+  putBranchMembersBooks,
   putBranchSettings,
   removeBranchTitles,
   type BranchRowView,
@@ -24,17 +25,20 @@ export interface BranchesPanelProps {
 
 /**
  * One branch: its owner, what it shares (read-only; the branch's operator
- * sets it in Settings → Library there), and a Remove for the entries of
- * titles it no longer shares or left behind.
+ * sets it in Settings → Library there), this library's "Acquire all of
+ * this branch's members' books", and a Remove for the entries of titles it
+ * no longer shares or left behind.
  */
 function BranchRow({
   row,
   busy,
   onRemove,
+  onMembersBooks,
 }: {
   row: BranchRowView;
   busy: boolean;
   onRemove: (nodeId: string) => void;
+  onMembersBooks: (nodeId: string, acquire: boolean) => void;
 }) {
   const note = branchTitlesNote(row.titles, row.joined);
   return (
@@ -45,6 +49,27 @@ function BranchRow({
       <span className="break-all font-mono text-[11px] text-ink/45">{row.node_id}</span>
       <span className="w-full text-xs text-ink/60">{branchSharingSummary(row)}</span>
       {note ? <span className="w-full text-xs text-ink/50">{note}</span> : null}
+      {row.joined ? (
+        <label className="flex w-full items-start gap-2 text-xs text-ink">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={row.acquire_members_books === true}
+            disabled={busy}
+            onChange={(e) => onMembersBooks(row.node_id, e.target.checked)}
+          />
+          <span>
+            <span className="block font-medium">
+              Acquire all of this branch&apos;s members&apos; books
+            </span>
+            <span className="block text-ink/55">
+              Also receive the books the branch&apos;s members downloaded there, when the branch
+              lists its members&apos; books and they haven&apos;t opted out. Otherwise only its
+              owner&apos;s books arrive, plus any you request.
+            </span>
+          </span>
+        </label>
+      ) : null}
       {row.titles.detached > 0 ? (
         <Button
           type="button"
@@ -102,6 +127,18 @@ export function BranchesPanel({ onSessionExpired, canAddOwn }: BranchesPanelProp
       await refresh();
     } catch (err) {
       setError(joinErrorMessage(err, "Could not remove the entries."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onMembersBooks(nodeId: string, acquire: boolean) {
+    setBusy(true);
+    try {
+      await putBranchMembersBooks(nodeId, acquire);
+      await refresh();
+    } catch (err) {
+      setError(joinErrorMessage(err, "Could not save."));
     } finally {
       setBusy(false);
     }
@@ -186,6 +223,7 @@ export function BranchesPanel({ onSessionExpired, canAddOwn }: BranchesPanelProp
                     row={row}
                     busy={busy}
                     onRemove={(nodeId) => void onRemove(nodeId)}
+                    onMembersBooks={(nodeId, acquire) => void onMembersBooks(nodeId, acquire)}
                   />
                 ))}
               </ul>

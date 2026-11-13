@@ -45,7 +45,7 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `scan.results` | `scan.accepted {batch, upserted}` |
 | `acquire.plan` | `acquire.targets {targets, destinations}` |
 | `upload.grant` | `upload.granted {upload_id, sealed_token, expires_in_secs}` |
-| `catalog.begin {share_books, include_branches}` | `catalog.session {fence, cursor, ancestry, destinations, wanted}` |
+| `catalog.begin {share_books, include_branches}` | `catalog.session {fence, cursor, ancestry, destinations, wanted, members_books}`; `members_books` (absent reads as false) is the library's "Acquire all of this branch's members' books": the branch then also sends the members' books it lists (see [Acquiring all of a branch's members' books](../server/cluster-hosts.md#acquiring-all-of-a-branchs-members-books)) |
 | `catalog.sync {fence, batch, cursor, done, titles}` | `catalog.accepted {batch, upserted, skipped, wanted}`, or `lost` |
 | `catalog.upload {fence, store, product_id, files}` | `upload.granted` (then the upload routes above, job id `catalog`) |
 | `catalog.questions` | `catalog.ask {works}`: up to 100 questions `{work, identifiers}` waiting for this branch, or `error` `refused` |
