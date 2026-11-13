@@ -443,34 +443,67 @@ impl<'a> ScanDelta<'a> {
 
 /// Every `product_id` a key-ordered query returns.
 ///
-/// `sql` ends `AND <table>.product_id > ? ORDER BY <table>.product_id LIMIT
-/// ?`; `binds` fills the placeholders before those two. When the session
-/// streams, one read with no lower bound and no row limit returns it all.
-/// When it does not, every read is held to the inline caps, so the rows come
-/// in pages keyed on the product id (never `OFFSET`), each sized from
-/// `maxResultRows`, halved whenever a page's bytes pass `maxResultBytes` and
-/// doubled again (up to `maxResultRows`) after each full page.
+/// [`read_keyed`] keyed on `product_id`, keeping only that column.
 ///
 /// # Errors
 ///
-/// Returns the binding's error, `limit_exceeded` included when a single row
-/// passes the inline caps, and `internal` for a row without a text
-/// `product_id`.
+/// Returns what [`read_keyed`] returns, and `internal` for a row without a
+/// text `product_id`.
 async fn read_ids(
     db: &DatabaseBinding,
     sql: &str,
     binds: Vec<DbValue>,
 ) -> Result<Vec<String>, PluginError> {
+    read_keyed(db, sql, binds, "product_id")
+        .await?
+        .iter()
+        .map(product_id)
+        .collect()
+}
+
+/// Every row a key-ordered query returns, read within the session's limits.
+///
+/// `sql` ends `AND <key> > ? ORDER BY <key> LIMIT ?`, where `<key>` is the
+/// unique text column named by `key`, which the query also returns; `binds`
+/// fills the placeholders before those two. When the session streams, one read with no
+/// lower bound and no row limit returns it all. When it does not, every read
+/// is held to the inline caps, so the rows come in pages keyed on `key`
+/// (never `OFFSET`), each sized from `maxResultRows`, halved whenever a
+/// page's bytes pass `maxResultBytes` and doubled again (up to
+/// `maxResultRows`) after each full page.
+///
+/// # Arguments
+///
+/// * `db` - The plugin's database binding.
+/// * `sql` - The query, shaped as above.
+/// * `binds` - Values for the placeholders before the key bound and limit.
+/// * `key` - Name of the returned text column the rows are ordered on.
+///
+/// # Returns
+///
+/// The rows in key order, each as column name to value.
+///
+/// # Errors
+///
+/// Returns the binding's error, `limit_exceeded` included when a single row
+/// passes the inline caps, and `internal` when a paged row has no text
+/// `key` column.
+pub async fn read_keyed(
+    db: &DatabaseBinding,
+    sql: &str,
+    binds: Vec<DbValue>,
+    key: &str,
+) -> Result<Vec<HashMap<String, DbValue>>, PluginError> {
     let caps = db.limits().await?;
-    let mut ids = Vec::new();
+    let mut out = Vec::new();
     if caps.streams_results() {
         let mut all = binds;
         all.extend([text(""), DbValue::Int64(i64::MAX)]);
         let mut rows = db.prepare(sql).bind(all).iterate(None);
         while let Some(row) = rows.next().await {
-            ids.push(product_id(&row?)?);
+            out.push(row?);
         }
-        return Ok(ids);
+        return Ok(out);
     }
     let max_page = usize::try_from(caps.max_result_rows)
         .unwrap_or(usize::MAX)
@@ -497,13 +530,19 @@ async fn read_ids(
             }
         };
         let full = rows.len() >= page_size;
-        for row in &rows {
-            let id = product_id(row)?;
-            after.clone_from(&id);
-            ids.push(id);
+        for row in rows {
+            match row.get(key) {
+                Some(DbValue::Text(id)) => after.clone_from(id),
+                _ => {
+                    return Err(PluginError::internal(format!(
+                        "keyed read row has no text {key}"
+                    )))
+                }
+            }
+            out.push(row);
         }
         if !full {
-            return Ok(ids);
+            return Ok(out);
         }
         page_size = page_size.saturating_mul(2).min(max_page);
     }
