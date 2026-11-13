@@ -1,7 +1,7 @@
 //! Startup install of the platform plugins a release ships beside the host.
 //!
 //! A platform release keeps `plugins/<PluginKey fs-id>/` next to the host
-//! binaries. Before the database adapter is discovered, the host installs any
+//! binaries (the desktop app keeps it in its packaged runtime). Before the database adapter is discovered, the host installs any
 //! of those trees that `$BOOKCLERK_FILES_DIR` lacks (or holds an untrusted or
 //! different build of) and records them in the install ledger, so a fresh
 //! files directory, such as a container volume, starts with working `sqlite`
@@ -39,7 +39,7 @@ pub async fn install_bundled_platform_plugins(files_dir: &Path) {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let Some(bundle) = bundled_plugins_dir_beside(&exe) else {
+    let Some(bundle) = bundled_plugins_dir_for(&exe) else {
         return;
     };
     let mut attempted = ATTEMPTED.lock().await;
@@ -64,6 +64,27 @@ pub async fn install_bundled_platform_plugins(files_dir: &Path) {
             "the bundled platform plugin install did not finish"
         ),
     }
+}
+
+/// The bundled platform plugins for the running executable: `plugins/`
+/// beside it, else in the desktop app's packaged runtime
+/// ([`bookclerk_sandbox::packaged_runtime_dirs`]), else none.
+///
+/// # Arguments
+///
+/// * `exe` - Path of the running executable.
+///
+/// # Returns
+///
+/// The first of those `plugins/` directories that exists.
+fn bundled_plugins_dir_for(exe: &Path) -> Option<PathBuf> {
+    bundled_plugins_dir_beside(exe).or_else(|| {
+        bookclerk_sandbox::packaged_runtime_dirs(exe)
+            .into_iter()
+            // `bundled_plugins_dir_beside` looks beside a file, so name one
+            // inside each runtime directory.
+            .find_map(|runtime| bundled_plugins_dir_beside(&runtime.join("bookclerk-desktop")))
+    })
 }
 
 /// Logs one sync outcome at a level that matches what the operator must do.
@@ -93,5 +114,31 @@ fn log_row(row: &BundledSync) {
                 "could not install the bundled platform plugin"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_desktop_app_finds_plugins_in_its_packaged_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        let runtime = root.path().join("lib/Bookclerk/runtime");
+        std::fs::create_dir_all(runtime.join("plugins")).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        assert_eq!(
+            bundled_plugins_dir_for(&bin.join("bookclerk-desktop")),
+            Some(runtime.join("plugins"))
+        );
+        // The daemon does not look there.
+        assert_eq!(bundled_plugins_dir_for(&bin.join("bookclerkd")), None);
+        // `plugins/` beside the executable still wins.
+        std::fs::create_dir_all(bin.join("plugins")).unwrap();
+        assert_eq!(
+            bundled_plugins_dir_for(&bin.join("bookclerk-desktop")),
+            Some(bin.join("plugins"))
+        );
     }
 }
