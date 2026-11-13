@@ -116,9 +116,8 @@ pub async fn collect_listening_snapshots(
 /// With `memory`, each user's progress rows are fingerprinted (progress,
 /// position, duration, finished flag and last update). A row whose
 /// fingerprint matches what the last sync sent is skipped, along with the
-/// library item lookup it would need. Once a day per user
-/// ([`FULL_RESEND_MS`]) every row is sent again. Without `memory` every row
-/// is sent, as [`collect_listening_snapshots`] does.
+/// library item lookup it would need. Once a day per user every row is
+/// sent again. Without `memory` every row is sent, as [`collect_listening_snapshots`] does.
 ///
 /// The host upserts what it receives, so skipping a row it already holds
 /// changes nothing it stores.
