@@ -154,7 +154,9 @@ tested that exact commit. So the push run resolves with `--build-only`
 - Only the jobs that save caches run: `check`, `test`, `native-gateway`
   and `release` (`BUILD_ONLY_JOBS` in `scripts/ci_plan/execute.py`), plus
   the [macOS job](#macos-job), which runs the `native-gateway` leg. The
-  gate expects every other job to be skipped. The release job runs a fat
+  gate expects every other job to be skipped. The Windows `native-gateway`
+  leg also compiles the [Windows cluster](#windows-cluster-startup-and-identity)
+  tests, whose own job saves no cache. The release job runs a fat
   and a thin leg so both of its caches stay warm. Each leg also compiles
   the envelope seed (and runs nothing), because the seed's dependencies are
   built with their own profile (see [Small-VPS envelope](#small-vps-envelope)).
@@ -721,6 +723,14 @@ On `windows-latest` only, the job runs identity create, restart and
 binding, and different-cluster rejection. Then it runs the full
 `cluster_secret_startup` target with the sqlite guest, the jail,
 `bookclerk-workerd` and pinned `workerd`.
+
+Its job saves no cache. Its `bookclerk-cli` and `bookclerk-library` test
+builds unify dependency features differently from every other Windows
+command, so on a build-only `main` push the Windows `native-gateway` leg
+also compiles them (`BUILD_ONLY_HOSTED_CHECKS` in
+`scripts/ci_plan/execute.py`), and the `debug` cache it saves holds their
+dependencies. Before that, the job compiled about 250 dependencies, about
+13 of its 17 minutes, on every queue run.
 
 ### Desktop job
 

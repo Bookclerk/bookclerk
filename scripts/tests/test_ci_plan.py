@@ -25,6 +25,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from ci_plan import execute  # noqa: E402
 from ci_plan.execute import (  # noqa: E402
+    BUILD_ONLY_HOSTED_CHECKS,
     BUILD_ONLY_JOBS,
     DRAFT_JOBS,
     NEXTEST_RUN,
@@ -1594,7 +1595,8 @@ class ExecutionTests(unittest.TestCase):
             set(out),
             {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs", "test_parts"}
             | {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
-            | {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]},
+            | {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]}
+            | {f"check_{c}" for c in BUILD_ONLY_HOSTED_CHECKS},
         )
 
     def test_validate(self) -> None:
@@ -2056,6 +2058,44 @@ class EnvelopeTests(unittest.TestCase):
         self.assertEqual(out["job_release"], "true")
         self.assertEqual(out["check_release"], "false")
         self.assertEqual(out["check_envelope"], "true")
+
+    def test_build_only_push_compiles_windows_cluster_in_the_gateway_job(self) -> None:
+        art = resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="push",
+            force_full=True,
+            build_only=True,
+            paths=["Cargo.lock"],
+            metadata=META,
+            workspace=REPO,
+        )
+        out = job_outputs(art)
+        self.assertEqual(out["job_windows_cluster"], "false")
+        self.assertEqual(out["job_native_gateway"], "true")
+        self.assertEqual(out["check_windows_cluster"], "true")
+        cmds = [build_only_command(c) for _, c in planned_commands(art, "windows_cluster", CTX) if not _]
+        kept = [c.argv for c in cmds if c is not None]
+        self.assertTrue(kept)
+        self.assertTrue(all(argv[:2] == ["cargo", "test"] and argv[-1] == "--no-run" for argv in kept), kept)
+
+    def test_hosted_check_needs_its_host_job_in_a_build_only_push(self) -> None:
+        art = resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="push",
+            build_only=True,
+            paths=["scripts/bench/small-vps.sh"],
+            metadata=META,
+            workspace=REPO,
+        )
+        self.assertEqual(job_outputs(art)["check_windows_cluster"], "false")
 
     def test_build_only_envelope_compiles_the_platform_and_seed_only(self) -> None:
         p = plan("crates/bookclerk-library/tests/envelope_seed.rs")
