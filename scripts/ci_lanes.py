@@ -83,7 +83,7 @@ LABEL_RE = re.compile(re.escape(LABEL_PREFIX) + r"(0|[1-9][0-9]?)\Z")
 
 # CI jobs that wait in lanes on a pull request, longest first so the
 # longest jobs get the emptiest lanes.
-LANE_JOBS = ("test", "release", "check", "e2e", "postgres", "confinement", "native-gateway", "tray", "site")
+LANE_JOBS = ("test", "release", "check", "e2e", "postgres", "confinement", "native-gateway", "desktop", "tray", "site")
 
 # Jobs whose matrix has a fixed number of legs on a pull request. Jobs in
 # ``MATRIX_OUTPUTS`` take theirs from a plan output; every other job has one.
