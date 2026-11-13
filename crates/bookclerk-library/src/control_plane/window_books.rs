@@ -577,7 +577,7 @@ const PART_ROW_OVERHEAD: usize = 512;
 /// Every piece `select` reads, in pages small enough that a page of
 /// full-width pieces stays within the plugin's `maxResultBytes` as well
 /// as its `maxResultRows`. The estimate is only a starting size: a page
-/// the plugin still refuses for its bytes (longer keys than
+/// the plugin still refuses for its bytes, inline or streamed (longer keys than
 /// [`PART_ROW_OVERHEAD`] allows for) is read again at half the rows.
 ///
 /// # Errors

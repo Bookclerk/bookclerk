@@ -169,7 +169,10 @@ pub(crate) fn is_result_bytes_limit(err: &LibraryError) -> bool {
     err.limit().is_some_and(|limit| {
         matches!(
             limit.limit.as_str(),
-            "maxResultBytes" | "maxAtomicResultBytes" | "maxPayloadBytes"
+            "maxResultBytes"
+                | "maxAtomicResultBytes"
+                | "maxStreamedResultBytes"
+                | "maxPayloadBytes"
         )
     })
 }

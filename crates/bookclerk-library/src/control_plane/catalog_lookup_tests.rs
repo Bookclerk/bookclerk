@@ -652,6 +652,33 @@ async fn a_page_refused_for_its_bytes_is_read_again_smaller() {
     assert_eq!(got, rows);
     assert_eq!(*asked.lock().unwrap(), vec![8, 4, 4]);
 
+    // A streaming adapter's refusal shrinks the page the same way.
+    let streamed = std::sync::Mutex::new(0u32);
+    let got = read_shrinking(4, None, |offset: u64, limit: u64| {
+        let start = usize::try_from(offset).unwrap().min(rows.len());
+        let end = usize::try_from(offset + limit).unwrap().min(rows.len());
+        let page = rows[start..end].to_vec();
+        let refused = limit > 2;
+        if refused {
+            *streamed.lock().unwrap() += 1;
+        }
+        async move {
+            if refused {
+                Err(LibraryError::LimitExceeded(LimitExceeded::new(
+                    "maxStreamedResultBytes",
+                    4096,
+                    6000,
+                )))
+            } else {
+                Ok(page)
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(got, rows);
+    assert_eq!(*streamed.lock().unwrap(), 1);
+
     let err = read_shrinking(3, None, fetch(5000)).await.unwrap_err();
     assert!(err.limit().is_some(), "{err}");
 

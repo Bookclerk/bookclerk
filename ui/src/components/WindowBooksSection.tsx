@@ -97,7 +97,9 @@ export function WindowBooksSection({ query = "" }: { query?: string }) {
   useEffect(() => {
     void load();
   }, [load]);
-  useLiveRefresh(["clusters"], load, { pollMs: 0, openPollMs: 300_000 });
+  // Poll every minute while the live socket is down (a proxy without
+  // WebSocket forwarding), so books the window reader stores still show.
+  useLiveRefresh(["clusters"], load, { pollMs: 60_000, openPollMs: 300_000 });
 
   if (!view || view.clusters.length === 0) return null;
   const shown = filterWindowBooks(view.books, query);
