@@ -269,6 +269,27 @@ mod tests {
     const TOKEN: &str = "Zm9vYmFyYmF6cXV4cXV1eGNvcmdlZ3JhdWx0Z2FycGx";
 
     #[test]
+    fn a_token_request_is_one_object_only() {
+        let object = br#" {"code":"c","code_verifier":"v","redirect_uri":"r"}"#;
+        assert_eq!(
+            parse_client_token_request(object),
+            Some(ClientTokenRequest {
+                code: "c".to_string(),
+                code_verifier: "v".to_string(),
+                redirect_uri: "r".to_string(),
+            })
+        );
+        for refused in [
+            &br#"["c","v","r"]"#[..],
+            br#"{"code":"c","code":"d","code_verifier":"v","redirect_uri":"r"}"#,
+            br#"{"code":"c","code_verifier":"v","redirect_uri":"r","x":1}"#,
+            b"",
+        ] {
+            assert_eq!(parse_client_token_request(refused), None);
+        }
+    }
+
+    #[test]
     fn a_token_parses_under_its_scheme_only() {
         assert_eq!(TOKEN.len(), CLIENT_TOKEN_LEN);
         let header = format!("Bookclerk-Client {TOKEN}");
@@ -329,6 +350,13 @@ mod tests {
 /// `None`.
 #[must_use]
 pub fn parse_client_token_request(body: &[u8]) -> Option<ClientTokenRequest> {
+    // A derived struct also reads from a JSON array; the body is an object.
+    let first = body
+        .iter()
+        .find(|b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r'));
+    if first != Some(&b'{') {
+        return None;
+    }
     serde_json::from_slice(body).ok()
 }
 
