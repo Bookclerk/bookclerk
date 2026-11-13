@@ -694,7 +694,7 @@ impl SnapshotReader<'_> {
             .collect();
         out.extend(
             find_chunked(self.store, &miss, |part| {
-                holdings::Entity::find()
+                super::holdings::find_holdings()
                     .filter(holdings::Column::Holder.eq(holder))
                     .filter(holdings::Column::ListingId.is_in(part.iter().cloned()))
             })

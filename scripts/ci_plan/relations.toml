@@ -94,6 +94,8 @@ paths = [
     "fuzz/oracles/plan_authz.rs",
     "fuzz/corpus/job_cap_request/**",
     "fuzz/oracles/job_cap_request.rs",
+    "fuzz/corpus/branch_request/**",
+    "fuzz/oracles/branch_request.rs",
     "fuzz/corpus/sharing_request/**",
     "fuzz/oracles/sharing_request.rs",
     "fuzz/corpus/connections_request/**",

@@ -220,6 +220,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "branch_request"
+path = "fuzz_targets/branch_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "job_cap_request"
 path = "fuzz_targets/job_cap_request.rs"
 test = false

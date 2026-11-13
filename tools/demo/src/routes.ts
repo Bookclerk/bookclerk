@@ -92,6 +92,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/config/branches", "allow"],
   ["PUT", "/api/config/branches", "deny"],
   ["POST", "/api/config/branches/titles/remove", "deny"],
+  // Asking a branch for a book acquires it there: never from the demo.
+  ["POST", "/api/branch-requests", "deny"],
   ["GET", "/api/config/clerks", "allow"],
   ["GET", "/api/config/cluster-consents", "allow"],
   ["POST", "/api/config/cluster-consents/approve", "deny"],
@@ -111,6 +113,7 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/config/join/sharing", "deny"],
   ["POST", "/api/config/join/capacity", "deny"],
   ["POST", "/api/config/join/start", "deny"],
+  ["GET", "/api/config/join/window", "allow"],
   ["DELETE", "/api/config/node-credentials/{node_id}", "deny"],
   ["GET", "/api/config/node-invites", "allow"],
   ["POST", "/api/config/node-invites", "deny"],

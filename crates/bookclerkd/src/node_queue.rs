@@ -92,7 +92,7 @@ pub fn wake_for(message: &NodeMessage) {
         }
         // Addressed to a branch's queue and forwarded over its socket; a
         // daemon's own queue never carries it.
-        NodeMessage::CatalogAsked {} => {}
+        NodeMessage::CatalogAsked {} | NodeMessage::RequestsQueued {} => {}
     }
 }
 

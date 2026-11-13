@@ -107,6 +107,33 @@ show your branch as a source for up to two days afterwards.
 The library sees the book and that your branch can supply it. It never
 sees whose account it's on. Nothing is copied until someone asks for it.
 
+## See your books without downloading them
+
+A server can show the books you have in each library you joined without
+keeping copies. Open **Settings → Library** and turn off **Use this
+computer to download** for that library. Your server is then a window of
+it:
+
+- It runs none of that library's work, and anything in progress is handed
+  back.
+- **Library** shows **Your books in other libraries**: the books each
+  library holds for you, merged into one list. The same book in two
+  libraries shows once, with both libraries named.
+- The search box on **Library** narrows this list too.
+- The list is refreshed when your server connects, every 30 minutes, and
+  when you change the setting. If a refresh fails, the last list stays
+  with a **Try again** button.
+
+Turn the setting back on to download again. The list for that library is
+then cleared, even while the library can't be reached.
+
+The desktop app starts this way: a library you join from it has the
+setting off from the start, so the computer is a window of that library
+until you turn downloading on.
+
+> [!NOTE]
+> Asking a library to send you one of these books isn't possible yet.
+
 ## Leave a library
 
 On the branch, open **Settings → Library → Leave library**.

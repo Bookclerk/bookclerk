@@ -13813,6 +13813,137 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
+    "/api/config/join/window": {
+      "get": {
+        "tags": [
+          "Cluster"
+        ],
+        "summary": "`GET /api/config/join/window`: the window view for the operator or an\nOwner: the books every library this install is a window of holds for\nthis install's person, merged by work (`{clusters, books}`).",
+        "operationId": "get_join_window",
+        "responses": {
+          "200": {
+            "description": "The libraries this install is a window of, and their books for its person.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WindowBooks"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorAnswer"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The user is not an active Owner.",
+                    "value": {
+                      "error": "forbidden"
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "no_user": {
+                    "summary": "The session has no user account.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library database could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
     "/api/config/join/connections": {
       "post": {
         "tags": [
@@ -18075,6 +18206,179 @@
                   "message": "Your sign-in could not be checked yet. Try again in a moment.",
                   "status": 503
                 }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session."
+      }
+    },
+    "/api/branch-requests": {
+      "post": {
+        "tags": [
+          "Wishlist"
+        ],
+        "summary": "Asks a branch for a book it listed.",
+        "description": "The work must currently be available through a branch this library\ntrusts (its `available_through` in Discover and search). The branch\ntakes the request automatically for anything it listed; the book\narrives with the branch's catalog sync and is then held through that\nbranch. Asking again while a request for the same work and branch\nwaits returns that request.",
+        "operationId": "create_branch_request",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BranchRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The request was queued for the branch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BranchRequestQueued"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The work or node id is malformed. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": "invalid work_id"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No branch this library trusts (or not the named one) currently lists the work.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "book not found: work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b through a branch"
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `work_id` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read or written.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+              }
+            }
+          },
+          "503": {
+            "description": "The job queue is full; try again later. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "the job queue is full"
               }
             }
           },
@@ -28119,6 +28423,53 @@
           }
         }
       },
+      "BranchRequestBody": {
+        "type": "object",
+        "description": "`POST /api/branch-requests` body: the work to ask a branch for, and\noptionally which branch.",
+        "required": [
+          "work_id"
+        ],
+        "properties": {
+          "work_id": {
+            "type": "string",
+            "description": "This library's work id, as Discover and search name it.",
+            "example": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b"
+          },
+          "node_id": {
+            "type": "string",
+            "description": "The branch to ask, from the work's `available_through`; absent or\n`null` asks the first branch that lists the work.",
+            "example": "9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "BranchRequestQueued": {
+        "type": "object",
+        "description": "`POST /api/branch-requests` answer.",
+        "required": [
+          "job_id",
+          "node_id",
+          "already_queued"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "The request's job (kind `branch_request`), as `/api/jobs` lists it.",
+            "example": "branch_request-5e0f2a1c-7b3d-4c6e-8f9a-1b2c3d4e5f6a"
+          },
+          "node_id": {
+            "type": "string",
+            "description": "The branch the request went to.",
+            "example": "9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"
+          },
+          "already_queued": {
+            "type": "boolean",
+            "description": "`true` when a request for this work to this branch was already\nwaiting or being taken; `job_id` is that request.",
+            "example": false
+          }
+        }
+      },
       "BranchTitleCounts": {
         "type": "object",
         "description": "Counts of one branch's shared titles.",
@@ -28145,7 +28496,7 @@
           "detached": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles marked detached (it stopped sharing, left, or withdrew them).",
+            "description": "Editions whose files it delivered that nothing in this library holds\nany more (it stopped sharing, left, or withdrew them, and no store\naccount or other branch here holds them).",
             "example": 3,
             "minimum": 0
           }
@@ -28890,7 +29241,8 @@
           "include_branches",
           "work_for_members",
           "keep_member_copies",
-          "list_members_books"
+          "list_members_books",
+          "download"
         ],
         "properties": {
           "cluster_id": {
@@ -28961,6 +29313,11 @@
           "list_members_books": {
             "type": "boolean",
             "description": "\"List my members' books to the library\": the library's catalog\nlookups are answered with members' books (except those who opted\nout) as well as the owner's.",
+            "example": true
+          },
+          "download": {
+            "type": "boolean",
+            "description": "\"Use this computer to download\": the link takes the library's jobs\nand runs its plugins here. Off makes this install a window of the\nlibrary: no jobs, no plugins, and the books the library holds for\nthis install's person are shown instead.",
             "example": true
           },
           "running": {
@@ -31305,6 +31662,7 @@
           "discover_request_queue",
           "cache_sweep",
           "search_index_rebuild",
+          "branch_request",
           "invalid"
         ]
       },
@@ -38928,6 +39286,12 @@
             "description": "\"Keep copies of other members' books\": also write a book acquired\nhere for another member to this install's own destinations. Absent\nor `null` keeps the stored setting.",
             "example": false,
             "nullable": true
+          },
+          "download": {
+            "type": "boolean",
+            "description": "\"Use this computer to download\": off makes this install a window of\nthe library (it runs none of the library's work and shows the books\nthe library holds for its person instead). Absent or `null` keeps\nthe stored setting.",
+            "example": true,
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -41113,6 +41477,150 @@
             "description": "Always `true` when `email` is present: Bookclerk trusts the address the Owner recorded.",
             "example": true,
             "nullable": true
+          }
+        }
+      },
+      "WindowBooks": {
+        "type": "object",
+        "description": "JSON body for `GET /api/config/join/window`.",
+        "required": [
+          "clusters",
+          "books"
+        ],
+        "properties": {
+          "clusters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClusterLinkView"
+            },
+            "description": "The libraries this install is a window of (active links with \"Use\nthis computer to download\" off)."
+          },
+          "books": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WindowEntryView"
+            },
+            "description": "Their books for this install's person, one entry per work, by title."
+          }
+        }
+      },
+      "WindowEditionView": {
+        "type": "object",
+        "description": "One edition in [`WindowBooks`], and the library that holds it.",
+        "required": [
+          "cluster_id",
+          "owner_origin",
+          "store",
+          "marketplace",
+          "product_id",
+          "formats",
+          "title"
+        ],
+        "properties": {
+          "cluster_id": {
+            "type": "string",
+            "description": "The library (owner cluster id) that holds it for this install's person.",
+            "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
+          },
+          "owner_origin": {
+            "type": "string",
+            "description": "The library's origin.",
+            "example": "https://books.example.com"
+          },
+          "store": {
+            "type": "string",
+            "description": "The store's plain id.",
+            "example": "audible"
+          },
+          "marketplace": {
+            "type": "string",
+            "description": "Lower-cased store marketplace; empty when the store has none.",
+            "example": "us"
+          },
+          "product_id": {
+            "type": "string",
+            "description": "The store's product id.",
+            "example": "B0EXAMPLE1"
+          },
+          "formats": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Formats that library has (`audio`, `pdf`); empty when unknown.",
+            "example": [
+              "audio"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "description": "The edition's title.",
+            "example": "A Title"
+          },
+          "subtitle": {
+            "type": "string",
+            "description": "Subtitle, when known.",
+            "example": "A Novel",
+            "nullable": true
+          },
+          "authors": {
+            "type": "string",
+            "description": "Authors as one display string, when known.",
+            "example": "Ann Author",
+            "nullable": true
+          },
+          "narrators": {
+            "type": "string",
+            "description": "Narrators as one display string, when known.",
+            "example": "Ned Narrator",
+            "nullable": true
+          },
+          "series": {
+            "type": "string",
+            "description": "Series name, when known.",
+            "example": "The Series",
+            "nullable": true
+          },
+          "series_index": {
+            "type": "string",
+            "description": "Position in the series, when known.",
+            "example": "2",
+            "nullable": true
+          },
+          "length_minutes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Length in minutes, when known.",
+            "example": 600,
+            "nullable": true
+          }
+        }
+      },
+      "WindowEntryView": {
+        "type": "object",
+        "description": "One work in [`WindowBooks`]: every edition its libraries hold for the person.",
+        "required": [
+          "key",
+          "editions"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "A key that stays the same while the entry's editions do.",
+            "example": "work:0b8f2c1e-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+          },
+          "work_id": {
+            "type": "string",
+            "description": "The work of this install's own library the entry was placed on, by\nidentifier; absent when none was.",
+            "example": "0b8f2c1e-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+            "nullable": true
+          },
+          "editions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WindowEditionView"
+            },
+            "description": "The editions, in library then store order; the first names the entry."
           }
         }
       },

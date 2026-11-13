@@ -4196,7 +4196,7 @@ mod tests {
         use crate::models::JobKind;
         // Exhaustive on purpose: a new variant stops this from compiling
         // until it is added here, and the assertion fails until `ALL` has it.
-        fn every(kind: JobKind) -> [JobKind; 12] {
+        fn every(kind: JobKind) -> [JobKind; 13] {
             match kind {
                 JobKind::Scan
                 | JobKind::Acquire
@@ -4209,6 +4209,7 @@ mod tests {
                 | JobKind::DiscoverRequestQueue
                 | JobKind::CacheSweep
                 | JobKind::SearchIndexRebuild
+                | JobKind::BranchRequest
                 | JobKind::Invalid => [
                     JobKind::Scan,
                     JobKind::Acquire,
@@ -4221,6 +4222,7 @@ mod tests {
                     JobKind::DiscoverRequestQueue,
                     JobKind::CacheSweep,
                     JobKind::SearchIndexRebuild,
+                    JobKind::BranchRequest,
                     JobKind::Invalid,
                 ],
             }

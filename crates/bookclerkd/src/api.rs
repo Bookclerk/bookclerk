@@ -1227,6 +1227,9 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
             crate::cluster_link::join::get_join_sharing,
             crate::cluster_link::join::post_join_sharing
         ))
+        // The window view on a branch (operator or Owner; the handler
+        // checks).
+        .routes(routes!(crate::cluster_link::join::get_join_window))
         // Store connections across linked libraries: the branch's person
         // only (the handler checks).
         .routes(routes!(
@@ -1268,6 +1271,7 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(list_wishlist, create_wishlist))
         .routes(routes!(delete_wishlist))
         .routes(routes!(list_request_queue))
+        .routes(routes!(crate::branch_requests::create_branch_request))
         .routes(routes!(auth::logout))
         .routes(routes!(auth::list_sessions))
         .routes(routes!(auth::revoke_session))

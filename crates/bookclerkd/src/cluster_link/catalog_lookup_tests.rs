@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_library::control_plane::{
-    ask_branches, branch_listings_for_works, load_cluster_link_keys, set_cluster_link_listing,
-    ClusterLink,
+    ask_branches, branch_listings_for_works, load_cluster_link_keys, set_cluster_link_download,
+    set_cluster_link_listing, ClusterLink,
 };
 use bookclerk_library::{LibraryStore, NewBook, UserRole};
 use bookclerk_node_client::{HostClient, HostClientConfig, HostClientHandle};
@@ -209,6 +209,34 @@ async fn a_branch_answers_its_librarys_question_over_the_socket() {
     .await
     .unwrap();
     assert!(hits[0].available_through.is_empty(), "expired: {hits:?}");
+
+    // Members' books back on, but B becomes a window of A (download off):
+    // a window is a client of A, not one of its nodes, and offers nothing.
+    assert!(set_cluster_link_listing(&b, &link.owner_cluster_id, true)
+        .await
+        .unwrap());
+    assert!(set_cluster_link_download(&b, &link.owner_cluster_id, false)
+        .await
+        .unwrap());
+    a.db()
+        .execute_unprepared("UPDATE catalog_lookups SET answered_at = '1970-01-01T00:00:00Z'")
+        .await
+        .unwrap();
+    assert_eq!(
+        ask_branches(&a, std::slice::from_ref(&work))
+            .await
+            .unwrap()
+            .asked,
+        1
+    );
+    assert_eq!(answerer.answer_once().await.unwrap(), 1);
+    assert!(
+        branch_listings_for_works(&a, std::slice::from_ref(&work))
+            .await
+            .unwrap()
+            .is_empty(),
+        "a window lists nothing"
+    );
 }
 
 /// A catalog search hit for [`ASIN`] from the `audible` storefront.

@@ -618,6 +618,51 @@ pub enum Body {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         missing: Vec<String>,
     },
+    /// Branch → library: claim the interlibrary requests waiting for this
+    /// branch (see [`crate::BranchRequest`]). Answered with
+    /// [`Body::RequestsClaimed`], or `error {code: "refused"}` when the
+    /// node is not a branch this library trusts.
+    #[serde(rename = "requests.claim")]
+    RequestsClaim {},
+    /// Library → branch: the requests now leased to it, at most
+    /// [`crate::MAX_CLAIMED_REQUESTS`]; empty when none waits.
+    #[serde(rename = "requests.claimed")]
+    RequestsClaimed {
+        /// The requests now leased to the asking branch, at most [`crate::MAX_CLAIMED_REQUESTS`].
+        requests: Vec<crate::requests::BranchRequest>,
+    },
+    /// Branch → library: what it did with one claimed request. Answered
+    /// with [`Body::Accepted`], [`Body::Lost`] (item
+    /// [`crate::ITEM_REQUEST`]) when the lease is no longer the branch's,
+    /// or `error`.
+    #[serde(rename = "requests.finish")]
+    RequestFinish {
+        /// The request's job id.
+        job: String,
+        /// The lease generation it was claimed under.
+        generation: i64,
+        /// What the branch did.
+        outcome: crate::requests::RequestOutcome,
+    },
+    /// Window → library: send the next page of the books this library
+    /// holds for the window's person (the node's owner). Answered with
+    /// [`Body::WindowPage`], or `error {code: "refused"}` when the node is
+    /// not a branch this library trusts.
+    #[serde(rename = "window.books")]
+    WindowBooks {
+        /// The `next` cursor of the previous page; 0 for the first page.
+        #[serde(default)]
+        after: i64,
+    },
+    /// Library → window: one page of the person's books.
+    #[serde(rename = "window.page")]
+    WindowPage {
+        /// The works, at most [`crate::MAX_WINDOW_WORKS`].
+        works: Vec<crate::window::WindowWork>,
+        /// The cursor to ask with for the next page; absent on the last.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<i64>,
+    },
     /// Owner → host: the request with this frame id was applied.
     #[serde(rename = "ok")]
     Accepted {},
@@ -1569,6 +1614,7 @@ mod tests {
                     titles: vec![crate::CatalogTitle {
                         store: "audible".into(),
                         product_id: "B1".into(),
+                        marketplace: "us".into(),
                         metadata: crate::CatalogMetadata {
                             title: "T".into(),
                             ..crate::CatalogMetadata::default()

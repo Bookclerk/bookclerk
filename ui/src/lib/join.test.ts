@@ -19,6 +19,11 @@ import {
   listClerks,
   looksLikeBranchInvite,
   parseJoinCallback,
+  windowEntryFormats,
+  setLinkDownload,
+  makeWindowOf,
+  filterWindowBooks,
+  windowEntryLibraries,
   setMembersListing,
   setBranchSharing,
 } from "./join";
@@ -370,6 +375,62 @@ describe("broughtConnectionsSummary", () => {
   });
 });
 
+describe("window view helpers", () => {
+  const edition = (origin: string, store: string, formats: string[]) => ({
+    cluster_id: origin,
+    owner_origin: origin,
+    store,
+    marketplace: "us",
+    product_id: "B0X",
+    formats,
+    title: "T",
+  });
+
+  it("names each library once, by host, in order", () => {
+    const entry = {
+      key: "work:1",
+      editions: [
+        edition("https://books.example.com", "audible", ["audio"]),
+        edition("https://books.example.com", "libro", []),
+        edition("https://other.example:8443", "audible", ["pdf", "audio"]),
+        edition("not a url", "audible", []),
+      ],
+    };
+    expect(windowEntryLibraries(entry)).toEqual([
+      "books.example.com",
+      "other.example:8443",
+      "not a url",
+    ]);
+    expect(windowEntryFormats(entry)).toEqual(["audio", "pdf"]);
+  });
+
+  it("narrows to the entries matching a Library search", () => {
+    const dune = {
+      key: "work:1",
+      editions: [
+        { ...edition("https://a.example", "audible", []), title: "Dune", authors: "Frank Herbert" },
+      ],
+    };
+    const emma = {
+      key: "work:2",
+      editions: [
+        {
+          ...edition("https://a.example", "audible", []),
+          title: "Emma",
+          series: "Classics",
+          subtitle: null,
+        },
+      ],
+    };
+    const books = [dune, emma];
+    expect(filterWindowBooks(books, "")).toEqual(books);
+    expect(filterWindowBooks(books, "  ")).toEqual(books);
+    expect(filterWindowBooks(books, "HERBERT")).toEqual([dune]);
+    expect(filterWindowBooks(books, " classics ")).toEqual([emma]);
+    expect(filterWindowBooks(books, "nothing")).toEqual([]);
+  });
+});
+
 describe("connectionsAddedLine", () => {
   const report = {
     added: 1,
@@ -434,5 +495,60 @@ describe("setMembersListing", () => {
       include_branches: true,
       list_members_books: true,
     });
+  });
+});
+
+describe("setLinkDownload", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends the download setting with the link's current sharing settings", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify({ cluster: { cluster_id: "c1" } }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await setLinkDownload({ cluster_id: "c1", share_books: false, include_branches: true }, false);
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(body).toEqual({
+      cluster_id: "c1",
+      share_books: false,
+      include_branches: true,
+      download: false,
+    });
+  });
+});
+
+describe("makeWindowOf", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("turns downloading off for the joined link", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify({ cluster: { cluster_id: "c1" } }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await makeWindowOf({ cluster_id: "c1", share_books: true, download: true })).toBe(true);
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(body).toEqual({
+      cluster_id: "c1",
+      share_books: true,
+      include_branches: true,
+      download: false,
+    });
+  });
+
+  it("sends nothing when the link is already a window", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await makeWindowOf({ cluster_id: "c1", download: false })).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("answers false when the setting could not be stored", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 500 })),
+    );
+    expect(await makeWindowOf({ cluster_id: "c1" })).toBe(false);
   });
 });

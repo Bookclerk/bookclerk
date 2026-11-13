@@ -38,9 +38,9 @@ use std::time::Duration;
 use anyhow::Context as _;
 use bookclerk_library::control_plane::{
     forwardable_branch_title, forwardable_branch_title_keys_page, load_cluster_link,
-    set_cluster_link_ancestry, ForwardableBranchKey, OwnerShareFilter, FORWARDABLE_KEYS_MAX_PAGE,
+    set_cluster_link_ancestry, ForwardableBranchKey, ForwardableBranchTitle, OwnerShareFilter,
+    FORWARDABLE_KEYS_MAX_PAGE,
 };
-use bookclerk_library::entities::branch_titles;
 use bookclerk_library::{
     AcquireStatus, AcquiredBookKey, BookRecord, LibraryStore, ACQUIRED_KEYS_MAX_PAGE,
 };
@@ -145,7 +145,7 @@ enum Loaded {
     /// A book acquired on this install.
     Own(Box<BookRecord>),
     /// A title one of this install's branches shared, files delivered.
-    Branch(Box<branch_titles::Model>),
+    Branch(Box<ForwardableBranchTitle>),
 }
 
 /// A shareable title and its place in the sync order.
@@ -192,6 +192,17 @@ fn content_type(key: &str) -> Option<String> {
         }
         .to_string(),
     )
+}
+
+/// The marketplace a shared title names for an own book: its own,
+/// lower-cased, or none when it is not a plain marketplace code.
+fn own_marketplace(marketplace: &str) -> String {
+    let market = marketplace.trim().to_ascii_lowercase();
+    if bookclerk_node_proto::is_marketplace(&market) {
+        market
+    } else {
+        String::new()
+    }
 }
 
 /// Metadata of an own book.
@@ -355,11 +366,15 @@ impl<S: BranchShelf> CatalogSync<S> {
                 if !seen.insert(reference.clone()) {
                     continue;
                 }
+                // A requested book counts as changed when it was last
+                // asked for, so one already past the cursor still goes up.
+                let changed = owners
+                    .requested_at(&key)
+                    .map_or(key.updated_at, |asked| asked.max(key.updated_at));
                 out.push(Entry {
                     order: format!(
                         "{}|own|{}",
-                        key.updated_at
-                            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                        changed.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
                         key.uuid
                     ),
                     reference,
@@ -371,13 +386,16 @@ impl<S: BranchShelf> CatalogSync<S> {
             }
         }
         if include_branches {
-            let mut after = None;
+            let mut after: Option<String> = None;
             loop {
-                let page =
-                    forwardable_branch_title_keys_page(&self.library, after, BRANCH_ENTRY_PAGE)
-                        .await?;
+                let page = forwardable_branch_title_keys_page(
+                    &self.library,
+                    after.as_deref(),
+                    BRANCH_ENTRY_PAGE,
+                )
+                .await?;
                 let full = u64::try_from(page.len()).unwrap_or(u64::MAX) >= BRANCH_ENTRY_PAGE;
-                after = page.last().map(|key| key.id);
+                after = page.last().map(|key| key.id.clone());
                 for key in page.into_iter().filter(|key| key.delivered) {
                     let reference = CatalogRef {
                         store: key.store.clone(),
@@ -387,7 +405,7 @@ impl<S: BranchShelf> CatalogSync<S> {
                         continue;
                     }
                     out.push(Entry {
-                        order: format!("{}|branch|{}", key.updated_at, key.uuid),
+                        order: format!("{}|branch|{}", key.updated_at, key.id),
                         reference,
                         source: Source::Branch(key),
                     });
@@ -418,7 +436,7 @@ impl<S: BranchShelf> CatalogSync<S> {
                     book.acquire_status == AcquireStatus::Acquired && book.storage_key.is_some()
                 })
                 .map(|book| Loaded::Own(Box::new(book))),
-            Source::Branch(key) => forwardable_branch_title(&self.library, &key.uuid)
+            Source::Branch(key) => forwardable_branch_title(&self.library, &key.id)
                 .await?
                 .map(|row| Loaded::Branch(Box::new(row))),
         })
@@ -445,22 +463,15 @@ impl<S: BranchShelf> CatalogSync<S> {
                 Ok(CatalogTitle {
                     store: entry.reference.store.clone(),
                     product_id: entry.reference.product_id.clone(),
+                    marketplace: own_marketplace(&book.marketplace),
                     metadata: own_metadata(book),
                     primary_key: primary.to_string(),
                     pdf_key,
                     files,
                 })
             }
-            Loaded::Branch(row) => Ok(CatalogTitle {
-                store: row.store.clone(),
-                product_id: row.product_id.clone(),
-                metadata: serde_json::from_str(&row.metadata_json)
-                    .context("a shared title's metadata")?,
-                primary_key: row.primary_key.clone(),
-                pdf_key: row.pdf_key.clone(),
-                files: serde_json::from_str(&row.manifest_json)
-                    .context("a shared title's manifest")?,
-            }),
+            // Passed on as the branch shared it.
+            Loaded::Branch(row) => Ok(row.title.clone()),
         }
     }
 
