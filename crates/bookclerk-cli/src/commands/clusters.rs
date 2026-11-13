@@ -661,7 +661,7 @@ mod tests {
         let url = ["join", "--url", "https://library.example"];
         assert_eq!(join_as(&url).unwrap(), JoinAs::Branch);
         assert_eq!(
-            join_as(&[&url[..], &["--as", "shared_branch"]].concat()).unwrap(),
+            join_as(&[&url[..], &["--as", "shared-branch"]].concat()).unwrap(),
             JoinAs::SharedBranch
         );
         assert_eq!(
