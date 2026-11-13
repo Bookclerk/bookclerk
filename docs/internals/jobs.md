@@ -244,8 +244,9 @@ Its answer completes the job (accepted), fails it without a retry
 [Requesting a book from a branch](../server/cluster-hosts.md#requesting-a-book-from-a-branch).
 
 `discover_request_queue` carries no subject: one ranking of the shared
-request queue serves everyone. Discover's event consumer queues it on the
-same three events, and a read of `GET /api/request-queue` queues it when
+request queue serves everyone. Discover's event consumer queues it on
+every one of those five events (a holding event too, since a new holding
+can hide an entry), and a read of `GET /api/request-queue` queues it when
 the stored ranking is missing an entry or older than a day. See
 [Request queue](discovery.md#request-queue).
 

@@ -274,7 +274,8 @@ async fn queue_for(
         }
     }
     // Every taste event can move the shared request queue: a wish adds or
-    // drops an entry, an acquire hides one, listening shifts taste.
+    // drops an entry, an acquire or a new holding hides one, listening
+    // shifts taste.
     if !request_queue_ranked_since(library, since).await? {
         let admitted =
             enqueue_request_queue_rank(state, JobTrigger::Scheduler, EVENT_DEBOUNCE).await?;
