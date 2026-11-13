@@ -1986,84 +1986,77 @@ impl LibraryStore {
             return Ok(());
         }
         let ids: Vec<String> = works.iter().map(|w| w.id.clone()).collect();
-        let mut work_credits = Vec::new();
-        let mut entries = Vec::new();
-        for chunk in ids.chunks(self.lookup_chunk()) {
-            work_credits.extend(
-                credits::Entity::find()
-                    .filter(credits::Column::TargetKind.eq(resolve::Level::Work.as_str()))
-                    .filter(credits::Column::TargetId.is_in(chunk.iter().cloned()))
-                    .order_by_asc(credits::Column::Position)
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?,
-            );
-            entries.extend(
-                series_entries::Entity::find()
-                    .filter(series_entries::Column::WorkId.is_in(chunk.iter().cloned()))
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?,
-            );
-        }
+        // Every lookup but the names is one-to-many (several credits or
+        // series per work, several expressions per work), so each is read
+        // in pages that fit the backend's result cap. Ordering ends with
+        // the primary key so pages neither skip nor repeat a row.
+        let work_credits = find_chunked_paged(self, &ids, |part| {
+            credits::Entity::find()
+                .filter(credits::Column::TargetKind.eq(resolve::Level::Work.as_str()))
+                .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
+                .order_by_asc(credits::Column::TargetId)
+                .order_by_asc(credits::Column::Position)
+                .order_by_asc(credits::Column::ContributorId)
+                .order_by_asc(credits::Column::Role)
+        })
+        .await?;
+        let entries = find_chunked_paged(self, &ids, |part| {
+            series_entries::Entity::find()
+                .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
+                .order_by_asc(series_entries::Column::WorkId)
+                .order_by_asc(series_entries::Column::SeriesId)
+        })
+        .await?;
         // Narrators are credited on expressions, not on the work.
-        let mut expression_work: BTreeMap<String, String> = BTreeMap::new();
-        for chunk in ids.chunks(self.lookup_chunk()) {
-            expression_work.extend(
-                expressions::Entity::find()
-                    .filter(expressions::Column::WorkId.is_in(chunk.iter().cloned()))
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?
-                    .into_iter()
-                    .map(|x| (x.id, x.work_id)),
-            );
-        }
+        let expression_work: BTreeMap<String, String> = find_chunked_paged(self, &ids, |part| {
+            expressions::Entity::find()
+                .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
+                .order_by_asc(expressions::Column::Id)
+        })
+        .await?
+        .into_iter()
+        .map(|x| (x.id, x.work_id))
+        .collect();
         let expression_ids: Vec<String> = expression_work.keys().cloned().collect();
-        let mut narrator_credits = Vec::new();
-        for chunk in expression_ids.chunks(self.lookup_chunk()) {
-            narrator_credits.extend(
-                credits::Entity::find()
-                    .filter(credits::Column::TargetKind.eq(resolve::Level::Expression.as_str()))
-                    .filter(credits::Column::TargetId.is_in(chunk.iter().cloned()))
-                    .filter(credits::Column::Role.eq(resolve::CreditRole::Narrator.as_str()))
-                    .order_by_asc(credits::Column::Position)
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?,
-            );
-        }
-        let contributor_ids: BTreeSet<String> = work_credits
+        let narrator_credits = find_chunked_paged(self, &expression_ids, |part| {
+            credits::Entity::find()
+                .filter(credits::Column::TargetKind.eq(resolve::Level::Expression.as_str()))
+                .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
+                .filter(credits::Column::Role.eq(resolve::CreditRole::Narrator.as_str()))
+                .order_by_asc(credits::Column::TargetId)
+                .order_by_asc(credits::Column::Position)
+                .order_by_asc(credits::Column::ContributorId)
+        })
+        .await?;
+        let contributor_ids: Vec<String> = work_credits
             .iter()
             .chain(&narrator_credits)
             .map(|c| c.contributor_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect();
-        let series_ids: BTreeSet<String> = entries.iter().map(|e| e.series_id.clone()).collect();
-        let mut names: BTreeMap<String, String> = BTreeMap::new();
-        let contributor_ids: Vec<String> = contributor_ids.into_iter().collect();
-        for chunk in contributor_ids.chunks(self.lookup_chunk()) {
-            names.extend(
-                contributors::Entity::find()
-                    .filter(contributors::Column::Id.is_in(chunk.iter().cloned()))
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?
-                    .into_iter()
-                    .map(|c| (c.id, c.name)),
-            );
-        }
-        let series_ids: Vec<String> = series_ids.into_iter().collect();
-        for chunk in series_ids.chunks(self.lookup_chunk()) {
-            names.extend(
-                series::Entity::find()
-                    .filter(series::Column::Id.is_in(chunk.iter().cloned()))
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?
-                    .into_iter()
-                    .map(|s| (s.id, s.name)),
-            );
-        }
+        let series_ids: Vec<String> = entries
+            .iter()
+            .map(|e| e.series_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mut names: BTreeMap<String, String> = find_chunked(self, &contributor_ids, |part| {
+            contributors::Entity::find()
+                .filter(contributors::Column::Id.is_in(part.iter().cloned()))
+        })
+        .await?
+        .into_iter()
+        .map(|c| (c.id, c.name))
+        .collect();
+        names.extend(
+            find_chunked(self, &series_ids, |part| {
+                series::Entity::find().filter(series::Column::Id.is_in(part.iter().cloned()))
+            })
+            .await?
+            .into_iter()
+            .map(|s| (s.id, s.name)),
+        );
         for work in works.iter_mut() {
             work.credits = work_credits
                 .iter()

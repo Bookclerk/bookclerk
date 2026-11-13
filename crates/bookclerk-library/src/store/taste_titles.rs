@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bookclerk_resolve as resolve;
-use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
 use super::library_model::{find_chunked, find_chunked_paged};
 use super::{parse_dt, LibraryStore};
@@ -26,10 +26,6 @@ use crate::entities::{
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{TasteHolder, TasteTitle, UserTitleState};
-
-/// Most per-person state rows read per keyset page; narrowed and halved
-/// like [`HOLDINGS_PAGE`].
-const STATE_PAGE: u64 = 500;
 
 /// Most holdings read per keyset page; the page is narrowed further to the
 /// database plugin's `maxResultRows`, and halved when a reply is refused
@@ -271,52 +267,18 @@ impl LibraryStore {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        // Several people may hold state on one work, so the rows of a chunk
-        // of works are read in keyset pages over (work, user) rather than
-        // one read per chunk, which a one-row result cap would refuse.
-        let mut rows: Vec<UserTitleState> = Vec::new();
-        let mut page_size = STATE_PAGE.min(u64::from(self.max_result_rows.max(1)));
-        for part in ids.chunks(self.lookup_chunk().max(1)) {
-            let mut after: Option<(String, i64)> = None;
-            loop {
-                let mut query = user_title_state::Entity::find()
-                    .filter(user_title_state::Column::WorkId.is_in(part.iter().cloned()))
-                    .order_by_asc(user_title_state::Column::WorkId)
-                    .order_by_asc(user_title_state::Column::UserId)
-                    .limit(page_size);
-                if let Some((work, user)) = &after {
-                    query = query.filter(
-                        Condition::any()
-                            .add(user_title_state::Column::WorkId.gt(work.as_str()))
-                            .add(
-                                Condition::all()
-                                    .add(user_title_state::Column::WorkId.eq(work.as_str()))
-                                    .add(user_title_state::Column::UserId.gt(*user)),
-                            ),
-                    );
-                }
-                let page = match query.all(&self.db).await {
-                    Ok(page) => page,
-                    Err(err)
-                        if page_size > 1
-                            && bookclerk_plugin_abi::LimitExceeded::from_message(
-                                &err.to_string(),
-                            )
-                            .is_some() =>
-                    {
-                        page_size /= 2;
-                        continue;
-                    }
-                    Err(err) => return Err(LibraryError::Orm(err)),
-                };
-                let short = u64::try_from(page.len()).unwrap_or(u64::MAX) < page_size;
-                after = page.last().map(|m| (m.work_id.clone(), m.user_id));
-                rows.extend(page.into_iter().map(super::user_title_state::map_state));
-                if short || after.is_none() {
-                    break;
-                }
-            }
-        }
+        // Several people may hold state on one work, so the rows are read
+        // in pages that fit the backend's result cap.
+        let mut rows: Vec<UserTitleState> = find_chunked_paged(self, &ids, |part| {
+            user_title_state::Entity::find()
+                .filter(user_title_state::Column::WorkId.is_in(part.iter().cloned()))
+                .order_by_asc(user_title_state::Column::WorkId)
+                .order_by_asc(user_title_state::Column::UserId)
+        })
+        .await?
+        .into_iter()
+        .map(super::user_title_state::map_state)
+        .collect();
         rows.sort_by(|a, b| {
             a.work_id
                 .cmp(&b.work_id)
@@ -940,11 +902,24 @@ mod tests {
             let mut book = NewBook::minimal("B0JUSTICE", "a1", "us", "Ancillary Justice");
             book.asin = Some("B0JUSTICE".into());
             book.isbn = Some("9780316246620".into());
+            // Two authors and two narrators are likewise two credits each.
+            book.authors = Some("Ann Leckie, Second Author".into());
+            book.narrators = Some("Adjoa Andoh, Second Narrator".into());
             store.upsert_book(&book).await.unwrap();
             let titles = store.taste_titles().await.unwrap();
             assert_eq!(titles.len(), 1, "{name}");
             assert_eq!(titles[0].asin.as_deref(), Some("B0JUSTICE"), "{name}");
             assert_eq!(titles[0].isbn.as_deref(), Some("9780316246620"), "{name}");
+            let authors = titles[0].authors.clone().unwrap_or_default();
+            assert!(
+                authors.contains("Ann Leckie") && authors.contains("Second Author"),
+                "{name}: {authors}"
+            );
+            let narrators = titles[0].narrators.clone().unwrap_or_default();
+            assert!(
+                narrators.contains("Adjoa Andoh") && narrators.contains("Second Narrator"),
+                "{name}: {narrators}"
+            );
         }
     }
 }
