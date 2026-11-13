@@ -548,6 +548,18 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
         );
         let asked = OwnerShareFilter::load(&store, "library-x").await.unwrap();
         assert!(asked.admits(key), "{name}: sent to the library that asked");
+        // Ordered by the request, so a book already past the sync's cursor
+        // still goes up; asking again moves it later.
+        let first = asked.requested_at(key).unwrap();
+        record_link_request(&store, "library-x", &found)
+            .await
+            .unwrap();
+        let again = OwnerShareFilter::load(&store, "library-x")
+            .await
+            .unwrap()
+            .requested_at(key)
+            .unwrap();
+        assert!(again >= first, "{name}");
         let other_library = OwnerShareFilter::load(&store, "library-y").await.unwrap();
         assert!(
             !other_library.admits(key),

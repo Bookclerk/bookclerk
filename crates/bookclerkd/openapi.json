@@ -27432,7 +27432,7 @@
       },
       "BranchRequestBody": {
         "type": "object",
-        "description": "`POST /api/branch-requests` body.",
+        "description": "`POST /api/branch-requests` body: the work to ask a branch for, and\noptionally which branch.",
         "required": [
           "work_id"
         ],
@@ -27447,7 +27447,7 @@
               "string",
               "null"
             ],
-            "description": "The branch to ask, from the work's `available_through`; leave it out\nto ask the first branch that lists the work.",
+            "description": "The branch to ask, from the work's `available_through`; absent or\n`null` asks the first branch that lists the work.",
             "example": "9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"
           }
         },

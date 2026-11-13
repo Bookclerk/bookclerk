@@ -29,20 +29,23 @@
 //! book, so the catalog sync sends that library the book although it is a
 //! member's ([`books_requested_by_link`]).
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
-use bookclerk_node_proto::{BranchRequest, LookupWork, RequestOutcome, MAX_CLAIMED_REQUESTS};
-use chrono::Utc;
+use bookclerk_node_proto::{
+    is_work_ref, BranchRequest, LookupWork, RequestOutcome, MAX_CLAIMED_REQUESTS,
+};
+use chrono::{DateTime, Utc};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveValue::{NotSet, Set},
     ColumnTrait as _, EntityTrait as _, FromQueryResult, QueryFilter as _, QueryOrder as _,
     QuerySelect as _,
 };
+use serde::Deserialize;
 
 use super::catalog_lookup::{identifiers_of, trusts};
 use super::link_imports::HeldBookKey;
-use super::node_queue::{notify_node, NodeMessage};
+use super::node_queue::{is_valid_node_id, notify_node, NodeMessage};
 use super::remote_work::{remote_job_fence, remote_lease_owner};
 use crate::entities::{jobs, link_requests};
 use crate::error::{LibraryError, Result};
@@ -51,6 +54,96 @@ use crate::models::{
     JobTrigger,
 };
 use crate::store::LibraryStore;
+
+/// `POST /api/branch-requests` body: the work to ask a branch for, and
+/// optionally which branch.
+#[derive(Debug, utoipa::ToSchema)]
+// Read by the schema only (no unknown fields); `BranchRequestFields`
+// enforces it.
+#[serde(deny_unknown_fields)]
+pub struct BranchRequestBody {
+    /// This library's work id, as Discover and search name it.
+    #[schema(example = "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b")]
+    work_id: String,
+    /// The branch to ask, from the work's `available_through`; absent or
+    /// `null` asks the first branch that lists the work.
+    #[serde(default)]
+    #[schema(example = "9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e")]
+    node_id: Option<String>,
+}
+
+/// [`BranchRequestBody`]'s fields as JSON carries them; read only from a
+/// JSON object ([`BranchRequestBody`]'s `Deserialize`), never from an array.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BranchRequestFields {
+    /// See [`BranchRequestBody::work_id`].
+    work_id: String,
+    /// See [`BranchRequestBody::node_id`].
+    #[serde(default)]
+    node_id: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for BranchRequestBody {
+    /// Reads the body from a JSON object only.
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let fields: BranchRequestFields =
+            super::cluster_links::from_object(deserializer, "a JSON object with work_id")?;
+        Ok(Self {
+            work_id: fields.work_id,
+            node_id: fields.node_id,
+        })
+    }
+}
+
+/// A validated [`BranchRequestBody`]: both ids trimmed and well formed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchRequestAsk {
+    /// The work id: 1 to 64 ASCII letters, digits and `-`.
+    pub work_id: String,
+    /// The branch's node id, when the body named one: a valid node id.
+    pub node_id: Option<String>,
+}
+
+impl BranchRequestBody {
+    /// Checks the body: a well-formed work id and, when present, node id
+    /// (each with surrounding whitespace removed).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] for a malformed work or node id.
+    pub fn validate(self) -> Result<BranchRequestAsk> {
+        let work_id = self.work_id.trim();
+        if !is_work_ref(work_id) {
+            return Err(LibraryError::Invalid("invalid work_id".into()));
+        }
+        let node_id = self.node_id.as_deref().map(str::trim);
+        if node_id.is_some_and(|node| !is_valid_node_id(node)) {
+            return Err(LibraryError::Invalid("invalid node_id".into()));
+        }
+        Ok(BranchRequestAsk {
+            work_id: work_id.to_string(),
+            node_id: node_id.map(str::to_string),
+        })
+    }
+}
+
+/// Parses and validates a `POST /api/branch-requests` body from its raw
+/// bytes, sans IO, the way the route reads it: JSON into
+/// [`BranchRequestBody`], then [`BranchRequestBody::validate`].
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for bytes that are not the body's JSON
+/// shape (unknown or repeated fields, wrong types, a missing `work_id`) or a
+/// malformed id.
+pub fn parse_branch_request(body: &[u8]) -> Result<BranchRequestAsk> {
+    serde_json::from_slice::<BranchRequestBody>(body)
+        .map_err(|err| LibraryError::Invalid(format!("branch request body: {err}")))?
+        .validate()
+}
 
 /// How long a branch holds a claimed request before it goes back to
 /// pending. Taking a request is a few local reads and writes on the
@@ -190,7 +283,10 @@ pub async fn claim_branch_requests(
         .order_by_desc(jobs::Column::Priority)
         .order_by_asc(jobs::Column::CreatedAt)
         .order_by_asc(jobs::Column::Id)
-        .limit(CLAIM_SCAN)
+        .limit(match store.db_capabilities().max_result_rows {
+            0 => CLAIM_SCAN,
+            rows => u64::from(rows).clamp(1, CLAIM_SCAN),
+        })
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?;
@@ -349,7 +445,9 @@ pub async fn record_link_request(
                 link_requests::Column::Marketplace,
                 link_requests::Column::ProductId,
             ])
-            .do_nothing()
+            // Asking again moves the request to now, so the catalog sync
+            // sends a book it already passed.
+            .update_column(link_requests::Column::CreatedAt)
             .to_owned(),
         )
         .exec_without_returning(store.db())
@@ -371,11 +469,14 @@ struct RequestRow {
     marketplace: String,
     /// The book's product id, normalized as stored.
     product_id: String,
+    /// When the library last asked for it (RFC 3339).
+    created_at: String,
 }
 
 /// On a branch: every book the library `cluster_id` asked for, by store
-/// identity. Read in keyset pages no larger than the database plugin's
-/// `maxResultRows`.
+/// identity, with when it last asked (an unreadable stamp reads as now, so
+/// the book is sent rather than skipped). Read in keyset pages no larger
+/// than the database plugin's `maxResultRows`.
 ///
 /// # Errors
 ///
@@ -383,13 +484,14 @@ struct RequestRow {
 pub async fn books_requested_by_link(
     store: &LibraryStore,
     cluster_id: &str,
-) -> Result<BTreeSet<HeldBookKey>> {
+) -> Result<BTreeMap<HeldBookKey, DateTime<Utc>>> {
     let page = match store.db_capabilities().max_result_rows {
         0 => REQUESTED_PAGE,
         rows => u64::from(rows).clamp(1, REQUESTED_PAGE),
     };
-    let mut out = BTreeSet::new();
+    let mut out = BTreeMap::new();
     let mut after: Option<i64> = None;
+    let now = Utc::now();
     loop {
         let mut query = link_requests::Entity::find()
             .select_only()
@@ -398,6 +500,7 @@ pub async fn books_requested_by_link(
             .column(link_requests::Column::AccountId)
             .column(link_requests::Column::Marketplace)
             .column(link_requests::Column::ProductId)
+            .column(link_requests::Column::CreatedAt)
             .filter(link_requests::Column::ClusterId.eq(cluster_id))
             .order_by_asc(link_requests::Column::Id);
         if let Some(after) = after {
@@ -412,12 +515,17 @@ pub async fn books_requested_by_link(
         let full = u64::try_from(rows.len()).unwrap_or(u64::MAX) >= page;
         after = rows.last().map(|row| row.id);
         for row in rows {
-            out.insert((
-                row.plugin_key,
-                row.marketplace,
-                row.product_id,
-                row.account_id,
-            ));
+            let asked = DateTime::parse_from_rfc3339(&row.created_at)
+                .map_or(now, |at| at.with_timezone(&Utc));
+            out.insert(
+                (
+                    row.plugin_key,
+                    row.marketplace,
+                    row.product_id,
+                    row.account_id,
+                ),
+                asked,
+            );
         }
         if !full {
             return Ok(out);

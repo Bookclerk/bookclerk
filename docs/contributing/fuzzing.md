@@ -50,6 +50,7 @@ boundary extends it.
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
+| `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
 
 Some boundaries need more than a cell:
 
@@ -246,6 +247,14 @@ only that. The others check:
   from 0 to 16), both present; the parser then returns the trimmed id and
   that cap, and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/job_cap_request.rs`, replayed from `bookclerk-library`.
+- **`branch_request`**: reads the body as an untyped JSON value. It is
+  accepted exactly when it is one object with no repeated keys and no keys
+  besides `work_id` (a string, required) and `node_id` (absent, `null` or
+  a string), where the trimmed `work_id` is 1 to 64 ASCII letters, digits
+  and `-`, and a trimmed `node_id` is 1 to 58 lowercase ASCII letters,
+  digits, `.`, `_` and `-`. The parser then returns those trimmed ids,
+  and otherwise refuses it as `Invalid`. The shared oracle is
+  `fuzz/oracles/branch_request.rs`, replayed from `bookclerk-library`.
 - **`sharing_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
   besides `cluster_id`, `share_books`, `include_branches`,

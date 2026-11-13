@@ -1210,3 +1210,60 @@ async fn a_hosts_scan_request_is_planned_as_its_owner() {
     assert_eq!(jobs[0].kind, "scan");
     assert_eq!(jobs[0].state, "pending");
 }
+
+/// The interlibrary request frames: a trusted branch with nothing waiting
+/// claims an empty list; a finish with a malformed id is refused as
+/// invalid before the store; one for a job the branch does not hold is
+/// lost; and a node this library does not trust as a branch is refused.
+#[tokio::test]
+async fn request_frames_refuse_what_the_branch_may_not_settle() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store) = super::tests::test_state(&files).await;
+    let (node_id, _member) = enroll_member(&store).await;
+    let host = host_context(&state, &node_id).await;
+    let finish = |job: &str, generation: i64| {
+        Frame::new(
+            "f",
+            Body::RequestFinish {
+                job: job.into(),
+                generation,
+                outcome: bookclerk_node_proto::RequestOutcome::Accepted,
+            },
+        )
+    };
+
+    let claimed = super::work::answer(&store, &host, Frame::new("c", Body::RequestsClaim {})).await;
+    assert!(
+        matches!(&claimed.body, Body::RequestsClaimed { requests } if requests.is_empty()),
+        "{claimed:?}"
+    );
+    let invalid = super::work::answer(&store, &host, finish("../etc", 1)).await;
+    assert!(
+        matches!(&invalid.body, Body::Error { code, .. } if code == "invalid"),
+        "{invalid:?}"
+    );
+    let stale = super::work::answer(&store, &host, finish("branch_request-x", 0)).await;
+    assert!(
+        matches!(&stale.body, Body::Error { code, .. } if code == "invalid"),
+        "{stale:?}"
+    );
+    let lost = super::work::answer(&store, &host, finish("branch_request-unknown", 1)).await;
+    assert!(
+        matches!(&lost.body, Body::Lost { job_id, fence: 1, .. } if job_id == "branch_request-unknown"),
+        "{lost:?}"
+    );
+
+    let stranger = host_context(&state, "not-a-branch").await;
+    let refused =
+        super::work::answer(&store, &stranger, Frame::new("c", Body::RequestsClaim {})).await;
+    assert!(
+        matches!(&refused.body, Body::Error { code, .. } if code == "refused"),
+        "{refused:?}"
+    );
+    let refused = super::work::answer(&store, &stranger, finish("branch_request-unknown", 1)).await;
+    assert!(
+        matches!(&refused.body, Body::Error { code, .. } if code == "refused"),
+        "{refused:?}"
+    );
+}

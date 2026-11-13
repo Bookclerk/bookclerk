@@ -254,7 +254,7 @@ impl<'de> Deserialize<'de> for CapacityBody {
 /// # Errors
 ///
 /// Returns the deserializer's error for anything but an object `T` reads.
-fn from_object<'de, D, T>(
+pub(super) fn from_object<'de, D, T>(
     deserializer: D,
     expecting: &'static str,
 ) -> std::result::Result<T, D::Error>

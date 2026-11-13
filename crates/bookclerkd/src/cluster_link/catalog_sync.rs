@@ -355,11 +355,15 @@ impl<S: BranchShelf> CatalogSync<S> {
                 if !seen.insert(reference.clone()) {
                     continue;
                 }
+                // A requested book counts as changed when it was last
+                // asked for, so one already past the cursor still goes up.
+                let changed = owners
+                    .requested_at(&key)
+                    .map_or(key.updated_at, |asked| asked.max(key.updated_at));
                 out.push(Entry {
                     order: format!(
                         "{}|own|{}",
-                        key.updated_at
-                            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                        changed.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
                         key.uuid
                     ),
                     reference,

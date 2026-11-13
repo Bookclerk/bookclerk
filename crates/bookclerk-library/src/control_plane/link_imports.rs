@@ -17,9 +17,9 @@
 //! account that bought it, and an account this install does not have, or
 //! has for someone else, is left alone.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveValue::{NotSet, Set},
@@ -299,23 +299,25 @@ pub async fn books_imported_from_link(
 async fn still_listed_requests(
     store: &LibraryStore,
     cluster_id: &str,
-) -> Result<BTreeSet<HeldBookKey>> {
+) -> Result<BTreeMap<HeldBookKey, DateTime<Utc>>> {
     let Some(link) = super::load_cluster_link(store, cluster_id).await? else {
-        return Ok(BTreeSet::new());
+        return Ok(BTreeMap::new());
     };
     if !link.share_books {
-        return Ok(BTreeSet::new());
+        return Ok(BTreeMap::new());
     }
     let requested = super::books_requested_by_link(store, cluster_id).await?;
     let accounts: BTreeSet<super::AccountKey> = requested
-        .iter()
+        .keys()
         .map(|(plugin, _, _, account)| (plugin.clone(), account.clone()))
         .collect();
     let listable =
         super::catalog_lookup::listable_accounts(store, &accounts, link.list_members_books).await?;
     Ok(requested
         .into_iter()
-        .filter(|(plugin, _, _, account)| listable.contains(&(plugin.clone(), account.clone())))
+        .filter(|((plugin, _, _, account), _)| {
+            listable.contains(&(plugin.clone(), account.clone()))
+        })
         .collect())
 }
 
@@ -331,8 +333,9 @@ async fn still_listed_requests(
 pub struct OwnerShareFilter {
     /// The person's store accounts: `(plugin_key, account_id)`.
     accounts: BTreeSet<super::AccountKey>,
-    /// Books the library asked for, by store identity.
-    requested: BTreeSet<HeldBookKey>,
+    /// Books the library asked for, by store identity, with when it last
+    /// asked.
+    requested: BTreeMap<HeldBookKey, DateTime<Utc>>,
     /// Books imported from the library, by store identity.
     imported: BTreeSet<HeldBookKey>,
 }
@@ -358,17 +361,31 @@ impl OwnerShareFilter {
     /// True when the book `key` names is sent.
     #[must_use]
     pub fn admits(&self, key: &AcquiredBookKey) -> bool {
-        let held: HeldBookKey = (
-            key.plugin_key.clone(),
-            bookclerk_resolve::stored_marketplace(&key.marketplace),
-            bookclerk_resolve::stored_product_id(&key.product_id),
-            key.account_id.clone(),
-        );
+        let held = held_key(key);
         let owners = self
             .accounts
             .contains(&(key.plugin_key.clone(), key.account_id.clone()));
-        (owners || self.requested.contains(&held)) && !self.imported.contains(&held)
+        (owners || self.requested.contains_key(&held)) && !self.imported.contains(&held)
     }
+
+    /// When the library last asked for the book `key` names, if it asked
+    /// and this branch still lists it. The catalog sync orders a requested
+    /// book no earlier than this, so a book already past the sync's cursor
+    /// still goes up on the next pass.
+    #[must_use]
+    pub fn requested_at(&self, key: &AcquiredBookKey) -> Option<DateTime<Utc>> {
+        self.requested.get(&held_key(key)).copied()
+    }
+}
+
+/// The store identity of an acquired book, normalized as stored.
+fn held_key(key: &AcquiredBookKey) -> HeldBookKey {
+    (
+        key.plugin_key.clone(),
+        bookclerk_resolve::stored_marketplace(&key.marketplace),
+        bookclerk_resolve::stored_product_id(&key.product_id),
+        key.account_id.clone(),
+    )
 }
 
 #[cfg(test)]

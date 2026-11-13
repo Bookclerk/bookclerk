@@ -215,7 +215,7 @@ async fn a_branch_takes_its_librarys_request_for_a_members_book() {
         .await
         .unwrap();
     assert_eq!(requested.len(), 1);
-    let entry = requested.iter().next().unwrap();
+    let entry = requested.keys().next().unwrap();
     assert_eq!((entry.0.as_str(), entry.3.as_str()), (PLUGIN, "sam-acct"));
     b.set_acquire_status(
         &sams.uuid,

@@ -12,7 +12,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use bookclerk_library::control_plane::{
-    is_valid_node_id, notify_requests_queued, plan_branch_request,
+    notify_requests_queued, plan_branch_request, BranchRequestBody,
 };
 use bookclerk_library::{EnqueueJobSpec, JobKind, JobTrigger, LibraryError};
 use serde::{Deserialize, Serialize};
@@ -20,20 +20,6 @@ use serde_json::json;
 
 use crate::api::AppState;
 use crate::jobs::{admit, queue_limits, AdmitJob};
-
-/// `POST /api/branch-requests` body.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct BranchRequestBody {
-    /// This library's work id, as Discover and search name it.
-    #[schema(example = "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b")]
-    pub work_id: String,
-    /// The branch to ask, from the work's `available_through`; leave it out
-    /// to ask the first branch that lists the work.
-    #[serde(default)]
-    #[schema(example = "9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e")]
-    pub node_id: Option<String>,
-}
 
 /// `POST /api/branch-requests` answer.
 #[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
@@ -48,15 +34,6 @@ pub struct BranchRequestQueued {
     /// waiting or being taken; `job_id` is that request.
     #[schema(example = false)]
     pub already_queued: bool,
-}
-
-/// Longest work id the route accepts.
-const MAX_WORK_ID_BYTES: usize = 64;
-
-/// True for a work id: 1 to [`MAX_WORK_ID_BYTES`] ASCII letters, digits
-/// and `-`, as the library mints them.
-fn is_work_id(work_id: &str) -> bool {
-    bookclerk_node_proto::is_work_ref(work_id) && work_id.len() <= MAX_WORK_ID_BYTES
 }
 
 /// Asks a branch for a book it listed.
@@ -85,14 +62,12 @@ pub(crate) async fn create_branch_request(
     headers: HeaderMap,
     Json(body): Json<BranchRequestBody>,
 ) -> Result<Json<BranchRequestQueued>, (StatusCode, String)> {
-    let work_id = body.work_id.trim();
-    if !is_work_id(work_id) {
-        return Err((StatusCode::BAD_REQUEST, "invalid work_id".into()));
-    }
-    let node_id = body.node_id.as_deref().map(str::trim);
-    if node_id.is_some_and(|node| !is_valid_node_id(node)) {
-        return Err((StatusCode::BAD_REQUEST, "invalid node_id".into()));
-    }
+    // The same parse the fuzz target drives (`parse_branch_request`).
+    let ask = body
+        .validate()
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    let work_id = ask.work_id.as_str();
+    let node_id = ask.node_id.as_deref();
     let library = state.library_snapshot().await;
     let plan = plan_branch_request(&library, work_id, node_id, JobTrigger::Api)
         .await

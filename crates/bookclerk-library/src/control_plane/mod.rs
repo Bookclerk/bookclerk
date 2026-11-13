@@ -63,8 +63,9 @@ pub use branch_catalog::{
 };
 pub use branch_requests::{
     books_requested_by_link, claim_branch_requests, finish_branch_request, notify_requests_queued,
-    plan_branch_request, record_link_request, BranchRequestPlan, RequestFinished, REQUEST_ACCEPTED,
-    REQUEST_BRANCH_FAILED, REQUEST_LEASE_SECS, REQUEST_NOT_LISTED, REQUEST_WORK_GONE,
+    parse_branch_request, plan_branch_request, record_link_request, BranchRequestAsk,
+    BranchRequestBody, BranchRequestPlan, RequestFinished, REQUEST_ACCEPTED, REQUEST_BRANCH_FAILED,
+    REQUEST_LEASE_SECS, REQUEST_NOT_LISTED, REQUEST_WORK_GONE,
 };
 pub use cache::{
     is_cache_setting_key, load_cache_settings, update_cache_settings, CacheSettingsV1,
