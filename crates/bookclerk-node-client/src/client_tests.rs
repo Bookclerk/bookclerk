@@ -199,6 +199,7 @@ fn work(job_id: &str, fence: i64, lease_secs: u64) -> Body {
             attempt: 1,
             scan_import: None,
             for_node_owner: true,
+            scan_tokens: Vec::new(),
         },
         fence,
         lease_secs,

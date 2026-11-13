@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use bookclerk_node_proto::{
-    AcquireTarget, PlanDestination, SecretEntry, SecretRef, SecretValue, UploadFile, WorkJob,
+    AcquireTarget, Body, PlanDestination, SecretEntry, SecretRef, SecretValue, UploadFile, WorkJob,
 };
 
 use crate::client::Shared;
@@ -303,6 +303,64 @@ impl HostJobCtx {
         let batch = self.batches.fetch_add(1, Ordering::SeqCst) + 1;
         self.shared
             .scan_results(&self.job.job.id, self.job.fence, plugin_key, batch, books)
+            .await
+    }
+
+    /// Sends product ids a delta pass of `account_id` found gone to the
+    /// owner, which removes those holdings; answers how many it removed.
+    /// Sent after the job's rows, at most
+    /// [`bookclerk_node_proto::MAX_SCAN_REMOVED_IDS`] ids per call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`]; `Lost` also cancels the job.
+    pub async fn send_scan_removed(
+        &self,
+        plugin_key: &str,
+        account_id: &str,
+        product_ids: Vec<String>,
+    ) -> Result<u64, OwnerCallError> {
+        let batch = self.batches.fetch_add(1, Ordering::SeqCst) + 1;
+        let body = Body::ScanRemoved {
+            job_id: self.job.job.id.clone(),
+            fence: self.job.fence,
+            plugin_key: plugin_key.to_string(),
+            account_id: account_id.to_string(),
+            batch,
+            product_ids,
+        };
+        self.shared
+            .scan_report(&self.job.job.id, self.job.fence, body)
+            .await
+    }
+
+    /// Tells the owner how the pass of `account_id` ended, after its rows
+    /// and removals: the owner keeps `sync_token` for the account's next
+    /// pass and, after a complete full pass, removes the account's holdings
+    /// this job's rows did not list. Answers how many it removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`]; `Lost` also cancels the job.
+    pub async fn send_scan_pass_end(
+        &self,
+        plugin_key: &str,
+        account_id: &str,
+        sync_token: &str,
+        complete: bool,
+        full: bool,
+    ) -> Result<u64, OwnerCallError> {
+        let body = Body::ScanPassEnd {
+            job_id: self.job.job.id.clone(),
+            fence: self.job.fence,
+            plugin_key: plugin_key.to_string(),
+            account_id: account_id.to_string(),
+            sync_token: sync_token.to_string(),
+            complete,
+            full,
+        };
+        self.shared
+            .scan_report(&self.job.job.id, self.job.fence, body)
             .await
     }
 

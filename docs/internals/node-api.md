@@ -34,7 +34,7 @@ request is answered by a frame with the same `id`. Both sides ping every
 | Host → owner | Owner answers |
 | --- | --- |
 | `heartbeat` | `ok` (capacity and use land in `node_status`) |
-| `claim {filter: {kinds, plugins, scope?}}` | `work` (job, lease, fence, sealed secrets, and `for_node_owner` on the job when all its accounts are the node owner's) or `none {retry_after_secs}` |
+| `claim {filter: {kinds, plugins, scope?}}` | `work` (job, lease, fence, sealed secrets, `for_node_owner` on the job when all its accounts are the node owner's, and for a scan `scan_tokens`: the owner's sync token per handed account whose last complete pass is under 7 days old) or `none {retry_after_secs}` |
 | `renew` | `renewed`, or `lost` when the fence is gone |
 | `complete`, `fail`, `release` | `ok`, or `lost` |
 | `deployments.list` | `deployments` (what targets this node, with versions and the requested grant) |
@@ -43,6 +43,8 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `secret.update` | `ok` (a refreshed store token, sealed to the owner, only for a ref handed with a live job), or `error` `refused` `kept_by_branch` for a single-keeper account a branch keeps and has pushed a sign-in for |
 | `accounts.update {sealed, revision}` | `accounts.updated {outcome}`: `applied`, `stale` (not newer than the last one applied) or `not_shared` (not an account this branch keeps there); see [One refresh keeper](../server/cluster-hosts.md#one-refresh-keeper) |
 | `scan.results` | `scan.accepted {batch, upserted}` |
+| `scan.removed {account_id, batch, product_ids}` (at most 500 ids, after the job's rows) | `scan.accepted {batch, upserted}` (holdings removed), `lost`, or `error` `refused` |
+| `scan.pass_end {account_id, sync_token, complete, full}` (one per account, last) | `scan.accepted {batch: 0, upserted}` (holdings a complete full pass pruned), `lost`, or `error` `refused` |
 | `acquire.plan` | `acquire.targets {targets, destinations}` |
 | `upload.grant` | `upload.granted {upload_id, sealed_token, expires_in_secs}` |
 | `catalog.begin {share_books, include_branches}` | `catalog.session {fence, cursor, ancestry, destinations, wanted, members_books}`; `members_books` (absent reads as false) is the library's "Acquire all of this branch's members' books": the branch then also sends the members' books it lists (see [Acquiring all of a branch's members' books](../server/cluster-hosts.md#acquiring-all-of-a-branchs-members-books)) |

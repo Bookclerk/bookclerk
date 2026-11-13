@@ -80,6 +80,11 @@ after every page, so a large library never has to arrive in one piece.
 - A book that leaves an account (a returned loan, a refund) stops counting
   as held by that account: the next scan reports it. Its downloaded files
   stay.
+- A scan that runs on a [host](cluster-hosts.md) works the same way: the
+  library hands it the account's place, so an Audible scan on a host also
+  asks only for what changed. Libro.fm, Chirp and GraphicAudio scans on a
+  host pass on the whole library, since their memory stays on the
+  library's own server.
 
 ### Matching to Audible's catalog
 

@@ -374,10 +374,15 @@ impl ExternalSource {
     }
 
     /// Scans with the handed credentials and answers the guest's rows
-    /// unwritten (the owner validates and writes them).
+    /// unwritten, with how each account's pass ended (the owner validates
+    /// and writes them, removes what a pass found gone, and keeps the sync
+    /// tokens).
     ///
     /// `opts.accounts` narrows the scan to those account ids; empty means
-    /// every handed account.
+    /// every handed account. An account with a token in `sync_tokens` (the
+    /// owner's, from its last complete pass) runs a delta pass from it; the
+    /// others run full passes. A pass whose token the guest refuses
+    /// restarts once as a full pass, and its report says so.
     ///
     /// # Errors
     ///
@@ -386,7 +391,8 @@ impl ExternalSource {
     pub async fn scan_handed(
         &self,
         opts: ScanOptions,
-    ) -> bookclerk_source::Result<Vec<bookclerk_plugin_sdk::ScanBook>> {
+        sync_tokens: &std::collections::HashMap<String, String>,
+    ) -> bookclerk_source::Result<HandedScan> {
         let Some(handed) = self.handed.as_ref() else {
             return Err(bookclerk_source::SourceError::Auth(
                 "no credentials were handed with this job".into(),
@@ -406,9 +412,9 @@ impl ExternalSource {
         if !credentials.is_empty() {
             self.session.require_binding("secrets")?;
         }
-        // The owner keeps no sync state for a handed scan yet, so each
-        // account runs one full pass and every row goes back to the owner.
-        let mut rows = Vec::new();
+        // The owner keeps each account's sync state: it handed the token of
+        // its last complete pass, and records how this pass ends.
+        let mut scan = HandedScan::default();
         for (account_id, credential) in credentials {
             let mut io = CollectPass {
                 source: self,
@@ -416,17 +422,32 @@ impl ExternalSource {
                 account_id: account_id.clone(),
                 credential,
                 rows: Vec::new(),
+                removed: Vec::new(),
+                end: None,
+            };
+            let start = bookclerk_library::PassStart {
+                sync_token: sync_tokens.get(&account_id).cloned().unwrap_or_default(),
+                ..full_pass()
             };
             run_pass(
                 &mut io,
                 &account_id,
-                full_pass(),
+                start,
                 &self.session.describe_snapshot().media,
             )
             .await?;
-            rows.append(&mut io.rows);
+            scan.rows.append(&mut io.rows);
+            if let Some(end) = io.end {
+                scan.passes.push(HandedPass {
+                    account_id,
+                    removed: io.removed,
+                    sync_token: end.sync_token,
+                    complete: end.complete,
+                    full: end.full,
+                });
+            }
         }
-        Ok(rows)
+        Ok(scan)
     }
 
     /// Asks the guest for one page of one account's pass.
@@ -1373,6 +1394,80 @@ struct CollectPass<'a> {
     credential: Vec<u8>,
     /// Rows collected so far.
     rows: Vec<bookclerk_plugin_sdk::ScanBook>,
+    /// Product ids the pass reported gone so far.
+    removed: Vec<String>,
+    /// How the pass ended, once its last page came back.
+    end: Option<PassEnd>,
+}
+
+/// Adds a page's `books` to a collected pass's `rows`.
+///
+/// The owner writes every collected row before any removal, so a title an
+/// earlier page reported gone and this page lists again leaves `removed`:
+/// the local pass would write it after removing it.
+fn collect_rows(
+    rows: &mut Vec<bookclerk_plugin_sdk::ScanBook>,
+    removed: &mut Vec<String>,
+    books: &mut Vec<bookclerk_plugin_sdk::ScanBook>,
+) {
+    if !removed.is_empty() {
+        let listed: std::collections::HashSet<&str> =
+            books.iter().map(|book| book.product_id.as_str()).collect();
+        removed.retain(|id| !listed.contains(id.as_str()));
+    }
+    rows.append(books);
+}
+
+/// Adds a page's removals to a collected pass's `removed`.
+///
+/// A row an earlier page (or the same one, which the local pass writes
+/// first) listed leaves `rows`: the local pass would remove it after
+/// writing it, so the owner must not write it back.
+fn collect_removed(
+    rows: &mut Vec<bookclerk_plugin_sdk::ScanBook>,
+    removed: &mut Vec<String>,
+    product_ids: &[String],
+) {
+    let gone: std::collections::HashSet<&str> = product_ids.iter().map(String::as_str).collect();
+    rows.retain(|book| !gone.contains(book.product_id.as_str()));
+    removed.extend_from_slice(product_ids);
+}
+
+/// How a collected pass ended.
+struct PassEnd {
+    /// The plugin's token for the account's next pass.
+    sync_token: String,
+    /// The pass listed every title the account holds.
+    complete: bool,
+    /// The pass sent no sync token.
+    full: bool,
+}
+
+/// What a scan with handed credentials found ([`ExternalSource::scan_handed`]).
+#[derive(Debug, Default)]
+pub struct HandedScan {
+    /// Every account's rows, unwritten.
+    pub rows: Vec<bookclerk_plugin_sdk::ScanBook>,
+    /// How each account's pass ended, in the order the accounts ran.
+    pub passes: Vec<HandedPass>,
+}
+
+/// How one account's pass of a handed scan ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandedPass {
+    /// The account.
+    pub account_id: String,
+    /// Product ids the pass reported gone from the account (a delta pass's
+    /// removals).
+    pub removed: Vec<String>,
+    /// The plugin's token for the account's next pass; empty when it keeps
+    /// none.
+    pub sync_token: String,
+    /// The pass listed every title the account holds.
+    pub complete: bool,
+    /// The pass was full (sent no token, or restarted after its token was
+    /// refused), so with `complete` its rows are all the account holds.
+    pub full: bool,
 }
 
 impl PassIo for CollectPass<'_> {
@@ -1411,7 +1506,7 @@ impl PassIo for CollectPass<'_> {
         mut books: Vec<bookclerk_plugin_sdk::ScanBook>,
     ) -> bookclerk_source::Result<usize> {
         let n = books.len();
-        self.rows.append(&mut books);
+        collect_rows(&mut self.rows, &mut self.removed, &mut books);
         Ok(n)
     }
 
@@ -1423,25 +1518,37 @@ impl PassIo for CollectPass<'_> {
         Ok(())
     }
 
-    async fn remove(&mut self, _product_ids: &[String]) -> bookclerk_source::Result<()> {
-        // The owner keeps no holdings state for a handed scan yet.
+    async fn remove(&mut self, product_ids: &[String]) -> bookclerk_source::Result<()> {
+        collect_removed(&mut self.rows, &mut self.removed, product_ids);
         Ok(())
     }
 
     async fn finish(
         &mut self,
-        _sync_token: &str,
-        _complete: bool,
-        _full: bool,
+        sync_token: &str,
+        complete: bool,
+        full: bool,
     ) -> bookclerk_source::Result<()> {
+        self.end = Some(PassEnd {
+            sync_token: sync_token.to_string(),
+            complete,
+            full,
+        });
         Ok(())
     }
 
     async fn reset(&mut self) -> bookclerk_source::Result<()> {
+        // The owner's stored token is replaced when this pass ends.
         Ok(())
     }
 
-    fn restart(&mut self) {}
+    fn restart(&mut self) {
+        // A restarted pass starts over: what the abandoned attempt listed
+        // or found gone must not reach the owner, since a full pass's end
+        // would otherwise keep or remove titles on its word.
+        self.rows.clear();
+        self.removed.clear();
+    }
 
     fn cancelled(&self) -> bool {
         self.opts.is_cancelled()
@@ -1895,5 +2002,29 @@ mod tests {
         let (explicit, skipped) = scan_credentials_for(&echo, &["a1".into()]).await.unwrap();
         assert_eq!(explicit.len(), 1);
         assert_eq!(skipped, 0);
+    }
+
+    /// A collected pass ends with what the local pass, which applies each
+    /// page's rows and then its removals in page order, would hold: the
+    /// owner writes every row before any removal, so a title removed and
+    /// then listed again stays, and one listed then removed goes.
+    #[test]
+    fn collected_rows_and_removals_follow_page_order() {
+        let mut rows = Vec::new();
+        let mut removed = Vec::new();
+        let ids = |list: &[&str]| list.iter().map(|id| (*id).to_string()).collect::<Vec<_>>();
+        // Page 1 lists p1 and p2 and reports p3 gone.
+        collect_rows(
+            &mut rows,
+            &mut removed,
+            &mut vec![scanned("p1"), scanned("p2")],
+        );
+        collect_removed(&mut rows, &mut removed, &ids(&["p3"]));
+        // Page 2 lists p3 again and reports p1 gone.
+        collect_rows(&mut rows, &mut removed, &mut vec![scanned("p3")]);
+        collect_removed(&mut rows, &mut removed, &ids(&["p1"]));
+        let listed: Vec<&str> = rows.iter().map(|b| b.product_id.as_str()).collect();
+        assert_eq!(listed, ["p2", "p3"]);
+        assert_eq!(removed, ids(&["p1"]));
     }
 }
