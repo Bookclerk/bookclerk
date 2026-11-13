@@ -53,7 +53,8 @@
 //! - A token this crate did not write, or one whose pass is gone or never
 //!   finished: `invalid_cursor`, so the host restarts once as a full pass.
 //! - A pass whose row was cleared while it ran (another pass of the account
-//!   started): the pass ends with an empty token, so the next one is full.
+//!   started): its last page returns `invalid_cursor` instead of removals
+//!   worked out from a partial record, and the host starts over.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -261,7 +262,9 @@ impl<'a> ScanDelta<'a> {
     ///
     /// # Errors
     ///
-    /// Returns the binding's error when a database call fails.
+    /// Returns `invalid_cursor` on the last store page when another pass of
+    /// the account cleared this one while it ran, and the binding's error
+    /// when a database call fails.
     pub async fn page(
         &self,
         store_cursor: &str,
@@ -384,9 +387,24 @@ impl<'a> ScanDelta<'a> {
     ///
     /// # Errors
     ///
-    /// Returns the binding's error.
+    /// Returns `invalid_cursor` when another pass of the account cleared
+    /// this one, and the binding's error.
     async fn finish(&self, db: &DatabaseBinding, page: &mut DeltaPage) -> Result<(), PluginError> {
         page.complete = self.base.is_none();
+        // Another pass of the account that started meanwhile deleted this
+        // pass's row and the titles it had recorded, so `removed` worked out
+        // now would name titles the account still holds.
+        let live = db
+            .prepare(
+                "SELECT finished FROM scan_delta_passes \
+                 WHERE account = ? AND generation = ?",
+            )
+            .bind(vec![text(&self.account), text(&self.generation)])
+            .first(None)
+            .await?;
+        if live.is_none() {
+            return Err(cleared_pass());
+        }
         if let Some(base) = &self.base {
             page.removed = read_ids(
                 db,
@@ -413,11 +431,12 @@ impl<'a> ScanDelta<'a> {
             ])
             .run(None)
             .await?;
-        // No row: another pass of the account started meanwhile and cleared
-        // this one, so the next pass must be full.
-        if marked.meta.changes > 0 {
-            page.sync_token = format!("{LAYOUT}.{}", self.generation);
+        // No row: another pass cleared this one while `removed` was being
+        // read, so that list cannot be trusted either.
+        if marked.meta.changes == 0 {
+            return Err(cleared_pass());
         }
+        page.sync_token = format!("{LAYOUT}.{}", self.generation);
         Ok(())
     }
 }
@@ -516,6 +535,13 @@ fn now_seconds() -> i64 {
         .ok()
         .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok())
         .unwrap_or(0)
+}
+
+/// The error the last page of a pass gets when another pass of the account
+/// cleared it while it ran, so the host restarts the account instead of
+/// applying removals worked out from a partial record.
+fn cleared_pass() -> PluginError {
+    PluginError::invalid_cursor("another scan of this account replaced this one; start over")
 }
 
 /// The error a token this crate cannot use gets, so the host restarts the

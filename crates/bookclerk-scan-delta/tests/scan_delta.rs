@@ -204,7 +204,7 @@ async fn foreign_or_forgotten_tokens_restart_the_pass() {
 }
 
 #[tokio::test]
-async fn a_pass_cleared_while_it_ran_ends_without_a_token() {
+async fn a_pass_cleared_while_it_ran_restarts_instead_of_removing() {
     for profile in Profile::ALL {
         let (db, _) = served(profile).await;
         let first = pass(&db, "", &[vec![book("1", "A")]]).await;
@@ -215,9 +215,13 @@ async fn a_pass_cleared_while_it_ran_ends_without_a_token() {
             .unwrap();
         delta.page("", vec![book("1", "A")], false).await.unwrap();
         pass(&db, "", &[vec![book("1", "A")]]).await;
-        // The delta pass's own last page finds its row gone.
-        let page = delta.page("1", vec![], true).await.unwrap();
-        assert!(page.sync_token.is_empty(), "{profile:?}");
+        // The delta pass's own last page finds its row gone, and reports no
+        // removals from the titles the full pass deleted ("1" is still held).
+        let err = delta
+            .page("1", vec![], true)
+            .await
+            .expect_err("cleared pass");
+        assert!(is_invalid_cursor(&err), "{profile:?}");
     }
 }
 
