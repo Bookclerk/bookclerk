@@ -120,9 +120,7 @@ async fn empty_library_scan_returns_no_books() {
         .await;
 
     let credentials = host_credentials("9", &stored_auth("9", "a@ex.com"));
-    let page = guest_scan_page(&server.uri(), &credentials, 1)
-        .await
-        .unwrap();
+    let page = guest_scan_page(&server.uri(), &credentials).await.unwrap();
     assert!(page.books.is_empty());
     assert!(page.complete && page.next_cursor.is_empty());
 }
@@ -161,9 +159,7 @@ async fn library_scan_returns_scan_rows() {
         .await;
 
     let credentials = host_credentials("9", &stored_auth("9", "a@ex.com"));
-    let page = guest_scan_page(&server.uri(), &credentials, 1)
-        .await
-        .unwrap();
+    let page = guest_scan_page(&server.uri(), &credentials).await.unwrap();
     // One item on a 20-item page is the last page.
     assert!(page.complete && page.next_cursor.is_empty());
     assert_eq!(page.books.len(), 1);
@@ -174,8 +170,8 @@ async fn library_scan_returns_scan_rows() {
         page_size: 1,
         ..credentials
     };
-    let first = guest_scan_page(&server.uri(), &full, 1).await.unwrap();
-    assert_eq!(first.next_cursor, "page:2");
+    let first = guest_scan_page(&server.uri(), &full).await.unwrap();
+    assert_eq!(first.next_cursor, "sp1.0.2");
     assert!(!first.complete);
 }
 

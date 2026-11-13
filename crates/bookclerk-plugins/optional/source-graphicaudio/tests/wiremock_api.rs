@@ -114,7 +114,6 @@ async fn scan_skips_samples_returns_owned() {
         GraphicAudioAccess::Device,
         None,
         &params,
-        1,
     )
     .await
     .unwrap();
