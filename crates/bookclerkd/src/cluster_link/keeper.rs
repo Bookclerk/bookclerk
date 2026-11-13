@@ -9,7 +9,9 @@
 //! for each whose sign-in here is newer than the revision last pushed
 //! there sends it up the link (`accounts.update`). The library applies it
 //! only when it is newer than the last one it applied, so a push that is
-//! retried, or overtaken by a newer one, changes nothing there.
+//! retried, or overtaken by a newer one, changes nothing there. A push the
+//! library does not take from this branch yet (`not_shared`, such as one
+//! that overtook its offer) is sent again on the next pass.
 //!
 //! The revision is the time of the account's newest secret write here: a
 //! sign-in in Accounts, a refresh a storefront handed back, or a sign-in
@@ -52,9 +54,13 @@ pub struct SignInPusher {
 pub struct PushPass {
     /// Sign-ins the library applied.
     pub applied: usize,
-    /// Sign-ins the library already had, or does not share with this
-    /// branch; recorded so they are not sent again.
+    /// Sign-ins the library already had; recorded so they are not sent
+    /// again.
     pub settled: usize,
+    /// Sign-ins the library does not take from this branch (it doesn't
+    /// count this branch as the account's keeper there, at least not yet);
+    /// sent again next pass, and not logged.
+    pub not_kept: usize,
     /// Sign-ins that could not be sent this time; tried again next pass.
     pub retry: usize,
 }
@@ -70,7 +76,7 @@ impl SignInPusher {
             }
             if self.handle.is_connected() {
                 match self.push_once().await {
-                    Ok(pass) if pass == PushPass::default() => {}
+                    Ok(pass) if pass.applied + pass.settled + pass.retry == 0 => {}
                     Ok(pass) => tracing::info!(
                         cluster_id = %self.cluster_id,
                         applied = pass.applied,
@@ -154,7 +160,7 @@ impl SignInPusher {
                     .await
                     .unwrap_or(Err(OwnerCallError::Unavailable));
             match pushed {
-                Ok(outcome) => {
+                Ok(outcome @ (KeeperOutcome::Applied | KeeperOutcome::Stale)) => {
                     record_pushed_revision(
                         &self.library,
                         plugin_key,
@@ -163,11 +169,16 @@ impl SignInPusher {
                         revision,
                     )
                     .await?;
-                    match outcome {
-                        KeeperOutcome::Applied => pass.applied += 1,
-                        KeeperOutcome::Stale | KeeperOutcome::NotShared => pass.settled += 1,
+                    if outcome == KeeperOutcome::Applied {
+                        pass.applied += 1;
+                    } else {
+                        pass.settled += 1;
                     }
                 }
+                // Not (yet) this branch's to keep there: an offer still on its
+                // way, or one retried later, may make it so. Not recorded,
+                // so the next pass sends it again.
+                Ok(KeeperOutcome::NotShared) => pass.not_kept += 1,
                 Err(OwnerCallError::Refused(reason)) => {
                     tracing::warn!(
                         cluster_id = %self.cluster_id,

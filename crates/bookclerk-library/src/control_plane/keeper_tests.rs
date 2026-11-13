@@ -160,6 +160,32 @@ async fn a_library_applies_only_newer_pushes_from_its_keeper_branch() {
         assert!(apply_keeper_update(store, ana.id, "b1", &empty, 50)
             .await
             .is_err());
+
+        // Disconnected everywhere: the library forgets its keeper, so a
+        // later connection may pick another branch.
+        record_accounts_sent_to(store, &link_peer("c9"), &[pushed("ana", b"")])
+            .await
+            .unwrap();
+        withdraw_person_account(store, ana.id, KEEPER, "ana")
+            .await
+            .unwrap();
+        assert_eq!(
+            keeping_branch(store, KEEPER, "ana").await.unwrap(),
+            None,
+            "{name}"
+        );
+        // What this install shared with a library it joined stays, so a
+        // disconnect retried later still reaches it.
+        assert!(keeps_for_link(store, KEEPER, "ana", "c9").await.unwrap());
+        // Sam's account, still linked, keeps its keeper.
+        assert_eq!(
+            keeping_branch(store, KEEPER, "sam")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("b1"),
+            "{name}"
+        );
     }
 }
 

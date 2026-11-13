@@ -917,12 +917,33 @@ pub async fn withdraw_person_account(
 }
 
 /// Deletes the account's secrets and marks it `revoked` with scans off,
-/// each statement guarded on no link holding the account.
+/// each statement guarded on no link holding the account. It also forgets
+/// which branch kept it for this library (its `node:` shares and their
+/// sign-in revisions), so a later connection picks its keeper afresh; the
+/// shares this install recorded with libraries it joined (`link:`) stay,
+/// so a disconnect-everywhere retried later still reaches them.
 fn revoke_unlinked_statements(plugin_key: &str, account_id: &str) -> Vec<TypedDbStatement> {
     const UNLINKED: &str = "NOT EXISTS (SELECT 1 FROM account_links \
                             WHERE plugin_key = ? AND account_id = ?)";
     let now = Utc::now().to_rfc3339();
+    let forget_keeper = |table: &str| {
+        batch::exec(
+            &format!(
+                "DELETE FROM {table} \
+                 WHERE plugin_key = ? AND account_id = ? AND peer LIKE ? AND {UNLINKED}"
+            ),
+            vec![
+                text(plugin_key),
+                text(account_id),
+                text("node:%"),
+                text(plugin_key),
+                text(account_id),
+            ],
+        )
+    };
     vec![
+        forget_keeper("account_credential_revisions"),
+        forget_keeper("account_shares"),
         batch::exec(
             &format!(
                 "DELETE FROM encrypted_secrets \

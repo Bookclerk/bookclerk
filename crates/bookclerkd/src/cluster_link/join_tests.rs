@@ -1254,4 +1254,34 @@ async fn a_keeping_branch_pushes_its_newer_sign_ins_up_the_link() {
     assert_eq!(secret_in(owner_store.clone()).await, br#"{"t":"2"}"#);
     // Nothing newer: nothing is sent.
     assert_eq!(pusher.push_once().await.unwrap(), PushPass::default());
+
+    // A share recorded here before the library took the offer (still on
+    // its way, or to be retried): the library doesn't take its sign-in
+    // from this branch yet, and the next pass sends it again.
+    let later = "later@example.com";
+    connect_account(&host_store, me.id, &plugin_key, later, b"later").await;
+    bookclerk_library::control_plane::record_accounts_sent_to(
+        &host_store,
+        &bookclerk_library::control_plane::link_peer(&cluster_id),
+        &[bookclerk_node_proto::CarriedAccount {
+            plugin_key: plugin_key.clone(),
+            account_id: later.into(),
+            source: "libro".into(),
+            marketplace: "us".into(),
+            label: None,
+            secrets: Vec::new(),
+        }],
+    )
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        let pass = pusher.push_once().await.unwrap();
+        assert_eq!(
+            pass,
+            PushPass {
+                not_kept: 1,
+                ..PushPass::default()
+            }
+        );
+    }
 }

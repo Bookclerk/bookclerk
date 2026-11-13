@@ -687,7 +687,9 @@ received from a library (`received`, peer `link:<cluster id>`); it is
 removed with the account. `account_credential_revisions` holds, per account
 and peer, the newest sign-in revision of a single-keeper account: on a
 library the last one applied from its keeper branch, on that branch the
-last one pushed to each library. It is removed with the account.
+last one pushed to each library. It is removed with the account. When an
+account is taken back with no link left, its `node:` rows in both tables
+go too, so the library picks its next keeper afresh.
 
 The library model ([ADR](../adr/library-data-model.md)) stores what the
 library holds as works, expressions and editions:

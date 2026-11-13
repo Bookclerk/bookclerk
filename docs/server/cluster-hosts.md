@@ -330,6 +330,11 @@ account itself.
   newer sign-in.
 - **Elsewhere.** A kept account travels back only to its keeper, never to
   a second branch, and a second branch's offer of it is not kept.
+- **A new keeper.** When the account is disconnected everywhere on the
+  library (no member's link holds it), the library forgets its keeper, so
+  the branch the person adds it from next keeps it. A push the library
+  doesn't take from the branch yet (`not_shared`, as when it overtook the
+  branch's offer) is sent again on the next pass.
 
 Disconnecting on a library does not yet reach its branches.
 
