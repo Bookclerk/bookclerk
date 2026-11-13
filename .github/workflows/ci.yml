@@ -44,6 +44,13 @@ env:
   # Line tables keep file:line in panics and backtraces at a fraction of the
   # link time and cache size of full debuginfo (dev and test profiles only).
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # A digest of the `[profile]` tables in the workspace Cargo.toml. rust-cache
+  # keys hash the manifests' dependencies but not their profiles, so without
+  # it a profile change keeps the old key and every job rebuilds all
+  # dependencies without ever saving them. Each cache step lists it in
+  # env-vars; test_ci_contract.py fails until it matches Cargo.toml
+  # (docs/contributing/ci.md#caches).
+  CI_CARGO_PROFILES: "8feea116acfe4449"
   # A failing test's panic prints its backtrace. Library backtraces stay off:
   # with RUST_BACKTRACE alone, every error built by an error library such as
   # anyhow would capture a backtrace, slowing tests that create many errors.
@@ -400,7 +407,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: lint
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           lookup-only: true
           save-if: false
@@ -415,7 +422,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: lint
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
 
@@ -591,7 +598,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           lookup-only: true
           save-if: false
@@ -607,7 +614,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && matrix.part == 1 && !inputs.private-head }}
 
@@ -729,7 +736,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: false
 
@@ -823,7 +830,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: release
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           lookup-only: true
           save-if: false
@@ -838,7 +845,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: release
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
 
@@ -926,7 +933,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: false
 
@@ -998,7 +1005,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           lookup-only: true
           save-if: false
@@ -1013,7 +1020,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && matrix.os != 'ubuntu-latest' && !inputs.private-head }}
 
@@ -1104,7 +1111,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: false
 
@@ -1174,7 +1181,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           lookup-only: true
           save-if: false
@@ -1189,7 +1196,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
 
@@ -1290,7 +1297,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: false
 
@@ -1346,7 +1353,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: debug
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES
           cache-on-failure: true
           save-if: false
 

@@ -164,8 +164,10 @@ tested that exact commit. So the push run resolves with `--build-only`
 Caches are saved only on `main`, because merge-group refs can't share
 theirs. So this run is what keeps pull-request and queue runs warm.
 
-A dependency cache key covers `Cargo.lock`, the manifests, the toolchain
-and the CI environment, not the repository's own sources. An existing key
+A dependency cache key covers `Cargo.lock`, the manifests' dependencies,
+the toolchain and the CI environment, not the repository's own sources.
+It doesn't cover the manifests' `[profile]` tables, so the CI environment
+carries their digest (see [Caches](#caches)). An existing key
 is never saved again, so most merges leave every key unchanged and their
 build would save nothing.
 
@@ -266,6 +268,16 @@ Rust dependency caches use three shared keys. Each is saved by one job on
 Fewer entries keep the repository under the Actions cache limit, so jobs
 stop missing their cache.
 
+rust-cache hashes the manifests' dependencies but not their `[profile]`
+tables. A profile change would otherwise keep the old key: every job would
+restore dependencies built under the old profile, rebuild all of them, and
+never save the result, because the key already exists. The workflow's
+`CI_CARGO_PROFILES` variable holds a digest of the workspace `Cargo.toml`
+profile tables, and every cache step lists it in `env-vars`, so a profile
+change starts a new key that the next `main` push saves. The workflow
+contract test fails until the digest matches `Cargo.toml` and prints the new
+value.
+
 The `test` job instruments its build for [coverage](#coverage) and still
 uses the `debug` key: the instrumentation applies only to workspace crates,
 which no cache holds, so the cached dependencies match. The build-only
@@ -281,7 +293,8 @@ libfdk-aac's forced inlines at `-O1`, so it stays at `opt-level = 0`. Measured o
 (4 cores), the suite ran in 432 s instead of 573 s, for a cold dependency
 build 67 s longer; `opt-level = 2` gained only 8 s more for another 100 s of
 cold build. The cost is paid once per cache key, since the caches hold the
-built dependencies.
+built dependencies; changing a profile updates `CI_CARGO_PROFILES` (see
+[Caches](#caches)).
 
 CI builds the dev and test profiles with
 `CARGO_PROFILE_DEV_DEBUG=line-tables-only`. That keeps file and line in
