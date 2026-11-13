@@ -105,6 +105,73 @@ pub trait RefreshedCredentialSink: Send + Sync {
     async fn refreshed(&self, account_id: &str, credentials: Vec<u8>);
 }
 
+/// Where credentials a guest refreshed go
+/// ([`keep_refreshed_credentials`]).
+enum RefreshTarget<'a> {
+    /// The credentials were handed with a host job: the refreshed ones go
+    /// to the sink (the owner), or are dropped with a warning without one.
+    Handed(Option<&'a dyn RefreshedCredentialSink>),
+    /// This install's own account, stored in the scope (none: not stored).
+    Local(Option<&'a SourceScope>),
+}
+
+/// Keeps credentials a guest of `plugin` handed back after refreshing those
+/// of `account_id`, which it was sent as `sent`.
+///
+/// For handed credentials they go to the refresh sink (the owner); for
+/// this install's own accounts they replace the stored credentials only
+/// while those are still `sent`, so a sign-in that happened meanwhile wins
+/// ([`SourceScope::replace_refreshed_credentials`]). An empty blob means
+/// nothing changed. The value is registered for redaction first.
+///
+/// # Errors
+///
+/// Returns an error when the blob breaks the ABI bounds, `sent` is not
+/// JSON, or storing it fails.
+async fn keep_refreshed_credentials(
+    plugin: &str,
+    target: RefreshTarget<'_>,
+    account_id: &str,
+    sent: &[u8],
+    refreshed: Vec<u8>,
+) -> bookclerk_source::Result<()> {
+    if refreshed.is_empty() {
+        return Ok(());
+    }
+    bookclerk_plugin_abi::validate_refreshed_credentials(&refreshed)
+        .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
+    bookclerk_config::register_secret_bytes(&refreshed);
+    let scope = match target {
+        RefreshTarget::Handed(Some(sink)) => {
+            sink.refreshed(account_id, refreshed).await;
+            return Ok(());
+        }
+        RefreshTarget::Handed(None) => {
+            tracing::warn!(
+                plugin,
+                account_id,
+                "the guest refreshed handed credentials, but nothing takes them back"
+            );
+            return Ok(());
+        }
+        RefreshTarget::Local(None) => return Ok(()),
+        RefreshTarget::Local(Some(scope)) => scope,
+    };
+    let sent = credentials_from_bytes(sent)?;
+    let stored = scope
+        .replace_refreshed_credentials(account_id, &sent, &refreshed)
+        .await
+        .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+    if !stored {
+        tracing::info!(
+            plugin,
+            account_id,
+            "kept the account's newer credentials over the guest's refreshed ones"
+        );
+    }
+    Ok(())
+}
+
 /// Credentials handed with a host job, zeroized on drop and never shown by
 /// `Debug`.
 struct HandedCredentials(std::collections::BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>);
@@ -224,39 +291,12 @@ impl ExternalSource {
         sent: &[u8],
         refreshed: Vec<u8>,
     ) -> bookclerk_source::Result<()> {
-        if refreshed.is_empty() {
-            return Ok(());
-        }
-        bookclerk_plugin_abi::validate_refreshed_credentials(&refreshed)
-            .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
-        bookclerk_config::register_secret_bytes(&refreshed);
-        if self.handed.is_some() {
-            match &self.refresh_sink {
-                Some(sink) => sink.refreshed(account_id, refreshed).await,
-                None => tracing::warn!(
-                    plugin = %self.id(),
-                    account_id,
-                    "the guest refreshed handed credentials, but nothing takes them back"
-                ),
-            }
-            return Ok(());
-        }
-        let Some(scope) = scope else {
-            return Ok(());
+        let target = if self.handed.is_some() {
+            RefreshTarget::Handed(self.refresh_sink.as_deref())
+        } else {
+            RefreshTarget::Local(scope)
         };
-        let sent = credentials_from_bytes(sent)?;
-        let stored = scope
-            .replace_refreshed_credentials(account_id, &sent, &refreshed)
-            .await
-            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
-        if !stored {
-            tracing::info!(
-                plugin = %self.id(),
-                account_id,
-                "kept the account's newer credentials over the guest's refreshed ones"
-            );
-        }
-        Ok(())
+        keep_refreshed_credentials(self.id(), target, account_id, sent, refreshed).await
     }
 
     /// Uses only `credentials` (an owner cluster handed them with a job)
@@ -1505,6 +1545,79 @@ mod tests {
         full.reset().await.unwrap();
         let state = scope.scan_state("a1").await.unwrap();
         assert!(state.is_none_or(|s| s.sync_token.is_empty()));
+    }
+
+    /// Records what reached it.
+    #[derive(Default)]
+    struct Recorded(std::sync::Mutex<Vec<(String, Vec<u8>)>>);
+
+    #[async_trait::async_trait]
+    impl RefreshedCredentialSink for Recorded {
+        async fn refreshed(&self, account_id: &str, credentials: Vec<u8>) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((account_id.into(), credentials));
+        }
+    }
+
+    /// Refreshed credentials go to the sink for handed credentials, replace
+    /// this install's stored ones only while they are still what was sent,
+    /// and are refused when they break the ABI bounds.
+    #[tokio::test]
+    async fn refreshed_credentials_go_where_the_credentials_came_from() {
+        let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
+        shared_test_master_key();
+        let store = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let scope = store.scope("path:file:///plugins/echo", "echo");
+        scope.upsert_account("a1", "us", None, true).await.unwrap();
+        let v1 = serde_json::json!({"token": "v1"});
+        scope.save_credentials_json("a1", &v1).await.unwrap();
+        let sent = serde_json::to_vec(&v1).unwrap();
+        let keep = |target, refreshed: &[u8]| {
+            keep_refreshed_credentials("echo", target, "a1", &sent, refreshed.to_vec())
+        };
+
+        // Handed: to the sink, or dropped without one; nothing stored here.
+        let sink = Recorded::default();
+        keep(RefreshTarget::Handed(Some(&sink)), br#"{"token":"h"}"#)
+            .await
+            .unwrap();
+        keep(RefreshTarget::Handed(None), br#"{"token":"h"}"#)
+            .await
+            .unwrap();
+        assert_eq!(
+            sink.0.lock().unwrap().as_slice(),
+            &[("a1".to_string(), br#"{"token":"h"}"#.to_vec())]
+        );
+        keep(RefreshTarget::Local(None), br#"{"token":"x"}"#)
+            .await
+            .unwrap();
+        let stored = |scope: &SourceScope| {
+            let scope = scope.clone();
+            async move { scope.load_credentials_json("a1").await.unwrap().unwrap() }
+        };
+        assert_eq!(stored(&scope).await, v1);
+
+        // Empty means unchanged; a non-object is refused.
+        keep(RefreshTarget::Local(Some(&scope)), b"").await.unwrap();
+        assert!(keep(RefreshTarget::Local(Some(&scope)), b"[1]")
+            .await
+            .is_err());
+        assert_eq!(stored(&scope).await, v1);
+
+        // Local: replaces what was sent.
+        keep(RefreshTarget::Local(Some(&scope)), br#"{"token":"v2"}"#)
+            .await
+            .unwrap();
+        assert_eq!(stored(&scope).await, serde_json::json!({"token": "v2"}));
+        // Sent v1 again, but the account now holds v2: v2 stays.
+        keep(RefreshTarget::Local(Some(&scope)), br#"{"token":"v3"}"#)
+            .await
+            .unwrap();
+        assert_eq!(stored(&scope).await, serde_json::json!({"token": "v2"}));
     }
 
     #[tokio::test]
