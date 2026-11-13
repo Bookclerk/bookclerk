@@ -166,17 +166,21 @@ pub(crate) fn find_holdings() -> sea_orm::Select<holdings::Entity> {
 struct SharePiece {
     /// The piece's text; `None` when the holding or its title is gone.
     piece: Option<String>,
+    /// The holding's `updated_at` when the piece was read, which every
+    /// share-state rewrite advances (nanosecond RFC 3339 text).
+    updated_at: String,
 }
 
 /// Reads holding `holding_id`'s `share_title` in pieces that each fit one
 /// cell the database plugin may return, so a title of any accepted size is
 /// readable under every profile. Every piece is read only while the
-/// holding's `share_digest` is still `digest`, the one the caller checked.
+/// holding's `share_digest` is still `digest`, the one the caller checked,
+/// and its `updated_at` is still the one the first piece was read with.
 ///
 /// # Returns
 ///
 /// The title as the branch shared it, or `None` when the holding or its
-/// title is gone, or was shared again under another digest meanwhile.
+/// title is gone, or the holding was rewritten while it was read.
 ///
 /// # Errors
 ///
@@ -194,26 +198,39 @@ pub(crate) async fn share_title_of(
     };
     let chars = i64::try_from((cell.saturating_sub(64) / 4).max(1)).unwrap_or(i64::MAX);
     let mut out: Option<String> = None;
+    let mut version: Option<String> = None;
     let mut start: i64 = 1;
     loop {
-        let piece = holdings::Entity::find()
+        let mut query = holdings::Entity::find()
             .select_only()
             .column_as(
                 Expr::cust_with_values("substr(share_title, ?, ?)", [start, chars]),
                 "piece",
             )
+            .column(holdings::Column::UpdatedAt)
             .filter(holdings::Column::Id.eq(holding_id))
-            .filter(holdings::Column::ShareDigest.eq(digest))
+            .filter(holdings::Column::ShareDigest.eq(digest));
+        if let Some(version) = &version {
+            query = query.filter(holdings::Column::UpdatedAt.eq(version.as_str()));
+        }
+        let row = query
             .into_model::<SharePiece>()
             .one(store.db())
             .await
-            .map_err(LibraryError::Orm)?
-            .and_then(|row| row.piece);
-        // Every piece requires the digest the caller read, so a title
-        // rewritten (or removed) part way is not stitched from two versions.
-        let Some(piece) = piece else {
+            .map_err(LibraryError::Orm)?;
+        // Every piece requires the digest the caller read and the
+        // `updated_at` of the first piece. The digest leaves metadata out,
+        // so a rewrite with the same digest still advances `updated_at`:
+        // a title rewritten (or removed) part way is never stitched from
+        // two versions.
+        let Some(SharePiece {
+            piece: Some(piece),
+            updated_at,
+        }) = row
+        else {
             return Ok(None);
         };
+        version.get_or_insert(updated_at);
         let read = i64::try_from(piece.chars().count()).unwrap_or(i64::MAX);
         out.get_or_insert_with(String::new).push_str(&piece);
         if read < chars {
