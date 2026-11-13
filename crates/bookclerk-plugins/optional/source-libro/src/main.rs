@@ -6,14 +6,14 @@ use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
     serve, Bindings, Brand, CatalogCapabilities, CatalogDetailParams, CatalogHit,
-    ContentSource as ContentSourceRole, Entrypoints, ExpandCandidatesParams, FetchTitleParams,
-    HealthOk, Invocation, KvNamespace, ListDealsParams, LoginParams, LoginResult, PlainFetch,
-    PluginDescribe, PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams,
-    ScalarLimits, ScanPage, ScanParams, SearchCatalogParams, FEATURE_SCALAR_LIMITS,
-    PRODUCT_API_VERSION,
+    ContentSource as ContentSourceRole, DatabaseBinding, Entrypoints, ExpandCandidatesParams,
+    FetchTitleParams, HealthOk, Invocation, ListDealsParams, LoginParams, LoginResult, PlainFetch,
+    PluginDescribe, PluginError, PluginMigration, PluginWorker, PortalAuthMode, PurchaseHint,
+    PurchaseHintParams, ScalarLimits, ScanPage, ScanParams, SearchCatalogParams,
+    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
+use bookclerk_scan_delta::SCAN_STATE_BINDING;
 use bookclerk_storefront::abi::expand_seed_from_params;
-use bookclerk_storefront::scan_delta::SCAN_STATE_BINDING;
 use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
 use serde_json::Value;
 
@@ -55,19 +55,26 @@ impl PluginWorker for LibroRoot {
         _invocation: Invocation,
         mut bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
-        let scan_state = bindings
-            .take_named_kv(SCAN_STATE_BINDING)
-            .map(|binding| binding.kv);
+        let scan_state =
+            DatabaseBinding::take_named_from_bindings(&mut bindings, SCAN_STATE_BINDING);
         Ok(Entrypoints {
             storefront: Some(Box::new(LibroContentSource { scan_state })),
             ..Entrypoints::default()
         })
     }
+
+    async fn database_migrations(
+        &self,
+        binding: &str,
+    ) -> Result<Vec<PluginMigration>, PluginError> {
+        Ok(bookclerk_scan_delta::migrations_for(binding))
+    }
 }
 
 struct LibroContentSource {
-    /// `SCAN_STATE`, once the operator approved it: scan delta state.
-    scan_state: Option<Box<dyn KvNamespace>>,
+    /// The `SCAN_STATE` database, once the operator approved it: scan delta
+    /// state.
+    scan_state: Option<DatabaseBinding>,
 }
 
 fn internal(err: impl std::fmt::Display) -> PluginError {
@@ -100,7 +107,7 @@ impl ContentSourceRole for LibroContentSource {
 
     async fn scan(&self, params: ScanParams) -> Result<ScanPage, PluginError> {
         let base = bookclerk_plugin_source_libro::resolve_base_url(&Value::Null);
-        bookclerk_plugin_source_libro::guest_scan_page(&base, &params, self.scan_state.as_deref())
+        bookclerk_plugin_source_libro::guest_scan_page(&base, &params, self.scan_state.as_ref())
             .await
     }
 

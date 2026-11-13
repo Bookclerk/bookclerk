@@ -504,65 +504,16 @@ async fn scan_pages_walk_the_library_and_complete_on_the_last_page() {
     );
 }
 
-/// In-memory `SCAN_STATE` namespace for the delta test.
-#[derive(Default)]
-struct MemoryKv {
-    /// Stored values by key.
-    rows: std::cell::RefCell<std::collections::BTreeMap<String, Vec<u8>>>,
-}
-
-#[async_trait::async_trait(?Send)]
-impl bookclerk_plugin_sdk::KvNamespace for MemoryKv {
-    async fn get(
-        &self,
-        key: String,
-    ) -> Result<bookclerk_plugin_sdk::KvGetOk, bookclerk_plugin_sdk::PluginError> {
-        let value = self.rows.borrow().get(&key).cloned();
-        Ok(bookclerk_plugin_sdk::KvGetOk {
-            found: value.is_some(),
-            value: value.unwrap_or_default(),
-            ..Default::default()
-        })
-    }
-
-    async fn put(
-        &self,
-        key: String,
-        value: Vec<u8>,
-        _options: bookclerk_plugin_sdk::KvPutOptions,
-    ) -> Result<bookclerk_plugin_sdk::KvPutOk, bookclerk_plugin_sdk::PluginError> {
-        self.rows.borrow_mut().insert(key, value);
-        Ok(Default::default())
-    }
-
-    async fn delete(
-        &self,
-        key: String,
-    ) -> Result<bookclerk_plugin_sdk::KvDeleteOk, bookclerk_plugin_sdk::PluginError> {
-        self.rows.borrow_mut().remove(&key);
-        Ok(Default::default())
-    }
-
-    async fn list(
-        &self,
-        options: bookclerk_plugin_sdk::KvListOptions,
-    ) -> Result<bookclerk_plugin_sdk::KvListOk, bookclerk_plugin_sdk::PluginError> {
-        let keys = self
-            .rows
-            .borrow()
-            .keys()
-            .filter(|k| k.starts_with(&options.prefix))
-            .map(|key| bookclerk_plugin_sdk::KvListKey {
-                key: key.clone(),
-                ..Default::default()
-            })
-            .collect();
-        Ok(bookclerk_plugin_sdk::KvListOk {
-            keys,
-            list_complete: true,
-            cursor: String::new(),
-        })
-    }
+/// A `SCAN_STATE` database like the one a host grants, under the shipped
+/// adapters' limits.
+async fn scan_state() -> bookclerk_plugin_sdk::DatabaseBinding {
+    let unit = bookclerk_db_testkit::BindingDatabase::open(
+        bookclerk_db_testkit::Profile::FirstParty,
+        bookclerk_scan_delta::migrations(),
+    )
+    .await
+    .unwrap();
+    bookclerk_plugin_sdk::DatabaseBinding::from_session(std::sync::Arc::new(unit))
 }
 
 #[tokio::test]
@@ -606,9 +557,9 @@ async fn a_second_scan_sends_only_what_changed() {
         },
         ..bookclerk_plugin_sdk::ScanParams::default()
     };
-    let kv = MemoryKv::default();
+    let db = scan_state().await;
 
-    let full = guest_scan_page(&server.uri(), &params, Some(&kv))
+    let full = guest_scan_page(&server.uri(), &params, Some(&db))
         .await
         .unwrap();
     assert_eq!(full.books.len(), 2);
@@ -619,7 +570,7 @@ async fn a_second_scan_sends_only_what_changed() {
         sync_token: full.sync_token.clone(),
         ..params
     };
-    let delta = guest_scan_page(&server.uri(), &delta_params, Some(&kv))
+    let delta = guest_scan_page(&server.uri(), &delta_params, Some(&db))
         .await
         .unwrap();
     let sent: Vec<&str> = delta.books.iter().map(|b| b.product_id.as_str()).collect();

@@ -7,15 +7,15 @@
 use std::path::Path;
 
 use bookclerk_plugin_sdk::{
-    scan_page, FetchTitleParams, KvNamespace, LoginParams, LoginResult,
+    scan_page, DatabaseBinding, FetchTitleParams, LoginParams, LoginResult,
     PlainFetch as AbiPlainFetch, PluginError, ScanBook, ScanPage, ScanParams, SourceAccount,
     StorePage,
 };
+use bookclerk_scan_delta::ScanDelta;
 use bookclerk_storefront::abi::{
     credentials_from_bytes, credentials_to_bytes, scan_credential, store_page_cursor,
     store_page_from_cursor,
 };
-use bookclerk_storefront::scan_delta::ScanDelta;
 use bookclerk_storefront::{LoginOptions, PlainFetch};
 use serde_json::Value;
 
@@ -101,7 +101,7 @@ pub async fn guest_login_rpc(graphql_url: &str, params: LoginParams) -> Result<L
 /// RPC scan: one page of one account's full pass (the host upserts books).
 ///
 /// Chirp has no delta API, so every pass fetches the whole library. With
-/// the `SCAN_STATE` namespace, [`ScanDelta`] sends the host only titles that
+/// the `SCAN_STATE` database, [`ScanDelta`] sends the host only titles that
 /// are new or changed since the last pass, and the product ids that
 /// disappeared; without it every pass is full and ends `complete`. The SDK's
 /// [`scan_page`] helper pages the store's numbered library pages into scan
@@ -112,18 +112,18 @@ pub async fn guest_login_rpc(graphql_url: &str, params: LoginParams) -> Result<L
 /// * `graphql_url` - Chirp GraphQL endpoint.
 /// * `params` - The pass's account, credential, page size, cursor and sync
 ///   token.
-/// * `scan_state` - The `SCAN_STATE` namespace, when granted.
+/// * `scan_state` - The `SCAN_STATE` database, when granted.
 ///
 /// # Errors
 ///
 /// Returns `invalid_cursor` for a cursor or sync token this plugin cannot
-/// use, the namespace's error when scan state cannot be kept, and
+/// use, the database's error when scan state cannot be kept, and
 /// `internal` when the credential is missing or invalid or the page request
 /// fails.
 pub async fn guest_scan_page(
     graphql_url: &str,
     params: &ScanParams,
-    scan_state: Option<&dyn KvNamespace>,
+    scan_state: Option<&DatabaseBinding>,
 ) -> std::result::Result<ScanPage, PluginError> {
     let delta = &ScanDelta::open(scan_state, params).await?;
     scan_page(params, |store_cursor, _| async move {

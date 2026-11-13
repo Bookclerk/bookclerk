@@ -70,9 +70,9 @@ after every page, so a large library never has to arrive in one piece.
   a fingerprint of each book the last scan saw and passes on only the
   books that are new or changed, and the ones that left. Every seven days
   a scan passes on the whole library again.
-- That memory is the plugin's `SCAN_STATE` storage. Until you approve it
-  in the plugin's consent, these stores pass on the whole library on every
-  scan, as before.
+- That memory is the plugin's own `SCAN_STATE` database, which the
+  plugin's consent lists with its other permissions. Until you approve it,
+  these stores pass on the whole library on every scan, as before.
 - Each page is saved in a few database writes sized to what your database
   accepts, so the same scan fits Cloudflare D1's smaller limits. Books the
   library already has, as the store still describes them, are checked

@@ -64,9 +64,6 @@ description = "Override the GraphicAudio store origin (testing only)."
 [work_fs]
 
 # Fingerprints of the titles the last scan listed, so a scan sends the host
-# only what changed (see `bookclerk_storefront::scan_delta`).
-[[kv_namespaces]]
+# only what changed (see the `bookclerk-scan-delta` crate).
+[[databases]]
 binding = "SCAN_STATE"
-namespace = "scan.delta"
-max_value_bytes = 1048576
-max_keys = 100000

@@ -33,6 +33,7 @@ members = [
     "crates/bookclerk-plugin-tools",
     "crates/bookclerk-resolve",
     "crates/bookclerk-sandbox",
+    "crates/bookclerk-scan-delta",
     "crates/bookclerk-search",
     "crates/bookclerk-source",
     "crates/bookclerk-storefront",
@@ -100,6 +101,7 @@ bookclerk-storage = { path = "crates/bookclerk-storage" }
 bookclerk-library = { path = "crates/bookclerk-library" }
 bookclerk-source = { path = "crates/bookclerk-source" }
 bookclerk-storefront = { path = "crates/bookclerk-storefront" }
+bookclerk-scan-delta = { path = "crates/bookclerk-scan-delta" }
 bookclerk-resolve = { path = "crates/bookclerk-resolve" }
 bookclerk-acquire = { path = "crates/bookclerk-acquire" }
 bookclerk-naming = { path = "crates/bookclerk-naming" }

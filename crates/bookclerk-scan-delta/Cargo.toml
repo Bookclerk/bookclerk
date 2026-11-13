@@ -1,0 +1,24 @@
+[package]
+name = "bookclerk-scan-delta"
+description = "Hash-based scan deltas for first-party storefronts with no change feed, kept in the plugin's own database"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# Storefront guests link this crate: only the plugin SDK, never the host
+# stack. Its tests run against `bookclerk-db-testkit` under every profile.
+[dependencies]
+bookclerk-plugin-sdk.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+bookclerk-db-testkit.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true
