@@ -6,9 +6,10 @@
 //! scheme goes straight to the host's router: no socket is bound, so nothing
 //! else on the machine or the network can reach this host's web API.
 //!
-//! The window may only show pages from that scheme. Navigation anywhere
-//! else is refused, and the window grants the page no Tauri commands (the
-//! capability set is empty).
+//! The window shows only pages from that scheme, except while joining a
+//! library, when it shows the library's own sign-in pages until the library
+//! sends it back (the host decides: [`bookclerkd::embedded::Navigation`]).
+//! No page gets Tauri commands (the capability set is empty).
 //!
 //! The window needs the `window` feature, which needs the platform webview's
 //! development files to build; without it this binary only says so.

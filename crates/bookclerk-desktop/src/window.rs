@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use bookclerkd::embedded::{EmbeddedHost, EmbeddedOptions};
-use tauri::{RunEvent, Url, WebviewUrl, WebviewWindowBuilder};
+use bookclerkd::embedded::{EmbeddedHost, EmbeddedOptions, Navigation};
+use tauri::{Manager as _, RunEvent, Url, WebviewUrl, WebviewWindowBuilder};
 
 /// The custom scheme the web app is served on.
 const SCHEME: &str = "bookclerk";
@@ -11,14 +11,17 @@ const SCHEME: &str = "bookclerk";
 /// The name the OS log facility records for this process.
 const LOG_IDENTIFIER: &str = "bookclerk-desktop";
 
-/// The window's first page. WebView2 (Windows) only loads custom schemes
-/// as `http://<scheme>.localhost`; the other webviews take `<scheme>://`.
+/// The app's origin. WebView2 (Windows) only loads custom schemes as
+/// `http://<scheme>.localhost`; the other webviews take `<scheme>://`.
 #[cfg(windows)]
-const START_URL: &str = "http://bookclerk.localhost/";
-/// The window's first page. WebView2 (Windows) only loads custom schemes
-/// as `http://<scheme>.localhost`; the other webviews take `<scheme>://`.
+const APP_ORIGIN: &str = "http://bookclerk.localhost";
+/// The app's origin. WebView2 (Windows) only loads custom schemes as
+/// `http://<scheme>.localhost`; the other webviews take `<scheme>://`.
 #[cfg(not(windows))]
-const START_URL: &str = "bookclerk://localhost/";
+const APP_ORIGIN: &str = "bookclerk://localhost";
+
+/// The window's label.
+const WINDOW_LABEL: &str = "main";
 
 /// Starts the host, opens the window and runs until it closes.
 ///
@@ -35,9 +38,10 @@ pub fn run() -> anyhow::Result<()> {
         EmbeddedOptions::default(),
         LOG_IDENTIFIER,
     ))?);
-    let start = Url::parse(START_URL)?;
+    let start = Url::parse(&format!("{APP_ORIGIN}/"))?;
 
     let scheme_host = host.clone();
+    let navigation_host = host.clone();
     let spawner = runtime.handle().clone();
     let app = tauri::Builder::default()
         .register_asynchronous_uri_scheme_protocol(SCHEME, move |_ctx, request, responder| {
@@ -47,16 +51,21 @@ pub fn run() -> anyhow::Result<()> {
             });
         })
         .setup(move |app| {
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::CustomProtocol(start))
+            let handle = app.handle().clone();
+            WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::CustomProtocol(start))
                 .title("Bookclerk")
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(480.0, 360.0)
-                .on_navigation(|url| {
-                    let allowed = is_app_url(url);
-                    if !allowed {
-                        tracing::info!(url = %url, "window refused to navigate away from the app");
+                .on_navigation(move |url| match navigation_host.navigation(url.as_str()) {
+                    Navigation::App | Navigation::JoinSignIn => true,
+                    Navigation::JoinReturn(path_and_query) => {
+                        return_to_app(&handle, &path_and_query);
+                        false
                     }
-                    allowed
+                    Navigation::Refuse => {
+                        tracing::info!(url = %url, "window refused to navigate away from the app");
+                        false
+                    }
                 })
                 .build()?;
             Ok(())
@@ -71,19 +80,32 @@ pub fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Whether `url` is a page of the app itself (the custom scheme).
+/// Opens `path_and_query` on the app scheme: where the library's return
+/// from a join sign-in lands, so the app finishes the join.
 ///
 /// # Arguments
 ///
-/// * `url` - Where the window is about to navigate.
-///
-/// # Returns
-///
-/// `true` only for the custom scheme (or its WebView2 form on Windows).
-fn is_app_url(url: &Url) -> bool {
-    if cfg!(windows) {
-        url.scheme() == "http" && url.host_str() == Some("bookclerk.localhost")
-    } else {
-        url.scheme() == SCHEME && url.host_str() == Some("localhost")
+/// * `handle` - The running app.
+/// * `path_and_query` - The return path and its query (code and state).
+fn return_to_app(handle: &tauri::AppHandle, path_and_query: &str) {
+    let target = match Url::parse(&format!("{APP_ORIGIN}{path_and_query}")) {
+        Ok(target) => target,
+        Err(err) => {
+            tracing::warn!(error = %err, "join return address is not a valid app URL");
+            return;
+        }
+    };
+    let window_handle = handle.clone();
+    // Navigating from inside the navigation callback would re-enter the
+    // webview; do it on the next turn of the main loop instead.
+    let queued = handle.run_on_main_thread(move || {
+        if let Some(window) = window_handle.get_webview_window(WINDOW_LABEL) {
+            if let Err(err) = window.navigate(target) {
+                tracing::warn!(error = %err, "could not return the window to the app");
+            }
+        }
+    });
+    if let Err(err) = queued {
+        tracing::warn!(error = %err, "could not queue the window's return to the app");
     }
 }

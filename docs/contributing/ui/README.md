@@ -70,14 +70,35 @@ network can reach this host's web API.
 - The node API (`/api/node/...`) and the live socket (`/api/live`) are
   refused. A custom scheme cannot carry a WebSocket, so screens fall back to
   their polling timers until live updates move to a Tauri channel.
-- The window only shows pages from the scheme: navigation anywhere else is
-  refused, and the page gets no Tauri commands (the capability set is
-  empty).
+- A request a page from anywhere else sends to the scheme (its `Origin`, or
+  for a write its `Referer`, is not the app's) is refused with `403`, since
+  the host would otherwise add the operator token to it.
+- The window only shows pages from the scheme, with one exception: joining a
+  library opens the library's own sign-in pages in the window until the
+  library sends it back, and that return (to `http://localhost/join/callback`)
+  is handed to the app scheme. Navigation anywhere else is refused, and no
+  page gets Tauri commands (the capability set is empty).
+
+#### First run in the window
+
+On a fresh install the window opens on **Join your library**: the person
+enters the library's address (with its port, if it has one) and signs in on
+the library as a member, through the same join flow a server uses (see
+[Branches](../../guide/branches.md)). The library must let new branches join.
+**Host a library on this computer instead** sets up a library here, as
+`bookclerkd`'s first run does.
+
+A computer that joins from the window is a **window** of the library: it shows
+the person's books and downloads nothing. Turning on **Use this computer to
+download** in Settings → Library makes it a branch that downloads their own
+books.
 
 Not there yet: the tray, live updates over a Tauri channel, uploads (when
 they come, through the native file picker), opening external links in the
 system browser, passkeys (WebAuthn needs a real origin), impersonation (it
-needs a session cookie), and packaging. Links the host writes for other
+needs a session cookie), and packaging. Joining a library whose node API uses
+a self-signed certificate does not work from the window yet: the webview does
+not trust that certificate for the sign-in pages. Links the host writes for other
 people, such as invite links, still name `integrations.public_origin` or the
 `daemon.listen` address, which the window does not serve. Joining a library
 as a clerk finishes the next time the app starts, where `bookclerkd` restarts
