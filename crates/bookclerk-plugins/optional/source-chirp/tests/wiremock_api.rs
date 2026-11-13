@@ -168,11 +168,19 @@ async fn library_scan_returns_scan_rows() {
 
     let full = bookclerk_plugin_sdk::ScanParams {
         page_size: 1,
-        ..credentials
+        ..credentials.clone()
     };
     let first = guest_scan_page(&server.uri(), &full).await.unwrap();
     assert_eq!(first.next_cursor, "sp1.0.2");
     assert!(!first.complete);
+
+    // A credential for another account fails the call.
+    let foreign = bookclerk_plugin_sdk::ScanParams {
+        account_id: "someone-else".into(),
+        ..credentials
+    };
+    let err = guest_scan_page(&server.uri(), &foreign).await.unwrap_err();
+    assert_eq!(err.code, bookclerk_plugin_sdk::PluginErrorCode::Internal);
 }
 
 #[tokio::test]
