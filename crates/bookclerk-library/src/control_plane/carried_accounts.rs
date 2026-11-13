@@ -391,7 +391,7 @@ async fn account_secrets(
 
 /// Records that `accounts` were sent to the branch `node_id`
 /// (`account_shares`, direction [`SHARE_SENT`]), in atomic batches of at
-/// most 20 accounts; a repeat refreshes the time.
+/// most 13 accounts; a repeat refreshes the time.
 ///
 /// # Errors
 ///
@@ -408,6 +408,13 @@ pub async fn record_accounts_sent(
 /// branch, [`link_peer`] for a library this install offered them to), as
 /// [`record_accounts_sent`] does.
 ///
+/// Sending an account to a library again also forgets which sign-in this
+/// install last pushed there (`account_credential_revisions.observed`),
+/// keeping the revision: the library may have forgotten its keeper in
+/// between (the account was disconnected everywhere there), so the next
+/// push pass sends the current sign-in again even when it hasn't changed,
+/// which confirms this install as the keeper anew.
+///
 /// # Errors
 ///
 /// Returns the write error.
@@ -419,10 +426,10 @@ pub async fn record_accounts_sent_to(
     if accounts.is_empty() {
         return Ok(());
     }
-    /// Accounts per batch: two statements each, so a batch stays within
+    /// Accounts per batch: three statements each, so a batch stays within
     /// the 40-statement minimum every database guest must accept
     /// (`HOST_MIN_STATEMENTS`).
-    const ACCOUNTS_PER_BATCH: usize = 20;
+    const ACCOUNTS_PER_BATCH: usize = 13;
     let now = Utc::now().to_rfc3339();
     for chunk in accounts.chunks(ACCOUNTS_PER_BATCH) {
         let mut statements = Vec::new();
@@ -434,6 +441,15 @@ pub async fn record_accounts_sent_to(
                 SHARE_SENT,
                 &now,
                 None,
+            ));
+            statements.push(batch::exec(
+                "UPDATE account_credential_revisions SET observed = 0 \
+                 WHERE plugin_key = ? AND account_id = ? AND peer = ? AND peer LIKE 'link:%'",
+                vec![
+                    batch::text(&account.plugin_key),
+                    batch::text(&account.account_id),
+                    batch::text(peer),
+                ],
             ));
         }
         let operation_id = format!("accounts-sent-{}", uuid::Uuid::new_v4());

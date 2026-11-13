@@ -275,6 +275,14 @@ async fn a_keeper_tracks_what_it_pushed_to_each_library() {
         assert_eq!(share.next_revision(&sign_in(30, 8)), Some(30), "{name}");
         assert_eq!(share.next_revision(&sign_in(12, 8)), Some(21), "{name}");
         assert_eq!(share.next_revision(&sign_in(20, 8)), Some(21), "{name}");
+        // Offered to the library again (it may have forgotten its keeper):
+        // the same sign-in is sent again, above the last revision.
+        record_accounts_sent_to(store, &link_peer("c1"), &[pushed("ana", b"")])
+            .await
+            .unwrap();
+        let share = kept_shares(store).await.unwrap().remove(0);
+        assert_eq!((share.pushed, share.observed), (20, 0), "{name}");
+        assert_eq!(share.next_revision(&sign_in(20, 7)), Some(21), "{name}");
 
         // Several shares and several secrets read in pages within the
         // profile's result limit (one row on the minimum profile).

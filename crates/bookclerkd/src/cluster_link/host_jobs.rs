@@ -1003,6 +1003,12 @@ impl OwnerWriteBack {
         Self::remember(&self.latest, account_id, &credentials);
         let sent = self.stored_here(account_id);
         if let Some(local) = &self.local {
+            // Pending until the save settles, so a job cancelled while it
+            // is in flight still retries it at its end.
+            self.pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(account_id.to_owned());
             let mut kept = local
                 .keep(&self.plugin_key, account_id, &sent, &credentials)
                 .await;
@@ -1013,13 +1019,11 @@ impl OwnerWriteBack {
                     .keep(&self.plugin_key, account_id, &sent, &credentials)
                     .await;
             }
-            if kept.is_some() {
-                let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
-                if kept == Some(KeptHere::Failed) {
-                    pending.insert(account_id.to_owned());
-                } else {
-                    pending.remove(account_id);
-                }
+            if kept != Some(KeptHere::Failed) {
+                self.pending
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(account_id);
             }
             match kept {
                 Some(KeptHere::Saved) => {
