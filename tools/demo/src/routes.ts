@@ -49,6 +49,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/auth/branch-consent", "deny"],
   ["POST", "/api/auth/branch-consent", "deny"],
   ["POST", "/api/auth/branch-consent/step-up", "deny"],
+  ["GET", "/api/auth/client-consent", "deny"],
+  ["POST", "/api/auth/client-consent", "deny"],
   ["GET", "/api/auth/mfa-policy", "allow"],
   ["PUT", "/api/auth/mfa-policy", "deny"],
   ["GET", "/api/auth/oidc/callback", "deny"],
@@ -95,6 +97,7 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["PUT", "/api/config/branches/members-books", "deny"],
   // Asking a branch for a book acquires it there: never from the demo.
   ["POST", "/api/branch-requests", "deny"],
+  ["POST", "/api/client/v1/token", "deny"],
   ["GET", "/api/config/clerks", "allow"],
   ["GET", "/api/config/cluster-consents", "allow"],
   ["POST", "/api/config/cluster-consents/approve", "deny"],
