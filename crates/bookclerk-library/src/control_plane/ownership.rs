@@ -78,7 +78,7 @@ pub async fn set_node_owner(
         let user = store
             .get_user(user_id)
             .await?
-            .ok_or_else(|| LibraryError::NotFound(format!("user {user_id}")))?;
+            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, user_id))?;
         if user.status != UserStatus::Active {
             return Err(LibraryError::Invalid(format!(
                 "user {user_id} is disabled and cannot own a node"
@@ -92,7 +92,7 @@ pub async fn set_node_owner(
         .await
         .map_err(LibraryError::Orm)?;
     if res.rows_affected == 0 {
-        return Err(LibraryError::NotFound(format!("node {node_id}")));
+        return Err(LibraryError::not_found(crate::EntityKind::Node, node_id));
     }
     load_node(store, node_id).await
 }

@@ -130,7 +130,7 @@ pub async fn set_member_may_connect_accounts(
     allowed: bool,
 ) -> Result<()> {
     if store.get_user(user_id).await?.is_none() {
-        return Err(LibraryError::NotFound(format!("user {user_id}")));
+        return Err(LibraryError::not_found(crate::EntityKind::User, user_id));
     }
     let now = Utc::now().to_rfc3339();
     let value = i64::from(allowed);
@@ -714,7 +714,7 @@ async fn import_from_peer(
     let user = store
         .get_user(user_id)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("user {user_id}")))?;
+        .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, user_id))?;
     let identity = store
         .ensure_local_portal_identity(user_id, user.display_name.as_deref())
         .await?;

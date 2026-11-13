@@ -604,8 +604,9 @@ mod tests {
             brought_connections_line(&Ok(BroughtConnections::NoPerson(3)))
                 .starts_with("3 store connection(s)")
         );
-        let failed: bookclerk_library::Result<BroughtConnections> =
-            Err(bookclerk_library::LibraryError::NotFound("user 1".into()));
+        let failed: bookclerk_library::Result<BroughtConnections> = Err(
+            bookclerk_library::LibraryError::not_found(bookclerk_library::EntityKind::User, 1),
+        );
         assert!(brought_connections_line(&failed).contains("could not be kept"));
         report_brought_connections(Ok(BroughtConnections::NoPerson(1)));
     }

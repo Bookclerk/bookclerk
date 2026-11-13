@@ -338,7 +338,7 @@ async fn active_user(store: &LibraryStore, user_id: i64) -> Result<UserRecord> {
     let user = store
         .get_user(user_id)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("user {user_id}")))?;
+        .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, user_id))?;
     if user.status != UserStatus::Active {
         return Err(LibraryError::Invalid(format!("user {user_id} is disabled")));
     }
@@ -682,7 +682,7 @@ pub async fn mint_enrollment_link(
     }
     let link = load_link(store, &link_id)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("enrollment link {link_id}")))?;
+        .ok_or_else(|| LibraryError::not_found(crate::EntityKind::EnrollmentLink, link_id))?;
     tracing::info!(
         link_id = %link.link_id,
         for_user_id,
@@ -749,7 +749,7 @@ pub async fn revoke_enrollment_link(
     link_id: &str,
 ) -> Result<EnrollmentLink> {
     let resolved = resolve(store, actor).await?;
-    let not_found = || LibraryError::NotFound(format!("enrollment link {link_id}"));
+    let not_found = || LibraryError::not_found(crate::EntityKind::EnrollmentLink, link_id);
     let link = load_link(store, link_id).await?.ok_or_else(not_found)?;
     if !resolved.covers_user(link.for_user_id) {
         return Err(not_found());
@@ -1376,7 +1376,7 @@ pub async fn revoke_node_credential(
     node_id: &str,
 ) -> Result<NodeCredential> {
     let resolved = resolve(store, actor).await?;
-    let not_found = || LibraryError::NotFound(format!("node {node_id}"));
+    let not_found = || LibraryError::not_found(crate::EntityKind::Node, node_id);
     let node = match super::load_node(store, node_id).await {
         Ok(node) => node,
         Err(LibraryError::NotFound(_)) => return Err(not_found()),

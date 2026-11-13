@@ -30,9 +30,10 @@ pub async fn emit_book_acquired(
     }
 
     let Some(book) = book else {
-        return Err(bookclerk_library::LibraryError::NotFound(format!(
-            "no book row for acquire event `{product_or_uuid}`"
-        )));
+        return Err(bookclerk_library::LibraryError::not_found(
+            bookclerk_library::EntityKind::Book,
+            product_or_uuid,
+        ));
     };
 
     let edition = library.edition_of_book(&book.uuid).await?;

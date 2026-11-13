@@ -5401,7 +5401,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: plugin `source-libro` has no pinned settings schema; install it on a node first"
+                  "error": "settings schema of plugin source-libro not found"
                 }
               }
             }
@@ -5544,7 +5544,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
                 }
               }
             }
@@ -5678,7 +5678,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: configuration plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b is not initialized"
+                  "error": "configuration of plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
                 }
               }
             }
@@ -5814,7 +5814,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
                 }
               }
             }
@@ -5996,7 +5996,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"
+                  "error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e not found"
                 }
               }
             }
@@ -6168,7 +6168,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
                 }
               }
             }
@@ -6323,7 +6323,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
                 }
               }
             }
@@ -6460,7 +6460,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"
+                  "error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e not found"
                 }
               }
             }
@@ -6619,7 +6619,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: user 42"
+                  "error": "user 42 not found"
                 }
               }
             }
@@ -7251,7 +7251,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: version source-libro 0.4.2"
+                  "error": "plugin version source-libro 0.4.2 not found"
                 }
               }
             }
@@ -10704,7 +10704,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"
+                  "error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e not found"
                 }
               }
             }
@@ -11025,7 +11025,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"
+                  "error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e not found"
                 }
               }
             }
@@ -12079,7 +12079,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: user 7"
+                  "error": "user 7 not found"
                 }
               }
             }
@@ -12238,7 +12238,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: enrollment link 5f1e2d3c4b5a69788796a5b4c3d2e1f0"
+                  "error": "enrollment link 5f1e2d3c4b5a69788796a5b4c3d2e1f0 not found"
                 }
               }
             }
@@ -14793,7 +14793,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
+                  "error": "node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c not found"
                 }
               }
             }
@@ -18518,7 +18518,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "book not found: work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b through a branch"
+                "example": "work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b on any branch not found"
               }
             }
           },

@@ -543,7 +543,10 @@ async fn first_import_rejects_an_invalid_seed() {
     .expect_err("invalid seed");
     assert!(err.to_string().contains("retention_days"), "{err}");
     let missing = load_events(&store).await.expect_err("no document");
-    assert!(missing.to_string().contains("not initialized"), "{missing}");
+    assert!(
+        matches!(&missing, crate::LibraryError::NotFound(m) if m.entity == crate::EntityKind::Configuration),
+        "{missing}"
+    );
     assert_eq!(audit_count(&store, EVENTS_NAMESPACE).await.unwrap(), 0);
     assert_eq!(change_count(&store, EVENTS_NAMESPACE).await.unwrap(), 0);
 }

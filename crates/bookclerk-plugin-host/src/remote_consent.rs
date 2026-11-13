@@ -629,7 +629,7 @@ impl From<bookclerk_library::LibraryError> for RemoteApprovalError {
     fn from(err: bookclerk_library::LibraryError) -> Self {
         use bookclerk_library::LibraryError;
         match err {
-            LibraryError::NotFound(detail) => Self::NotRequested(detail),
+            LibraryError::NotFound(detail) => Self::NotRequested(detail.to_string()),
             LibraryError::Conflict(detail) => Self::Conflict(detail),
             LibraryError::Invalid(detail) => Self::Invalid(detail),
             other => Self::Store(other.to_string()),
