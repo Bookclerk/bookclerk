@@ -2,6 +2,165 @@
 
 use thiserror::Error;
 
+/// The kind of thing a [`LibraryError::NotFound`] could not find.
+///
+/// Each variant displays as the lower-case phrase an error message uses,
+/// such as `enrollment link`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EntityKind {
+    /// A store account, keyed by plugin and account id.
+    Account,
+    /// A library title (`books` row).
+    Book,
+    /// A work of the library data model.
+    Work,
+    /// A title request (wishlist entry).
+    TitleRequest,
+    /// A user.
+    User,
+    /// A portal identity linked to a user.
+    PortalIdentity,
+    /// An operator session.
+    OperatorSession,
+    /// A registered passkey.
+    Passkey,
+    /// An OpenID Connect relying-party sign-in state.
+    OidcState,
+    /// A WebAuthn ceremony challenge.
+    WebauthnChallenge,
+    /// A cluster node.
+    Node,
+    /// A node enrollment link.
+    EnrollmentLink,
+    /// A pending join of this host to another library.
+    PendingJoin,
+    /// This cluster's identity.
+    ClusterIdentity,
+    /// A link to another library.
+    ClusterLink,
+    /// The node keys a linked library published.
+    ClusterNodeKeys,
+    /// A configuration document, by namespace.
+    Configuration,
+    /// A plugin instance.
+    PluginInstance,
+    /// A plugin deployment.
+    PluginDeployment,
+    /// A plugin instance's scheduler placement.
+    Placement,
+    /// An installed plugin version.
+    PluginVersion,
+    /// A plugin's active version pointer.
+    VersionPointer,
+    /// A plugin's pinned settings schema.
+    SettingsSchema,
+    /// A remote plugin consent.
+    RemoteConsent,
+    /// A request from a linked library.
+    BranchRequest,
+    /// A domain event on the outbox.
+    DomainEvent,
+    /// An event delivery.
+    EventDelivery,
+    /// A job.
+    Job,
+    /// A saved library filter.
+    SavedFilter,
+    /// A claim ticket.
+    ClaimTicket,
+}
+
+impl EntityKind {
+    /// The phrase an error message names this kind with.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Account => "account",
+            Self::Book => "book",
+            Self::Work => "work",
+            Self::TitleRequest => "title request",
+            Self::User => "user",
+            Self::PortalIdentity => "portal identity",
+            Self::OperatorSession => "operator session",
+            Self::Passkey => "passkey",
+            Self::OidcState => "sign-in state",
+            Self::WebauthnChallenge => "passkey challenge",
+            Self::Node => "node",
+            Self::EnrollmentLink => "enrollment link",
+            Self::PendingJoin => "pending join",
+            Self::ClusterIdentity => "cluster identity",
+            Self::ClusterLink => "library link",
+            Self::ClusterNodeKeys => "node keys of library",
+            Self::Configuration => "configuration",
+            Self::PluginInstance => "plugin instance",
+            Self::PluginDeployment => "plugin deployment",
+            Self::Placement => "placement",
+            Self::PluginVersion => "plugin version",
+            Self::VersionPointer => "active version of plugin",
+            Self::SettingsSchema => "settings schema of plugin",
+            Self::RemoteConsent => "remote plugin consent",
+            Self::BranchRequest => "request",
+            Self::DomainEvent => "event",
+            Self::EventDelivery => "event delivery",
+            Self::Job => "job",
+            Self::SavedFilter => "saved filter",
+            Self::ClaimTicket => "claim ticket",
+        }
+    }
+}
+
+impl std::fmt::Display for EntityKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What a [`LibraryError::NotFound`] could not find: the kind of row and,
+/// when the caller named one, its id.
+///
+/// Displays as `<entity> <id> not found`, or `<entity> not found` without
+/// an id, so an error body names the missing thing rather than presuming a
+/// book.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Missing {
+    /// The kind of row.
+    pub entity: EntityKind,
+    /// The id the caller asked for, when it named one.
+    pub id: Option<String>,
+}
+
+impl std::fmt::Display for Missing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.id {
+            Some(id) => write!(f, "{} {id} not found", self.entity),
+            None => write!(f, "{} not found", self.entity),
+        }
+    }
+}
+
+impl LibraryError {
+    /// A [`Self::NotFound`] for `entity` with the id `id`.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - The kind of row that is missing.
+    /// * `id` - The id that was asked for, as the caller names it.
+    #[must_use]
+    pub fn not_found(entity: EntityKind, id: impl std::fmt::Display) -> Self {
+        Self::NotFound(Missing {
+            entity,
+            id: Some(id.to_string()),
+        })
+    }
+
+    /// A [`Self::NotFound`] for `entity` without an id (a singleton, or a
+    /// lookup by something other than an id).
+    #[must_use]
+    pub const fn missing(entity: EntityKind) -> Self {
+        Self::NotFound(Missing { entity, id: None })
+    }
+}
+
 /// Result alias for [`LibraryError`].
 pub type Result<T> = std::result::Result<T, LibraryError>;
 
@@ -24,9 +183,9 @@ pub enum LibraryError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Requested book (or similar library row) was not found.
-    #[error("book not found: {0}")]
-    NotFound(String),
+    /// A requested row was not found; the payload names what and which.
+    #[error("{0}")]
+    NotFound(Missing),
 
     /// Demoting or disabling the last active administrator is refused.
     #[error("cannot demote or disable the last active administrator")]
@@ -153,7 +312,7 @@ impl From<LibraryError> for bookclerk_storefront::SourceError {
 
 #[cfg(test)]
 mod tests {
-    use super::LibraryError;
+    use super::{EntityKind, LibraryError};
     use bookclerk_plugin_abi::{LimitExceeded, PluginError};
 
     #[test]
@@ -203,5 +362,27 @@ mod tests {
             source,
             Some(LibraryError::Conflict("busy".into()).to_string())
         );
+    }
+
+    #[test]
+    fn not_found_names_the_missing_entity() {
+        assert_eq!(
+            LibraryError::not_found(EntityKind::EnrollmentLink, "5f1e").to_string(),
+            "enrollment link 5f1e not found"
+        );
+        assert_eq!(
+            LibraryError::not_found(EntityKind::User, 7).to_string(),
+            "user 7 not found"
+        );
+        assert_eq!(
+            LibraryError::missing(EntityKind::ClusterIdentity).to_string(),
+            "cluster identity not found"
+        );
+        let LibraryError::NotFound(missing) = LibraryError::not_found(EntityKind::Node, "n_1")
+        else {
+            panic!("a not-found error");
+        };
+        assert_eq!(missing.entity, EntityKind::Node);
+        assert_eq!(missing.id.as_deref(), Some("n_1"));
     }
 }

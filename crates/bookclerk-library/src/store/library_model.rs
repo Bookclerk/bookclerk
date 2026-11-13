@@ -2331,7 +2331,7 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
         else {
-            return Err(LibraryError::NotFound(format!("work {work_id}")));
+            return Err(LibraryError::not_found(crate::EntityKind::Work, work_id));
         };
         let mut am: works::ActiveModel = existing.clone().into();
         am.description = Set(enrichment.description.clone().or(existing.description));

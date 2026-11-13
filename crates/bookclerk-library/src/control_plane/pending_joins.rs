@@ -253,7 +253,7 @@ pub async fn create_pending_join(
         .await
         .map_err(LibraryError::Orm)?
         .map(PendingJoin::from)
-        .ok_or_else(|| LibraryError::NotFound("pending join".into()))
+        .ok_or_else(|| LibraryError::missing(crate::EntityKind::PendingJoin))
 }
 
 /// Reads the pending join for `state` without consuming it: its facts and

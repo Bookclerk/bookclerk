@@ -52,7 +52,7 @@ pub struct BranchRequestQueued {
         (status = 200, description = "The request was queued for the branch.", body = BranchRequestQueued),
         (status = 400, description = "The work or node id is malformed.", body = String, content_type = "text/plain", example = json!("invalid work_id")),
         (status = 401, description = "The caller is not signed in."),
-        (status = 404, description = "No branch this library trusts (or not the named one) currently lists the work.", body = String, content_type = "text/plain", example = json!("book not found: work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b through a branch")),
+        (status = 404, description = "No branch this library trusts (or not the named one) currently lists the work.", body = String, content_type = "text/plain", example = json!("work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b on any branch not found")),
         (status = 503, description = "The job queue is full; try again later.", body = String, content_type = "text/plain", example = json!("the job queue is full")),
         (status = 500, description = "The library could not be read or written.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
     ),

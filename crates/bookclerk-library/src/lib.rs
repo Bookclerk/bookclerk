@@ -81,7 +81,7 @@ pub use db_atomic::{
     db_atomic_operation_id, db_atomic_request_hash, execute_db_atomic, execute_named_atomic,
 };
 pub use email::gravatar_hash;
-pub use error::{LibraryError, Result};
+pub use error::{EntityKind, LibraryError, Missing, Result};
 pub use host_schema::{
     apply_host_schema, apply_host_schema_with_batch, apply_host_schema_with_batch_opts,
     apply_host_schema_with_options, current_schema_state, current_schema_state_in,

@@ -269,9 +269,10 @@ pub async fn load_instance_config(
     instance_id: &PluginInstanceId,
 ) -> Result<InstanceConfigDocument> {
     let stored = load_stored(store, instance_id).await?.ok_or_else(|| {
-        LibraryError::NotFound(format!(
-            "configuration plugin instance {instance_id} is not initialized"
-        ))
+        LibraryError::not_found(
+            crate::EntityKind::Configuration,
+            format!("of plugin instance {instance_id}"),
+        )
     })?;
     parse_instance_config(stored)
 }
@@ -544,7 +545,7 @@ pub async fn resolve_instance_bindings(
 ) -> Result<ResolvedInstanceBindings> {
     let instance = load_plugin_instance(store, instance_id)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("plugin instance {instance_id}")))?;
+        .ok_or_else(|| LibraryError::not_found(crate::EntityKind::PluginInstance, instance_id))?;
     let document = load_instance_config(store, instance_id).await?;
     // A plugin that declares no non-secret settings needs no `[vars]`
     // binding: it spawns with an empty `CONFIG`. One that declares some

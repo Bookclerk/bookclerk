@@ -917,9 +917,7 @@ pub fn overlay_output(
 pub async fn load_output(store: &LibraryStore) -> Result<ConfigurationDocument<OutputSettingsV1>> {
     let stored = load_document(store, &DocumentKey::cluster(OUTPUT_NAMESPACE))
         .await?
-        .ok_or_else(|| {
-            LibraryError::NotFound("configuration core.output is not initialized".into())
-        })?;
+        .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Configuration, "core.output"))?;
     parse_output(stored)
 }
 

@@ -92,7 +92,7 @@ pub async fn create_plugin_instance(
     insert_instance(store.db(), actor, &id, plugin_key, display_name, None).await?;
     load_plugin_instance(store, &id)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("plugin instance {id}")))
+        .ok_or_else(|| LibraryError::not_found(crate::EntityKind::PluginInstance, id))
 }
 
 /// Inserts a node-local instance of `plugin_key` owned by `node_id` (H-2):
@@ -120,7 +120,7 @@ pub async fn create_node_local_instance(
         .map_err(LibraryError::Orm)?
         .is_none()
     {
-        return Err(LibraryError::NotFound(format!("node {node_id}")));
+        return Err(LibraryError::not_found(crate::EntityKind::Node, node_id));
     }
     let id = PluginInstanceId::mint();
     insert_instance(
@@ -134,7 +134,7 @@ pub async fn create_node_local_instance(
     .await?;
     load_plugin_instance(store, &id)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("plugin instance {id}")))
+        .ok_or_else(|| LibraryError::not_found(crate::EntityKind::PluginInstance, id))
 }
 
 /// Returns the existing instance for `plugin_key`, or inserts one.
@@ -221,9 +221,9 @@ pub async fn ensure_plugin_instance(
         {
             Ok(reply) => {
                 if super::batch::rows_affected(&reply, 2) > 0 {
-                    return load_plugin_instance(store, &id)
-                        .await?
-                        .ok_or_else(|| LibraryError::NotFound(format!("plugin instance {id}")));
+                    return load_plugin_instance(store, &id).await?.ok_or_else(|| {
+                        LibraryError::not_found(crate::EntityKind::PluginInstance, id)
+                    });
                 }
             }
             Err(err) if enrollment_contention(&err) => continue,

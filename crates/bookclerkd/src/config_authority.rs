@@ -373,8 +373,8 @@ async fn publish_events(
 async fn cluster_id_of(library: &LibraryStore) -> Result<String, Response> {
     let row = load_cluster_row(library).await.map_err(events_error)?;
     row.map(|row| row.cluster_id).ok_or_else(|| {
-        events_error(bookclerk_library::LibraryError::NotFound(
-            "cluster identity is not initialized".into(),
+        events_error(bookclerk_library::LibraryError::missing(
+            bookclerk_library::EntityKind::ClusterIdentity,
         ))
     })
 }
@@ -1141,7 +1141,7 @@ pub(crate) struct PluginInstanceCreated {
     responses(
         (status = 200, description = "The new instance.", body = PluginInstanceCreated),
         (status = 400, description = "The body is invalid.", body = ErrorMessage, example = json!({"error": "invalid plugin instance: display_name must be at most 64 bytes without control characters"})),
-        (status = 404, description = "No such plugin, or it has no pinned schema.", body = ErrorMessage, example = json!({"error": "book not found: plugin `source-libro` has no pinned settings schema; install it on a node first"})),
+        (status = 404, description = "No such plugin, or it has no pinned schema.", body = ErrorMessage, example = json!({"error": "settings schema of plugin source-libro not found"})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
@@ -1205,7 +1205,7 @@ pub(crate) struct PluginInstanceDeleted {
     responses(
         (status = 200, description = "The instance was removed.", body = PluginInstanceDeleted),
         (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage, example = json!({"error": "invalid plugin instance id: expected a UUID"})),
-        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "book not found: plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
         (status = 409, description = "The instance is a default or still deployed.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b still has deployments; set them absent and remove them first"})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
@@ -1261,7 +1261,7 @@ pub(crate) struct PluginInstanceConfigResponse {
     responses(
         (status = 200, description = "The instance's settings document (secrets as names only).", body = PluginInstanceConfigResponse),
         (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage, example = json!({"error": "invalid plugin instance id: expected a UUID"})),
-        (status = 404, description = "No such instance, or it has no document yet.", body = ErrorMessage, example = json!({"error": "book not found: configuration plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b is not initialized"})),
+        (status = 404, description = "No such instance, or it has no document yet.", body = ErrorMessage, example = json!({"error": "configuration of plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
         (status = 500, description = "The configuration could not be read.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
@@ -1278,9 +1278,10 @@ pub async fn get_plugin_instance_config(
         .await
         .map_err(events_error)?
         .ok_or_else(|| {
-            events_error(bookclerk_library::LibraryError::NotFound(format!(
-                "plugin instance {instance_id}"
-            )))
+            events_error(bookclerk_library::LibraryError::not_found(
+                bookclerk_library::EntityKind::PluginInstance,
+                &instance_id,
+            ))
         })?;
     let document = load_instance_config(&library, &instance_id)
         .await
@@ -1378,7 +1379,7 @@ pub(crate) struct PluginInstanceConfigChanged {
     responses(
         (status = 200, description = "The document after the change.", body = PluginInstanceConfigChanged),
         (status = 400, description = "The body is invalid, or a value does not fit the pinned schema.", body = ErrorMessage, example = json!({"error": "invalid configuration: secret `api_token` is empty"})),
-        (status = 404, description = "No such instance, or its plugin has no pinned schema.", body = ErrorMessage, example = json!({"error": "book not found: plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"})),
+        (status = 404, description = "No such instance, or its plugin has no pinned schema.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
         (status = 409, description = "`expected_revision` is not the current revision.", body = RevisionConflict, example = json!({"error": "revision_conflict", "current_revision": 7})),
         (status = 500, description = "The configuration could not be read or written, or a secret was not stored.", body = ErrorMessage, example = json!({"error": "document revision 8 was saved but secret `api_token` was not stored (the secret store refused the write); submit the secret again"})),
     ),
@@ -1399,9 +1400,10 @@ pub async fn put_plugin_instance_config(
         .await
         .map_err(events_error)?
         .ok_or_else(|| {
-            events_error(bookclerk_library::LibraryError::NotFound(format!(
-                "plugin instance {instance_id}"
-            )))
+            events_error(bookclerk_library::LibraryError::not_found(
+                bookclerk_library::EntityKind::PluginInstance,
+                &instance_id,
+            ))
         })?;
     let pinned = require_plugin_schema(&library, &instance.plugin_key)
         .await
@@ -1568,7 +1570,7 @@ impl utoipa::ToSchema for DeploymentConflict {
     responses(
         (status = 200, description = "The deployment after the change.", body = PluginDeploymentChanged),
         (status = 400, description = "The body is invalid.", body = ErrorMessage, example = json!({"error": "invalid configuration: desired must be `present`, `absent`, `placed`, or `unplaced`"})),
-        (status = 404, description = "No such instance or node.", body = ErrorMessage, example = json!({"error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"})),
+        (status = 404, description = "No such instance or node.", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e not found"})),
         (status = 409, description = "The instance is placed by the scheduler (an `error` message), or `expected_revision` is stale (`revision_conflict` with `current_revision`).", body = DeploymentConflict, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b is placed by the scheduler (2 replica(s) on region=eu); change it with `bookclerk plugins deploy`, or drop the placement with `bookclerk plugins deploy --manual` first"})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
@@ -1588,9 +1590,10 @@ pub async fn put_plugin_deployment(
         .await
         .map_err(events_error)?
         .ok_or_else(|| {
-            events_error(bookclerk_library::LibraryError::NotFound(format!(
-                "plugin instance {instance_id}"
-            )))
+            events_error(bookclerk_library::LibraryError::not_found(
+                bookclerk_library::EntityKind::PluginInstance,
+                &instance_id,
+            ))
         })?;
     bookclerk_library::control_plane::ensure_hand_managed(&library, &instance_id)
         .await
@@ -1610,8 +1613,9 @@ pub async fn put_plugin_deployment(
         .map_err(events_error)?
         .contains(&node_id)
     {
-        return Err(events_error(bookclerk_library::LibraryError::NotFound(
-            format!("node {node_id}"),
+        return Err(events_error(bookclerk_library::LibraryError::not_found(
+            bookclerk_library::EntityKind::Node,
+            &node_id,
         )));
     }
     let desired = bookclerk_library::control_plane::DesiredState::parse(&body.desired)
@@ -2263,7 +2267,7 @@ pub(crate) struct OwnerNodeRemoved {
         (status = 200, description = "The owner node was removed.", body = OwnerNodeRemoved),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
-        (status = 404, description = "No such node, or not one the caller administers.", body = ErrorMessage, example = json!({"error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"})),
+        (status = 404, description = "No such node, or not one the caller administers.", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e not found"})),
         (status = 409, description = "The node is still running.", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e is running; stop Bookclerk there first"})),
         (status = 400, description = "The node is this node, or a branch (revoke it instead).", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e is a branch: revoke it instead"})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
@@ -2354,7 +2358,7 @@ where
         (status = 400, description = "The body is invalid, or a budget is outside 1..=100.", body = ErrorMessage, example = json!({"error": "invalid configuration: cpu_budget_percent must be between 1 and 100"})),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "A node owner named a node they do not own (an unknown node included).", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e is not owned by this user"})),
-        (status = 404, description = "The operator named a node that does not exist.", body = ErrorMessage, example = json!({"error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"})),
+        (status = 404, description = "The operator named a node that does not exist.", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e not found"})),
         (status = 409, description = "Concurrent edits kept changing the document; retry.", body = ErrorMessage, example = json!({"error": "node.runtime for 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e kept changing; retry"})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
@@ -2429,7 +2433,7 @@ pub(crate) struct PutNodeLabels {
     responses(
         (status = 200, description = "The node after the change.", body = NodeView),
         (status = 400, description = "The body is invalid, or a label is malformed.", body = ErrorMessage, example = json!({"error": "invalid configuration: label `Region=EU` must be `name` or `name=value` using lowercase letters, digits, and `._/-` (at most 63 bytes)"})),
-        (status = 404, description = "No such node.", body = ErrorMessage, example = json!({"error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"})),
+        (status = 404, description = "No such node.", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e not found"})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
@@ -2486,7 +2490,7 @@ pub(crate) struct PutNodeOwner {
     responses(
         (status = 200, description = "The node's owner after the change.", body = NodeOwnerChanged),
         (status = 400, description = "The user is disabled and cannot own a node.", body = ErrorMessage, example = json!({"error": "user 42 is disabled and cannot own a node"})),
-        (status = 404, description = "No such node or user.", body = ErrorMessage, example = json!({"error": "book not found: user 42"})),
+        (status = 404, description = "No such node or user.", body = ErrorMessage, example = json!({"error": "user 42 not found"})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
@@ -2560,7 +2564,7 @@ pub(crate) struct PluginPlacementDeleted {
     responses(
         (status = 200, description = "The scheduler now places the instance.", body = PluginPlacementChanged),
         (status = 400, description = "The body is invalid.", body = ErrorMessage, example = json!({"error": "invalid configuration: replicas must be at most 64"})),
-        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "book not found: plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
         (status = 409, description = "`expected_revision` is not the current revision.", body = RevisionConflict, example = json!({"error": "revision_conflict", "current_revision": 7})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
@@ -2607,7 +2611,7 @@ pub async fn put_plugin_placement_route(
     responses(
         (status = 200, description = "The instance is back to manual deployment.", body = PluginPlacementDeleted),
         (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage, example = json!({"error": "invalid plugin instance id: expected a UUID"})),
-        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "book not found: plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]

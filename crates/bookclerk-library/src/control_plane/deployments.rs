@@ -255,9 +255,10 @@ pub async fn ensure_plugin_deployment(
     authorize_create(actor, desired)?;
     validate_node_id(node_id)?;
     let Some(instance) = load_plugin_instance(store, instance_id).await? else {
-        return Err(LibraryError::NotFound(format!(
-            "plugin instance {instance_id}"
-        )));
+        return Err(LibraryError::not_found(
+            crate::EntityKind::PluginInstance,
+            instance_id,
+        ));
     };
     // H-2: a node-local instance runs only on the node that owns it.
     if let Some(owner) = instance.owner_node_id.as_deref() {
@@ -288,7 +289,9 @@ pub async fn ensure_plugin_deployment(
         Ok(_) => {
             let created = load_deployment_by_id(store, &deployment_id)
                 .await?
-                .ok_or_else(|| LibraryError::NotFound(deployment_id))?;
+                .ok_or_else(|| {
+                    LibraryError::not_found(crate::EntityKind::PluginDeployment, deployment_id)
+                })?;
             notify_deployment(store, &created).await;
             Ok(created)
         }
@@ -338,7 +341,9 @@ pub async fn replace_plugin_deployment(
     }
     let current = load_deployment_by_id(store, deployment_id)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("plugin deployment {deployment_id}")))?;
+        .ok_or_else(|| {
+            LibraryError::not_found(crate::EntityKind::PluginDeployment, deployment_id)
+        })?;
     if current.revision != expected_revision {
         if let Some(outcome) = existing_receipt(store, operation_id, &request_hash).await? {
             return Ok(outcome);
@@ -464,7 +469,9 @@ pub async fn replace_plugin_deployment(
     }
     let stored = load_deployment_by_id(store, deployment_id)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(deployment_id.to_string()))?;
+        .ok_or_else(|| {
+            LibraryError::not_found(crate::EntityKind::PluginDeployment, deployment_id)
+        })?;
     if stored.revision == next_revision {
         notify_deployment(store, &stored).await;
         Ok(DeploymentReplace::Applied(stored))
@@ -597,7 +604,9 @@ pub async fn delete_plugin_deployment(
 ) -> Result<()> {
     let current = load_deployment_by_id(store, deployment_id)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("plugin deployment {deployment_id}")))?;
+        .ok_or_else(|| {
+            LibraryError::not_found(crate::EntityKind::PluginDeployment, deployment_id)
+        })?;
     authorize_replace(actor, current.desired)?;
     if current.desired.runs() {
         return Err(LibraryError::Conflict(format!(

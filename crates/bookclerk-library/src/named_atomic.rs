@@ -113,7 +113,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
         unit_from_atomic(
             self.call(DbAtomicParams::DeleteUser { user_id: id })
                 .await?,
-            format!("user {id}"),
+            LibraryError::not_found(crate::EntityKind::User, id),
         )
     }
 
@@ -124,7 +124,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
                 status: status.as_str().to_string(),
             })
             .await?,
-            format!("user {id}"),
+            LibraryError::not_found(crate::EntityKind::User, id),
         )
     }
 
@@ -139,7 +139,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
                 password_hash: password_hash.map(str::to_string),
             })
             .await?,
-            format!("user {id}"),
+            LibraryError::not_found(crate::EntityKind::User, id),
         )
     }
 
@@ -150,7 +150,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
                 role: role.as_str().to_string(),
             })
             .await?,
-            format!("user {id}"),
+            LibraryError::not_found(crate::EntityKind::User, id),
         )
     }
 
@@ -190,7 +190,10 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
         if result.status == atomic_status::EMPTY {
             return Ok(None);
         }
-        if let Some(err) = app_err(&result.status, "oidc rp state".into()) {
+        if let Some(err) = app_err(
+            &result.status,
+            LibraryError::missing(crate::EntityKind::OidcState),
+        ) {
             return Err(err);
         }
         let row: AtomicOidcRpState = decode_payload(result.payload, "oidc rp state")?;
@@ -217,7 +220,10 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
         if result.status == atomic_status::EMPTY {
             return Ok(None);
         }
-        if let Some(err) = app_err(&result.status, "webauthn challenge".into()) {
+        if let Some(err) = app_err(
+            &result.status,
+            LibraryError::missing(crate::EntityKind::WebauthnChallenge),
+        ) {
             return Err(err);
         }
         let row: AtomicWebauthnChallenge = decode_payload(result.payload, "webauthn challenge")?;
@@ -269,7 +275,10 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
         if result.status == atomic_status::EMPTY {
             return Ok(None);
         }
-        if let Some(err) = app_err(&result.status, "job".into()) {
+        if let Some(err) = app_err(
+            &result.status,
+            LibraryError::missing(crate::EntityKind::Job),
+        ) {
             return Err(err);
         }
         decode_payload(result.payload, "job").map(Some)
@@ -292,7 +301,10 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
             .await?;
         // The plan answers `notFound` when the reservation would push the
         // job over its scratch quota.
-        match app_err(&result.status, String::new()) {
+        match app_err(
+            &result.status,
+            LibraryError::missing(crate::EntityKind::Job),
+        ) {
             None => Ok(()),
             Some(LibraryError::NotFound(_)) => Err(LibraryError::Other(anyhow::anyhow!(
                 "acquire scratch quota exceeded"
@@ -308,7 +320,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
     ) -> Result<()> {
         unit_from_atomic(
             self.call(confirm_totp_params(user_id, record)).await?,
-            "user".into(),
+            LibraryError::missing(crate::EntityKind::User),
         )
     }
 
@@ -316,7 +328,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
         unit_from_atomic(
             self.call(DbAtomicParams::DisableUserTotp { user_id })
                 .await?,
-            "user".into(),
+            LibraryError::missing(crate::EntityKind::User),
         )
     }
 
@@ -388,7 +400,10 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
                 ordering_key: event.ordering_key,
             })
             .await?;
-        unit_from_atomic(result, format!("book {book_uuid}"))
+        unit_from_atomic(
+            result,
+            LibraryError::not_found(crate::EntityKind::Book, book_uuid),
+        )
     }
 
     async fn dispatch_event_deliveries(
@@ -408,7 +423,10 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
                 },
             )
             .await?;
-        if let Some(err) = app_err(&result.status, format!("event {event_id}")) {
+        if let Some(err) = app_err(
+            &result.status,
+            LibraryError::not_found(crate::EntityKind::DomainEvent, event_id),
+        ) {
             return Err(err);
         }
         let created = result
@@ -471,7 +489,10 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
         if result.status == atomic_status::EMPTY {
             return Ok(None);
         }
-        if let Some(err) = app_err(&result.status, "event delivery".into()) {
+        if let Some(err) = app_err(
+            &result.status,
+            LibraryError::missing(crate::EntityKind::EventDelivery),
+        ) {
             return Err(err);
         }
         decode_payload(result.payload, "event delivery").map(Some)

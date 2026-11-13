@@ -414,7 +414,7 @@ pub async fn record_remote_plugin_request(
         .await?;
     load_remote_plugin_consent(store, cluster_id, plugin_key)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("remote plugin consent {plugin_key}")))
+        .ok_or_else(|| LibraryError::not_found(crate::EntityKind::RemoteConsent, plugin_key))
 }
 
 /// Who gives an approval.
@@ -489,10 +489,13 @@ pub async fn approve_remote_plugin(
     let Some(existing) =
         load_remote_plugin_consent(store, approval.cluster_id, approval.plugin_key).await?
     else {
-        return Err(LibraryError::NotFound(format!(
-            "no request from cluster {} for plugin {}",
-            approval.cluster_id, approval.plugin_key
-        )));
+        return Err(LibraryError::not_found(
+            crate::EntityKind::RemoteConsent,
+            format!(
+                "{} from library {}",
+                approval.plugin_key, approval.cluster_id
+            ),
+        ));
     };
     let automatic = matches!(approval.approver, RemoteApprover::Platform);
     if automatic && existing.is_revoked() {
@@ -598,7 +601,7 @@ pub async fn approve_remote_plugin(
     load_remote_plugin_consent(store, approval.cluster_id, approval.plugin_key)
         .await?
         .ok_or_else(|| {
-            LibraryError::NotFound(format!("remote plugin consent {}", approval.plugin_key))
+            LibraryError::not_found(crate::EntityKind::RemoteConsent, approval.plugin_key)
         })
 }
 

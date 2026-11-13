@@ -674,7 +674,9 @@ pub async fn record_cluster_link(
     }
     load_cluster_link(store, &link.owner_cluster_id)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("cluster link {}", link.owner_cluster_id)))
+        .ok_or_else(|| {
+            LibraryError::not_found(crate::EntityKind::ClusterLink, &link.owner_cluster_id)
+        })
 }
 
 /// Every cluster link, oldest enrollment first.
@@ -741,7 +743,7 @@ pub async fn load_cluster_link_keys(
     )
     .await?
     .ok_or_else(|| {
-        LibraryError::NotFound(format!("node keys of cluster {}", link.owner_cluster_id))
+        LibraryError::not_found(crate::EntityKind::ClusterNodeKeys, &link.owner_cluster_id)
     })?;
     let plaintext = Zeroizing::new(unseal_secret(&record)?);
     if plaintext.len() != 2 * KEY_LEN {
