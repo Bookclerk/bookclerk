@@ -13676,6 +13676,137 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
+    "/api/config/join/window": {
+      "get": {
+        "tags": [
+          "Cluster"
+        ],
+        "summary": "`GET /api/config/join/window`: the window view for the operator or an\nOwner: the books every library this install is a window of holds for\nthis install's person, merged by work (`{clusters, books}`).",
+        "operationId": "get_join_window",
+        "responses": {
+          "200": {
+            "description": "The libraries this install is a window of, and their books for its person.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WindowBooks"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorAnswer"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The user is not an active Owner.",
+                    "value": {
+                      "error": "forbidden"
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "no_user": {
+                    "summary": "The session has no user account.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library database could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
     "/api/config/join/connections": {
       "post": {
         "tags": [
@@ -28524,7 +28655,8 @@
           "include_branches",
           "work_for_members",
           "keep_member_copies",
-          "list_members_books"
+          "list_members_books",
+          "download"
         ],
         "properties": {
           "cluster_id": {
@@ -28599,6 +28731,11 @@
           "list_members_books": {
             "type": "boolean",
             "description": "\"List my members' books to the library\": the library's catalog\nlookups are answered with members' books (except those who opted\nout) as well as the owner's.",
+            "example": true
+          },
+          "download": {
+            "type": "boolean",
+            "description": "\"Use this computer to download\": the link takes the library's jobs\nand runs its plugins here. Off makes this install a window of the\nlibrary: no jobs, no plugins, and the books the library holds for\nthis install's person are shown instead.",
             "example": true
           },
           "running": {
@@ -37900,6 +38037,14 @@
             ],
             "description": "\"Keep copies of other members' books\": also write a book acquired\nhere for another member to this install's own destinations. Absent\nor `null` keeps the stored setting.",
             "example": false
+          },
+          "download": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "\"Use this computer to download\": off makes this install a window of\nthe library (it runs none of the library's work and shows the books\nthe library holds for its person instead). Absent or `null` keeps\nthe stored setting.",
+            "example": true
           }
         },
         "additionalProperties": false
@@ -40114,6 +40259,164 @@
             ],
             "description": "Always `true` when `email` is present: Bookclerk trusts the address the Owner recorded.",
             "example": true
+          }
+        }
+      },
+      "WindowBooks": {
+        "type": "object",
+        "description": "JSON body for `GET /api/config/join/window`.",
+        "required": [
+          "clusters",
+          "books"
+        ],
+        "properties": {
+          "clusters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClusterLinkView"
+            },
+            "description": "The libraries this install is a window of (active links with \"Use\nthis computer to download\" off)."
+          },
+          "books": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WindowEntryView"
+            },
+            "description": "Their books for this install's person, one entry per work, by title."
+          }
+        }
+      },
+      "WindowEditionView": {
+        "type": "object",
+        "description": "One edition in [`WindowBooks`], and the library that holds it.",
+        "required": [
+          "cluster_id",
+          "owner_origin",
+          "store",
+          "marketplace",
+          "product_id",
+          "formats",
+          "title"
+        ],
+        "properties": {
+          "cluster_id": {
+            "type": "string",
+            "description": "The library (owner cluster id) that holds it for this install's person.",
+            "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
+          },
+          "owner_origin": {
+            "type": "string",
+            "description": "The library's origin.",
+            "example": "https://books.example.com"
+          },
+          "store": {
+            "type": "string",
+            "description": "The store's plain id.",
+            "example": "audible"
+          },
+          "marketplace": {
+            "type": "string",
+            "description": "Lower-cased store marketplace; empty when the store has none.",
+            "example": "us"
+          },
+          "product_id": {
+            "type": "string",
+            "description": "The store's product id.",
+            "example": "B0EXAMPLE1"
+          },
+          "formats": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Formats that library has (`audio`, `pdf`); empty when unknown.",
+            "example": [
+              "audio"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "description": "The edition's title.",
+            "example": "A Title"
+          },
+          "subtitle": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Subtitle, when known.",
+            "example": "A Novel"
+          },
+          "authors": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Authors as one display string, when known.",
+            "example": "Ann Author"
+          },
+          "narrators": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Narrators as one display string, when known.",
+            "example": "Ned Narrator"
+          },
+          "series": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Series name, when known.",
+            "example": "The Series"
+          },
+          "series_index": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Position in the series, when known.",
+            "example": "2"
+          },
+          "length_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Length in minutes, when known.",
+            "example": 600
+          }
+        }
+      },
+      "WindowEntryView": {
+        "type": "object",
+        "description": "One work in [`WindowBooks`]: every edition its libraries hold for the person.",
+        "required": [
+          "key",
+          "editions"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "A key that stays the same while the entry's editions do.",
+            "example": "work:0b8f2c1e-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+          },
+          "work_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The work of this install's own library the entry was placed on, by\nidentifier; absent when none was.",
+            "example": "0b8f2c1e-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+          },
+          "editions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WindowEditionView"
+            },
+            "description": "The editions, in library then store order; the first names the entry."
           }
         }
       },

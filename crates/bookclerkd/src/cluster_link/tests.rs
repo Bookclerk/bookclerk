@@ -4406,7 +4406,7 @@ async fn departed_libraries_lose_their_plugin_state() {
     );
 
     let links = list_cluster_links(&store).await.unwrap();
-    super::purge_departed_link_state(&state, &links).await;
+    super::purge_departed_link_state(&state, &store, &links).await;
     assert!(
         !state_dir("cluster-left").exists(),
         "a departed library's state goes"
@@ -4415,4 +4415,72 @@ async fn departed_libraries_lose_their_plugin_state() {
         state_dir("cluster-kept").join("plugin").exists(),
         "an active library's state stays"
     );
+}
+
+/// "Use this computer to download" off makes the link a window: the
+/// consented plugin is withdrawn, the owner sees the deployment as an
+/// error naming window mode, and no job is claimed until the setting is on
+/// again.
+#[tokio::test]
+async fn a_window_link_runs_no_owner_plugin_until_it_downloads_again() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let host_files = tempfile::tempdir().unwrap();
+    let (state, owner) = crate::node_api::tests::test_state(&owner_files).await;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    let origin = public_origin(&state, &format!("http://127.0.0.1:{}", addr.port())).await;
+    let host = host_store(host_files.path()).await;
+    let (admin, _token) =
+        owner_account_as(&owner, b"riley-token-v1", UserRole::Administrator).await;
+    let link = join(&owner, &host, admin, &origin, None).await.unwrap();
+    let node_id = link.remote_node_id.clone();
+    let cluster_id = link.owner_cluster_id.clone();
+    let deployed = deploy_store(&owner, owner_files.path(), &node_id).await;
+    let first = enqueue_scan(&owner).await;
+    let transport = EchoTransport::default();
+    let (handle, _stop) = start_client(
+        &host,
+        host_files.path(),
+        link,
+        transport.clone(),
+        Duration::from_millis(200),
+    )
+    .await;
+    connected(&handle, 1).await;
+    approve_store(&host, &cluster_id).await;
+    eventually("the scan to finish on the host", || async {
+        job(&owner, &first).await.state == JobState::Succeeded
+    })
+    .await;
+
+    assert!(
+        bookclerk_library::control_plane::set_cluster_link_download(&host, &cluster_id, false)
+            .await
+            .unwrap()
+    );
+    notify_consent_changed();
+    eventually("the owner to see window mode", || async {
+        observed(&owner, &deployed, &node_id)
+            .await
+            .is_some_and(|seen| {
+                seen.status == DeploymentStatus::Error
+                    && seen.detail == super::consent::WINDOW_MODE_DETAIL
+            })
+    })
+    .await;
+    assert!(handle.consented_plugins().is_empty());
+    let second = enqueue_scan(&owner).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(job(&owner, &second).await.state, JobState::Pending);
+    assert_eq!(transport.runs().len(), 1, "a window claims nothing");
+
+    bookclerk_library::control_plane::set_cluster_link_download(&host, &cluster_id, true)
+        .await
+        .unwrap();
+    notify_consent_changed();
+    eventually(
+        "the second scan to finish once it downloads again",
+        || async { job(&owner, &second).await.state == JobState::Succeeded },
+    )
+    .await;
 }
