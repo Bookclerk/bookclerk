@@ -112,8 +112,11 @@ operator, a household user, or a portal identity) has a **subject key**
    Finished flags, ratings and tags come from each user's own state on the
    work (`user_title_state`): a person's own books carry theirs, and
    household books carry everyone's merged (finished when anyone finished
-   it, each rating the mean of those who gave one). A portal visitor with
-   no user has no stored state. A per-person taste profile stored between
+   it, each rating the mean of those who gave one). A work a person
+   finished, rated or tagged counts as one of their own books, so a user
+   with no portal identity or linked store account still gets a taste of
+   their own once they have any. A portal visitor with no user has no
+   stored state. A per-person taste profile stored between
    jobs, so a job no longer reads the whole library at all, is planned for
    the rest of the book model's step 6.
 
