@@ -120,9 +120,7 @@ async fn empty_library_scan_returns_no_books() {
         .await;
 
     let credentials = host_credentials("9", &stored_auth("9", "a@ex.com"));
-    let page = guest_scan_page(&server.uri(), &credentials, 1)
-        .await
-        .unwrap();
+    let page = guest_scan_page(&server.uri(), &credentials).await.unwrap();
     assert!(page.books.is_empty());
     assert!(page.complete && page.next_cursor.is_empty());
 }
@@ -161,9 +159,7 @@ async fn library_scan_returns_scan_rows() {
         .await;
 
     let credentials = host_credentials("9", &stored_auth("9", "a@ex.com"));
-    let page = guest_scan_page(&server.uri(), &credentials, 1)
-        .await
-        .unwrap();
+    let page = guest_scan_page(&server.uri(), &credentials).await.unwrap();
     // One item on a 20-item page is the last page.
     assert!(page.complete && page.next_cursor.is_empty());
     assert_eq!(page.books.len(), 1);
@@ -172,11 +168,19 @@ async fn library_scan_returns_scan_rows() {
 
     let full = bookclerk_plugin_sdk::ScanParams {
         page_size: 1,
+        ..credentials.clone()
+    };
+    let first = guest_scan_page(&server.uri(), &full).await.unwrap();
+    assert_eq!(first.next_cursor, "sp1.0.2");
+    assert!(!first.complete);
+
+    // A credential for another account fails the call.
+    let foreign = bookclerk_plugin_sdk::ScanParams {
+        account_id: "someone-else".into(),
         ..credentials
     };
-    let first = guest_scan_page(&server.uri(), &full, 1).await.unwrap();
-    assert_eq!(first.next_cursor, "page:2");
-    assert!(!first.complete);
+    let err = guest_scan_page(&server.uri(), &foreign).await.unwrap_err();
+    assert_eq!(err.code, bookclerk_plugin_sdk::PluginErrorCode::Internal);
 }
 
 #[tokio::test]

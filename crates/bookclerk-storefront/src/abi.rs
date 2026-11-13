@@ -441,33 +441,34 @@ pub fn rfc3339(at: chrono::DateTime<chrono::Utc>) -> String {
     at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
 }
 
-/// Prefix of the page-number scan cursor storefronts with numbered pages use.
-const PAGE_CURSOR_PREFIX: &str = "page:";
-
-/// Store page a scan page-number cursor names: page 1 for the empty cursor a
-/// pass starts with, otherwise the page [`page_cursor`] wrote.
+/// Store page a numbered store cursor names: page 1 for the empty store
+/// cursor that starts a pass, otherwise the page [`store_page_cursor`] wrote.
+///
+/// Storefronts with numbered library pages hand this to the SDK's
+/// `scan_page` helper as their own store cursor; the helper wraps it in the
+/// scan cursor the host sees.
 ///
 /// # Errors
 ///
-/// Returns an `invalid_cursor` [`abi::PluginError`] when the cursor is not
-/// one [`page_cursor`] wrote (a page below 2 included), so the host restarts
-/// the pass.
-pub fn page_from_cursor(cursor: &str) -> Result<u32, abi::PluginError> {
-    if cursor.is_empty() {
+/// Returns an `invalid_cursor` [`abi::PluginError`] when the store cursor is
+/// not one [`store_page_cursor`] wrote (a page below 2 included), so the
+/// host restarts the pass.
+pub fn store_page_from_cursor(store_cursor: &str) -> Result<u32, abi::PluginError> {
+    if store_cursor.is_empty() {
         return Ok(1);
     }
-    cursor
-        .strip_prefix(PAGE_CURSOR_PREFIX)
+    Some(store_cursor)
         .filter(|digits| !digits.starts_with('0') && digits.bytes().all(|b| b.is_ascii_digit()))
         .and_then(|digits| digits.parse::<u32>().ok())
         .filter(|page| *page >= 2)
-        .ok_or_else(|| abi::PluginError::invalid_cursor("not a page cursor this plugin wrote"))
+        .ok_or_else(|| abi::PluginError::invalid_cursor("not a store page this plugin wrote"))
 }
 
-/// Cursor naming store page `page`, read back by [`page_from_cursor`].
+/// Store cursor naming the store page after this one, read back by
+/// [`store_page_from_cursor`]; empty when `next` is `None` (the last page).
 #[must_use]
-pub fn page_cursor(page: u32) -> String {
-    format!("{PAGE_CURSOR_PREFIX}{page}")
+pub fn store_page_cursor(next: Option<u32>) -> String {
+    next.map(|page| page.to_string()).unwrap_or_default()
 }
 
 /// The pass's credential document, checked against the account it scans.
@@ -484,28 +485,6 @@ pub fn scan_credential(params: &abi::ScanParams) -> crate::Result<serde_json::Va
         )));
     }
     credentials_from_bytes(&params.credential.credentials)
-}
-
-/// One page of a full pass: the pass is complete once no page follows.
-///
-/// Storefronts without a delta API list every title on every pass, so the
-/// last page of a pass always says `complete` and leaves `syncToken` empty.
-#[must_use]
-pub fn full_pass_page(
-    books: Vec<abi::ScanBook>,
-    next_cursor: Option<String>,
-    store_pages: u32,
-) -> abi::ScanPage {
-    let next_cursor = next_cursor.unwrap_or_default();
-    abi::ScanPage {
-        books,
-        removed: Vec::new(),
-        complete: next_cursor.is_empty(),
-        next_cursor,
-        sync_token: String::new(),
-        store_pages,
-        refreshed_credentials: None,
-    }
 }
 
 /// Encodes a credential document as the opaque bytes the ABI carries.
@@ -681,22 +660,17 @@ mod tests {
     }
 
     #[test]
-    fn page_cursors_round_trip_and_refuse_foreign_text() {
-        assert_eq!(page_from_cursor(""), Ok(1));
+    fn store_page_cursors_round_trip_and_refuse_foreign_text() {
+        assert_eq!(store_page_from_cursor(""), Ok(1));
+        assert_eq!(store_page_cursor(None), "");
         for page in [2, 3, 1000, u32::MAX] {
-            assert_eq!(page_from_cursor(&page_cursor(page)), Ok(page));
+            assert_eq!(
+                store_page_from_cursor(&store_page_cursor(Some(page))),
+                Ok(page)
+            );
         }
-        for bad in [
-            "page:1",
-            "page:0",
-            "page:02",
-            "page:",
-            "page:x",
-            "2",
-            "page:-3",
-            "page:4294967296",
-        ] {
-            let err = page_from_cursor(bad).expect_err(bad);
+        for bad in ["1", "0", "02", "x", "page:2", "-3", "+3", "4294967296"] {
+            let err = store_page_from_cursor(bad).expect_err(bad);
             assert_eq!(err.code, abi::PluginErrorCode::InvalidCursor, "{bad}");
         }
     }
@@ -717,16 +691,6 @@ mod tests {
         params.account_id = String::new();
         params.credential.account_id = String::new();
         assert!(scan_credential(&params).is_err());
-    }
-
-    #[test]
-    fn full_pass_pages_complete_on_the_last_page() {
-        let middle = full_pass_page(Vec::new(), Some(page_cursor(2)), 1);
-        assert!(!middle.complete);
-        assert_eq!(middle.next_cursor, "page:2");
-        let last = full_pass_page(Vec::new(), None, 1);
-        assert!(last.complete);
-        assert!(last.next_cursor.is_empty() && last.sync_token.is_empty());
     }
 
     #[test]

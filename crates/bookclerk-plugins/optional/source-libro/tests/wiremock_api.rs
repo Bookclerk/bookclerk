@@ -416,7 +416,7 @@ async fn guest_scan_and_fetch_title_use_host_credentials() {
         ..bookclerk_plugin_sdk::ScanParams::default()
     };
 
-    let page = guest_scan_page(&server.uri(), &params, 1).await.unwrap();
+    let page = guest_scan_page(&server.uri(), &params).await.unwrap();
     assert!(page.complete);
     assert!(page.next_cursor.is_empty());
     assert_eq!(page.store_pages, 1);
@@ -469,19 +469,33 @@ async fn scan_pages_walk_the_library_and_complete_on_the_last_page() {
         ..bookclerk_plugin_sdk::ScanParams::default()
     };
 
-    let first = guest_scan_page(&server.uri(), &params, 1).await.unwrap();
+    let first = guest_scan_page(&server.uri(), &params).await.unwrap();
     assert_eq!(first.books[0].product_id, "9780000000001");
-    assert_eq!(first.next_cursor, "page:2");
+    assert_eq!(first.next_cursor, "sp1.0.2");
     assert!(!first.complete);
-    let page = bookclerk_storefront::abi::page_from_cursor(&first.next_cursor).unwrap();
-    let last = guest_scan_page(&server.uri(), &params, page).await.unwrap();
+    let second = bookclerk_plugin_sdk::ScanParams {
+        cursor: first.next_cursor.clone(),
+        ..params.clone()
+    };
+    let last = guest_scan_page(&server.uri(), &second).await.unwrap();
     assert_eq!(last.books[0].product_id, "9780000000002");
     assert!(last.next_cursor.is_empty());
     assert!(last.complete);
 
     let foreign = bookclerk_plugin_sdk::ScanParams {
         account_id: "someone-else".into(),
+        ..params.clone()
+    };
+    assert!(guest_scan_page(&server.uri(), &foreign).await.is_err());
+
+    // The old page-number cursor of a pass in progress restarts the pass.
+    let stale = bookclerk_plugin_sdk::ScanParams {
+        cursor: "page:2".into(),
         ..params
     };
-    assert!(guest_scan_page(&server.uri(), &foreign, 1).await.is_err());
+    let err = guest_scan_page(&server.uri(), &stale).await.unwrap_err();
+    assert_eq!(
+        err.code,
+        bookclerk_plugin_sdk::PluginErrorCode::InvalidCursor
+    );
 }

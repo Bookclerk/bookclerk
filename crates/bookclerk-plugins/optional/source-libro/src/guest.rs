@@ -7,11 +7,12 @@
 use std::path::Path;
 
 use bookclerk_plugin_sdk::{
-    FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch, ScanPage, ScanParams,
-    SourceAccount,
+    scan_page, FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch,
+    PluginError, ScanPage, ScanParams, SourceAccount, StorePage,
 };
 use bookclerk_storefront::abi::{
-    credentials_from_bytes, credentials_to_bytes, full_pass_page, page_cursor, scan_credential,
+    credentials_from_bytes, credentials_to_bytes, scan_credential, store_page_cursor,
+    store_page_from_cursor,
 };
 use bookclerk_storefront::{LoginOptions, PlainFetch};
 use chrono::{Duration, TimeZone, Utc};
@@ -107,20 +108,49 @@ pub async fn guest_login_rpc(base_url: &str, params: LoginParams) -> Result<Logi
 /// RPC scan: one page of one account's full pass (the host upserts books).
 ///
 /// Libro.fm has no delta API, so every pass lists the whole library and
-/// ends `complete`.
+/// ends `complete`. The SDK's [`scan_page`] helper pages the store's
+/// numbered library pages into scan replies.
 ///
 /// # Arguments
 ///
 /// * `base_url` - Libro.fm API base URL.
 /// * `params` - The pass's account, credential and cursor.
-/// * `page` - The store page the cursor names
-///   ([`bookclerk_storefront::abi::page_from_cursor`]).
+///
+/// # Errors
+///
+/// Returns `invalid_cursor` for a cursor this plugin did not write, and
+/// `internal` when the credential is missing or invalid or the page request
+/// fails.
+pub async fn guest_scan_page(
+    base_url: &str,
+    params: &ScanParams,
+) -> std::result::Result<ScanPage, PluginError> {
+    scan_page(params, |store_cursor, _| async move {
+        let page = store_page_from_cursor(&store_cursor)?;
+        let (books, next) = fetch_scan_page(base_url, params, page)
+            .await
+            .map_err(|err| PluginError::internal(err.to_string()))?;
+        Ok(StorePage {
+            books,
+            next: store_page_cursor(next),
+            complete: true,
+            ..StorePage::default()
+        })
+    })
+    .await
+}
+
+/// Fetches one numbered library page with the pass's credential.
 ///
 /// # Errors
 ///
 /// Returns an error when the credential is missing or invalid, or the page
 /// request fails.
-pub async fn guest_scan_page(base_url: &str, params: &ScanParams, page: u32) -> Result<ScanPage> {
+async fn fetch_scan_page(
+    base_url: &str,
+    params: &ScanParams,
+    page: u32,
+) -> Result<(Vec<bookclerk_plugin_sdk::ScanBook>, Option<u32>)> {
     let creds = scan_credential(params).map_err(|e| LibroError::auth(e.to_string()))?;
     let auth: LibroAuthFile = serde_json::from_value(creds).map_err(|e| {
         LibroError::auth(format!(
@@ -129,9 +159,7 @@ pub async fn guest_scan_page(base_url: &str, params: &ScanParams, page: u32) -> 
         ))
     })?;
     let client = LibroClient::new(base_url).with_token(&auth.access_token);
-    let (books, next) =
-        fetch_account_page(&client, &params.account_id, &auth.marketplace, page).await?;
-    Ok(full_pass_page(books, next.map(page_cursor), 1))
+    fetch_account_page(&client, &params.account_id, &auth.marketplace, page).await
 }
 
 /// Download one title into `cache_dir` using host-injected credentials.
