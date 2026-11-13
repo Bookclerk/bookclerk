@@ -259,7 +259,7 @@ Rust dependency caches use three shared keys. Each is saved by one job on
 - **`lint`**: saved by `check`.
 - **`debug`**: saved by `test` on Linux (its first part), by `native-gateway` on Windows
   and by the [macOS job](#macos-job) on macOS. Restored by `e2e`,
-  `confinement`, `tray`, `postgres` and `windows-cluster`.
+  `confinement`, `tray`, `desktop`, `postgres` and `windows-cluster`.
 - **`release`**: saved by `release` (the job that also runs the
   envelope), once per LTO mode (see [Release build](#release-build)).
 
@@ -511,6 +511,7 @@ when a step matches no test. Name such tests `postgres_*`.
 | `sandbox + jailed tiers` (Linux; Windows in the [queue](#platform-legs-in-the-merge-queue)) | sandbox, jail, media or media-worker is affected | Clippy and enforcement tests (Windows `--test-threads=1`) |
 | `native-behind-workerd gateway` (Linux; Windows in the queue) | See [the gateway job](#native-behind-workerd-gateway-job) | The four `native_gateway` targets, plus per-OS extras |
 | `tray` (Linux; Windows in the queue) | `bookclerk-tray` is affected | Clippy and tests |
+| `desktop window` (Linux) | A `[desktop].paths` input changed, or the full suite | Clippy on `bookclerk-desktop --features window`; see [Desktop job](#desktop-job) |
 | `macOS (sandbox, gateway, tray)` | Any of the three jobs above runs, outside a pull request | The macOS run of each of them, one step each; see [macOS job](#macos-job) |
 | `postgres 16/17/18` | An owning package's unit tests are affected | Only the owners' steps, on every supported major |
 | `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite; never on a pull request | See [Windows cluster](#windows-cluster-startup-and-identity) |
@@ -686,6 +687,22 @@ On `windows-latest` only, the job runs identity create, restart and
 binding, and different-cluster rejection. Then it runs the full
 `cluster_secret_startup` target with the sqlite guest, the jail,
 `bookclerk-workerd` and pinned `workerd`.
+
+### Desktop job
+
+The desktop window's Tauri code (`bookclerk-desktop`'s `window` feature)
+only builds with the WebKitGTK development files, so every other job builds
+the crate without it. This job, on `ubuntu-latest`, installs those files
+and `capnproto`, then runs Clippy on `bookclerk-desktop --features window
+--all-targets`. Clippy type-checks the window code without linking it.
+
+A pull request runs it when a `[desktop].paths` input in
+`scripts/ci_plan/relations.toml` changes: the window crate, its request
+policy (`bookclerk-window-policy`), or the embedded host it drives
+(`bookclerkd`'s `embedded.rs`, `lib.rs` and `Cargo.toml`). It doesn't select
+on every package the window links, which is most of the host. The full
+suite, in the merge queue and on `main`, always runs it, which catches a
+host change that breaks the window. Windows and macOS don't run it yet.
 
 ### Small-VPS envelope
 
@@ -1616,7 +1633,7 @@ about 35 minutes and averages about 6 runners.
 Those figures predate splitting the unit tests into three parts (see
 [Test runner and retries](#test-runner-and-retries)). A group now asks for
 two more jobs, the tests take about 14 minutes, and the release build is
-the longest job.
+the longest job. The [desktop job](#desktop-job) adds one more short job.
 
 | Build concurrency | Merge-group runners (peak, typical) | Left for pull requests |
 | --- | --- | --- |

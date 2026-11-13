@@ -1407,6 +1407,26 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             Command("clippy bookclerk-tray", ["cargo", "clippy", "-p", "bookclerk-tray", "--all-targets", "--", "-D", "warnings"]),
             Command("test bookclerk-tray", ["cargo", "test", "-p", "bookclerk-tray"]),
         ]
+    if check == "desktop":
+        # Clippy compiles the window code (the Tauri app and its scheme
+        # handler) without linking it; the job installed WebKitGTK first.
+        return [
+            Command(
+                "clippy bookclerk-desktop --features window",
+                [
+                    "cargo",
+                    "clippy",
+                    "-p",
+                    "bookclerk-desktop",
+                    "--features",
+                    "window",
+                    "--all-targets",
+                    "--",
+                    "-D",
+                    "warnings",
+                ],
+            ),
+        ]
     if check == "envelope":
         # Compile on the runner. The container is only the seed, daemon, and load.
         files = str(ctx.files_dir / "envelope")
