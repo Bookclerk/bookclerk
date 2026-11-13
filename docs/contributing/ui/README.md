@@ -1,7 +1,8 @@
 # Web UI development
 
 This page explains how the React app in `ui/` is built and served, how the
-in-process tray works, and where the brand assets live. The roles,
+in-process tray and the desktop window work, and where the brand assets
+live. The roles,
 sign-in and screens are described in the
 [Web app and sign-in reference](../../server/sign-in.md).
 
@@ -48,20 +49,91 @@ wrappers are optional.
 | --- | --- |
 | Web UI (`bookclerkd` + `ui/`) | Supported |
 | In-process tray (`bookclerkd` through the `bookclerk-tray` library → the system browser) | Supported on Linux (`ksni`), Windows and macOS (`tray-icon` without GTK features); skipped on headless hosts |
-| Tauri embedded window + tray | Tracked in [#44](https://github.com/Bookclerk/bookclerk/pull/44). Blocked until an OSV-clean GTK4 / WebKitGTK 6 graph lands (**no** advisory ignores, **no** OSV path excludes) |
+| Desktop window (`bookclerk-desktop`, Tauri 2) | Early: runs the web app in its own window with no listener (below). Not packaged yet; no tray, live updates or uploads |
 
-Watch upstream:
-[tauri#12563](https://github.com/tauri-apps/tauri/issues/12563) and
-[tauri#14684](https://github.com/tauri-apps/tauri/pull/14684).
+### The desktop window
 
-Rejected shortcuts:
+`bookclerk-desktop` runs the whole host in its own process and shows the
+web app in a Tauri window. It binds **no socket**: not `daemon.listen` and
+not the node API's TLS listener, so nothing else on the machine or the
+network can reach this host's web API.
 
-- Merging GTK3/WebKitGTK 4.1 Tauri into the root (or a nested) lockfile and
-  ignoring or excluding the advisories. That isn't acceptable for a shipped
-  binary.
-- Windows- or macOS-only Tauri packaging that still records GTK in a
-  lockfile kept out of OSV. That is the same bar as ignores (see
-  [#46](https://github.com/Bookclerk/bookclerk/pull/46)).
+- The window loads the web app from the `bookclerk` custom scheme
+  (`bookclerk://localhost/`; `http://bookclerk.localhost/` on Windows, where
+  WebView2 requires that form). Every request on the scheme goes straight to
+  the host's router in-process (`bookclerkd::embedded`).
+- Whoever runs the app is the operator, the same person the tray hands an
+  operator session to. The host adds the operator token to each request
+  itself; the page never sees it. Cookies, `Authorization`, `Origin`,
+  `Referer` and forwarding headers from the page are dropped, and so is
+  `Set-Cookie` on the way back, so the page holds no credential.
+- The node API (`/api/node/...`) and the live socket (`/api/live`) are
+  refused. A custom scheme cannot carry a WebSocket, so screens fall back to
+  their polling timers until live updates move to a Tauri channel.
+- The window only shows pages from the scheme: navigation anywhere else is
+  refused, and the page gets no Tauri commands (the capability set is
+  empty).
+
+Not there yet: the tray, live updates over a Tauri channel, uploads (when
+they come, through the native file picker), opening external links in the
+system browser, passkeys (WebAuthn needs a real origin), impersonation (it
+needs a session cookie), and packaging. Links the host writes for other
+people, such as invite links, still name `integrations.public_origin` or the
+`daemon.listen` address, which the window does not serve. Joining a library
+as a clerk finishes the next time the app starts, where `bookclerkd` restarts
+itself.
+
+To build and run it:
+
+1. Install the webview's development files. On Debian and Ubuntu:
+
+   ```sh
+   sudo apt-get install libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev
+   ```
+
+   Windows (WebView2) and macOS (WKWebView) need nothing extra.
+
+2. Build the platform once (`cargo build-app --platform`) so the helpers,
+   platform plugins and `ui/dist` are in place, as for `bookclerkd`.
+
+3. Build and run the window. It reads the same `BOOKCLERK_FILES_DIR` and
+   `BOOKCLERK_CONFIG` as `bookclerkd`; don't run both on one files
+   directory at once.
+
+   ```sh
+   cargo run -p bookclerk-desktop --features window
+   ```
+
+The window is behind the crate's `window` feature, off by default, so
+`cargo build --workspace` and CI's workspace checks don't need the webview's
+development files. Without it the binary only says how to build it.
+
+### Advisories the desktop window brings in
+
+On Linux, Tauri 2 (tao, wry, webkit2gtk and muda) is built on gtk-rs 0.18,
+which adds two OSV findings to the root `Cargo.lock`. Both are ignored in
+[`osv-scanner.toml`](../../../osv-scanner.toml) with their reasons, until
+2026-12-23 like the other entries:
+
+- `RUSTSEC-2024-0429` (alias `GHSA-wrw7-89jp-8q8g`): unsound iterators on
+  `glib::VariantStrIter`. Nothing in the graph calls
+  `Variant::array_iter_str()`, the only way to get one.
+- `RUSTSEC-2024-0370`: `proc-macro-error` is unmaintained. It is a build-time
+  dependency of `glib-macros` 0.18 and is not linked into any binary.
+
+The gtk-rs 0.18 "unmaintained" advisories that used to block this window
+were withdrawn on 2026-08-14. Take both entries out once tao, wry,
+webkit2gtk and muda move to gtk 0.19, or the window moves to Tauri's GTK4 /
+WebKitGTK 6 backend
+([tauri#12563](https://github.com/tauri-apps/tauri/issues/12563),
+[tauri#14684](https://github.com/tauri-apps/tauri/pull/14684)), which is the
+preferred target.
+
+> [!NOTE]
+> This reverses the earlier rule of no advisory ignores for the window. That
+> exception covers only these two findings. The desktop window stays in the
+> root lockfile, and OSV path excludes are still not allowed: a lockfile kept
+> out of OSV hides its findings rather than explaining them.
 
 ## The tray
 
@@ -122,15 +194,16 @@ elevation on the public hostname). On a headless host or VPS, open an SSH
 tunnel (`ssh -L 8787:127.0.0.1:8787 …`), run `bookclerk login`, and paste
 the printed URL into a browser that reaches loopback.
 
-### Keep GTK out of the lockfile
+### Keep GTK out of the tray
 
 `tray-icon` is a dependency only on Windows and macOS, **and** with
-`default-features = false`, so the root `Cargo.lock` doesn't resolve the
-Linux GTK3 graph.
+`default-features = false`, so the tray (and so `bookclerkd`) never links
+the Linux GTK3 graph. Only the desktop window brings gtk-rs into the root
+`Cargo.lock` (see
+[Advisories the desktop window brings in](#advisories-the-desktop-window-brings-in)).
 
 > [!WARNING]
-> Don't enable the `tray-icon` or `muda` default features in this
-> workspace.
+> Don't enable the `tray-icon` or `muda` default features in the tray.
 
 ## Brand assets
 

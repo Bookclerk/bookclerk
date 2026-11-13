@@ -131,16 +131,21 @@ if [[ "$RUN_RUST" -eq 1 ]]; then
   WORKSPACE_RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::redundant_explicit_links -D rustdoc::invalid_html_tags -D rustdoc::bare_urls -D rustdoc::invalid_codeblock_attributes"
   if [[ "$DO_ALL" -eq 1 ]]; then
     # Exclude the publish trio here — they are documented once below under
-    # stricter rustdoc flags (crate-level docs).
+    # stricter rustdoc flags (crate-level docs). The desktop window binary is
+    # left out too: `--all-features` turns on its `window` feature, which
+    # needs the webview's development files (WebKitGTK on Linux).
     RUSTDOCFLAGS="$WORKSPACE_RUSTDOCFLAGS" \
       cargo doc --workspace --exclude bookclerk-plugin-abi \
         --exclude bookclerk-plugin-manifest --exclude bookclerk-plugin-sdk \
+        --exclude bookclerk-desktop \
         --no-deps --all-features --target-dir "$DOC_TARGET"
   else
     ARGS=()
     for p in "${RUST_PACKAGES[@]}"; do
       case "$p" in
         bookclerk-plugin-abi|bookclerk-plugin-manifest|bookclerk-plugin-sdk) continue ;;
+        # See the workspace branch above.
+        bookclerk-desktop) continue ;;
       esac
       ARGS+=(-p "$p")
     done

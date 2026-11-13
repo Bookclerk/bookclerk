@@ -142,3 +142,38 @@ INFO / unmaintained: `zvariant_derive` (a compile-time proc-macro) was folded
 into zbus 6. Same dependency path and exit as RUSTSEC-2026-0370 (ksni -> zbus
 5); tracked in #382.
 """
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0429"
+ignoreUntil = 2026-12-23
+reason = """
+glib 0.18.5 unsound `Iterator` / `DoubleEndedIterator` impls on
+`glib::VariantStrIter` (INFO/unsound; alias GHSA-wrw7-89jp-8q8g, which the
+scanner matches through this entry). Fixed in glib >= 0.20. Pulled only by
+the desktop window (`bookclerk-desktop`, `window` feature): tauri 2.12.5 ->
+tao 0.37 / wry 0.57 / webkit2gtk 2.0 / muda 0.20 -> gtk 0.18 -> glib 0.18 on
+Linux. No host
+(`bookclerkd`, `bookclerk`, helpers) links it.
+
+A `VariantStrIter` comes only from `Variant::array_iter_str()`. Verified in
+the locked sources: no crate in the graph calls it outside glib's own docs
+and tests (tauri 2.12.5, tauri-runtime-wry 2.12, wry 0.57.2, tao 0.37.2,
+webkit2gtk 2.0.2, muda 0.20.0, gtk/gdk 0.18.2, soup3 0.5,
+javascriptcore-rs 1.1), and Bookclerk code does not use glib at all.
+
+No lockfile change can lift it: the whole Tauri 2 Linux stack pins gtk-rs
+0.18. Remove when tao, wry, webkit2gtk and muda move to gtk 0.19 (glib 0.22),
+or the window moves to Tauri's GTK4 / WebKitGTK 6 backend.
+"""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0370"
+ignoreUntil = 2026-12-23
+reason = """
+INFO / unmaintained: `proc-macro-error` 1.0.4. No vulnerability and no
+patched release. Build time only: a proc-macro dependency of glib-macros 0.18,
+which the desktop window's gtk-rs 0.18 stack pulls (see RUSTSEC-2024-0429);
+nothing of it is linked into a binary. Same exit as RUSTSEC-2024-0429:
+remove when tao, wry, webkit2gtk and muda move to gtk 0.19, whose glib-macros
+no longer uses it.
+"""

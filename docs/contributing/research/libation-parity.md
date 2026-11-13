@@ -167,4 +167,4 @@ checks), or **minor headless polish** listed under
 | Item | Notes |
 | --- | --- |
 | Spatial / Atmos (Widevine L1) | Hardware TEE only; desktop L3 cannot satisfy L1 license grants |
-| GUI | MVP React web UI + optional tray→browser ([the UI page](../ui/README.md)); Tauri deferred; not Avalonia |
+| GUI | MVP React web UI + optional tray→browser ([the UI page](../ui/README.md)); early Tauri desktop window, built from source; not Avalonia |
