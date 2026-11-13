@@ -6,9 +6,15 @@
  * rows, ids or secrets. While it is down (connecting, refused, daemon
  * restarting) panels fall back to their old polling timers, so nothing goes
  * stale for longer than it used to.
+ *
+ * In the desktop window, whose custom scheme cannot carry a WebSocket, the
+ * same frames come over the window shell's channel instead (see
+ * `desktopLive.ts`).
  */
 
 import { useEffect, useRef, useState } from "react";
+import { isDesktopWindow } from "@/lib/desktop";
+import { openDesktopLive, tauriBridge } from "@/lib/desktopLive";
 
 /** Subprotocol the daemon speaks on `/api/live`. */
 export const LIVE_SUBPROTOCOL = "bookclerk-live.v1";
@@ -243,9 +249,12 @@ let shared: LiveClient | null = null;
  * @returns The client, created on first use.
  */
 export function liveClient(): LiveClient {
+  const bridge = isDesktopWindow() ? tauriBridge() : null;
   shared ??= new LiveClient({
     location: window.location,
     connect: (url, protocol) => {
+      // The desktop window: the shell's channel instead of a socket.
+      if (bridge) return openDesktopLive(bridge);
       const socket = new WebSocket(url, protocol);
       // The client assigns its handlers right after; this adapter only
       // narrows the DOM event types to what it reads.

@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "The app's own pages in the main window may start their live updates, and do nothing else.",
+  "windows": ["main"],
+  "local": true,
+  "permissions": ["allow-live"]
+}

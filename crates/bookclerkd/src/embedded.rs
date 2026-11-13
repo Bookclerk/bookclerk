@@ -36,7 +36,9 @@
 //! handoff) and the node API's transport policy refuse it. The node API
 //! (`/api/node/...`) is for other nodes over TLS and is refused here before
 //! routing. The live socket (`/api/live`) needs a WebSocket, which a custom
-//! scheme cannot carry; it is refused, and the SPA falls back to polling.
+//! scheme cannot carry; it is refused here. The window hears the same
+//! frames from [`EmbeddedHost::live`] instead, which the shell forwards to
+//! the page over its own channel.
 //!
 //! **Responses** are collected whole, up to [`MAX_RESPONSE_BYTES`] and
 //! [`RESPONSE_TIMEOUT`]; a custom scheme cannot stream.
@@ -52,7 +54,9 @@ use bookclerk_window_policy::{
     classify_navigation, join_sign_in_ttl, refusal, rewrite_request_headers, Refusal,
     JOIN_START_PATH,
 };
-pub use bookclerk_window_policy::{Navigation, APP_ORIGINS, EMBEDDED_ORIGIN};
+pub use bookclerk_window_policy::{
+    live_refusal, LiveRefusal, Navigation, APP_ORIGINS, EMBEDDED_ORIGIN, MAIN_WINDOW_LABEL,
+};
 use tower_service::Service as _;
 
 use crate::api::AppState;
@@ -198,6 +202,20 @@ impl EmbeddedHost {
         if let Ok(mut slot) = self.join_open_until.lock() {
             *slot = until;
         }
+    }
+
+    /// Feeds the live frames the SPA's `/api/live` socket would carry, for
+    /// the shell to forward to the page: `hello` with every topic (the
+    /// window is the operator), then a `changed` frame for each change.
+    ///
+    /// Runs until `send` answers false. The frames name topics only, as on
+    /// the socket.
+    ///
+    /// # Arguments
+    ///
+    /// * `send` - Takes each frame's JSON text; false stops the feed.
+    pub async fn live(&self, send: impl FnMut(String) -> bool + Send) {
+        crate::live::operator_feed(Arc::clone(&self.state), send).await;
     }
 
     /// Stops the integration watchers before the process exits, as
@@ -451,5 +469,31 @@ mod tests {
         );
         assert_eq!(host.navigation(sign_in), Navigation::Refuse);
         host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn the_window_hears_live_frames_without_the_socket() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let files = tempfile::tempdir().unwrap();
+        let (state, _store) = crate::node_api::tests::test_state(&files).await;
+        let host = EmbeddedHost {
+            state,
+            app: echo_router(),
+            join_open_until: Mutex::new(None),
+        };
+        let mut frames = Vec::new();
+        // Stop after the first frame: `hello`, naming every topic.
+        host.live(|text| {
+            frames.push(text);
+            false
+        })
+        .await;
+        assert_eq!(frames.len(), 1);
+        let hello: serde_json::Value = serde_json::from_str(&frames[0]).unwrap();
+        assert_eq!(hello["type"], "hello");
+        assert_eq!(
+            hello["topics"].as_array().map(Vec::len),
+            Some(bookclerk_library::control_plane::LiveTopic::ALL.len())
+        );
     }
 }

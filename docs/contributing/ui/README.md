@@ -49,7 +49,7 @@ wrappers are optional.
 | --- | --- |
 | Web UI (`bookclerkd` + `ui/`) | Supported |
 | In-process tray (`bookclerkd` through the `bookclerk-tray` library → the system browser) | Supported on Linux (`ksni`), Windows and macOS (`tray-icon` without GTK features); skipped on headless hosts |
-| Desktop window (`bookclerk-desktop`, Tauri 2) | Early: runs the web app in its own window with no listener (below). Not packaged yet; no tray, live updates or uploads |
+| Desktop window (`bookclerk-desktop`, Tauri 2) | Early: runs the web app in its own window with no listener (below). Not packaged yet; no tray or uploads |
 
 ### The desktop window
 
@@ -68,18 +68,26 @@ network can reach this host's web API.
   `Referer` and forwarding headers from the page are dropped, and so is
   `Set-Cookie` on the way back, so the page holds no credential.
 - The node API (`/api/node/...`) and the live socket (`/api/live`) are
-  refused. A custom scheme cannot carry a WebSocket, so screens fall back to
-  their polling timers until live updates move to a Tauri channel.
+  refused. A custom scheme cannot carry a WebSocket, so the window sends the
+  same frames over a Tauri channel instead: the page calls the window's one
+  command, `live`, with a channel, and each frame arrives on it as the text
+  the socket would have sent (`ui/src/lib/desktopLive.ts`). A later call
+  replaces the earlier feed, so a reloaded page doesn't leave one running.
 - A request a page from anywhere else sends to the scheme (its `Origin`, or
   for a write its `Referer`, is not the app's) is refused with `403`, since
   the host would otherwise add the operator token to it.
 - The window only shows pages from the scheme, with one exception: joining a
   library opens the library's own sign-in pages in the window until the
   library sends it back, and that return (to `http://localhost/join/callback`)
-  is handed to the app scheme. Navigation anywhere else is refused, and no
-  page gets Tauri commands (the capability set is empty).
+  is handed to the app scheme. Navigation anywhere else is refused.
+- The page may call one Tauri command, `live`, which takes nothing from the
+  page but its channel. The capability in
+  `crates/bookclerk-desktop/capabilities/main.json` allows it for the main
+  window's own pages only, so the library's sign-in pages, which are remote,
+  can't call it, and the command itself checks the calling webview and page
+  again before it starts the feed.
 - These rules (which requests are refused, the headers the router sees,
-  where the window may go) live in the `bookclerk-window-policy` crate,
+  where the window may go, who may start the live feed) live in the `bookclerk-window-policy` crate,
   which the `window_policy` fuzz target checks (see
   [Fuzzing](../fuzzing.md)).
 
@@ -102,7 +110,7 @@ deploys runs there before that, or before the window's operator approves it.
 If the setting can't be stored, the page says the computer is a branch that
 downloads and points at Settings → Library.
 
-Not there yet: the tray, live updates over a Tauri channel, uploads (when
+Not there yet: the tray, uploads (when
 they come, through the native file picker), opening external links in the
 system browser, passkeys (WebAuthn needs a real origin), impersonation (it
 needs a session cookie), and packaging. Joining a library whose node API uses

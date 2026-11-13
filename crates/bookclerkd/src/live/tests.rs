@@ -425,3 +425,56 @@ fn only_an_unchecked_session_keeps_the_socket_open() {
         axum::http::StatusCode::UNAUTHORIZED
     )));
 }
+
+/// The next frame the feed sent, as JSON.
+async fn next_feed_frame(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+) -> serde_json::Value {
+    let text = tokio::time::timeout(POLL_INTERVAL * 3, rx.recv())
+        .await
+        .expect("a frame in time")
+        .expect("the feed is running");
+    serde_json::from_str(&text).unwrap()
+}
+
+/// The desktop window's feed: `hello` with every topic, then the same
+/// change frames the socket sends, until the receiver says stop.
+#[tokio::test]
+async fn the_operator_feed_reports_changes_until_told_to_stop() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store) = crate::node_api::tests::test_state(&files).await;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let feed = tokio::spawn(operator_feed(Arc::clone(&state), move |text| {
+        tx.send(text).is_ok()
+    }));
+    let hello = next_feed_frame(&mut rx).await;
+    assert_eq!(hello["type"], "hello");
+    let all: Vec<String> = LiveTopic::ALL
+        .iter()
+        .map(|topic| topic.as_str().to_string())
+        .collect();
+    let mut heard = topics(&hello);
+    heard.sort();
+    let mut want = all.clone();
+    want.sort();
+    assert_eq!(heard, want, "the operator hears every topic");
+
+    enqueue(&store).await;
+    // Other tests' pokes reach this process-wide feed too; wait for jobs.
+    loop {
+        let changed = next_feed_frame(&mut rx).await;
+        assert_eq!(changed["type"], "changed", "{changed}");
+        if topics(&changed).contains(&"jobs".to_string()) {
+            break;
+        }
+    }
+
+    // A receiver that is gone ends the feed at its next frame.
+    drop(rx);
+    poke(LiveTopic::Config);
+    tokio::time::timeout(Duration::from_secs(5), feed)
+        .await
+        .expect("the feed ends once its receiver is gone")
+        .unwrap();
+}

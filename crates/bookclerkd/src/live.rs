@@ -241,12 +241,65 @@ pub async fn get_live(State(state): State<Arc<AppState>>, request: Request) -> R
 
 /// A frame naming `topics`.
 fn frame(kind: &str, topics: &BTreeSet<LiveTopic>) -> Message {
+    Message::Text(frame_text(kind, topics).into())
+}
+
+/// The text of a frame naming `topics`, as the socket and the desktop
+/// window's feed send it.
+fn frame_text(kind: &str, topics: &BTreeSet<LiveTopic>) -> String {
     let names: Vec<&str> = topics.iter().map(|topic| topic.as_str()).collect();
-    Message::Text(
-        json!({ "v": 1, "type": kind, "topics": names })
-            .to_string()
-            .into(),
-    )
+    json!({ "v": 1, "type": kind, "topics": names }).to_string()
+}
+
+/// Feeds the operator's live frames to `send`, the socket's frames
+/// without the socket: the desktop window, whose requests are all the
+/// operator's and which has no WebSocket (see [`crate::embedded`]).
+///
+/// Sends `hello` with every topic once the baseline is read, then a
+/// `changed` frame whenever a revision moves or a topic is poked, exactly
+/// as [`get_live`]'s socket does. There is no session to re-check and no
+/// ping. Returns when `send` answers false, or when the process's pokes
+/// end.
+///
+/// # Arguments
+///
+/// * `state` - The host whose library is watched.
+/// * `send` - Takes each frame's JSON text; false stops the feed.
+pub async fn operator_feed(state: Arc<AppState>, mut send: impl FnMut(String) -> bool + Send) {
+    let topics: BTreeSet<LiveTopic> = LiveTopic::ALL.into_iter().collect();
+    let mut pokes = POKES.subscribe();
+    let mut seen = read_revisions(&state).await;
+    if !send(frame_text("hello", &topics)) {
+        return;
+    }
+    let mut poll = tokio::time::interval(POLL_INTERVAL);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    poll.tick().await;
+    loop {
+        let changed: BTreeSet<LiveTopic> = tokio::select! {
+            _ = poll.tick() => {
+                let Some(now) = read_revisions(&state).await else {
+                    continue;
+                };
+                let changed = changed_topics(seen.as_ref().unwrap_or(&Vec::new()), &now)
+                    .into_iter()
+                    .collect();
+                seen = Some(now);
+                changed
+            }
+            poked = pokes.recv() => match poked {
+                Ok(topic) => BTreeSet::from([topic]),
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return,
+            },
+        };
+        if changed.is_empty() {
+            continue;
+        }
+        if !send(frame_text("changed", &changed)) {
+            return;
+        }
+    }
 }
 
 /// How long one revision read serves every socket over the same library:

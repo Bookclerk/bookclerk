@@ -54,7 +54,7 @@ boundary extends it.
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
 | `members_books_request` | A library operator's "Acquire all of this branch's members' books" choice, the body of `PUT /api/config/branches/members-books` | `bookclerk-library::control_plane::parse_members_books_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
-| `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, and the URLs the window is asked to open | `bookclerk-window-policy` |
+| `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
 
 Some boundaries need more than a cell:
 
@@ -315,7 +315,8 @@ only that. The others check:
   was given, and keep every other header unchanged. Navigation allows app
   pages always and, only while a join is open, `https` and loopback `http`
   sign-in pages, with the return to the join callback kept on its path. The
-  shared oracle is `fuzz/oracles/window_policy.rs`, replayed from
+  `live` command answers only the webview labelled `main` on an app page.
+  The shared oracle is `fuzz/oracles/window_policy.rs`, replayed from
   `bookclerk-window-policy`.
 
 ## Boundaries outside the Rust workspace

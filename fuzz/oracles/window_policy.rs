@@ -25,17 +25,22 @@
 //!   returns that path and query (always starting with the callback path, so
 //!   the window stays on its own origin), other `https` and loopback `http`
 //!   URLs are a sign-in, and the rest is refused.
+//! - **Live updates.** The `live` command answers exactly when the calling
+//!   webview's label is byte for byte `main` and the page URL parses onto
+//!   an app origin; a wrong label is reported before a foreign page.
 //! - **Sign-in time.** A join start answer opens the sign-in exactly when it
 //!   is a JSON object with a string `authorize_url` and an unsigned
 //!   `expires_in_secs`, for that many seconds up to an hour.
 //!
 //! Input layout: the first byte holds flags (bit 0: a join is open, bit 1:
-//! a token is given); the rest splits on `0x00` into the method, the path,
-//! the navigation URL, the join start body, the token, and then header lines
-//! `name: value`.
+//! a token is given, bit 2: the `live` caller is labelled `main`, otherwise
+//! its label is the method's text); the rest splits on `0x00` into the
+//! method, the path, the navigation URL (also the `live` caller's page),
+//! the join start body, the token, and then header lines `name: value`.
 
 use bookclerk_window_policy::{
-    classify_navigation, join_sign_in_ttl, refusal, rewrite_request_headers, Navigation, Refusal,
+    classify_navigation, join_sign_in_ttl, live_refusal, refusal, rewrite_request_headers,
+    LiveRefusal, Navigation, Refusal,
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Method};
 
@@ -64,6 +69,9 @@ struct Case<'a> {
     token: Option<&'a str>,
     /// The headers the page sent.
     headers: HeaderMap,
+    /// Whether the `live` caller is labelled `main` rather than with the
+    /// method's text.
+    main_label: bool,
 }
 
 /// Splits `data` into a case, or `None` when it is too short.
@@ -96,6 +104,7 @@ fn decode(data: &[u8]) -> Option<Case<'_>> {
         join_body,
         token: (flags & 2 != 0).then_some(token),
         headers,
+        main_label: flags & 4 != 0,
     })
 }
 
@@ -294,6 +303,26 @@ pub fn check(data: &[u8]) -> bool {
             }
         }
     }
+
+    // Live updates.
+    let label = if case.main_label {
+        "main"
+    } else {
+        case.method.as_str()
+    };
+    let want = if label.as_bytes() != b"main" {
+        Some(LiveRefusal::OtherWebview)
+    } else if !app {
+        Some(LiveRefusal::ForeignPage)
+    } else {
+        None
+    };
+    assert_eq!(
+        live_refusal(label, case.navigation),
+        want,
+        "live for {label:?} on {:?}",
+        case.navigation
+    );
 
     // Sign-in time.
     let ttl = join_sign_in_ttl(case.join_body);
