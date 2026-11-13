@@ -893,8 +893,9 @@ to ask the first branch that lists the work.
    **What B lists** above): its owner's books always, a member's while
    **List my members' books to <library>** is on and the member has not
    opted out, and nothing while **Share this branch's books with
-   <library>** is off. B's listing settings are where B's operator draws
-   the line; there is no per-request approval.
+   <library>** is off or B is a window of A (see
+   [Window mode](#window-mode)). B's listing settings are where B's
+   operator draws the line; there is no per-request approval.
 4. **B fetches and sends the book.** An accepted book not yet downloaded
    is queued as an ordinary acquire in B's own library, on the store
    account on B that holds it. B records the book as requested by A, so
@@ -935,6 +936,10 @@ With the setting off for library A, B:
   the setting off hands back any job B holds for A at once. A's share of
   B's job slots goes to the libraries B downloads for, and A's job cap
   applies again when the setting is turned back on.
+- **Lists nothing to A and takes none of its requests.** A window is a
+  client of A, not one of its nodes. It answers A's catalog questions as
+  "missing" and every interlibrary request from A as "not listed", so A
+  shows no title as available through B.
 - **Reads its person's books from A.** On every connection, every 30
   minutes, and at once when the setting changes, B sends `window.books`
   page by page. A answers each page (`window.page`) with the books on the

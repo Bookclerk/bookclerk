@@ -7,7 +7,10 @@
 //! (`catalog.questions`), answers them from this install's own library
 //! ([`answer_questions`]: the owner's books, and the members' while the
 //! link's "List my members' books" setting is on and they did not opt
-//! out), and sends the answers back (`catalog.found`). Questions name works
+//! out), and sends the answers back (`catalog.found`). A window (the
+//! link's "Use this computer to download" setting off) is a client of that
+//! library rather than one of its nodes, so it answers that it has none of
+//! them. Questions name works
 //! by identifier only, and answers name no account, user or other library.
 
 use std::time::Duration;
@@ -115,12 +118,14 @@ impl CatalogAnswerer {
             if questions.is_empty() {
                 return Ok(answered);
             }
-            let (answers, missing) = if link.share_books {
+            let (answers, missing) = if link.share_books && link.download {
                 answer_questions(&self.library, &questions, link.list_members_books)
                     .await
                     .context("looking the questions up in this library")?
             } else {
-                // Sharing off: this branch lists nothing to that library.
+                // Sharing off: this branch lists nothing to that library. A
+                // window (download off) is a client of it, not a node, and
+                // offers it nothing.
                 (
                     Vec::new(),
                     questions.iter().map(|q| q.work.clone()).collect(),

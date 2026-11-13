@@ -151,10 +151,21 @@ take all of it.
 
 ### Kinds of install
 
-A **window** shows the libraries a person joined in one view and keeps no
-downloads. A **branch** archives its own library's books. Both are the
-same software: a per-link setting, "Use this computer to download",
-decides whether the link takes work.
+A **library** and a **branch** are the same software with no technical
+difference, except that a library others join must be routable. A
+branch dials out to its library over a websocket and is not assumed to
+be publicly addressable. It contributes to that library (jobs, catalog
+answers, requests) whether or not it keeps local copies for itself.
+
+A **window** also dials out, but it is a client of the libraries a
+person joined, not one of their nodes. It shows those libraries in one
+view and refuses their work: no jobs, no catalog answers, no requests.
+A window can be turned into a branch. Being a desktop window has nothing
+to do with it; any install can be a window.
+
+Today the per-link setting "Use this computer to download" is what marks
+a link as a window. Separating the window from that setting, so a
+branch can contribute without downloading, is still open.
 
 ## Consequences
 

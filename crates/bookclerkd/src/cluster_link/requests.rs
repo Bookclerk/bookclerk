@@ -17,6 +17,9 @@
 //!   that holds it. A branch fulfils automatically for anything it listed:
 //!   its listing settings are where it draws the edge.
 //! - **Not listed** when it does not, which the library records for good.
+//!   A window (the link's "Use this computer to download" setting off) is
+//!   a client of that library rather than one of its nodes, so it answers
+//!   every request this way.
 //! - **Failed** when a local read or write failed; the library retries.
 //!
 //! The book itself goes up with the catalog sync's next pass, as the
@@ -229,8 +232,10 @@ impl<A: RequestAcquirer> RequestTaker<A> {
 
     /// Decides one request.
     async fn take(&self, link: &ClusterLink, request: &BranchRequest) -> RequestOutcome {
-        if !link.share_books {
-            // Sharing off: this branch lists nothing to that library.
+        if !link.share_books || !link.download {
+            // Sharing off: this branch lists nothing to that library. A
+            // window (download off) is a client of that library, not one
+            // of its nodes, and takes no work for it.
             return RequestOutcome::NotListed;
         }
         match self.accept(link, request).await {
