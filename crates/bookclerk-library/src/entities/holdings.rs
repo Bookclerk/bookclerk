@@ -31,8 +31,24 @@ pub struct Model {
     /// RFC 3339 time it was bought or added, when known.
     pub purchased_at: Option<String>,
     /// Id of the scan pass that last listed this holding
-    /// (`account_scan_state.pass_id`); `None` until a pass lists it.
+    /// (`account_scan_state.pass_id`, or the branch's catalog pass start for
+    /// a node holding); `None` until a pass lists it.
     pub seen_pass: Option<String>,
+    /// For a node holding, `store:product_id` as the branch named the title
+    /// (`CatalogRef`); `None` for an account holding.
+    pub share_ref: Option<String>,
+    /// For a node holding, the title as the branch shared it (JSON
+    /// `CatalogTitle`: metadata and file manifest), passed on unchanged
+    /// when this library is itself a branch.
+    pub share_title: Option<String>,
+    /// For a node holding, the digest of the shared manifest
+    /// (`CatalogTitle::manifest_digest`).
+    pub share_digest: Option<String>,
+    /// For a node holding, the manifest digest whose files reached this
+    /// library; equal to `share_digest` once the current files arrived.
+    pub delivered_digest: Option<String>,
+    /// For a node holding, the RFC 3339 time its files last arrived.
+    pub delivered_at: Option<String>,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,
     /// RFC 3339 timestamp when the row was last modified.

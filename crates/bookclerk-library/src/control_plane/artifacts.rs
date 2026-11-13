@@ -51,7 +51,7 @@ const BATCH_BYTES_EIGHTHS: usize = 7;
 /// an adapter may carry or count a blob as base64 text (the shipped sqlite
 /// adapter charges a blob cell its JSON length, and D1 crosses JSON). A cap
 /// of `0` is unlimited. Never below one byte.
-fn chunk_bytes(caps: &DbCapabilities) -> usize {
+pub(crate) fn chunk_bytes(caps: &DbCapabilities) -> usize {
     let less = |cap: u32, headroom: usize| -> usize {
         if cap == 0 {
             usize::MAX

@@ -719,15 +719,18 @@ C is B's.
   B on a store account connected there to B's Owner, and (when "Include
   books from my own branches" is on) those C shared with B. B's other
   members' books stay on B. Each title carries its store, product id,
-  metadata and file list, nothing else. A records them as belonging to the
-  A user who owns B, so C's books are simply B's books there. A title B
-  got from A, or acquired for A and added to its own library, isn't sent
-  back.
+  marketplace, metadata (with its ASIN, ISBN and kind) and file list,
+  nothing else. A matches each one to the edition it already knows, as a
+  store scan would, and records B as holding it, so C's books are simply
+  B's books there, belonging to the A user who owns B. A title B got from
+  A, or acquired for A and added to its own library, isn't sent back.
 - **Files** stream to A's outputs through the same upload endpoint a
   branch's acquire uses (nothing staged on A), under the keys they have on
   B. A title whose files would land on a key another book in A already
-  uses is recorded, but its files aren't sent. If A has no output
-  deployed, it records the titles without files.
+  uses is recorded, but its files aren't sent. Neither are the files of an
+  edition A already has (acquired there, or delivered by another branch),
+  so each edition arrives once. If A has no output deployed, it records
+  the titles without files.
 - **Sync** runs when the branch connects, every 5 minutes, and at once
   when a setting changes. It is incremental and resumes after a
   reconnect. A full pass (after a setting changes, and once a day) also
@@ -739,14 +742,18 @@ C is B's.
 all on by default:
 
 - **Share this branch's books with <library>.** Off: nothing new is sent,
-  and A marks what it already got from B. Files already delivered stay in
-  A's outputs. B also lists nothing in answer to A's catalog questions.
+  and A no longer counts B as holding what it got from B. Files already
+  delivered stay in A's outputs. B also lists nothing in answer to A's
+  catalog questions.
 - **Include books from my own branches.** Off: B shares only books
   acquired on B itself, and C's titles are withdrawn from A on the next
   pass.
 - **List my members' books to <library>.** Off: B answers A's catalog
   questions with its owner's books only (see
   [Shared catalog](#shared-catalog)).
+- **Use this computer to download.** Off: B is a window of that library.
+  It takes none of A's work and shows the books A holds for B's person
+  instead (see [Window mode](#window-mode)).
 
 B's operator or an Owner of B may change them. An Owner sees only the
 libraries, these settings and each library's job cap (see
@@ -756,9 +763,9 @@ refused (403).
 
 The routes are `GET /api/config/join/sharing` (→ `{clusters}`) and
 `POST /api/config/join/sharing`
-`{cluster_id, share_books, include_branches, list_members_books?}`
-(`list_members_books` is left as it is when absent), which also takes
-the [work settings](#work-settings-on-the-branch).
+`{cluster_id, share_books, include_branches, list_members_books?, download?}`
+(`list_members_books` and `download` are left as they are when absent),
+which also takes the [work settings](#work-settings-on-the-branch).
 
 ### Work settings on the branch
 
@@ -787,9 +794,14 @@ The same people may change them, through the same routes:
 shares (read-only, because B's operator or an Owner of B sets it), and
 counts of its titles.
 
-Titles from a branch that stopped sharing or left are kept, marked, until
-the owner removes the entries with **Remove** (or
-`POST /api/config/branches/titles/remove {node_id?}`). The files stay.
+When a branch stops sharing, withdraws a title or leaves, A no longer
+counts it as holding those titles. Files it already delivered are kept.
+When nothing else in A holds that book either, its files are marked as
+from a branch that left, until the owner removes the entries with
+**Remove** (or `POST /api/config/branches/titles/remove {node_id?}`). The
+files themselves stay in A's outputs. A book a store account or another
+branch in A still holds keeps its files as that book's. If the branch
+shares the title again later, it is delivered again.
 
 ### Shared catalog
 
@@ -859,6 +871,53 @@ missing.
 > stops counting two days after B last named it, so A can still show B as
 > a source for up to two days.
 
+### Window mode
+
+A window shows the books its person has in the libraries they joined,
+without downloading anything. It is the same install as a branch with one
+setting per library turned off: **Use this computer to download** in
+**Settings → Library**. A person can start as a window and turn the
+setting on later to keep copies.
+
+With the setting off for library A, B:
+
+- **Takes no work from A.** B claims no jobs from A and runs none of A's
+  plugins. Each deployment A made to B is reported to A as `error` with
+  the detail "this computer does not download for this library (window
+  mode)", and B records, fetches and configures nothing for it. Turning
+  the setting off hands back any job B holds for A at once. A's share of
+  B's job slots goes to the libraries B downloads for, and A's job cap
+  applies again when the setting is turned back on.
+- **Reads its person's books from A.** On every connection, every 30
+  minutes, and at once when the setting changes, B sends `window.books`
+  page by page. A answers each page (`window.page`) with the books on the
+  store accounts linked to B's owner in A, at most 100 works per page,
+  grouped by A's works with each work's identifiers. A answers only a
+  branch it trusts, and the frame names no user, so B can read only its
+  own person's books.
+- **Keeps one copy of the list per library.** B stores each page as it
+  arrives. Once the last page is in, it drops the books A no longer
+  named. A read cut short keeps the list from the last complete read.
+  Turning the setting back on clears that library's list.
+
+B's **Library** page then shows **Your books in other libraries** to B's
+operator and Owners: every library B is a window of, merged into one list
+by work. Two books are the same work when their identifiers reach the
+same work in B's own library, when they share a strong identifier (an
+ASIN with its marketplace, or an OpenLibrary edition or work id), or when
+one library groups them under one work. An ISBN alone doesn't join two
+libraries' books, since one ISBN can sit on several editions. Titles are
+never compared,
+because work ids differ between libraries. Each entry shows which
+libraries hold it, from which stores, and in which formats.
+
+The route is `GET /api/config/join/window` (→ `{clusters, books}`), for
+B's operator or an Owner of B.
+
+> [!NOTE]
+> Asking a library to send a book to a window isn't built yet. It arrives
+> with interlibrary requests.
+
 ### No loops
 
 `GET /api/node/v1/info` reports the library's ancestry: its own cluster id
@@ -897,8 +956,8 @@ A revoked branch deletes the library's plugin state the same way.
 > anyway and says the library wasn't told. Revoke the node there
 > (**Settings → Nodes** or `bookclerk nodes revoke <node_id>`).
 
-Joining again needs a new sign-in or invite. Books the branch shared stay
-in the library, marked as from a branch that left (see
+Joining again needs a new sign-in or invite. Files of books the branch
+shared stay in the library, marked as from a branch that left (see
 [Branch titles on the library](#branch-titles-on-the-library)).
 
 ## Not built yet
@@ -907,6 +966,9 @@ in the library, marked as from a branch that left (see
   (the operator or an Owner). There is no CLI command for them yet.
 - A branch answers only from its own library, not from other libraries it
   joined.
+- A window can't ask a library to send it a book yet, and the library's
+  scheduler can still place plugin replicas on a window (the window
+  reports them as errors and never runs them).
 - The library's name is the host of its public origin. There is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the

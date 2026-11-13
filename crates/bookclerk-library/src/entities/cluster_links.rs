@@ -42,6 +42,11 @@ pub struct Model {
     /// branch answers that library's catalog lookups with its members'
     /// books as well as its owner's.
     pub list_members_books: i64,
+    /// "Use this computer to download" (1 = on, the default): the link
+    /// takes that library's jobs and runs its plugins here. Off makes this
+    /// install a window of that library: no jobs, no plugins, and it reads
+    /// the books the library holds for its person instead.
+    pub download: i64,
     /// The local user who joined the library through this link (`NULL`
     /// when nobody could be named, such as a join with several Owners and
     /// no signed-in Administrator). Only this person may add their own

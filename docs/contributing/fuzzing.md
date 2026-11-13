@@ -230,7 +230,10 @@ only that. The others check:
   checked byte by byte. A `catalog.ask` or `catalog.found` that passes
   its validator names at most 100 works, each once, by plain correlation
   keys; its identifiers are plain ASCII with a marketplace exactly on an
-  ASIN, and each answer lists 1 to 8 distinct editions with a title. The shared oracle is `fuzz/oracles/node_frame.rs`,
+  ASIN, and each answer lists 1 to 8 distinct editions with a title. A
+  `window.page` that passes its validator carries at most 100 works, each
+  once, with plain identifiers, 1 to 8 distinct owned editions with a
+  title, and a next cursor past the one asked with. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
   has the bundle version and names the cluster and node it was opened
@@ -260,9 +263,9 @@ only that. The others check:
 - **`sharing_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
   besides `cluster_id`, `share_books`, `include_branches`,
-  `list_members_books`, `work_for_members` and `keep_member_copies`, with
-  a string `cluster_id` and booleans for `share_books` and
-  `include_branches`, and each of the other three absent, `null` or a
+  `list_members_books`, `work_for_members`, `keep_member_copies` and
+  `download`, with a string `cluster_id` and booleans for `share_books`
+  and `include_branches`, and each of the other four absent, `null` or a
   boolean. The parser then returns the trimmed id and those values, with
   an absent or `null` setting left unset (kept as stored) rather than read
   as `false`, and otherwise refuses it as `Invalid`. The shared oracle is

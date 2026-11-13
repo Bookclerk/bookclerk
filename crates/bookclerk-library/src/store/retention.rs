@@ -18,9 +18,9 @@ use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
 
 use super::LibraryStore;
 use crate::entities::{
-    claim_tickets, configuration_audit, configuration_changes, node_enrollment_links,
-    node_upload_sessions, oidc_auth_codes, oidc_refresh_tokens, portal_sessions,
-    security_audit_events, user_invites,
+    claim_tickets, configuration_audit, configuration_changes, edition_files,
+    node_enrollment_links, node_upload_sessions, oidc_auth_codes, oidc_refresh_tokens,
+    portal_sessions, security_audit_events, user_invites,
 };
 use crate::error::{LibraryError, Result};
 
@@ -166,8 +166,26 @@ impl LibraryStore {
                     .await
             }
             RecordPruneStep::UploadSessions => {
+                // A branch's catalog upload stays while a file record names
+                // it as writer: it is how those files are known to be that
+                // branch's (detached counts, Remove, and redelivery).
+                let referenced = sea_orm::sea_query::Query::select()
+                    .column(edition_files::Column::Writer)
+                    .from(edition_files::Entity)
+                    .and_where(edition_files::Column::Writer.is_not_null())
+                    .to_owned();
                 node_upload_sessions::Entity::delete_many()
                     .filter(node_upload_sessions::Column::State.is_in(["committed", "aborted"]))
+                    .filter(
+                        Condition::any()
+                            .add(
+                                node_upload_sessions::Column::JobId
+                                    .ne(bookclerk_node_proto::CATALOG_ITEM),
+                            )
+                            .add(
+                                node_upload_sessions::Column::UploadId.not_in_subquery(referenced),
+                            ),
+                    )
                     .filter(
                         node_upload_sessions::Column::ExpiresAt
                             .lte(days_before(now, UPLOAD_HISTORY_DAYS)),
@@ -305,9 +323,16 @@ mod tests {
                  ('u-committed', 'uh1', 'n1', 'j', 1, 'n0', 'b', 'k', '{{}}', 'committed', '{t}', '{old}'), \
                  ('u-aborted', 'uh2', 'n1', 'j', 1, 'n0', 'b', 'k', '{{}}', 'aborted', '{t}', '{old}'), \
                  ('u-open', 'uh3', 'n1', 'j', 1, 'n0', 'b', 'k', '{{}}', 'open', '{t}', '{old}'), \
-                 ('u-recent', 'uh4', 'n1', 'j', 1, 'n0', 'b', 'k', '{{}}', 'committed', '{t}', '{recent}')",
+                 ('u-recent', 'uh4', 'n1', 'j', 1, 'n0', 'b', 'k', '{{}}', 'committed', '{t}', '{recent}'), \
+                 ('u-catalog', 'uh5', 'n1', 'catalog', 1, 'n0', 'h', 'k', '{{}}', 'committed', '{t}', '{old}'), \
+                 ('u-catalog-gone', 'uh6', 'n1', 'catalog', 1, 'n0', 'h', 'k', '{{}}', 'committed', '{t}', '{old}')",
                 old = at(-2),
                 recent = (now() - Duration::hours(12)).to_rfc3339()
+            ),
+            format!(
+                "INSERT INTO edition_files (destination, storage_key, owner_kind, owner_id, role, \
+                 lossless, writer, written_at) VALUES \
+                 ('local', 'A/b.m4b', 'edition', 'e1', 'audio', 0, 'u-catalog', '{t}')"
             ),
             // Scans: a jobless generation silent past the window goes, a
             // fresh one stays.
@@ -361,7 +386,7 @@ mod tests {
             for step in RecordPruneStep::ALL {
                 removed.push(store.prune_record_step(step, now()).await.unwrap());
             }
-            assert_eq!(removed, [1, 2, 1, 1, 1, 1, 2, 1, 1, 1, 1], "{name}");
+            assert_eq!(removed, [1, 2, 1, 1, 1, 1, 3, 1, 1, 1, 1], "{name}");
             assert_eq!(kit.refused_begins(), 0, "{name}");
 
             let db = kit.connection();
@@ -421,7 +446,8 @@ mod tests {
                 .map(|row| row.upload_id)
                 .collect();
             uploads.sort();
-            assert_eq!(uploads, ["u-open", "u-recent"], "{name}");
+            // A catalog upload a file record still names stays.
+            assert_eq!(uploads, ["u-catalog", "u-open", "u-recent"], "{name}");
             let scans: Vec<String> = storage_scan_generations::Entity::find()
                 .all(db)
                 .await

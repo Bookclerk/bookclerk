@@ -1,0 +1,1 @@
+{"v":1,"id":"r1","type":"catalog.sync","fence":3,"batch":1,"cursor":"c2","titles":[{"store":"audible","product_id":"B0TEST","marketplace":"US-east","metadata":{"title":"Dune"},"primary_key":"D/D.m4b","files":[{"key":"D/D.m4b","size":10}]}]}

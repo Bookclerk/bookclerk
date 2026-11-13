@@ -1,6 +1,6 @@
 # ADR: Library data model (works, expressions, editions, holdings)
 
-- **Status:** Accepted; steps 1 to 4 implemented, with file quality moved to step 5 and the naming discriminator replaced by a required `<library id>` tag (see [Status of the work](#status-of-the-work)). Amended 2026-11-13: the kind enums were reshaped for mixed media and every kind became required (decisions 1 and 5)
+- **Status:** Accepted; steps 1 to 4 implemented, and step 5's holdings and branch titles (file quality, moved to step 5, still to come); the naming discriminator replaced by a required `<library id>` tag (see [Status of the work](#status-of-the-work)). Amended 2026-11-13: the kind enums were reshaped for mixed media and every kind became required (decisions 1 and 5)
 - **Date:** 2026-11-04
 - **Related:** [Schema versioning](schema-versioning.md),
   [SQL database contract](sql-database-contract.md),
@@ -335,7 +335,14 @@ are spelled in snake case, like `book_acquired`. Step 3 publishes
 `edition_linked`, `edition_updated` and `holding_added`, so subscribe to
 those spellings. It derives a listing from every stored `books` row, so the
 new tables fill as titles are scanned or imported. Step 5 publishes
-`holding_removed` when a scan, a revoke or a remap removes a holding;
+`holding_removed` when a scan, a revoke or a remap removes a holding, and
+makes a title a branch shares a node holding (holder `node:<node id>`),
+resolved into the library like a scanned listing: the `catalog.sync`
+frame carries the listing's marketplace beside the ASIN, ISBN and content
+kind, the holding carries the share and delivery state, delivered files
+are the edition's (an edition already in the outputs is not delivered
+again), and a branch that stops sharing, withdraws a title or leaves
+loses its holdings with `holding_removed`;
 `edition_files_written` comes with the step that writes files. The old tables are dropped by
 the step that moves their last reader off them: `title_files` with step 4,
 `branch_titles` with step 5 and `books` with step 6.

@@ -92,9 +92,15 @@ the library as a member, through the same join flow a server uses (see
 **Host a library on this computer instead** sets up a library here, as
 `bookclerkd`'s first run does.
 
-A computer that joins from the window becomes a branch of the library, like
-any other install that joins. Nothing the library deploys runs there until
-the window's operator approves it in Settings → Library.
+A computer that joins from the window becomes a **window** of the library:
+as soon as the join finishes, the app turns off **Use this computer to
+download** for that library, so the computer shows the person's books there
+and takes none of the library's work (see
+[Window mode](../../server/cluster-hosts.md#window-mode)). Turning the setting
+on in Settings → Library makes it a branch that downloads. Nothing the library
+deploys runs there before that, or before the window's operator approves it.
+If the setting can't be stored, the page says the computer is a branch that
+downloads and points at Settings → Library.
 
 Not there yet: the tray, live updates over a Tauri channel, uploads (when
 they come, through the native file picker), opening external links in the

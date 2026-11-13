@@ -14,19 +14,29 @@
 //! - every library id an `acquire.targets` frame carries is 1 to 16 ASCII
 //!   letters and digits, checked byte by byte here rather than through the
 //!   parser's own rule, since a host names storage keys with it;
+//! - every marketplace a `catalog.sync` title the library would accept
+//!   carries is at most 16 lowercase ASCII letters and digits, checked byte
+//!   by byte here, since the library scopes ASIN identifiers to it.
 //! - a `catalog.ask` or `catalog.found` frame the library or branch would
 //!   accept (`questions_problem` / `found_problem` find nothing) names at
 //!   most 100 works, each once, with plain correlation keys; every
 //!   identifier is plain ASCII with a marketplace exactly when it is an
 //!   ASIN; and every answer lists 1 to 8 distinct editions with a
 //!   non-blank title. Each is checked byte by byte here, not through the
-//!   validators, since the library writes them into its listing pool.
+//!   validators, since the library writes them into its listing pool;
+//! - a `window.page` frame a window would accept (`window_page_problem`
+//!   finds nothing for the cursor it asked with) carries at most 100 works,
+//!   each once, with plain grouping keys, plain identifiers (a marketplace
+//!   exactly on an ASIN), 1 to 8 distinct owned editions with a non-blank
+//!   title, and a next cursor past the one asked with, so a window's paging
+//!   always moves forward. Checked byte by byte here, since the window
+//!   stores them.
 
 use std::collections::BTreeSet;
 
 use bookclerk_node_proto::{
-    found_problem, questions_problem, Body, Frame, LookupScheme, FRAME_VERSION, MAX_FRAME_BYTES,
-    MAX_LIBRARY_ID_BYTES,
+    found_problem, questions_problem, window_page_problem, Availability, Body, Frame, LookupScheme,
+    FRAME_VERSION, MAX_FRAME_BYTES, MAX_LIBRARY_ID_BYTES,
 };
 use serde_json::Value;
 
@@ -56,7 +66,21 @@ pub fn check(data: &[u8]) {
             }
         }
     }
+    if let Body::CatalogSync { titles, .. } = &frame.body {
+        for title in titles.iter().filter(|title| title.problem().is_none()) {
+            let market = title.marketplace.as_bytes();
+            assert!(
+                market.len() <= 16
+                    && market
+                        .iter()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()),
+                "marketplace {:?} accepted",
+                title.marketplace
+            );
+        }
+    }
     check_lookup(&frame.body);
+    check_window(&frame.body);
     let text_again = frame.to_text();
     // Serializing can lengthen an opaque JSON field (`1e9` is written out
     // in full), past the limit the parser enforces: such a frame is never
@@ -150,6 +174,70 @@ fn check_lookup(body: &Body) {
             }
         }
         _ => {}
+    }
+}
+
+/// The window page invariants on an accepted page, for the cursors a
+/// window could have asked with (the first page, and the one just before
+/// the page's `next`).
+fn check_window(body: &Body) {
+    let Body::WindowPage { works, next } = body else {
+        return;
+    };
+    let afters = [0, next.map_or(0, |n| n.saturating_sub(1))];
+    for after in afters {
+        if window_page_problem(after, works, *next).is_some() {
+            continue;
+        }
+        assert!(works.len() <= 100, "too many window works accepted");
+        if let Some(next) = next {
+            assert!(
+                *next > after,
+                "a cursor that does not move forward accepted"
+            );
+        }
+        let mut seen = BTreeSet::new();
+        for work in works {
+            assert!(plain(&work.work, 64), "work key {:?} accepted", work.work);
+            assert!(seen.insert(&work.work), "a work listed twice was accepted");
+            assert!(
+                work.identifiers.len() <= 16,
+                "too many identifiers accepted"
+            );
+            let mut ids = BTreeSet::new();
+            for id in &work.identifiers {
+                assert!(plain(&id.value, 64), "identifier {:?} accepted", id.value);
+                assert_eq!(
+                    id.scheme == LookupScheme::Asin,
+                    !id.marketplace.is_empty(),
+                    "marketplace {:?} accepted on {:?}",
+                    id.marketplace,
+                    id.scheme
+                );
+                assert!(ids.insert(id), "an identifier listed twice was accepted");
+            }
+            assert!(
+                (1..=8).contains(&work.editions.len()),
+                "a window work with {} editions accepted",
+                work.editions.len()
+            );
+            let mut keys = BTreeSet::new();
+            for edition in &work.editions {
+                assert_eq!(
+                    edition.availability,
+                    Availability::Owned,
+                    "a window edition that is not owned was accepted"
+                );
+                assert!(
+                    !edition.metadata.title.trim().is_empty(),
+                    "a blank title accepted"
+                );
+                assert!(
+                    keys.insert((&edition.store, &edition.marketplace, &edition.product_id)),
+                    "an edition listed twice was accepted"
+                );
+            }
+        }
     }
 }
 

@@ -94,6 +94,9 @@ struct LinkShare {
     serial: u64,
     /// The operator's cap, in jobs.
     cap: Option<usize>,
+    /// Whether the link is a window (download off): it takes no slots, and
+    /// its cap is kept for when downloading resumes.
+    window: bool,
     /// The link's share, as its client reads it.
     share: watch::Sender<usize>,
 }
@@ -110,13 +113,20 @@ struct State {
     /// between reading its link and registering); newer than what that
     /// client read, so registration takes them.
     pending_caps: BTreeMap<String, Option<usize>>,
+    /// Window settings saved while their link had no entry, taken at
+    /// registration like `pending_caps`.
+    pending_windows: BTreeMap<String, bool>,
 }
 
 impl State {
     /// Recomputes every link's share and tells the clients whose share
     /// changed.
     fn publish(&self) {
-        let caps: Vec<Option<usize>> = self.links.values().map(|link| link.cap).collect();
+        let caps: Vec<Option<usize>> = self
+            .links
+            .values()
+            .map(|link| if link.window { Some(0) } else { link.cap })
+            .collect();
         let shares = split_slots(self.machine, self.own_busy, &caps);
         for (link, share) in self.links.values().zip(shares) {
             link.share.send_if_modified(|current| {
@@ -195,6 +205,7 @@ impl CapacityShares {
                 own_busy: 0,
                 links: BTreeMap::new(),
                 pending_caps: BTreeMap::new(),
+                pending_windows: BTreeMap::new(),
             }),
             cap_writes: tokio::sync::Mutex::new(()),
         }
@@ -209,7 +220,8 @@ impl CapacityShares {
     }
 
     /// Adds run `serial` of the link to `cluster_id` with its cap,
-    /// replacing an earlier run's entry.
+    /// replacing an earlier run's entry. A window link (`window`, download
+    /// off) takes no slots.
     ///
     /// # Returns
     ///
@@ -219,6 +231,7 @@ impl CapacityShares {
         cluster_id: &str,
         serial: u64,
         cap: Option<LinkJobCap>,
+        window: bool,
     ) -> watch::Receiver<usize> {
         let (share, receiver) = watch::channel(0);
         let mut state = self.lock();
@@ -227,9 +240,16 @@ impl CapacityShares {
             .pending_caps
             .remove(cluster_id)
             .unwrap_or_else(|| cap.map(LinkJobCap::jobs));
-        state
-            .links
-            .insert(cluster_id.to_owned(), LinkShare { serial, cap, share });
+        let window = state.pending_windows.remove(cluster_id).unwrap_or(window);
+        state.links.insert(
+            cluster_id.to_owned(),
+            LinkShare {
+                serial,
+                cap,
+                window,
+                share,
+            },
+        );
         state.publish();
         receiver
     }
@@ -267,6 +287,21 @@ impl CapacityShares {
             // A client may be starting with the cap it read before this
             // write; it takes this one when it registers.
             state.pending_caps.insert(cluster_id.to_owned(), cap);
+        }
+    }
+
+    /// Marks the link to `cluster_id` a window (`true`: download off, no
+    /// slots) or a downloading link again under its cap: at once when it
+    /// runs, else when its client next registers.
+    pub fn set_window(&self, cluster_id: &str, window: bool) {
+        let mut state = self.lock();
+        if let Some(link) = state.links.get_mut(cluster_id) {
+            if link.window != window {
+                link.window = window;
+                state.publish();
+            }
+        } else {
+            state.pending_windows.insert(cluster_id.to_owned(), window);
         }
     }
 
@@ -522,9 +557,9 @@ mod tests {
     fn a_link_hears_its_share_change() {
         let table = CapacityShares::new();
         table.set_machine(4);
-        let a = table.register("a", 1, None);
+        let a = table.register("a", 1, None, false);
         assert_eq!(*a.borrow(), 4);
-        let b = table.register("b", 2, None);
+        let b = table.register("b", 2, None, false);
         assert_eq!((*a.borrow(), *b.borrow()), (2, 2));
         {
             let _own = table.own_job();
@@ -538,11 +573,11 @@ mod tests {
         // A cap saved while a link is not registered yet is taken when it
         // registers, over the one its client read before.
         table.set_cap("c", Some(LinkJobCap::new(0).unwrap()));
-        let c = table.register("c", 9, None);
+        let c = table.register("c", 9, None, false);
         assert_eq!(*c.borrow(), 0);
         table.unregister("c", 9);
         // A stale run's removal leaves the current entry.
-        let b2 = table.register("b", 3, None);
+        let b2 = table.register("b", 3, None, false);
         table.unregister("b", 2);
         assert_eq!(*b2.borrow(), 3);
         table.unregister("b", 3);
@@ -552,6 +587,31 @@ mod tests {
         assert_eq!(*a.borrow(), 4);
         table.set_machine(0);
         assert_eq!(*a.borrow(), 0);
+    }
+
+    /// A window link (download off) takes no slots, so a downloading link
+    /// gets the whole machine; its cap holds again when downloading resumes,
+    /// and a window set before its client registers is taken then.
+    #[test]
+    fn a_window_link_gives_its_share_to_the_downloading_links() {
+        let table = CapacityShares::new();
+        table.set_machine(1);
+        let a = table.register("a", 1, Some(LinkJobCap::new(1).unwrap()), false);
+        let b = table.register("b", 2, None, false);
+        assert_eq!((*a.borrow(), *b.borrow()), (1, 0));
+        table.set_window("a", true);
+        assert_eq!((*a.borrow(), *b.borrow()), (0, 1));
+        table.set_machine(3);
+        assert_eq!((*a.borrow(), *b.borrow()), (0, 3));
+        table.set_window("a", false);
+        assert_eq!((*a.borrow(), *b.borrow()), (1, 2), "a's cap holds again");
+
+        table.set_window("c", true);
+        let c = table.register("c", 3, None, false);
+        assert_eq!(*c.borrow(), 0, "the window saved before it registered");
+        let d = table.register("d", 4, None, true);
+        assert_eq!(*d.borrow(), 0);
+        assert_eq!((*a.borrow(), *b.borrow()), (1, 2));
     }
 
     #[test]
@@ -609,7 +669,7 @@ mod tests {
         let table = CapacityShares::new();
         // Until then a link gets no share and reports no capacity, however
         // small the budget turns out to be or if the node is drained.
-        let share = table.register("c1", 1, None);
+        let share = table.register("c1", 1, None, false);
         assert_eq!(table.machine(), 0);
         assert_eq!(*share.borrow(), 0);
         let sample = NodeHeartbeat {

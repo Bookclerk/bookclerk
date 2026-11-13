@@ -51,6 +51,11 @@
 //! questions and wakes the branch, which pulls them with
 //! [`Body::CatalogQuestions`] and answers with [`Body::CatalogFound`].
 //!
+//! A window (a branch whose link takes no work) reads the books the
+//! library holds for its person with [`Body::WindowBooks`], page by page
+//! ([`Body::WindowPage`], [`WindowWork`]), and merges them by identifier
+//! with the other libraries it joined.
+//!
 //! A host that leaves sends [`Body::NodeLeaving`]; the owner revokes the
 //! node at once. Joining with a sign-in instead of a link is the OAuth
 //! code + PKCE flow of the built-in client [`BRANCH_CLIENT_ID`] ([`OwnerInfo`],
@@ -74,6 +79,7 @@ mod keys;
 mod lookup;
 mod sealed;
 mod signature;
+mod window;
 
 pub use accounts::{
     account_bundle_aad, account_offer_aad, check_account_bundle, open_account_bundle,
@@ -84,9 +90,10 @@ pub use accounts::{
     MAX_CARRIED_FIELD_BYTES, MAX_CARRIED_PLUGIN_KEY_BYTES, MAX_CARRIED_SECRET_BYTES,
 };
 pub use catalog::{
-    is_ancestry, is_cluster_id, is_product_id, is_store_id, CatalogFile, CatalogMetadata,
-    CatalogRef, CatalogTitle, CATALOG_ITEM, MAX_ANCESTRY, MAX_CATALOG_BATCH_TITLES,
-    MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_TITLE_BYTES, MAX_CATALOG_WANTED,
+    is_ancestry, is_cluster_id, is_marketplace, is_product_id, is_store_id, CatalogFile,
+    CatalogMetadata, CatalogRef, CatalogTitle, CATALOG_ITEM, MAX_ANCESTRY,
+    MAX_CATALOG_BATCH_TITLES, MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_TITLE_BYTES,
+    MAX_CATALOG_WANTED, MAX_MARKETPLACE_BYTES,
 };
 pub use clerk::{
     clerk_bootstrap_aad, open_clerk_bootstrap, seal_clerk_bootstrap, ClerkBootstrap, ClerkDatabase,
@@ -130,6 +137,7 @@ pub use signature::{
     verify_auth, ArtifactRequest, AuthContext, AuthError, ARTIFACT_AUTH_SCHEME, ARTIFACT_DOMAIN,
     ARTIFACT_REQUEST_MAX_SKEW_SECS, AUTH_DOMAIN, NONCE_LEN,
 };
+pub use window::{window_page_problem, WindowWork, MAX_WINDOW_WORKS};
 
 /// Path prefix of the owner's artifact endpoint: `GET
 /// /api/node/v1/artifacts/<archive_sha256>` with a signed `Authorization`

@@ -44,6 +44,11 @@
 //! client claims no more than its share, and its heartbeat reports the
 //! owner only that part of the machine's CPU and memory.
 //!
+//! A link whose "Use this computer to download" setting is off makes this
+//! install a window of that library: its supervisor withdraws every plugin
+//! (no job is claimed), and its [`window::WindowReader`] reads the books the
+//! library holds for this install's person instead.
+//!
 //! A close with 4403 (this node revoked) marks the link `revoked`, cancels
 //! held work, and stops that client; the link is not dialed again.
 
@@ -56,6 +61,7 @@ pub mod consent;
 pub mod host_jobs;
 pub mod join;
 pub mod remote_bindings;
+pub mod window;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -465,7 +471,7 @@ async fn supervise_cluster_links(state: Arc<AppState>) {
         // Once per store: state of libraries left or revoked while this
         // daemon was not running (or whose purge failed last time).
         if let Ok(links) = list_cluster_links(&library).await {
-            purge_departed_link_state(&state, &links).await;
+            purge_departed_link_state(&state, &library, &links).await;
         }
         let swapped = loop {
             joins.borrow_and_update();
@@ -542,7 +548,7 @@ async fn purge_after_grace(
     }
     match load_cluster_link(&library, &cluster_id).await {
         Ok(Some(link)) if !purge_cancelled(&store_stopped) => {
-            purge_departed_link_state(&state, &[link]).await;
+            purge_departed_link_state(&state, &library, &[link]).await;
         }
         Ok(_) => {}
         Err(err) => {
@@ -558,7 +564,8 @@ fn purge_cancelled(store_stopped: &watch::Receiver<bool>) -> bool {
     *store_stopped.borrow() || store_stopped.has_changed().is_err()
 }
 
-/// Deletes the plugin state kept for each library in `links` this install
+/// Deletes the plugin state (and window books, in `library`, the store
+/// `links` came from) kept for each library in `links` this install
 /// left or was revoked from, so a library's plugin caches and logins do
 /// not outlive the membership.
 ///
@@ -567,7 +574,11 @@ fn purge_cancelled(store_stopped: &watch::Receiver<bool>) -> bool {
 /// live store records as not active are purged: a subtree this store does
 /// not know (another database's links) is left alone. A purge that fails
 /// is logged and tried again at the next start.
-async fn purge_departed_link_state(state: &Arc<AppState>, links: &[ClusterLink]) {
+async fn purge_departed_link_state(
+    state: &Arc<AppState>,
+    library: &LibraryStore,
+    links: &[ClusterLink],
+) {
     let departed: Vec<_> = links
         .iter()
         .filter(|link| !link.is_active())
@@ -580,6 +591,15 @@ async fn purge_departed_link_state(state: &Arc<AppState>, links: &[ClusterLink])
         .collect();
     if departed.is_empty() {
         return;
+    }
+    // The person's book list from a library this install left goes too,
+    // from the store whose links these are.
+    for (cluster_id, _) in &departed {
+        if let Err(err) =
+            bookclerk_library::control_plane::clear_window_books(library, cluster_id).await
+        {
+            tracing::warn!(%cluster_id, error = %err, "could not clear a departed library's window books; retrying at the next start");
+        }
     }
     let files_dir = state.config.read().await.paths().files_dir.clone();
     let purged = tokio::task::spawn_blocking(move || {
@@ -667,8 +687,11 @@ async fn start_clients(
         let failure = failure_key(&link);
         let serial = NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // The link's share of the machine: its claims stop there, and its
-        // heartbeat reports the library only that part.
-        let share = state.capacity.register(&cluster_id, serial, link.max_jobs);
+        // heartbeat reports the library only that part. A window link
+        // (download off) takes none.
+        let share = state
+            .capacity
+            .register(&cluster_id, serial, link.max_jobs, !link.download);
         let share_entry =
             capacity::ShareEntry::new(Arc::clone(&state.capacity), &cluster_id, serial);
         let config = HostClientConfig {
@@ -747,6 +770,17 @@ async fn start_clients(
                 cluster_id: cluster_id.clone(),
                 handle: handle.clone(),
             }
+            .run(link_shutdown.clone()),
+        )));
+        // The link's window reader (the books the library holds for this
+        // install's person, while the link does not download) stops with
+        // its client the same way.
+        let window_reader = AbortOnDrop(Some(tokio::spawn(
+            window::WindowReader {
+                library: library.clone(),
+                cluster_id: cluster_id.clone(),
+                handle: handle.clone(),
+            }
             .run(link_shutdown),
         )));
         // The client stops on a swap (forwarded from `shutdown`), once its
@@ -783,12 +817,12 @@ async fn start_clients(
             drop(listed);
             drop(share_entry);
             let _ = link_stop.send(true);
-            // Both exit before a client for a new enrollment can start, so
+            // All exit before a client for a new enrollment can start, so
             // one cluster never has two consent supervisors (or two catalog
-            // syncs or answerers). They wind down side by side, so the
+            // syncs, answerers or window readers). They wind down side by side, so the
             // client's exit waits for the slowest of them only.
-            let (mut supervisor, mut catalog_sync, mut catalog_answers) =
-                (supervisor, catalog_sync, catalog_answers);
+            let (mut supervisor, mut catalog_sync, mut catalog_answers, mut window_reader) =
+                (supervisor, catalog_sync, catalog_answers, window_reader);
             tokio::join!(
                 async {
                     if let Some(supervisor) = supervisor.0.take() {
@@ -803,6 +837,11 @@ async fn start_clients(
                 async {
                     if let Some(catalog_answers) = catalog_answers.0.take() {
                         join_or_abort(catalog_answers).await;
+                    }
+                },
+                async {
+                    if let Some(window_reader) = window_reader.0.take() {
+                        join_or_abort(window_reader).await;
                     }
                 },
             );

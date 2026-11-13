@@ -6,7 +6,8 @@
 //! joined the titles in its own library (and, unless its operator turned
 //! that off, the titles its own branches shared with it) in fenced
 //! [`crate::Body::CatalogSync`] batches. A title carries its store, product
-//! id, bibliographic metadata and file manifest, and nothing else: no store
+//! id and marketplace, bibliographic metadata (with its ASIN, ISBN and
+//! content kind) and file manifest, and nothing else: no store
 //! account id, no token, no user identity and no downstream library or node
 //! id. [`CatalogTitle`] and [`CatalogMetadata`] refuse unknown fields, so a
 //! frame that tries to carry one does not parse.
@@ -57,6 +58,9 @@ const MAX_PRODUCT_ID_BYTES: usize = 256;
 /// Longest metadata text field.
 const MAX_TEXT_BYTES: usize = 2048;
 
+/// Longest marketplace.
+pub const MAX_MARKETPLACE_BYTES: usize = 16;
+
 /// One title, as a branch shares it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,6 +70,11 @@ pub struct CatalogTitle {
     pub store: String,
     /// The store's product id (ASIN, ISBN, ...).
     pub product_id: String,
+    /// Lower-cased marketplace of the store listing (`us`, `uk`); empty
+    /// when the store has none. The receiving library scopes the ASIN to
+    /// it, so the title meets the same edition there.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub marketplace: String,
     /// Bibliographic metadata.
     pub metadata: CatalogMetadata,
     /// Storage key of the primary audio file (one of `files`).
@@ -165,6 +174,16 @@ pub fn is_product_id(product_id: &str) -> bool {
         && !product_id.chars().any(char::is_control)
 }
 
+/// True for a marketplace: empty, or up to [`MAX_MARKETPLACE_BYTES`]
+/// lowercase ASCII letters and digits.
+#[must_use]
+pub fn is_marketplace(marketplace: &str) -> bool {
+    marketplace.len() <= MAX_MARKETPLACE_BYTES
+        && marketplace
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+}
+
 /// True for a plain cluster id in an ancestry.
 #[must_use]
 pub fn is_cluster_id(id: &str) -> bool {
@@ -193,8 +212,8 @@ impl CatalogTitle {
         }
     }
 
-    /// Why the title is malformed, or `None`: the store and product id, a
-    /// non-empty bounded title and bounded metadata, between one and
+    /// Why the title is malformed, or `None`: the store, product id and
+    /// marketplace, a non-empty bounded title and bounded metadata, between one and
     /// [`MAX_UPLOAD_FILES`] files with distinct storage keys within
     /// [`MAX_UPLOAD_FILE_BYTES`], and the primary key (and PDF key) among
     /// them.
@@ -205,6 +224,9 @@ impl CatalogTitle {
         }
         if !is_product_id(&self.product_id) {
             return Some("invalid_product_id");
+        }
+        if !is_marketplace(&self.marketplace) {
+            return Some("invalid_marketplace");
         }
         let meta = &self.metadata;
         if meta.title.trim().is_empty() || !text_ok(Some(&meta.title)) {
@@ -288,6 +310,7 @@ mod tests {
         CatalogTitle {
             store: "audible".into(),
             product_id: "B0TEST".into(),
+            marketplace: "us".into(),
             metadata: CatalogMetadata {
                 title: "A Title".into(),
                 authors: Some("An Author".into()),
@@ -327,6 +350,17 @@ mod tests {
         let mut bad = title();
         bad.product_id = " x".into();
         assert_eq!(bad.problem(), Some("invalid_product_id"));
+        for market in ["US", "u-s", "abcdefghijklmnopq"] {
+            let mut bad = title();
+            bad.marketplace = market.into();
+            assert_eq!(bad.problem(), Some("invalid_marketplace"), "{market}");
+        }
+        let mut none = title();
+        none.marketplace = String::new();
+        assert_eq!(none.problem(), None);
+        assert!(!serde_json::to_string(&none)
+            .unwrap()
+            .contains("marketplace"));
         let mut bad = title();
         bad.metadata.title = " ".into();
         assert_eq!(bad.problem(), Some("invalid_title"));
