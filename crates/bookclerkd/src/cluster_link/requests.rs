@@ -139,6 +139,10 @@ impl<A: RequestAcquirer> RequestTaker<A> {
                     ),
                 }
             }
+            // One deadline per wait, so unrelated wakes don't push the
+            // poll back.
+            let poll = tokio::time::sleep(REQUEST_POLL);
+            tokio::pin!(poll);
             loop {
                 tokio::select! {
                     changed = shutdown.changed() => {
@@ -160,7 +164,7 @@ impl<A: RequestAcquirer> RequestTaker<A> {
                         Err(broadcast::error::RecvError::Lagged(_)) => break,
                         Err(broadcast::error::RecvError::Closed) => return,
                     },
-                    () = tokio::time::sleep(REQUEST_POLL) => break,
+                    () = &mut poll => break,
                 }
             }
         }
