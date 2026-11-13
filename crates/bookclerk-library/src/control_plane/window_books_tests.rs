@@ -1025,3 +1025,46 @@ async fn many_editions_repeated_in_one_read_stay_within_the_bind_limit() {
     finish_window_read(&store, "alpha", &read).await.unwrap();
     assert_eq!(window_view(&store).await.unwrap().len(), 40);
 }
+
+/// A title a later scan dropped (its holding removed, its book row kept)
+/// is no longer listed to the branch.
+#[tokio::test]
+async fn a_title_a_scan_dropped_is_not_listed() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    hold(
+        &store,
+        riley,
+        "riley-acct",
+        &["B0KEPT0001".into(), "B0GONE0001".into()],
+    )
+    .await;
+    add_branch(&store, BRANCH, riley).await;
+    let listed = |works: Vec<WindowWork>| -> Vec<String> {
+        works
+            .into_iter()
+            .flat_map(|work| work.editions)
+            .map(|edition| edition.product_id)
+            .collect()
+    };
+    assert_eq!(
+        listed(read_all(&store, BRANCH).await),
+        vec!["B0KEPT0001", "B0GONE0001"]
+    );
+
+    store
+        .remove_account_holdings(
+            PLUGIN,
+            "riley-acct",
+            crate::store::HoldingSelection::Products(&["B0GONE0001".into()]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed(read_all(&store, BRANCH).await), vec!["B0KEPT0001"]);
+}

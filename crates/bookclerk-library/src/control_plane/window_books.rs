@@ -43,7 +43,8 @@ use super::catalog_lookup::{
 };
 use super::cluster_links::list_cluster_links;
 use crate::entities::{
-    account_links, books, nodes, portal_identities, store_listings, window_book_parts, window_books,
+    account_links, books, holdings, nodes, portal_identities, store_listings, window_book_parts,
+    window_books,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -154,6 +155,76 @@ fn grouping_key(key: &str) -> &str {
 /// budget when it cannot be encoded, so it never fits.
 fn encoded_len<T: serde::Serialize>(value: &T) -> usize {
     serde_json::to_vec(value).map_or(WINDOW_PAGE_BUDGET, |bytes| bytes.len() + 1)
+}
+
+/// The books of `rows` their account still holds: a holding of the
+/// book's store listing (plugin, marketplace, product id) on that account.
+///
+/// A scan that drops a title (a returned loan, a refund) removes the
+/// account's holding but keeps the book row, so the row alone would list
+/// the title as owned on every read.
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn still_held(store: &LibraryStore, rows: Vec<books::Model>) -> Result<Vec<books::Model>> {
+    if rows.is_empty() {
+        return Ok(rows);
+    }
+    let products: Vec<String> = rows
+        .iter()
+        .map(|b| b.product_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let listings = read_chunked_all(store, &products, |part| {
+        store_listings::Entity::find().filter(store_listings::Column::ProductId.is_in(part))
+    })
+    .await?;
+    let listing_ids: Vec<String> = listings.iter().map(|l| l.id.clone()).collect();
+    let held = read_chunked_all(store, &listing_ids, |part| {
+        holdings::Entity::find()
+            .filter(holdings::Column::ListingId.is_in(part))
+            .filter(holdings::Column::AccountId.is_not_null())
+    })
+    .await?;
+    let listing_of: HashMap<String, (String, String, String)> = listings
+        .into_iter()
+        .map(|l| {
+            (
+                l.id,
+                (
+                    l.plugin_key,
+                    l.marketplace.to_ascii_lowercase(),
+                    l.product_id,
+                ),
+            )
+        })
+        .collect();
+    let held: BTreeSet<(String, String, String, String)> = held
+        .into_iter()
+        .filter_map(|h| {
+            let (plugin, marketplace, product) = listing_of.get(&h.listing_id)?.clone();
+            let account = h.account_id?;
+            (h.plugin_key.as_deref().is_none_or(|key| key == plugin)).then_some((
+                plugin,
+                account,
+                marketplace,
+                product,
+            ))
+        })
+        .collect();
+    Ok(rows
+        .into_iter()
+        .filter(|b| {
+            held.contains(&(
+                b.plugin_key.clone(),
+                b.account_id.clone(),
+                b.marketplace.trim().to_ascii_lowercase(),
+                b.product_id.clone(),
+            ))
+        })
+        .collect())
 }
 
 /// The books `select` reads, and the ids it matched in order.
@@ -324,6 +395,8 @@ async fn window_books_page_by(
         .into_iter()
         .filter(|b| accounts.contains(&(b.plugin_key.clone(), b.account_id.clone())))
         .collect();
+    // A scan that drops a title removes its holding, not its book row.
+    let rows = still_held(store, rows).await?;
     let work_of_book = works_of_books(store, &rows).await?;
     let work_ids: Vec<String> = work_of_book
         .values()
