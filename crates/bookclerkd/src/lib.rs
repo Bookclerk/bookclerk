@@ -62,7 +62,7 @@ pub mod embedded;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bookclerk_config::{
@@ -150,8 +150,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             .map_err(|err| anyhow::anyhow!("invalid --listen / BOOKCLERK_DAEMON_LISTEN: {err}"))?;
     }
 
-    // Held until the daemon exits: dropping it stops stderr logging.
-    let _logging = init_logging(&config, "bookclerkd");
+    init_logging(&config, "bookclerkd");
     serve_listeners(start_host(config, HostMode::Listening).await?).await
 }
 
@@ -164,12 +163,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 /// * `syslog_identifier` - The name the OS log facility records
 ///   (`bookclerkd`, or the desktop window's binary name).
 ///
-/// # Returns
-///
-/// The logging handle. Keep it for as long as the process logs: it owns
-/// the non-blocking stderr writer, which stops when it is dropped.
-#[must_use = "dropping the handle stops stderr logging"]
-fn init_logging(config: &Config, syslog_identifier: &str) -> LoggingHandle {
+/// The logging handle is kept in [`LOGGING`] for the rest of the process,
+/// so stderr logging keeps running after this returns. A second call keeps
+/// the first handle; its own subscriber is not installed either.
+fn init_logging(config: &Config, syslog_identifier: &str) {
     let log_format = if config.daemon.json_logs {
         LogFormat::Json
     } else {
@@ -204,7 +201,27 @@ fn init_logging(config: &Config, syslog_identifier: &str) -> LoggingHandle {
             "diagnostics.share_reports=true — redacted reports POST to Worker /submit (B2 via Cloudflare)"
         );
     }
-    logging
+    keep_logging(logging);
+}
+
+/// The process's logging handle, kept until the process exits: it owns the
+/// non-blocking stderr writer, which stops when the handle is dropped.
+/// Logging is process-wide, so the handle is too.
+static LOGGING: OnceLock<LoggingHandle> = OnceLock::new();
+
+/// Keeps `logging` in [`LOGGING`] for the rest of the process.
+///
+/// # Arguments
+///
+/// * `logging` - The handle [`init_logging`] just built. When a handle is
+///   already kept, this one is dropped: its subscriber was not installed,
+///   so nothing writes through it.
+///
+/// # Returns
+///
+/// Whether `logging` was kept (`false` when an earlier handle already was).
+fn keep_logging(logging: LoggingHandle) -> bool {
+    LOGGING.set(logging).is_ok()
 }
 
 /// Whether the host serves HTTP listeners or runs embedded in a window.
@@ -615,5 +632,26 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         ctrl_c.await;
+    }
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use super::{init_logging, Config, LoggingHandle, LOGGING};
+
+    /// Where the kept handle lives, to tell one handle from another.
+    fn kept() -> Option<*const LoggingHandle> {
+        LOGGING.get().map(std::ptr::from_ref)
+    }
+
+    #[test]
+    fn logging_outlives_its_setup_and_a_second_setup_keeps_the_first() {
+        let files = tempfile::tempdir().unwrap();
+        let config = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+        init_logging(&config, "bookclerkd-test");
+        let first = kept();
+        assert!(first.is_some(), "the handle must outlive init_logging");
+        init_logging(&config, "bookclerkd-test");
+        assert_eq!(kept(), first, "a second setup keeps the first handle");
     }
 }
