@@ -3,7 +3,6 @@ import { JoinShell } from "@/components/JoinShell";
 import { JoinWizard } from "@/components/JoinWizard";
 import { Button } from "@/components/ui/button";
 import { isDesktopWindow } from "@/lib/desktop";
-import { makeWindowOf } from "@/lib/join";
 
 /** Props for {@link WelcomeScreen}. */
 export interface WelcomeScreenProps {
@@ -24,8 +23,8 @@ export interface WelcomeScreenProps {
  * In the desktop window joining comes first: the window opens on the join
  * form (the library's address, then signing in as a member), and hosting a
  * library on this computer is the alternative below it. A join there makes
- * this computer a window of the library (downloading off); the sign-in path
- * does that on `/join/callback`, an invite does it here.
+ * this computer a window of the library (downloading off): the sign-in
+ * path does that on `/join/callback`, an invite in {@link JoinWizard}.
  */
 export function WelcomeScreen({
   defaultBranchName,
@@ -91,11 +90,10 @@ export function WelcomeScreen({
       >
         <JoinWizard
           defaultBranchName={defaultBranchName}
-          onJoined={(origin, link) => {
-            void makeWindowOf(link).then((ok) => {
-              setAsWindow(ok);
-              setJoinedTo(origin);
-            });
+          desktop
+          onJoined={(origin, _link, asWindow) => {
+            setAsWindow(asWindow);
+            setJoinedTo(origin);
           }}
         />
         <div className="mt-6 border-t border-ink/10 pt-4">
