@@ -356,6 +356,13 @@ impl LocalKeeper for DaemonKeeper {
         refreshed: &[u8],
     ) -> Option<bool> {
         let library = self.state.library_snapshot().await;
+        // A shareable account's copies each refresh on their own: its
+        // refresh goes back to the library as before.
+        let sharing = crate::node_api::branch::credential_sharing(&self.state, &library).await;
+        if sharing.get(plugin_key) != Some(&bookclerk_plugin_host::CredentialSharing::SingleKeeper)
+        {
+            return None;
+        }
         match bookclerk_library::control_plane::keeps_for_link(
             &library,
             plugin_key,

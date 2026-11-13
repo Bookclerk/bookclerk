@@ -1032,6 +1032,21 @@ async fn a_branch_adds_a_connection_to_its_library_and_disconnects_it_everywhere
         .unwrap()
         .iter()
         .any(|link| link.account_id == "den@example.com"));
+    // A shareable account's refresh in a job for the library is not kept
+    // here instead: it goes back to the library as a write-back.
+    {
+        use super::super::host_jobs::{DaemonKeeper, LocalKeeper as _};
+        let keeper = DaemonKeeper {
+            state: Arc::clone(&host_state),
+            cluster_id: cluster_id.clone(),
+        };
+        assert_eq!(
+            keeper
+                .keep(&plugin_key, "den@example.com", b"{}", br#"{"t":"2"}"#)
+                .await,
+            None
+        );
+    }
 
     // Disconnect everywhere: gone on the branch and on the library.
     let (status, _, gone) = call(

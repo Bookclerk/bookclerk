@@ -48,7 +48,7 @@ use super::work::{error, HostContext};
 
 /// Serializes `accounts.add` and `accounts.remove` on this owner node,
 /// across every branch connection. Both are rare, person-driven actions.
-static ACCOUNTS_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(super) static ACCOUNTS_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The branch's owner user, while one is assigned and active.
 async fn branch_owner(

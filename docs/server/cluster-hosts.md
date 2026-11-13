@@ -281,7 +281,9 @@ gone.
   accounts another branch already keeps. The answer,
   `accounts.added`, counts what was added, already there, taken, or not
   kept, and whether the rule refused them all. The library handles
-  `accounts.add` and `accounts.remove` one at a time, and refuses either
+  `accounts.add`, `accounts.remove`, `accounts.update` and the
+  connections a join sends one at a time, so two branches never both
+  become an account's keeper. It refuses a branch's request
   (`superseded`) unless the connection it came on is still the branch's
   live one, so a request the branch gave up on can't land after a later
   one.

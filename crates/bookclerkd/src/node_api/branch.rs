@@ -583,6 +583,10 @@ async fn sealed_connections(
             return None;
         }
     }
+    // One at a time with branch offers and other joins, from choosing what
+    // travels to recording where it went: two branches joining at once
+    // must not both become an account's keeper.
+    let _serialized = super::host_accounts::ACCOUNTS_GATE.lock().await;
     let travelling = travelling_accounts(
         state,
         library,
