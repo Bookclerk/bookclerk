@@ -786,7 +786,8 @@ async fn apply_catalog_batch(
 /// holding's own uploads never count against it, nor do the branch's
 /// uploads for a holding that is gone (an earlier holding of the same
 /// title, removed when the branch stopped sharing and held again since
-/// under a new id).
+/// under a new id). A key claimed by an upload that was aborted, or left
+/// open past its token's life, holds no audio and does not count either.
 async fn edition_has_other_audio(
     store: &LibraryStore,
     node_id: &str,
@@ -797,6 +798,23 @@ async fn edition_has_other_audio(
         .filter(edition_files::Column::OwnerKind.eq("edition"))
         .filter(edition_files::Column::OwnerId.eq(edition_id))
         .filter(edition_files::Column::Role.eq(crate::store::FileRole::Audio.as_str()))
+        .filter(
+            edition_files::Column::Writer.not_in_subquery(
+                Query::select()
+                    .column(node_upload_sessions::Column::UploadId)
+                    .from(node_upload_sessions::Entity)
+                    .cond_where(
+                        Condition::any()
+                            .add(node_upload_sessions::Column::State.eq("aborted"))
+                            .add(
+                                Condition::all()
+                                    .add(node_upload_sessions::Column::State.eq("open"))
+                                    .add(node_upload_sessions::Column::ExpiresAt.lt(stamp())),
+                            ),
+                    )
+                    .to_owned(),
+            ),
+        )
         .filter(
             edition_files::Column::Writer.not_in_subquery(
                 Query::select()

@@ -2191,3 +2191,42 @@ async fn a_branchs_two_listings_of_one_edition_are_delivered_once() {
         "p2's edition already has p1's audio"
     );
 }
+
+/// Keys claimed by another branch's upload that was abandoned hold no
+/// audio: the edition is still asked for.
+#[tokio::test]
+async fn an_abandoned_claim_does_not_suppress_another_branchs_delivery() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, member) = world(dir.path()).await;
+    add_node(&store, "branch-c", "host", Some(member)).await;
+    let key = "Author/p1/p1.m4b";
+    let fence = open_branch(&store, BRANCH, &[title_with("p1", key, &[])]).await;
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_branch_local(&store, BRANCH, fence, "p1", &[key]).await
+    else {
+        panic!("expected a grant");
+    };
+    open_branch(&store, "branch-c", &[title_with("p1", "Other/p1.m4b", &[])]).await;
+    assert!(
+        pending_deliveries(&store, "branch-c", 10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "an open upload's claim stands while it may still arrive"
+    );
+    // The upload's token lapses without its audio.
+    node_upload_sessions::Entity::update_many()
+        .col_expr(
+            node_upload_sessions::Column::ExpiresAt,
+            sea_orm::sea_query::Expr::value("2000-01-01T00:00:00Z"),
+        )
+        .filter(node_upload_sessions::Column::UploadId.eq(upload_id))
+        .exec(store.db())
+        .await
+        .unwrap();
+    assert_eq!(
+        pending_deliveries(&store, "branch-c", 10).await.unwrap(),
+        vec![reference("p1")]
+    );
+}
