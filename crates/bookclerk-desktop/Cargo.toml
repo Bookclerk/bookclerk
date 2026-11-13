@@ -18,13 +18,14 @@ path = "src/main.rs"
 # development files to build (WebKitGTK 4.1 on Linux); see
 # docs/contributing/ui/README.md. Without it the binary only explains that.
 default = []
-window = ["dep:tauri", "dep:tauri-build"]
+window = ["dep:bookclerkd", "dep:tokio", "dep:tracing", "dep:tauri", "dep:tauri-build"]
 
 [dependencies]
 anyhow.workspace = true
-bookclerkd = { path = "../bookclerkd" }
-tokio.workspace = true
-tracing.workspace = true
+# The in-process host and its runtime, which only the window runs.
+bookclerkd = { path = "../bookclerkd", optional = true }
+tokio = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 # Default features minus `compression` (the window embeds no assets: the
 # web app comes from the host over the custom scheme).
 tauri = { version = "2.12.5", default-features = false, features = ["wry", "common-controls-v6"], optional = true }
