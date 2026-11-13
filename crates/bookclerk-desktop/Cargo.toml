@@ -1,0 +1,36 @@
+[package]
+name = "bookclerk-desktop"
+description = "Desktop window for Bookclerk: the host runs in-process and the web app talks to it over a custom scheme, with no listener"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "bookclerk-desktop"
+path = "src/main.rs"
+
+[features]
+# The Tauri window. Off by default because it needs the platform webview's
+# development files to build (WebKitGTK 4.1 on Linux); see
+# docs/contributing/ui/README.md. Without it the binary only explains that.
+default = []
+window = ["dep:tauri", "dep:tauri-build"]
+
+[dependencies]
+anyhow.workspace = true
+bookclerkd = { path = "../bookclerkd" }
+tokio.workspace = true
+tracing.workspace = true
+# Default features minus `compression` (the window embeds no assets: the
+# web app comes from the host over the custom scheme).
+tauri = { version = "2.12.5", default-features = false, features = ["wry", "common-controls-v6"], optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2.5", default-features = false, optional = true }
+
+[lints]
+workspace = true

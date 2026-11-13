@@ -13807,6 +13807,380 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
+    "/api/config/join/connections": {
+      "post": {
+        "tags": [
+          "Cluster"
+        ],
+        "summary": "`POST /api/config/join/connections`: \"Add my connections to *library*\".",
+        "operationId": "post_join_connections",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddConnectionsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What the library kept.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionsAdded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No accounts, or more than 64 (`invalid_request`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "name between 1 and 64 accounts",
+                  "error": "invalid_request"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not the person this branch belongs to (`not_branch_person`). A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "not_branch_person": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "detail": "sign in as the person this branch belongs to",
+                      "error": "not_branch_person"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This install is not a branch of that library (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "this install is not a branch of that library",
+                  "error": "not_found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The library refused the offer (`refused`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "no_owner",
+                  "error": "refused"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `cluster_id` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The library database could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The library could not be reached (`unavailable`). The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "the library could not be reached; try again",
+                  "error": "unavailable"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/config/join/connections/disconnect": {
+      "post": {
+        "tags": [
+          "Cluster"
+        ],
+        "summary": "`POST /api/config/join/connections/disconnect`: disconnects one of the\nperson's store accounts here, and with `everywhere` in every linked\nlibrary it was shared with.",
+        "operationId": "post_join_connections_disconnect",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisconnectBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Where the account is disconnected now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Disconnected"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not the person this branch belongs to (`not_branch_person`). A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "not_branch_person": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "detail": "sign in as the person this branch belongs to",
+                      "error": "not_branch_person"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `plugin_key` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The library database could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
     "/api/config/join/capacity": {
       "post": {
         "tags": [
@@ -26169,6 +26543,27 @@
   },
   "components": {
     "schemas": {
+      "AccountRef": {
+        "type": "object",
+        "description": "One store account, by storefront plugin key and store account id.",
+        "required": [
+          "plugin_key",
+          "account_id"
+        ],
+        "properties": {
+          "plugin_key": {
+            "type": "string",
+            "description": "Provenance-qualified plugin key of the storefront, as sent.",
+            "example": "platform:bookclerk/bookclerk-plugin-source-libro#libro"
+          },
+          "account_id": {
+            "type": "string",
+            "description": "Store account id, as sent.",
+            "example": "reader@example.com"
+          }
+        },
+        "additionalProperties": false
+      },
       "AcquireRequestBody": {
         "type": "object",
         "description": "Optional body for `POST /api/library/acquire`.",
@@ -26314,6 +26709,29 @@
             "example": 4
           }
         }
+      },
+      "AddConnectionsBody": {
+        "type": "object",
+        "description": "`POST /api/config/join/connections` body.",
+        "required": [
+          "cluster_id",
+          "accounts"
+        ],
+        "properties": {
+          "cluster_id": {
+            "type": "string",
+            "description": "The library (owner cluster id) to add the connections to.",
+            "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
+          },
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountRef"
+            },
+            "description": "The person's accounts to add; 1 to 64."
+          }
+        },
+        "additionalProperties": false
       },
       "ApiError": {
         "type": "object",
@@ -28621,6 +29039,60 @@
           "clerk"
         ]
       },
+      "ConnectionsAdded": {
+        "type": "object",
+        "description": "JSON body after `POST /api/config/join/connections`.",
+        "required": [
+          "added",
+          "already_here",
+          "taken",
+          "failed",
+          "not_sent",
+          "not_allowed"
+        ],
+        "properties": {
+          "added": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Accounts now connected in the library for the person.",
+            "example": 1,
+            "minimum": 0
+          },
+          "already_here": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Accounts the person had already connected there.",
+            "example": 0,
+            "minimum": 0
+          },
+          "taken": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Accounts connected to someone else there; left as they are.",
+            "example": 0,
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Accounts that could not be kept there.",
+            "example": 0,
+            "minimum": 0
+          },
+          "not_sent": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Accounts not sent: not the person's, not connected, or of a\nstorefront whose sign-ins can't be shared.",
+            "example": 0,
+            "minimum": 0
+          },
+          "not_allowed": {
+            "type": "boolean",
+            "description": "The library's operator does not let the person connect store\naccounts there; nothing was kept.",
+            "example": false
+          }
+        }
+      },
       "ConnectionsResponse": {
         "type": "object",
         "description": "JSON body for `GET /connections`.",
@@ -29109,6 +29581,66 @@
           "placed",
           "unplaced"
         ]
+      },
+      "DisconnectBody": {
+        "type": "object",
+        "description": "`POST /api/config/join/connections/disconnect` body.",
+        "required": [
+          "plugin_key",
+          "account_id"
+        ],
+        "properties": {
+          "plugin_key": {
+            "type": "string",
+            "description": "Provenance-qualified plugin key of the storefront.",
+            "example": "platform:bookclerk/bookclerk-plugin-source-libro#libro"
+          },
+          "account_id": {
+            "type": "string",
+            "description": "Store account id.",
+            "example": "reader@example.com"
+          },
+          "everywhere": {
+            "type": "boolean",
+            "description": "Also disconnect it in every linked library it was shared with;\nabsent means `false`.",
+            "example": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "Disconnected": {
+        "type": "object",
+        "description": "JSON body after `POST /api/config/join/connections/disconnect`.",
+        "required": [
+          "here",
+          "libraries",
+          "unreached"
+        ],
+        "properties": {
+          "here": {
+            "type": "boolean",
+            "description": "The account was the person's here and is disconnected here now.",
+            "example": true
+          },
+          "libraries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Linked libraries (owner cluster ids) that confirmed the disconnect.",
+            "example": [
+              "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
+            ]
+          },
+          "unreached": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Linked libraries that could not be reached or refused; the account\nstays connected there until the person disconnects it there.",
+            "example": []
+          }
+        }
       },
       "DiscoverFeed": {
         "type": "object",

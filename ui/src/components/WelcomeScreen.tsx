@@ -2,6 +2,7 @@ import { useState } from "react";
 import { JoinShell } from "@/components/JoinShell";
 import { JoinWizard } from "@/components/JoinWizard";
 import { Button } from "@/components/ui/button";
+import { isDesktopWindow } from "@/lib/desktop";
 
 /** Props for {@link WelcomeScreen}. */
 export interface WelcomeScreenProps {
@@ -11,14 +12,25 @@ export interface WelcomeScreenProps {
   onStartNew: () => void;
   /** An invite joined this install to a library. */
   onJoined: () => void;
+  /** Whether the app runs in the desktop window (defaults to detecting it). */
+  desktop?: boolean;
 }
 
 /**
  * First start of a fresh install (operator only): start a new library, or
  * join an existing one as a branch.
+ *
+ * In the desktop window joining comes first: the window opens on the join
+ * form (the library's address, then signing in as a member), and hosting a
+ * library on this computer is the alternative below it.
  */
-export function WelcomeScreen({ defaultBranchName, onStartNew, onJoined }: WelcomeScreenProps) {
-  const [joining, setJoining] = useState(false);
+export function WelcomeScreen({
+  defaultBranchName,
+  onStartNew,
+  onJoined,
+  desktop = isDesktopWindow(),
+}: WelcomeScreenProps) {
+  const [joining, setJoining] = useState(desktop);
   const [joinedTo, setJoinedTo] = useState<string | null>(null);
 
   if (joinedTo) {
@@ -35,6 +47,25 @@ export function WelcomeScreen({ defaultBranchName, onStartNew, onJoined }: Welco
         <Button type="button" onClick={onJoined}>
           Open Settings → Library
         </Button>
+      </JoinShell>
+    );
+  }
+
+  if (joining && desktop) {
+    return (
+      <JoinShell
+        title="Join your library"
+        lead="Enter your library's address, with its port if it has one, then sign in as a member. This computer becomes a branch of that library, and nothing the library sends runs here until you approve it."
+      >
+        <JoinWizard
+          defaultBranchName={defaultBranchName}
+          onJoined={(origin) => setJoinedTo(origin)}
+        />
+        <div className="mt-6 border-t border-ink/10 pt-4">
+          <Button type="button" variant="secondary" onClick={onStartNew}>
+            Host a library on this computer instead
+          </Button>
+        </div>
       </JoinShell>
     );
   }

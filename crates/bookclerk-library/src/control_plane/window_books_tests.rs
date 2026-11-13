@@ -253,6 +253,7 @@ async fn many_books_page_out_within_every_profiles_limits() {
             work_for_members: Set(0),
             keep_member_copies: Set(0),
             download: Set(0),
+            person_user_id: Set(None),
             max_jobs: Set(None),
         }
         .insert(store.db())
@@ -273,6 +274,7 @@ async fn many_books_page_out_within_every_profiles_limits() {
             work_for_members: Set(0),
             keep_member_copies: Set(0),
             download: Set(1),
+            person_user_id: Set(None),
             max_jobs: Set(None),
         }
         .insert(store.db())
@@ -685,6 +687,7 @@ async fn an_edition_wider_than_a_cell_is_kept_whole_under_every_profile() {
             work_for_members: Set(0),
             keep_member_copies: Set(0),
             download: Set(0),
+            person_user_id: Set(None),
             max_jobs: Set(None),
         }
         .insert(store.db())

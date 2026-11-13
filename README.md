@@ -193,9 +193,9 @@ JSON POST bodies need `Content-Type: application/json`.
 
 Headless multi-source acquire, daemon, destinations, Audiobookshelf
 integration, the plugin host, an MVP web library GUI, and an optional
-in-process tray→browser companion are in active development. An embedded Tauri
-window is deferred until an OSV-clean GTK4 graph is available (see
-[docs/contributing/ui/README.md](docs/contributing/ui/README.md#desktop-shell-path)). Libation Classic/Chardonnay CLI parity for the
+in-process tray→browser companion are in active development. An early desktop
+window (Tauri, no listener) can be built from source (see
+[docs/contributing/ui/README.md](docs/contributing/ui/README.md#the-desktop-window)). Libation Classic/Chardonnay CLI parity for the
 Audible acquire surface is tracked in
 [docs/contributing/research/libation-parity.md](docs/contributing/research/libation-parity.md).
 

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Bookclerk",
+  "identifier": "app.bookclerk.desktop",
+  "app": {
+    "windows": [],
+    "withGlobalTauri": false,
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": false,
+    "icon": [
+      "../../assets/brand/png/mark/bookclerk-mark-256.png",
+      "../../assets/brand/web/favicon.ico"
+    ]
+  }
+}

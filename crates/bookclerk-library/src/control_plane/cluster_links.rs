@@ -163,6 +163,10 @@ pub struct ClusterLink {
     /// of its plugins, and reads the books the library holds for this
     /// install's person instead (`control_plane::window_books`).
     pub download: bool,
+    /// The local user who joined the library through this link, when one
+    /// could be named: the only person who may add store connections to
+    /// that library, or withdraw them from it, through this link.
+    pub person_user_id: Option<i64>,
 }
 
 /// The most jobs a branch runs for one library at once, as its operator
@@ -259,7 +263,7 @@ impl<'de> Deserialize<'de> for CapacityBody {
 /// # Errors
 ///
 /// Returns the deserializer's error for anything but an object `T` reads.
-fn from_object<'de, D, T>(
+pub(super) fn from_object<'de, D, T>(
     deserializer: D,
     expecting: &'static str,
 ) -> std::result::Result<T, D::Error>
@@ -523,6 +527,7 @@ impl From<cluster_links::Model> for ClusterLink {
             max_jobs: LinkJobCap::from_column(row.max_jobs),
             list_members_books: row.list_members_books != 0,
             download: row.download != 0,
+            person_user_id: row.person_user_id,
         }
     }
 }
@@ -570,7 +575,9 @@ pub fn decode_spki_pin(pin: &str) -> Result<[u8; 32]> {
 /// a key row left by a failed write is replaced by the next enrollment.
 /// When the re-enrollment minted a different node id, the earlier node's
 /// key row is deleted once the new link row is stored, so the sealed
-/// private keys of a node the owner no longer knows are not kept.
+/// private keys of a node the owner no longer knows are not kept. The link
+/// is stored with no person bound (a re-enrollment unbinds it); the join
+/// binds one with [`set_cluster_link_person`].
 ///
 /// # Errors
 ///
@@ -621,6 +628,11 @@ pub async fn record_cluster_link(
         max_jobs: Set(None),
         list_members_books: Set(1),
         download: Set(1),
+        // Bound by the join afterwards with [`set_cluster_link_person`]. A
+        // re-enrollment unbinds it too (the conflict update below), so a
+        // join that cannot name its person leaves the link usable by
+        // nobody rather than by whoever joined before.
+        person_user_id: Set(None),
     };
     let insert = cluster_links::Entity::insert(row).on_conflict(
         OnConflict::column(cluster_links::Column::OwnerClusterId)
@@ -630,6 +642,7 @@ pub async fn record_cluster_link(
                 cluster_links::Column::SpkiPin,
                 cluster_links::Column::State,
                 cluster_links::Column::EnrolledAt,
+                cluster_links::Column::PersonUserId,
             ])
             .to_owned(),
     );
@@ -937,6 +950,44 @@ pub async fn set_cluster_link_download(
         return Ok(load_cluster_link(store, owner_cluster_id).await?.is_some());
     }
     Ok(true)
+}
+
+/// Binds the link to the local user who joined the library through it.
+///
+/// Only that person may add their store connections to the library, or
+/// withdraw them from it, through this link.
+///
+/// # Arguments
+///
+/// * `owner_cluster_id` - The library the link joined.
+/// * `remote_node_id` - The node id that join enrolled as: a join another
+///   one replaced since binds nothing.
+/// * `person_user_id` - The local user who joined (`None` unbinds it).
+///
+/// # Returns
+///
+/// Whether the link exists as that node (`false` otherwise).
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn set_cluster_link_person(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    remote_node_id: &str,
+    person_user_id: Option<i64>,
+) -> Result<bool> {
+    let update = cluster_links::Entity::update_many()
+        .col_expr(
+            cluster_links::Column::PersonUserId,
+            Expr::value(person_user_id),
+        )
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(cluster_links::Column::RemoteNodeId.eq(remote_node_id));
+    let updated = store
+        .exec_bumped(update, LiveTopic::Clusters, Bump::Always)
+        .await?;
+    Ok(updated == 1)
 }
 
 /// Sets a link's two work settings: "Download for other members of
@@ -1471,13 +1522,26 @@ mod tests {
             .await
             .is_err());
 
-        // Re-enrolling replaces the link and its keys and reactivates it.
+        // Re-enrolling replaces the link and its keys and reactivates it,
+        // and unbinds the person until the join names one again.
+        assert!(
+            set_cluster_link_person(&store, "cluster-1", "node-1", Some(7))
+                .await
+                .unwrap()
+        );
+        // A join that enrolled as another node binds nothing.
+        assert!(
+            !set_cluster_link_person(&store, "cluster-1", "node-0", Some(8))
+                .await
+                .unwrap()
+        );
         let fresh = ClusterLinkKeys::from_bytes(&[3; 32], &[4; 32]);
         let again = record_cluster_link(&store, &new_link(None), &fresh)
             .await
             .unwrap();
         assert!(again.is_active());
         assert_eq!(again.spki_pin, None);
+        assert_eq!(again.person_user_id, None);
         let loaded = load_cluster_link_keys(&store, &again).await.unwrap();
         assert_eq!(loaded.sign_seed(), &[3; 32]);
     }

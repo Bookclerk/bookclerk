@@ -229,7 +229,10 @@ accounts and which of them would travel.
   branch's single active Owner. Each account is one atomic batch: the
   account row, its secrets re-sealed with the branch's own key, the link
   to the person, and a `received` row in `account_shares`. An account
-  already linked to someone else on the branch is left as it is, and one
+  the person already has there keeps its own credentials but still gets
+  the `received` row, so disconnecting everywhere reaches that library
+  too. An account already linked to someone else on the branch is left
+  as it is, and one
   that came without a secret is not added. The join's answer counts what
   was added, already there, taken, or not kept.
 - **The branch operator's rule.** Each operator decides per member
@@ -242,6 +245,60 @@ accounts and which of them would travel.
   the rule is turned off (or the member is disabled) stops: each account
   is added in its own batch that checks the rule again, and the ones not
   yet added count as not kept.
+
+### Adding connections later, and disconnecting everywhere
+
+A branch's person can add store connections to a library the branch
+already joined, and take one back from every library at once. The join
+binds each link to its person: the Owner who signed in to run the join,
+or else the branch's single active Owner (a join that can name neither
+binds nobody). Only an active Owner may call these routes, and only
+through the links they joined: anyone else, or an add through another
+Owner's link, gets `403 not_branch_person`, and a disconnect leaves other
+Owners' libraries alone.
+Each call to a library is bounded at 12 seconds, inside the routes'
+30-second deadline; the branch runs one such request at a time, so an
+offer never reaches a library after a disconnect reported the account
+gone.
+
+- **Add to a library.** On the branch, **Accounts** shows **Add to
+  *library*** beside each connection
+  (`POST /api/config/join/connections` with `{cluster_id, accounts}`, at
+  most 64). The branch picks the person's own connected accounts of
+  shareable storefronts, records each as sent to `link:<cluster id>` in
+  `account_shares`, and sends them over the link's socket as
+  `accounts.add`: one bundle sealed to the connection's owner box key from
+  `welcome`, bound to the cluster and node ids under its own
+  associated-data domain, so a joining bundle never opens as an offer.
+- **On the library.** The library keeps the accounts for the user its node
+  row names as the branch's owner (the user who let the branch join),
+  under its own per-member rule, exactly as a branch keeps a joining
+  bundle: one guarded atomic batch per account, a `received` row against
+  `node:<node id>`, and an audit row `branch_connections_added`. Accounts
+  of storefronts that are not shareable there are not kept. The answer,
+  `accounts.added`, counts what was added, already there, taken, or not
+  kept, and whether the rule refused them all. The library handles
+  `accounts.add` and `accounts.remove` one at a time, and refuses either
+  (`superseded`) unless the connection it came on is still the branch's
+  live one, so a request the branch gave up on can't land after a later
+  one.
+- **Disconnect everywhere.** **Revoke everywhere** on the branch
+  (`POST /api/config/join/connections/disconnect` with
+  `everywhere: true`) disconnects it on the branch first, then sends
+  `accounts.remove` up every link the account was shared with, in either
+  direction, all at once. A link the branch left or lost is named in
+  `unreached`. Each library removes the person's links to the account and, in
+  the same atomic batch, deletes its secrets and marks it revoked when no
+  other member's link holds it. When it is the only holder, the library
+  first marks the account revoked, so a scan still running can't write
+  more, then removes its holdings (each with a `holding_removed` event)
+  and its scan checkpoints, as any revocation does, and only then the
+  links: a failed step is retried by disconnecting again. A library that can't be reached is named
+  in the answer's `unreached`, and the account stays connected there.
+  **Revoke here** (or `everywhere: false`) disconnects it on the branch
+  only.
+
+Disconnecting on a library does not yet reach its branches.
 
 > [!NOTE]
 > A retry of the same exchange (a lost answer) replays the same node, and
@@ -913,10 +970,10 @@ in the library, marked as from a branch that left (see
   `SECRETS` reach only a node trusted with every job.
 - Pebble (ACME) doesn't run in CI.
 - Store connections travel only with a sign-in join, not an invite, and
-  only shareable stores' accounts. Adding connections to a library you
-  already joined, disconnecting on every instance at once, and one
-  refresh keeper for single-keeper stores such as Audible are still to
-  come.
+  only shareable stores' accounts. One refresh keeper for single-keeper
+  stores such as Audible is still to come.
+- Adding connections later and disconnecting everywhere work only
+  through links the join could bind to a person.
 
 ## Next steps
 
