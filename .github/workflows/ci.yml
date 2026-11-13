@@ -864,13 +864,15 @@ jobs:
         run: python3 scripts/ci-exec.py run release
 
       # The envelope runs on the binaries the release step just built; its
-      # `install-platform --release` only compiles what that step did not.
+      # `install-platform --release` only compiles what that step did not. A
+      # build-only push compiles the platform and the seed and runs nothing.
       - name: Measure the 1 GiB envelope
         if: needs.plan.outputs.check_envelope == 'true'
         run: python3 scripts/ci-exec.py run envelope
 
+      # A build-only push only compiles the envelope, so it has no metrics.
       - name: Upload envelope metrics
-        if: always() && needs.plan.outputs.check_envelope == 'true'
+        if: always() && needs.plan.outputs.check_envelope == 'true' && env.CI_BUILD_ONLY != 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: envelope-metrics

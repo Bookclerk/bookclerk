@@ -154,9 +154,10 @@ tested that exact commit. So the push run resolves with `--build-only`
 - Only the jobs that save caches run: `check`, `test`, `native-gateway`
   and `release` (`BUILD_ONLY_JOBS` in `scripts/ci_plan/execute.py`), plus
   the [macOS job](#macos-job), which runs the `native-gateway` leg. The
-  gate expects every other job to be skipped. The release job drops its
-  envelope check (`BUILD_ONLY_SKIPPED_CHECKS`), which only measures, and
-  runs a fat and a thin leg so both of its caches stay warm.
+  gate expects every other job to be skipped. The release job runs a fat
+  and a thin leg so both of its caches stay warm. Each leg also compiles
+  the envelope seed (and runs nothing), because the seed's dependencies are
+  built with their own profile (see [Small-VPS envelope](#small-vps-envelope)).
 - Builds, Clippy and installs run as usual. `cargo test` and the nextest
   run become `cargo test … --no-run`. Formatting, scripts, staging and
   runtime assertions are dropped.
@@ -746,8 +747,16 @@ are selected, so the hosts are compiled once per run.
 
 1. On the `ubuntu-latest` VM, `install-platform --release` builds what the
    release step did not (all of it when only the envelope is selected), and
-   the seed is compiled.
-2. `docker run --memory=1g --memory-swap=1g --cpus=1` runs the seed, the
+   the seed is compiled. The seed is a load generator, not a shipped binary,
+   so it's compiled without LTO and with 16 codegen units
+   (`ENVELOPE_SEED_PROFILE` in `scripts/ci_plan/execute.py`): about 98 s
+   instead of 173 s after a source change, measured locally. Its
+   dependencies are therefore separate artifacts from the release build's,
+   and only stay cheap because the build-only `main` push compiles them
+   into both release caches. Without that, they compile from scratch and the
+   job gets slower, not faster.
+2. `docker run --memory=1g --memory-swap=1g --cpus=1` runs the seed (10,000
+   titles written 200 at a time, the way a scan page writes them), the
    daemon and the load in an Ubuntu container of the runner's own release
    (`ubuntu:<VERSION_ID>` from `/etc/os-release`, or `ubuntu:24.04` on a
    non-Ubuntu host), because the hosts link the runner's glibc and libssl.

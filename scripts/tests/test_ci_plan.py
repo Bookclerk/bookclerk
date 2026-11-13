@@ -2017,7 +2017,7 @@ class EnvelopeTests(unittest.TestCase):
         self.assertEqual(out["check_release"], "false")
         self.assertEqual(out["release_mode"], "none")
 
-    def test_build_only_main_push_builds_release_but_skips_the_envelope(self) -> None:
+    def test_build_only_main_push_builds_release_and_the_envelope_seed(self) -> None:
         art = resolve(
             base=None,
             head=None,
@@ -2035,9 +2035,10 @@ class EnvelopeTests(unittest.TestCase):
         out = job_outputs(art)
         self.assertEqual(out["job_release"], "true")
         self.assertEqual(out["check_release"], "true")
-        self.assertEqual(out["check_envelope"], "false")
+        # Kept so the seed's own dependency artifacts land in the release caches.
+        self.assertEqual(out["check_envelope"], "true")
 
-    def test_build_only_push_of_an_envelope_input_runs_no_release_job(self) -> None:
+    def test_build_only_push_of_an_envelope_input_builds_only_the_envelope(self) -> None:
         art = resolve(
             base=None,
             head=None,
@@ -2052,8 +2053,22 @@ class EnvelopeTests(unittest.TestCase):
         )
         self.assertTrue(plan_from_dict(art["predicted"]).selected("envelope"))
         out = job_outputs(art)
-        self.assertEqual(out["job_release"], "false")
-        self.assertEqual(out["check_envelope"], "false")
+        self.assertEqual(out["job_release"], "true")
+        self.assertEqual(out["check_release"], "false")
+        self.assertEqual(out["check_envelope"], "true")
+
+    def test_build_only_envelope_compiles_the_platform_and_seed_only(self) -> None:
+        p = plan("crates/bookclerk-library/tests/envelope_seed.rs")
+        cmds = [build_only_command(c) for _, c in planned_commands(artifact(p), "envelope", CTX) if not _]
+        kept = [c for c in cmds if c is not None]
+        self.assertEqual([c.argv[:2] for c in kept], [["cargo", "install-platform"], ["cargo", "test"]])
+        self.assertIn("envelope_seed", kept[1].argv)
+
+    def test_envelope_seed_compiles_without_lto(self) -> None:
+        p = plan("crates/bookclerk-library/tests/envelope_seed.rs")
+        seed = [c for _, c in planned_commands(artifact(p), "envelope", CTX) if not _][1]
+        self.assertEqual(seed.env["CARGO_PROFILE_RELEASE_LTO"], "off")
+        self.assertEqual(seed.env["CARGO_PROFILE_RELEASE_CODEGEN_UNITS"], "16")
 
 
 class RunnerLayoutTests(unittest.TestCase):

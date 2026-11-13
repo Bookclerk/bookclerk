@@ -212,9 +212,16 @@ API_DOCS_SCRIPT = "./scripts/generate-api-docs.sh"
 # Jobs that save the dependency caches other runs restore (see ci.yml
 # `save-if`). Build-only runs skip every other job.
 BUILD_ONLY_JOBS = frozenset({"check", "test", "native-gateway", "release"})
-# Checks in a build-only job that only measure or test, so a build-only run
-# drops them (the small-VPS envelope shares the release job).
-BUILD_ONLY_SKIPPED_CHECKS = frozenset({"envelope"})
+# The envelope seed is a load generator, not a shipped binary: compiled
+# without LTO and with parallel codegen it builds in about half the time of
+# the shipping profile (98 s against 173 s locally after a source change),
+# and it runs no slower, since the seed waits on SQLite. Its dependencies are
+# then their own artifacts, which the build-only run compiles into the
+# release caches (docs/contributing/ci.md#small-vps-envelope).
+ENVELOPE_SEED_PROFILE = {
+    "CARGO_PROFILE_RELEASE_LTO": "off",
+    "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "16",
+}
 # Jobs a draft pull request runs: lints, docs and the Rust unit and
 # integration tests, the fast feedback a draft needs. Every other selected
 # job (e2e, release, the confinement and gateway matrices, macOS, Postgres,
@@ -362,7 +369,7 @@ def resolve(
         execution.checks = {
             c: v
             for c, v in execution.checks.items()
-            if CHECK_JOB[c] in BUILD_ONLY_JOBS and c not in BUILD_ONLY_SKIPPED_CHECKS
+            if CHECK_JOB[c] in BUILD_ONLY_JOBS
         }
         # A job whose only checks were dropped has nothing to build.
         kept = {CHECK_JOB[c] for c in execution.checks}
@@ -1453,7 +1460,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
                     "envelope_seed",
                     "--no-run",
                 ],
-                env=env,
+                env={**env, **ENVELOPE_SEED_PROFILE},
             ),
             Command(
                 "1 vCPU / 1 GiB envelope",

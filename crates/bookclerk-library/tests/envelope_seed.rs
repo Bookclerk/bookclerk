@@ -15,7 +15,10 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use bookclerk_library::{AcquireStatus, LibraryStore, NewBook};
+use bookclerk_library::{AcquireStatus, LibraryStore, NewBook, ScannedTitle};
+
+/// Titles written per call, the size of a large storefront scan page.
+const SEED_PAGE: u32 = 200;
 
 #[tokio::test]
 #[ignore = "writes BOOKCLERK_FILES_DIR; 10k books and 100001 one-byte objects"]
@@ -101,17 +104,27 @@ async fn seed_books(store: &LibraryStore) {
         )
         .await
         .unwrap();
+    // Written a page at a time, as a library scan writes them: one title
+    // per write took about 2 minutes of the CI envelope job on its one vCPU.
     let started = Instant::now();
-    for i in 0..10_000u32 {
-        let account = if i < 8_000 {
-            "envelope-a"
-        } else {
-            "envelope-b"
-        };
-        let book = NewBook::minimal(format!("B{i:05}"), account, "us", format!("Title {i:05}"));
-        store.upsert_book(&book).await.unwrap();
-        if i > 0 && i % 1_000 == 0 {
-            eprintln!("upserted {i} books in {} ms", started.elapsed().as_millis());
+    for page in 0..10_000u32 / SEED_PAGE {
+        let titles: Vec<ScannedTitle> = (page * SEED_PAGE..(page + 1) * SEED_PAGE)
+            .map(|i| {
+                let account = if i < 8_000 {
+                    "envelope-a"
+                } else {
+                    "envelope-b"
+                };
+                NewBook::minimal(format!("B{i:05}"), account, "us", format!("Title {i:05}")).into()
+            })
+            .collect();
+        store.upsert_scanned_titles(&titles).await.unwrap();
+        let done = (page + 1) * SEED_PAGE;
+        if done.is_multiple_of(1_000) {
+            eprintln!(
+                "upserted {done} books in {} ms",
+                started.elapsed().as_millis()
+            );
         }
     }
     let again = NewBook::minimal("B00000", "envelope-a", "us", "Title 00000");
