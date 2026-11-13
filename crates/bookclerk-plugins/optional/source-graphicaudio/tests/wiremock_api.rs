@@ -114,7 +114,6 @@ async fn scan_skips_samples_returns_owned() {
         GraphicAudioAccess::Device,
         None,
         &params,
-        1,
     )
     .await
     .unwrap();
@@ -123,6 +122,22 @@ async fn scan_skips_samples_returns_owned() {
     assert_eq!(page.books.len(), 1);
     assert_eq!(page.books[0].product_id, "99");
     assert_eq!(page.books[0].account_id, "a@ex.com");
+
+    // A credential for another account fails the call.
+    let foreign = bookclerk_plugin_sdk::ScanParams {
+        account_id: "someone-else".into(),
+        ..params
+    };
+    let err = guest_scan_page(
+        &server.uri(),
+        DEFAULT_STORE_URL,
+        GraphicAudioAccess::Device,
+        None,
+        &foreign,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code, bookclerk_plugin_sdk::PluginErrorCode::Internal);
 }
 
 #[tokio::test]
