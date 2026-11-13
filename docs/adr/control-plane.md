@@ -1521,7 +1521,11 @@ the handed credentials only. There is no in-process fallback.
   a pass id derived from the job and fence (`handed_pass_id`), so a
   complete full pass's end removes the account's holdings no row of that
   attempt listed, and then stores the token as a local pass's end does.
-  A Host that skipped a row too large to send reports no complete pass
+  A record that maps onto no library row (an ebook, say) still stamps its
+  holding, so the prune keeps it. The Host sends all of a pass's rows
+  before its removals, so it reconciles them in page order first: a title
+  removed on one page and listed on a later one is sent only as a row,
+  and one listed and then removed only as a removal. A Host that skipped a row too large to send reports no complete pass
   and no token, so the next pass is full rather than pruning or skipping
   that title. Plugin databases are not granted on a Host, so a plugin
   whose tokens name state in its own database (the hash-delta

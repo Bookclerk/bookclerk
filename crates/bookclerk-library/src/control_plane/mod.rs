@@ -228,8 +228,9 @@ pub use remote_consents::{
     REMOTE_CONSENT_PLATFORM,
 };
 pub use remote_results::{
-    accept_scan_pass_end, accept_scan_removed, accept_scan_results, handed_pass_id,
-    handed_sync_token, HandedPassEnd, ScanAccept, MAX_SCAN_RESULT_ROWS,
+    accept_scan_pass_end, accept_scan_removed, accept_scan_results, accept_scan_rows,
+    handed_pass_id, handed_sync_token, HandedPassEnd, ScanAccept, ScanSighting,
+    MAX_SCAN_RESULT_ROWS,
 };
 pub use remote_work::{
     claim_remote_job, finish_remote_job, job_secret_refs, live_remote_job, release_remote_job,

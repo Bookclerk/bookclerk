@@ -10,7 +10,8 @@
 //! | `upload.grant` | `upload.granted {upload_id, sealed_token, expires_in_secs}`, `lost`, or `error` |
 //!
 //! A scan's rows are parsed as the guest's `ScanBook` and handed to
-//! [`accept_scan_results`], which checks the fence, the node's trust and
+//! [`accept_scan_rows`] (a record that maps onto no row goes as a sighting,
+//! so the pass still counts it listed), which checks the fence, the node's trust and
 //! every row's account on each batch before it writes any row; the host
 //! never writes library SQL. After its rows, each account's pass reports
 //! the ids a delta pass found gone ([`accept_scan_removed`]) and how it
@@ -26,9 +27,9 @@
 //! and upload, so it is never frame text.
 
 use bookclerk_library::control_plane::{
-    accept_scan_pass_end, accept_scan_removed, accept_scan_results, grant_upload, job_titles,
-    live_remote_job, HandedPassEnd, ScanAccept, TitleNames, UploadDestination, UploadGrant,
-    UploadGrantRequest,
+    accept_scan_pass_end, accept_scan_removed, accept_scan_rows, grant_upload, job_titles,
+    live_remote_job, HandedPassEnd, ScanAccept, ScanSighting, TitleNames, UploadDestination,
+    UploadGrant, UploadGrantRequest,
 };
 use bookclerk_library::{JobKind, LibraryStore};
 use bookclerk_node_proto::{
@@ -73,6 +74,10 @@ pub(super) async fn scan_results(
         return Ok(error(id, "refused", "batch_too_large"));
     }
     let mut books = Vec::with_capacity(rows.len());
+    // Records that map onto no flat row (an ebook, say) were still listed,
+    // so they are carried as sightings: a complete full pass must not prune
+    // them.
+    let mut sightings = Vec::new();
     for row in rows {
         if row.to_string().len() > MAX_SCAN_ROW_BYTES {
             return Ok(error(id, "refused", "row_too_large"));
@@ -80,10 +85,26 @@ pub(super) async fn scan_results(
         let Ok(book) = serde_json::from_value::<bookclerk_plugin_abi::ScanBook>(row) else {
             return Ok(error(id, "refused", "invalid_row"));
         };
-        books.extend(bookclerk_source::abi::scanned_title(plugin_key, book));
+        let sighting = ScanSighting {
+            account_id: book.account_id.clone(),
+            product_id: book.product_id.clone(),
+        };
+        match bookclerk_source::abi::scanned_title(plugin_key, book) {
+            Some(title) => books.push(title),
+            None => sightings.push(sighting),
+        }
     }
     Ok(
-        match accept_scan_results(library, &host.node_id, &job_id, fence, plugin_key, books).await?
+        match accept_scan_rows(
+            library,
+            &host.node_id,
+            &job_id,
+            fence,
+            plugin_key,
+            books,
+            sightings,
+        )
+        .await?
         {
             ScanAccept::Accepted { upserted } => {
                 tracing::info!(

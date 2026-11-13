@@ -78,12 +78,20 @@ pub enum ScanAccept {
     Refused(&'static str),
 }
 
+/// A product a Host's pass listed that has no library row to write (its
+/// record maps onto no flat row, an ebook for instance), so the owner only
+/// marks the account's holding of it seen by the pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanSighting {
+    /// The account the pass listed it for.
+    pub account_id: String,
+    /// The storefront product id it listed.
+    pub product_id: String,
+}
+
 /// Validates one batch of a Host's scan rows and writes it to the library.
 ///
-/// `books` are the rows as the guest produced them; their `uuid`,
-/// `plugin_key` and `source` are ignored and set here (`source` from the
-/// account row), so a Host cannot address an existing row by id or label
-/// its rows as another plugin's.
+/// The same as [`accept_scan_rows`] with no sightings beyond the rows.
 ///
 /// # Errors
 ///
@@ -96,8 +104,42 @@ pub async fn accept_scan_results(
     plugin_key: &str,
     books: Vec<impl Into<ScannedTitle>>,
 ) -> Result<ScanAccept> {
+    accept_scan_rows(
+        store,
+        node_id,
+        job_id,
+        generation,
+        plugin_key,
+        books,
+        Vec::new(),
+    )
+    .await
+}
+
+/// Validates one batch of a Host's scan rows and writes it to the library,
+/// marking every listed product seen by the Host's pass.
+///
+/// `books` are the rows as the guest produced them; their `uuid`,
+/// `plugin_key` and `source` are ignored and set here (`source` from the
+/// account row), so a Host cannot address an existing row by id or label
+/// its rows as another plugin's. `sightings` are products the same batch
+/// listed that map onto no row; they pass the same account checks and are
+/// only marked seen, so a complete full pass's prune keeps them.
+///
+/// # Errors
+///
+/// Returns an error when a read or a write fails.
+pub async fn accept_scan_rows(
+    store: &LibraryStore,
+    node_id: &str,
+    job_id: &str,
+    generation: i64,
+    plugin_key: &str,
+    books: Vec<impl Into<ScannedTitle>>,
+    sightings: Vec<ScanSighting>,
+) -> Result<ScanAccept> {
     let books: Vec<ScannedTitle> = books.into_iter().map(Into::into).collect();
-    if books.len() > MAX_SCAN_RESULT_ROWS {
+    if books.len().saturating_add(sightings.len()) > MAX_SCAN_RESULT_ROWS {
         return Ok(ScanAccept::Refused("batch_too_large"));
     }
     let fence = remote_job_fence(node_id, job_id, generation);
@@ -131,25 +173,29 @@ pub async fn accept_scan_results(
     // Every row is checked before any is written.
     let mut sources = std::collections::BTreeMap::new();
     let mut seen_accounts = BTreeSet::new();
-    for book in books.iter().map(|t| &t.book) {
-        if book.product_id.trim().is_empty() || book.account_id.trim().is_empty() {
+    let named = books
+        .iter()
+        .map(|t| (&t.book.account_id, &t.book.product_id))
+        .chain(sightings.iter().map(|s| (&s.account_id, &s.product_id)));
+    for (account_id, product_id) in named {
+        if product_id.trim().is_empty() || account_id.trim().is_empty() {
             return Ok(ScanAccept::Refused("invalid_row"));
         }
         if job_accounts.as_ref().is_some_and(|accounts| {
-            !accounts.contains(&(plugin_key.to_string(), book.account_id.clone()))
+            !accounts.contains(&(plugin_key.to_string(), account_id.clone()))
         }) {
             return Ok(ScanAccept::Refused("account_not_in_job"));
         }
         if let Some(owned) = &owned {
-            if !owned.contains(&(plugin_key.to_string(), book.account_id.clone())) {
+            if !owned.contains(&(plugin_key.to_string(), account_id.clone())) {
                 return Ok(ScanAccept::Refused("not_your_account"));
             }
         }
-        if seen_accounts.insert(book.account_id.clone()) {
-            let Some(account) = store.get_account(plugin_key, &book.account_id).await? else {
+        if seen_accounts.insert(account_id.clone()) {
+            let Some(account) = store.get_account(plugin_key, account_id).await? else {
                 return Ok(ScanAccept::Refused("unknown_account"));
             };
-            sources.insert(book.account_id.clone(), account.source);
+            sources.insert(account_id.clone(), account.source);
         }
     }
     let pass_id = handed_pass_id(job_id, generation);
@@ -180,6 +226,25 @@ pub async fn accept_scan_results(
             .or_default()
             .push(title.book.product_id.clone());
         upserted += 1;
+    }
+    if !sightings.is_empty() {
+        match still_authorized(store, node_id, &fence).await? {
+            None => return Ok(ScanAccept::Lost),
+            Some(Some(owned))
+                if sightings
+                    .iter()
+                    .any(|s| !owned.contains(&(plugin_key.to_string(), s.account_id.clone()))) =>
+            {
+                return Ok(ScanAccept::Lost);
+            }
+            Some(_) => {}
+        }
+        for sighting in sightings {
+            listed
+                .entry(sighting.account_id)
+                .or_default()
+                .push(sighting.product_id);
+        }
     }
     // Every listed product counts as still held by this pass, so a complete
     // full pass's end leaves it in place.

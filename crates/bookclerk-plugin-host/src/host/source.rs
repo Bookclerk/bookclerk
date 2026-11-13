@@ -1400,6 +1400,39 @@ struct CollectPass<'a> {
     end: Option<PassEnd>,
 }
 
+/// Adds a page's `books` to a collected pass's `rows`.
+///
+/// The owner writes every collected row before any removal, so a title an
+/// earlier page reported gone and this page lists again leaves `removed`:
+/// the local pass would write it after removing it.
+fn collect_rows(
+    rows: &mut Vec<bookclerk_plugin_sdk::ScanBook>,
+    removed: &mut Vec<String>,
+    books: &mut Vec<bookclerk_plugin_sdk::ScanBook>,
+) {
+    if !removed.is_empty() {
+        let listed: std::collections::HashSet<&str> =
+            books.iter().map(|book| book.product_id.as_str()).collect();
+        removed.retain(|id| !listed.contains(id.as_str()));
+    }
+    rows.append(books);
+}
+
+/// Adds a page's removals to a collected pass's `removed`.
+///
+/// A row an earlier page (or the same one, which the local pass writes
+/// first) listed leaves `rows`: the local pass would remove it after
+/// writing it, so the owner must not write it back.
+fn collect_removed(
+    rows: &mut Vec<bookclerk_plugin_sdk::ScanBook>,
+    removed: &mut Vec<String>,
+    product_ids: &[String],
+) {
+    let gone: std::collections::HashSet<&str> = product_ids.iter().map(String::as_str).collect();
+    rows.retain(|book| !gone.contains(book.product_id.as_str()));
+    removed.extend_from_slice(product_ids);
+}
+
 /// How a collected pass ended.
 struct PassEnd {
     /// The plugin's token for the account's next pass.
@@ -1473,7 +1506,7 @@ impl PassIo for CollectPass<'_> {
         mut books: Vec<bookclerk_plugin_sdk::ScanBook>,
     ) -> bookclerk_source::Result<usize> {
         let n = books.len();
-        self.rows.append(&mut books);
+        collect_rows(&mut self.rows, &mut self.removed, &mut books);
         Ok(n)
     }
 
@@ -1486,8 +1519,7 @@ impl PassIo for CollectPass<'_> {
     }
 
     async fn remove(&mut self, product_ids: &[String]) -> bookclerk_source::Result<()> {
-        // The owner removes them after it wrote the rows.
-        self.removed.extend_from_slice(product_ids);
+        collect_removed(&mut self.rows, &mut self.removed, product_ids);
         Ok(())
     }
 
@@ -1970,5 +2002,29 @@ mod tests {
         let (explicit, skipped) = scan_credentials_for(&echo, &["a1".into()]).await.unwrap();
         assert_eq!(explicit.len(), 1);
         assert_eq!(skipped, 0);
+    }
+
+    /// A collected pass ends with what the local pass, which applies each
+    /// page's rows and then its removals in page order, would hold: the
+    /// owner writes every row before any removal, so a title removed and
+    /// then listed again stays, and one listed then removed goes.
+    #[test]
+    fn collected_rows_and_removals_follow_page_order() {
+        let mut rows = Vec::new();
+        let mut removed = Vec::new();
+        let ids = |list: &[&str]| list.iter().map(|id| (*id).to_string()).collect::<Vec<_>>();
+        // Page 1 lists p1 and p2 and reports p3 gone.
+        collect_rows(
+            &mut rows,
+            &mut removed,
+            &mut vec![scanned("p1"), scanned("p2")],
+        );
+        collect_removed(&mut rows, &mut removed, &ids(&["p3"]));
+        // Page 2 lists p3 again and reports p1 gone.
+        collect_rows(&mut rows, &mut removed, &mut vec![scanned("p3")]);
+        collect_removed(&mut rows, &mut removed, &ids(&["p1"]));
+        let listed: Vec<&str> = rows.iter().map(|b| b.product_id.as_str()).collect();
+        assert_eq!(listed, ["p2", "p3"]);
+        assert_eq!(removed, ids(&["p1"]));
     }
 }
