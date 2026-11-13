@@ -92,6 +92,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/config/branches", "allow"],
   ["PUT", "/api/config/branches", "deny"],
   ["POST", "/api/config/branches/titles/remove", "deny"],
+  // Asking a branch for a book acquires it there: never from the demo.
+  ["POST", "/api/branch-requests", "deny"],
   ["GET", "/api/config/clerks", "allow"],
   ["GET", "/api/config/cluster-consents", "allow"],
   ["POST", "/api/config/cluster-consents/approve", "deny"],
