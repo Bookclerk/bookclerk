@@ -1271,6 +1271,7 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(list_wishlist, create_wishlist))
         .routes(routes!(delete_wishlist))
         .routes(routes!(list_request_queue))
+        .routes(routes!(crate::branch_requests::create_branch_request))
         .routes(routes!(auth::logout))
         .routes(routes!(auth::list_sessions))
         .routes(routes!(auth::revoke_session))

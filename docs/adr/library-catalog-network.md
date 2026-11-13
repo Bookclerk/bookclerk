@@ -1,8 +1,9 @@
 # ADR: Library catalog network
 
 - **Status:** Accepted (2026-11-11). Step 1, per-library plugin state on a
-  branch, step 2, own library first, and step 7, capacity shares, are
-  implemented. The other steps are planned and listed under
+  branch, step 2, own library first, step 4, catalog lookup, and step 7,
+  capacity shares, are implemented. Step 5's requests are implemented; its
+  "acquire all of this branch's members' books" setting is planned. The other steps are planned and listed under
   [Consequences](#consequences).
 - **Date:** 2026-11-11
 - **Related:** [Control plane](control-plane.md) (H-4 branches, branches of
@@ -150,10 +151,21 @@ take all of it.
 
 ### Kinds of install
 
-A **window** shows the libraries a person joined in one view and keeps no
-downloads. A **branch** archives its own library's books. Both are the
-same software: a per-link setting, "Use this computer to download",
-decides whether the link takes work.
+A **library** and a **branch** are the same software with no technical
+difference, except that a library others join must be routable. A
+branch dials out to its library over a websocket and is not assumed to
+be publicly addressable. It contributes to that library (jobs, catalog
+answers, requests) whether or not it keeps local copies for itself.
+
+A **window** also dials out, but it is a client of the libraries a
+person joined, not one of their nodes. It shows those libraries in one
+view and refuses their work: no jobs, no catalog answers, no requests.
+A window can be turned into a branch. Being a desktop window has nothing
+to do with it; any install can be a window.
+
+Today the per-link setting "Use this computer to download" is what marks
+a link as a window. Separating the window from that setting, so a
+branch can contribute without downloading, is still open.
 
 ## Consequences
 
@@ -163,8 +175,9 @@ decides whether the link takes work.
      import of the owner's own books, and sharing only the owner's books.
   3. Accounts that follow the person, with the `credentials` declaration.
   4. Catalog lookup by strong identifiers into the listing pool.
-  5. Interlibrary requests, including the library operator's "acquire all
-     of this branch's members' books" setting.
+  5. Interlibrary requests (implemented), including the library
+     operator's "acquire all of this branch's members' books" setting
+     (planned).
   6. Window mode.
   7. Capacity shares between a branch's own work and each link
      (implemented).

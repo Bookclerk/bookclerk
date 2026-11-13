@@ -11,7 +11,7 @@ use bookclerk_plugin_sdk::{
     PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams, ScalarLimits,
     ScanPage, ScanParams, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
-use bookclerk_storefront::abi::{expand_seed_from_params, page_from_cursor};
+use bookclerk_storefront::abi::expand_seed_from_params;
 use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
 use serde_json::Value;
 
@@ -92,11 +92,8 @@ impl ContentSourceRole for LibroContentSource {
     }
 
     async fn scan(&self, params: ScanParams) -> Result<ScanPage, PluginError> {
-        let page = page_from_cursor(&params.cursor)?;
         let base = bookclerk_plugin_source_libro::resolve_base_url(&Value::Null);
-        bookclerk_plugin_source_libro::guest_scan_page(&base, &params, page)
-            .await
-            .map_err(internal)
+        bookclerk_plugin_source_libro::guest_scan_page(&base, &params).await
     }
 
     async fn fetch_title(&self, params: FetchTitleParams) -> Result<PlainFetch, PluginError> {

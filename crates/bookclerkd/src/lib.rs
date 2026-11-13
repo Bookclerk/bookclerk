@@ -16,6 +16,7 @@
 
 mod api;
 mod auth;
+mod branch_requests;
 mod cache_jobs;
 mod cache_policy;
 mod catalog_lookup;
@@ -55,6 +56,8 @@ mod requirements_sweep;
 mod restart;
 mod scheduler;
 mod search_index;
+#[cfg(test)]
+mod startup_tests;
 mod totp;
 mod tray_companion;
 
@@ -62,10 +65,12 @@ pub mod embedded;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use bookclerk_config::{init_tracing_with, Config, ListenAddrs, LogFormat, TracingOptions};
+use bookclerk_config::{
+    init_tracing_with, Config, ListenAddrs, LogFormat, LoggingHandle, TracingOptions,
+};
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 
 use crate::api::{
@@ -160,6 +165,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 /// * `config` - The loaded configuration (log format, diagnostics, media).
 /// * `syslog_identifier` - The name the OS log facility records
 ///   (`bookclerkd`, or the desktop window's binary name).
+///
+/// The logging handle is kept in [`LOGGING`] for the rest of the process,
+/// so stderr logging keeps running after this returns. A second call keeps
+/// the first handle; its own subscriber is not installed either.
 fn init_logging(config: &Config, syslog_identifier: &str) {
     let log_format = if config.daemon.json_logs {
         LogFormat::Json
@@ -195,6 +204,27 @@ fn init_logging(config: &Config, syslog_identifier: &str) {
             "diagnostics.share_reports=true — redacted reports POST to Worker /submit (B2 via Cloudflare)"
         );
     }
+    keep_logging(logging);
+}
+
+/// The process's logging handle, kept until the process exits: it owns the
+/// non-blocking stderr writer, which stops when the handle is dropped.
+/// Logging is process-wide, so the handle is too.
+static LOGGING: OnceLock<LoggingHandle> = OnceLock::new();
+
+/// Keeps `logging` in [`LOGGING`] for the rest of the process.
+///
+/// # Arguments
+///
+/// * `logging` - The handle [`init_logging`] just built. When a handle is
+///   already kept, this one is dropped: its subscriber was not installed,
+///   so nothing writes through it.
+///
+/// # Returns
+///
+/// Whether `logging` was kept (`false` when an earlier handle already was).
+fn keep_logging(logging: LoggingHandle) -> bool {
+    LOGGING.set(logging).is_ok()
 }
 
 /// Whether the host serves HTTP listeners or runs embedded in a window.
@@ -309,6 +339,27 @@ async fn start_host(config: Config, mode: HostMode) -> anyhow::Result<HostParts>
             }
         }
     };
+    assemble_host(opened, mode).await
+}
+
+/// Starts every background runtime (deployment reconcile, jobs, events,
+/// heartbeat, cluster links, scheduler) on an opened control plane, then
+/// builds the router. Binds nothing.
+///
+/// # Arguments
+///
+/// * `opened` - The control plane [`start_host`] opened (or a test's, on an
+///   in-process database).
+/// * `mode` - Whether `daemon.listen` will be bound (and so must be valid).
+///
+/// # Errors
+///
+/// Returns an error when `daemon.listen` is invalid in
+/// [`HostMode::Listening`] or operator auth cannot be built.
+async fn assemble_host(
+    opened: bookclerk_plugin_host::HostControlPlane,
+    mode: HostMode,
+) -> anyhow::Result<HostParts> {
     let bookclerk_plugin_host::HostControlPlane {
         config,
         database_registry,
@@ -318,6 +369,7 @@ async fn start_host(config: Config, mode: HostMode) -> anyhow::Result<HostParts>
         present,
         ..
     } = opened;
+    let paths = config.paths().clone();
     tracing::info!(
         node_id = %control_plane.node.node_id,
         cluster_id = %control_plane.cluster_id,
@@ -605,5 +657,26 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         ctrl_c.await;
+    }
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use super::{init_logging, Config, LoggingHandle, LOGGING};
+
+    /// Where the kept handle lives, to tell one handle from another.
+    fn kept() -> Option<*const LoggingHandle> {
+        LOGGING.get().map(std::ptr::from_ref)
+    }
+
+    #[test]
+    fn logging_outlives_its_setup_and_a_second_setup_keeps_the_first() {
+        let files = tempfile::tempdir().unwrap();
+        let config = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+        init_logging(&config, "bookclerkd-test");
+        let first = kept();
+        assert!(first.is_some(), "the handle must outlive init_logging");
+        init_logging(&config, "bookclerkd-test");
+        assert_eq!(kept(), first, "a second setup keeps the first handle");
     }
 }

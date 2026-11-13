@@ -88,6 +88,11 @@ pub enum NodeMessage {
     /// `catalog.questions`; the message itself carries none.
     #[serde(rename = "catalog.asked", rename_all = "camelCase")]
     CatalogAsked {},
+    /// Interlibrary requests wait for this branch
+    /// (`control_plane::branch_requests`). The branch claims them with
+    /// `requests.claim`; the message itself carries none.
+    #[serde(rename = "requests.queued", rename_all = "camelCase")]
+    RequestsQueued {},
 }
 
 impl NodeMessage {
@@ -110,6 +115,9 @@ impl NodeMessage {
             Self::NodeRevoked { node_id } => format!("node.revoked:{node_id}"),
             // Each ask is its own wakeup; the branch pulls whatever waits.
             Self::CatalogAsked {} => format!("catalog.asked:{}", uuid::Uuid::new_v4()),
+            // Each request is its own wakeup; the branch claims whatever
+            // waits.
+            Self::RequestsQueued {} => format!("requests.queued:{}", uuid::Uuid::new_v4()),
             Self::PlacementChanged { subject, revision } => format!(
                 "placement.changed:{subject}:{revision}:{}",
                 uuid::Uuid::new_v4()

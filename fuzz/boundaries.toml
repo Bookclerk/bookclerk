@@ -217,6 +217,13 @@ input_from = "operator"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.branch_request]
+crate = "bookclerk-library"
+boundary = "A user's request for a book a branch listed, from POST /api/branch-requests"
+input_from = "signed-in user"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.connections_request]
 crate = "bookclerk-library"
 boundary = "A branch Owner's store connections to add to one library, or one to disconnect, from POST /api/config/join/connections and POST /api/config/join/connections/disconnect"

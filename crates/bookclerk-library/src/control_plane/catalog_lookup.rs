@@ -39,9 +39,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bookclerk_node_proto::{
-    found_problem, Availability, CatalogMetadata, LookupAnswer, LookupEdition, LookupFormat,
-    LookupIdentifier, LookupScheme, LookupWork, MAX_LOOKUP_EDITIONS, MAX_LOOKUP_IDENTIFIERS,
-    MAX_LOOKUP_WORKS,
+    found_problem, Availability, BranchRequest, CatalogMetadata, LookupAnswer, LookupEdition,
+    LookupFormat, LookupIdentifier, LookupScheme, LookupWork, MAX_LOOKUP_EDITIONS,
+    MAX_LOOKUP_IDENTIFIERS, MAX_LOOKUP_WORKS,
 };
 use bookclerk_plugin_abi::TypedDbStatement;
 use bookclerk_resolve as resolve;
@@ -287,7 +287,7 @@ pub async fn trusted_branches(store: &LibraryStore) -> Result<Vec<String>> {
 }
 
 /// True when `node_id` is a branch this library trusts.
-async fn trusts(store: &LibraryStore, node_id: &str) -> Result<bool> {
+pub(super) async fn trusts(store: &LibraryStore, node_id: &str) -> Result<bool> {
     match nodes::Entity::find_by_id(node_id.to_string())
         .one(store.db())
         .await
@@ -889,6 +889,9 @@ pub struct BranchListing {
     pub work_id: String,
     /// The store the branch has it from (`audible`).
     pub store: String,
+    /// Lower-cased marketplace of the listing; empty when the store has
+    /// none.
+    pub marketplace: String,
     /// The store's product id.
     pub product_id: String,
     /// When the branch last named it.
@@ -1009,6 +1012,7 @@ async fn branch_listings(
             node_id: node_id.to_string(),
             work_id: work_id.clone(),
             store: store_id,
+            marketplace: row.marketplace.trim().to_ascii_lowercase(),
             product_id,
             observed_at,
         });
@@ -1423,7 +1427,12 @@ impl Listers {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let links = read_chunked(store, &account_ids, |part| {
+        Self::load_accounts(store, &account_ids).await
+    }
+
+    /// Reads who holds the store accounts `account_ids` (any plugin).
+    async fn load_accounts(store: &LibraryStore, account_ids: &[String]) -> Result<Self> {
+        let links = read_chunked(store, account_ids, |part| {
             account_links::Entity::find().filter(account_links::Column::AccountId.is_in(part))
         })
         .await?;
@@ -1496,9 +1505,15 @@ impl Listers {
     /// on an account linked to no one (a member disconnected it, or was
     /// removed, and the books stayed) is never listed: nobody consented.
     fn may_list(&self, book: &books::Model, members: bool) -> bool {
+        self.may_list_account(&book.plugin_key, &book.account_id, members)
+    }
+
+    /// [`Self::may_list`] for the books of the store account
+    /// `(plugin_key, account_id)`.
+    fn may_list_account(&self, plugin_key: &str, account_id: &str, members: bool) -> bool {
         let Some(users) = self
             .users_of
-            .get(&(book.plugin_key.clone(), book.account_id.clone()))
+            .get(&(plugin_key.to_string(), account_id.to_string()))
         else {
             return false;
         };
@@ -1508,6 +1523,33 @@ impl Listers {
                     .iter()
                     .any(|u| self.active.contains(u) && !self.opted_out.contains(u)))
     }
+}
+
+/// Of the store accounts `accounts` (`(plugin key, account id)`), those
+/// whose books this branch lists now under [`answer_questions`]'s rules:
+/// an Owner's always, an active member's with `list_members_books` on
+/// when they did not opt out, and none linked to no one.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub(super) async fn listable_accounts(
+    store: &LibraryStore,
+    accounts: &BTreeSet<super::AccountKey>,
+    list_members_books: bool,
+) -> Result<BTreeSet<super::AccountKey>> {
+    let account_ids: Vec<String> = accounts
+        .iter()
+        .map(|(_, account)| account.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let listers = Listers::load_accounts(store, &account_ids).await?;
+    Ok(accounts
+        .iter()
+        .filter(|(plugin, account)| listers.may_list_account(plugin, account, list_members_books))
+        .cloned()
+        .collect())
 }
 
 /// The answer edition for `book`, when its store, product id and title
@@ -1575,55 +1617,11 @@ pub async fn answer_questions(
     let mut answers = Vec::new();
     let mut missing = Vec::new();
     for question in questions.iter().take(MAX_LOOKUP_WORKS) {
-        let Some(work_id) = work_for_question(store, question).await? else {
-            missing.push(question.work.clone());
-            continue;
-        };
-        let edition_ids: Vec<String> = editions_of_works(store, std::slice::from_ref(&work_id))
-            .await?
-            .into_keys()
-            .collect();
-        let listings = read_chunked(store, &edition_ids, |part| {
-            store_listings::Entity::find().filter(store_listings::Column::EditionId.is_in(part))
-        })
-        .await?;
-        let keys: BTreeSet<(String, String, String)> = listings
-            .iter()
-            .map(|l| {
-                (
-                    l.plugin_key.clone(),
-                    l.marketplace.clone(),
-                    l.product_id.clone(),
-                )
-            })
-            .collect();
-        let products: Vec<String> = keys
-            .iter()
-            .map(|(_, _, p)| p.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let held: Vec<books::Model> = read_chunked(store, &products, |part| {
-            books::Entity::find()
-                .filter(books::Column::ProductId.is_in(part))
-                .order_by_asc(books::Column::Id)
-        })
-        .await?
-        .into_iter()
-        .filter(|b| {
-            keys.contains(&(
-                b.plugin_key.clone(),
-                b.marketplace.to_ascii_lowercase(),
-                b.product_id.clone(),
-            ))
-        })
-        .collect();
-        let listers = Listers::load(store, &held).await?;
+        let held = listable_books(store, question, list_members_books).await?;
         let mut editions: Vec<LookupEdition> = Vec::new();
         for book in &held {
-            if editions.len() >= MAX_LOOKUP_EDITIONS || !listers.may_list(book, list_members_books)
-            {
-                continue;
+            if editions.len() >= MAX_LOOKUP_EDITIONS {
+                break;
             }
             let Some(edition) = book_edition(book) else {
                 continue;
@@ -1652,6 +1650,115 @@ pub async fn answer_questions(
         }
     }
     Ok((answers, missing))
+}
+
+/// The books of this library a branch may list for `question`: the books
+/// of the one work the question's identifiers reach (`work_for_question`)
+/// whose holder may be listed ([`Listers::may_list`]), in row order. Empty
+/// when the identifiers reach no work, or several.
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn listable_books(
+    store: &LibraryStore,
+    question: &LookupWork,
+    list_members_books: bool,
+) -> Result<Vec<books::Model>> {
+    let Some(work_id) = work_for_question(store, question).await? else {
+        return Ok(Vec::new());
+    };
+    let edition_ids: Vec<String> = editions_of_works(store, std::slice::from_ref(&work_id))
+        .await?
+        .into_keys()
+        .collect();
+    let listings = read_chunked(store, &edition_ids, |part| {
+        store_listings::Entity::find().filter(store_listings::Column::EditionId.is_in(part))
+    })
+    .await?;
+    let keys: BTreeSet<(String, String, String)> = listings
+        .iter()
+        .map(|l| {
+            (
+                l.plugin_key.clone(),
+                l.marketplace.clone(),
+                l.product_id.clone(),
+            )
+        })
+        .collect();
+    let products: Vec<String> = keys
+        .iter()
+        .map(|(_, _, p)| p.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let held: Vec<books::Model> = read_chunked(store, &products, |part| {
+        books::Entity::find()
+            .filter(books::Column::ProductId.is_in(part))
+            .order_by_asc(books::Column::Id)
+    })
+    .await?
+    .into_iter()
+    .filter(|b| {
+        keys.contains(&(
+            b.plugin_key.clone(),
+            b.marketplace.to_ascii_lowercase(),
+            b.product_id.clone(),
+        ))
+    })
+    .collect();
+    let listers = Listers::load(store, &held).await?;
+    Ok(held
+        .into_iter()
+        .filter(|book| listers.may_list(book, list_members_books))
+        .collect())
+}
+
+/// The book of this library that fulfils an interlibrary request: a book
+/// this branch would list for the request's work
+/// ([`answer_questions`]'s rules: the owner's always, members' only with
+/// `list_members_books` on and when they did not opt out) whose store,
+/// marketplace and product id are the request's. A copy already acquired
+/// wins, then the first row. `None` when this branch no longer lists that
+/// edition to the library.
+///
+/// # Arguments
+///
+/// * `request` - The claimed request (already validated).
+/// * `list_members_books` - The link's "List my members' books" setting.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn book_for_request(
+    store: &LibraryStore,
+    request: &BranchRequest,
+    list_members_books: bool,
+) -> Result<Option<crate::models::BookRecord>> {
+    let held = listable_books(store, &request.work, list_members_books).await?;
+    let matching = held.into_iter().filter(|book| {
+        book_edition(book).is_some_and(|edition| {
+            edition.store == request.store
+                && edition.marketplace == request.marketplace
+                && edition.product_id == request.product_id
+        })
+    });
+    let mut best: Option<books::Model> = None;
+    for book in matching {
+        let acquired = |b: &books::Model| {
+            AcquireStatus::parse(&b.acquire_status) == Some(AcquireStatus::Acquired)
+        };
+        if best
+            .as_ref()
+            .is_none_or(|kept| !acquired(kept) && acquired(&book))
+        {
+            best = Some(book);
+        }
+    }
+    match best {
+        Some(book) => store.get_book_by_uuid(&book.uuid).await,
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]

@@ -119,13 +119,28 @@ impl EmbeddedHost {
     pub async fn start(options: EmbeddedOptions, syslog_identifier: &str) -> anyhow::Result<Self> {
         let config = bookclerk_config::Config::load(options.bookclerk_files, options.config)?;
         init_logging(&config, syslog_identifier);
-        let HostParts { state, app, .. } = start_host(config, HostMode::Embedded).await?;
+        let host = Self::from_host(start_host(config, HostMode::Embedded).await?);
         tracing::info!("host started embedded in the desktop window; no listener is bound");
-        Ok(Self {
+        Ok(host)
+    }
+
+    /// Wraps a started host for the window: its state and router, with the
+    /// library's sign-in pages closed.
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - The host [`start_host`] (or a test) started.
+    ///
+    /// # Returns
+    ///
+    /// The embedded host.
+    pub(crate) fn from_host(host: HostParts) -> Self {
+        let HostParts { state, app, .. } = host;
+        Self {
             state,
             app,
             join_open_until: Mutex::new(None),
-        })
+        }
     }
 
     /// Answers one request from the window.

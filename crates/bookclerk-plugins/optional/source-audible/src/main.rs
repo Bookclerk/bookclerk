@@ -104,10 +104,7 @@ impl ContentSourceRole for AudibleContentSource {
     }
 
     async fn scan(&self, params: ScanParams) -> Result<ScanPage, PluginError> {
-        let cursor = bookclerk_plugin_source_audible::AudibleScanCursor::parse(&params.cursor)?;
-        bookclerk_plugin_source_audible::guest_scan_page(&params, cursor)
-            .await
-            .map_err(internal)
+        bookclerk_plugin_source_audible::guest_scan_page(&params).await
     }
 
     async fn fetch_title(&self, params: FetchTitleParams) -> Result<PlainFetch, PluginError> {
