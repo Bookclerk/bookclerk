@@ -83,9 +83,7 @@ pub use recommend::{
     combine_wishlist_score, listening_engagement, rank_request_queue_taste, recommend,
     recommend_feed, RankedQueueEntry, RecommendOptions, Recommendation, WISH_COUNT_WEIGHT,
 };
-pub use request_queue::{
-    queue_entry_key, read_request_queue, StoredRequestQueue, REQUEST_QUEUE_MAX_AGE,
-};
+pub use request_queue::{read_request_queue, StoredRequestQueue, REQUEST_QUEUE_MAX_AGE};
 pub use shelves::{
     build_discover_feed, flatten_feed, shelf_is_disabled, shelf_kind_catalog, DiscoverFeed,
     DiscoverShelf, FeedState, ShelfKindInfo, ShelfTaste, SERIES_CAP,
