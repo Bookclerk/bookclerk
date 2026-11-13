@@ -2,9 +2,7 @@
 
 use std::collections::HashMap;
 
-use bookclerk_integrations::{
-    upsert_listening_snapshots, IntegrationError, ListeningProgressSnapshot, Result,
-};
+use bookclerk_integrations::{upsert_listening_snapshots, ListeningProgressSnapshot, Result};
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_sdk::{
     DatabaseBinding, DbValue, PluginError, PluginMigration, PluginMigrationOp, PreparedStatement,
@@ -127,6 +125,13 @@ pub async fn collect_listening_snapshots(
 /// runs on every database the host may grant. Memory of users not synced
 /// for seven days is dropped.
 ///
+/// The memory is written only after every user has been collected, so a
+/// sync that fails part way records nothing it did not return. A memory
+/// call that fails never fails the sync: a read that fails sends that
+/// user's whole snapshot, and a write that fails leaves the memory holding
+/// at most what this sync returns (a user row is written after its item
+/// rows, and an item row missing from the memory reads as changed).
+///
 /// # Arguments
 ///
 /// * `client` - The ABS API client.
@@ -135,8 +140,7 @@ pub async fn collect_listening_snapshots(
 ///
 /// # Errors
 ///
-/// Returns an error when ABS cannot list its users, or a database call
-/// fails.
+/// Returns an error when ABS cannot list its users.
 pub async fn collect_listening_changes(
     client: &AbsApiClient,
     memory: Option<&DatabaseBinding>,
@@ -144,13 +148,19 @@ pub async fn collect_listening_changes(
 ) -> Result<Vec<ListeningProgressSnapshot>> {
     let now_ms = now.timestamp_millis();
     if let Some(db) = memory {
-        prune(db, now_ms).await.map_err(memory_error)?;
+        if let Err(err) = prune(db, now_ms).await {
+            tracing::warn!(error = %err, "ABS listening memory prune failed");
+        }
     }
     let mut snapshots = Vec::new();
+    let mut remembered = Vec::new();
     for user in client.list_users().await? {
         let key = key_segment(&user.id);
         let previous = match memory {
-            Some(db) => read_memory(db, &key, now_ms).await.map_err(memory_error)?,
+            Some(db) => read_memory(db, &key, now_ms).await.unwrap_or_else(|err| {
+                tracing::warn!(error = %err, "ABS listening memory read failed");
+                None
+            }),
             None => None,
         };
         let Some((mut rows, next)) =
@@ -159,10 +169,13 @@ pub async fn collect_listening_changes(
             continue;
         };
         snapshots.append(&mut rows);
-        if let Some(db) = memory {
-            write_memory(db, &key, previous.as_ref(), &next, now_ms)
-                .await
-                .map_err(memory_error)?;
+        remembered.push((key, previous, next));
+    }
+    if let Some(db) = memory {
+        for (key, previous, next) in &remembered {
+            if let Err(err) = write_memory(db, key, previous.as_ref(), next, now_ms).await {
+                tracing::warn!(error = %err, "ABS listening memory write failed");
+            }
         }
     }
     Ok(snapshots)
@@ -415,11 +428,6 @@ async fn write(
     Ok(())
 }
 
-/// A listening-memory database error as an integration error.
-fn memory_error(err: PluginError) -> IntegrationError {
-    IntegrationError::message(format!("listening memory: {err}"))
-}
-
 /// A text bind value.
 fn text(value: &str) -> DbValue {
     DbValue::Text(value.to_owned())
@@ -647,6 +655,23 @@ mod tests {
             prune(&db, now.timestamp_millis()).await.unwrap();
             assert_eq!(count(&db, "abs_listening_items").await, 0, "{profile:?}");
             assert_eq!(count(&db, "abs_listening_users").await, 0, "{profile:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_memory_that_fails_never_fails_the_sync() {
+        for profile in Profile::ALL {
+            // No migrations: every memory read and write fails.
+            let unit = BindingDatabase::open(profile, Vec::new()).await.unwrap();
+            let db = DatabaseBinding::from_session(Arc::new(unit));
+            let abs = server(&[0.1, 0.5]).await;
+            let client = AbsApiClient::new(abs.uri(), "k").unwrap();
+            for _ in 0..2 {
+                let rows = collect_listening_changes(&client, Some(&db), Utc::now())
+                    .await
+                    .unwrap();
+                assert_eq!(items(&rows), ["li00000", "li00001"], "{profile:?}");
+            }
         }
     }
 

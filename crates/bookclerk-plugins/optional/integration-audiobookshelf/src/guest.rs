@@ -282,8 +282,7 @@ pub async fn guest_scan_library(state: &Mutex<AbsGuestState>, force: bool) -> Re
 ///
 /// # Errors
 ///
-/// Returns an error when ABS cannot list its users or a database call
-/// fails.
+/// Returns an error when ABS cannot list its users.
 pub async fn guest_sync_listening(
     state: &Mutex<AbsGuestState>,
     memory: Option<&DatabaseBinding>,
