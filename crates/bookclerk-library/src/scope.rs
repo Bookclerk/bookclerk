@@ -498,7 +498,11 @@ impl SourceScope {
     /// `sent` was read, the newer credentials stay and nothing is written.
     /// The check and the write are one host batch guarded on the sealed row
     /// read, so a sign-in that lands in between wins. Nothing is written
-    /// when the account has no stored credentials (it was disconnected).
+    /// when the account has no stored credentials (it was disconnected),
+    /// nor once a branch has taken the account's sign-in over for this
+    /// library (it has applied a push from one, a `node:` row in
+    /// `account_credential_revisions`), checked in the same batch so a
+    /// first push that lands in between wins too.
     /// The new value is registered with log redaction before it is stored.
     ///
     /// # Arguments
@@ -562,7 +566,10 @@ impl SourceScope {
                             kdf_m_cost = ?, kdf_t_cost = ?, kdf_p_cost = ?,
                             cipher_algorithm = ?, cipher_nonce = ?, updated_at = ?
                       WHERE kind = ? AND provider = ? AND account_type = ?
-                        AND account_id = ? AND name = ? AND ciphertext = ?",
+                        AND account_id = ? AND name = ? AND ciphertext = ?
+                        AND NOT EXISTS (SELECT 1 FROM account_credential_revisions
+                                         WHERE plugin_key = ? AND account_id = ?
+                                           AND peer LIKE 'node:%')",
                     vec![
                         batch::text(&record.format),
                         batch::blob(&record.ciphertext),
@@ -580,6 +587,8 @@ impl SourceScope {
                         batch::text(account_id),
                         batch::text(&name),
                         batch::blob(&current.ciphertext),
+                        batch::text(&self.plugin_key),
+                        batch::text(account_id),
                     ],
                 )],
             ))

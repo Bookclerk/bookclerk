@@ -157,11 +157,9 @@ async fn keep_refreshed_credentials(
     }
     bookclerk_plugin_abi::validate_refreshed_credentials(&refreshed)
         .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
-    // The library registers what it stores; handed values are registered
-    // here, before they go anywhere.
-    if matches!(target, RefreshTarget::Handed(_)) {
-        bookclerk_config::register_secret_bytes(&refreshed);
-    }
+    // Registered before anything else, whether the refresh is stored,
+    // handed back or discarded: the guest's process held it either way.
+    bookclerk_config::register_secret_bytes(&refreshed);
     let scope = match target {
         RefreshTarget::Handed(Some(sink)) => {
             sink.refreshed(account_id, refreshed).await;
@@ -1773,6 +1771,14 @@ mod tests {
         )
         .await
         .unwrap();
+        assert_eq!(stored(&scope).await, serde_json::json!({"token": "v5"}));
+        // The write itself refuses too, for a refresh whose keeper check
+        // ran before that first push landed.
+        let sent = serde_json::json!({"token": "v5"});
+        assert!(!scope
+            .replace_refreshed_credentials("a1", &sent, br#"{"token":"v7"}"#)
+            .await
+            .unwrap());
         assert_eq!(stored(&scope).await, serde_json::json!({"token": "v5"}));
     }
 
