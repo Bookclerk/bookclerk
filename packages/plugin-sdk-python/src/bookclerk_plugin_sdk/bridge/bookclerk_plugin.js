@@ -2564,7 +2564,7 @@ var ScanBookCodec = {
 };
 var ScanPageCodec = {
   dataWords: 1,
-  pointerCount: 4,
+  pointerCount: 5,
   write(s, v, caps) {
     {
       const list = v.books ?? [];
@@ -2578,9 +2578,12 @@ var ScanPageCodec = {
     s.setText(3, v.syncToken ?? "");
     s.setBool(0, v.complete ?? false);
     s.setUint32(1, v.storePages ?? 0);
+    if (v.refreshedCredentials !== void 0) {
+      s.setData(4, v.refreshedCredentials ?? EMPTY_BYTES);
+    }
   },
   read(s, caps) {
-    return {
+    const out = {
       books: s.getStructList(0, 2, 14).map((item) => ScanBookCodec.read(item, caps)),
       removed: s.getTextList(1),
       nextCursor: s.getText(2),
@@ -2588,6 +2591,11 @@ var ScanPageCodec = {
       complete: s.getBool(0),
       storePages: s.getUint32(1)
     };
+    const refreshedCredentialsValue = s.getData(4);
+    if (!(refreshedCredentialsValue.length === 0)) {
+      out.refreshedCredentials = refreshedCredentialsValue;
+    }
+    return out;
   }
 };
 var ScanReplyCodec = {
@@ -2598,7 +2606,7 @@ var ScanReplyCodec = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          ScanPageCodec.write(s.initStruct(0, 1, 4), v.value, caps);
+          ScanPageCodec.write(s.initStruct(0, 1, 5), v.value, caps);
         }
         break;
       case "err":
@@ -2615,7 +2623,7 @@ var ScanReplyCodec = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: ScanPageCodec.read(s.getStruct(0, 1, 4), caps) };
+        return { kind: "ok", value: ScanPageCodec.read(s.getStruct(0, 1, 5), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -2753,7 +2761,7 @@ var ChapterMarkerCodec = {
 };
 var PlainFetchCodec = {
   dataWords: 0,
-  pointerCount: 5,
+  pointerCount: 6,
   write(s, v, caps) {
     {
       const list = v.parts ?? [];
@@ -2778,6 +2786,9 @@ var PlainFetchCodec = {
     if (v.pdfUrl !== void 0) {
       s.setText(4, v.pdfUrl ?? "");
     }
+    if (v.refreshedCredentials !== void 0) {
+      s.setData(5, v.refreshedCredentials ?? EMPTY_BYTES);
+    }
   },
   read(s, caps) {
     const out = {
@@ -2796,6 +2807,10 @@ var PlainFetchCodec = {
     if (!(pdfUrlValue === "")) {
       out.pdfUrl = pdfUrlValue;
     }
+    const refreshedCredentialsValue = s.getData(5);
+    if (!(refreshedCredentialsValue.length === 0)) {
+      out.refreshedCredentials = refreshedCredentialsValue;
+    }
     return out;
   }
 };
@@ -2807,7 +2822,7 @@ var FetchTitleReplyCodec = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          PlainFetchCodec.write(s.initStruct(0, 0, 5), v.value, caps);
+          PlainFetchCodec.write(s.initStruct(0, 0, 6), v.value, caps);
         }
         break;
       case "err":
@@ -2824,7 +2839,7 @@ var FetchTitleReplyCodec = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: PlainFetchCodec.read(s.getStruct(0, 0, 5), caps) };
+        return { kind: "ok", value: PlainFetchCodec.read(s.getStruct(0, 0, 6), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:

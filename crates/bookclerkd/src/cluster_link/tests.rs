@@ -1375,6 +1375,7 @@ mod results_and_uploads {
     use bookclerk_library::{JobResourceClass, NewBook};
     use bookclerk_node_proto::{Body, UploadFile};
     use bookclerk_plugin_abi::ScanBook;
+    use bookclerk_plugin_host::RefreshedCredentialSink;
     use bookclerk_source::DownloadOptions;
     use bookclerk_storage::StorageBackend;
     use sha2::Digest as _;
@@ -1455,6 +1456,9 @@ mod results_and_uploads {
         /// Each owner's title imported into this install's library: the
         /// owner's book uuid and the `(destination, key)` files kept.
         imported: Arc<Mutex<Vec<ImportedTitle>>>,
+        /// Credentials the guest hands back as refreshed during a scan,
+        /// for `riley-acct` and for an account the owner did not hand.
+        refresh: Option<&'static str>,
     }
 
     /// An owner's title a [`StubGuests`] imported: the owner's book uuid and
@@ -1486,10 +1490,19 @@ mod results_and_uploads {
         async fn scan(
             &self,
             bindings: &HostJobBindings,
+            refreshed: Arc<dyn RefreshedCredentialSink>,
             scan: HostScan,
             _cancel: Arc<AtomicBool>,
         ) -> anyhow::Result<Vec<ScanBook>> {
             self.note(bindings);
+            if let Some(credentials) = self.refresh {
+                refreshed
+                    .refreshed("riley-acct", credentials.as_bytes().to_vec())
+                    .await;
+                refreshed
+                    .refreshed("not-handed", credentials.as_bytes().to_vec())
+                    .await;
+            }
             self.scans
                 .lock()
                 .unwrap()
@@ -1505,6 +1518,7 @@ mod results_and_uploads {
         async fn acquire(
             &self,
             bindings: &HostJobBindings,
+            _refreshed: Arc<dyn RefreshedCredentialSink>,
             title: &HostTitle,
             outbox: &Path,
             _cancel: Arc<AtomicBool>,
@@ -1764,6 +1778,38 @@ mod results_and_uploads {
             .unwrap()
             .iter()
             .all(|book| book.product_id != "late"));
+    }
+
+    /// Credentials the guest refreshed during a host scan are written back
+    /// to the owner as the handed account's row; a refresh for an account
+    /// the owner did not hand is dropped, and the scan still succeeds.
+    #[tokio::test]
+    async fn a_host_scan_writes_refreshed_credentials_back_to_the_owner() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let guests = StubGuests {
+            rows: vec![row("riley-acct", "p1")],
+            work: world.host_files.path().join("cluster-work"),
+            refresh: Some(r#"{"token":"riley-token-v2"}"#),
+            ..StubGuests::default()
+        };
+        let (_handle, _stop) = start(&world, guests).await;
+
+        let job_id = enqueue_scan(&world.owner).await;
+        eventually("the host scan to finish", || async {
+            job(&world.owner, &job_id).await.state == JobState::Succeeded
+        })
+        .await;
+        let token_ref = SecretRef {
+            kind: secret_kind::SOURCE_AUTH.into(),
+            provider: PLUGIN.into(),
+            account_id: "riley-acct".into(),
+            name: "riley-acct.auth".into(),
+        };
+        assert_eq!(
+            stored(&world.owner, &token_ref).await,
+            r#"{"token":"riley-token-v2"}"#
+        );
     }
 
     /// A member's host whose guest returns a row for another user's

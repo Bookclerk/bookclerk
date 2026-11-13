@@ -9253,7 +9253,7 @@
       "name": "PlainFetch",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 5,
+      "pointerCount": 6,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -9309,6 +9309,15 @@
             "kind": "text"
           },
           "offset": 4
+        },
+        {
+          "name": "refreshedCredentials",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 5
         }
       ]
     },
@@ -11755,7 +11764,7 @@
       "name": "ScanPage",
       "file": "plugin.capnp",
       "dataWords": 1,
-      "pointerCount": 4,
+      "pointerCount": 5,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -11819,6 +11828,15 @@
             "kind": "uint32"
           },
           "offset": 1
+        },
+        {
+          "name": "refreshedCredentials",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 4
         }
       ]
     },
@@ -13676,6 +13694,11 @@
       "name": "maxPluginMigrationTotalOps",
       "file": "plugin.capnp",
       "value": 2048
+    },
+    "maxRefreshedCredentialBytes": {
+      "name": "maxRefreshedCredentialBytes",
+      "file": "plugin.capnp",
+      "value": 65536
     },
     "maxScalarBytes": {
       "name": "maxScalarBytes",

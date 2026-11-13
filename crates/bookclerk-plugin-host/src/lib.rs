@@ -154,6 +154,7 @@ pub use host::{
     load_external_database, migrate_database_plugin, migrate_library_schema, open_library_store,
     open_library_store_for_plugin, restore_plugin_backup_units, DatabaseRegistry,
     DestinationRegistry, ExternalDatabase, ExternalIntegration, ExternalSource,
+    RefreshedCredentialSink,
 };
 pub use host_control_plane::{
     allow_credential_login, enroll_node, open_host_control_plane,

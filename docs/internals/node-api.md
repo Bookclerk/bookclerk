@@ -65,7 +65,11 @@ configuration and revocation changes, and `catalog.asked` when catalog
 questions wait for a branch), which the host acks. Secrets are
 never frame text: job secrets, instance secrets and upload tokens are sealed
 to the node's box key and bound to the node and the job or instance they
-belong to; a write-back is sealed to the owner's box key.
+belong to; a write-back is sealed to the owner's box key. A host job's
+storefront guest that renews an account's tokens mid-job hands them back
+([Refreshed credentials](../plugins/abi.md#refreshed-credentials)), and
+the host writes them back to the owner this way, as the account row the
+job was handed.
 
 ## The live socket (`/api/live`)
 
