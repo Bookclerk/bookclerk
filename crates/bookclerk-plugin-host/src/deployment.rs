@@ -886,9 +886,7 @@ impl LiveDeploymentRuntime {
     /// The on-demand integration registered for `plugin_instance_id`, if
     /// this process tracks one.
     ///
-    /// # Panics
-    ///
-    /// Panics when the deployment guest lock is poisoned.
+    /// Only reads the map, so a poisoned lock still yields it.
     #[must_use]
     pub fn on_demand_integration(
         &self,
@@ -897,7 +895,7 @@ impl LiveDeploymentRuntime {
         match &self
             .guests
             .lock()
-            .expect("deployment guests")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(plugin_instance_id)?
             .process
         {
