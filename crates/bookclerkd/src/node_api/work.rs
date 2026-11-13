@@ -88,6 +88,10 @@ pub(crate) struct HostContext {
     pub owner_node_id: String,
     /// The daemon, for this node's output destinations and settings.
     pub state: std::sync::Arc<crate::api::AppState>,
+    /// This connection's session serial: a work frame that changes what
+    /// the node holds here is refused unless this is still the node's live
+    /// connection (see [`super::ws::is_live_session`]).
+    pub serial: u64,
 }
 
 /// An `error` answer.
@@ -458,6 +462,15 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 files,
             )
             .await
+        }
+        Body::AccountsAdd { sealed } => {
+            super::host_accounts::add(library, host, id.clone(), &sealed).await
+        }
+        Body::AccountsRemove {
+            plugin_key,
+            account_id,
+        } => {
+            super::host_accounts::remove(library, host, id.clone(), &plugin_key, &account_id).await
         }
         Body::CatalogQuestions {} => super::host_lookup::questions(library, host, id.clone()).await,
         Body::CatalogFound { answers, missing } => {

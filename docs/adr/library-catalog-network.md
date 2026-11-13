@@ -1,10 +1,9 @@
 # ADR: Library catalog network
 
 - **Status:** Accepted (2026-11-11). Step 1, per-library plugin state on a
-  branch, and step 7, capacity shares, are implemented. Of step 2, the
-  branch-side work scope and copy settings are implemented; the import of
-  the owner's own books and sharing only the owner's books are next. The
-  other steps are planned and listed under [Consequences](#consequences).
+  branch, step 2, own library first, and step 7, capacity shares, are
+  implemented. The other steps are planned and listed under
+  [Consequences](#consequences).
 - **Date:** 2026-11-11
 - **Related:** [Control plane](control-plane.md) (H-4 branches, branches of
   branches), [Event delivery model](event-delivery-model.md),

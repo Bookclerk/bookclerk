@@ -707,3 +707,252 @@ async fn branches_show_their_sharing_and_the_owner_removes_what_a_branch_left() 
     assert_eq!(status, StatusCode::OK, "{removed}");
     assert_eq!(removed["removed"], 0);
 }
+
+/// A host context for the branch `node_id` whose owner box secret is
+/// `[3; 32]`, as its newest live connection.
+async fn branch_context(state: &Arc<AppState>, node_id: &str) -> super::super::work::HostContext {
+    let cfg = state.config.read().await;
+    super::super::work::HostContext {
+        node_id: node_id.into(),
+        incarnation: "inc-1".into(),
+        box_public_key: bookclerk_node_proto::box_public_key(&[4; 32]).to_vec(),
+        owner_box_secret: zeroize::Zeroizing::new([3; 32]),
+        settings: bookclerk_library::control_plane::RemoteClaimSettings {
+            lease_secs: cfg.jobs.lease_seconds,
+            limits: bookclerk_library::control_plane::JobClaimLimits {
+                class: cfg.jobs.concurrency.network.max(1),
+                plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
+            },
+        },
+        owner_node_id: "owner-node".into(),
+        state: Arc::clone(state),
+        serial: super::super::ws::go_live_for_test(node_id),
+    }
+}
+
+/// One account of `plugin_key` with one secret, for an offer.
+fn offered(plugin_key: &str, account_id: &str) -> bookclerk_node_proto::CarriedAccount {
+    use bookclerk_node_proto::{CarriedAccount, CarriedSecret, SecretValue};
+    CarriedAccount {
+        plugin_key: plugin_key.into(),
+        account_id: account_id.into(),
+        source: "libro".into(),
+        marketplace: "us".into(),
+        label: None,
+        secrets: vec![CarriedSecret {
+            kind: "source_auth".into(),
+            name: format!("{account_id}.libro"),
+            value: SecretValue::new(b"{\"token\":\"offered\"}".to_vec()),
+        }],
+    }
+}
+
+#[tokio::test]
+async fn a_branch_adds_and_withdraws_its_persons_connections() {
+    use crate::cluster_link::join::tests::{connect_account, stage_storefront};
+    use bookclerk_library::control_plane::{load_cluster_row, set_member_may_connect_accounts};
+    use bookclerk_node_proto::{seal_account_offer, AccountBundle, Body, ACCOUNT_BUNDLE_VERSION};
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store, member) = owner(&files).await;
+    let plugin_key = stage_storefront(&files, &state, "shareable");
+    connect_account(&store, member, &plugin_key, "riley@example.com", b"token").await;
+    let app = routes(&state, UserCaller::User { user_id: member }, LOOPBACK);
+    let v = verifier('o');
+    let code = approve(&app, &v).await;
+    let (status, _, enrolled) = call(
+        &app,
+        "POST",
+        "/api/node/v1/enroll/oauth",
+        Some(redeem(&code, &v, 31)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{enrolled}");
+    let node_id = enrolled["node_id"].as_str().unwrap().to_string();
+    let cluster_id = load_cluster_row(&store).await.unwrap().unwrap().cluster_id;
+    let host = branch_context(&state, &node_id).await;
+    let owner_key = bookclerk_node_proto::box_public_key(&[3; 32]);
+    let offer = |node: &str, accounts| {
+        seal_account_offer(
+            &owner_key,
+            &[7; 32],
+            &AccountBundle {
+                v: ACCOUNT_BUNDLE_VERSION,
+                cluster_id: cluster_id.clone(),
+                node_id: node.into(),
+                accounts,
+            },
+        )
+        .unwrap()
+    };
+
+    // A new shareable account is kept for the branch's person; one of a
+    // storefront that isn't installed here is not.
+    let sealed = offer(
+        &node_id,
+        vec![
+            offered(&plugin_key, "new@example.com"),
+            offered("platform:other/other#other", "elsewhere@example.com"),
+        ],
+    );
+    let answer = super::super::host_accounts::add(&store, &host, "a1".into(), &sealed)
+        .await
+        .unwrap();
+    assert_eq!(
+        answer.body,
+        Body::AccountsAdded {
+            added: 1,
+            already_here: 0,
+            taken: 0,
+            failed: 1,
+            not_allowed: false,
+        }
+    );
+    let identity = store
+        .ensure_local_portal_identity(member, None)
+        .await
+        .unwrap();
+    let links = store.list_account_links(identity.id).await.unwrap();
+    assert!(links
+        .iter()
+        .any(|link| link.account_id == "new@example.com"));
+
+    // An offer bound to another node does not open on this connection.
+    let answer = super::super::host_accounts::add(
+        &store,
+        &host,
+        "a2".into(),
+        &offer("other-node", vec![offered(&plugin_key, "x@example.com")]),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(&answer.body, Body::Error { code, message } if code == "refused" && message == "sealed_value_invalid"),
+        "{answer:?}"
+    );
+
+    // With the person's rule off, nothing more is kept.
+    set_member_may_connect_accounts(&store, member, false)
+        .await
+        .unwrap();
+    let answer = super::super::host_accounts::add(
+        &store,
+        &host,
+        "a3".into(),
+        &offer(&node_id, vec![offered(&plugin_key, "later@example.com")]),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            answer.body,
+            Body::AccountsAdded {
+                added: 0,
+                not_allowed: true,
+                ..
+            }
+        ),
+        "{answer:?}"
+    );
+
+    // Disconnect everywhere: the person's link goes and the account with it.
+    let answer = super::super::host_accounts::remove(
+        &store,
+        &host,
+        "r1".into(),
+        &plugin_key,
+        "new@example.com",
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer.body, Body::Accepted {});
+    let links = store.list_account_links(identity.id).await.unwrap();
+    assert!(!links
+        .iter()
+        .any(|link| link.account_id == "new@example.com"));
+    let account = store
+        .get_account(&plugin_key, "new@example.com")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(account.connection_status, "revoked");
+    // A malformed account id is refused before anything is read.
+    let answer = super::super::host_accounts::remove(&store, &host, "r2".into(), &plugin_key, "")
+        .await
+        .unwrap();
+    assert!(matches!(answer.body, Body::Error { .. }), "{answer:?}");
+
+    // The branch reconnected (it may have given up on an offer and then
+    // disconnected the account over the new connection): an offer still
+    // arriving on the old connection is refused, and one on the new
+    // connection is answered.
+    set_member_may_connect_accounts(&store, member, true)
+        .await
+        .unwrap();
+    let current = branch_context(&state, &node_id).await;
+    let stale = offer(&node_id, vec![offered(&plugin_key, "stale@example.com")]);
+    let answer = super::super::host_accounts::add(&store, &host, "a4".into(), &stale)
+        .await
+        .unwrap();
+    assert!(
+        matches!(&answer.body, Body::Error { code, message } if code == "refused" && message == "superseded"),
+        "{answer:?}"
+    );
+    assert!(store
+        .get_account(&plugin_key, "stale@example.com")
+        .await
+        .unwrap()
+        .is_none());
+    let answer = super::super::host_accounts::add(&store, &current, "a5".into(), &stale)
+        .await
+        .unwrap();
+    assert!(
+        matches!(answer.body, Body::AccountsAdded { added: 1, .. }),
+        "{answer:?}"
+    );
+    // The branch disconnects that account over the new connection, which
+    // then ends too. The offer still held by the old connection arrives
+    // last: it is refused, and the account stays revoked.
+    let answer = super::super::host_accounts::remove(
+        &store,
+        &current,
+        "r3".into(),
+        &plugin_key,
+        "stale@example.com",
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer.body, Body::Accepted {});
+    // A removal still held by an old connection is refused the same way.
+    let answer = super::super::host_accounts::remove(
+        &store,
+        &host,
+        "r4".into(),
+        &plugin_key,
+        "stale@example.com",
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(&answer.body, Body::Error { code, message } if code == "refused" && message == "superseded"),
+        "{answer:?}"
+    );
+    super::super::ws::unregister_for_test(&node_id, current.serial);
+    let answer = super::super::host_accounts::add(&store, &host, "a6".into(), &stale)
+        .await
+        .unwrap();
+    assert!(
+        matches!(&answer.body, Body::Error { code, message } if code == "refused" && message == "superseded"),
+        "{answer:?}"
+    );
+    let account = store
+        .get_account(&plugin_key, "stale@example.com")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(account.connection_status, "revoked");
+    let links = store.list_account_links(identity.id).await.unwrap();
+    assert!(!links
+        .iter()
+        .any(|link| link.account_id == "stale@example.com"));
+}

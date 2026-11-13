@@ -210,6 +210,13 @@ input_from = "operator"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.connections_request]
+crate = "bookclerk-library"
+boundary = "A branch Owner's store connections to add to one library, or one to disconnect, from POST /api/config/join/connections and POST /api/config/join/connections/disconnect"
+input_from = "signed-in user"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.libro_catalog]
 crate = "bookclerk-plugin-source-libro"
 boundary = "Libro.fm catalog search pages and audiobook details from the store's app API"

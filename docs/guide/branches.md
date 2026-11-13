@@ -63,8 +63,16 @@ store connections to this branch**. It is off unless you tick it.
 - The branch's operator decides whether you may connect store accounts
   there at all. If they turned that off for you, nothing is added.
 
-Disconnecting an account on the branch doesn't disconnect it on the
-library, and the other way round.
+To add a connection to the library later, open **Accounts** on the branch
+and choose **Add to *library*** beside it. The library's operator rule
+applies there too. Adding later, and **Revoke everywhere** below, work only for
+the Owner who joined the library from the branch.
+
+On the branch, **Revoke here** disconnects an account only on the branch.
+**Revoke everywhere** also disconnects it on every library you added it
+to, or brought it from. If a library can't be reached, the page says so;
+disconnect it there yourself. Disconnecting on the library doesn't reach
+the branch yet.
 
 ## Approve the library's plugins
 

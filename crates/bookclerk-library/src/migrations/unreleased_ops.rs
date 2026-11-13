@@ -1448,7 +1448,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         work_for_members INTEGER NOT NULL DEFAULT 0 CHECK (work_for_members IN (0, 1)),
         keep_member_copies INTEGER NOT NULL DEFAULT 0 CHECK (keep_member_copies IN (0, 1)),
         max_jobs INTEGER CHECK (max_jobs IS NULL OR (max_jobs >= 0 AND max_jobs <= 16)),
-        list_members_books INTEGER NOT NULL DEFAULT 1 CHECK (list_members_books IN (0, 1))
+        list_members_books INTEGER NOT NULL DEFAULT 1 CHECK (list_members_books IN (0, 1)),
+        person_user_id INTEGER
     )",
     ),
     MigrationOp::Schema(
@@ -1580,6 +1581,25 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE TABLE IF NOT EXISTS catalog_listing_optouts (
         user_id INTEGER PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         created_at TEXT NOT NULL
+    )",
+    ),
+    // On a branch: the branch owner's books acquired for a library it
+    // joined and imported into this library as well
+    // (`control_plane::link_imports`), one row per library and store
+    // identity, so the catalog sync never sends a library a book it
+    // acquired itself. `marketplace` and `product_id` are stored as
+    // `store_listings` stores them.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS link_imports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cluster_id TEXT NOT NULL,
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        marketplace TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (cluster_id, plugin_key, account_id, marketplace, product_id),
+        FOREIGN KEY (plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
     // Last claimed fire per plugin cron schedule (`control_plane::cron_fires`).

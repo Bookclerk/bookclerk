@@ -1227,6 +1227,14 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
             crate::cluster_link::join::get_join_sharing,
             crate::cluster_link::join::post_join_sharing
         ))
+        // Store connections across linked libraries: the branch's person
+        // only (the handler checks).
+        .routes(routes!(
+            crate::cluster_link::connections::post_join_connections
+        ))
+        .routes(routes!(
+            crate::cluster_link::connections::post_join_connections_disconnect
+        ))
         // Settings → Library's job cap on a branch (operator or Owner; the
         // handler checks).
         .routes(routes!(crate::cluster_link::join::post_join_capacity))
@@ -1647,6 +1655,14 @@ fn api_timeout_for_path(path: &str) -> Duration {
         // `bookclerk_node_client::endpoint`), so an unreachable one is
         // answered as `unreachable` rather than cut off.
         "/api/config/join/inspect" | "/api/config/join/start" => Duration::from_secs(45),
+        // Adding or disconnecting store connections calls each library
+        // once, concurrently, bounded by
+        // `cluster_link::connections::LIBRARY_CALL_TIMEOUT` (12 s), and may
+        // first wait for one other such request (as long again); the rest
+        // is margin for the database round trips around them.
+        "/api/config/join/connections" | "/api/config/join/connections/disconnect" => {
+            Duration::from_secs(30)
+        }
         _ => Duration::from_secs(8),
     }
 }

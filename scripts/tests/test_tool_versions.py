@@ -41,7 +41,7 @@ tv = _load("tool_versions", ROOT / "scripts" / "tool_versions.py")
 
 #: Fixed clock, pins and cooldown for replay.
 NOW = datetime(2026, 10, 30, tzinfo=timezone.utc)
-CURRENT = {"uv": "0.13.6", "cargo-nextest": "0.9.146"}
+CURRENT = {"uv": "0.13.6", "cargo-nextest": "0.9.146", "rust": "1.99.0"}
 COOLDOWN_DAYS = 7
 
 #: Fragments mutations splice in: JSON, version and date syntax.
@@ -160,6 +160,8 @@ class CorpusTests(unittest.TestCase):
             "uv__downgrade_only": None,
             "cargo-nextest__typical": "0.9.147",
             "cargo-nextest__prefix_only": None,
+            # 1.100.0 is inside the cooldown, so the newest eligible is 1.99.1.
+            "rust__typical": "1.99.1",
         }
         for name, tool, raw in corpus():
             if name in outcomes:
@@ -217,7 +219,7 @@ class MutationFuzzTests(unittest.TestCase):
                     if rng.random() < 0.9:
                         release[key] = rng.choice(values)
                 listing.append(release)
-            tool = rng.choice(["uv", "cargo-nextest"])
+            tool = rng.choice(["uv", "cargo-nextest", "rust"])
             raw = json.dumps(listing).encode()
             self.assertEqual(run(tool, raw), expected(tool, raw), f"generated {n}: {raw!r}")
 
@@ -295,19 +297,22 @@ class PinFileTests(unittest.TestCase):
     """``.tool-versions`` parsing, rendering and Dockerfile rewrites."""
 
     def test_round_trip(self) -> None:
-        text = "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\n"
+        text = "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\n"
         self.assertEqual(tv.render_pins(tv.parse_pins(text)), text)
 
     def test_refusals(self) -> None:
         for text in (
-            "uv 0.13.6\nnodejs 26\ncargo-nextest 0.9.146\n",  # nodejs must come first
-            "# pins\nnodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\n",
+            "uv 0.13.6\nnodejs 26\ncargo-nextest 0.9.146\nrust 1.100.0\n",  # nodejs must come first
+            "# pins\nnodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\n",
             "nodejs 26\nuv 0.13.6\n",
-            "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\npython 3.12\n",
-            "nodejs 26\nuv  0.13.6\ncargo-nextest 0.9.146\n",
-            "nodejs 26\nuv 0.13\ncargo-nextest 0.9.146\n",
-            "nodejs 26.1\nuv 0.13.6\ncargo-nextest 0.9.146\n",
-            "nodejs 26\nuv 0.13.6\nuv 0.13.6\ncargo-nextest 0.9.146\n",
+            "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\n",  # rust missing
+            "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust stable\n",
+            "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100\n",
+            "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\npython 3.12\n",
+            "nodejs 26\nuv  0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\n",
+            "nodejs 26\nuv 0.13\ncargo-nextest 0.9.146\nrust 1.100.0\n",
+            "nodejs 26.1\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\n",
+            "nodejs 26\nuv 0.13.6\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\n",
         ):
             with self.subTest(text=text), self.assertRaises(tv.ToolVersionsError):
                 tv.parse_pins(text)
@@ -328,6 +333,21 @@ class PinFileTests(unittest.TestCase):
             f"FROM ghcr.io/astral-sh/uvx:0.13.6@{old}\n"
             "# FROM ghcr.io/astral-sh/uv:0.13.6\n",
         )
+
+    def test_rewrite_toolchain_channel(self) -> None:
+        text = '# pinned\n[toolchain]\nchannel = "1.99.1"\ncomponents = ["rustfmt", "clippy"]\n'
+        self.assertEqual(tv.toolchain_channel(text), "1.99.1")
+        self.assertEqual(
+            tv.rewrite_toolchain_channel(text, "1.100.0"),
+            '# pinned\n[toolchain]\nchannel = "1.100.0"\ncomponents = ["rustfmt", "clippy"]\n',
+        )
+        for bad in (
+            "[toolchain]\n",
+            '[toolchain]\nchannel = "1.99.1"\nchannel = "1.99.0"\n',
+            '[toolchain]\n  channel = "1.99.1"\n',
+        ):
+            with self.subTest(text=bad), self.assertRaises(tv.ToolVersionsError):
+                tv.rewrite_toolchain_channel(bad, "1.100.0")
 
     def test_digest_and_version_refusals(self) -> None:
         for digest in ("sha256:" + "A" * 64, "sha256:" + "a" * 63, "sha512:" + "a" * 64, "sha256:" + "a" * 64 + "\n"):

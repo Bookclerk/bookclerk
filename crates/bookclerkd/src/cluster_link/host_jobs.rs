@@ -55,6 +55,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
+use bookclerk_config::OutputBackendKind;
+use bookclerk_library::control_plane::LinkImportOutcome;
 use bookclerk_library::{BookRecord, JobKind, LibraryStore, NewBook};
 use bookclerk_node_client::{HostJobCtx, OwnerCallError};
 use bookclerk_node_proto::{
@@ -231,7 +233,7 @@ pub trait HostGuests: Send + Sync + 'static {
     /// its copy.
     fn local_destinations(
         &self,
-    ) -> impl Future<Output = anyhow::Result<Vec<Box<dyn StorageBackend>>>> + Send;
+    ) -> impl Future<Output = anyhow::Result<Vec<LocalDestination>>> + Send;
 
     /// Where per-job scratch lives (under this host's files dir).
     fn work_dir(&self) -> PathBuf;
@@ -240,6 +242,29 @@ pub trait HostGuests: Send + Sync + 'static {
     /// so a title acquired for another member is copied to this host's own
     /// destinations too. False when the setting cannot be read.
     fn keeps_member_copies(&self) -> impl Future<Output = bool> + Send;
+
+    /// Imports a title of the branch owner's that the owner committed into
+    /// this install's own library, with the copy this host kept
+    /// ([`OwnerTitleCopy`]). Best effort: a failure is logged, never the
+    /// job's.
+    fn import_owner_title(&self, copy: OwnerTitleCopy<'_>) -> impl Future<Output = ()> + Send;
+}
+
+/// One of this host's own destinations: its destination id (`local`, `s3`;
+/// [`bookclerk_acquire::destination_id`]) and backend.
+pub type LocalDestination = (&'static str, Box<dyn StorageBackend>);
+
+/// A title of the branch owner's that the owner committed, as this host
+/// kept it ([`HostGuests::import_owner_title`]).
+#[derive(Debug, Clone, Copy)]
+pub struct OwnerTitleCopy<'a> {
+    /// The owner's row of the title.
+    pub book: &'a BookRecord,
+    /// The acquired files' keys.
+    pub acquired: &'a AcquiredTitle,
+    /// Every file this host holds on its own destinations:
+    /// `(destination id, key)`.
+    pub files: &'a [(&'static str, String)],
 }
 
 /// The daemon's [`HostGuests`]: spawns the owner's plugin version
@@ -351,12 +376,15 @@ impl HostGuests for GuestHost {
         result
     }
 
-    async fn local_destinations(&self) -> anyhow::Result<Vec<Box<dyn StorageBackend>>> {
+    async fn local_destinations(&self) -> anyhow::Result<Vec<LocalDestination>> {
         let registry = self.state.destinations.read().await;
         let mut out = Vec::new();
-        for deployed in [registry.require_local(), registry.require_s3()] {
+        for (kind, deployed) in [
+            (OutputBackendKind::Local, registry.require_local()),
+            (OutputBackendKind::S3, registry.require_s3()),
+        ] {
             if let Some(backend) = deployed.map_err(|err| anyhow::anyhow!(err))? {
-                out.push(backend.clone_box());
+                out.push((bookclerk_acquire::destination_id(kind), backend.clone_box()));
             }
         }
         Ok(out)
@@ -364,6 +392,52 @@ impl HostGuests for GuestHost {
 
     fn work_dir(&self) -> PathBuf {
         self.files_dir.join("cluster-work")
+    }
+
+    async fn import_owner_title(&self, copy: OwnerTitleCopy<'_>) {
+        let library = self.state.library_snapshot().await;
+        let files: Vec<(&str, &str)> = copy
+            .files
+            .iter()
+            .map(|(destination, key)| (*destination, key.as_str()))
+            .collect();
+        let import = bookclerk_library::control_plane::LinkImport {
+            cluster_id: &self.cluster_id,
+            book: copy.book,
+            primary_key: &copy.acquired.primary_key,
+            pdf_key: copy.acquired.pdf_key.as_deref(),
+            files: &files,
+        };
+        let book_uuid = copy.book.uuid.as_str();
+        match bookclerk_library::control_plane::import_link_title(&library, import).await {
+            Ok(LinkImportOutcome::Imported(book)) => tracing::info!(
+                cluster_id = %self.cluster_id,
+                owner_book_uuid = book_uuid,
+                book_uuid = %book.uuid,
+                "imported the owner's title into this library"
+            ),
+            Ok(LinkImportOutcome::AccountNotHere) => tracing::info!(
+                cluster_id = %self.cluster_id,
+                owner_book_uuid = book_uuid,
+                "the owner's title stays out of this library: its store account is not connected here to this install's Owner"
+            ),
+            Ok(LinkImportOutcome::KeyHeldElsewhere) => tracing::warn!(
+                cluster_id = %self.cluster_id,
+                owner_book_uuid = book_uuid,
+                "the owner's title stays unacquired in this library: another edition here holds its file key"
+            ),
+            Ok(LinkImportOutcome::NoPerson) => tracing::info!(
+                cluster_id = %self.cluster_id,
+                owner_book_uuid = book_uuid,
+                "the owner's title stays out of this library: this install has no single active Owner"
+            ),
+            Err(err) => tracing::warn!(
+                cluster_id = %self.cluster_id,
+                owner_book_uuid = book_uuid,
+                error = %err,
+                "could not import the owner's title into this library"
+            ),
+        }
     }
 
     async fn keeps_member_copies(&self) -> bool {
@@ -1067,6 +1141,11 @@ pub type LocalCopy = (Arc<dyn StorageBackend>, String);
 /// created ([`remove_local_copies`]) whether this fails or is dropped
 /// mid-copy; a key that was already there is never deleted by it.
 ///
+/// # Returns
+///
+/// Every file now on this host's own destinations, created or overwritten:
+/// `(destination id, key)`.
+///
 /// # Errors
 ///
 /// Returns an error when the destinations cannot be used or a copy fails.
@@ -1076,18 +1155,19 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
     outbox: &Path,
     acquired: &AcquiredTitle,
     copied: &std::sync::Mutex<Vec<LocalCopy>>,
-) -> anyhow::Result<()> {
-    let local: Vec<Arc<dyn StorageBackend>> = guests
+) -> anyhow::Result<Vec<(&'static str, String)>> {
+    let local: Vec<(&'static str, Arc<dyn StorageBackend>)> = guests
         .local_destinations()
         .await
         .context("this host's own destinations")?
         .into_iter()
-        .map(Arc::from)
+        .map(|(id, backend)| (id, Arc::from(backend)))
         .collect();
+    let mut placed = Vec::new();
     // This host's own copy follows the owner's primary destination naming.
     let primary = destination_outbox(outbox, 0);
     for key in acquired.keys.first().into_iter().flatten() {
-        for destination in &local {
+        for (id, destination) in &local {
             let meta = ObjectMeta {
                 content_type: content_type(key),
                 ..ObjectMeta::default()
@@ -1108,9 +1188,10 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
                     .unwrap_or_else(|e| e.into_inner())
                     .push((Arc::clone(destination), key.clone()));
             }
+            placed.push((*id, key.clone()));
         }
     }
-    Ok(())
+    Ok(placed)
 }
 
 /// Deletes `copies` (the files one run wrote for a title) from this host's
@@ -1173,9 +1254,12 @@ async fn upload_title<G: HostGuests>(
 ) -> anyhow::Result<()> {
     let book_uuid = title.book.uuid.as_str();
     let manifest = upload_manifest(&title.destinations, outbox, acquired).await?;
-    if let Some(copied) = copied {
-        copy_to_local_destinations(guests, book_uuid, outbox, acquired, copied).await?;
-    }
+    let placed = match copied {
+        Some(copied) => {
+            copy_to_local_destinations(guests, book_uuid, outbox, acquired, copied).await?
+        }
+        None => Vec::new(),
+    };
     let (files, paths): (Vec<UploadFile>, Vec<PathBuf>) = manifest.into_iter().unzip();
     let upload = with_retries(|| {
         host.grant_upload(
@@ -1220,5 +1304,16 @@ async fn upload_title<G: HostGuests>(
         files = files.len(),
         "streamed a title to the owner"
     );
+    // The owner's own book joins this install's library too, once the
+    // owner holds it; another member's copy stays a plain file.
+    if host.job.job.for_node_owner && !placed.is_empty() {
+        guests
+            .import_owner_title(OwnerTitleCopy {
+                book: &title.book,
+                acquired,
+                files: &placed,
+            })
+            .await;
+    }
     Ok(())
 }

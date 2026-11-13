@@ -46,6 +46,7 @@ pub mod ignored_titles;
 pub mod job_secret_handoffs;
 pub mod job_temp_paths;
 pub mod jobs;
+pub mod link_imports;
 pub mod listening_progress;
 pub mod listing_offers;
 pub mod member_account_rules;

@@ -13,6 +13,7 @@ use crate::secrets::{
 };
 use crate::store::LibraryStore;
 use crate::test_support::{sqlite, Profile};
+use bookclerk_node_proto::MAX_BUNDLE_ACCOUNTS;
 
 /// A storefront that declares `credentials = "shareable"`.
 const SHAREABLE: &str = "platform:bookclerk/bookclerk-plugin-source-libro#libro";
@@ -336,6 +337,15 @@ async fn a_branch_imports_carried_accounts_for_its_person_once() {
             "{name}"
         );
         assert!(again.imported.is_empty(), "{name}");
+        // ...but records that the second library holds it too, so a
+        // disconnect everywhere reaches both.
+        assert_eq!(
+            account_share_peers(store, SHAREABLE, "ana@example.com")
+                .await
+                .unwrap(),
+            vec![link_peer("cluster-x"), link_peer("cluster-y")],
+            "{name}"
+        );
         assert_eq!(kit.refused_begins(), 0, "{name}");
     }
 }
@@ -708,5 +718,221 @@ async fn an_import_batch_stores_nothing_once_the_rule_is_turned_off() {
             .await
             .unwrap();
         assert!(kept, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn disconnecting_everywhere_withdraws_only_the_persons_links() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let ana = store
+            .create_user(UserRole::Member, Some("Ana"), None)
+            .await
+            .unwrap();
+        let ben = store
+            .create_user(UserRole::Member, Some("Ben"), None)
+            .await
+            .unwrap();
+        connect(store, ana.id, SHAREABLE, "ana@example.com", b"ana-token").await;
+        connect(store, ben.id, SHAREABLE, "ben@example.com", b"ben-token").await;
+        // Ana's account was scanned: one holding and a checkpoint.
+        let libro = store.scope(SHAREABLE, "libro");
+        libro
+            .upsert_book(&crate::NewBook::minimal(
+                "ISBN1",
+                "ana@example.com",
+                "us",
+                "ISBN1",
+            ))
+            .await
+            .unwrap();
+        libro
+            .save_scan_checkpoint("ana@example.com", "c1", "t0", "p1")
+            .await
+            .unwrap();
+
+        // Not Ana's: nothing changes.
+        assert_eq!(
+            withdraw_person_account(store, ana.id, SHAREABLE, "ben@example.com")
+                .await
+                .unwrap(),
+            Withdrawn::NotTheirs,
+            "{name}"
+        );
+        assert!(
+            secret_of(store, SHAREABLE, "ben@example.com")
+                .await
+                .is_some(),
+            "{name}"
+        );
+
+        // Ana's own: her link goes, and the account with it.
+        assert_eq!(
+            withdraw_person_account(store, ana.id, SHAREABLE, "ana@example.com")
+                .await
+                .unwrap(),
+            Withdrawn::Unlinked,
+            "{name}"
+        );
+        assert_eq!(
+            store
+                .count_account_links_for_account(SHAREABLE, "ana@example.com")
+                .await
+                .unwrap(),
+            0,
+            "{name}"
+        );
+        let account = store
+            .get_account(SHAREABLE, "ana@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(account.connection_status, "revoked", "{name}");
+        assert!(!account.scan_enabled, "{name}");
+        assert!(
+            secret_of(store, SHAREABLE, "ana@example.com")
+                .await
+                .is_none(),
+            "{name}"
+        );
+        // As a revocation does: the holding and the checkpoint go too.
+        assert_eq!(
+            store
+                .remove_account_holdings(SHAREABLE, "ana@example.com", crate::HoldingSelection::All)
+                .await
+                .unwrap(),
+            0,
+            "{name}"
+        );
+        assert!(
+            store
+                .scan_state(SHAREABLE, "ana@example.com")
+                .await
+                .unwrap()
+                .is_none_or(|state| state.resume_cursor.is_empty()),
+            "{name}"
+        );
+        // A scan page still in flight adds nothing back: the account was
+        // revoked before the cleanup ran.
+        let _ = libro
+            .upsert_book(&crate::NewBook::minimal(
+                "ISBN2",
+                "ana@example.com",
+                "us",
+                "ISBN2",
+            ))
+            .await;
+        let _ = libro
+            .save_scan_checkpoint("ana@example.com", "c2", "t1", "p2")
+            .await;
+        assert_eq!(
+            store
+                .remove_account_holdings(SHAREABLE, "ana@example.com", crate::HoldingSelection::All)
+                .await
+                .unwrap(),
+            0,
+            "{name}"
+        );
+        assert!(
+            store
+                .scan_state(SHAREABLE, "ana@example.com")
+                .await
+                .unwrap()
+                .is_none_or(|state| state.resume_cursor.is_empty()),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_offer_from_a_branch_is_recorded_against_that_node() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    let offered = {
+        let kit = sqlite::memory(Profile::ALL[0]).await;
+        let store = kit.store();
+        let ana = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        connect(store, ana.id, SHAREABLE, "ana@example.com", b"ana-token").await;
+        accounts_to_carry(store, ana.id, &shareable).await.unwrap()
+    };
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let me = store
+            .create_user(UserRole::Member, Some("Ana"), None)
+            .await
+            .unwrap();
+        let report = import_offered_accounts(store, me.id, "branch-node", &offered)
+            .await
+            .unwrap();
+        assert_eq!(report.imported.len(), 1, "{name}");
+        assert_eq!(
+            account_share_peers(store, SHAREABLE, "ana@example.com")
+                .await
+                .unwrap(),
+            vec![node_peer("branch-node")],
+            "{name}"
+        );
+        // A branch that offers on to a library records the link it went to.
+        record_accounts_sent_to(store, &link_peer("cluster-up"), &offered)
+            .await
+            .unwrap();
+        assert_eq!(
+            account_share_peers(store, SHAREABLE, "ana@example.com")
+                .await
+                .unwrap(),
+            vec![link_peer("cluster-up"), node_peer("branch-node")],
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_picked_account_travels_even_past_the_bundle_limit() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let ana = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        for n in 0..=MAX_BUNDLE_ACCOUNTS {
+            connect(
+                store,
+                ana.id,
+                SHAREABLE,
+                &format!("ana{n}@example.com"),
+                b"t",
+            )
+            .await;
+        }
+        // Unpicked, one account is left behind by the limit.
+        let all = accounts_to_carry(store, ana.id, &shareable).await.unwrap();
+        assert_eq!(all.len(), MAX_BUNDLE_ACCOUNTS, "{name}");
+        let left_behind = (0..=MAX_BUNDLE_ACCOUNTS)
+            .map(|n| format!("ana{n}@example.com"))
+            .find(|id| !all.iter().any(|account| &account.account_id == id))
+            .unwrap();
+        // Picked, it travels.
+        let keep =
+            |plugin_key: &str, account_id: &str| shareable(plugin_key) && account_id == left_behind;
+        let picked = accounts_to_carry_where(store, ana.id, &keep).await.unwrap();
+        assert_eq!(picked.len(), 1, "{name}");
+        assert_eq!(picked[0].account_id, left_behind, "{name}");
+        assert_eq!(kit.refused_begins(), 0, "{name}");
     }
 }
