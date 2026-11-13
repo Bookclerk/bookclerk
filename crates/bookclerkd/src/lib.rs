@@ -149,121 +149,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     }
 
     init_logging(&config, "bookclerkd");
-    let host = start_host(config, HostMode::Listening).await?;
-    let HostParts {
-        state,
-        app,
-        config,
-        listen_reload,
-        process_shutdown,
-    } = host;
-    // The node API's TLS listener (acme / self_signed). Until it serves a
-    // certificate the node API stays unmounted on every listener.
-    let node_api_gate = {
-        let cfg = config.read().await.clone();
-        let files_dir = cfg.paths().files_dir.clone();
-        // The listener serves the web app too: `public_origin` names it, and
-        // a branch's owner signs in there.
-        node_api::tls::start_with(&state, &cfg, &files_dir, Some(app.clone()))
-            .await
-            .gate
-    };
-
-    loop {
-        if process_shutdown.load(Ordering::SeqCst) {
-            break;
-        }
-
-        let listeners = loop {
-            if process_shutdown.load(Ordering::SeqCst) {
-                if restart::is_requested() {
-                    restart::reexec()?;
-                }
-                return Ok(());
-            }
-
-            let listen = config.read().await.daemon.listen.clone();
-            match bind_listen_addrs(&listen).await {
-                Ok(listeners) => {
-                    *state.last_bound_listen.write().await = Some(listen);
-                    break listeners;
-                }
-                Err(err) => {
-                    let reverted = revert_listen_after_bind_failure(&state).await;
-                    tracing::error!(
-                        error = %err,
-                        reverted,
-                        "failed to bind any daemon.listen address; retrying in 5s or on config reload"
-                    );
-                    tokio::select! {
-                        () = tokio::time::sleep(Duration::from_secs(5)) => {}
-                        () = listen_reload.notified() => {
-                            tracing::info!("daemon.listen changed during bind retry; re-reading address");
-                        }
-                    }
-                }
-            }
-        };
-
-        for listener in &listeners {
-            if let Ok(addr) = listener.local_addr() {
-                tracing::info!(%addr, "bookclerkd listening");
-            }
-        }
-
-        // After bind so the tray's first browser open reaches a live listener.
-        let cfg = config.read().await.clone();
-        {
-            let mut tray_slot = state.tray.write().await;
-            match tray_slot.as_ref() {
-                Some(handle) => {
-                    let auth = state.auth_snapshot().await;
-                    tray_companion::update_tray_after_reload(handle, &cfg, &auth);
-                }
-                None => {
-                    let auth = state.auth_snapshot().await;
-                    *tray_slot = tray_companion::maybe_spawn_tray(&cfg, &auth);
-                }
-            }
-        }
-
-        let mut set = tokio::task::JoinSet::new();
-        for listener in listeners {
-            // The node API's transport policy needs both ends of each
-            // connection: the accepted socket's local address, which stays
-            // loopback for a same-machine client on a wildcard bind.
-            let app = app.clone().layer(axum::Extension(node_api_gate.clone()));
-            let app = node_api::transport::ConnAddrsMakeService::new(app);
-            let reload = listen_reload.clone();
-            let shutdown_flag = process_shutdown.clone();
-            set.spawn(async move {
-                axum::serve(listener, app)
-                    .with_graceful_shutdown(serve_shutdown(reload, shutdown_flag))
-                    .await
-            });
-        }
-
-        while let Some(joined) = set.join_next().await {
-            match joined {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => tracing::error!(error = %err, "HTTP listener exited with error"),
-                Err(err) => tracing::error!(error = %err, "HTTP listener task panicked"),
-            }
-        }
-
-        if process_shutdown.load(Ordering::SeqCst) {
-            break;
-        }
-        tracing::info!("HTTP listeners shut down for rebind");
-    }
-
-    // Best-effort stop of integration watchers on process exit.
-    state.integrations.read().await.stop_all().await;
-    if restart::is_requested() {
-        // New bootstrap files (a clerk join): start again on them.
-        restart::reexec()?;
-    }
-    Ok(())
+    serve_listeners(start_host(config, HostMode::Listening).await?).await
 }
 
 /// Installs the process-wide tracing subscriber for `config` and logs where
@@ -515,6 +401,134 @@ async fn start_host(config: Config, mode: HostMode) -> anyhow::Result<HostParts>
         listen_reload,
         process_shutdown,
     })
+}
+
+/// Binds `daemon.listen` and serves the host's router on every address until
+/// the process shuts down, rebinding when the address changes and re-executing
+/// the binary when a restart was requested.
+///
+/// # Arguments
+///
+/// * `host` - The running host from [`start_host`].
+///
+/// # Errors
+///
+/// Returns an error when a requested restart cannot re-exec the binary.
+async fn serve_listeners(host: HostParts) -> anyhow::Result<()> {
+    let HostParts {
+        state,
+        app,
+        config,
+        listen_reload,
+        process_shutdown,
+    } = host;
+    // The node API's TLS listener (acme / self_signed). Until it serves a
+    // certificate the node API stays unmounted on every listener.
+    let node_api_gate = {
+        let cfg = config.read().await.clone();
+        let files_dir = cfg.paths().files_dir.clone();
+        // The listener serves the web app too: `public_origin` names it, and
+        // a branch's owner signs in there.
+        node_api::tls::start_with(&state, &cfg, &files_dir, Some(app.clone()))
+            .await
+            .gate
+    };
+
+    loop {
+        if process_shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+
+        let listeners = loop {
+            if process_shutdown.load(Ordering::SeqCst) {
+                if restart::is_requested() {
+                    restart::reexec()?;
+                }
+                return Ok(());
+            }
+
+            let listen = config.read().await.daemon.listen.clone();
+            match bind_listen_addrs(&listen).await {
+                Ok(listeners) => {
+                    *state.last_bound_listen.write().await = Some(listen);
+                    break listeners;
+                }
+                Err(err) => {
+                    let reverted = revert_listen_after_bind_failure(&state).await;
+                    tracing::error!(
+                        error = %err,
+                        reverted,
+                        "failed to bind any daemon.listen address; retrying in 5s or on config reload"
+                    );
+                    tokio::select! {
+                        () = tokio::time::sleep(Duration::from_secs(5)) => {}
+                        () = listen_reload.notified() => {
+                            tracing::info!("daemon.listen changed during bind retry; re-reading address");
+                        }
+                    }
+                }
+            }
+        };
+
+        for listener in &listeners {
+            if let Ok(addr) = listener.local_addr() {
+                tracing::info!(%addr, "bookclerkd listening");
+            }
+        }
+
+        // After bind so the tray's first browser open reaches a live listener.
+        let cfg = config.read().await.clone();
+        {
+            let mut tray_slot = state.tray.write().await;
+            match tray_slot.as_ref() {
+                Some(handle) => {
+                    let auth = state.auth_snapshot().await;
+                    tray_companion::update_tray_after_reload(handle, &cfg, &auth);
+                }
+                None => {
+                    let auth = state.auth_snapshot().await;
+                    *tray_slot = tray_companion::maybe_spawn_tray(&cfg, &auth);
+                }
+            }
+        }
+
+        let mut set = tokio::task::JoinSet::new();
+        for listener in listeners {
+            // The node API's transport policy needs both ends of each
+            // connection: the accepted socket's local address, which stays
+            // loopback for a same-machine client on a wildcard bind.
+            let app = app.clone().layer(axum::Extension(node_api_gate.clone()));
+            let app = node_api::transport::ConnAddrsMakeService::new(app);
+            let reload = listen_reload.clone();
+            let shutdown_flag = process_shutdown.clone();
+            set.spawn(async move {
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(serve_shutdown(reload, shutdown_flag))
+                    .await
+            });
+        }
+
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => tracing::error!(error = %err, "HTTP listener exited with error"),
+                Err(err) => tracing::error!(error = %err, "HTTP listener task panicked"),
+            }
+        }
+
+        if process_shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+        tracing::info!("HTTP listeners shut down for rebind");
+    }
+
+    // Best-effort stop of integration watchers on process exit.
+    state.integrations.read().await.stop_all().await;
+    if restart::is_requested() {
+        // New bootstrap files (a clerk join): start again on them.
+        restart::reexec()?;
+    }
+    Ok(())
 }
 
 /// The cover service caching under `<cache>/covers`, or a detached one that

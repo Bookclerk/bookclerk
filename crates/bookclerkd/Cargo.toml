@@ -10,7 +10,7 @@ authors.workspace = true
 
 [[bin]]
 name = "bookclerkd"
-path = "src/main.rs"
+path = "src/bin/bookclerkd.rs"
 
 [features]
 # External guests only. Production hosts never link storefront crates.

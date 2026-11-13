@@ -683,4 +683,44 @@ mod tests {
         assert_eq!(join_sign_in_ttl(br#"{"expires_in_secs":600}"#), None);
         assert_eq!(join_sign_in_ttl(b"not json"), None);
     }
+
+    #[tokio::test]
+    async fn a_join_start_opens_the_sign_in_until_the_library_sends_the_window_back() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let files = tempfile::tempdir().unwrap();
+        let (state, _store) = crate::node_api::tests::test_state(&files).await;
+        let app = echo_router().route(
+            JOIN_START_PATH,
+            post(|| async {
+                axum::Json(serde_json::json!({
+                    "authorize_url": "https://library.example/join/approve",
+                    "expires_in_secs": 600,
+                }))
+            }),
+        );
+        let host = EmbeddedHost {
+            state,
+            app,
+            join_open_until: Mutex::new(None),
+        };
+        assert!(format!("{host:?}").starts_with("EmbeddedHost"));
+        let sign_in = "https://library.example/join/approve";
+        assert_eq!(host.navigation(sign_in), Navigation::Refuse);
+
+        let echoed = host.handle(page_request("/api/echo")).await;
+        assert_eq!(echoed.status(), StatusCode::OK);
+        assert_eq!(host.navigation(sign_in), Navigation::Refuse);
+
+        let mut start = page_request(JOIN_START_PATH);
+        *start.method_mut() = axum::http::Method::POST;
+        let started = host.handle(start).await;
+        assert_eq!(started.status(), StatusCode::OK);
+        assert_eq!(host.navigation(sign_in), Navigation::JoinSignIn);
+        assert_eq!(
+            host.navigation("http://localhost/join/callback?code=c"),
+            Navigation::JoinReturn("/join/callback?code=c".into())
+        );
+        assert_eq!(host.navigation(sign_in), Navigation::Refuse);
+        host.shutdown().await;
+    }
 }
