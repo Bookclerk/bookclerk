@@ -662,8 +662,9 @@ fn resolve_jail_bin(worker: Option<&Path>) -> std::result::Result<PathBuf, Strin
 }
 
 /// Locate the worker binary: the configured path, then [`WORKER_BIN_ENV`], then
-/// beside the current executable, which covers both an installed layout and
-/// `target/debug`.
+/// the helper directories of the current executable
+/// ([`bookclerk_sandbox::helper_search_dirs`]), which cover an installed
+/// layout, `target/debug` and the desktop app's packaged runtime.
 ///
 /// Every branch checks that the candidate is really there. Handing an
 /// unresolvable path to the pool would turn a packaging mistake into an
@@ -683,8 +684,13 @@ fn resolve_worker_bin(configured: Option<&Path>) -> std::result::Result<PathBuf,
     let dir = exe
         .parent()
         .ok_or_else(|| format!("{} has no parent directory", exe.display()))?;
-    let candidate = dir.join(format!("{WORKER_BIN_NAME}{}", std::env::consts::EXE_SUFFIX));
-    if let Ok(path) = bookclerk_sandbox::require_spawn_executable(&candidate) {
+    let name = format!("{WORKER_BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
+    // Beside the host (a test binary also looks in its Cargo profile
+    // directory, the desktop app in its packaged runtime).
+    if let Some(path) = bookclerk_sandbox::helper_search_dirs(&exe)
+        .into_iter()
+        .find_map(|dir| bookclerk_sandbox::require_spawn_executable(&dir.join(&name)).ok())
+    {
         return Ok(path);
     }
     Err(format!(

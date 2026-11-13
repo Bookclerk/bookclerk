@@ -49,7 +49,7 @@ wrappers are optional.
 | --- | --- |
 | Web UI (`bookclerkd` + `ui/`) | Supported |
 | In-process tray (`bookclerkd` through the `bookclerk-tray` library → the system browser) | Supported on Linux (`ksni`), Windows and macOS (`tray-icon` without GTK features); skipped on headless hosts |
-| Desktop window (`bookclerk-desktop`, Tauri 2) | Early: runs the web app in its own window with no listener (below). Not packaged yet; no tray or uploads |
+| Desktop window (`bookclerk-desktop`, Tauri 2) | Early: runs the web app in its own window with no listener (below). Unsigned packages for Linux, Windows and macOS ([Packages](#packages)); no tray or uploads |
 
 ### The desktop window
 
@@ -113,7 +113,7 @@ downloads and points at Settings → Library.
 Not there yet: the tray, uploads (when
 they come, through the native file picker), opening external links in the
 system browser, passkeys (WebAuthn needs a real origin), impersonation (it
-needs a session cookie), and packaging. Joining a library whose node API uses
+needs a session cookie), and signed packages. Joining a library whose node API uses
 a self-signed certificate does not work from the window yet: the webview does
 not trust that certificate for the sign-in pages. Links the host writes for other
 people, such as invite links, still name `integrations.public_origin` or the
@@ -146,6 +146,57 @@ The window is behind the crate's `window` feature, off by default, so
 `cargo build --workspace` and CI's workspace checks don't need the webview's
 development files. Without it the binary only says how to build it. CI's
 [desktop job](../ci.md#desktop-job) runs Clippy with the feature on Linux.
+
+#### Packages
+
+`cargo package-desktop` builds the desktop app's packages for the platform
+it runs on. They are **unsigned**, so the system warns before the first
+start:
+
+| Platform | Packages | Before the first start |
+| --- | --- | --- |
+| Linux | `.deb`, AppImage | The `.deb` depends on WebKitGTK 4.1, which the package manager installs; the AppImage needs FUSE 2 (`libfuse2`) |
+| Windows | NSIS installer (`.exe`), per user | SmartScreen asks to confirm an unknown publisher |
+| macOS | `.app` and `.dmg` | Gatekeeper blocks an unsigned app: open it from Finder's context menu once |
+
+To build them:
+
+1. Install the Tauri CLI:
+
+   ```sh
+   cargo install tauri-cli --version 2.12.4 --locked
+   ```
+
+2. Install what the platform build needs (`capnproto`, and on Linux the
+   webview's development files above).
+
+3. Build the packages:
+
+   ```sh
+   cargo package-desktop
+   ```
+
+   This stages the host's runtime in `target/desktop-runtime/`: the
+   `cargo package-platform` bundle (the helpers, `workerd` and the platform
+   plugins, without the `bookclerk` and `bookclerkd` binaries the app
+   doesn't use) plus `ui/dist`. It then runs `cargo tauri build` with
+   `crates/bookclerk-desktop/tauri.packaging.json`, which bundles that folder
+   as the app's `runtime/` resource. The packages land in
+   `target/release/bundle/`.
+
+A Linux package installs the executable in `/usr/bin` and its resources in
+`/usr/lib/Bookclerk/`, and a macOS app keeps them in `Contents/Resources/`, so
+the helpers can't sit beside the executable as they do for `bookclerkd`. For
+the executable named `bookclerk-desktop` only, the host also looks in
+`runtime/` in each of those places (beside the executable on Windows):
+helpers through `bookclerk_sandbox::helper_search_dirs`, the bundled platform
+plugins and `ui/dist` through `bookclerk_sandbox::packaged_runtime_dirs`.
+Every candidate is a fixed path relative to the executable, never one from
+the environment or the working directory.
+
+The [Desktop packages](../ci.md#other-workflows) workflow builds all
+three on pull requests that change the packaging, weekly and on demand, and
+uploads them as workflow artifacts. Nothing is signed or published yet.
 
 ### Advisories the desktop window brings in
 

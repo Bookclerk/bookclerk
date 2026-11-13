@@ -321,6 +321,94 @@ pub fn package_platform(root: &Path, out_dir: &Path, version: &str) -> Result<()
     Ok(())
 }
 
+/// Where [`stage_desktop_runtime`] puts the desktop app's runtime, under
+/// `target/`. `crates/bookclerk-desktop/tauri.packaging.json` bundles this
+/// folder as the app's `runtime/` resource.
+pub const DESKTOP_RUNTIME_STAGE: &str = "desktop-runtime";
+
+/// Stages the host runtime the desktop app's packages carry.
+///
+/// Builds the platform bundle ([`package_platform`]: release helpers,
+/// `workerd` and the platform plugins), adds the web app (`ui/dist`), and
+/// leaves the result in `target/desktop-runtime/`, where the packaging
+/// config picks it up. The bundle's install ledger and lock are dropped, as
+/// the container image does: the app's files directory keeps its own. So
+/// are the `bookclerk` and `bookclerkd` binaries: the app runs the host
+/// in-process, and nothing would put them on the `PATH`.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `version` - Version stamped into the platform plugins' receipts.
+///
+/// # Returns
+///
+/// The staged runtime directory.
+///
+/// # Errors
+///
+/// Returns an error when the platform bundle, the web app or a copy fails,
+/// or the staged runtime lacks a helper the desktop app needs.
+pub fn stage_desktop_runtime(root: &Path, version: &str) -> Result<PathBuf> {
+    let out = root.join("target").join("desktop-stage");
+    package_platform(root, &out, version)?;
+    let bundle = out.join(bundle_dir_name(version));
+    let runtime = root.join("target").join(DESKTOP_RUNTIME_STAGE);
+    if runtime.exists() {
+        fs::remove_dir_all(&runtime).with_context(|| format!("remove {}", runtime.display()))?;
+    }
+    fs::rename(&bundle, &runtime)
+        .with_context(|| format!("move {} -> {}", bundle.display(), runtime.display()))?;
+    let unused = [
+        "install-ledger.json".to_owned(),
+        ".plugin-mutation.lock".to_owned(),
+        exe_name("bookclerk"),
+        exe_name("bookclerkd"),
+    ];
+    for leftover in &unused {
+        let path = runtime.join(leftover);
+        if path.exists() {
+            fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+        }
+    }
+    copy_dir_all(
+        &root.join("ui").join("dist"),
+        &runtime.join("ui").join("dist"),
+    )?;
+    check_desktop_runtime(&runtime)?;
+    eprintln!("staged desktop runtime -> {}", runtime.display());
+    Ok(runtime)
+}
+
+/// Checks that `runtime` holds what the desktop app needs from it.
+///
+/// # Errors
+///
+/// Returns an error naming the first missing helper, `plugins/` or the web
+/// app.
+fn check_desktop_runtime(runtime: &Path) -> Result<()> {
+    for helper in [
+        "bookclerk-jail",
+        "bookclerk-workerd",
+        "bookclerk-media-worker",
+        "workerd",
+    ] {
+        let path = runtime.join(exe_name(helper));
+        if !path.is_file() {
+            bail!("desktop runtime is missing {}", path.display());
+        }
+    }
+    for dir in ["plugins", "ui/dist"] {
+        if !runtime.join(dir).is_dir() {
+            bail!(
+                "desktop runtime is missing {}/",
+                runtime.join(dir).display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Directory name inside a platform archive (`bookclerk-{version}-{target}`).
 fn bundle_dir_name(version: &str) -> String {
     format!("bookclerk-{}-{}", version, bookclerk_target())
@@ -564,5 +652,28 @@ mod tests {
         );
         assert!(uses_zip_archive("windows-x64"));
         assert!(!uses_zip_archive("linux-x64-gnu"));
+    }
+
+    #[test]
+    fn a_desktop_runtime_needs_every_helper_plugins_and_the_web_app() {
+        let runtime = tempfile::tempdir().unwrap();
+        let root = runtime.path();
+        let err = check_desktop_runtime(root).unwrap_err();
+        assert!(err.to_string().contains("bookclerk-jail"), "{err}");
+        for helper in [
+            "bookclerk-jail",
+            "bookclerk-workerd",
+            "bookclerk-media-worker",
+            "workerd",
+        ] {
+            fs::write(root.join(exe_name(helper)), b"").unwrap();
+        }
+        let err = check_desktop_runtime(root).unwrap_err();
+        assert!(err.to_string().contains("plugins"), "{err}");
+        fs::create_dir_all(root.join("plugins")).unwrap();
+        let err = check_desktop_runtime(root).unwrap_err();
+        assert!(err.to_string().contains("ui/dist"), "{err}");
+        fs::create_dir_all(root.join("ui/dist")).unwrap();
+        check_desktop_runtime(root).unwrap();
     }
 }

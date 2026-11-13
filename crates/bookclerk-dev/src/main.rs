@@ -158,6 +158,17 @@ enum Commands {
         /// Version stamped into the archive name (default: workspace version).
         version: Option<String>,
     },
+    /// Build the desktop app's unsigned packages for this platform.
+    ///
+    /// Stages the host runtime (platform bundle plus web app) in
+    /// `target/desktop-runtime/`, then runs the Tauri CLI (`cargo tauri`,
+    /// installed separately) with `crates/bookclerk-desktop/tauri.packaging.json`.
+    /// Packages land under `target/release/bundle/`.
+    PackageDesktop {
+        #[arg(long)]
+        /// Version stamped into the platform plugins (default: workspace version).
+        version: Option<String>,
+    },
     /// Download/update the pinned Cloudflare `workerd` binary into `target/<profile>/`.
     EnsureWorkerd,
     /// Wipe local app data under `$BOOKCLERK_FILES_DIR` (DB, config, keys, plugins).
@@ -345,6 +356,13 @@ fn run() -> Result<()> {
                 version.as_deref().unwrap_or(workspace_version()),
             )
         }
+        Commands::PackageDesktop { version } => {
+            package::stage_desktop_runtime(
+                &root,
+                version.as_deref().unwrap_or(workspace_version()),
+            )?;
+            bundle_desktop(&root)
+        }
         Commands::Reset {
             yes,
             artifacts,
@@ -404,6 +422,50 @@ fn prepend_helper_path(root: &Path, release: bool, cmd: &mut Command) {
     let mut paths = vec![helper_dir];
     paths.extend(std::env::split_paths(&path));
     cmd.env("PATH", std::env::join_paths(paths).unwrap_or(path));
+}
+
+/// The desktop app's package formats on this platform, as `cargo tauri
+/// build --bundles` names them: unsigned `.deb` and AppImage on Linux, an
+/// NSIS installer on Windows, an app and `.dmg` on macOS.
+fn desktop_bundles() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "nsis"
+    } else if cfg!(target_os = "macos") {
+        "app,dmg"
+    } else {
+        "deb,appimage"
+    }
+}
+
+/// Runs the Tauri CLI on the desktop crate with its packaging config, after
+/// [`package::stage_desktop_runtime`].
+///
+/// # Errors
+///
+/// Returns an error when `cargo tauri` cannot start or fails.
+fn bundle_desktop(root: &Path) -> Result<()> {
+    let crate_dir = root.join("crates").join("bookclerk-desktop");
+    let status = cargo(&crate_dir)
+        .args([
+            "tauri",
+            "build",
+            "--features",
+            "window",
+            "--config",
+            "tauri.packaging.json",
+            "--bundles",
+            desktop_bundles(),
+        ])
+        .status()
+        .context("run `cargo tauri build` (install it with `cargo install tauri-cli --locked`)")?;
+    if !status.success() {
+        bail!("`cargo tauri build` failed ({status})");
+    }
+    eprintln!(
+        "desktop packages -> {}",
+        root.join("target").join("release").join("bundle").display()
+    );
+    Ok(())
 }
 
 /// Builds a `cargo` command rooted at the workspace (honors `$CARGO`).

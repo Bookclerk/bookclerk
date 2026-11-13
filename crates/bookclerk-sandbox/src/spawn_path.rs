@@ -395,7 +395,9 @@ pub fn require_helper_beside_or_absolute(
 /// * `<profile>/build/<package>/<hash>/out/<test>-<hash>` (from Rust 1.100).
 ///
 /// Only these exact shapes add the profile directory, so an installed host
-/// still finds helpers only beside itself. The result names directories;
+/// still finds helpers only beside itself. The desktop app's installed
+/// packages are the one other shape: its runtime directories
+/// ([`packaged_runtime_dirs`]) follow. The result names directories;
 /// callers still validate any helper they find in them.
 ///
 /// # Arguments
@@ -404,7 +406,9 @@ pub fn require_helper_beside_or_absolute(
 ///
 /// # Returns
 ///
-/// One or two directories, nearest first. Empty when `exe` has no parent.
+/// Directories nearest first: beside `exe`, then the Cargo profile directory
+/// or the desktop app's runtime directories when `exe` has one of those
+/// shapes. Empty when `exe` has no parent.
 #[must_use]
 pub fn helper_search_dirs(exe: &Path) -> Vec<PathBuf> {
     let Some(dir) = exe.parent() else {
@@ -414,7 +418,63 @@ pub fn helper_search_dirs(exe: &Path) -> Vec<PathBuf> {
     if let Some(profile) = cargo_test_profile_dir(dir) {
         dirs.push(profile.to_path_buf());
     }
+    dirs.extend(packaged_runtime_dirs(exe));
     dirs
+}
+
+/// The desktop app's executable name, without the platform suffix.
+const DESKTOP_EXE_STEM: &str = "bookclerk-desktop";
+
+/// The desktop app's product name, which names its resource directory in a
+/// Linux package (`/usr/lib/<product>`, `usr/lib/<product>` in an AppImage).
+const DESKTOP_PRODUCT_NAME: &str = "Bookclerk";
+
+/// The folder inside the desktop app's resources that holds the host's
+/// runtime: its helper binaries, `workerd`, the bundled platform plugins
+/// (`plugins/`) and the web app (`ui/dist`).
+pub const DESKTOP_RUNTIME_DIR: &str = "runtime";
+
+/// Where an installed desktop app keeps the host's runtime, relative to its
+/// executable.
+///
+/// The desktop app's packages cannot put the helpers beside the executable
+/// on every platform: a Linux package installs the executable in `/usr/bin`
+/// and its resources in `/usr/lib/<product>`, and a macOS app keeps them in
+/// `Contents/Resources`. So for an executable named `bookclerk-desktop` this
+/// names the [`DESKTOP_RUNTIME_DIR`] folder in each of those resource
+/// directories (and beside the executable, as Windows installs it). Any
+/// other executable gets none, so the daemon and CLI still find helpers only
+/// beside themselves.
+///
+/// Every candidate is a fixed path relative to the executable, never taken
+/// from the environment or the working directory: whoever can write there
+/// can already replace the executable. Callers check what they find.
+///
+/// # Arguments
+///
+/// * `exe` - Path of the running executable, usually `std::env::current_exe()`.
+///
+/// # Returns
+///
+/// The candidate directories, nearest first, whether or not they exist.
+/// Empty unless `exe` is the desktop app's executable.
+#[must_use]
+pub fn packaged_runtime_dirs(exe: &Path) -> Vec<PathBuf> {
+    let is_desktop = exe.file_stem().is_some_and(|stem| stem == DESKTOP_EXE_STEM);
+    let Some(dir) = exe.parent().filter(|_| is_desktop) else {
+        return Vec::new();
+    };
+    let up = dir.parent().unwrap_or(dir);
+    vec![
+        // Windows: resources sit beside the executable.
+        dir.join(DESKTOP_RUNTIME_DIR),
+        // Linux .deb (`/usr/bin` -> `/usr/lib/<product>`) and AppImage.
+        up.join("lib")
+            .join(DESKTOP_PRODUCT_NAME)
+            .join(DESKTOP_RUNTIME_DIR),
+        // macOS: `Contents/MacOS` -> `Contents/Resources`.
+        up.join("Resources").join(DESKTOP_RUNTIME_DIR),
+    ]
 }
 
 /// The Cargo profile directory above `dir` when `dir` is where Cargo puts
@@ -486,6 +546,46 @@ mod tests {
             vec![PathBuf::from("/srv/x/y/z/out")]
         );
         assert!(helper_search_dirs(Path::new("/")).is_empty());
+    }
+
+    #[test]
+    fn the_desktop_app_also_searches_its_packaged_runtime() {
+        let exe = Path::new("/usr/bin/bookclerk-desktop");
+        assert_eq!(
+            helper_search_dirs(exe),
+            vec![
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/usr/bin/runtime"),
+                PathBuf::from("/usr/lib/Bookclerk/runtime"),
+                PathBuf::from("/usr/Resources/runtime"),
+            ]
+        );
+        let exe = Path::new("/Applications/Bookclerk.app/Contents/MacOS/bookclerk-desktop");
+        assert!(packaged_runtime_dirs(exe).contains(&PathBuf::from(
+            "/Applications/Bookclerk.app/Contents/Resources/runtime"
+        )));
+        #[cfg(windows)]
+        {
+            let exe = Path::new(r"C:\Program Files\Bookclerk\bookclerk-desktop.exe");
+            assert_eq!(
+                packaged_runtime_dirs(exe).first(),
+                Some(&Path::new(r"C:\Program Files\Bookclerk").join("runtime"))
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_desktop_app_has_a_packaged_runtime() {
+        for exe in [
+            "/usr/bin/bookclerkd",
+            "/usr/bin/bookclerk",
+            "/usr/bin/bookclerk-desktop-helper",
+            "/usr/bin/bookclerk-jail",
+        ] {
+            assert!(packaged_runtime_dirs(Path::new(exe)).is_empty(), "{exe}");
+        }
+        assert!(packaged_runtime_dirs(Path::new("bookclerk-desktop")).len() == 3);
+        assert!(packaged_runtime_dirs(Path::new("/")).is_empty());
     }
 
     #[test]

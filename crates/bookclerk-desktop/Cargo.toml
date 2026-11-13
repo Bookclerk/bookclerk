@@ -31,7 +31,7 @@ tracing = { workspace = true, optional = true }
 tauri = { version = "2.12.5", default-features = false, features = ["wry", "common-controls-v6"], optional = true }
 
 [build-dependencies]
-tauri-build = { version = "2.5", default-features = false, optional = true }
+tauri-build = { version = "2.5", default-features = false, optional = true , features = [] }
 
 [lints]
 workspace = true
