@@ -23,6 +23,10 @@ struct FakeGuest {
     delivery_time: Duration,
     /// Set when a delivery finished on a guest that had been stopped.
     stopped_mid_delivery: AtomicBool,
+    /// When set, each delivery waits (at most [`GATE_LIMIT`]) on `release`.
+    held: AtomicBool,
+    /// Opens held deliveries.
+    release: tokio::sync::Notify,
 }
 
 impl FakeGuest {
@@ -33,6 +37,8 @@ impl FakeGuest {
             delivered: AtomicUsize::new(0),
             delivery_time,
             stopped_mid_delivery: AtomicBool::new(false),
+            held: AtomicBool::new(false),
+            release: tokio::sync::Notify::new(),
         })
     }
 }
@@ -61,6 +67,9 @@ impl Integration for FakeGuest {
         _event: DomainEvent,
     ) -> bookclerk_integrations::Result<EventResult> {
         tokio::time::sleep(self.delivery_time).await;
+        if self.held.load(Ordering::SeqCst) {
+            let _ = tokio::time::timeout(GATE_LIMIT, self.release.notified()).await;
+        }
         if !self.running.load(Ordering::SeqCst) {
             self.stopped_mid_delivery.store(true, Ordering::SeqCst);
         }
@@ -237,11 +246,23 @@ async fn the_next_call_wakes_a_sleeping_guest_and_reuses_it_while_busy() {
 
 #[tokio::test]
 async fn a_call_in_flight_keeps_the_guest_past_the_idle_timeout() {
-    let (proxy, first, started) =
-        proxy(Duration::from_millis(30), Duration::from_millis(250), None);
-    proxy
-        .deliver_domain_event(event())
+    let (proxy, first, started) = proxy(Duration::from_millis(30), Duration::ZERO, None);
+    first.held.store(true, Ordering::SeqCst);
+    let delivering = {
+        let proxy = Arc::clone(&proxy);
+        tokio::spawn(async move { proxy.deliver_domain_event(event()).await })
+    };
+    wait_for("the delivery to start", || proxy.activity().in_flight == 1).await;
+    // Past the idle timeout, an idle check with the call still pending must
+    // leave the guest running.
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert!(!proxy.sleep_if_idle().await, "slept with a call in flight");
+    assert!(first.guest_running());
+    first.release.notify_one();
+    tokio::time::timeout(GATE_LIMIT, delivering)
         .await
+        .expect("delivery finishes")
+        .expect("join")
         .expect("delivered");
     assert_eq!(first.delivered.load(Ordering::SeqCst), 1);
     assert!(
