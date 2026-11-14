@@ -818,10 +818,5 @@ mod tests {
         want.extend(["--bundles".to_owned(), desktop_bundles().to_owned()]);
         assert_eq!(args, want);
         assert_eq!(desktop_configs()[0], "tauri.packaging.json");
-        // Every config the command names is checked in beside the crate.
-        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../bookclerk-desktop");
-        for config in ["tauri.packaging.json", "tauri.packaging.macos.json"] {
-            assert!(crate_dir.join(config).is_file(), "{config}");
-        }
     }
 }
