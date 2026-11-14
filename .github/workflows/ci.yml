@@ -94,6 +94,7 @@ jobs:
       job_desktop: ${{ steps.resolve.outputs.job_desktop }}
       job_postgres: ${{ steps.resolve.outputs.job_postgres }}
       job_windows_cluster: ${{ steps.resolve.outputs.job_windows_cluster }}
+      check_windows_cluster: ${{ steps.resolve.outputs.check_windows_cluster }}
       job_site: ${{ steps.resolve.outputs.job_site }}
       check_lint: ${{ steps.resolve.outputs.check_lint }}
       check_ui: ${{ steps.resolve.outputs.check_ui }}
@@ -864,13 +865,15 @@ jobs:
         run: python3 scripts/ci-exec.py run release
 
       # The envelope runs on the binaries the release step just built; its
-      # `install-platform --release` only compiles what that step did not.
+      # `install-platform --release` only compiles what that step did not. A
+      # build-only push compiles the platform and the seed and runs nothing.
       - name: Measure the 1 GiB envelope
         if: needs.plan.outputs.check_envelope == 'true'
         run: python3 scripts/ci-exec.py run envelope
 
+      # A build-only push only compiles the envelope, so it has no metrics.
       - name: Upload envelope metrics
-        if: always() && needs.plan.outputs.check_envelope == 'true'
+        if: always() && needs.plan.outputs.check_envelope == 'true' && env.CI_BUILD_ONLY != 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: envelope-metrics
@@ -1064,6 +1067,14 @@ jobs:
 
       - name: Native gateway smoke (+ Windows workerd checks)
         run: python scripts/ci-exec.py run native_gateway
+
+      # The Windows cluster tests run only in the merge queue, in a job that
+      # saves no cache. A build-only push compiles them here, so this leg's
+      # saved Windows cache holds their dependencies too
+      # (docs/contributing/ci.md#build-only-main-pushes).
+      - name: Compile the Windows cluster tests
+        if: env.CI_BUILD_ONLY == 'true' && runner.os == 'Windows' && needs.plan.outputs.check_windows_cluster == 'true'
+        run: python scripts/ci-exec.py run windows_cluster
 
   tray:
     name: tray (${{ matrix.os }})${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('tray-{0}', strategy.job-index)].label }}

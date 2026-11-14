@@ -28,6 +28,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 REPO = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 
+from ci_plan.execute import BUILD_ONLY_HOSTED_CHECKS  # noqa: E402
 from ci_plan.plan import CHECK_JOB, JOB_CHECKS, OS_LEG_JOBS, STEP_GATED_JOBS  # noqa: E402
 
 WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
@@ -39,6 +40,8 @@ LANES_OUTPUT = "lanes"
 FAIL_FAST_JOB = "merge-queue-fail-fast"
 # Checks out the OSV remediation workflow's sealed lockfile bump.
 PRIVATE_HEAD_ACTION = "./.github/actions/osv-remediation-head"
+# The gate of a step that compiles another job's check on a build-only push.
+HOSTED_BUILD_IF = "env.CI_BUILD_ONLY == 'true' && runner.os == 'Windows' && needs.plan.outputs.check_%s == 'true'"
 # The macOS job's display name, which CI Gate's stranded-job step names.
 MACOS_JOB_NAME = "macOS (sandbox, gateway, tray)"
 
@@ -52,6 +55,7 @@ def _emitted_keys() -> set[str]:
     keys = {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs", "test_parts"}
     keys |= {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
     keys |= {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]}
+    keys |= {f"check_{c}" for c in BUILD_ONLY_HOSTED_CHECKS}
     return keys
 
 
@@ -168,6 +172,10 @@ class WorkflowContractTests(unittest.TestCase):
                 for check in RUN_CHECK.findall(step.get("run", "")):
                     if job_name in OS_LEG_JOBS:
                         continue
+                    if BUILD_ONLY_HOSTED_CHECKS.get(check) == job_name:
+                        # Compiled on build-only pushes only; its own job runs it.
+                        self.assertEqual(step.get("if"), HOSTED_BUILD_IF % check, step.get("name"))
+                        continue
                     self.assertNotIn(check, seen, f"{check} run in {seen.get(check)} and {job_name}")
                     self.assertEqual(CHECK_JOB.get(check), job_name, f"{check} runs in wrong job {job_name}")
                     seen[check] = job_name
@@ -280,8 +288,12 @@ class WorkflowContractTests(unittest.TestCase):
         run = [s for s in steps if "ci-exec.py run windows_cluster" in s.get("run", "")]
         self.assertEqual(len(run), 1)
         self.assertNotIn("if", run[0])
+        # The other is the build-only compile in the Windows gateway leg.
         text = WORKFLOW.read_text(encoding="utf-8")
-        self.assertEqual(text.count("ci-exec.py run windows_cluster"), 1)
+        self.assertEqual(text.count("ci-exec.py run windows_cluster"), 2)
+        hosted = [s for s in self.jobs["native-gateway"]["steps"] if "ci-exec.py run windows_cluster" in s.get("run", "")]
+        self.assertEqual(len(hosted), 1)
+        self.assertEqual(hosted[0]["if"], HOSTED_BUILD_IF % "windows_cluster")
 
     def test_envelope_builds_on_the_runner(self) -> None:
         job = self.jobs["release"]

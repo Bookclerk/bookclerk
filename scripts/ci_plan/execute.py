@@ -212,9 +212,16 @@ API_DOCS_SCRIPT = "./scripts/generate-api-docs.sh"
 # Jobs that save the dependency caches other runs restore (see ci.yml
 # `save-if`). Build-only runs skip every other job.
 BUILD_ONLY_JOBS = frozenset({"check", "test", "native-gateway", "release"})
-# Checks in a build-only job that only measure or test, so a build-only run
-# drops them (the small-VPS envelope shares the release job).
-BUILD_ONLY_SKIPPED_CHECKS = frozenset({"envelope"})
+# The envelope seed is a load generator, not a shipped binary: compiled
+# without LTO and with parallel codegen it builds in about half the time of
+# the shipping profile (98 s against 173 s locally after a source change),
+# and it runs no slower, since the seed waits on SQLite. Its dependencies are
+# then their own artifacts, which the build-only run compiles into the
+# release caches (docs/contributing/ci.md#small-vps-envelope).
+ENVELOPE_SEED_PROFILE = {
+    "CARGO_PROFILE_RELEASE_LTO": "off",
+    "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "16",
+}
 # Jobs a draft pull request runs: lints, docs and the Rust unit and
 # integration tests, the fast feedback a draft needs. Every other selected
 # job (e2e, release, the confinement and gateway matrices, macOS, Postgres,
@@ -230,6 +237,14 @@ DRAFT_JOBS = frozenset({"check", "test"})
 # there, so a platform failure keeps the pull request out of `main`
 # (docs/contributing/ci.md#platform-legs-in-the-merge-queue).
 QUEUE_ONLY_CHECKS = frozenset({"windows_cluster"})
+# Checks whose own job never saves a cache, compiled on a build-only push by
+# another job's leg on the same runner OS, which saves them into its cache.
+# `windows_cluster` runs only in the queue, on Windows: without this its
+# `bookclerk-cli` and `bookclerk-library` test builds, whose dependency
+# features no other Windows command unifies to, compiled about 250
+# dependencies (about 13 of its 17 minutes) on every queue run
+# (docs/contributing/ci.md#build-only-main-pushes).
+BUILD_ONLY_HOSTED_CHECKS = {"windows_cluster": "native-gateway"}
 # Runner labels of the matrix jobs' `os` legs (`os_matrix` plan output).
 LINUX_RUNNERS = ("ubuntu-latest",)
 ALL_RUNNERS = ("ubuntu-latest", "windows-latest")
@@ -359,13 +374,16 @@ def resolve(
         execution = predicted
     if build_only:
         execution = plan_from_dict(plan_to_dict(execution))
-        execution.checks = {
+        own = {c: v for c, v in execution.checks.items() if CHECK_JOB[c] in BUILD_ONLY_JOBS}
+        # A job whose only checks were dropped has nothing to build.
+        kept = {CHECK_JOB[c] for c in own}
+        # A hosted check rides along only when its host job runs anyway.
+        hosted = {
             c: v
             for c, v in execution.checks.items()
-            if CHECK_JOB[c] in BUILD_ONLY_JOBS and c not in BUILD_ONLY_SKIPPED_CHECKS
+            if c not in own and BUILD_ONLY_HOSTED_CHECKS.get(c) in kept
         }
-        # A job whose only checks were dropped has nothing to build.
-        kept = {CHECK_JOB[c] for c in execution.checks}
+        execution.checks = {**own, **hosted}
         execution.jobs = {job: on and job in BUILD_ONLY_JOBS and job in kept for job, on in execution.jobs.items()}
     deferred: list[str] = []
     if draft:
@@ -419,6 +437,8 @@ def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
     for job in STEP_GATED_JOBS:
         for check in JOB_CHECKS[job]:
             out[f"check_{check}"] = _b(plan.selected(check))
+    for check in BUILD_ONLY_HOSTED_CHECKS:
+        out[f"check_{check}"] = _b(plan.selected(check))
     check_job = [c for c in JOB_CHECKS["check"] if plan.selected(c)]
     out["check_needs_cargo"] = _b(any(c not in NON_CARGO_CHECKS for c in check_job))
     docs = plan.params("api_docs")
@@ -1453,7 +1473,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
                     "envelope_seed",
                     "--no-run",
                 ],
-                env=env,
+                env={**env, **ENVELOPE_SEED_PROFILE},
             ),
             Command(
                 "1 vCPU / 1 GiB envelope",
@@ -1774,6 +1794,7 @@ __all__ = [
     "ARTIFACT_NAME",
     "DRAFT_JOBS",
     "QUEUE_ONLY_CHECKS",
+    "BUILD_ONLY_HOSTED_CHECKS",
     "Command",
     "Context",
     "ExecError",
