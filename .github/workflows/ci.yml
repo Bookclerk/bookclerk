@@ -94,6 +94,7 @@ jobs:
       job_desktop: ${{ steps.resolve.outputs.job_desktop }}
       job_postgres: ${{ steps.resolve.outputs.job_postgres }}
       job_windows_cluster: ${{ steps.resolve.outputs.job_windows_cluster }}
+      check_windows_cluster: ${{ steps.resolve.outputs.check_windows_cluster }}
       job_site: ${{ steps.resolve.outputs.job_site }}
       check_lint: ${{ steps.resolve.outputs.check_lint }}
       check_ui: ${{ steps.resolve.outputs.check_ui }}
@@ -580,13 +581,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends capnproto
 
-      # A full-suite coverage build fills most of a hosted runner's disk, and
-      # a partial cache restore adds stale dependencies on top, which ran
-      # merge groups out of space. Drop the preinstalled SDKs this job never
-      # uses, as the mutation job does (docs/contributing/ci.md#test-runner-and-retries).
+      # A full-suite coverage build plus a partial cache restore once ran
+      # merge groups out of space on runners with about 20 GiB free. Drop the
+      # preinstalled SDKs this job never uses only on such a runner: deleting
+      # their hundreds of thousands of files takes 2 to 5 minutes, and current
+      # images have about 90 GiB free (docs/contributing/ci.md#test-runner-and-retries).
       - name: Free disk space
+        env:
+          CI_MIN_FREE_GIB: 40
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          free_gib=$(df --output=avail -BG / | tail -n 1 | tr -dc '0-9')
+          if [ "$free_gib" -lt "$CI_MIN_FREE_GIB" ]; then
+            echo "Only ${free_gib} GiB free; removing unused SDKs"
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          else
+            echo "${free_gib} GiB free; keeping the preinstalled SDKs"
+          fi
           df -h / "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
 
       # Build-only main push: the dependency cache key covers Cargo.lock, the
@@ -855,13 +865,15 @@ jobs:
         run: python3 scripts/ci-exec.py run release
 
       # The envelope runs on the binaries the release step just built; its
-      # `install-platform --release` only compiles what that step did not.
+      # `install-platform --release` only compiles what that step did not. A
+      # build-only push compiles the platform and the seed and runs nothing.
       - name: Measure the 1 GiB envelope
         if: needs.plan.outputs.check_envelope == 'true'
         run: python3 scripts/ci-exec.py run envelope
 
+      # A build-only push only compiles the envelope, so it has no metrics.
       - name: Upload envelope metrics
-        if: always() && needs.plan.outputs.check_envelope == 'true'
+        if: always() && needs.plan.outputs.check_envelope == 'true' && env.CI_BUILD_ONLY != 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: envelope-metrics
@@ -1055,6 +1067,14 @@ jobs:
 
       - name: Native gateway smoke (+ Windows workerd checks)
         run: python scripts/ci-exec.py run native_gateway
+
+      # The Windows cluster tests run only in the merge queue, in a job that
+      # saves no cache. A build-only push compiles them here, so this leg's
+      # saved Windows cache holds their dependencies too
+      # (docs/contributing/ci.md#build-only-main-pushes).
+      - name: Compile the Windows cluster tests
+        if: env.CI_BUILD_ONLY == 'true' && runner.os == 'Windows' && needs.plan.outputs.check_windows_cluster == 'true'
+        run: python scripts/ci-exec.py run windows_cluster
 
   tray:
     name: tray (${{ matrix.os }})${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('tray-{0}', strategy.job-index)].label }}

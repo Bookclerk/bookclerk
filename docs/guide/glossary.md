@@ -42,6 +42,11 @@ The words Bookclerk uses, in plain language.
   it. See [Join a library as a branch](branches.md).
 - **Shared branch**: A branch that is an extra copy of the library itself
   on another machine, sharing its database.
+- **Clerk**: Another Bookclerk install that a
+  person uses to see their books from a library. It signs in with a
+  library card and is not a branch: the library never gives it work.
+- **Library card**: A clerk's sign-in to a library as one person. It
+  appears in that person's sessions, where they can revoke it.
 - **Node**: Any computer running Bookclerk for a library: the library's own,
   and its branches.
 - **Daemon**: `bookclerkd`, the Bookclerk program that keeps running and

@@ -15,9 +15,9 @@
 //! `bookclerk-plugin-e2e`). Storefronts, storage, remote libraries, sign-in
 //! providers and Python guests stay resident for now.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bookclerk_integrations::{
@@ -31,6 +31,7 @@ use bookclerk_plugin_abi::{
 };
 use bookclerk_plugin_manifest::CronSchedule;
 
+use crate::activation::{Activation, Busy, Guest, GuestStarter, OnDemandStatus, WakeError};
 use crate::{Entrypoint, PluginFamily, PluginManifest};
 
 /// How long a trigger-driven guest stays up after its last call returns.
@@ -59,16 +60,13 @@ pub fn activates_on_demand(manifest: &PluginManifest) -> bool {
         && !manifest.has_entrypoint(Entrypoint::Oidc)
 }
 
-/// A running guest the proxy forwards to, with the process facts it needs.
-pub(crate) trait AwakeGuest: Integration {
-    /// True while the guest process is still running.
-    fn guest_running(&self) -> bool;
+/// A running integration guest the proxy forwards to.
+pub(crate) trait AwakeGuest: Integration + Guest {}
 
-    /// Native guest pid, when there is one.
-    fn guest_pid(&self) -> Option<u32>;
-}
+impl<T: Integration + Guest> AwakeGuest for T {}
 
-impl AwakeGuest for crate::ExternalIntegration {
+#[async_trait]
+impl Guest for crate::ExternalIntegration {
     fn guest_running(&self) -> bool {
         self.session().guest_running()
     }
@@ -76,21 +74,15 @@ impl AwakeGuest for crate::ExternalIntegration {
     fn guest_pid(&self) -> Option<u32> {
         self.session().guest_pid()
     }
+
+    async fn stop_guest(&self) -> std::result::Result<(), String> {
+        Integration::stop(self).await.map_err(|err| err.to_string())
+    }
 }
 
-/// Starts the guest for one instance: spawn, `open`, health and `start`.
-#[async_trait]
-pub(crate) trait GuestStarter: Send + Sync {
-    /// Spawns a fresh guest and returns it once it is ready for calls.
-    ///
-    /// # Errors
-    ///
-    /// Returns the spawn, `open` or health failure as text.
-    async fn start_guest(
-        &self,
-        ctx: IntegrationContext,
-    ) -> std::result::Result<Arc<dyn AwakeGuest>, String>;
-}
+/// Lifecycle context shared between a proxy and its starter, so a guest
+/// started on demand gets the context the daemon last gave `start`.
+pub(crate) type SharedContext = Arc<std::sync::Mutex<IntegrationContext>>;
 
 /// The values a sleeping proxy answers without waking its guest.
 ///
@@ -147,49 +139,16 @@ impl Identity {
     }
 }
 
-/// Calls in flight and when the last one finished.
-struct Activity {
-    /// Calls that hold a [`Busy`] guard right now.
-    in_flight: usize,
-    /// When the guest last started or a call last finished.
-    last_used: Instant,
-}
-
 /// Integration registry entry that starts its guest on the first call and
-/// stops it after [`OnDemandIntegration::idle_timeout`] without calls.
+/// stops it after the idle timeout without calls.
 pub struct OnDemandIntegration {
     /// Answers given while the guest sleeps.
     identity: Identity,
-    /// Starts a fresh guest on wake.
-    starter: Box<dyn GuestStarter>,
-    /// Idle time after which the guest is stopped.
-    idle_timeout: Duration,
-    /// The running guest, or `None` while asleep. Held across a wake so
-    /// concurrent callers share one spawn.
-    guest: tokio::sync::Mutex<Option<Arc<dyn AwakeGuest>>>,
-    /// In-flight calls and last use; the sweep reads it.
-    activity: std::sync::Mutex<Activity>,
-    /// Lifecycle context passed to each guest's `start`.
-    context: std::sync::Mutex<IntegrationContext>,
-    /// Set by [`Integration::stop`]; a retired proxy does not wake until a
-    /// later [`Integration::start`] revives it (a deployment rollback).
-    retired: AtomicBool,
-    /// Guests started after the first, for logs and tests.
-    wakes: AtomicU64,
-}
-
-/// Marks one call in flight until dropped, then records the finish time.
-struct Busy<'a> {
-    /// Proxy whose activity this guard holds.
-    owner: &'a OnDemandIntegration,
-}
-
-impl Drop for Busy<'_> {
-    fn drop(&mut self) {
-        let mut activity = self.owner.activity();
-        activity.in_flight = activity.in_flight.saturating_sub(1);
-        activity.last_used = Instant::now();
-    }
+    /// The running guest, started on a call and stopped when idle.
+    activation: Arc<Activation<dyn AwakeGuest>>,
+    /// Lifecycle context passed to each guest's `start`; shared with the
+    /// starter.
+    context: SharedContext,
 }
 
 impl OnDemandIntegration {
@@ -200,8 +159,8 @@ impl OnDemandIntegration {
     ///
     /// * `guest` - the running guest; its answers become the sleep-time identity.
     /// * `plugin_instance_id` - deployment instance the guest serves.
-    /// * `starter` - spawns a replacement guest on each wake.
-    /// * `context` - lifecycle context the guest was started with.
+    /// * `starter` - spawns a replacement guest on each wake, reading `context`.
+    /// * `context` - lifecycle context, shared with `starter`.
     /// * `idle_timeout` - idle time before the guest is stopped.
     ///
     /// # Returns
@@ -210,210 +169,76 @@ impl OnDemandIntegration {
     pub(crate) fn wrap(
         guest: Arc<dyn AwakeGuest>,
         plugin_instance_id: &str,
-        starter: Box<dyn GuestStarter>,
-        context: IntegrationContext,
+        starter: Box<dyn GuestStarter<dyn AwakeGuest>>,
+        context: SharedContext,
         idle_timeout: Duration,
     ) -> Arc<Self> {
-        let proxy = Arc::new(Self {
+        Arc::new(Self {
             identity: Identity::of(guest.as_ref(), plugin_instance_id),
-            starter,
-            idle_timeout,
-            guest: tokio::sync::Mutex::new(Some(guest)),
-            activity: std::sync::Mutex::new(Activity {
-                in_flight: 0,
-                last_used: Instant::now(),
-            }),
-            context: std::sync::Mutex::new(context),
-            retired: AtomicBool::new(false),
-            wakes: AtomicU64::new(0),
-        });
-        spawn_idle_sweep(Arc::downgrade(&proxy), idle_timeout);
-        proxy
+            activation: Activation::start(guest, plugin_instance_id, starter, idle_timeout),
+            context,
+        })
     }
 
-    /// Idle time after which the guest is stopped.
-    #[must_use]
-    pub fn idle_timeout(&self) -> Duration {
-        self.idle_timeout
-    }
-
-    /// True once the deployment stopped this proxy.
-    #[must_use]
-    pub fn is_retired(&self) -> bool {
-        self.retired.load(Ordering::SeqCst)
-    }
-
-    /// True while a guest is running for this proxy.
-    ///
-    /// Returns false while a wake or a sleep holds the guest slot.
-    #[must_use]
-    pub fn is_awake(&self) -> bool {
-        self.guest
-            .try_lock()
-            .is_ok_and(|guest| guest.as_ref().is_some_and(|guest| guest.guest_running()))
-    }
-
-    /// Native pid of the running guest, if awake.
-    #[must_use]
-    pub fn guest_pid(&self) -> Option<u32> {
-        self.guest
-            .try_lock()
-            .ok()
-            .and_then(|guest| guest.as_ref().and_then(|guest| guest.guest_pid()))
-    }
-
-    /// Guests started on demand since the proxy was created.
-    #[must_use]
-    pub fn wakes(&self) -> u64 {
-        self.wakes.load(Ordering::SeqCst)
-    }
-
-    /// Locks the activity record.
-    ///
-    /// A poisoned lock still yields the record: it holds two plain
-    /// counters that no panic can leave half-written.
-    fn activity(&self) -> std::sync::MutexGuard<'_, Activity> {
-        self.activity
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Lifecycle context for the next guest.
-    ///
-    /// A poisoned lock still yields the context, which is only ever
-    /// replaced whole.
-    fn context(&self) -> IntegrationContext {
-        self.context
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    /// Marks a call in flight, then returns the running guest, starting one
-    /// when the proxy is asleep or its guest exited.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the proxy is retired or the guest cannot start.
-    async fn awake(&self) -> bookclerk_integrations::Result<(Arc<dyn AwakeGuest>, Busy<'_>)> {
-        // Counted before taking the slot so a sweep that wins the slot
-        // first sees the call and leaves the guest running.
-        self.activity().in_flight += 1;
-        let busy = Busy { owner: self };
-        if self.is_retired() {
-            return Err(IntegrationError::message(format!(
-                "integration `{}` was stopped",
-                self.identity.id
-            )));
-        }
-        let mut slot = self.guest.lock().await;
-        // `stop` may have retired the proxy while this call waited for the
-        // slot; a retired proxy must not start a guest.
-        if self.is_retired() {
-            return Err(IntegrationError::message(format!(
-                "integration `{}` was stopped",
-                self.identity.id
-            )));
-        }
-        if let Some(guest) = slot.as_ref() {
-            if guest.guest_running() {
-                return Ok((Arc::clone(guest), busy));
-            }
-        }
-        if let Some(exited) = slot.take() {
-            let _ = exited.stop().await;
-        }
-        let started = Instant::now();
-        let guest = self
-            .starter
-            .start_guest(self.context())
-            .await
-            .map_err(|detail| {
-                IntegrationError::message(format!(
-                    "integration `{}` did not start on demand: {detail}",
-                    self.identity.id
-                ))
-            })?;
-        // A retirement that landed while the guest started wins: stop the
-        // new guest rather than hand it work.
-        if self.is_retired() {
-            let _ = guest.stop().await;
-            return Err(IntegrationError::message(format!(
-                "integration `{}` was stopped",
-                self.identity.id
-            )));
-        }
-        self.wakes.fetch_add(1, Ordering::SeqCst);
-        tracing::debug!(
-            plugin_instance_id = %self.identity.plugin_instance_id,
-            elapsed_ms = started.elapsed().as_millis(),
-            "integration started on demand"
-        );
-        *slot = Some(Arc::clone(&guest));
-        Ok((guest, busy))
-    }
-
-    /// Stops the guest when no call is in flight and the last one finished
-    /// at least the idle timeout ago.
-    ///
-    /// A wake or call holding the slot makes this a no-op; the next sweep
-    /// tries again.
+    /// Stops the guest now if it has been idle for the timeout.
     ///
     /// # Returns
     ///
     /// True when a running guest was stopped.
     pub async fn sleep_if_idle(&self) -> bool {
-        let Ok(mut slot) = self.guest.try_lock() else {
-            return false;
-        };
-        if slot.is_none() {
-            return false;
-        }
-        {
-            let activity = self.activity();
-            if activity.in_flight > 0 || activity.last_used.elapsed() < self.idle_timeout {
-                return false;
+        self.activation.sleep_if_idle().await
+    }
+
+    /// Marks a call in flight and returns the running guest, starting one
+    /// when asleep.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the proxy is retired or the guest cannot start.
+    async fn awake(&self) -> bookclerk_integrations::Result<(Arc<dyn AwakeGuest>, Busy<'_>)> {
+        self.activation.awake().await.map_err(|err| match err {
+            WakeError::Retired => {
+                IntegrationError::message(format!("integration `{}` was stopped", self.identity.id))
             }
-        }
-        let Some(guest) = slot.take() else {
-            return false;
-        };
-        drop(slot);
-        if let Err(err) = guest.stop().await {
-            tracing::warn!(
-                plugin_instance_id = %self.identity.plugin_instance_id,
-                error = %err,
-                "idle integration stop failed"
-            );
-        }
-        tracing::debug!(
-            plugin_instance_id = %self.identity.plugin_instance_id,
-            "idle integration stopped"
-        );
-        true
+            WakeError::Start(detail) => IntegrationError::message(format!(
+                "integration `{}` did not start on demand: {detail}",
+                self.identity.id
+            )),
+        })
     }
 }
 
-/// Checks `proxy` for idleness a few times per timeout until it is dropped.
-///
-/// A retired proxy is skipped rather than abandoned, so one revived by a
-/// rollback's [`Integration::start`] goes back to sleep when idle.
-fn spawn_idle_sweep(proxy: Weak<OnDemandIntegration>, idle_timeout: Duration) {
-    let period = (idle_timeout / 4).clamp(Duration::from_millis(10), Duration::from_secs(15));
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(period);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tick.tick().await;
-            let Some(proxy) = proxy.upgrade() else {
-                return;
-            };
-            if proxy.is_retired() {
-                continue;
-            }
-            proxy.sleep_if_idle().await;
+#[async_trait]
+impl OnDemandStatus for OnDemandIntegration {
+    fn is_retired(&self) -> bool {
+        self.activation.is_retired()
+    }
+
+    async fn retire(&self) {
+        if let Err(err) = self.activation.retire().await {
+            tracing::warn!(
+                integration = %self.identity.id,
+                error = %err,
+                "retired on-demand guest stop failed"
+            );
         }
-    });
+    }
+
+    fn is_awake(&self) -> bool {
+        self.activation.is_awake()
+    }
+
+    fn guest_pid(&self) -> Option<u32> {
+        self.activation.guest_pid()
+    }
+
+    fn wakes(&self) -> u64 {
+        self.activation.wakes()
+    }
+
+    fn idle_timeout(&self) -> Duration {
+        self.activation.idle_timeout()
+    }
 }
 
 #[async_trait]
@@ -440,25 +265,22 @@ impl Integration for OnDemandIntegration {
     /// failed to start registers the previous proxy again, and its next call
     /// wakes a fresh guest.
     async fn start(&self, ctx: IntegrationContext) -> bookclerk_integrations::Result<()> {
-        self.retired.store(false, Ordering::SeqCst);
+        self.activation.revive();
         *self
             .context
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = ctx.clone();
-        let guest = self.guest.lock().await.clone();
-        match guest {
+        match self.activation.running().await {
             Some(guest) => guest.start(ctx).await,
             None => Ok(()),
         }
     }
 
     async fn stop(&self) -> bookclerk_integrations::Result<()> {
-        self.retired.store(true, Ordering::SeqCst);
-        let guest = self.guest.lock().await.take();
-        match guest {
-            Some(guest) => guest.stop().await,
-            None => Ok(()),
-        }
+        self.activation
+            .retire()
+            .await
+            .map_err(IntegrationError::message)
     }
 
     async fn deliver_domain_event(
@@ -512,10 +334,9 @@ impl Integration for OnDemandIntegration {
     /// without being woken, since it passed health when it last started and
     /// the next call starts and checks it again.
     async fn health(&self) -> bookclerk_integrations::Result<IntegrationHealth> {
-        let guest = self.guest.lock().await.clone();
-        match guest {
-            Some(guest) if guest.guest_running() => guest.health().await,
-            _ => Ok(IntegrationHealth {
+        match self.activation.running().await {
+            Some(guest) => guest.health().await,
+            None => Ok(IntegrationHealth {
                 id: self.identity.id.clone(),
                 enabled: true,
                 ok: true,

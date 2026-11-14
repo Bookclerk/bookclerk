@@ -189,6 +189,30 @@ paths = ["fuzz/corpus/node_frame/**", "fuzz/oracles/node_frame.rs"]
 
 [[test_input]]
 package = "bookclerk-node-proto"
+# The client authorization oracle is shared with the replay test through `#[path]`.
+paths = [
+  "fuzz/corpus/client_authorization/**",
+  "fuzz/oracles/client_authorization.rs",
+]
+
+[[test_input]]
+package = "bookclerk-node-proto"
+# The client authorize oracle is shared with the replay test through `#[path]`.
+paths = [
+  "fuzz/corpus/client_authorize/**",
+  "fuzz/oracles/client_authorize.rs",
+]
+
+[[test_input]]
+package = "bookclerk-node-proto"
+# The client token request oracle is shared with the replay test through `#[path]`.
+paths = [
+  "fuzz/corpus/client_token_request/**",
+  "fuzz/oracles/client_token_request.rs",
+]
+
+[[test_input]]
+package = "bookclerk-node-proto"
 # The account bundle oracle is shared with the replay test through `#[path]`.
 paths = [
   "fuzz/corpus/node_account_bundle/**",
