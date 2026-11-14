@@ -28,7 +28,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 REPO = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 
-from ci_plan.execute import BUILD_ONLY_HOSTED_CHECKS  # noqa: E402
+from ci_plan.execute import BUILD_ONLY_HOSTED_CHECKS, BUILD_PLAN_ENV  # noqa: E402
 from ci_plan.plan import CHECK_JOB, JOB_CHECKS, OS_LEG_JOBS, STEP_GATED_JOBS  # noqa: E402
 
 WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
@@ -381,7 +381,10 @@ class WorkflowContractTests(unittest.TestCase):
                     self.assertIn(step["with"].get("shared-key"), {"lint", "debug", "release"})
                     self.assertIn("CARGO_PROFILE_DEV_DEBUG", step["with"]["env-vars"].split())
                     self.assertIn("CI_CARGO_PROFILES", step["with"]["env-vars"].split())
-                    self.assertIn("CI_CACHE_EPOCH", step["with"]["env-vars"].split())
+                    listed = step["with"]["env-vars"].split()
+                    own = BUILD_PLAN_ENV[step["with"]["shared-key"]]
+                    self.assertIn(own, listed)
+                    self.assertEqual([v for v in listed if v.startswith("CI_BUILD_PLAN_")], [own])
                     if step["with"]["save-if"] is not False and step["with"]["save-if"] != "false":
                         self.assertIn("refs/heads/main", step["with"]["save-if"])
                         savers.add(name)
@@ -406,6 +409,39 @@ class WorkflowContractTests(unittest.TestCase):
             digest,
             f"Cargo.toml's [profile] tables changed: set CI_CARGO_PROFILES to \"{digest}\" in ci.yml",
         )
+
+    def test_cache_keys_follow_the_build_only_plan(self) -> None:
+        """Each CI_BUILD_PLAN_* is the digest of what the build-only push compiles into that cache.
+
+        Without it, a change to those builds keeps the old key: the
+        build-only push skips the build and later runs compile cold.
+        """
+        import json
+
+        from ci_plan.execute import build_plan_digests, resolve
+
+        meta = json.loads((SCRIPTS / "tests/ci_plan_fixtures/workspace_metadata.json").read_text())
+        art = resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="1",
+            checkout_sha="x",
+            event="push",
+            force_full=True,
+            build_only=True,
+            paths=["Cargo.lock"],
+            metadata=meta,
+            workspace=REPO,
+        )
+        for key, digest in build_plan_digests(art, REPO).items():
+            var = BUILD_PLAN_ENV[key]
+            with self.subTest(cache=key):
+                self.assertEqual(
+                    self.wf["env"].get(var),
+                    digest,
+                    f"the build-only builds for the `{key}` cache changed: set {var} to \"{digest}\" in ci.yml",
+                )
 
     def test_build_only_jobs_skip_when_their_saved_cache_is_current(self) -> None:
         """Each cache-saving job looks its own key up first and skips the build on a hit."""
