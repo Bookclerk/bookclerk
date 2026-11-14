@@ -283,10 +283,19 @@ of these once, checks its health, and then lets it sleep:
 While a plugin sleeps, its health reads "asleep; starts on its next call"
 without waking it.
 
+Storefronts sleep the same way, after 5 minutes without a call, because
+their work comes in bursts: a scan pages through a library and an acquire
+fetches several parts. A sign-in, scan, fetch, catalog search or Discover
+lookup starts the store's guest again. Listing a store's accounts reads
+the library and does not wake it. Credentials a guest refreshes are
+written back as they change, so a guest started later begins from the
+stored ones.
+
 > [!NOTE]
-> Storefronts, storage destinations, remote libraries such as
-> Audiobookshelf, sign-in providers (`oidc`) and Python plugins stay
-> running for now. Python guests take several seconds to start.
+> Storage destinations, remote libraries such as Audiobookshelf, sign-in
+> providers (`oidc`), plugins that belong to more than one family, and
+> Python plugins stay running for now. Python guests take several seconds
+> to start.
 
 ### How a node hears about a change
 

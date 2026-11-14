@@ -636,6 +636,44 @@ impl ExternalSource {
     }
 }
 
+/// Accounts table rows for the storefront `scope` names.
+///
+/// Host-mediated: the plugin is never asked to open the library, so a
+/// sleeping storefront answers this without waking.
+///
+/// # Errors
+///
+/// Returns the library read failure.
+pub(crate) async fn list_scope_accounts(
+    scope: &SourceScope,
+) -> bookclerk_source::Result<Vec<SourceAccount>> {
+    let all = scope
+        .list_accounts()
+        .await
+        .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+    Ok(all
+        .into_iter()
+        .map(|a| SourceAccount {
+            account_id: a.account_id,
+            source: a.source,
+            marketplace: a.marketplace,
+            label: a.label,
+            scan_enabled: a.scan_enabled,
+        })
+        .collect())
+}
+
+#[async_trait]
+impl crate::activation::Guest for ExternalSource {
+    fn guest_running(&self) -> bool {
+        self.session.guest_running()
+    }
+
+    fn guest_pid(&self) -> Option<u32> {
+        self.session.guest_pid()
+    }
+}
+
 #[async_trait]
 impl ContentSource for ExternalSource {
     fn id(&self) -> &str {
@@ -705,21 +743,7 @@ impl ContentSource for ExternalSource {
         &self,
         scope: &SourceScope,
     ) -> bookclerk_source::Result<Vec<SourceAccount>> {
-        // Host-mediated: accounts table rows for this source id (never ask plugin to open DB).
-        let all = scope
-            .list_accounts()
-            .await
-            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
-        Ok(all
-            .into_iter()
-            .map(|a| SourceAccount {
-                account_id: a.account_id,
-                source: a.source,
-                marketplace: a.marketplace,
-                label: a.label,
-                scan_enabled: a.scan_enabled,
-            })
-            .collect())
+        list_scope_accounts(scope).await
     }
 
     async fn scan(

@@ -1495,7 +1495,7 @@ async fn live_two_instances_same_key_route_to_the_default() {
 }
 
 #[tokio::test]
-async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
+async fn a_killed_storefront_guest_is_replaced_on_its_next_call() {
     let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
@@ -1558,15 +1558,21 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
         .tracked_guest_pid(instance.id.as_str())
         .expect("guest pid");
     kill_pid(first_pid);
+    // A storefront runs on demand: the deployment stays deployed while its
+    // guest is gone, and the next call starts a replacement.
+    let proxy = runtime
+        .on_demand(instance.id.as_str())
+        .expect("storefront runs on demand");
     let mut dead = false;
     for _ in 0..50 {
-        if !DeploymentRuntime::guest_still_running(&runtime, instance.id.as_str()).await {
+        if !proxy.is_awake() {
             dead = true;
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     assert!(dead, "killed guest still looks alive");
+    assert!(DeploymentRuntime::guest_still_running(&runtime, instance.id.as_str()).await);
     reconcile_local_deployments(
         &store,
         &config,
@@ -1576,16 +1582,57 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
     )
     .await
     .unwrap();
+    assert_eq!(
+        proxy.wakes(),
+        0,
+        "reconcile does not start a sleeping guest"
+    );
+    let source = runtime
+        .sources
+        .read()
+        .await
+        .get(instance.id.as_str())
+        .expect("registered while its guest is gone");
+    let scope = store.scope(source.plugin_key(), source.id());
+    // No account exists, so the call fails after the wake.
+    let _ = source.revoke_credentials(&scope, "no-such-account").await;
+    assert_eq!(proxy.wakes(), 1);
     let second_pid = runtime
         .tracked_guest_pid(instance.id.as_str())
         .expect("replacement pid");
     assert_ne!(first_pid, second_pid);
-    assert!(DeploymentRuntime::guest_still_running(&runtime, instance.id.as_str()).await);
     let obs = load_observation(&store, &deployment.deployment_id, &session.node.node_id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
+    // Removing the deployment retires the proxy, so a job still holding it
+    // in a registry snapshot cannot start the removed guest again.
+    runtime.retire_plugin_instance(instance.id.as_str()).await;
+    assert!(proxy.is_retired());
+    assert!(!proxy.is_awake());
+    let err = source
+        .list_deals(1)
+        .await
+        .expect_err("a retired storefront refuses calls");
+    assert!(err.to_string().contains("stopped"), "{err}");
+    // Revoking still deletes the stored credentials without a guest.
+    scope
+        .save_credentials_json("held-account", &serde_json::json!({ "token": "t" }))
+        .await
+        .expect("seal credentials");
+    source
+        .revoke_credentials(&scope, "held-account")
+        .await
+        .expect("revoke without a guest");
+    assert_eq!(
+        scope
+            .load_credentials_json("held-account")
+            .await
+            .expect("load credentials"),
+        None
+    );
+    assert_eq!(proxy.wakes(), 1);
 }
 
 #[tokio::test]
@@ -2102,7 +2149,7 @@ async fn live_event_only_integration_sleeps_when_idle_and_wakes_on_delivery() {
     assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
     let instance_id = instance.id.as_str();
     let proxy = runtime
-        .on_demand_integration(instance_id)
+        .on_demand(instance_id)
         .expect("event-only plugin runs on demand");
     let first_pid = runtime.tracked_guest_pid(instance_id).expect("awake pid");
     assert!(proxy.is_awake());

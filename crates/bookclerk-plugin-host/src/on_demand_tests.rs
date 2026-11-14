@@ -11,7 +11,8 @@ use bookclerk_integrations::{
 };
 use bookclerk_plugin_abi::{DomainEvent, EventResult};
 
-use super::{activates_on_demand, AwakeGuest, GuestStarter, OnDemandIntegration};
+use super::{activates_on_demand, AwakeGuest, OnDemandIntegration};
+use crate::activation::{Guest, GuestStarter, OnDemandStatus};
 
 /// Guest double that counts deliveries and can be told it exited.
 struct FakeGuest {
@@ -93,13 +94,18 @@ impl Integration for FakeGuest {
     }
 }
 
-impl AwakeGuest for FakeGuest {
+#[async_trait]
+impl Guest for FakeGuest {
     fn guest_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
 
     fn guest_pid(&self) -> Option<u32> {
         self.guest_running().then_some(4242)
+    }
+
+    async fn stop_guest(&self) -> std::result::Result<(), String> {
+        Integration::stop(self).await.map_err(|err| err.to_string())
     }
 }
 
@@ -120,11 +126,8 @@ struct FakeStarter {
 const GATE_LIMIT: Duration = Duration::from_secs(5);
 
 #[async_trait]
-impl GuestStarter for FakeStarter {
-    async fn start_guest(
-        &self,
-        _ctx: IntegrationContext,
-    ) -> std::result::Result<Arc<dyn AwakeGuest>, String> {
+impl GuestStarter<dyn AwakeGuest> for FakeStarter {
+    async fn start_guest(&self) -> std::result::Result<Arc<dyn AwakeGuest>, String> {
         if let Some(gate) = &self.gate {
             let _ = tokio::time::timeout(GATE_LIMIT, gate.notified()).await;
         }
@@ -170,7 +173,7 @@ fn gated_proxy(
             fail: fail.map(str::to_string),
             gate,
         }),
-        IntegrationContext::default(),
+        Arc::new(std::sync::Mutex::new(IntegrationContext::default())),
         idle,
     );
     (proxy, first, started)
@@ -254,11 +257,14 @@ async fn a_call_in_flight_keeps_the_guest_past_the_idle_timeout() {
         let proxy = Arc::clone(&proxy);
         tokio::spawn(async move { proxy.deliver_domain_event(event()).await })
     };
-    wait_for("the delivery to start", || proxy.activity().in_flight == 1).await;
+    wait_for("the delivery to start", || {
+        proxy.activation.in_flight() == 1
+    })
+    .await;
     // Past the idle timeout, an idle check with the call still pending must
     // leave the guest running.
     tokio::time::sleep(Duration::from_millis(60)).await;
-    assert_eq!(proxy.activity().in_flight, 1, "the call is still pending");
+    assert_eq!(proxy.activation.in_flight(), 1, "the call is still pending");
     assert!(!proxy.sleep_if_idle().await, "slept with a call in flight");
     assert!(first.guest_running());
     first.release.notify_one();
@@ -293,7 +299,7 @@ async fn concurrent_calls_on_a_sleeping_proxy_start_one_guest() {
         })
         .collect();
     // Hold the first wake until every call is waiting on it.
-    wait_for("all eight calls", || proxy.activity().in_flight == 8).await;
+    wait_for("all eight calls", || proxy.activation.in_flight() == 8).await;
     gate.notify_one();
     for call in calls {
         call.await.expect("join").expect("delivered");
@@ -535,16 +541,16 @@ async fn a_call_waiting_on_a_wake_does_not_start_a_guest_after_stop() {
     wait_asleep(&proxy, &first).await;
     // Hold the slot so the call passes the first retirement check and then
     // waits, as it would behind a concurrent `stop`.
-    let slot = proxy.guest.lock().await;
+    let slot = proxy.activation.slot().lock().await;
     let waiting = {
         let proxy = Arc::clone(&proxy);
         tokio::spawn(async move { proxy.deliver_domain_event(event()).await })
     };
     wait_for("the call to wait on the slot", || {
-        proxy.activity().in_flight == 1
+        proxy.activation.in_flight() == 1
     })
     .await;
-    proxy.retired.store(true, Ordering::SeqCst);
+    proxy.activation.mark_retired();
     drop(slot);
     let err = waiting
         .await
@@ -570,10 +576,10 @@ async fn a_guest_that_finishes_starting_after_stop_is_stopped_unused() {
     };
     // The wake holds the slot while the starter waits on the gate.
     wait_for("the wake to hold the slot", || {
-        proxy.guest.try_lock().is_err()
+        proxy.activation.slot().try_lock().is_err()
     })
     .await;
-    proxy.retired.store(true, Ordering::SeqCst);
+    proxy.activation.mark_retired();
     gate.notify_one();
     let err = waking
         .await

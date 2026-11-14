@@ -1,6 +1,6 @@
 # ADR: Event delivery follows the Workers model
 
-- **Status:** Accepted (decisions 1 to 5); later phases proposed
+- **Status:** Accepted (decisions 1 to 6); later phases proposed
 - **Date:** 2026-11-11
 
 ## Context
@@ -94,13 +94,21 @@ callers await a promise, and long work is a durable job.
    the guest on the next delivery, queue batch, cron fire or lookup, and
    stops it after 60 seconds with no call in flight. Placement keeps
    reserving budget for asleep instances.
+6. **On-demand storefronts.** A plugin whose only family is source and
+   that is not Python sleeps the same way, behind a source proxy that
+   shares the integration proxy's activation core. Its idle timeout is
+   5 minutes, since storefront work comes in bursts. Every storefront
+   call returns once its work is done (a fetch hands back files on
+   disk), so a call in flight is all that keeps the guest up. Account
+   listing reads the library and never wakes the guest.
 
 The following phases are proposed and get their own pull requests and
 updates to this record:
 
-- **On-demand activation for the rest.** Storefronts, storage and remote
-  libraries sleep too, with an idle timeout per family; Python guests
-  need a faster start (snapshots or prewarming) before they can.
+- **On-demand activation for the rest.** Storage and remote libraries
+  sleep too, with an idle timeout per family; storage holds its guest
+  from a staged upload to its commit. Python guests need a faster start
+  (snapshots or prewarming) before they can.
 - **Batched delivery.** `event(batch)` and `queue(batch)` receive up to
   `max_batch_size` messages per call.
 - **Richer host-side filters.** Envelope selectors and per-instance
