@@ -417,8 +417,20 @@ fn desktop_bundles() -> &'static str {
     }
 }
 
+/// The packaging configs `cargo tauri build` merges, in order, on this
+/// platform. On macOS an overlay drops `favicon.ico` from the icons: every
+/// icon goes into the app's `.icns`, which has no slot for the `.ico`'s
+/// largest (48 px) image.
+fn desktop_configs() -> &'static [&'static str] {
+    if cfg!(target_os = "macos") {
+        &["tauri.packaging.json", "tauri.packaging.macos.json"]
+    } else {
+        &["tauri.packaging.json"]
+    }
+}
+
 /// The `cargo tauri build` call that bundles the desktop app with the
-/// packaging config, run in the desktop crate.
+/// packaging configs, run in the desktop crate.
 ///
 /// # Arguments
 ///
@@ -431,16 +443,11 @@ pub fn tauri_build_command(root: &Path) -> std::process::Command {
     let mut cmd =
         std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     cmd.current_dir(root.join("crates").join("bookclerk-desktop"))
-        .args([
-            "tauri",
-            "build",
-            "--features",
-            "window",
-            "--config",
-            "tauri.packaging.json",
-            "--bundles",
-            desktop_bundles(),
-        ]);
+        .args(["tauri", "build", "--features", "window"]);
+    for config in desktop_configs() {
+        cmd.args(["--config", config]);
+    }
+    cmd.args(["--bundles", desktop_bundles()]);
     cmd
 }
 
@@ -798,20 +805,23 @@ mod tests {
             cmd.get_current_dir(),
             Some(root.join("crates").join("bookclerk-desktop").as_path())
         );
-        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy()).collect();
-        assert_eq!(
-            args[..7],
-            [
-                "tauri",
-                "build",
-                "--features",
-                "window",
-                "--config",
-                "tauri.packaging.json",
-                "--bundles"
-            ]
-        );
-        assert_eq!(args[7], desktop_bundles());
-        assert!(!desktop_bundles().is_empty());
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let mut want: Vec<String> = ["tauri", "build", "--features", "window"]
+            .map(String::from)
+            .to_vec();
+        for config in desktop_configs() {
+            want.extend(["--config".to_owned(), (*config).to_owned()]);
+        }
+        want.extend(["--bundles".to_owned(), desktop_bundles().to_owned()]);
+        assert_eq!(args, want);
+        assert_eq!(desktop_configs()[0], "tauri.packaging.json");
+        // Every config the command names is checked in beside the crate.
+        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../bookclerk-desktop");
+        for config in ["tauri.packaging.json", "tauri.packaging.macos.json"] {
+            assert!(crate_dir.join(config).is_file(), "{config}");
+        }
     }
 }

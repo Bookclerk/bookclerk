@@ -181,7 +181,9 @@ To build them:
    plugins, without the `bookclerk` and `bookclerkd` binaries the app
    doesn't use) plus `ui/dist`. It then runs `cargo tauri build` with
    `crates/bookclerk-desktop/tauri.packaging.json`, which bundles that folder
-   as the app's `runtime/` resource. The packages land in
+   as the app's `runtime/` resource (on macOS,
+   `tauri.packaging.macos.json` also drops `favicon.ico` from the icons,
+   since the `.icns` has no slot for its 48 px image). The packages land in
    `target/release/bundle/`.
 
 A Linux package installs the executable in `/usr/bin` and its resources in
