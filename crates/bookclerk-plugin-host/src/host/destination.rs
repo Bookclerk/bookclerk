@@ -11,13 +11,14 @@ use bookclerk_config::{Config, DestinationNaming, NamingProfile, OutputBackendKi
 use bookclerk_storage::StorageBackend;
 
 use crate::discover::DiscoveredPlugin;
+use crate::on_demand_storage::{HeldSession, OnDemandStorage};
 use crate::protocol::OutputS3ContextDto;
 use crate::rpc_session::{PluginSession, PluginStorage};
 use crate::Result as PluginResult;
 
 /// Which single-slot backend a deployed destination owns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeployedKind {
+pub(crate) enum DeployedKind {
     /// Platform S3 output.
     S3,
     /// Platform local-filesystem output.
@@ -36,6 +37,44 @@ pub(crate) struct SpawnedDestination {
     kind: DeployedKind,
     /// Key layout from the instance document.
     settings: DestinationSettings,
+}
+
+/// The parts of a spawned storage guest an on-demand proxy wraps.
+pub(crate) struct OnDemandParts {
+    /// Guest session.
+    pub session: Arc<PluginSession>,
+    /// Storage backend over `session`.
+    pub backend: Arc<dyn StorageBackend>,
+    /// Which acquire slot this backend fills.
+    pub kind: DeployedKind,
+    /// Key layout from the instance document.
+    pub settings: DestinationSettings,
+}
+
+impl SpawnedDestination {
+    /// Splits a first-party `s3` or `local` guest into the parts an
+    /// on-demand proxy wraps.
+    ///
+    /// # Errors
+    ///
+    /// Returns `self` unchanged, boxed, for a storage guest with no
+    /// host-side backend, which stays resident.
+    pub(crate) fn on_demand_parts(self) -> std::result::Result<OnDemandParts, Box<Self>> {
+        match (self.kind, self.backend) {
+            (DeployedKind::S3 | DeployedKind::Local, Some(backend)) => Ok(OnDemandParts {
+                session: self.session,
+                backend,
+                kind: self.kind,
+                settings: self.settings,
+            }),
+            (kind, backend) => Err(Box::new(Self {
+                session: self.session,
+                backend,
+                kind,
+                settings: self.settings,
+            })),
+        }
+    }
 }
 
 /// Key layout settings the host reads from a deployed destination's instance
@@ -75,11 +114,124 @@ impl DestinationSettings {
     }
 }
 
+/// The identity of a guest session, kept while an on-demand guest sleeps so
+/// session lookups still match it.
+struct SessionIdentity {
+    /// Owning account of the session.
+    account_id: String,
+    /// Plugin-instance key the session was spawned under.
+    instance_key: String,
+    /// Plugin id of the session.
+    id: String,
+    /// Display alias of the session.
+    alias: String,
+}
+
+impl SessionIdentity {
+    /// Copies the identity of a running session.
+    fn of(session: &PluginSession) -> Self {
+        Self {
+            account_id: session.account_id().to_string(),
+            instance_key: session.instance_key().to_string(),
+            id: session.id().to_string(),
+            alias: session.alias().to_string(),
+        }
+    }
+}
+
+/// How a deployed slot reaches its guest.
+#[derive(Clone)]
+enum SlotGuest {
+    /// A session that runs until the deployment is retired.
+    Resident(Arc<PluginSession>),
+    /// A proxy that starts the guest on a call and stops it when idle. The
+    /// slot holds no session, so a sleeping guest's process can end.
+    OnDemand {
+        /// The storage proxy.
+        proxy: Arc<OnDemandStorage>,
+        /// The session identity captured from the first guest.
+        identity: Arc<SessionIdentity>,
+    },
+}
+
+impl SlotGuest {
+    /// Owning account of the guest's session.
+    fn account_id(&self) -> &str {
+        match self {
+            Self::Resident(session) => session.account_id(),
+            Self::OnDemand { identity, .. } => &identity.account_id,
+        }
+    }
+
+    /// Plugin-instance key of the guest's session.
+    fn instance_key(&self) -> &str {
+        match self {
+            Self::Resident(session) => session.instance_key(),
+            Self::OnDemand { identity, .. } => &identity.instance_key,
+        }
+    }
+
+    /// True when `plugin_id` names this guest by id or alias.
+    fn matches(&self, plugin_id: &str) -> bool {
+        match self {
+            Self::Resident(session) => {
+                crate::identity_matches_occupancy(session.id(), session.alias(), plugin_id)
+            }
+            Self::OnDemand { identity, .. } => {
+                crate::identity_matches_occupancy(&identity.id, &identity.alias, plugin_id)
+            }
+        }
+    }
+
+    /// True when both reach the same guest.
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Resident(a), Self::Resident(b)) => Arc::ptr_eq(a, b),
+            (Self::OnDemand { proxy: a, .. }, Self::OnDemand { proxy: b, .. }) => Arc::ptr_eq(a, b),
+            (Self::Resident(_), Self::OnDemand { .. })
+            | (Self::OnDemand { .. }, Self::Resident(_)) => false,
+        }
+    }
+
+    /// A handle a caller can lend the guest's session from.
+    fn handle(&self) -> DestinationSession {
+        match self {
+            Self::Resident(session) => DestinationSession::Resident(Arc::clone(session)),
+            Self::OnDemand { proxy, .. } => DestinationSession::OnDemand(Arc::clone(proxy)),
+        }
+    }
+}
+
+/// A deployed destination's guest, as handed to a job that calls the
+/// guest's entrypoints directly.
+#[derive(Clone)]
+pub enum DestinationSession {
+    /// A guest that is always running.
+    Resident(Arc<PluginSession>),
+    /// A guest that sleeps while idle; [`Self::lend`] starts it.
+    OnDemand(Arc<OnDemandStorage>),
+}
+
+impl DestinationSession {
+    /// The guest's session, starting the guest when it sleeps; it stays
+    /// awake until the returned value is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an on-demand guest was retired or cannot start.
+    pub async fn lend(&self) -> std::result::Result<HeldSession, String> {
+        match self {
+            Self::Resident(session) => Ok(HeldSession::resident(Arc::clone(session))),
+            Self::OnDemand(proxy) => proxy.session().await,
+        }
+    }
+}
+
 /// One reconciler-spawned destination, addressed by plugin instance id.
 #[derive(Clone)]
 struct DeployedSlot {
-    /// Guest session.
-    session: Arc<PluginSession>,
+    /// How the slot reaches its guest.
+    guest: SlotGuest,
     /// Storage backend when this guest is S3 or local.
     backend: Option<Arc<dyn StorageBackend>>,
     /// Which acquire slot this backend fills.
@@ -178,7 +330,7 @@ impl DestinationRegistry {
     /// a display alias. Aliases are installation-unique; two occupants sharing
     /// an alias is invalid state and fails closed rather than returning a twin.
     #[must_use]
-    pub fn plugin_session(&self, plugin_id: &str, account_id: &str) -> Option<Arc<PluginSession>> {
+    pub fn plugin_session(&self, plugin_id: &str, account_id: &str) -> Option<DestinationSession> {
         self.require_plugin_session(plugin_id, account_id).ok()
     }
 
@@ -192,36 +344,33 @@ impl DestinationRegistry {
         &self,
         plugin_id: &str,
         account_id: &str,
-    ) -> std::result::Result<Arc<PluginSession>, String> {
+    ) -> std::result::Result<DestinationSession, String> {
         if let Some(slot) = self.deployed.get(plugin_id) {
-            if slot.session.account_id() == account_id {
-                return Ok(Arc::clone(&slot.session));
+            if slot.guest.account_id() == account_id {
+                return Ok(slot.guest.handle());
             }
         }
-        let mut hits: Vec<Arc<PluginSession>> = Vec::new();
-        let mut push = |session: &Arc<PluginSession>| {
-            if hits.iter().any(|existing| Arc::ptr_eq(existing, session)) {
-                return;
-            }
-            let exact = session.instance_key() == crate::plugin_instance_key(plugin_id, account_id);
-            let alias = session.account_id() == account_id
-                && crate::identity_matches_occupancy(session.id(), session.alias(), plugin_id);
-            if exact || alias {
-                hits.push(Arc::clone(session));
-            }
-        };
+        let mut hits: Vec<&SlotGuest> = Vec::new();
         for slot in self.deployed.values() {
-            push(&slot.session);
+            let guest = &slot.guest;
+            if hits.iter().any(|existing| existing.same(guest)) {
+                continue;
+            }
+            let exact = guest.instance_key() == crate::plugin_instance_key(plugin_id, account_id);
+            let alias = guest.account_id() == account_id && guest.matches(plugin_id);
+            if exact || alias {
+                hits.push(guest);
+            }
         }
         match hits.len() {
-            1 => Ok(hits.remove(0)),
+            1 => Ok(hits[0].handle()),
             0 => Err(format!(
                 "no plugin session for plugin `{plugin_id}` (guest not loaded)"
             )),
             count => Err(format!(
                 "plugin `{plugin_id}` matches {count} destination sessions; pass a plugin instance id. candidates: {}",
                 hits.iter()
-                    .map(|session| session.instance_key())
+                    .map(|guest| guest.instance_key())
                     .collect::<Vec<_>>()
                     .join(", ")
             )),
@@ -234,7 +383,7 @@ impl DestinationRegistry {
     fn note_deployed_instance(
         &mut self,
         plugin_instance_id: &str,
-        session: Arc<PluginSession>,
+        guest: SlotGuest,
         backend: Option<Arc<dyn StorageBackend>>,
         kind: DeployedKind,
         settings: DestinationSettings,
@@ -245,7 +394,7 @@ impl DestinationRegistry {
         self.deployed.insert(
             plugin_instance_id.to_string(),
             DeployedSlot {
-                session,
+                guest,
                 backend,
                 kind,
                 settings,
@@ -274,11 +423,54 @@ impl DestinationRegistry {
         let kind = spawned.kind;
         self.note_deployed_instance(
             plugin_instance_id,
-            Arc::clone(&spawned.session),
+            SlotGuest::Resident(Arc::clone(&spawned.session)),
             spawned.backend,
             kind,
             spawned.settings,
         );
+        self.refuse_second_backend(plugin_instance_id, kind)?;
+        Ok(spawned.session)
+    }
+
+    /// Records an on-demand storage proxy under `plugin_instance_id`.
+    ///
+    /// `first` is the guest the deployment started; its session identity is
+    /// kept for session lookups while the guest sleeps, and the slot keeps
+    /// no reference to the session itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another instance already owns the same `s3` or
+    /// `local` slot.
+    pub(crate) fn publish_on_demand(
+        &mut self,
+        plugin_instance_id: &str,
+        first: &PluginSession,
+        proxy: Arc<OnDemandStorage>,
+        kind: DeployedKind,
+        settings: DestinationSettings,
+    ) -> std::result::Result<(), String> {
+        let backend: Arc<dyn StorageBackend> = Arc::clone(&proxy) as Arc<dyn StorageBackend>;
+        self.note_deployed_instance(
+            plugin_instance_id,
+            SlotGuest::OnDemand {
+                proxy,
+                identity: Arc::new(SessionIdentity::of(first)),
+            },
+            Some(backend),
+            kind,
+            settings,
+        );
+        self.refuse_second_backend(plugin_instance_id, kind)
+    }
+
+    /// Removes `plugin_instance_id` again when a second instance would own
+    /// the single `s3` or `local` slot.
+    fn refuse_second_backend(
+        &mut self,
+        plugin_instance_id: &str,
+        kind: DeployedKind,
+    ) -> std::result::Result<(), String> {
         if matches!(kind, DeployedKind::S3 | DeployedKind::Local) {
             let count = self
                 .deployed
@@ -297,7 +489,7 @@ impl DestinationRegistry {
                 ));
             }
         }
-        Ok(spawned.session)
+        Ok(())
     }
 
     /// Copies deployed sessions from this registry onto `candidate`.

@@ -195,7 +195,7 @@ impl OnDemandIntegration {
     /// # Errors
     ///
     /// Returns an error when the proxy is retired or the guest cannot start.
-    async fn awake(&self) -> bookclerk_integrations::Result<(Arc<dyn AwakeGuest>, Busy<'_>)> {
+    async fn awake(&self) -> bookclerk_integrations::Result<(Arc<dyn AwakeGuest>, Busy)> {
         self.activation.awake().await.map_err(|err| match err {
             WakeError::Retired => {
                 IntegrationError::message(format!("integration `{}` was stopped", self.identity.id))

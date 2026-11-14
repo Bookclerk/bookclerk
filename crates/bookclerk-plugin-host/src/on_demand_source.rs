@@ -146,7 +146,7 @@ impl OnDemandSource {
     /// # Errors
     ///
     /// Returns an error when the proxy is retired or the guest cannot start.
-    async fn awake(&self) -> bookclerk_source::Result<(Arc<dyn AwakeSource>, Busy<'_>)> {
+    async fn awake(&self) -> bookclerk_source::Result<(Arc<dyn AwakeSource>, Busy)> {
         self.activation.awake().await.map_err(|err| match err {
             WakeError::Retired => {
                 SourceError::api(format!("storefront `{}` was stopped", self.identity.id))

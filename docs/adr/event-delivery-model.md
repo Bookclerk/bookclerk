@@ -1,6 +1,6 @@
 # ADR: Event delivery follows the Workers model
 
-- **Status:** Accepted (decisions 1 to 6); later phases proposed
+- **Status:** Accepted (decisions 1 to 7); later phases proposed
 - **Date:** 2026-11-11
 
 ## Context
@@ -101,14 +101,25 @@ callers await a promise, and long work is a durable job.
    call returns once its work is done (a fetch hands back files on
    disk), so a call in flight is all that keeps the guest up. Account
    listing reads the library and never wakes the guest.
+7. **On-demand storage destinations.** The first-party `local` and `s3`
+   destinations, whose host side is a storage backend, sleep behind a
+   storage proxy on the same activation core, with a 5-minute idle
+   timeout. Every backend call starts the guest when it sleeps. A write
+   commits inside one call, so the call in flight holds the guest from
+   upload to commit. A read stream carries its own hold and keeps the
+   guest up until it is dropped, and a job that lends the guest's session
+   holds it the same way. The backend's name, instance id, scan placement
+   and copy support are captured from the first guest, so placement and
+   dedupe never wake it. Other storage guests have no host backend to
+   proxy and stay running.
 
 The following phases are proposed and get their own pull requests and
 updates to this record:
 
-- **On-demand activation for the rest.** Storage and remote libraries
-  sleep too, with an idle timeout per family; storage holds its guest
-  from a staged upload to its commit. Python guests need a faster start
-  (snapshots or prewarming) before they can.
+- **On-demand activation for the rest.** Remote libraries and the
+  remaining storage guests sleep too, with an idle timeout per family.
+  Python guests need a faster start (snapshots or prewarming) before
+  they can.
 - **Batched delivery.** `event(batch)` and `queue(batch)` receive up to
   `max_batch_size` messages per call.
 - **Richer host-side filters.** Envelope selectors and per-instance
