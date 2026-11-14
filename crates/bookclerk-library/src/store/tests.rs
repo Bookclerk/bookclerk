@@ -8474,3 +8474,97 @@ async fn the_event_stream_scan_budget_stops_and_resumes() {
     assert_eq!(ids, vec![wanted]);
     assert!(pages >= 2);
 }
+
+/// Asserts `result` is a not-found error naming `entity`.
+fn assert_missing<T: std::fmt::Debug>(result: Result<T>, entity: crate::EntityKind) {
+    match result {
+        Err(LibraryError::NotFound(missing)) => assert_eq!(missing.entity, entity, "{missing}"),
+        other => panic!("expected {entity} not found, got {other:?}"),
+    }
+}
+
+/// Lookups of rows that do not exist name the missing kind (#559).
+#[tokio::test]
+async fn missing_rows_name_their_kind() {
+    use crate::models::{RequestStatus, UserRole, UserStatus};
+    use crate::EntityKind;
+    let store = kit_store().await;
+    assert_missing(
+        store.set_scan_enabled("audible", "nobody", false).await,
+        EntityKind::Account,
+    );
+    assert_missing(
+        store.mark_connection_active("audible", "nobody").await,
+        EntityKind::Account,
+    );
+    assert_missing(
+        store.revoke_credentials("audible", "nobody").await,
+        EntityKind::Account,
+    );
+    assert_missing(store.delete_user(9_999).await, EntityKind::User);
+    assert_missing(
+        store.set_user_status(9_999, UserStatus::Disabled).await,
+        EntityKind::User,
+    );
+    assert_missing(
+        store.set_user_display_name(9_999, Some("x")).await,
+        EntityKind::User,
+    );
+    assert_missing(
+        store.set_user_password_hash(9_999, None).await,
+        EntityKind::User,
+    );
+    assert_missing(
+        store.set_user_login_name(9_999, Some("x")).await,
+        EntityKind::User,
+    );
+    assert_missing(store.set_user_email(9_999, None).await, EntityKind::User);
+    assert_missing(
+        store.set_user_avatar_source(9_999, None).await,
+        EntityKind::User,
+    );
+    assert_missing(
+        store.set_user_role(9_999, UserRole::Member).await,
+        EntityKind::User,
+    );
+    assert_missing(
+        store
+            .set_operator_session_impersonating("no-such-hash", None)
+            .await,
+        EntityKind::OperatorSession,
+    );
+    assert_missing(
+        store.update_webauthn_credential(9_999, "{}").await,
+        EntityKind::Passkey,
+    );
+    assert_missing(
+        store.set_user_totp_enabled(9_999, false).await,
+        EntityKind::User,
+    );
+    assert_missing(
+        store.unlink_account(9_999, "audible", "nobody").await,
+        EntityKind::Account,
+    );
+    assert_missing(
+        store
+            .set_ignored("no-such-title", "nobody", true, None)
+            .await,
+        EntityKind::Book,
+    );
+    assert_missing(
+        store.delete_saved_filter("nope").await,
+        EntityKind::SavedFilter,
+    );
+    assert_missing(
+        store
+            .update_catalog_enrichment("no-such-book", &CatalogEnrichmentFields::default())
+            .await,
+        EntityKind::Book,
+    );
+    assert_missing(
+        store
+            .update_title_request_status("no-such-request", RequestStatus::Cancelled, None)
+            .await,
+        EntityKind::TitleRequest,
+    );
+}

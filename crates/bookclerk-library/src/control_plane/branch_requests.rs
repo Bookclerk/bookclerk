@@ -29,6 +29,7 @@
 //! book, so the catalog sync sends that library the book although it is a
 //! member's ([`books_requested_by_link`]).
 
+use crate::EntityKind;
 use std::collections::BTreeMap;
 
 use bookclerk_node_proto::{
@@ -214,7 +215,7 @@ pub async fn plan_branch_request(
         .find(|l| node_id.is_none_or(|node| l.node_id == node))
         .ok_or_else(|| {
             LibraryError::not_found(
-                crate::EntityKind::Work,
+                EntityKind::Work,
                 match node_id {
                     Some(node) => format!("{work_id} on branch {node}"),
                     None => format!("{work_id} on any branch"),

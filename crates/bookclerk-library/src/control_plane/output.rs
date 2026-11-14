@@ -12,6 +12,7 @@
 //! values seed the document once, after which only a compare-and-swap write
 //! changes it. See `docs/adr/control-plane.md`.
 
+use crate::EntityKind;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -917,7 +918,7 @@ pub fn overlay_output(
 pub async fn load_output(store: &LibraryStore) -> Result<ConfigurationDocument<OutputSettingsV1>> {
     let stored = load_document(store, &DocumentKey::cluster(OUTPUT_NAMESPACE))
         .await?
-        .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Configuration, "core.output"))?;
+        .ok_or_else(|| LibraryError::not_found(EntityKind::Configuration, "core.output"))?;
     parse_output(stored)
 }
 

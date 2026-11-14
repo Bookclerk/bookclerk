@@ -2,6 +2,7 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
+use crate::EntityKind;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::anyhow;
@@ -515,7 +516,7 @@ impl LibraryStore {
                 .one(&self.db)
                 .await
                 .map_err(LibraryError::Orm)?
-                .ok_or_else(|| LibraryError::not_found(crate::EntityKind::DomainEvent, event_id))?;
+                .ok_or_else(|| LibraryError::not_found(EntityKind::DomainEvent, event_id))?;
             // The subscriber snapshot is frozen for the pages of the first
             // dispatch only, so a page that resumes after a crash sees the
             // same list. Once the event is dispatched, a call adds deliveries
@@ -615,7 +616,7 @@ impl LibraryStore {
                 .one(&self.db)
                 .await
                 .map_err(LibraryError::Orm)?
-                .ok_or_else(|| LibraryError::not_found(crate::EntityKind::DomainEvent, event_id))?;
+                .ok_or_else(|| LibraryError::not_found(EntityKind::DomainEvent, event_id))?;
             return parse_dispatch_snapshot(event_id, &row.dispatch_snapshot_json);
         }
         Ok(subscribers.to_vec())
@@ -4085,7 +4086,7 @@ mod placeholder_tests {
         let mut calls = 0;
         let err = shrink_on_large_result::<u64, _, _>(4, |_| {
             calls += 1;
-            async { Err(LibraryError::missing(crate::EntityKind::DomainEvent)) }
+            async { Err(LibraryError::missing(EntityKind::DomainEvent)) }
         })
         .await
         .expect_err("other errors pass through");

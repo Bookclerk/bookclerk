@@ -14,6 +14,7 @@
 //! The keys never leave this module in plain form except as zeroizing
 //! buffers, and their `Debug` output is redacted.
 
+use crate::EntityKind;
 use chrono::{SecondsFormat, Utc};
 use rand::RngCore as _;
 use sea_orm::sea_query::{Expr, OnConflict};
@@ -674,9 +675,7 @@ pub async fn record_cluster_link(
     }
     load_cluster_link(store, &link.owner_cluster_id)
         .await?
-        .ok_or_else(|| {
-            LibraryError::not_found(crate::EntityKind::ClusterLink, &link.owner_cluster_id)
-        })
+        .ok_or_else(|| LibraryError::not_found(EntityKind::ClusterLink, &link.owner_cluster_id))
 }
 
 /// Every cluster link, oldest enrollment first.
@@ -742,9 +741,7 @@ pub async fn load_cluster_link_keys(
         CLUSTER_LINK_KEYS_NAME,
     )
     .await?
-    .ok_or_else(|| {
-        LibraryError::not_found(crate::EntityKind::ClusterNodeKeys, &link.owner_cluster_id)
-    })?;
+    .ok_or_else(|| LibraryError::not_found(EntityKind::ClusterNodeKeys, &link.owner_cluster_id))?;
     let plaintext = Zeroizing::new(unseal_secret(&record)?);
     if plaintext.len() != 2 * KEY_LEN {
         return Err(LibraryError::Invalid(format!(

@@ -9,6 +9,7 @@
 //! at that count until process restart; retention, the in-flight cap, and
 //! every output setting follow the latest applied revision.
 
+use bookclerk_library::EntityKind;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -374,7 +375,7 @@ async fn cluster_id_of(library: &LibraryStore) -> Result<String, Response> {
     let row = load_cluster_row(library).await.map_err(events_error)?;
     row.map(|row| row.cluster_id).ok_or_else(|| {
         events_error(bookclerk_library::LibraryError::missing(
-            bookclerk_library::EntityKind::ClusterIdentity,
+            EntityKind::ClusterIdentity,
         ))
     })
 }
@@ -1279,7 +1280,7 @@ pub async fn get_plugin_instance_config(
         .map_err(events_error)?
         .ok_or_else(|| {
             events_error(bookclerk_library::LibraryError::not_found(
-                bookclerk_library::EntityKind::PluginInstance,
+                EntityKind::PluginInstance,
                 &instance_id,
             ))
         })?;
@@ -1401,7 +1402,7 @@ pub async fn put_plugin_instance_config(
         .map_err(events_error)?
         .ok_or_else(|| {
             events_error(bookclerk_library::LibraryError::not_found(
-                bookclerk_library::EntityKind::PluginInstance,
+                EntityKind::PluginInstance,
                 &instance_id,
             ))
         })?;
@@ -1591,7 +1592,7 @@ pub async fn put_plugin_deployment(
         .map_err(events_error)?
         .ok_or_else(|| {
             events_error(bookclerk_library::LibraryError::not_found(
-                bookclerk_library::EntityKind::PluginInstance,
+                EntityKind::PluginInstance,
                 &instance_id,
             ))
         })?;
@@ -1614,7 +1615,7 @@ pub async fn put_plugin_deployment(
         .contains(&node_id)
     {
         return Err(events_error(bookclerk_library::LibraryError::not_found(
-            bookclerk_library::EntityKind::Node,
+            EntityKind::Node,
             &node_id,
         )));
     }

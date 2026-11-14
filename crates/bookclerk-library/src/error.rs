@@ -71,6 +71,40 @@ pub enum EntityKind {
 }
 
 impl EntityKind {
+    /// Every kind, in declaration order.
+    pub const ALL: [Self; 30] = [
+        Self::Account,
+        Self::Book,
+        Self::Work,
+        Self::TitleRequest,
+        Self::User,
+        Self::PortalIdentity,
+        Self::OperatorSession,
+        Self::Passkey,
+        Self::OidcState,
+        Self::WebauthnChallenge,
+        Self::Node,
+        Self::EnrollmentLink,
+        Self::PendingJoin,
+        Self::ClusterIdentity,
+        Self::ClusterLink,
+        Self::ClusterNodeKeys,
+        Self::Configuration,
+        Self::PluginInstance,
+        Self::PluginDeployment,
+        Self::Placement,
+        Self::PluginVersion,
+        Self::VersionPointer,
+        Self::SettingsSchema,
+        Self::RemoteConsent,
+        Self::BranchRequest,
+        Self::DomainEvent,
+        Self::EventDelivery,
+        Self::Job,
+        Self::SavedFilter,
+        Self::ClaimTicket,
+    ];
+
     /// The phrase an error message names this kind with.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -362,6 +396,21 @@ mod tests {
             source,
             Some(LibraryError::Conflict("busy".into()).to_string())
         );
+    }
+
+    #[test]
+    fn every_entity_kind_has_a_distinct_phrase() {
+        let phrases: std::collections::HashSet<&str> =
+            EntityKind::ALL.iter().map(|kind| kind.as_str()).collect();
+        assert_eq!(phrases.len(), EntityKind::ALL.len());
+        for kind in EntityKind::ALL {
+            assert!(!kind.as_str().is_empty());
+            assert_eq!(kind.to_string(), kind.as_str());
+            assert_eq!(
+                LibraryError::missing(kind).to_string(),
+                format!("{} not found", kind.as_str())
+            );
+        }
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Control-plane identity, configuration, and secret-root tests.
 
+use crate::EntityKind;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -544,7 +545,7 @@ async fn first_import_rejects_an_invalid_seed() {
     assert!(err.to_string().contains("retention_days"), "{err}");
     let missing = load_events(&store).await.expect_err("no document");
     assert!(
-        matches!(&missing, crate::LibraryError::NotFound(m) if m.entity == crate::EntityKind::Configuration),
+        matches!(&missing, crate::LibraryError::NotFound(m) if m.entity == EntityKind::Configuration),
         "{missing}"
     );
     assert_eq!(audit_count(&store, EVENTS_NAMESPACE).await.unwrap(), 0);

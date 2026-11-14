@@ -21,6 +21,7 @@
 //! steps of the plan: disconnecting an account everywhere and keeping a
 //! single-keeper login in step.
 
+use crate::EntityKind;
 use std::collections::{BTreeMap, BTreeSet};
 
 use bookclerk_node_proto::{
@@ -130,7 +131,7 @@ pub async fn set_member_may_connect_accounts(
     allowed: bool,
 ) -> Result<()> {
     if store.get_user(user_id).await?.is_none() {
-        return Err(LibraryError::not_found(crate::EntityKind::User, user_id));
+        return Err(LibraryError::not_found(EntityKind::User, user_id));
     }
     let now = Utc::now().to_rfc3339();
     let value = i64::from(allowed);
@@ -714,7 +715,7 @@ async fn import_from_peer(
     let user = store
         .get_user(user_id)
         .await?
-        .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, user_id))?;
+        .ok_or_else(|| LibraryError::not_found(EntityKind::User, user_id))?;
     let identity = store
         .ensure_local_portal_identity(user_id, user.display_name.as_deref())
         .await?;

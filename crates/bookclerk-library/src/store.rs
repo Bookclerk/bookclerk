@@ -8,6 +8,7 @@
 //! backend-portable. Timestamps live in the DB as RFC 3339 `TEXT`; records
 //! expose `chrono::DateTime<Utc>` and conversions happen at the record boundary.
 
+use crate::EntityKind;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -780,7 +781,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Account, account_id))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Account, account_id))?;
         let mut am: accounts::ActiveModel = model.into();
         am.scan_enabled = Set(i64::from(scan_enabled));
         am.updated_at = Set(now_str());
@@ -800,7 +801,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Account, account_id))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Account, account_id))?;
         let mut am: accounts::ActiveModel = model.into();
         am.connection_status = Set(String::from("active"));
         am.scan_enabled = Set(1);
@@ -836,7 +837,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Account, account_id))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Account, account_id))?;
         let mut am: accounts::ActiveModel = model.into();
         am.scan_enabled = Set(0);
         am.connection_status = Set(String::from("revoked"));
@@ -959,7 +960,7 @@ impl LibraryStore {
             .await?;
         self.get_user(id)
             .await?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, id))
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))
     }
 
     /// Writes a loaded title's changed columns and bumps the library topic
@@ -1003,7 +1004,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Book, id))
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Book, id))
     }
 
     /// Writes a loaded user's changed columns and bumps the users topic in
@@ -1021,7 +1022,7 @@ impl LibraryStore {
             .await?;
         self.get_user(id)
             .await?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, id))
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))
     }
 
     /// Look up a first-party user by id.
@@ -1334,7 +1335,7 @@ impl LibraryStore {
             .one(txn)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, id))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let current = map_user(model);
         if matches!(current.role, UserRole::Owner)
             && matches!(current.status, UserStatus::Active)
@@ -1481,7 +1482,7 @@ impl LibraryStore {
             .one(txn)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, id))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let current = map_user(model.clone());
         if matches!(status, UserStatus::Disabled)
             && matches!(current.role, UserRole::Owner)
@@ -1514,7 +1515,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, id))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let mut am: users::ActiveModel = model.into();
         am.display_name = Set(display_name
             .map(str::trim)
@@ -1551,7 +1552,7 @@ impl LibraryStore {
             .one(txn)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, id))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let next_sv = model.security_version.saturating_add(1);
         let mut am: users::ActiveModel = model.into();
         am.password_hash = Set(password_hash.map(str::to_string));
@@ -1576,7 +1577,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, id))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let mut am: users::ActiveModel = model.into();
         am.login_name = Set(normalize_login_name(login_name));
         am.updated_at = Set(now_str());
@@ -1593,7 +1594,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, id))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let mut am: users::ActiveModel = model.into();
         am.email = Set(crate::email::normalize_user_email(email)?);
         am.updated_at = Set(now_str());
@@ -1616,7 +1617,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, id))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let mut am: users::ActiveModel = model.into();
         am.avatar_source = Set(source
             .map(str::trim)
@@ -1654,7 +1655,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::missing(crate::EntityKind::PortalIdentity))?;
+            .ok_or_else(|| LibraryError::missing(EntityKind::PortalIdentity))?;
         let mut am: portal_identities::ActiveModel = model.into();
         am.picture_url = Set(next);
         am.update(&self.db).await.map_err(LibraryError::Orm)?;
@@ -1822,7 +1823,7 @@ impl LibraryStore {
             .one(txn)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, id))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let current = map_user(model.clone());
         if !matches!(role, UserRole::Owner)
             && matches!(current.role, UserRole::Owner)
@@ -2323,7 +2324,7 @@ impl LibraryStore {
                     .one(txn)
                     .await
                     .map_err(LibraryError::Orm)?
-                    .ok_or_else(|| LibraryError::not_found(crate::EntityKind::User, user_id))?;
+                    .ok_or_else(|| LibraryError::not_found(EntityKind::User, user_id))?;
                 if user.password_hash.is_none() {
                     let Some(hash) = new_password_hash else {
                         return Err(LibraryError::Other(anyhow::anyhow!(
@@ -2770,7 +2771,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::missing(crate::EntityKind::OperatorSession))?;
+            .ok_or_else(|| LibraryError::missing(EntityKind::OperatorSession))?;
         let mut am: operator_sessions::ActiveModel = session.into();
         am.impersonating_user_id = Set(user_id);
         am.last_used_at = Set(Some(now));
@@ -2926,7 +2927,7 @@ impl LibraryStore {
                     .one(&self.db)
                     .await
                     .map_err(LibraryError::Orm)?
-                    .ok_or_else(|| LibraryError::missing(crate::EntityKind::PortalIdentity))?;
+                    .ok_or_else(|| LibraryError::missing(EntityKind::PortalIdentity))?;
                 let mut am: portal_identities::ActiveModel = model.into();
                 am.user_id = Set(Some(user_id));
                 if label.is_some() {
@@ -3137,7 +3138,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::missing(crate::EntityKind::Passkey))?;
+            .ok_or_else(|| LibraryError::missing(EntityKind::Passkey))?;
         let mut am: webauthn_credentials::ActiveModel = model.into();
         am.passkey_json = Set(passkey_json.to_string());
         am.last_used_at = Set(Some(now_str()));
@@ -3196,7 +3197,7 @@ impl LibraryStore {
             ))
             .await?;
         if batch::rows_affected(&reply, 0) == 0 {
-            return Err(LibraryError::missing(crate::EntityKind::User));
+            return Err(LibraryError::missing(EntityKind::User));
         }
         Ok(())
     }
@@ -3211,7 +3212,7 @@ impl LibraryStore {
             .one(txn)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::missing(crate::EntityKind::User))?;
+            .ok_or_else(|| LibraryError::missing(EntityKind::User))?;
         let mut am: users::ActiveModel = model.into();
         am.totp_enabled = Set(i64::from(enabled));
         am.updated_at = Set(now_str());
@@ -4094,10 +4095,7 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         if res.rows_affected == 0 {
-            return Err(LibraryError::not_found(
-                crate::EntityKind::Account,
-                account_id,
-            ));
+            return Err(LibraryError::not_found(EntityKind::Account, account_id));
         }
         Ok(())
     }
@@ -4602,7 +4600,7 @@ impl LibraryStore {
     async fn resolve_book(&self, title_id: &str, account_id: &str) -> Result<books::Model> {
         self.resolve_book_in(None, title_id, account_id)
             .await?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Book, title_id))
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Book, title_id))
     }
 
     /// Best match for `title_id` on `account_id`, optionally within one plugin.
@@ -4780,7 +4778,7 @@ impl LibraryStore {
     ) -> Result<()> {
         let Some((plugin_key, product_id)) = self.ignore_key(title_id, account_id).await? else {
             return Err(LibraryError::not_found(
-                crate::EntityKind::Book,
+                EntityKind::Book,
                 format!("{title_id} of account {account_id}"),
             ));
         };
@@ -5051,10 +5049,7 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         if res.rows_affected == 0 {
-            return Err(LibraryError::not_found(
-                crate::EntityKind::SavedFilter,
-                name,
-            ));
+            return Err(LibraryError::not_found(EntityKind::SavedFilter, name));
         }
         Ok(())
     }
@@ -5157,7 +5152,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Book, book_uuid))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Book, book_uuid))?;
         let mut am: books::ActiveModel = model.into();
         if let Some(v) = &fields.description {
             am.description = Set(Some(v.clone()));
@@ -5429,7 +5424,7 @@ impl LibraryStore {
             .await;
         self.get_title_request_by_id(model.id)
             .await?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Book, model.uuid))
+            .ok_or_else(|| LibraryError::not_found(EntityKind::TitleRequest, model.uuid))
     }
 
     /// Publishes `wishlist_changed` for one wishlist row, after its write.
@@ -5543,9 +5538,7 @@ impl LibraryStore {
         let mut row = self
             .get_title_request_by_id(title_request_id)
             .await?
-            .ok_or_else(|| {
-                LibraryError::not_found(crate::EntityKind::TitleRequest, title_request_id)
-            })?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::TitleRequest, title_request_id))?;
         // Persist merged identity fields onto the parent when still blank.
         if let Some(model) = title_requests::Entity::find_by_id(title_request_id)
             .one(&self.db)
@@ -5782,7 +5775,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Book, &existing.uuid))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::TitleRequest, &existing.uuid))?;
         let mut am: title_requests::ActiveModel = model.into();
         am.cover_url = Set(Some(cover.to_string()));
         am.updated_at = Set(now_str());
@@ -5790,7 +5783,7 @@ impl LibraryStore {
         self.hydrate_requests(vec![model])
             .await?
             .pop()
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Book, &existing.uuid))
+            .ok_or_else(|| LibraryError::not_found(EntityKind::TitleRequest, &existing.uuid))
     }
 
     /// Open wish of this identity for `work_id`, if any.
@@ -6084,7 +6077,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Book, uuid))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::TitleRequest, uuid))?;
         let mut am: title_requests::ActiveModel = model.into();
         am.status = Set(status.as_str().to_string());
         if let Some(v) = resolved_edition_id {

@@ -8,6 +8,7 @@ use crate::atomic_ops::{atomic_status, DbAtomicParams, DbAtomicResult};
 use crate::atomic_txn::AtomicTxnBackend;
 use crate::in_process_atomic::InProcessSqliteAtomic;
 use crate::sql_plan::CompiledAtomic;
+use crate::EntityKind;
 use chrono::{DateTime, Utc};
 use sea_orm::DatabaseConnection;
 use serde_json::Value as JsonValue;
@@ -259,7 +260,7 @@ pub(crate) fn user_from_atomic(
 pub(crate) fn identity_from_atomic(result: DbAtomicResult) -> Result<PortalIdentity> {
     if let Some(err) = app_err(
         &result.status,
-        LibraryError::missing(crate::EntityKind::ClaimTicket),
+        LibraryError::missing(EntityKind::ClaimTicket),
     ) {
         return Err(err);
     }

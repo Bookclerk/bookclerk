@@ -5,6 +5,7 @@
 //! Desired writes do not update observations.
 
 use super::node_queue::NodeMessage;
+use crate::EntityKind;
 use chrono::{Duration, Utc};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
@@ -256,7 +257,7 @@ pub async fn ensure_plugin_deployment(
     validate_node_id(node_id)?;
     let Some(instance) = load_plugin_instance(store, instance_id).await? else {
         return Err(LibraryError::not_found(
-            crate::EntityKind::PluginInstance,
+            EntityKind::PluginInstance,
             instance_id,
         ));
     };
@@ -290,7 +291,7 @@ pub async fn ensure_plugin_deployment(
             let created = load_deployment_by_id(store, &deployment_id)
                 .await?
                 .ok_or_else(|| {
-                    LibraryError::not_found(crate::EntityKind::PluginDeployment, deployment_id)
+                    LibraryError::not_found(EntityKind::PluginDeployment, deployment_id)
                 })?;
             notify_deployment(store, &created).await;
             Ok(created)
@@ -341,9 +342,7 @@ pub async fn replace_plugin_deployment(
     }
     let current = load_deployment_by_id(store, deployment_id)
         .await?
-        .ok_or_else(|| {
-            LibraryError::not_found(crate::EntityKind::PluginDeployment, deployment_id)
-        })?;
+        .ok_or_else(|| LibraryError::not_found(EntityKind::PluginDeployment, deployment_id))?;
     if current.revision != expected_revision {
         if let Some(outcome) = existing_receipt(store, operation_id, &request_hash).await? {
             return Ok(outcome);
@@ -469,9 +468,7 @@ pub async fn replace_plugin_deployment(
     }
     let stored = load_deployment_by_id(store, deployment_id)
         .await?
-        .ok_or_else(|| {
-            LibraryError::not_found(crate::EntityKind::PluginDeployment, deployment_id)
-        })?;
+        .ok_or_else(|| LibraryError::not_found(EntityKind::PluginDeployment, deployment_id))?;
     if stored.revision == next_revision {
         notify_deployment(store, &stored).await;
         Ok(DeploymentReplace::Applied(stored))
@@ -604,9 +601,7 @@ pub async fn delete_plugin_deployment(
 ) -> Result<()> {
     let current = load_deployment_by_id(store, deployment_id)
         .await?
-        .ok_or_else(|| {
-            LibraryError::not_found(crate::EntityKind::PluginDeployment, deployment_id)
-        })?;
+        .ok_or_else(|| LibraryError::not_found(EntityKind::PluginDeployment, deployment_id))?;
     authorize_replace(actor, current.desired)?;
     if current.desired.runs() {
         return Err(LibraryError::Conflict(format!(

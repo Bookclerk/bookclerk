@@ -4,6 +4,7 @@
 //! document for one namespace. Lost updates fail the `revision` predicate and
 //! do not insert an audit row or a change notice.
 
+use crate::EntityKind;
 use chrono::{Duration, Utc};
 use sea_orm::EntityTrait;
 use serde::Deserialize;
@@ -381,7 +382,7 @@ pub async fn import_if_absent(
     .await?;
     load_document(store, key)
         .await?
-        .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Configuration, &key.namespace))
+        .ok_or_else(|| LibraryError::not_found(EntityKind::Configuration, &key.namespace))
 }
 
 /// Replaces one document when `expected_revision` is current.
@@ -427,7 +428,7 @@ pub async fn replace_document(
     pause_after_empty_receipt_lookup(operation_id).await;
     let current = load_document(store, key)
         .await?
-        .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Configuration, &key.namespace))?;
+        .ok_or_else(|| LibraryError::not_found(EntityKind::Configuration, &key.namespace))?;
     if current.schema_version != schema_version {
         return Err(unsupported(&key.namespace, current.schema_version));
     }
@@ -619,7 +620,7 @@ pub async fn replace_document(
     }
     let stored = load_document(store, key)
         .await?
-        .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Configuration, &key.namespace))?;
+        .ok_or_else(|| LibraryError::not_found(EntityKind::Configuration, &key.namespace))?;
     if stored.write_operation_id == operation_id || stored.revision == receipt.revision {
         // Cluster settings and instance documents both land here; every node
         // re-reads what it runs on the next pass.

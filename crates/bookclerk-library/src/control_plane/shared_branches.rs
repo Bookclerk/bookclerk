@@ -11,6 +11,7 @@
 //! - [`remove_owner_node`] removes an owner node that is no longer running
 //!   from the library's node list, the way any owner node leaves.
 
+use crate::EntityKind;
 use chrono::Utc;
 use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use serde::Serialize;
@@ -155,7 +156,7 @@ pub async fn remove_owner_node(
     node_id: &str,
     this_node: &str,
 ) -> Result<()> {
-    let not_found = || LibraryError::not_found(crate::EntityKind::Node, node_id);
+    let not_found = || LibraryError::not_found(EntityKind::Node, node_id);
     let node = match load_node(store, node_id).await {
         Ok(node) => node,
         Err(LibraryError::NotFound(_)) => return Err(not_found()),

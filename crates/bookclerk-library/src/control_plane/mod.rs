@@ -51,6 +51,7 @@ mod uploads;
 mod versions;
 mod window_books;
 
+use crate::EntityKind;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -616,7 +617,7 @@ pub fn overlay_events(
 pub async fn load_events(store: &LibraryStore) -> Result<ConfigurationDocument<EventsSettingsV1>> {
     let stored = load_document(store, &DocumentKey::cluster(EVENTS_NAMESPACE))
         .await?
-        .ok_or_else(|| LibraryError::not_found(crate::EntityKind::Configuration, "core.events"))?;
+        .ok_or_else(|| LibraryError::not_found(EntityKind::Configuration, "core.events"))?;
     parse_events(stored)
 }
 
@@ -728,7 +729,7 @@ pub async fn load_node_runtime(
         .await?
         .ok_or_else(|| {
             LibraryError::not_found(
-                crate::EntityKind::Configuration,
+                EntityKind::Configuration,
                 format!("node.runtime of node {node_id}"),
             )
         })?;

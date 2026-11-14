@@ -8,6 +8,7 @@
 //! compiled plan: the in-process connection of a local tool, or the
 //! profile-enforcing executor of the test kit.
 
+use crate::EntityKind;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -113,7 +114,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
         unit_from_atomic(
             self.call(DbAtomicParams::DeleteUser { user_id: id })
                 .await?,
-            LibraryError::not_found(crate::EntityKind::User, id),
+            LibraryError::not_found(EntityKind::User, id),
         )
     }
 
@@ -124,7 +125,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
                 status: status.as_str().to_string(),
             })
             .await?,
-            LibraryError::not_found(crate::EntityKind::User, id),
+            LibraryError::not_found(EntityKind::User, id),
         )
     }
 
@@ -139,7 +140,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
                 password_hash: password_hash.map(str::to_string),
             })
             .await?,
-            LibraryError::not_found(crate::EntityKind::User, id),
+            LibraryError::not_found(EntityKind::User, id),
         )
     }
 
@@ -150,7 +151,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
                 role: role.as_str().to_string(),
             })
             .await?,
-            LibraryError::not_found(crate::EntityKind::User, id),
+            LibraryError::not_found(EntityKind::User, id),
         )
     }
 
@@ -190,10 +191,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
         if result.status == atomic_status::EMPTY {
             return Ok(None);
         }
-        if let Some(err) = app_err(
-            &result.status,
-            LibraryError::missing(crate::EntityKind::OidcState),
-        ) {
+        if let Some(err) = app_err(&result.status, LibraryError::missing(EntityKind::OidcState)) {
             return Err(err);
         }
         let row: AtomicOidcRpState = decode_payload(result.payload, "oidc rp state")?;
@@ -222,7 +220,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
         }
         if let Some(err) = app_err(
             &result.status,
-            LibraryError::missing(crate::EntityKind::WebauthnChallenge),
+            LibraryError::missing(EntityKind::WebauthnChallenge),
         ) {
             return Err(err);
         }
@@ -275,10 +273,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
         if result.status == atomic_status::EMPTY {
             return Ok(None);
         }
-        if let Some(err) = app_err(
-            &result.status,
-            LibraryError::missing(crate::EntityKind::Job),
-        ) {
+        if let Some(err) = app_err(&result.status, LibraryError::missing(EntityKind::Job)) {
             return Err(err);
         }
         decode_payload(result.payload, "job").map(Some)
@@ -301,10 +296,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
             .await?;
         // The plan answers `notFound` when the reservation would push the
         // job over its scratch quota.
-        match app_err(
-            &result.status,
-            LibraryError::missing(crate::EntityKind::Job),
-        ) {
+        match app_err(&result.status, LibraryError::missing(EntityKind::Job)) {
             None => Ok(()),
             Some(LibraryError::NotFound(_)) => Err(LibraryError::Other(anyhow::anyhow!(
                 "acquire scratch quota exceeded"
@@ -320,7 +312,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
     ) -> Result<()> {
         unit_from_atomic(
             self.call(confirm_totp_params(user_id, record)).await?,
-            LibraryError::missing(crate::EntityKind::User),
+            LibraryError::missing(EntityKind::User),
         )
     }
 
@@ -328,7 +320,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
         unit_from_atomic(
             self.call(DbAtomicParams::DisableUserTotp { user_id })
                 .await?,
-            LibraryError::missing(crate::EntityKind::User),
+            LibraryError::missing(EntityKind::User),
         )
     }
 
@@ -400,10 +392,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
                 ordering_key: event.ordering_key,
             })
             .await?;
-        unit_from_atomic(
-            result,
-            LibraryError::not_found(crate::EntityKind::Book, book_uuid),
-        )
+        unit_from_atomic(result, LibraryError::not_found(EntityKind::Book, book_uuid))
     }
 
     async fn dispatch_event_deliveries(
@@ -425,7 +414,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
             .await?;
         if let Some(err) = app_err(
             &result.status,
-            LibraryError::not_found(crate::EntityKind::DomainEvent, event_id),
+            LibraryError::not_found(EntityKind::DomainEvent, event_id),
         ) {
             return Err(err);
         }
@@ -491,7 +480,7 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
         }
         if let Some(err) = app_err(
             &result.status,
-            LibraryError::missing(crate::EntityKind::EventDelivery),
+            LibraryError::missing(EntityKind::EventDelivery),
         ) {
             return Err(err);
         }
