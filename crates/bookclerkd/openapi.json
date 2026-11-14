@@ -16082,7 +16082,7 @@
             }
           },
           "404": {
-            "description": "The token was not issued by this node, or the size is unknown.",
+            "description": "The token was not issued by this node, the size is unknown, or the image host answered `404 Not Found`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16241,7 +16241,7 @@
             }
           },
           "404": {
-            "description": "The token was not issued by this node.",
+            "description": "The token was not issued by this node, or the image host answered `404 Not Found`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16400,7 +16400,7 @@
             }
           },
           "404": {
-            "description": "The hash is not 64 lowercase hex digits.",
+            "description": "The hash is not 64 lowercase hex digits, or the email has no Gravatar.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16415,7 +16415,7 @@
             }
           },
           "502": {
-            "description": "The email has no Gravatar, or the image is not a supported image.",
+            "description": "The image is not a supported image, or the download failed for another reason.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16559,7 +16559,7 @@
             }
           },
           "404": {
-            "description": "No deployed storefront or integration has this id, or it names no icon.",
+            "description": "No deployed storefront or integration has this id, it names no icon, or its icon host answered `404 Not Found`.",
             "content": {
               "application/json": {
                 "schema": {

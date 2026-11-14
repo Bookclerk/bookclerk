@@ -175,6 +175,25 @@ pub(crate) enum CoverFailure {
     Unavailable(String),
     /// The download failed or the image was refused.
     Refused(String),
+    /// The image host answered `404 Not Found`: a missing image, not a
+    /// failure of the host or this node.
+    NotFound(String),
+}
+
+impl CoverFailure {
+    /// The failure a plugin's answer names.
+    ///
+    /// The cover ABI carries no status field, so the plugin's text is the
+    /// only channel; `docs/plugins/abi.md` fixes an upstream `404` as
+    /// `HTTP 404`. A missing image is [`Self::NotFound`], so the route can
+    /// answer `404` instead of blaming the gateway; anything else is
+    /// [`Self::Refused`].
+    fn from_answer(error: String) -> Self {
+        if error == "HTTP 404" {
+            return Self::NotFound(error);
+        }
+        Self::Refused(error)
+    }
 }
 
 /// One image to download, with what to revalidate a cached copy with.
@@ -667,7 +686,7 @@ impl CoverService {
                     .await
                     .and_then(|mut downloads| match downloads.pop() {
                         Some(Download::Body { bytes, policy }) => Ok((bytes, policy)),
-                        Some(Download::Failed(error)) => Err(CoverFailure::Refused(error)),
+                        Some(Download::Failed(error)) => Err(CoverFailure::from_answer(error)),
                         Some(Download::NotModified { .. }) => Err(CoverFailure::Refused(
                             "not modified, but nothing was asked".into(),
                         )),
@@ -771,7 +790,7 @@ impl CoverService {
                 .store(backend, &dir, key, bytes, policy)
                 .await
                 .map(drop),
-            Ok(Some(Download::Failed(error))) => Err(CoverFailure::Refused(error)),
+            Ok(Some(Download::Failed(error))) => Err(CoverFailure::from_answer(error)),
             Ok(None) => Err(CoverFailure::Refused("no answer".into())),
             Err(failure) => Err(failure),
         };
@@ -918,7 +937,7 @@ impl CoverService {
                         .into_iter()
                         .map(|download| match download {
                             Download::Body { bytes, policy } => Ok((bytes, policy)),
-                            Download::Failed(error) => Err(CoverFailure::Refused(error)),
+                            Download::Failed(error) => Err(CoverFailure::from_answer(error)),
                             Download::NotModified { .. } => Err(CoverFailure::Refused(
                                 "not modified, but nothing was asked".into(),
                             )),
@@ -1452,7 +1471,7 @@ fn load_or_create_key(path: &Path) -> std::io::Result<TokenKey> {
     responses(
         (status = 200, description = "The cover as a JPEG.", content_type = "image/jpeg"),
         (status = 304, description = "`If-None-Match` names the current `ETag`; no body."),
-        (status = 404, description = "The token was not issued by this node, or the size is unknown."),
+        (status = 404, description = "The token was not issued by this node, the size is unknown, or the image host answered `404 Not Found`."),
         (status = 502, description = "The image could not be downloaded or is not a supported image."),
         (status = 503, description = "This node cannot fetch or process covers right now."),
     ),
@@ -1522,7 +1541,6 @@ async fn serve(
     refresh: Refresh,
     admission: Admission,
 ) -> axum::response::Response {
-    use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
     let backend = Arc::new(LiveBackend {
@@ -1552,15 +1570,39 @@ async fn serve(
             "image/jpeg",
             refresh.cache_control(),
         ),
-        Err(CoverFailure::UnknownToken) => StatusCode::NOT_FOUND.into_response(),
-        Err(CoverFailure::Refused(reason)) => {
-            tracing::debug!(reason = %reason, "cover refused");
-            failure_response(StatusCode::BAD_GATEWAY)
+        Err(failure) => {
+            // A token this node never issued is not an image failure the
+            // browser should retry, so it answers without `no-store`.
+            if matches!(failure, CoverFailure::UnknownToken) {
+                return failure_status(&failure).into_response();
+            }
+            match &failure {
+                CoverFailure::NotFound(reason) => {
+                    tracing::debug!(reason = %reason, "cover not found upstream");
+                }
+                CoverFailure::Refused(reason) => {
+                    tracing::debug!(reason = %reason, "cover refused");
+                }
+                CoverFailure::Unavailable(reason) => {
+                    tracing::warn!(reason = %reason, "cover unavailable");
+                }
+                CoverFailure::UnknownToken => {}
+            }
+            failure_response(failure_status(&failure))
         }
-        Err(CoverFailure::Unavailable(reason)) => {
-            tracing::warn!(reason = %reason, "cover unavailable");
-            failure_response(StatusCode::SERVICE_UNAVAILABLE)
-        }
+    }
+}
+
+/// The status a [`CoverFailure`] answers with.
+///
+/// A missing image is the browser's `404`, like a token this node never
+/// issued; a refused image blames the gateway, and an unavailable cover
+/// service blames this node.
+fn failure_status(failure: &CoverFailure) -> axum::http::StatusCode {
+    match failure {
+        CoverFailure::UnknownToken | CoverFailure::NotFound(_) => axum::http::StatusCode::NOT_FOUND,
+        CoverFailure::Refused(_) => axum::http::StatusCode::BAD_GATEWAY,
+        CoverFailure::Unavailable(_) => axum::http::StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 
@@ -1582,7 +1624,7 @@ async fn serve(
     responses(
         (status = 200, description = "The image as a JPEG.", content_type = "image/jpeg"),
         (status = 304, description = "`If-None-Match` names the current `ETag`; no body."),
-        (status = 404, description = "The token was not issued by this node."),
+        (status = 404, description = "The token was not issued by this node, or the image host answered `404 Not Found`."),
         (status = 502, description = "The image could not be downloaded or is not a supported image."),
         (status = 503, description = "This node cannot fetch or process images right now."),
     ),
@@ -1618,8 +1660,8 @@ pub(crate) async fn get_image(
     responses(
         (status = 200, description = "The picture as a JPEG.", content_type = "image/jpeg"),
         (status = 304, description = "`If-None-Match` names the current `ETag`; no body."),
-        (status = 404, description = "The hash is not 64 lowercase hex digits."),
-        (status = 502, description = "The email has no Gravatar, or the image is not a supported image."),
+        (status = 404, description = "The hash is not 64 lowercase hex digits, or the email has no Gravatar."),
+        (status = 502, description = "The image is not a supported image, or the download failed for another reason."),
         (status = 503, description = "This node cannot fetch or process images right now, or too many Gravatars are downloading at once."),
     ),
 )]
@@ -1653,7 +1695,7 @@ pub(crate) async fn get_gravatar(
     responses(
         (status = 200, description = "The icon as a JPEG.", content_type = "image/jpeg"),
         (status = 304, description = "`If-None-Match` names the current `ETag`; no body."),
-        (status = 404, description = "No deployed storefront or integration has this id, or it names no icon."),
+        (status = 404, description = "No deployed storefront or integration has this id, it names no icon, or its icon host answered `404 Not Found`."),
         (status = 502, description = "The icon could not be downloaded or is not a supported image."),
         (status = 503, description = "This node cannot fetch or process images right now."),
     ),
@@ -2056,6 +2098,30 @@ mod tests {
         }
     }
 
+    /// The route's answer: a missing image is the browser's 404, while a
+    /// refused download and an unavailable service stay gateway/node errors.
+    #[test]
+    fn failures_split_missing_images_from_broken_ones() {
+        use axum::http::StatusCode;
+        for (failure, expected) in [
+            (CoverFailure::UnknownToken, StatusCode::NOT_FOUND),
+            (
+                CoverFailure::NotFound("HTTP 404".into()),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                CoverFailure::Refused("HTTP 500".into()),
+                StatusCode::BAD_GATEWAY,
+            ),
+            (
+                CoverFailure::Unavailable("no covers plugin".into()),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        ] {
+            assert_eq!(failure_status(&failure), expected, "{failure:?}");
+        }
+    }
+
     #[test]
     fn the_token_key_survives_a_restart() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -2163,18 +2229,24 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let service = service(temp.path());
         let backend = Arc::new(Fake::default());
-        for url in [
-            "https://img.example/missing.png",
-            "https://img.example/html",
-        ] {
-            let token = token_for(&service, url);
-            for _ in 0..2 {
-                let err = service
-                    .image(&backend, &token, CoverSize::Thumb)
-                    .await
-                    .expect_err("refused");
-                assert!(matches!(err, CoverFailure::Refused(_)), "{err:?}");
-            }
+        // A missing image is not a gateway failure: the host's 404 is
+        // remembered as such, so the route can answer 404 and the failure
+        // counts stay meaningful.
+        let missing = token_for(&service, "https://img.example/missing.png");
+        for _ in 0..2 {
+            let err = service
+                .image(&backend, &missing, CoverSize::Thumb)
+                .await
+                .expect_err("not found");
+            assert_eq!(err, CoverFailure::NotFound("HTTP 404".into()));
+        }
+        let html = token_for(&service, "https://img.example/html");
+        for _ in 0..2 {
+            let err = service
+                .image(&backend, &html, CoverSize::Thumb)
+                .await
+                .expect_err("refused");
+            assert!(matches!(err, CoverFailure::Refused(_)), "{err:?}");
         }
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
         assert_eq!(

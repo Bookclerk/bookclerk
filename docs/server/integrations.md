@@ -321,9 +321,11 @@ when the host says nothing. Once that time is up:
 So a changed picture shows up within about a week at most, and usually
 much sooner. An image the host sends with `no-store` is served but never
 kept. Without a deployed cover fetcher they answer
-`503` and the web app shows a monogram. Gravatars are downloaded at most
-four at a time, since anyone signed in can name a new hash; a request
-over that limit also answers `503`.
+`503` and the web app shows a monogram. An address whose image the host
+answers with `404 Not Found` — a Gravatar for an email that has none, for
+example — answers `404`, and the web app shows the monogram too. Gravatars
+are downloaded at most four at a time, since anyone signed in can name a
+new hash; a request over that limit also answers `503`.
 
 ### Cache retention
 
