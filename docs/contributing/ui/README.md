@@ -157,7 +157,7 @@ start:
 | --- | --- | --- |
 | Linux | `.deb`, AppImage | The `.deb` depends on WebKitGTK 4.1, which the package manager installs; the AppImage needs FUSE 2 (`libfuse2`) |
 | Windows | NSIS installer (`.exe`), per user | SmartScreen asks to confirm an unknown publisher |
-| macOS | `.app` and `.dmg` | Gatekeeper blocks an unsigned app: open it from Finder's context menu once |
+| macOS | `.app` and `.dmg` | Gatekeeper blocks an unsigned app: try to open it once, then choose **Open Anyway** under System Settings → Privacy & Security |
 
 To build them:
 

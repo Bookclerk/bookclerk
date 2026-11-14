@@ -15,10 +15,14 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/desktop-packages.yml"
+      - ".cargo/config.toml"
       - "crates/bookclerk-desktop/**"
+      - "crates/bookclerk-dev/src/main.rs"
       - "crates/bookclerk-dev/src/package.rs"
       - "crates/bookclerk-sandbox/src/spawn_path.rs"
+      - "crates/bookclerk-media/src/pool.rs"
       - "crates/bookclerk-plugin-host/src/bundled_platform.rs"
+      - "crates/bookclerkd/src/api.rs"
   workflow_dispatch:
   schedule:
     - cron: "17 6 * * 3"
