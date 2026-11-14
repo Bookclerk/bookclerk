@@ -680,6 +680,20 @@ impl Shared {
         }
     }
 
+    /// `scan.removed` or `scan.pass_end` for a job's pass: the holdings
+    /// the owner removed.
+    pub(crate) async fn scan_report(
+        &self,
+        job_id: &str,
+        fence: i64,
+        body: Body,
+    ) -> Result<u64, OwnerCallError> {
+        match self.job_call(job_id, fence, body).await? {
+            Body::ScanAccepted { upserted, .. } => Ok(upserted),
+            _ => Err(OwnerCallError::Unavailable),
+        }
+    }
+
     /// `acquire.plan`: the titles still to acquire and the owner node's
     /// destinations, the primary first.
     pub(crate) async fn acquire_plan(

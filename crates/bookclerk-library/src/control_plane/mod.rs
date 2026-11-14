@@ -227,7 +227,11 @@ pub use remote_consents::{
     revoke_remote_plugin, RemoteApproval, RemoteApprover, RemoteArtifactRef, RemotePluginConsent,
     REMOTE_CONSENT_PLATFORM,
 };
-pub use remote_results::{accept_scan_results, ScanAccept, MAX_SCAN_RESULT_ROWS};
+pub use remote_results::{
+    accept_scan_pass_end, accept_scan_removed, accept_scan_results, accept_scan_rows,
+    handed_pass_id, handed_sync_token, HandedPassEnd, ScanAccept, ScanSighting,
+    MAX_SCAN_RESULT_ROWS,
+};
 pub use remote_work::{
     claim_remote_job, finish_remote_job, job_secret_refs, live_remote_job, release_remote_job,
     remote_job_fence, remote_lease_owner, renew_remote_job, write_back_job_secret, JobSecret,
