@@ -19,7 +19,7 @@ use super::super::branch::tests::{call, LOOPBACK};
 use crate::api::AppState;
 use crate::auth::UserCaller;
 
-/// Where the client install wants the code.
+/// Where the clerk wants the code.
 const REDIRECT: &str = "http://127.0.0.1:41923/client/callback";
 
 /// A LAN peer over plain HTTP.

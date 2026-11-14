@@ -205,14 +205,14 @@ artifacts = ["bookclerk"]
 
 [targets.client_authorization]
 crate = "bookclerk-node-proto"
-boundary = "A client app's library card, the Authorization: Bookclerk-Client header value"
+boundary = "A clerk's library card, the Authorization: Bookclerk-Client header value"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
 [targets.client_authorize]
 crate = "bookclerk-node-proto"
-boundary = "A client app's authorization request, the /oidc/authorize query that leads to the library card consent page"
+boundary = "A clerk's authorization request, the /oidc/authorize query that leads to the library card consent page"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]

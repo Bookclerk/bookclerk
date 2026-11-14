@@ -13081,7 +13081,7 @@
           {
             "name": "client_name",
             "in": "query",
-            "description": "The name the client install gives itself, shown on the consent page\nand in the user's session list.",
+            "description": "The name the clerk gives itself, shown on the consent page\nand in the user's session list.",
             "required": false,
             "schema": {
               "type": "string"
@@ -15717,7 +15717,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -15866,7 +15866,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -16031,7 +16031,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -16194,7 +16194,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -16353,7 +16353,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -16512,7 +16512,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -16671,7 +16671,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -16811,7 +16811,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -16941,7 +16941,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -17091,7 +17091,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -17255,7 +17255,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -17438,7 +17438,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -17809,7 +17809,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -18111,7 +18111,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -18294,7 +18294,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -18477,7 +18477,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -18633,7 +18633,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -18795,7 +18795,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -18987,7 +18987,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -19144,7 +19144,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -19309,7 +19309,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -19470,7 +19470,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -19583,7 +19583,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -19740,7 +19740,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -19953,7 +19953,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -20143,7 +20143,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -20292,7 +20292,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -20477,7 +20477,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -20632,7 +20632,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -20792,7 +20792,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -20941,7 +20941,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -21082,7 +21082,7 @@
                     "summary": "A library card on a listener without the node API",
                     "value": {
                       "error": "client_sign_in_unavailable",
-                      "message": "This library does not accept client apps on this address.",
+                      "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
                   },
@@ -30583,7 +30583,7 @@
           },
           "client_name": {
             "type": "string",
-            "description": "The name the client install gives itself, shown on the consent page\nand in the user's session list.",
+            "description": "The name the clerk gives itself, shown on the consent page\nand in the user's session list.",
             "example": "Riley's laptop",
             "nullable": true
           }
@@ -43509,7 +43509,7 @@
     },
     {
       "name": "Client sign-in",
-      "description": "A client install's sign-in as a person: redeem an approved code for a session token."
+      "description": "A clerk's sign-in as a person: redeem an approved code for a session token."
     },
     {
       "name": "Node protocol",

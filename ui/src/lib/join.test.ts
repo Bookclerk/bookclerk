@@ -46,7 +46,7 @@ describe("join pages", () => {
     expect(joinPage("/settings")).toBeNull();
   });
 
-  it("include a client app's consent page", () => {
+  it("include a clerk's consent page", () => {
     expect(isAppPath("/client/approve")).toBe(true);
     expect(joinPage("/client/approve/")).toBe("client-approve");
     expect(isConsentPage("client-approve")).toBe(true);

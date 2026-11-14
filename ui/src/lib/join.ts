@@ -901,20 +901,20 @@ export function fetchBranchConsent(search: string): Promise<BranchConsentView> {
   return request(`/api/auth/branch-consent?${query}`);
 }
 
-/** `GET /api/auth/client-consent`: what a client app's consent page shows. */
+/** `GET /api/auth/client-consent`: what a clerk's consent page shows. */
 export interface ClientConsentView {
   /** This library's name, as the consent question shows it. */
   library_name: string;
-  /** The name the client app gave itself. */
+  /** The name the clerk gave itself. */
   client_name: string;
-  /** Where the browser goes back to (the client app). */
+  /** Where the browser goes back to (the clerk). */
   redirect_origin: string;
-  /** The signed-in user the client app would sign in as. */
+  /** The signed-in user the clerk would sign in as. */
   user: { id: number; display_name?: string | null };
 }
 
 /**
- * Reads what a client app's consent page shows.
+ * Reads what a clerk's consent page shows.
  *
  * @param search - The authorize request (query string).
  * @returns The consent view.
@@ -925,10 +925,10 @@ export function fetchClientConsent(search: string): Promise<ClientConsentView> {
 }
 
 /**
- * Approves or denies a client app's sign-in; answers where to send the browser.
+ * Approves or denies a clerk's sign-in; answers where to send the browser.
  *
  * @param search - The authorize request (query string).
- * @param approve - True to give the client app a library card.
+ * @param approve - True to give the clerk a library card.
  * @returns Where to send the browser.
  */
 export function answerClientConsent(

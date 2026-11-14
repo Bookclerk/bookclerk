@@ -1,6 +1,6 @@
 //! Where a client sign-in's session token is accepted.
 //!
-//! A client install signs in to this library as a person
+//! A clerk signs in to this library as a person
 //! ([`crate::node_api::client`]) and sends its session token as
 //! `Authorization: Bookclerk-Client <token>`. The token is accepted only on
 //! the route group a library session may use for the person's own books
@@ -169,7 +169,7 @@ pub(crate) const CLIENT_SIGN_IN_UNAVAILABLE: &str = "client_sign_in_unavailable"
 
 /// The `message` of that refusal.
 pub(crate) const CLIENT_SIGN_IN_UNAVAILABLE_MESSAGE: &str =
-    "This library does not accept client apps on this address.";
+    "This library does not accept clerks on this address.";
 
 /// The client session token in `headers`, when an admitted request carries
 /// one.

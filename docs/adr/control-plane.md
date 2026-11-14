@@ -1727,7 +1727,7 @@ names are unchanged.
   single-use code (hashed, 60 s) in `oidc_auth_codes`.
 - **Library cards (2026-11-13).** A second built-in public client,
   `bookclerk-client` (scope `library:member`, same redirect and PKCE
-  rules), signs a client app in as the person. Its code is redeemed only
+  rules), signs a clerk in as the person. Its code is redeemed only
   at `POST /api/client/v1/token` for an opaque session token
   (`portal_sessions`, `kind = client`, 90 idle days), sent as
   `Authorization: Bookclerk-Client <token>` and accepted only on the

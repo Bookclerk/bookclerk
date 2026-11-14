@@ -2,7 +2,7 @@
 //! `bookclerk-node-proto` corpus replay test
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 //!
-//! The boundary is the authorization request a client app sends to a
+//! The boundary is the authorization request a clerk sends to a
 //! library's `/oidc/authorize` (`bookclerk-node-proto::parse_client_query`,
 //! then `client_request_problem`): a query string from another machine
 //! that decides whether the library shows its consent page and where it

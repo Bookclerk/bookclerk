@@ -260,7 +260,7 @@ const TAGS: &[(&str, &str, &str)] = &[
     ("Cluster", "/api/config/cluster-consents", "Nodes, branches, joining a library and host enrollment."),
     ("Cluster", "/api/config/clusters", "Nodes, branches, joining a library and host enrollment."),
     ("Accounts", "/api/portal", "Store accounts a library user connects (the Accounts page)."),
-    ("Client sign-in", "/api/client/v1", "A client install's sign-in as a person: redeem an approved code for a session token."),
+    ("Client sign-in", "/api/client/v1", "A clerk's sign-in as a person: redeem an approved code for a session token."),
     ("Node protocol", "/api/node/v1", "Node-to-node enrollment, socket, artifacts and uploads; each route checks its own credential."),
     ("OIDC provider", "/.well-known", "Bookclerk as an OpenID Connect provider for other apps."),
     ("OIDC provider", "/oidc", "Bookclerk as an OpenID Connect provider for other apps."),

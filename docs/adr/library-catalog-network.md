@@ -1,6 +1,6 @@
 # ADR: Library catalog network
 
-- **Status:** Accepted (2026-11-11), amended 2026-11-13 (client apps are
+- **Status:** Accepted (2026-11-11), amended 2026-11-13 (clerks are
   not nodes; see [Kinds of install](#kinds-of-install)). Step 1,
   per-library plugin state on a branch, step 2, own library first, step 3,
   accounts that follow the person (with one refresh keeper per
@@ -159,17 +159,17 @@ Amended 2026-11-13. Every install runs the same software; what differs is
 how it relates to other libraries:
 
 - A **library** is a branch with no parent. Only a library others join
-  must be routable; branches and client apps dial out to it over a
+  must be routable; branches and clerks dial out to it over a
   websocket and are not assumed to be publicly addressable.
 - A **branch** is a node of its parent library. It contributes to that
   library (jobs, catalog answers, requests) whether or not it keeps local
   copies of the books for itself.
-- A **client app** is not a node. It signs in as the person with a
+- A **clerk** is not a node. It signs in as the person with a
   **library card** (the built-in OAuth client `bookclerk-client`, scope
   `library:member`) and uses the library's member routes with that card,
   the same routes the person's browser session may use. It has no node
   row, node key or node socket, and the library never sends it work. A
-  client app can later be turned into a branch.
+  clerk can later be turned into a branch.
 
 This replaces the first version of this section, which made a branch with
 "Use this computer to download" turned off a **window**: a node that
@@ -188,10 +188,10 @@ a window on `main`.
      all of this branch's members' books" setting (implemented). The
      setting reaches the branch with its catalog session, and the branch
      then sends every book it lists to that library.
-  6. Window mode, now replaced by client apps with library cards (see
+  6. Window mode, now replaced by clerks with library cards (see
      [Kinds of install](#kinds-of-install)): the library side first, then
      the client side, then the copy setting redefined as "Keep copies on
-     this computer", then turning a client app into a branch.
+     this computer", then turning a clerk into a branch.
   7. Capacity shares between a branch's own work and each link
      (implemented).
 - Steps 2 to 7 add node-socket frames. Each ships with a fuzz target, a

@@ -476,7 +476,7 @@ pub struct OperatorSessionRecord {
 pub enum PortalSessionKind {
     /// A browser's session cookie.
     Browser,
-    /// A client sign-in: a client install that shows the user's books from
+    /// A client sign-in: a clerk that shows the user's books from
     /// this library without joining it as a node.
     Client,
 }
@@ -520,7 +520,7 @@ pub struct PortalSessionRecord {
     /// Best-effort device class.
     pub device_type: Option<String>,
     /// Best-effort OS / client label; for a client sign-in, the name the
-    /// client install gave itself.
+    /// clerk gave itself.
     pub client_label: Option<String>,
     /// Where the token is presented.
     pub kind: PortalSessionKind,
