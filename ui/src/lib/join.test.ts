@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConfigNodeView } from "./api";
 import {
   answerBranchConsent,
-  answerClientConsent,
+  answerClerkConsent,
   rememberApproveReturn,
   takeApproveReturn,
   sharedBranchNodes,
@@ -47,9 +47,9 @@ describe("join pages", () => {
   });
 
   it("include a clerk's consent page", () => {
-    expect(isAppPath("/client/approve")).toBe(true);
-    expect(joinPage("/client/approve/")).toBe("client-approve");
-    expect(isConsentPage("client-approve")).toBe(true);
+    expect(isAppPath("/clerk/approve")).toBe(true);
+    expect(joinPage("/clerk/approve/")).toBe("clerk-approve");
+    expect(isConsentPage("clerk-approve")).toBe(true);
     expect(isConsentPage("approve")).toBe(true);
     expect(isConsentPage("callback")).toBe(false);
     expect(isConsentPage(null)).toBe(false);
@@ -66,44 +66,44 @@ describe("approve return", () => {
       setItem: (key: string, value: string) => void store.set(key, value),
       removeItem: (key: string) => void store.delete(key),
     });
-    rememberApproveReturn("/client/approve?client_id=bookclerk-client");
-    expect(takeApproveReturn()).toBe("/client/approve?client_id=bookclerk-client");
+    rememberApproveReturn("/clerk/approve?client_id=bookclerk-clerk");
+    expect(takeApproveReturn()).toBe("/clerk/approve?client_id=bookclerk-clerk");
     expect(takeApproveReturn()).toBeNull();
     rememberApproveReturn("/join/approve?client_id=bookclerk-branch");
     expect(takeApproveReturn()).toBe("/join/approve?client_id=bookclerk-branch");
-    rememberApproveReturn("/client/approve/?client_id=bookclerk-client");
-    expect(takeApproveReturn()).toBe("/client/approve/?client_id=bookclerk-client");
-    rememberApproveReturn("/client/approver?client_id=bookclerk-client");
+    rememberApproveReturn("/clerk/approve/?client_id=bookclerk-clerk");
+    expect(takeApproveReturn()).toBe("/clerk/approve/?client_id=bookclerk-clerk");
+    rememberApproveReturn("/clerk/approver?client_id=bookclerk-clerk");
     expect(takeApproveReturn()).toBeNull();
     rememberApproveReturn("/settings?x=1");
     expect(takeApproveReturn()).toBeNull();
   });
 });
 
-describe("answerClientConsent", () => {
+describe("answerClerkConsent", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("sends the authorize request with the answer", async () => {
     const fetchMock = vi.fn(
       async (_url: string, _init: RequestInit) =>
-        new Response(JSON.stringify({ redirect: "http://localhost:41923/client/callback" }), {
+        new Response(JSON.stringify({ redirect: "http://localhost:41923/clerk/callback" }), {
           status: 200,
         }),
     );
     vi.stubGlobal("fetch", fetchMock);
     const search =
-      "?client_id=bookclerk-client&response_type=code&scope=library%3Amember" +
-      "&redirect_uri=http%3A%2F%2Flocalhost%3A41923%2Fclient%2Fcallback" +
-      "&code_challenge=abc&code_challenge_method=S256&state=s1&client_name=Laptop";
-    await answerClientConsent(search, true);
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/auth/client-consent");
+      "?client_id=bookclerk-clerk&response_type=code&scope=library%3Amember" +
+      "&redirect_uri=http%3A%2F%2Flocalhost%3A41923%2Fclerk%2Fcallback" +
+      "&code_challenge=abc&code_challenge_method=S256&state=s1&clerk_name=Laptop";
+    await answerClerkConsent(search, true);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/auth/clerk-consent");
     const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
     expect(body).toMatchObject({
-      client_id: "bookclerk-client",
-      client_name: "Laptop",
+      client_id: "bookclerk-clerk",
+      clerk_name: "Laptop",
       approve: true,
     });
-    await answerClientConsent(search, false);
+    await answerClerkConsent(search, false);
     const denied = JSON.parse(String(fetchMock.mock.calls[1][1].body));
     expect(denied.approve).toBe(false);
   });

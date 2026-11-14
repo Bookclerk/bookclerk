@@ -158,7 +158,7 @@ than the OS hint alone:
 | Sign-in link | Tray **Copy sign-in link** or `bookclerk login`: a loopback `?code=` URL, valid 180 seconds by default; the tray then removes that URL if it is still on the clipboard |
 | Operator cookie | `bookclerk_operator_session` (`Path=/`), also used by elevated Owners |
 | Portal cookie | `bookclerk_portal_session` (`Path=/`), the session of a first-party user |
-| Library card | A clerk's session, sent as `Authorization: Bookclerk-Client <token>`, never as a cookie (see [Library cards](#library-cards)) |
+| Library card | A clerk's session, sent as `Authorization: Bookclerk-Clerk <token>`, never as a cookie (see [Library cards](#library-cards)) |
 | Config | `[daemon.auth]` |
 | Preferences | Stored in the database (`user_preferences`), not `config.toml` |
 
@@ -169,28 +169,28 @@ as a branch. It signs in as the person and holds a **library card**: a
 session token in the person's session list, not a node.
 
 > [!NOTE]
-> A clerk is another Bookclerk install that a
-> person uses to reach a library. The protocol and the code call it a
-> *client*: the OAuth client `bookclerk-client`, the
-> `Authorization: Bookclerk-Client` scheme, the `/api/client/` routes and
-> the `client` session kind.
+> A clerk is another Bookclerk install that a person uses to reach a
+> library. The API and the code use the same word: the built-in OAuth
+> client `bookclerk-clerk`, the `Authorization: Bookclerk-Clerk` scheme,
+> the `/api/clerk/` routes and the `clerk` session kind. Only OAuth's own
+> parameter names, such as `client_id`, keep their standard spelling.
 
 1. The clerk sends the browser to the library's `/oidc/authorize`
-   with the built-in public client `bookclerk-client`, the scope
+   with the built-in public client `bookclerk-clerk`, the scope
    `library:member`, an S256 code challenge, a `state`, a loopback or
-   `https://` redirect URI, and a `client_name`.
-2. The library sends the request to `/client/approve`, which signs the
+   `https://` redirect URI, and a `clerk_name`.
+2. The library sends the request to `/clerk/approve`, which signs the
    person in and asks "Give *name* a library card for *library*?", where *name* is the name the clerk gave itself.
    Approving needs an active user and the node API transport policy (TLS,
    except on loopback). It does not need "Let new branches join".
 3. The library sends the browser back with a single-use code that lives
    60 seconds.
 4. The clerk redeems the code with its verifier at
-   `POST /api/client/v1/token` and gets
+   `POST /api/clerk/v1/token` and gets
    `{ token, cluster_id, user, idle_secs }`. The token is shown once; the
    library keeps only its hash. Any failed redeem spends the code.
 
-The clerk then sends `Authorization: Bookclerk-Client <token>`:
+The clerk then sends `Authorization: Bookclerk-Clerk <token>`:
 
 - It works only on the routes any library session may use: the library,
   Discover, the wishlist, the request queue, preferences, the person's
@@ -199,7 +199,7 @@ The clerk then sends `Authorization: Bookclerk-Client <token>`:
   role.
 - It needs TLS, except on loopback, like the node API. Otherwise the
   route answers `403 transport_insecure`, or `403
-  client_sign_in_unavailable` where this daemon doesn't serve remote
+  clerk_sign_in_unavailable` where this daemon doesn't serve remote
   installs.
 - It is never a cookie, and a browser's session token is never a library
   card.
@@ -212,8 +212,8 @@ The clerk then sends `Authorization: Bookclerk-Client <token>`:
   beside that browser session, including a sign-in through an integration
   such as Audiobookshelf.
 
-`bookclerk-client` codes are never redeemed at `/oidc/token`, and
-`bookclerk-client` can't be registered as a client.
+`bookclerk-clerk` codes are never redeemed at `/oidc/token`, and
+`bookclerk-clerk` can't be registered as a client.
 
 ## API endpoints
 
@@ -232,7 +232,7 @@ The clerk then sends `Authorization: Bookclerk-Client <token>`:
 | Second-factor policy | `GET`/`PUT /api/auth/mfa-policy` `{ require_second_factor }` (Owner or operator) |
 | Preferences | `GET`/`PATCH /api/preferences`: `default_view`, `disabled_shelves`, `theme` (subject `user:{id}`, `portal:{identity_id}` or `operator`) |
 | Portal | `/api/portal/*` (Accounts, invite claims) |
-| Library cards | `GET`/`POST /api/auth/client-consent` (the consent page, any signed-in user), `POST /api/client/v1/token` (the clerk redeems its code) |
+| Library cards | `GET`/`POST /api/auth/clerk-consent` (the consent page, any signed-in user), `POST /api/clerk/v1/token` (the clerk redeems its code) |
 
 `GET /api/auth/me` returns
 `{ authenticated, role, default_view, can_acquire, elevated, impersonating?, portal?, user?, second_factor? }`:
@@ -265,7 +265,7 @@ The web app keeps the address bar in step with the screen:
 | `/accounts` | Accounts |
 | `/settings` | Settings |
 | `/invite` | Claim an invite (`?ticket=`) |
-| `/client/approve` | Give a clerk a library card (see [Library cards](#library-cards)) |
+| `/clerk/approve` | Give a clerk a library card (see [Library cards](#library-cards)) |
 
 `bookclerkd` serves `index.html` for these paths, so a hard refresh on
 `/library` loads the app instead of a 404. Assets still come from

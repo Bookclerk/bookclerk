@@ -209,8 +209,8 @@ The exchange runs in five steps:
    link in `cluster_links`, and starts the link's client.
 
 A clerk's library card uses the same authorization server with a
-second built-in public client, `bookclerk-client` (scope
-`library:member`). Its code is redeemed at `POST /api/client/v1/token`
+second built-in public client, `bookclerk-clerk` (scope
+`library:member`). Its code is redeemed at `POST /api/clerk/v1/token`
 for a session token, not at the node API, and no node row is made. See
 [Library cards](sign-in.md#library-cards).
 

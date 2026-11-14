@@ -234,22 +234,22 @@ doc = false
 bench = false
 
 [[bin]]
-name = "client_authorization"
-path = "fuzz_targets/client_authorization.rs"
+name = "clerk_authorization"
+path = "fuzz_targets/clerk_authorization.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "client_authorize"
-path = "fuzz_targets/client_authorize.rs"
+name = "clerk_authorize"
+path = "fuzz_targets/clerk_authorize.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "client_token_request"
-path = "fuzz_targets/client_token_request.rs"
+name = "clerk_token_request"
+path = "fuzz_targets/clerk_token_request.rs"
 test = false
 doc = false
 bench = false

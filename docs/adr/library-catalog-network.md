@@ -165,7 +165,7 @@ how it relates to other libraries:
   library (jobs, catalog answers, requests) whether or not it keeps local
   copies of the books for itself.
 - A **clerk** is not a node. It signs in as the person with a
-  **library card** (the built-in OAuth client `bookclerk-client`, scope
+  **library card** (the built-in OAuth client `bookclerk-clerk`, scope
   `library:member`) and uses the library's member routes with that card,
   the same routes the person's browser session may use. It has no node
   row, node key or node socket, and the library never sends it work. A

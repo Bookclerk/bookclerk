@@ -31,7 +31,7 @@
 
 mod artifacts;
 pub mod branch;
-pub mod client;
+pub mod clerk;
 mod host_accounts;
 mod host_catalog;
 mod host_interlibrary;
@@ -448,9 +448,9 @@ pub(crate) fn node_routes() -> OpenApiRouter<Arc<AppState>> {
         // the redeem of an approved code (code + PKCE verifier).
         .routes(routes!(branch::get_info))
         .routes(routes!(branch::post_enroll_oauth))
-        // A client sign-in's redeem of its approved code (code + PKCE
+        // A clerk sign-in's redeem of its approved code (code + PKCE
         // verifier) for a session token.
-        .routes(routes!(client::post_client_token))
+        .routes(routes!(clerk::post_clerk_token))
         // Host-node socket: the node's Ed25519 key is the credential.
         .routes(routes!(ws::get_connect))
         // Owner plugin archives: a node-signed request is the credential.

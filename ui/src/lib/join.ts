@@ -901,12 +901,12 @@ export function fetchBranchConsent(search: string): Promise<BranchConsentView> {
   return request(`/api/auth/branch-consent?${query}`);
 }
 
-/** `GET /api/auth/client-consent`: what a clerk's consent page shows. */
-export interface ClientConsentView {
+/** `GET /api/auth/clerk-consent`: what a clerk's consent page shows. */
+export interface ClerkConsentView {
   /** This library's name, as the consent question shows it. */
   library_name: string;
   /** The name the clerk gave itself. */
-  client_name: string;
+  clerk_name: string;
   /** Where the browser goes back to (the clerk). */
   redirect_origin: string;
   /** The signed-in user the clerk would sign in as. */
@@ -919,9 +919,9 @@ export interface ClientConsentView {
  * @param search - The authorize request (query string).
  * @returns The consent view.
  */
-export function fetchClientConsent(search: string): Promise<ClientConsentView> {
+export function fetchClerkConsent(search: string): Promise<ClerkConsentView> {
   const query = search.startsWith("?") ? search.slice(1) : search;
-  return request(`/api/auth/client-consent?${query}`);
+  return request(`/api/auth/clerk-consent?${query}`);
 }
 
 /**
@@ -931,11 +931,11 @@ export function fetchClientConsent(search: string): Promise<ClientConsentView> {
  * @param approve - True to give the clerk a library card.
  * @returns Where to send the browser.
  */
-export function answerClientConsent(
+export function answerClerkConsent(
   search: string,
   approve: boolean,
 ): Promise<{ redirect: string }> {
-  return request("/api/auth/client-consent", {
+  return request("/api/auth/clerk-consent", {
     method: "POST",
     body: { ...authorizeParams(search), approve },
   });
@@ -1285,14 +1285,14 @@ export function rememberApproveReturn(location: string): void {
 /**
  * Takes the remembered consent page address once, if it is one.
  *
- * @returns `/join/approve?…` or `/client/approve?…` (with or without a
+ * @returns `/join/approve?…` or `/clerk/approve?…` (with or without a
  *   slash before the query, as {@link joinPage} accepts both), or `null`.
  */
 export function takeApproveReturn(): string | null {
   try {
     const value = sessionStorage.getItem(APPROVE_RETURN);
     sessionStorage.removeItem(APPROVE_RETURN);
-    return value && /^\/(?:join|client)\/approve\/?\?/.test(value) ? value : null;
+    return value && /^\/(?:join|clerk)\/approve\/?\?/.test(value) ? value : null;
   } catch {
     return null;
   }

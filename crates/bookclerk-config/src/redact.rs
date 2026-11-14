@@ -466,8 +466,8 @@ fn secret_patterns() -> &'static [Regex] {
             r"(?i)\bAtna\|[A-Za-z0-9._\-+/=]+",
             r"(?i)\bAtnr\|[A-Za-z0-9._\-+/=]+",
             r"(?i)\bBearer\s+[A-Za-z0-9._\-+/=]+",
-            // A clerk's library card (`Authorization: Bookclerk-Client`).
-            r"(?i)\bBookclerk-Client\s+[A-Za-z0-9_\-]+",
+            // A clerk's library card (`Authorization: Bookclerk-Clerk`).
+            r"(?i)\bBookclerk-Clerk\s+[A-Za-z0-9_\-]+",
             r"\bAKIA[0-9A-Z]{16}\b",
             r"(?i)(aws_secret_access_key\s*[=:]\s*)\S+",
             r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b",
@@ -694,8 +694,8 @@ mod tests {
 
     #[test]
     fn redacts_library_cards_and_authorization_codes() {
-        let s = "Authorization: Bookclerk-Client Zm9vYmFyYmF6cXV4cXV1eGNvcmdlZ3JhdWx0Z2FycGx \
-                 GET /client/callback?code=q8Zl0m3VnS2xR7bW4cYd1eTf6gUh9iJk5LoNpQrStUv&state=s1";
+        let s = "Authorization: Bookclerk-Clerk Zm9vYmFyYmF6cXV4cXV1eGNvcmdlZ3JhdWx0Z2FycGx \
+                 GET /clerk/callback?code=q8Zl0m3VnS2xR7bW4cYd1eTf6gUh9iJk5LoNpQrStUv&state=s1";
         let out = redact_str(s);
         assert!(!out.contains("Zm9vYmFyYmF6cXV4"), "{out}");
         assert!(!out.contains("q8Zl0m3VnS2xR7bW"), "{out}");

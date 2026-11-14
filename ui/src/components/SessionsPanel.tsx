@@ -12,7 +12,7 @@ function sessionDeviceIcon(deviceType: string | null | undefined) {
       return Tablet;
     case "api":
       return Cable;
-    case "client":
+    case "clerk":
       return IdCard;
     default:
       return Monitor;
@@ -52,7 +52,7 @@ function SessionMeta({ row }: { row: ListedSession }) {
 function SessionBadges({ row }: { row: ListedSession }) {
   return (
     <>
-      {row.channel === "client" ? (
+      {row.channel === "clerk" ? (
         <Badge className="bg-ink/10 text-ink normal-case tracking-normal">Library card</Badge>
       ) : null}
       {row.elevated ? (

@@ -1331,7 +1331,7 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   the fence, and acks a wake; with tracing and `log` at TRACE no token
   appears in the logs, plain or base64. A database swap stops the
   previous store's link and connects the new store's. Against a scripted
-  owner (`client_tests.rs`), an unanswered heartbeat and claim are
+  owner (`clerk_tests.rs`), an unanswered heartbeat and claim are
   retried on the same connection, and a wake is acked only once a
   subscriber received it. A fence held across a dropped
   connection is resumed and the job completes under it; one reclaimed
@@ -1726,11 +1726,11 @@ names are unchanged.
   and `classify_transport` allows the connection, then stores a
   single-use code (hashed, 60 s) in `oidc_auth_codes`.
 - **Library cards (2026-11-13).** A second built-in public client,
-  `bookclerk-client` (scope `library:member`, same redirect and PKCE
+  `bookclerk-clerk` (scope `library:member`, same redirect and PKCE
   rules), signs a clerk in as the person. Its code is redeemed only
-  at `POST /api/client/v1/token` for an opaque session token
+  at `POST /api/clerk/v1/token` for an opaque session token
   (`portal_sessions`, `kind = client`, 90 idle days), sent as
-  `Authorization: Bookclerk-Client <token>` and accepted only on the
+  `Authorization: Bookclerk-Clerk <token>` and accepted only on the
   routes a browser session may use for the person's own library, never on
   administration or as a cookie. No node is enrolled; see
   [ADR: Library catalog network](library-catalog-network.md#kinds-of-install).

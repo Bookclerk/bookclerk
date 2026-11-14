@@ -20,7 +20,7 @@ mod branch_requests;
 mod cache_jobs;
 mod cache_policy;
 mod catalog_lookup;
-mod client_token;
+mod clerk_token;
 mod cluster_link;
 mod config_authority;
 mod covers;

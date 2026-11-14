@@ -13007,18 +13007,18 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
-    "/api/auth/client-consent": {
+    "/api/auth/clerk-consent": {
       "get": {
         "tags": [
           "Auth"
         ],
-        "summary": "`GET /api/auth/client-consent?<authorize params>`: what the consent page\nshows. 400 `invalid_request` for a malformed request (the page then\nshows the problem and never redirects).",
-        "operationId": "get_client_consent",
+        "summary": "`GET /api/auth/clerk-consent?<authorize params>`: what the consent page\nshows. 400 `invalid_request` for a malformed request (the page then\nshows the problem and never redirects).",
+        "operationId": "get_clerk_consent",
         "parameters": [
           {
             "name": "client_id",
             "in": "query",
-            "description": "Must be [`CLIENT_CLIENT_ID`].",
+            "description": "Must be [`CLERK_CLIENT_ID`].",
             "required": true,
             "schema": {
               "type": "string"
@@ -13045,7 +13045,7 @@
           {
             "name": "scope",
             "in": "query",
-            "description": "Must be [`CLIENT_SCOPE`].",
+            "description": "Must be [`CLERK_SCOPE`].",
             "required": false,
             "schema": {
               "type": "string"
@@ -13079,7 +13079,7 @@
             }
           },
           {
-            "name": "client_name",
+            "name": "clerk_name",
             "in": "query",
             "description": "The name the clerk gives itself, shown on the consent page\nand in the user's session list.",
             "required": false,
@@ -13094,7 +13094,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ClientConsentPage"
+                  "$ref": "#/components/schemas/ClerkConsentPage"
                 }
               }
             }
@@ -13107,10 +13107,10 @@
                   "$ref": "#/components/schemas/ErrorDetail"
                 },
                 "examples": {
-                  "client_name": {
-                    "summary": "The client name is empty or too long.",
+                  "clerk_name": {
+                    "summary": "The clerk name is empty or too long.",
                     "value": {
-                      "detail": "the client needs a name of 1 to 64 characters",
+                      "detail": "the clerk needs a name of 1 to 64 characters",
                       "error": "invalid_request"
                     }
                   },
@@ -13129,7 +13129,7 @@
                     }
                   },
                   "unknown_client": {
-                    "summary": "The client id is not the client sign-in client.",
+                    "summary": "The client id is not the clerk's built-in client.",
                     "value": {
                       "detail": "unknown client",
                       "error": "invalid_request"
@@ -13246,13 +13246,13 @@
         "tags": [
           "Auth"
         ],
-        "summary": "`POST /api/auth/client-consent`: approve or deny. Answers `{redirect}`,\nthe URL to send the browser to: the client's callback with a code (or\n`error=access_denied`).",
-        "operationId": "post_client_consent",
+        "summary": "`POST /api/auth/clerk-consent`: approve or deny. Answers `{redirect}`,\nthe URL to send the browser to: the clerk's callback with a code (or\n`error=access_denied`).",
+        "operationId": "post_clerk_consent",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ClientConsentBody"
+                "$ref": "#/components/schemas/ClerkConsentBody"
               }
             }
           },
@@ -13260,7 +13260,7 @@
         },
         "responses": {
           "200": {
-            "description": "`{redirect}` back to the client.",
+            "description": "`{redirect}` back to the clerk.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13292,7 +13292,7 @@
                     }
                   },
                   "unknown_client": {
-                    "summary": "The client id is not the client sign-in client.",
+                    "summary": "The client id is not the clerk's built-in client.",
                     "value": {
                       "detail": "unknown client",
                       "error": "invalid_request"
@@ -15706,17 +15706,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -15804,10 +15804,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/library/books/{uuid}": {
@@ -15855,17 +15855,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -15968,10 +15968,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/library/books/{uuid}/cover": {
@@ -16020,17 +16020,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -16118,10 +16118,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/covers/{token}/{size}": {
@@ -16183,17 +16183,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -16286,10 +16286,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/images/{token}": {
@@ -16342,17 +16342,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -16445,10 +16445,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/avatars/gravatar/{hash}": {
@@ -16501,17 +16501,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -16604,10 +16604,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/stores/{id}/icon": {
@@ -16660,17 +16660,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -16763,10 +16763,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/status": {
@@ -16800,17 +16800,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -16894,10 +16894,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/refresh": {
@@ -16930,17 +16930,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -17043,10 +17043,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/recommendations": {
@@ -17080,17 +17080,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -17174,10 +17174,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/purchase-hints": {
@@ -17244,17 +17244,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -17357,10 +17357,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/purchase-hints/batch": {
@@ -17427,17 +17427,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -17551,10 +17551,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/search": {
@@ -17798,17 +17798,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -17881,10 +17881,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/title-meta": {
@@ -18100,17 +18100,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -18213,10 +18213,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/title-meta/batch": {
@@ -18283,17 +18283,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -18396,10 +18396,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/discover/title-reviews": {
@@ -18466,17 +18466,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -18579,10 +18579,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/wishlist": {
@@ -18622,17 +18622,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -18716,10 +18716,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       },
       "post": {
         "tags": [
@@ -18784,17 +18784,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -18908,10 +18908,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/wishlist/{uuid}": {
@@ -18970,7 +18970,7 @@
             }
           },
           "403": {
-            "description": "The request belongs to someone else. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The request belongs to someone else. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -18983,10 +18983,10 @@
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -19089,10 +19089,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/request-queue": {
@@ -19133,17 +19133,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -19227,10 +19227,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/branch-requests": {
@@ -19298,17 +19298,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -19419,10 +19419,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/auth/logout": {
@@ -19459,17 +19459,17 @@
             }
           },
           "403": {
-            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -19532,10 +19532,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/auth/sessions": {
@@ -19572,17 +19572,17 @@
             }
           },
           "403": {
-            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -19677,10 +19677,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/auth/sessions/{id}": {
@@ -19729,17 +19729,17 @@
             }
           },
           "403": {
-            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -19842,10 +19842,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/auth/profile": {
@@ -19942,17 +19942,17 @@
             }
           },
           "403": {
-            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -20092,10 +20092,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/auth/profile/catalog-listing": {
@@ -20132,17 +20132,17 @@
             }
           },
           "403": {
-            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -20222,10 +20222,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       },
       "put": {
         "tags": [
@@ -20281,17 +20281,17 @@
             }
           },
           "403": {
-            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -20401,10 +20401,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/auth/profile/avatar": {
@@ -20466,17 +20466,17 @@
             }
           },
           "403": {
-            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -20579,10 +20579,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       },
       "delete": {
         "tags": [
@@ -20621,17 +20621,17 @@
             }
           },
           "403": {
-            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -20719,10 +20719,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/users/{id}/avatar": {
@@ -20781,17 +20781,17 @@
             }
           },
           "403": {
-            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -20894,10 +20894,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/api/preferences": {
@@ -20930,17 +20930,17 @@
             }
           },
           "403": {
-            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -21016,10 +21016,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       },
       "patch": {
         "tags": [
@@ -21071,17 +21071,17 @@
             }
           },
           "403": {
-            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "examples": {
-                  "client_sign_in_unavailable": {
+                  "clerk_sign_in_unavailable": {
                     "summary": "A library card on a listener without the node API",
                     "value": {
-                      "error": "client_sign_in_unavailable",
+                      "error": "clerk_sign_in_unavailable",
                       "message": "This library does not accept clerks on this address.",
                       "status": 403
                     }
@@ -21187,10 +21187,10 @@
             "portalSession": []
           },
           {
-            "clientToken": []
+            "clerkToken": []
           }
         ],
-        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
     "/.well-known/openid-configuration": {
@@ -21290,7 +21290,7 @@
         ],
         "responses": {
           "303": {
-            "description": "A `bookclerk-branch` request is sent to the SPA consent page `/join/approve`, and a `bookclerk-client` request to `/client/approve`."
+            "description": "A `bookclerk-branch` request is sent to the SPA consent page `/join/approve`, and a `bookclerk-clerk` request to `/clerk/approve`."
           },
           "307": {
             "description": "Redirects to sign-in (no user session) or to the client with a code."
@@ -26456,18 +26456,18 @@
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
-    "/api/client/v1/token": {
+    "/api/clerk/v1/token": {
       "post": {
         "tags": [
-          "Client sign-in"
+          "Clerk sign-in"
         ],
-        "summary": "`POST /api/client/v1/token`: redeem an approved client sign-in for a\nsession token. The code is spent by any attempt, matching or not.",
-        "operationId": "post_client_token",
+        "summary": "`POST /api/clerk/v1/token`: redeem an approved clerk sign-in for a\nsession token. The code is spent by any attempt, matching or not.",
+        "operationId": "post_clerk_token",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ClientTokenRequest"
+                "$ref": "#/components/schemas/ClerkTokenRequest"
               }
             }
           },
@@ -26479,7 +26479,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ClientTokenAnswer"
+                  "$ref": "#/components/schemas/ClerkTokenAnswer"
                 }
               }
             }
@@ -30533,9 +30533,9 @@
         ],
         "example": "off"
       },
-      "ClientAuthorizeParams": {
+      "ClerkAuthorizeParams": {
         "type": "object",
-        "description": "The authorization request a client consent is for (the query\n`/oidc/authorize` forwards to the library's `/client/approve` page).",
+        "description": "The authorization request a clerk consent is for (the query\n`/oidc/authorize` forwards to the library's `/clerk/approve` page).",
         "required": [
           "client_id",
           "redirect_uri",
@@ -30545,13 +30545,13 @@
         "properties": {
           "client_id": {
             "type": "string",
-            "description": "Must be [`CLIENT_CLIENT_ID`].",
-            "example": "bookclerk-client"
+            "description": "Must be [`CLERK_CLIENT_ID`].",
+            "example": "bookclerk-clerk"
           },
           "redirect_uri": {
             "type": "string",
             "description": "Where the code goes: loopback or https.",
-            "example": "http://127.0.0.1:41923/client/callback"
+            "example": "http://127.0.0.1:41923/clerk/callback"
           },
           "response_type": {
             "type": "string",
@@ -30560,7 +30560,7 @@
           },
           "scope": {
             "type": "string",
-            "description": "Must be [`CLIENT_SCOPE`].",
+            "description": "Must be [`CLERK_SCOPE`].",
             "example": "library:member",
             "nullable": true
           },
@@ -30581,7 +30581,7 @@
             "example": "S256",
             "nullable": true
           },
-          "client_name": {
+          "clerk_name": {
             "type": "string",
             "description": "The name the clerk gives itself, shown on the consent page\nand in the user's session list.",
             "example": "Riley's laptop",
@@ -30589,12 +30589,12 @@
           }
         }
       },
-      "ClientConsentBody": {
+      "ClerkConsentBody": {
         "allOf": [
           {
             "allOf": [
               {
-                "$ref": "#/components/schemas/ClientAuthorizeParams"
+                "$ref": "#/components/schemas/ClerkAuthorizeParams"
               }
             ],
             "description": "The authorization request."
@@ -30607,20 +30607,20 @@
             "properties": {
               "approve": {
                 "type": "boolean",
-                "description": "True to let the client sign in; false to deny.",
+                "description": "True to let the clerk sign in; false to deny.",
                 "example": true
               }
             }
           }
         ],
-        "description": "`POST /api/auth/client-consent` body."
+        "description": "`POST /api/auth/clerk-consent` body."
       },
-      "ClientConsentPage": {
+      "ClerkConsentPage": {
         "type": "object",
-        "description": "JSON body for `GET /api/auth/client-consent`: what the consent page shows.",
+        "description": "JSON body for `GET /api/auth/clerk-consent`: what the consent page shows.",
         "required": [
           "library_name",
-          "client_name",
+          "clerk_name",
           "redirect_origin",
           "user"
         ],
@@ -30630,14 +30630,14 @@
             "description": "This library's name.",
             "example": "books.example.com"
           },
-          "client_name": {
+          "clerk_name": {
             "type": "string",
-            "description": "The name the client gives itself.",
+            "description": "The name the clerk gives itself.",
             "example": "Riley's laptop"
           },
           "redirect_origin": {
             "type": "string",
-            "description": "Origin of the client's redirect URI, for the page to name.",
+            "description": "Origin of the clerk's redirect URI, for the page to name.",
             "example": "http://127.0.0.1:41923"
           },
           "user": {
@@ -30646,13 +30646,13 @@
                 "$ref": "#/components/schemas/ConsentingUser"
               }
             ],
-            "description": "The signed-in user the client would sign in as."
+            "description": "The signed-in user the clerk would sign in as."
           }
         }
       },
-      "ClientTokenAnswer": {
+      "ClerkTokenAnswer": {
         "type": "object",
-        "description": "`POST /api/client/v1/token` answer.",
+        "description": "`POST /api/clerk/v1/token` answer.",
         "required": [
           "token",
           "cluster_id",
@@ -30662,7 +30662,7 @@
         "properties": {
           "token": {
             "type": "string",
-            "description": "The session token, sent as `Authorization: Bookclerk-Client <token>`.\nShown once; the library keeps only its hash.",
+            "description": "The session token, sent as `Authorization: Bookclerk-Clerk <token>`.\nShown once; the library keeps only its hash.",
             "example": "Zm9vYmFyYmF6cXV4cXV1eGNvcmdlZ3JhdWx0Z2FycGx5"
           },
           "cluster_id": {
@@ -30673,7 +30673,7 @@
           "user": {
             "allOf": [
               {
-                "$ref": "#/components/schemas/ClientUser"
+                "$ref": "#/components/schemas/ClerkUser"
               }
             ],
             "description": "The signed-in person on that library."
@@ -30686,9 +30686,9 @@
           }
         }
       },
-      "ClientTokenRequest": {
+      "ClerkTokenRequest": {
         "type": "object",
-        "description": "`POST /api/client/v1/token` body: exactly these three strings, each\nonce, and nothing else.",
+        "description": "`POST /api/clerk/v1/token` body: exactly these three strings, each\nonce, and nothing else.",
         "required": [
           "code",
           "code_verifier",
@@ -30708,14 +30708,14 @@
           "redirect_uri": {
             "type": "string",
             "description": "The redirect URI the authorize request named.",
-            "example": "http://127.0.0.1:41923/client/callback"
+            "example": "http://127.0.0.1:41923/clerk/callback"
           }
         },
         "additionalProperties": false
       },
-      "ClientUser": {
+      "ClerkUser": {
         "type": "object",
-        "description": "The person a client session signs in as.",
+        "description": "The person a clerk session signs in as.",
         "required": [
           "id"
         ],
@@ -38833,10 +38833,10 @@
       },
       "PortalSessionKind": {
         "type": "string",
-        "description": "Where a user's session token is presented.\n\nA token works only in its own place: a browser token only as the session\ncookie, a client token only as `Authorization: Bookclerk-Client`.",
+        "description": "Where a user's session token is presented.\n\nA token works only in its own place: a browser token only as the session\ncookie, a library card only as `Authorization: Bookclerk-Clerk`.",
         "enum": [
           "browser",
-          "client"
+          "clerk"
         ]
       },
       "PortalSessionView": {
@@ -38901,7 +38901,7 @@
                 "$ref": "#/components/schemas/PortalSessionKind"
               }
             ],
-            "description": "How the session is used: `browser` for a browser session, `client`\nfor a client sign-in (a library card), whose `client_label` is the\nname the client gave itself."
+            "description": "How the session is used: `browser` for a browser session, `clerk`\nfor a library card, whose `client_label` is the name the clerk gave\nitself."
           }
         }
       },
@@ -43400,11 +43400,11 @@
       }
     },
     "securitySchemes": {
-      "clientToken": {
+      "clerkToken": {
         "type": "apiKey",
         "in": "header",
         "name": "Authorization",
-        "description": "A client sign-in's session token (`POST /api/client/v1/token`), as `Authorization: Bookclerk-Client <token>`. Accepted only on routes any library session may use, over TLS except on loopback."
+        "description": "A library card (`POST /api/clerk/v1/token`), as `Authorization: Bookclerk-Clerk <token>`. Accepted only on routes any library session may use, over TLS except on loopback."
       },
       "nodeSignature": {
         "type": "apiKey",
@@ -43508,7 +43508,7 @@
       "description": "Store accounts a library user connects (the Accounts page)."
     },
     {
-      "name": "Client sign-in",
+      "name": "Clerk sign-in",
       "description": "A clerk's sign-in as a person: redeem an approved code for a session token."
     },
     {

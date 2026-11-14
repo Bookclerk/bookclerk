@@ -2409,15 +2409,15 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Creates a client sign-in session: a token a clerk presents
-    /// as `Authorization: Bookclerk-Client`, never as a cookie.
+    /// Creates a clerk sign-in session: a token a clerk presents
+    /// as `Authorization: Bookclerk-Clerk`, never as a cookie.
     ///
     /// # Arguments
     ///
     /// * `token_hash` - SHA-256 hex of the token (the token is never stored).
     /// * `identity_id` - The user's portal identity.
     /// * `expires_at` - First expiry; each use moves it forward
-    ///   ([`Self::get_client_session_identity`]).
+    ///   ([`Self::get_clerk_session_identity`]).
     /// * `label` - The name the clerk gave itself, shown in the
     ///   user's session list.
     ///
@@ -2428,7 +2428,7 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the insert fails.
-    pub async fn insert_client_session(
+    pub async fn insert_clerk_session(
         &self,
         token_hash: &str,
         identity_id: i64,
@@ -2444,28 +2444,26 @@ impl LibraryStore {
             created_at: Set(now.clone()),
             last_used_at: Set(Some(now.clone())),
             user_agent: Set(None),
-            device_type: Set(Some(String::from("client"))),
+            device_type: Set(Some(String::from("clerk"))),
             client_label: Set(Some(label.to_string())),
-            kind: Set(crate::models::PortalSessionKind::Client
-                .as_str()
-                .to_string()),
+            kind: Set(crate::models::PortalSessionKind::Clerk.as_str().to_string()),
         };
         let row = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
         Self::set_last_seen_for_identity_on(&self.db, identity_id, &now).await?;
         Ok(row.id)
     }
 
-    /// Deletes a client sign-in session by token hash (the client signing
+    /// Deletes a clerk sign-in session by token hash (the clerk signing
     /// itself out). A browser session with that hash is left alone.
     ///
     /// # Errors
     ///
     /// Returns an error when the delete fails.
-    pub async fn delete_client_session(&self, token_hash: &str) -> Result<bool> {
+    pub async fn delete_clerk_session(&self, token_hash: &str) -> Result<bool> {
         let result = portal_sessions::Entity::delete_many()
             .filter(portal_sessions::Column::TokenHash.eq(token_hash))
             .filter(
-                portal_sessions::Column::Kind.eq(crate::models::PortalSessionKind::Client.as_str()),
+                portal_sessions::Column::Kind.eq(crate::models::PortalSessionKind::Clerk.as_str()),
             )
             .exec(&self.db)
             .await
@@ -2582,7 +2580,7 @@ impl LibraryStore {
     /// Refreshes `portal_sessions.last_used_at` and `users.last_seen_at` at most
     /// once per minute so administrator presence can tell active from idle
     /// without a write on every request. `last_seen_at` is kept after logout.
-    /// A client sign-in's token is not a browser session and resolves to
+    /// A library card is not a browser session and resolves to
     /// nothing here.
     ///
     /// # Errors
@@ -2596,7 +2594,7 @@ impl LibraryStore {
             .await
     }
 
-    /// Resolve a valid client sign-in session to its identity.
+    /// Resolve a valid clerk sign-in session to its identity.
     ///
     /// Like [`Self::get_portal_session_identity`], but only for a `client`
     /// session, and each touch (at most once a minute) also moves its expiry
@@ -2606,14 +2604,14 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn get_client_session_identity(
+    pub async fn get_clerk_session_identity(
         &self,
         token_hash: &str,
         idle: chrono::Duration,
     ) -> Result<Option<crate::models::PortalIdentity>> {
         self.session_identity(
             token_hash,
-            crate::models::PortalSessionKind::Client,
+            crate::models::PortalSessionKind::Clerk,
             Some(idle),
         )
         .await

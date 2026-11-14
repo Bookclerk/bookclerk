@@ -202,9 +202,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_claim_tickets_identity ON claim_tickets(identity_id)",
     ),
     // A user's sessions. `kind` is `browser` for a cookie session and
-    // `client` for a client sign-in (a library card a clerk holds
-    // and sends as `Authorization: Bookclerk-Client`). A token only works in
-    // the place its kind belongs, so a client token is never a cookie.
+    // `client` for a clerk sign-in (a library card a clerk holds
+    // and sends as `Authorization: Bookclerk-Clerk`). A token only works in
+    // the place its kind belongs, so a library card is never a cookie.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS portal_sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,7 +216,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         device_type TEXT,
         client_label TEXT,
         last_used_at TEXT,
-        kind TEXT NOT NULL DEFAULT 'browser' CHECK (kind IN ('browser', 'client')),
+        kind TEXT NOT NULL DEFAULT 'browser' CHECK (kind IN ('browser', 'clerk')),
         FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE CASCADE
     )",
     ),
