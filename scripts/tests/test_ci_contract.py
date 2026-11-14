@@ -381,6 +381,7 @@ class WorkflowContractTests(unittest.TestCase):
                     self.assertIn(step["with"].get("shared-key"), {"lint", "debug", "release"})
                     self.assertIn("CARGO_PROFILE_DEV_DEBUG", step["with"]["env-vars"].split())
                     self.assertIn("CI_CARGO_PROFILES", step["with"]["env-vars"].split())
+                    self.assertIn("CI_CACHE_EPOCH", step["with"]["env-vars"].split())
                     if step["with"]["save-if"] is not False and step["with"]["save-if"] != "false":
                         self.assertIn("refs/heads/main", step["with"]["save-if"])
                         savers.add(name)

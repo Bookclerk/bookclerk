@@ -289,6 +289,15 @@ change starts a new key that the next `main` push saves. The workflow
 contract test fails until the digest matches `Cargo.toml` and prints the new
 value.
 
+The same gap opens when a change makes a build-only job compile something
+new without touching `Cargo.lock` or a manifest: a new command, a new
+feature set, or a profile override on one command. The build-only push finds
+its key saved and skips the build, so queue runs compile the new
+dependencies from scratch until the next lockfile change. Such a change
+bumps `CI_CACHE_EPOCH` in the workflow. Every cache step lists it in
+`env-vars` too, so the bump starts new keys that the next `main` push saves.
+Until that push finishes, queue runs build without a cache.
+
 The `test` job instruments its build for [coverage](#coverage) and still
 uses the `debug` key: the instrumentation applies only to workspace crates,
 which no cache holds, so the cached dependencies match. The build-only
