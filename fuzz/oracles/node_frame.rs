@@ -128,7 +128,11 @@ fn check_scan_reports(body: &Body) {
             product_ids,
             ..
         } if scan_removed_problem(account_id, product_ids).is_none() => {
-            assert!(named(account_id), "account {account_id:?} accepted");
+            assert!(
+                named(account_id),
+                "a blank account of {} bytes was accepted",
+                account_id.len()
+            );
             assert!(
                 product_ids.len() <= 500,
                 "{} removed ids accepted",
@@ -146,7 +150,11 @@ fn check_scan_reports(body: &Body) {
             sync_token,
             ..
         } if scan_pass_end_problem(account_id, sync_token).is_none() => {
-            assert!(named(account_id), "account {account_id:?} accepted");
+            assert!(
+                named(account_id),
+                "a blank account of {} bytes was accepted",
+                account_id.len()
+            );
             assert!(
                 sync_token.len() <= 4096 && clean(sync_token),
                 "sync token of {} bytes accepted",
