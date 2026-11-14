@@ -215,6 +215,29 @@ The clerk then sends `Authorization: Bookclerk-Clerk <token>`:
 `bookclerk-clerk` codes are never redeemed at `/oidc/token`, and
 `bookclerk-clerk` can't be registered as a client.
 
+### The clerk socket
+
+With its library card, a clerk keeps one WebSocket open to the library at
+`GET /api/clerk/v1/connect`, so it hears about changes instead of polling.
+It is a window onto the person's own books, not a branch link: the library
+never sends work on it.
+
+1. The clerk connects with `Authorization: Bookclerk-Clerk <token>` and
+   the subprotocol `bookclerk-clerk.v1`, over TLS except on loopback.
+2. The library answers `hello` with the topics the card hears about
+   (`library` and `discover`), then `changed` whenever one of them moves.
+3. The clerk asks for the person's books a page at a time with
+   `{"v":1,"type":"books","after":0}`. The library answers `books.page`
+   with up to 100 works, each with its identifiers and the editions the
+   person owns, and the cursor for the next page (none on the last page).
+   A frame it cannot read gets `error` with code `invalid`.
+
+The library checks the card again every 30 seconds and closes the socket
+with code 4401 once the card is signed out, revoked, expired or its user
+disabled. A socket the clerk leaves silent for 60 seconds is closed, and a
+library serves at most 512 clerk sockets at once (more get 503
+`clerk_sockets_busy`).
+
 ## API endpoints
 
 | Area | Endpoints |
@@ -232,7 +255,7 @@ The clerk then sends `Authorization: Bookclerk-Clerk <token>`:
 | Second-factor policy | `GET`/`PUT /api/auth/mfa-policy` `{ require_second_factor }` (Owner or operator) |
 | Preferences | `GET`/`PATCH /api/preferences`: `default_view`, `disabled_shelves`, `theme` (subject `user:{id}`, `portal:{identity_id}` or `operator`) |
 | Portal | `/api/portal/*` (Accounts, invite claims) |
-| Library cards | `GET`/`POST /api/auth/clerk-consent` (the consent page, any signed-in user), `POST /api/clerk/v1/token` (the clerk redeems its code) |
+| Library cards | `GET`/`POST /api/auth/clerk-consent` (the consent page, any signed-in user), `POST /api/clerk/v1/token` (the clerk redeems its code), `GET /api/clerk/v1/connect` (the clerk socket) |
 
 `GET /api/auth/me` returns
 `{ authenticated, role, default_view, can_acquire, elevated, impersonating?, portal?, user?, second_factor? }`:

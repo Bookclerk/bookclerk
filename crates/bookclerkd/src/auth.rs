@@ -2245,6 +2245,64 @@ async fn clerk_identity_from_token(
         .await?)
 }
 
+/// What a library card turned out to mean on a route that takes nothing
+/// else ([`resolve_card`]).
+#[derive(Debug)]
+pub(crate) enum CardLookup {
+    /// A live card of this user, who is not disabled and may use it.
+    Person(i64),
+    /// An unknown, expired or ended card, a disabled user, or a card that
+    /// names no user.
+    SignedOut,
+    /// The library failed or did not answer, so the card could not be
+    /// checked.
+    Unavailable,
+    /// The user must finish second-factor enrollment first; the response
+    /// says so.
+    Refused(Response),
+}
+
+/// Resolves a library card's token for a route that admits only cards
+/// (the clerk socket), with the same checks the routes a card may use
+/// apply: a live client session, a user who is not disabled, and the
+/// second-factor enrollment rule. Each successful check keeps the card
+/// signed in for another [`bookclerk_node_proto::CLERK_IDLE_DAYS`].
+///
+/// # Arguments
+///
+/// * `state` - Shared daemon state.
+/// * `token` - The card's token, already well formed.
+/// * `path` - The route, for the enrollment rule.
+///
+/// # Returns
+///
+/// What the card means.
+pub(crate) async fn resolve_card(state: &AppState, token: &str, path: &str) -> CardLookup {
+    let Ok(mut value) = HeaderValue::from_str(&format!(
+        "{} {token}",
+        bookclerk_node_proto::CLERK_AUTH_SCHEME
+    )) else {
+        return CardLookup::SignedOut;
+    };
+    value.set_sensitive(true);
+    let mut headers = HeaderMap::new();
+    headers.insert(header::AUTHORIZATION, value);
+    let library = state.library_snapshot().await;
+    match portal_lookup_from_headers(&library, &headers).await {
+        PortalLookup::SignedIn(identity) => {
+            let Some(user_id) = identity.user_id else {
+                return CardLookup::SignedOut;
+            };
+            match reject_if_enrollment_required(state, &library, user_id, path).await {
+                Some(denied) => CardLookup::Refused(denied),
+                None => CardLookup::Person(user_id),
+            }
+        }
+        PortalLookup::SignedOut => CardLookup::SignedOut,
+        PortalLookup::Unavailable => CardLookup::Unavailable,
+    }
+}
+
 /// Seconds a browser is told to wait before retrying when its session
 /// could not be checked.
 const SESSION_CHECK_RETRY_AFTER_SECS: u64 = 2;

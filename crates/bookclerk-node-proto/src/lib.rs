@@ -72,9 +72,11 @@
 //! chose to bring them.
 //!
 //! An install can also sign in to a library as a person rather than join
-//! it as a node: a client ([`CLERK_CLIENT_ID`], [`ClerkTokenAnswer`]),
+//! it as a node: a clerk ([`CLERK_CLIENT_ID`], [`ClerkTokenAnswer`]),
 //! whose session token travels as `Authorization: Bookclerk-Clerk`
-//! ([`parse_clerk_authorization`]).
+//! ([`parse_clerk_authorization`]). With it the clerk holds the clerk
+//! socket at [`CLERK_CONNECT_PATH`] ([`ClerkFrame`], [`LibraryFrame`]):
+//! changed topics and pages of the person's books, never work.
 //!
 //! This crate is pure: no I/O, no clock, no randomness. The daemon (owner)
 //! and the host client share it so both sides sign and check the same
@@ -83,6 +85,7 @@
 mod accounts;
 mod catalog;
 mod clerk;
+mod clerk_socket;
 mod frames;
 mod join;
 mod keys;
@@ -113,6 +116,11 @@ pub use clerk::{
     ClerkAuthorizeParams, ClerkTokenAnswer, ClerkTokenRequest, ClerkUser, StoredClerkCode,
     CLERK_AUTH_SCHEME, CLERK_CLIENT_ID, CLERK_CODE_TTL_SECS, CLERK_IDLE_DAYS, CLERK_SCOPE,
     CLERK_TOKEN_LEN, CLERK_TOKEN_PATH, MAX_CLERK_NAME_BYTES, MAX_CLERK_STATE_BYTES,
+};
+pub use clerk_socket::{
+    is_topic_name, parse_clerk_frame, parse_library_frame, ClerkFrame, ClerkSocketError,
+    ClerkTopic, LibraryFrame, CLERK_CONNECT_PATH, CLERK_SOCKET_VERSION, CLERK_SUBPROTOCOL,
+    MAX_CLERK_FRAME_BYTES, MAX_CLERK_TOPICS, MAX_CLERK_TOPIC_BYTES,
 };
 pub use ed25519_dalek::SigningKey;
 pub use frames::{

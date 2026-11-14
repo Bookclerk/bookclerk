@@ -98,6 +98,7 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   // Asking a branch for a book acquires it there: never from the demo.
   ["POST", "/api/branch-requests", "deny"],
   ["POST", "/api/clerk/v1/token", "deny"],
+  ["GET", "/api/clerk/v1/connect", "deny"],
   ["GET", "/api/config/shared-branches", "allow"],
   ["GET", "/api/config/cluster-consents", "allow"],
   ["POST", "/api/config/cluster-consents/approve", "deny"],

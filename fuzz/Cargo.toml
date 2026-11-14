@@ -255,6 +255,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "clerk_socket_frame"
+path = "fuzz_targets/clerk_socket_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "members_books_request"
 path = "fuzz_targets/members_books_request.rs"
 test = false

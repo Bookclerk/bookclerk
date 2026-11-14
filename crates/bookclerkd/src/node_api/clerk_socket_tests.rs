@@ -1,0 +1,376 @@
+//! The clerk socket: who is admitted, what a card hears, the pages of its
+//! person's books, and the close once the card ends.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::http::HeaderValue;
+use bookclerk_library::control_plane::LiveTopic;
+use bookclerk_library::{hash_token, AcquireStatus, LibraryStore, NewBook, UserRole};
+use bookclerk_node_proto::{
+    parse_library_frame, ClerkFrame, ClerkSocketError, ClerkTopic, LibraryFrame,
+    CLERK_CONNECT_PATH, CLERK_SUBPROTOCOL,
+};
+use futures::{SinkExt as _, StreamExt as _};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+use tokio_tungstenite::tungstenite::Message;
+
+use crate::api::AppState;
+use crate::live::{poke, CLOSE_UNAUTHORIZED, REAUTH_INTERVAL};
+
+/// The operator token of the served daemon.
+const TOKEN: &str = "client-socket-operator-token";
+
+/// The store plugin the test books come from.
+const PLUGIN: &str = "path:file:///tmp/store#audible";
+
+/// A bootstrapped daemon with operator auth on, served on loopback.
+async fn served(files: &tempfile::TempDir) -> (Arc<AppState>, LibraryStore, SocketAddr) {
+    let (state, store) = crate::node_api::tests::test_state(files).await;
+    *state.auth.write().await = Arc::new(crate::auth::OperatorAuthState::new(
+        TOKEN.into(),
+        1,
+        true,
+        5,
+        30,
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = crate::api::router(Arc::clone(&state), None)
+        .layer(axum::Extension(crate::node_api::transport::LocalAddr(addr)));
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    (state, store, addr)
+}
+
+/// The test's socket.
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Opens the socket with `headers`; answers the socket or the refusal's
+/// HTTP status.
+async fn open(addr: SocketAddr, headers: &[(&str, &str)]) -> Result<Socket, u16> {
+    let mut request = format!("ws://127.0.0.1:{}{CLERK_CONNECT_PATH}", addr.port())
+        .into_client_request()
+        .unwrap();
+    for (name, value) in headers {
+        request.headers_mut().insert(
+            axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            HeaderValue::from_str(value).unwrap(),
+        );
+    }
+    match tokio_tungstenite::connect_async(request).await {
+        Ok((socket, _)) => Ok(socket),
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            Err(response.status().as_u16())
+        }
+        Err(other) => panic!("unexpected socket error: {other}"),
+    }
+}
+
+/// What the socket did next within `wait`.
+#[derive(Debug, PartialEq)]
+enum Next {
+    /// A library frame, checked by the clerk's own decoder.
+    Frame(LibraryFrame),
+    /// The socket closed with this code (0 when none was sent).
+    Closed(u16),
+    /// Nothing arrived.
+    Quiet,
+}
+
+/// The next frame within `wait`.
+async fn next(socket: &mut Socket, wait: Duration) -> Next {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(left, socket.next()).await {
+            Err(_) => return Next::Quiet,
+            Ok(Some(Ok(Message::Text(text)))) => {
+                let frame = parse_library_frame(text.as_bytes())
+                    .unwrap_or_else(|| panic!("the clerk refuses {text}"));
+                return Next::Frame(frame);
+            }
+            Ok(Some(Ok(Message::Close(frame)))) => {
+                return Next::Closed(frame.map(|f| u16::from(f.code)).unwrap_or(0))
+            }
+            Ok(Some(Ok(_))) => continue,
+            Ok(Some(Err(_)) | None) => return Next::Closed(0),
+        }
+    }
+}
+
+/// A member with a library card; answers the user id and the card token.
+async fn member_with_card(store: &LibraryStore, name: &str) -> (i64, String) {
+    let user = store
+        .create_user(UserRole::Member, Some(name), None)
+        .await
+        .unwrap()
+        .id;
+    let identity = store
+        .ensure_local_portal_identity(user, None)
+        .await
+        .unwrap();
+    let token: String = std::iter::repeat_n(name.chars().next().unwrap(), 43).collect();
+    store
+        .insert_clerk_session(
+            &hash_token(&token),
+            identity.id,
+            chrono::Utc::now() + chrono::Duration::days(1),
+            "laptop",
+        )
+        .await
+        .unwrap();
+    (user, token)
+}
+
+/// Connects `account` for `user` and records an acquired book `asin` on it.
+async fn hold(store: &LibraryStore, user: i64, account: &str, asin: &str) {
+    store
+        .upsert_account(PLUGIN, account, "us", None, true, "audible")
+        .await
+        .unwrap();
+    let identity = store
+        .ensure_local_portal_identity(user, None)
+        .await
+        .unwrap();
+    store
+        .link_account(identity.id, PLUGIN, account, "test")
+        .await
+        .unwrap();
+    store
+        .upsert_book(&NewBook {
+            uuid: None,
+            product_id: asin.into(),
+            plugin_key: PLUGIN.into(),
+            source: "audible".into(),
+            account_id: account.into(),
+            asin: Some(asin.into()),
+            isbn: None,
+            marketplace: "us".into(),
+            title: format!("Title {asin}"),
+            authors: Some("Ann Author".into()),
+            narrators: None,
+            series: None,
+            series_index: None,
+            series_asin: None,
+            purchased_at: None,
+            publisher: None,
+            length_minutes: Some(600),
+            is_abridged: false,
+            content_kind: "book".into(),
+            categories: None,
+            subtitle: None,
+            published_at: None,
+        })
+        .await
+        .unwrap();
+    store
+        .set_acquire_status(asin, account, AcquireStatus::Acquired, None, None)
+        .await
+        .unwrap();
+}
+
+/// The card header for `token`.
+fn card(token: &str) -> String {
+    format!("Bookclerk-Clerk {token}")
+}
+
+#[tokio::test]
+async fn only_a_library_card_offering_the_subprotocol_is_admitted() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (_state, store, addr) = served(&files).await;
+    let (_, token) = member_with_card(&store, "riley").await;
+    let bearer = format!("Bearer {TOKEN}");
+    let unknown = card(&"z".repeat(43));
+    let card = card(&token);
+
+    assert_eq!(
+        open(addr, &[("sec-websocket-protocol", CLERK_SUBPROTOCOL)])
+            .await
+            .err(),
+        Some(401),
+        "no card"
+    );
+    assert_eq!(
+        open(
+            addr,
+            &[
+                ("authorization", &bearer),
+                ("sec-websocket-protocol", CLERK_SUBPROTOCOL)
+            ]
+        )
+        .await
+        .err(),
+        Some(401),
+        "the operator's token is not a card"
+    );
+    assert_eq!(
+        open(
+            addr,
+            &[
+                ("authorization", &unknown),
+                ("sec-websocket-protocol", CLERK_SUBPROTOCOL)
+            ]
+        )
+        .await
+        .err(),
+        Some(401),
+        "a card that is not signed in"
+    );
+    assert_eq!(
+        open(addr, &[("authorization", &card)]).await.err(),
+        Some(400),
+        "no subprotocol"
+    );
+    assert!(open(
+        addr,
+        &[
+            ("authorization", &card),
+            ("sec-websocket-protocol", CLERK_SUBPROTOCOL)
+        ]
+    )
+    .await
+    .is_ok());
+}
+
+#[tokio::test]
+async fn a_card_reads_its_persons_books_and_hears_their_topics_until_it_ends() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (_state, store, addr) = served(&files).await;
+    let (riley, token) = member_with_card(&store, "riley").await;
+    let (sam, _) = member_with_card(&store, "sam").await;
+    hold(&store, riley, "riley-acct", "B0RILEY001").await;
+    hold(&store, sam, "sam-acct", "B0SAM00001").await;
+
+    let header = card(&token);
+    let mut socket = open(
+        addr,
+        &[
+            ("authorization", &header),
+            ("sec-websocket-protocol", CLERK_SUBPROTOCOL),
+        ],
+    )
+    .await
+    .expect("a card is admitted");
+    assert_eq!(
+        next(&mut socket, Duration::from_secs(5)).await,
+        Next::Frame(LibraryFrame::Hello {
+            topics: ClerkTopic::ALL.into_iter().collect(),
+        })
+    );
+
+    socket
+        .send(Message::Text(
+            ClerkFrame::Books { after: 0 }.encode().into(),
+        ))
+        .await
+        .unwrap();
+    let Next::Frame(LibraryFrame::BooksPage {
+        after,
+        works,
+        next: cursor,
+    }) = next(&mut socket, Duration::from_secs(5)).await
+    else {
+        panic!("a books frame is answered with a page");
+    };
+    assert_eq!((after, cursor), (0, None));
+    let products: Vec<&str> = works
+        .iter()
+        .flat_map(|work| work.editions.iter().map(|e| e.product_id.as_str()))
+        .collect();
+    assert_eq!(products, vec!["B0RILEY001"], "only Riley's books");
+
+    for bad in [
+        r#"{"v":1,"type":"books","after":-1}"#,
+        r#"{"v":1,"type":"claim"}"#,
+        "not json",
+    ] {
+        socket.send(Message::Text(bad.into())).await.unwrap();
+        assert_eq!(
+            next(&mut socket, Duration::from_secs(5)).await,
+            Next::Frame(LibraryFrame::Error {
+                code: ClerkSocketError::Invalid,
+            }),
+            "{bad}"
+        );
+    }
+
+    poke(LiveTopic::Jobs);
+    poke(LiveTopic::Users);
+    poke(LiveTopic::Library);
+    let mut heard = Vec::new();
+    while let Next::Frame(LibraryFrame::Changed { topics }) =
+        next(&mut socket, Duration::from_secs(2)).await
+    {
+        heard.extend(topics);
+        if heard.contains(&ClerkTopic::Library) {
+            break;
+        }
+    }
+    assert_eq!(
+        heard,
+        vec![ClerkTopic::Library],
+        "operator topics are not reported"
+    );
+
+    assert!(store
+        .delete_clerk_session(&hash_token(&token))
+        .await
+        .unwrap());
+    let mut closed = None;
+    for _ in 0..10 {
+        match next(&mut socket, REAUTH_INTERVAL * 4).await {
+            Next::Closed(code) => {
+                closed = Some(code);
+                break;
+            }
+            Next::Frame(_) => continue,
+            Next::Quiet => break,
+        }
+    }
+    assert_eq!(
+        closed,
+        Some(CLOSE_UNAUTHORIZED),
+        "the socket closes once the card ends"
+    );
+}
+
+#[tokio::test]
+async fn a_binary_frame_closes_the_socket() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (_state, store, addr) = served(&files).await;
+    let (_, token) = member_with_card(&store, "riley").await;
+    let header = card(&token);
+    let mut socket = open(
+        addr,
+        &[
+            ("authorization", &header),
+            ("sec-websocket-protocol", CLERK_SUBPROTOCOL),
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        next(&mut socket, Duration::from_secs(5)).await,
+        Next::Frame(LibraryFrame::Hello { .. })
+    ));
+    socket
+        .send(Message::Binary(vec![1, 2, 3].into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        next(&mut socket, Duration::from_secs(5)).await,
+        Next::Closed(1003)
+    );
+}

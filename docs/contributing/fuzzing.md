@@ -52,6 +52,7 @@ boundary extends it.
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
 | `clerk_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_clerk_query`, `clerk_request_problem` |
 | `clerk_token_request` | A library card's token exchange, the body of `POST /api/clerk/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_clerk_token_request`, `clerk_exchange_matches` |
+| `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics and pages of the person's books) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
@@ -292,6 +293,20 @@ only that. The others check:
   verifier is not empty and hashes to the stored challenge (checked
   against RFC 7636's example pair). The shared oracle is
   `fuzz/oracles/clerk_token_request.rs`, replayed from
+  `bookclerk-node-proto`.
+- **`clerk_socket_frame`**: the first byte picks the direction (even:
+  clerk to library; odd: library to clerk) and the rest is the frame,
+  checked against the frame read as an untyped JSON value. A clerk frame
+  parses exactly when it is at most 4 KiB and one object with no repeated
+  keys and exactly `v` (the integer 1), `type` (`books`) and `after` (an
+  integer, not negative). A library frame is refused when it is not one
+  object, repeats a key, has another `v` or an unknown `type`, or carries
+  another type's field; `hello` and `changed` parse exactly when `topics`
+  holds at most 16 well-formed names, and keep only the ones the clerk
+  knows; `error` parses exactly for a known `code`; an accepted
+  `books.page` passes `window_page_problem`. Every accepted frame
+  round-trips through its encoder. The shared oracle is
+  `fuzz/oracles/clerk_socket_frame.rs`, replayed from
   `bookclerk-node-proto`.
 - **`job_cap_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
