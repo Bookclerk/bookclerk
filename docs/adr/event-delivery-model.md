@@ -1,6 +1,6 @@
 # ADR: Event delivery follows the Workers model
 
-- **Status:** Accepted (decisions 1 to 4); later phases proposed
+- **Status:** Accepted (decisions 1 to 6); later phases proposed
 - **Date:** 2026-11-11
 
 ## Context
@@ -83,15 +83,32 @@ callers await a promise, and long work is a durable job.
    name. The guest request and its Cap'n Proto codecs are a fuzzed
    boundary (`event_read`).
 
+5. **On-demand activation, first step.** Cold start was measured with the
+   ignored `cold_start` test in `bookclerk-plugin-e2e`. Ready times on a
+   1-CPU, 1 GiB machine were about 60 ms for native guests, 75 ms for
+   workerd JavaScript and 4 s for workerd Python. Runtime, not family,
+   decides the cost. A plugin whose only family is integration and that
+   exports no `remoteLibrary` or `oidc` entrypoint and is not Python is
+   registered behind an on-demand proxy. The proxy answers identity,
+   subscriptions, schedules and health while the guest sleeps, starts
+   the guest on the next delivery, queue batch, cron fire or lookup, and
+   stops it after 60 seconds with no call in flight. Placement keeps
+   reserving budget for asleep instances.
+6. **On-demand storefronts.** A plugin whose only family is source and
+   that is not Python sleeps the same way, behind a source proxy that
+   shares the integration proxy's activation core. Its idle timeout is
+   5 minutes, since storefront work comes in bursts. Every storefront
+   call returns once its work is done (a fetch hands back files on
+   disk), so a call in flight is all that keeps the guest up. Account
+   listing reads the library and never wakes the guest.
+
 The following phases are proposed and get their own pull requests and
 updates to this record:
 
-- **On-demand activation.** A due delivery, queue message, job or cron
-  fire, or an RPC call, starts an asleep instance; an idle timeout per
-  family stops it with `PluginWorker.shutdown`. Cold-start time is
-  measured per family first (the ignored `cold_start` test in
-  `bookclerk-plugin-e2e`), and the RPC budget is set from those
-  numbers. Placement keeps reserving budget for asleep instances.
+- **On-demand activation for the rest.** Storage and remote libraries
+  sleep too, with an idle timeout per family; storage holds its guest
+  from a staged upload to its commit. Python guests need a faster start
+  (snapshots or prewarming) before they can.
 - **Batched delivery.** `event(batch)` and `queue(batch)` receive up to
   `max_batch_size` messages per call.
 - **Richer host-side filters.** Envelope selectors and per-instance

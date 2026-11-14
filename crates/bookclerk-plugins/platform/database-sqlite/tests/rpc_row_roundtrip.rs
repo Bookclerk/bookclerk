@@ -28,7 +28,7 @@ async fn title_request_select_survives_typed_roundtrip() {
             isbn: None,
             notes: None,
             status: bookclerk_library::RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: Some("https://example.com/c.jpg".into()),
         })
         .await

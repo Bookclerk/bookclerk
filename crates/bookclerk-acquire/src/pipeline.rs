@@ -2816,9 +2816,9 @@ async fn name_held_elsewhere(library: &LibraryStore, key: &str, owner: &FileOwne
     Ok(library.name_held_by_another_owner(stem, owner).await?)
 }
 
-/// Marks `book` acquired at the files of another book of its edition, when
-/// one is already acquired and every destination holds its copy, so the
-/// edition is not fetched again. The edition's companion PDF is shared too
+/// Marks `book` acquired at the files of its edition, when another book
+/// of the edition acquired it (`edition_acquisitions`) and every
+/// destination holds the copy, so the edition is not fetched again. The edition's companion PDF is shared too
 /// when that book has one.
 ///
 /// A destination holds the copy when the sibling's primary key there is
@@ -2853,51 +2853,55 @@ pub async fn share_acquired_sibling(
     let Some(edition) = library.edition_of_book(&book.uuid).await? else {
         return Ok(None);
     };
-    let owner = FileOwner::Edition(edition.clone());
-    'siblings: for uuid in library.books_of_edition(&edition).await? {
-        if uuid == book.uuid {
-            continue;
-        }
-        let Some(sibling) = library.get_book_by_uuid(&uuid).await? else {
-            continue;
-        };
-        if sibling.acquire_status != AcquireStatus::Acquired {
-            continue;
-        }
-        let Some(key) = sibling.storage_key.as_deref().filter(|key| !key.is_empty()) else {
-            continue;
-        };
-        // The book row's key names the primary destination's file; another
-        // destination may name the same audio differently, so it is judged
-        // by the keys the edition recorded there.
-        for (index, (destination, backend)) in destinations.iter().enumerate() {
-            let recorded = library.audio_keys_of(destination, &owner).await?;
-            if index == 0 {
-                let holder = library.edition_file(destination, key).await?;
-                if holder.is_some_and(|file| file.owner != owner) {
-                    continue 'siblings;
-                }
-                if !backend.exists(key).await? {
-                    continue 'siblings;
-                }
-            } else if recorded.is_empty() && !backend.exists(key).await? {
-                continue 'siblings;
+    // The edition records which title acquired it (`edition_acquisitions`).
+    let Some(acquisition) = library.edition_acquisition(&edition).await? else {
+        return Ok(None);
+    };
+    if acquisition.status != AcquireStatus::Acquired || acquisition.title_uuid == book.uuid {
+        return Ok(None);
+    }
+    let Some(key) = acquisition
+        .storage_key
+        .as_deref()
+        .filter(|key| !key.is_empty())
+    else {
+        return Ok(None);
+    };
+    let owner = FileOwner::Edition(edition);
+    // The primary key names the primary destination's file; another
+    // destination may name the same audio differently, so it is judged by
+    // the keys the edition recorded there.
+    for (index, (destination, backend)) in destinations.iter().enumerate() {
+        let recorded = library.audio_keys_of(destination, &owner).await?;
+        if index == 0 {
+            let holder = library.edition_file(destination, key).await?;
+            if holder.is_some_and(|file| file.owner != owner) {
+                return Ok(None);
             }
-            for audio in recorded {
-                if !backend.exists(&audio).await? {
-                    continue 'siblings;
-                }
+            if !backend.exists(key).await? {
+                return Ok(None);
+            }
+        } else if recorded.is_empty() && !backend.exists(key).await? {
+            return Ok(None);
+        }
+        for audio in recorded {
+            if !backend.exists(&audio).await? {
+                return Ok(None);
             }
         }
-        library
-            .set_acquire_status(
-                &book.uuid,
-                &book.account_id,
-                AcquireStatus::Acquired,
-                Some(key),
-                None,
-            )
-            .await?;
+    }
+    library
+        .set_acquire_status(
+            &book.uuid,
+            &book.account_id,
+            AcquireStatus::Acquired,
+            Some(key),
+            None,
+        )
+        .await?;
+    // The companion PDF stays per title: shared from the acquiring title
+    // when it has one on the primary destination.
+    if let Some(sibling) = library.get_book_by_uuid(&acquisition.title_uuid).await? {
         if companion_pdf_is_stored(&sibling)
             && sibling_pdf_is_present(destinations.first(), sibling.pdf_storage_key.as_deref())
                 .await?
@@ -2911,9 +2915,8 @@ pub async fn share_acquired_sibling(
                 )
                 .await?;
         }
-        return Ok(Some(key.to_string()));
     }
-    Ok(None)
+    Ok(Some(key.to_string()))
 }
 
 /// True when the sibling's companion PDF `key` is present on the primary
@@ -3878,6 +3881,42 @@ mod tests {
             shared.storage_key.as_deref(),
             Some(first.storage_key.as_str())
         );
+        // The edition records the copy once, under the title that fetched it.
+        let edition = edition.unwrap();
+        let acquired = store.edition_acquisition(&edition).await.unwrap().unwrap();
+        assert_eq!(acquired.status, AcquireStatus::Acquired);
+        assert_eq!(
+            acquired.storage_key.as_deref(),
+            Some(first.storage_key.as_str())
+        );
+        assert_eq!(acquired.title_uuid, first_uuid);
+        // A sibling title's failure leaves the edition acquired; the title
+        // that fetched it can demote it.
+        store
+            .set_acquire_status(
+                &second_uuid,
+                "user-2",
+                AcquireStatus::Error,
+                None,
+                Some("x"),
+            )
+            .await
+            .unwrap();
+        let kept = store.edition_acquisition(&edition).await.unwrap().unwrap();
+        assert_eq!(kept, acquired);
+        store
+            .set_acquire_status(
+                &first_uuid,
+                "user-1",
+                AcquireStatus::NotAcquired,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let demoted = store.edition_acquisition(&edition).await.unwrap().unwrap();
+        assert_eq!(demoted.status, AcquireStatus::NotAcquired);
+        assert_eq!(demoted.storage_key, None);
     }
 
     #[tokio::test]

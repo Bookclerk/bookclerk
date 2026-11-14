@@ -34,6 +34,7 @@ pub mod discover_store_call_hits;
 pub mod discover_store_calls;
 pub mod discover_tastes;
 pub mod domain_events;
+pub mod edition_acquisitions;
 pub mod edition_files;
 pub mod edition_identifiers;
 pub mod editions;

@@ -772,6 +772,11 @@ pub struct PortalSessionView {
     /// Raw User-Agent captured when the session was created.
     #[schema(example = "Mozilla/5.0 (Linux; Android 15) Chrome/131.0 Mobile")]
     pub user_agent: Option<String>,
+    /// How the session is used: `browser` for a browser session, `client`
+    /// for a client sign-in (a library card), whose `client_label` is the
+    /// name the client gave itself.
+    #[schema(example = "browser")]
+    pub channel: bookclerk_library::PortalSessionKind,
 }
 
 /// Validates the operator token (throttled, constant-time) and issues a hashed session cookie.
@@ -1289,6 +1294,7 @@ pub(crate) fn too_many_requests(retry_after: Duration) -> Response {
     path = "/api/auth/logout",
     responses(
         (status = 200, description = "Signed out; both session cookies are cleared.", body = OkResponse),
+        (status = 503, description = "A library card's session could not be ended (`sign_out_failed`); the card is still signed in, so try again. Clearing cookies does not end a card.", body = crate::http_error::ErrorJson),
     ),
 )]
 pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
@@ -1303,6 +1309,27 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         let hash = hash_token(&portal_raw);
         if let Err(err) = library.delete_portal_session(&hash).await {
             tracing::warn!(error = %err, "failed to revoke portal session on operator logout");
+        }
+    }
+    // A client signing itself out ends its own session.
+    if let Some(token) = crate::client_token::client_token_from_headers(&headers) {
+        match library.delete_client_session(&hash_token(token)).await {
+            Ok(true) => {
+                let _ = library
+                    .insert_security_audit_event("client", "client_sign_out", None)
+                    .await;
+            }
+            Ok(false) => {}
+            Err(err) => {
+                // Unlike a browser, whose cookies are cleared below, a card
+                // stays signed in until its row is gone: say so.
+                tracing::warn!(error = %err, "failed to end a client session");
+                return json_auth_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "sign_out_failed",
+                    "The library card could not be signed out. Try again.",
+                );
+            }
         }
     }
     let flags = {
@@ -2159,10 +2186,16 @@ pub(crate) async fn portal_lookup_from_headers(
     library: &bookclerk_library::LibraryStore,
     headers: &HeaderMap,
 ) -> PortalLookup {
-    let Some(raw) = cookie_value(headers, PORTAL_SESSION_COOKIE) else {
+    let lookup = if let Some(raw) = cookie_value(headers, PORTAL_SESSION_COOKIE) {
+        timeout(AUTH_DB_TIMEOUT, identity_from_session(library, &raw)).await
+    } else if let Some(token) = crate::client_token::client_token_from_headers(headers) {
+        // Only an admitted request still carries the token
+        // (`crate::client_token`).
+        timeout(AUTH_DB_TIMEOUT, client_identity_from_token(library, token)).await
+    } else {
         return PortalLookup::SignedOut;
     };
-    let identity = match timeout(AUTH_DB_TIMEOUT, identity_from_session(library, &raw)).await {
+    let identity = match lookup {
         Ok(Ok(Some(identity))) => identity,
         Ok(Ok(None)) => return PortalLookup::SignedOut,
         Ok(Err(err)) => {
@@ -2192,6 +2225,24 @@ pub(crate) async fn portal_lookup_from_headers(
         }
     }
     PortalLookup::SignedIn(identity)
+}
+
+/// Resolves a client sign-in's session token to its identity, keeping the
+/// session signed in for another [`bookclerk_node_proto::CLIENT_IDLE_DAYS`].
+///
+/// # Errors
+///
+/// Returns the store's error when the read fails.
+async fn client_identity_from_token(
+    library: &bookclerk_library::LibraryStore,
+    token: &str,
+) -> bookclerk_integrations::Result<Option<PortalIdentity>> {
+    Ok(library
+        .get_client_session_identity(
+            &hash_token(token),
+            ChronoDuration::days(bookclerk_node_proto::CLIENT_IDLE_DAYS),
+        )
+        .await?)
 }
 
 /// Seconds a browser is told to wait before retrying when its session
@@ -4298,7 +4349,9 @@ pub async fn list_sessions(
     let identity = timed_portal_identity_from_headers(&library, &headers)
         .await
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    let current_portal = cookie_value(&headers, PORTAL_SESSION_COOKIE).map(|raw| hash_token(&raw));
+    let current_portal = cookie_value(&headers, PORTAL_SESSION_COOKIE)
+        .map(|raw| hash_token(&raw))
+        .or_else(|| crate::client_token::client_token_from_headers(&headers).map(hash_token));
     Ok(Json(SessionsResponse {
         sessions: portal_session_rows(&library, identity.id, current_portal.as_deref()).await?,
     }))
@@ -4329,6 +4382,7 @@ async fn portal_session_rows(
                 client_label: row.client_label,
                 device_type: row.device_type,
                 user_agent: row.user_agent,
+                channel: row.kind,
             })
         })
         .collect())

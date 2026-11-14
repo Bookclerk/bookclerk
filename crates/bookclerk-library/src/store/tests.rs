@@ -94,6 +94,17 @@ async fn account_and_book_roundtrip() {
     assert_eq!(pending.event_type, "book_acquired");
     assert_eq!(pending.ordering_key, updated.uuid);
     assert_eq!(pending.dedup_key, format!("book_acquired:{}", updated.uuid));
+    let payload: serde_json::Value = serde_json::from_str(&pending.payload).unwrap();
+    let edition = store.edition_of_book(&updated.uuid).await.unwrap();
+    assert!(edition.is_some(), "the stored title resolves to an edition");
+    assert_eq!(payload["editionId"].as_str(), edition.as_deref());
+    let acquisition = store
+        .edition_acquisition(edition.as_deref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(acquisition.status, AcquireStatus::Acquired);
+    assert_eq!(acquisition.title_uuid, updated.uuid);
 }
 
 #[tokio::test]
@@ -686,7 +697,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open, // ignored
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         })
         .await
@@ -701,7 +712,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         })
         .await
@@ -717,7 +728,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         })
         .await
@@ -734,7 +745,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         })
         .await
@@ -761,7 +772,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         })
         .await
@@ -776,7 +787,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             isbn: None,
             notes: None,
             status: RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         })
         .await
@@ -828,7 +839,7 @@ async fn wishlist_sources_merge_description_and_editions() {
             isbn: Some("9781984811234".into()),
             notes: None,
             status: RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         })
         .await
@@ -7151,7 +7162,7 @@ async fn wishlist_writes_publish_wishlist_changed() {
         isbn: None,
         notes: None,
         status: RequestStatus::Open,
-        resolved_book_uuid: None,
+        resolved_edition_id: None,
         cover_url: None,
     };
     let row = store.create_title_request(&wish).await.unwrap();
@@ -8462,4 +8473,129 @@ async fn the_event_stream_scan_budget_stops_and_resumes() {
     let (ids, pages) = read_all_event_pages(store, read).await;
     assert_eq!(ids, vec![wanted]);
     assert!(pages >= 2);
+}
+
+/// Client sign-in sessions under every database profile: a client token
+/// resolves only as a client session, each touch slides its expiry, an
+/// expired one resolves to nothing, and revoking it leaves browser
+/// sessions alone.
+#[tokio::test]
+async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
+    use crate::entities::portal_sessions;
+    use crate::hash_token;
+    use crate::models::UserRole;
+    use chrono::{Duration as ChronoDuration, Utc};
+    use sea_orm::{ColumnTrait, QueryFilter, Set};
+
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        let user = store
+            .create_user(UserRole::Member, Some("Pat"), None)
+            .await
+            .unwrap();
+        let identity = store
+            .ensure_local_portal_identity(user.id, Some("Pat"))
+            .await
+            .unwrap();
+        let browser = hash_token("browser-session-token");
+        let client = hash_token("client-session-token");
+        let idle = ChronoDuration::days(90);
+        store
+            .insert_portal_session(&browser, identity.id, Utc::now() + ChronoDuration::hours(1))
+            .await
+            .unwrap();
+        let client_id = store
+            .insert_client_session(&client, identity.id, Utc::now() + idle, "Pat's laptop")
+            .await
+            .unwrap();
+
+        // Each kind resolves only through its own lookup.
+        let found = store
+            .get_client_session_identity(&client, idle)
+            .await
+            .unwrap();
+        assert_eq!(found.map(|row| row.id), Some(identity.id), "{name}");
+        assert!(
+            store
+                .get_portal_session_identity(&client)
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}: a card is not a browser session"
+        );
+        assert!(
+            store
+                .get_client_session_identity(&browser, idle)
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}: a browser session is not a card"
+        );
+
+        // A touch after a minute moves the expiry to `idle` from now.
+        let row = portal_sessions::Entity::find_by_id(client_id)
+            .one(kit.connection())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.kind, "client", "{name}");
+        assert_eq!(row.client_label.as_deref(), Some("Pat's laptop"), "{name}");
+        let mut am: portal_sessions::ActiveModel = row.into();
+        am.last_used_at = Set(Some(
+            (Utc::now() - ChronoDuration::minutes(10)).to_rfc3339(),
+        ));
+        am.expires_at = Set((Utc::now() + ChronoDuration::minutes(1)).to_rfc3339());
+        am.update(kit.connection()).await.unwrap();
+        assert!(store
+            .get_client_session_identity(&client, idle)
+            .await
+            .unwrap()
+            .is_some());
+        let row = portal_sessions::Entity::find_by_id(client_id)
+            .one(kit.connection())
+            .await
+            .unwrap()
+            .unwrap();
+        let expires = chrono::DateTime::parse_from_rfc3339(&row.expires_at).unwrap();
+        assert!(
+            expires.with_timezone(&Utc) > Utc::now() + ChronoDuration::days(89),
+            "{name}: expiry slid to {expires}"
+        );
+
+        // An expired card resolves to nothing.
+        let mut am: portal_sessions::ActiveModel = row.into();
+        am.expires_at = Set((Utc::now() - ChronoDuration::minutes(1)).to_rfc3339());
+        am.update(kit.connection()).await.unwrap();
+        assert!(
+            store
+                .get_client_session_identity(&client, idle)
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}: expired"
+        );
+
+        // Revoking deletes only client sessions.
+        assert!(
+            !store.delete_client_session(&browser).await.unwrap(),
+            "{name}"
+        );
+        assert!(store
+            .get_portal_session_identity(&browser)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(
+            store.delete_client_session(&client).await.unwrap(),
+            "{name}"
+        );
+        let left = portal_sessions::Entity::find()
+            .filter(portal_sessions::Column::Kind.eq("client"))
+            .all(kit.connection())
+            .await
+            .unwrap();
+        assert!(left.is_empty(), "{name}");
+    }
 }
