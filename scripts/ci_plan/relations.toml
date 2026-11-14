@@ -453,6 +453,11 @@ reference = "ui/dist"
 reason = "runtime lookup of the packaged SPA; tests pass the dist path explicitly"
 
 [[reviewed]]
+package = "bookclerk-dev"
+reference = "ui/dist"
+reason = "desktop runtime layout (runtime/ui/dist) and the staging copy of the built SPA; tests build the layout in a temp dir"
+
+[[reviewed]]
 package = "bookclerkd"
 reference = "assets/logo.png"
 reason = "runtime lookup relative to ui/dist, not a repository path"

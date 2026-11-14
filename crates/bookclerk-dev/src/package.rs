@@ -775,7 +775,7 @@ mod tests {
         assert_eq!(staged, runtime);
         assert!(!bundle.exists());
         assert!(!runtime.join("stale").exists());
-        assert!(runtime.join("ui/dist/index.html").is_file());
+        assert!(runtime.join("ui").join("dist").join("index.html").is_file());
         assert!(runtime.join(exe_name("bookclerk-jail")).is_file());
         for gone in [
             exe_name("bookclerk"),
