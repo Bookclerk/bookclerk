@@ -557,7 +557,10 @@ export function TitleDetailModal({
           : res.works.find(
               (w) =>
                 w.title.trim().toLowerCase() === needle &&
-                (author === "" || (w.authors ?? "").toLowerCase().includes(author)),
+                (author === "" ||
+                  (w.authors ?? "")
+                    .split(",")
+                    .some((name) => name.trim().toLowerCase() === author)),
             );
         if (!match) return;
         const work = await fetchWork(match.id);
