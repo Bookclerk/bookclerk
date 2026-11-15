@@ -38,6 +38,14 @@ fn complete_marker() -> String {
     format!("bookclerk-works-complete-v{WORKS_SCHEMA_VERSION}")
 }
 
+/// Name of the file the first finished rebuild leaves in the index
+/// directory. Unlike [`complete_marker`], [`WorkSearchIndex::mark_incomplete`]
+/// keeps it: once a full build has committed, searches answer from the
+/// index while a later rebuild runs.
+fn built_marker() -> String {
+    format!("bookclerk-works-built-v{WORKS_SCHEMA_VERSION}")
+}
+
 /// One window of a query's matches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkMatches {
@@ -178,7 +186,9 @@ impl WorkSearchIndex {
     /// current layout (the rebuild has not run yet), or
     /// [`SearchError::Index`] when it cannot be opened.
     pub fn open_for_search(dir: &Path) -> Result<Self> {
-        if !dir.join("meta.json").is_file() {
+        // Events can write documents before the first rebuild has
+        // committed; until it has, the index holds only some works.
+        if !dir.join(built_marker()).is_file() || !dir.join("meta.json").is_file() {
             return Err(SearchError::NotReady);
         }
         let (schema, _) = works_schema();
@@ -254,8 +264,11 @@ impl WorkSearchIndex {
         let mut tops = Vec::new();
         for id in work_ids {
             let (top, doc) = library.work_search_document(id).await?;
-            tops.push(top);
-            docs.extend(doc);
+            // Two episodes of one show resolve to the same document.
+            if !tops.contains(&top) {
+                tops.push(top);
+                docs.extend(doc);
+            }
         }
         let mut writer = self
             .index
@@ -307,6 +320,7 @@ impl WorkSearchIndex {
             after = Some(last);
         }
         writer.commit().map_err(index_error)?;
+        std::fs::write(self.dir.join(built_marker()), b"").map_err(index_error)?;
         std::fs::write(self.dir.join(complete_marker()), b"").map_err(index_error)?;
         Ok(count)
     }
@@ -380,6 +394,10 @@ impl WorkSearchIndex {
             .try_into()
             .map(|reader: tantivy::IndexReader| reader.searcher())
             .map_err(index_error)?;
+        // A cursor's offset comes from the client; past the indexed
+        // documents it can only yield an empty window, so clamp it before
+        // it sizes the collector.
+        let offset = offset.min(usize::try_from(searcher.num_docs()).unwrap_or(usize::MAX));
         let window = TopDocs::with_limit(limit.max(1))
             .and_offset(offset)
             .order_by_score();
@@ -538,6 +556,38 @@ mod tests {
         ));
         assert!(!missing.exists(), "a search creates nothing");
         assert!(WorkSearchIndex::open_for_search(dir.path()).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_search_waits_for_the_first_build_and_survives_a_later_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (library, works) = library_with(&[("B0DUNE", "Dune", "Frank Herbert")]).await;
+        let index = WorkSearchIndex::open(dir.path()).unwrap();
+        // An event writes a document before any rebuild has finished.
+        index.refresh_works(&library, &works).await.unwrap();
+        assert!(matches!(
+            WorkSearchIndex::open_for_search(dir.path()),
+            Err(SearchError::NotReady)
+        ));
+        index.rebuild(&library).await.unwrap();
+        index.mark_incomplete().unwrap();
+        let found = WorkSearchIndex::open_and_match_ids(
+            dir.path().to_path_buf(),
+            "dune".into(),
+            usize::MAX,
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(found.total, 1, "searchable while a rebuild is due");
+        assert!(
+            found.ids.is_empty(),
+            "an offset past the end is an empty window"
+        );
+        // A show's episodes, or a repeated id, write one document.
+        let twice = [works[0].clone(), works[0].clone()];
+        assert_eq!(index.refresh_works(&library, &twice).await.unwrap(), 1);
+        assert_eq!(ids(&index, "dune"), works);
     }
 
     #[test]

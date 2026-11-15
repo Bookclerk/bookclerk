@@ -16322,7 +16322,17 @@
             }
           },
           "503": {
-            "description": "A search (`q`) arrived before the node's works search index was first built. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "description": "A search (`q`) arrived before the node's works search index was first built; that answer carries no `Retry-After`. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again; sent only when the sign-in could not be checked."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {

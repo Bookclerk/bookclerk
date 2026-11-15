@@ -748,7 +748,7 @@ async fn search_page(
         (status = 200, description = "A page of works.", body = WorksPage),
         (status = 400, description = "A filter, the query or the cursor is invalid.", body = ErrorMessage, example = json!({"error": "invalid page cursor"})),
         (status = 500, description = "The library could not be read.", body = ErrorMessage, example = json!({"error": "the library could not be read"})),
-        (status = 503, description = "A search (`q`) arrived before the node's works search index was first built.", body = ErrorMessage, example = json!({"error": "the search index is being built; try again shortly"})),
+        (status = 503, description = "A search (`q`) arrived before the node's works search index was first built; that answer carries no `Retry-After`.", body = ErrorMessage, headers(("Retry-After" = u64, description = "Seconds to wait before asking again; sent only when the sign-in could not be checked.")), example = json!({"error": "the search index is being built; try again shortly"})),
     ),
 )]
 pub(crate) async fn list_works(
