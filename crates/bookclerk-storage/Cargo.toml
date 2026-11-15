@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-storage"
-description = "Pluggable local and S3 storage backends for acquired audiobooks"
+description = "Pluggable local and S3 (feature `s3`) storage backends for acquired audiobooks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -24,16 +24,32 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "net"] }
 tracing.workspace = true
 
-# S3 is compiled in but unused until Phase 3 wiring; keeps the trait ready.
-aws-config.workspace = true
-aws-sdk-s3.workspace = true
-aws-smithy-runtime-api = { version = "1", default-features = false, features = ["client", "http-1x"] }
-aws-smithy-types = { version = "1", default-features = false, features = ["http-body-1-x"] }
-bookclerk-plugin-sdk = { workspace = true, features = ["http"] }
-http-body-util = "0.1"
-chrono.workspace = true
+# The S3 backend (`s3` feature) is only for the `s3` destination plugin. The
+# hosts never open S3 themselves, and without it their fat-LTO release links
+# skip the AWS SDK.
+aws-config = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-smithy-runtime-api = { version = "1", default-features = false, features = ["client", "http-1x"], optional = true }
+aws-smithy-types = { version = "1", default-features = false, features = ["http-body-1-x"], optional = true }
+bookclerk-plugin-sdk.workspace = true
+http-body-util = { version = "0.1", optional = true }
+chrono = { workspace = true, optional = true }
+
+[features]
+# The S3 / MinIO backend (`S3Backend`), for the `s3` destination plugin.
+s3 = [
+  "dep:aws-config",
+  "dep:aws-sdk-s3",
+  "dep:aws-smithy-runtime-api",
+  "dep:aws-smithy-types",
+  "dep:http-body-util",
+  "dep:chrono",
+  "bookclerk-plugin-sdk/http",
+]
 
 [dev-dependencies]
+# The crate's own tests always cover the S3 backend.
+bookclerk-storage = { path = ".", features = ["s3"] }
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

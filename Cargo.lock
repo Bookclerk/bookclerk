@@ -2460,6 +2460,7 @@ dependencies = [
  "bookclerk-config",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
+ "bookclerk-storage",
  "bytes",
  "chrono",
  "filetime",

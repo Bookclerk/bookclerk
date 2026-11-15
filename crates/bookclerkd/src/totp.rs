@@ -43,6 +43,8 @@ const TOTP_LOGIN_KIND: &str = "totp_login";
 /// # Returns
 ///
 /// The login and enrollment group, then the policy group.
+// Out of line so it is optimized apart from `api::route_groups`.
+#[inline(never)]
 pub(crate) fn route_groups() -> Vec<RouteGroup> {
     let public = OpenApiRouter::new()
         .routes(routes!(login_verify))
