@@ -167,7 +167,7 @@ where
             db,
             sql,
             values,
-            &crate::migrations::host_sql_type_env(),
+            crate::migrations::host_sql_type_env_ref(),
             max_rows,
         )
         .await?;
@@ -183,7 +183,7 @@ where
         db,
         sql,
         values,
-        &crate::migrations::host_sql_type_env(),
+        crate::migrations::host_sql_type_env_ref(),
     )
     .await
     .map_err(LibraryError::Orm)?;

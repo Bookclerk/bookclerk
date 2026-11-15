@@ -420,7 +420,7 @@ impl LibraryStore {
         }
         write.sql = crate::proxy_insert_returning_identity(
             &write.sql,
-            &crate::migrations::host_sql_type_env(),
+            crate::migrations::host_sql_type_env_ref(),
         )
         .ok_or_else(|| {
             LibraryError::Other(anyhow::anyhow!(

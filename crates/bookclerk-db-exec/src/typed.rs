@@ -840,7 +840,42 @@ pub fn stamp_host_proofs(
     req: &ExecuteRequest,
     catalog: &SqlTypeEnv,
 ) -> Result<Vec<ResolvedStatement>, DbErr> {
-    proofs_for_host_plan(req, &type_env_with_bookkeeping(catalog))
+    stamp_host_proofs_with(req, &StampCatalog::new(catalog))
+}
+
+/// A catalog merged with the host's bookkeeping tables, ready to stamp
+/// proofs against.
+///
+/// [`stamp_host_proofs`] builds one for every request, which copies the
+/// whole catalog; a caller that stamps many requests against the same
+/// catalog (the host library schema, fixed for the life of the binary)
+/// builds it once and calls [`stamp_host_proofs_with`] instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StampCatalog {
+    /// `catalog` merged over [`bookkeeping_type_env`].
+    env: SqlTypeEnv,
+}
+
+impl StampCatalog {
+    /// Merges `catalog` over the host bookkeeping tables.
+    #[must_use]
+    pub fn new(catalog: &SqlTypeEnv) -> Self {
+        Self {
+            env: type_env_with_bookkeeping(catalog),
+        }
+    }
+}
+
+/// [`stamp_host_proofs`] against an already prepared [`StampCatalog`].
+///
+/// # Errors
+///
+/// Returns [`DbErr::Custom`] when typecheck fails.
+pub fn stamp_host_proofs_with(
+    req: &ExecuteRequest,
+    catalog: &StampCatalog,
+) -> Result<Vec<ResolvedStatement>, DbErr> {
+    proofs_for_host_plan(req, &catalog.env)
 }
 
 /// Host-stamped [`AdapterExecuteRequest`] for first-party adapter execute.
@@ -857,13 +892,26 @@ pub fn stamp_adapter_execute(
     request: ExecuteRequest,
     catalog: &SqlTypeEnv,
 ) -> Result<AdapterExecuteRequest, DbErr> {
+    stamp_adapter_execute_with(request, &StampCatalog::new(catalog))
+}
+
+/// [`stamp_adapter_execute`] against an already prepared [`StampCatalog`].
+///
+/// # Errors
+///
+/// Returns [`DbErr::Custom`] when typecheck fails, proofs do not bind, or a
+/// TEXT SQL/bind contains U+0000.
+pub fn stamp_adapter_execute_with(
+    request: ExecuteRequest,
+    catalog: &StampCatalog,
+) -> Result<AdapterExecuteRequest, DbErr> {
     let canonical = bookclerk_plugin_abi::UnresolvedExecuteRequest::new(request).canonicalize();
     for stmt in &canonical.request.statements {
         require_portable_text(&stmt.sql).map_err(|err| DbErr::Custom(err.to_string()))?;
         require_portable_text_binds(&stmt.parameters)
             .map_err(|err| DbErr::Custom(err.to_string()))?;
     }
-    let proofs = stamp_host_proofs(&canonical.request, catalog)?;
+    let proofs = stamp_host_proofs_with(&canonical.request, catalog)?;
     canonical
         .bind_proofs(proofs)
         .map_err(|err| DbErr::Custom(err.to_string()))
@@ -991,12 +1039,14 @@ pub fn proofs_for_host_plan(
     req: &ExecuteRequest,
     env: &SqlTypeEnv,
 ) -> Result<Vec<ResolvedStatement>, DbErr> {
-    let mut working = env.clone();
+    // Most requests hold no DDL, so the environment is only copied once a
+    // statement changes it.
+    let mut working = std::borrow::Cow::Borrowed(env);
     let mut proofs = Vec::with_capacity(req.statements.len());
     for stmt in &req.statements {
         let sql = stmt.sql.trim();
         if host_adapter_private_sql(sql) || bookclerk_plugin_abi::statement_is_ddl(sql) {
-            apply_schema_sql_to_env(&mut working, sql);
+            apply_schema_sql_to_env(working.to_mut(), sql);
             proofs.push(ResolvedStatement::bound_empty(sql));
             continue;
         }
@@ -1038,11 +1088,23 @@ fn serialization_slot_sql(upper: &str) -> bool {
         && upper.contains("BOOKCLERK_SLOTS")
 }
 
+/// The host bookkeeping tables (receipts, pragma views and the binding
+/// catalog companions), parsed once per process: they come from fixed
+/// statements.
+fn bookkeeping_type_env() -> &'static SqlTypeEnv {
+    static ENV: std::sync::OnceLock<SqlTypeEnv> = std::sync::OnceLock::new();
+    ENV.get_or_init(|| {
+        let mut env = sql_host_bookkeeping_type_env();
+        apply_schema_sql_to_env(&mut env, &sql_catalog_create_table_sql());
+        apply_schema_sql_to_env(&mut env, &sql_schema_create_table_sql());
+        apply_schema_sql_to_env(&mut env, &sql_ddl_create_table_sql());
+        env
+    })
+}
+
+/// `catalog` merged over [`bookkeeping_type_env`].
 fn type_env_with_bookkeeping(catalog: &SqlTypeEnv) -> SqlTypeEnv {
-    let mut env = sql_host_bookkeeping_type_env();
-    apply_schema_sql_to_env(&mut env, &sql_catalog_create_table_sql());
-    apply_schema_sql_to_env(&mut env, &sql_schema_create_table_sql());
-    apply_schema_sql_to_env(&mut env, &sql_ddl_create_table_sql());
+    let mut env = bookkeeping_type_env().clone();
     env.merge(catalog);
     env
 }
@@ -3368,6 +3430,65 @@ mod tests {
         let proofs = proofs_for_host_plan(&req, &SqlTypeEnv::new())
             .expect("mixed host schema DDL + markers typecheck");
         assert_eq!(proofs.len(), 4);
+    }
+
+    /// One statement for the prepared-catalog test.
+    fn host_stmt(sql: &str, kind: DbPlanStatementKind) -> TypedDbStatement {
+        TypedDbStatement {
+            sql: sql.into(),
+            parameters: Vec::new(),
+            kind,
+            max_rows: 0,
+            result_selection: if kind == DbPlanStatementKind::Select {
+                DbResultSelection::Rows
+            } else {
+                DbResultSelection::AffectedRows
+            },
+        }
+    }
+
+    #[test]
+    fn a_prepared_catalog_stamps_like_the_plain_one_and_keeps_no_request_ddl() {
+        let catalog = bookclerk_plugin_abi::sql_type_env_from_canonical_ddl(
+            "CREATE TABLE notes (id TEXT PRIMARY KEY NOT NULL, body TEXT)",
+        );
+        let prepared = StampCatalog::new(&catalog);
+        let read = ExecuteRequest {
+            operation_id: "read".into(),
+            request_hash: String::new(),
+            deadline_unix_ms: 0,
+            statements: vec![host_stmt(
+                "SELECT id, body FROM notes",
+                DbPlanStatementKind::Select,
+            )],
+        };
+        assert_eq!(
+            stamp_host_proofs_with(&read, &prepared).expect("prepared"),
+            stamp_host_proofs(&read, &catalog).expect("plain"),
+        );
+
+        // A table created inside a request types that request's later
+        // statements, and nothing after it.
+        let create_then_read = ExecuteRequest {
+            statements: vec![
+                host_stmt(
+                    "CREATE TABLE drafts (id TEXT PRIMARY KEY NOT NULL)",
+                    DbPlanStatementKind::Execute,
+                ),
+                host_stmt("SELECT id FROM drafts", DbPlanStatementKind::Select),
+            ],
+            ..read.clone()
+        };
+        stamp_host_proofs_with(&create_then_read, &prepared).expect("same-request DDL types");
+        let later = ExecuteRequest {
+            statements: vec![host_stmt(
+                "SELECT id FROM drafts",
+                DbPlanStatementKind::Select,
+            )],
+            ..read
+        };
+        assert!(stamp_host_proofs_with(&later, &prepared).is_err());
+        assert_eq!(prepared, StampCatalog::new(&catalog));
     }
 
     #[test]

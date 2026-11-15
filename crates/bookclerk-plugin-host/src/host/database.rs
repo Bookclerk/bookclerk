@@ -86,7 +86,20 @@ fn stamp_adapter_request(
     catalog: &SqlTypeEnv,
     isolation: IsolationReq,
 ) -> std::result::Result<AdapterExecuteRequest, crate::PluginError> {
-    let proofs = bookclerk_db_exec::stamp_host_proofs(&req, catalog)
+    stamp_prepared_adapter_request(
+        req,
+        &bookclerk_db_exec::StampCatalog::new(catalog),
+        isolation,
+    )
+}
+
+/// [`stamp_adapter_request`] against an already prepared catalog.
+fn stamp_prepared_adapter_request(
+    req: ExecuteRequest,
+    catalog: &bookclerk_db_exec::StampCatalog,
+    isolation: IsolationReq,
+) -> std::result::Result<AdapterExecuteRequest, crate::PluginError> {
+    let proofs = bookclerk_db_exec::stamp_host_proofs_with(&req, catalog)
         .map_err(|err| crate::PluginError::from_abi(Some("invalid_params"), err.to_string()))?;
     bookclerk_plugin_abi::CanonicalExecuteRequest::from_desugared(req)
         .with_isolation(isolation)
@@ -99,11 +112,42 @@ fn stamp_library_adapter_request(
     req: ExecuteRequest,
     isolation: IsolationReq,
 ) -> std::result::Result<AdapterExecuteRequest, crate::PluginError> {
-    stamp_adapter_request(
+    stamp_prepared_adapter_request(
         req,
-        &bookclerk_library::migrations::host_sql_type_env(),
+        bookclerk_library::migrations::host_stamp_catalog(),
         isolation,
     )
+}
+
+/// The SQL catalog an [`RpcDatabaseProxy`]'s statements typecheck against.
+enum ProxyCatalog {
+    /// The host library schema, fixed for the life of the binary.
+    Host,
+    /// A binding's declared schema, loaded for this statement.
+    Binding(SqlTypeEnv),
+}
+
+impl ProxyCatalog {
+    /// The catalog's column types.
+    fn env(&self) -> &SqlTypeEnv {
+        match self {
+            Self::Host => bookclerk_library::migrations::host_sql_type_env_ref(),
+            Self::Binding(env) => env,
+        }
+    }
+
+    /// The catalog prepared for stamping: the host's is prepared once per
+    /// process, a binding's for each statement.
+    fn stamp(&self) -> std::borrow::Cow<'static, bookclerk_db_exec::StampCatalog> {
+        match self {
+            Self::Host => {
+                std::borrow::Cow::Borrowed(bookclerk_library::migrations::host_stamp_catalog())
+            }
+            Self::Binding(env) => {
+                std::borrow::Cow::Owned(bookclerk_db_exec::StampCatalog::new(env))
+            }
+        }
+    }
 }
 
 /// External database backend spawned for `[database].plugin`.
@@ -1722,9 +1766,9 @@ impl RpcDatabaseProxy {
     ///
     /// Returns a plugin ABI `invalid_params` error when the binding catalog
     /// cannot be loaded.
-    async fn sql_type_env(&self) -> Result<SqlTypeEnv, crate::PluginError> {
+    async fn sql_type_env(&self) -> Result<ProxyCatalog, crate::PluginError> {
         let Some(binding) = self.binding.as_deref() else {
-            return Ok(bookclerk_library::migrations::host_sql_type_env());
+            return Ok(ProxyCatalog::Host);
         };
         let cancel = Arc::new(AtomicBool::new(false));
         load_binding_sql_type_env(
@@ -1736,6 +1780,7 @@ impl RpcDatabaseProxy {
             self.depth() > 0,
         )
         .await
+        .map(ProxyCatalog::Binding)
         .map_err(|err| crate::PluginError::from_abi(Some("invalid_params"), err.to_string()))
     }
 
@@ -1755,7 +1800,7 @@ impl RpcDatabaseProxy {
     async fn execute_typed_validated(
         &self,
         mut req: ExecuteRequest,
-        catalog: &SqlTypeEnv,
+        catalog: &ProxyCatalog,
     ) -> Result<bookclerk_plugin_sdk::ExecuteReply, crate::PluginError> {
         bookclerk_library::authorize_typed_request(&mut req, &self.caps)
             .map_err(map_reply_validation_err)?;
@@ -1763,7 +1808,7 @@ impl RpcDatabaseProxy {
         let cancel = Arc::new(AtomicBool::new(false));
         let on_txn = self.depth() > 0;
         let isolation = binding_isolation(on_txn);
-        let stamped = stamp_adapter_request(req, catalog, isolation)?;
+        let stamped = stamp_prepared_adapter_request(req, &catalog.stamp(), isolation)?;
         #[cfg(test)]
         note_outbound_adapter_sql(&stamped);
         // An open adapter transaction answers inline only; a standalone
@@ -1888,7 +1933,7 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
         )?;
         let catalog = self.sql_type_env().await.map_err(map_rpc_err)?;
         let returns_identity =
-            match bookclerk_library::proxy_insert_returning_identity(&typed.sql, &catalog) {
+            match bookclerk_library::proxy_insert_returning_identity(&typed.sql, catalog.env()) {
                 Some(sql) => {
                     typed.sql = sql;
                     typed.kind = DbPlanStatementKind::Returning;

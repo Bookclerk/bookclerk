@@ -7825,9 +7825,11 @@ impl LibraryStore {
         req: bookclerk_plugin_abi::ExecuteRequest,
         max_result_rows: u32,
     ) -> Result<bookclerk_plugin_abi::ExecuteReply> {
-        let type_env = crate::migrations::host_sql_type_env();
-        let envelope = bookclerk_db_exec::stamp_adapter_execute(req.clone(), &type_env)
-            .map_err(LibraryError::from_db_err)?;
+        let envelope = bookclerk_db_exec::stamp_adapter_execute_with(
+            req.clone(),
+            crate::migrations::host_stamp_catalog(),
+        )
+        .map_err(LibraryError::from_db_err)?;
         if let Some(exec) = &self.typed_exec {
             return exec.execute_typed(envelope).await.map_err(|err| {
                 let message = err.to_string();
