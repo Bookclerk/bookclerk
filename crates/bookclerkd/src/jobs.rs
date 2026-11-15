@@ -641,10 +641,16 @@ pub async fn run_plugin_copy(
     if let Some(ctx) = ctx {
         let _ = library.set_job_progress(&ctx.fence, "copying").await;
     }
-    let destinations = state.destinations.read().await;
-    let session = destinations
+    let handle = state
+        .destinations
+        .read()
+        .await
         .require_plugin_session(plugin_id, bookclerk_plugin_host::OPERATOR_ACCOUNT)
         .map_err(|err| anyhow::anyhow!(err))?;
+    // Lent outside the registry lock: waking a sleeping guest spawns it.
+    // The hold keeps it awake until the copy finishes.
+    let held = handle.lend().await.map_err(|err| anyhow::anyhow!(err))?;
+    let session = &held.session;
     let lease = match ctx {
         Some(ctx) => bookclerk_plugin_host::JobInvocationLease {
             job_id: ctx.fence.job_id.clone(),
@@ -671,7 +677,7 @@ pub async fn run_plugin_copy(
     let cancel = ctx
         .map(|c| std::sync::Arc::clone(&c.cancel))
         .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
-    let databases = open_granted_binding_databases(state, &library, &session).await?;
+    let databases = open_granted_binding_databases(state, &library, session).await?;
     let outcome = tokio::select! {
         () = async {
             loop {

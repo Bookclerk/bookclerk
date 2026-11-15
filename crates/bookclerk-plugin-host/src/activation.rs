@@ -91,14 +91,18 @@ struct Activity {
 }
 
 /// Marks one call in flight until dropped, then records the finish time.
-pub(crate) struct Busy<'a> {
+///
+/// The guard owns its share of the activity record, so it can outlive the
+/// call that took it: a storage read keeps the guest awake until its byte
+/// stream is dropped.
+pub(crate) struct Busy {
     /// Activity record this guard counts in.
-    activity: &'a std::sync::Mutex<Activity>,
+    activity: Arc<std::sync::Mutex<Activity>>,
 }
 
-impl Drop for Busy<'_> {
+impl Drop for Busy {
     fn drop(&mut self) {
-        let mut activity = lock_activity(self.activity);
+        let mut activity = lock_activity(&self.activity);
         activity.in_flight = activity.in_flight.saturating_sub(1);
         activity.last_used = Instant::now();
     }
@@ -126,7 +130,7 @@ pub(crate) struct Activation<G: ?Sized> {
     /// concurrent callers share one spawn.
     guest: tokio::sync::Mutex<Option<Arc<G>>>,
     /// In-flight calls and last use; the sweep reads it.
-    activity: std::sync::Mutex<Activity>,
+    activity: Arc<std::sync::Mutex<Activity>>,
     /// Set by [`Activation::retire`]; a retired activation does not wake
     /// until [`Activation::revive`] clears it.
     retired: AtomicBool,
@@ -155,10 +159,10 @@ impl<G: ?Sized + Guest + 'static> Activation<G> {
             starter,
             idle_timeout,
             guest: tokio::sync::Mutex::new(Some(guest)),
-            activity: std::sync::Mutex::new(Activity {
+            activity: Arc::new(std::sync::Mutex::new(Activity {
                 in_flight: 0,
                 last_used: Instant::now(),
-            }),
+            })),
             retired: AtomicBool::new(false),
             wakes: AtomicU64::new(0),
         });
@@ -213,12 +217,12 @@ impl<G: ?Sized + Guest + 'static> Activation<G> {
     ///
     /// [`WakeError::Retired`] after [`Self::retire`]; [`WakeError::Start`]
     /// when the starter fails.
-    pub(crate) async fn awake(&self) -> std::result::Result<(Arc<G>, Busy<'_>), WakeError> {
+    pub(crate) async fn awake(&self) -> std::result::Result<(Arc<G>, Busy), WakeError> {
         // Counted before taking the slot so a sweep that wins the slot
         // first sees the call and leaves the guest running.
         lock_activity(&self.activity).in_flight += 1;
         let busy = Busy {
-            activity: &self.activity,
+            activity: Arc::clone(&self.activity),
         };
         if self.is_retired() {
             return Err(WakeError::Retired);

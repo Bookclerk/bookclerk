@@ -77,6 +77,7 @@ mod kv_binding;
 mod manifest;
 mod on_demand;
 mod on_demand_source;
+mod on_demand_storage;
 mod queue_producer;
 mod registry;
 mod remote_consent;
@@ -157,8 +158,8 @@ pub use host::{
     backup_adapter_id, database_connect_bindings, export_registered_plugin_units,
     load_external_database, migrate_database_plugin, migrate_library_schema, open_library_store,
     open_library_store_for_plugin, restore_plugin_backup_units, DatabaseRegistry,
-    DestinationRegistry, ExternalDatabase, ExternalIntegration, ExternalSource, HandedPass,
-    HandedScan, RefreshedCredentialSink,
+    DestinationRegistry, DestinationSession, ExternalDatabase, ExternalIntegration, ExternalSource,
+    HandedPass, HandedScan, RefreshedCredentialSink,
 };
 pub use host_control_plane::{
     allow_credential_login, enroll_node, open_host_control_plane,
@@ -192,6 +193,9 @@ pub use manifest::{
 pub use on_demand::{activates_on_demand, OnDemandIntegration, TRIGGER_IDLE_TIMEOUT};
 pub use on_demand_source::{
     storefront_activates_on_demand, OnDemandSource, STOREFRONT_IDLE_TIMEOUT,
+};
+pub use on_demand_storage::{
+    storage_activates_on_demand, HeldSession, OnDemandStorage, STORAGE_IDLE_TIMEOUT,
 };
 pub use queue_producer::{OutboxQueueProducer, QueueOutbox};
 pub use registry::{
