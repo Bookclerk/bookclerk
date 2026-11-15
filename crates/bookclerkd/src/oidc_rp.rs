@@ -100,6 +100,8 @@ fn sso_error_redirect(location: &'static str) -> Response {
 /// # Returns
 ///
 /// The public group, then the settings group.
+// Out of line so it is optimized apart from `api::route_groups`.
+#[inline(never)]
 pub(crate) fn route_groups() -> Vec<RouteGroup> {
     let public = OpenApiRouter::new()
         .routes(routes!(list_providers))

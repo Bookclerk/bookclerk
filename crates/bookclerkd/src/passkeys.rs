@@ -38,6 +38,8 @@ use crate::auth::{
 /// # Returns
 ///
 /// One public group.
+// Out of line so it is optimized apart from `api::route_groups`.
+#[inline(never)]
 pub(crate) fn route_groups() -> Vec<RouteGroup> {
     let routes = OpenApiRouter::new()
         .routes(routes!(list_passkeys))

@@ -27,10 +27,16 @@ pub const MAX_LIST_PAGE: u32 = bookclerk_plugin_sdk::MAX_LIST_PAGE;
 /// S3 allows 10,000 parts. Each part is 8 MiB, so the application ceiling is
 /// 80 GiB. AWS's own 5 TiB object maximum is wider;
 /// requests above this ceiling fail before any part buffer is filled.
-pub const MAX_SUPPORTED_OBJECT_BYTES: u64 =
-    crate::s3::MULTIPART_PART_SIZE as u64 * crate::s3::S3_MAX_PARTS as u64;
+pub const MAX_SUPPORTED_OBJECT_BYTES: u64 = MULTIPART_PART_SIZE as u64 * S3_MAX_PARTS as u64;
+
+/// Bytes per S3 multipart part (8 MiB), except the last part.
+pub(crate) const MULTIPART_PART_SIZE: usize = 8 * 1024 * 1024;
+
+/// S3's part count limit for one multipart upload.
+pub(crate) const S3_MAX_PARTS: i32 = 10_000;
 
 /// AWS `CopyObject` inclusive ceiling. Larger copies use `UploadPartCopy`.
+#[cfg(any(feature = "s3", test))]
 pub const COPY_OBJECT_MAX_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
 /// How a ranged read is applied after rejecting ambiguous internal lengths.
@@ -254,6 +260,7 @@ pub fn clamp_page_limit(limit: u32) -> usize {
 }
 
 /// True when a single `CopyObject` is within the AWS 5 GiB ceiling.
+#[cfg(any(feature = "s3", test))]
 #[must_use]
 pub fn copy_uses_single_request(size: u64) -> bool {
     size <= COPY_OBJECT_MAX_BYTES

@@ -24,8 +24,9 @@ mod fanout;
 mod list_index;
 mod local;
 mod placement;
+#[cfg(feature = "s3")]
 mod s3;
-#[cfg(any(unix, windows))]
+#[cfg(all(feature = "s3", any(unix, windows)))]
 mod s3_http;
 /// [`StorageBackend`] trait plus object metadata and audio-key helpers.
 mod traits;
@@ -40,6 +41,7 @@ pub use error::{Result, StorageError};
 pub use fanout::FanoutBackend;
 pub use local::LocalFsBackend;
 pub use placement::node_placement_id;
+#[cfg(feature = "s3")]
 pub use s3::{S3Backend, S3Credentials, S3Settings};
 pub use traits::{
     bookclerk_meta_sidecar_key, is_audio_key, ByteRange, ListPage, ObjectInfo, ObjectMeta,

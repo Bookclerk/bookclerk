@@ -1063,14 +1063,44 @@ struct DatabaseMigrateRequest {
 /// # Returns
 ///
 /// The groups from this module and the auth, OIDC, passkey and TOTP modules.
-// The legacy aliases are deprecated in the document and still served.
-#[allow(deprecated)]
 pub(crate) fn route_groups() -> Vec<RouteGroup> {
     // Use `route_layer` (not `layer`) for auth, so auth never wraps the
     // router's fallback: `.layer(auth)` made unmatched paths, including `/`
     // when the GUI dist was missing, return a bare 401 instead of serving the
     // SPA or the branded 404.
-    let operator_or_admin = OpenApiRouter::new()
+    let mut groups = vec![
+        RouteGroup::new(public_routes(), Access::Public),
+        RouteGroup::new(operator_or_admin_routes(), Access::OperatorOrAdministrator),
+        RouteGroup::new(operator_only_routes(), Access::Operator),
+        RouteGroup::new(node_admin_routes(), Access::OperatorOrNodeOwner),
+        RouteGroup::new(user_scoped_routes(), Access::OperatorOrUser),
+        RouteGroup::new(shared_routes(), Access::OperatorOrPortal),
+    ];
+    // OIDC authorization server (ABS / third-party user tokens).
+    groups.extend(crate::oidc::route_groups());
+    // Optional upstream OIDC/OAuth relying party (identity broker).
+    groups.extend(crate::oidc_rp::route_groups());
+    // WebAuthn passkeys (login + Owner elevate).
+    groups.extend(crate::passkeys::route_groups());
+    // TOTP MFA + host second-factor policy.
+    groups.extend(crate::totp::route_groups());
+    groups
+}
+
+/// Routes for the operator or an Administrator (jobs, events, queues, legacy aliases).
+///
+/// Kept out of line so the optimizer works on one group at a time: inlined
+/// together, the whole route table is a single function that the
+/// fat-LTO release build spends minutes optimizing.
+///
+/// # Returns
+///
+/// The group's routes, without auth layers (see [`route_groups`]).
+// The legacy aliases are deprecated in the document and still served.
+#[allow(deprecated)]
+#[inline(never)]
+fn operator_or_admin_routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
         .routes(routes!(legacy_status))
         .routes(routes!(legacy_scan))
         .routes(routes!(legacy_acquire))
@@ -1088,9 +1118,21 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(ack_event_delivery))
         .routes(routes!(cancel_event_delivery))
         .routes(routes!(resume_event_delivery))
-        .routes(routes!(sync_listening));
+        .routes(routes!(sync_listening))
+}
 
-    let operator_only = OpenApiRouter::new()
+/// Routes for the operator alone (configuration, plugins, cluster consents, joining a library).
+///
+/// Kept out of line so the optimizer works on one group at a time: inlined
+/// together, the whole route table is a single function that the
+/// fat-LTO release build spends minutes optimizing.
+///
+/// # Returns
+///
+/// The group's routes, without auth layers (see [`route_groups`]).
+#[inline(never)]
+fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
         .routes(routes!(reload_config))
         .routes(routes!(
             crate::config_authority::get_events_domain,
@@ -1149,22 +1191,46 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(get_plugin_logo))
         .routes(routes!(migrate_database))
         .routes(routes!(auth::impersonate, auth::impersonate_end))
-        .routes(routes!(auth::elevate_end));
+        .routes(routes!(auth::elevate_end))
+}
 
-    // Node administration: operators see and edit every node; a user who
-    // owns nodes (Host, Administrator, Owner) sees and edits only those. An
-    // Owner also sees and removes every owner node (the shared branches).
-    let node_admin = OpenApiRouter::new()
+/// Node administration routes: operators see and edit every node; a node owner sees and edits only theirs.
+///
+/// Kept out of line so the optimizer works on one group at a time: inlined
+/// together, the whole route table is a single function that the
+/// fat-LTO release build spends minutes optimizing.
+///
+/// # Returns
+///
+/// The group's routes, without auth layers (see [`route_groups`]).
+// Node administration: operators see and edit every node; a user who
+// owns nodes (Host, Administrator, Owner) sees and edits only those. An
+// Owner also sees and removes every owner node (the shared branches).
+#[inline(never)]
+fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
         .routes(routes!(crate::config_authority::get_nodes))
         .routes(routes!(crate::config_authority::delete_owner_node))
         // Settings → Shared branches: every owner node for the operator or an Owner.
         .routes(routes!(crate::config_authority::get_shared_branches))
         .routes(routes!(crate::config_authority::put_node_runtime))
-        .routes(routes!(crate::config_authority::get_cluster_status));
+        .routes(routes!(crate::config_authority::get_cluster_status))
+}
 
-    // Host enrollment links: any signed-in user acts for themselves; the
-    // library lets the operator or an Owner act for others.
-    let user_scoped = OpenApiRouter::new()
+/// Routes any signed-in user calls for themselves (enrollment links, branch and client consents, branch settings).
+///
+/// Kept out of line so the optimizer works on one group at a time: inlined
+/// together, the whole route table is a single function that the
+/// fat-LTO release build spends minutes optimizing.
+///
+/// # Returns
+///
+/// The group's routes, without auth layers (see [`route_groups`]).
+// Host enrollment links: any signed-in user acts for themselves; the
+// library lets the operator or an Owner act for others.
+#[inline(never)]
+fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
         // Any active user queues scans and acquires; the planner limits a
         // Member or Host to the store accounts linked to them.
         .routes(routes!(trigger_scan))
@@ -1226,9 +1292,21 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(
             crate::node_api::get_host_enrollment,
             crate::node_api::put_host_enrollment
-        ));
+        ))
+}
 
-    let shared = OpenApiRouter::new()
+/// Routes for the operator or any signed-in patron (works, covers, wishlist, sessions, profile).
+///
+/// Kept out of line so the optimizer works on one group at a time: inlined
+/// together, the whole route table is a single function that the
+/// fat-LTO release build spends minutes optimizing.
+///
+/// # Returns
+///
+/// The group's routes, without auth layers (see [`route_groups`]).
+#[inline(never)]
+fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
         .routes(routes!(crate::library_works::list_works))
         .routes(routes!(crate::library_works::get_work))
         .routes(routes!(crate::library_works::list_facet_values))
@@ -1263,12 +1341,24 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
             crate::profile::delete_avatar
         ))
         .routes(routes!(crate::profile::get_avatar))
-        .routes(routes!(get_preferences, patch_preferences));
+        .routes(routes!(get_preferences, patch_preferences))
+}
 
-    // `/api/auth/me` stays public so the SPA bootstrap can probe session state
-    // without a bare middleware 401 (which some browsers render as an error
-    // document). The handler itself reports operator / portal / anonymous.
-    let public = OpenApiRouter::new()
+/// Routes with no auth layer; each handler checks what it needs.
+///
+/// Kept out of line so the optimizer works on one group at a time: inlined
+/// together, the whole route table is a single function that the
+/// fat-LTO release build spends minutes optimizing.
+///
+/// # Returns
+///
+/// The group's routes, without auth layers (see [`route_groups`]).
+// `/api/auth/me` stays public so the SPA bootstrap can probe session state
+// without a bare middleware 401 (which some browsers render as an error
+// document). The handler itself reports operator / portal / anonymous.
+#[inline(never)]
+fn public_routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
         .routes(routes!(health))
         .routes(routes!(auth::login))
         .routes(routes!(auth::signin_methods))
@@ -1283,25 +1373,7 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(auth::list_users, auth::create_user))
         .routes(routes!(auth::patch_user, auth::delete_user))
         .routes(routes!(auth::create_user_claim_ticket))
-        .routes(routes!(auth::reset_user_password));
-
-    let mut groups = vec![
-        RouteGroup::new(public, Access::Public),
-        RouteGroup::new(operator_or_admin, Access::OperatorOrAdministrator),
-        RouteGroup::new(operator_only, Access::Operator),
-        RouteGroup::new(node_admin, Access::OperatorOrNodeOwner),
-        RouteGroup::new(user_scoped, Access::OperatorOrUser),
-        RouteGroup::new(shared, Access::OperatorOrPortal),
-    ];
-    // OIDC authorization server (ABS / third-party user tokens).
-    groups.extend(crate::oidc::route_groups());
-    // Optional upstream OIDC/OAuth relying party (identity broker).
-    groups.extend(crate::oidc_rp::route_groups());
-    // WebAuthn passkeys (login + Owner elevate).
-    groups.extend(crate::passkeys::route_groups());
-    // TOTP MFA + host second-factor policy.
-    groups.extend(crate::totp::route_groups());
-    groups
+        .routes(routes!(auth::reset_user_password))
 }
 
 /// Wraps a route group in the auth middleware its access names.

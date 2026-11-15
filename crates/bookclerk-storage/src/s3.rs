@@ -17,6 +17,7 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
+use crate::bounded::{MULTIPART_PART_SIZE, S3_MAX_PARTS};
 use crate::error::{Result, StorageError};
 use crate::traits::{ObjectInfo, ObjectMeta, ObjectProbe, StorageBackend};
 
@@ -75,13 +76,6 @@ fn redact_access_key(access_key_id: &str) -> String {
 /// parts so memory stays bounded and objects larger than the single-PUT limit
 /// (5 GiB on AWS) still work.
 pub(crate) const MULTIPART_THRESHOLD: u64 = 100 * 1024 * 1024;
-
-/// Each part is read into a buffer this large at most. S3 requires 5 MiB minimum
-/// per part except the last. `8 MiB * S3_MAX_PARTS` is the application object ceiling.
-pub(crate) const MULTIPART_PART_SIZE: usize = 8 * 1024 * 1024;
-
-/// AWS multipart upload part-count ceiling.
-pub(crate) const S3_MAX_PARTS: i32 = 10_000;
 
 /// S3-compatible object storage.
 #[derive(Clone)]

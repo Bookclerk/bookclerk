@@ -48,6 +48,8 @@ const CODE_TTL_SECS: i64 = 300;
 /// # Returns
 ///
 /// The two groups, protocol first.
+// Out of line so it is optimized apart from `api::route_groups`.
+#[inline(never)]
 pub(crate) fn route_groups() -> Vec<RouteGroup> {
     let protocol = OpenApiRouter::new()
         .routes(routes!(openid_configuration))
