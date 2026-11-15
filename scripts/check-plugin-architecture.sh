@@ -319,8 +319,12 @@ else
   fail "plugin_copy still keys plugin databases on the job's plugin_id string"
 fi
 
+# Session lookups match through `SlotGuest::matches`, which compares the
+# occupancy identity of a resident session or a sleeping guest's captured one.
 if grep -A30 'pub fn plugin_session' crates/bookclerk-plugin-host/src/host/destination.rs \
-    | grep -q 'identity_matches_occupancy'; then
+    | grep -q 'guest.matches(plugin_id)' \
+  && grep -A12 'fn matches(&self, plugin_id: &str)' crates/bookclerk-plugin-host/src/host/destination.rs \
+    | grep -c 'identity_matches_occupancy' | grep -qx 2; then
   ok "destination plugin_session occupancy is PluginKey-aware"
 else
   fail "destination plugin_session still looks up only plugin_instance_key(alias)"
