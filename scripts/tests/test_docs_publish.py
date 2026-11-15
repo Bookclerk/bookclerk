@@ -375,6 +375,59 @@ class PublishTest(unittest.TestCase):
         with self.assertRaises(dp.PublishError):
             dp.publish_main(dp.DocsRepo(REPO, truncated), "main", self.write({"README.md": "x\n"}), SRC, SHA_B)
 
+    def flaky(self, failures: list[tuple[int, Any]]) -> Any:
+        """A requester that answers the next create-tree calls with ``failures``."""
+
+        def request(method: str, path: str, body: Any) -> tuple[int, Any]:
+            if method == "POST" and path.endswith("/git/trees") and failures:
+                self.gh.calls.append((method, path))
+                return failures.pop(0)
+            return self.gh(method, path, body)
+
+        return request
+
+    def test_a_timed_out_tree_is_retried(self) -> None:
+        timeout = (422, {"message": "Sorry, your request timed out.  It's likely that your input was too large to process."})
+        failures = [timeout, (502, {"message": "Server Error"})]
+        repo = dp.DocsRepo(REPO, self.flaky(failures))
+        with mock.patch.object(dp, "RETRY_BACKOFF_S", 0), mock.patch("sys.stderr"):
+            dp.publish_main(repo, "main", self.write({"README.md": "# Docs\n"}), SRC, SHA_A)
+        self.assertEqual(failures, [])
+        self.assertEqual(self.gh.files("heads/main"), {"README.md": b"# Docs\n"})
+
+    def test_tree_retries_stop_after_the_last_attempt(self) -> None:
+        timeout = (422, {"message": "Sorry, your request timed out."})
+        failures = [timeout] * dp.WRITE_ATTEMPTS
+        repo = dp.DocsRepo(REPO, self.flaky(failures))
+        with mock.patch.object(dp, "RETRY_BACKOFF_S", 0), mock.patch("sys.stderr"):
+            with self.assertRaisesRegex(dp.PublishError, "HTTP 422 Sorry, your request timed out"):
+                dp.publish_main(repo, "main", self.write({"README.md": "# Docs\n"}), SRC, SHA_A)
+        self.assertEqual(failures, [])
+
+    def test_other_tree_errors_are_not_retried(self) -> None:
+        failures = [(422, {"message": "Invalid tree info"}), (201, {"sha": "f" * 40})]
+        repo = dp.DocsRepo(REPO, self.flaky(failures))
+        with self.assertRaisesRegex(dp.PublishError, "HTTP 422 Invalid tree info"):
+            dp.publish_main(repo, "main", self.write({"README.md": "# Docs\n"}), SRC, SHA_A)
+        self.assertEqual(len(failures), 1)
+
+    def test_large_text_files_are_uploaded_as_blobs(self) -> None:
+        big = "# Big\n" + "x" * dp.INLINE_TEXT_MAX_BYTES
+        bodies: list[Any] = []
+
+        def recording(method: str, path: str, body: Any) -> tuple[int, Any]:
+            if method == "POST" and path.endswith("/git/trees"):
+                bodies.append(body)
+            return self.gh(method, path, body)
+
+        repo = dp.DocsRepo(REPO, recording)
+        dp.publish_main(repo, "main", self.write({"README.md": "# Docs\n", "big.md": big}), SRC, SHA_A)
+        self.assertEqual(self.gh.files("heads/main"), {"README.md": b"# Docs\n", "big.md": big.encode()})
+        entries = {e["path"]: e for b in bodies for e in b["tree"]}
+        self.assertIn("content", entries["README.md"])
+        self.assertNotIn("content", entries["big.md"])
+        self.assertIn("sha", entries["big.md"])
+
     def dates(self, ref: str = "heads/main") -> dict[str, str]:
         """The page dates published at ``ref``."""
         return json.loads(self.gh.files(ref)[dp.LAST_UPDATED_FILE])["pages"]
