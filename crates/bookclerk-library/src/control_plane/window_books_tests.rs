@@ -189,6 +189,54 @@ async fn the_library_lists_only_its_persons_books_to_a_trusted_branch() {
     }));
 }
 
+/// A clerk's library card reads the same page for its person, with no
+/// branch node involved, and only that person's books.
+#[tokio::test]
+async fn a_persons_page_lists_only_that_persons_books() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path()).await;
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    let sam = store
+        .create_user(UserRole::Member, Some("Sam"), None)
+        .await
+        .unwrap()
+        .id;
+    let nobody = store
+        .create_user(UserRole::Member, Some("Nobody"), None)
+        .await
+        .unwrap()
+        .id;
+    let works = hold(&store, riley, "riley-acct", &["B0RILEY001".into()]).await;
+    hold(&store, sam, "sam-acct", &["B0SAM00001".into()]).await;
+    store
+        .set_acquire_status(
+            "B0RILEY001",
+            "riley-acct",
+            AcquireStatus::Acquired,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let (page, next) = person_books_page(&store, riley, 0).await.unwrap();
+    assert_eq!(window_page_problem(0, &page, next), None);
+    assert_eq!(next, None);
+    assert_eq!(page.len(), 1, "only Riley's book: {page:?}");
+    assert_eq!(page[0].work, works[0]);
+    assert_eq!(page[0].editions[0].product_id, "B0RILEY001");
+    assert_eq!(
+        person_books_page(&store, nobody, 0).await.unwrap(),
+        (Vec::new(), None),
+        "a person with no store accounts has no books"
+    );
+}
+
 /// More books than one read takes are paged out with a cursor that moves
 /// forward, each page within the frame budget, under every profile.
 #[tokio::test]

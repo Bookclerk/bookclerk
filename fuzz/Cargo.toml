@@ -14,8 +14,9 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 httparse = "1"
 serde_json = "1"
-# Determinism checks in the libro_catalog oracle serialize the records.
-serde = "1"
+# Determinism checks in the libro_catalog oracle serialize the records;
+# the clerk_socket_frame oracle reads a page's works with a derived struct.
+serde = { version = "1", features = ["derive"] }
 # The event_read oracle restates the cursor time rule.
 chrono = "0.4"
 bookclerk-plugin-abi = { path = "../crates/bookclerk-plugin-abi", features = ["host"] }
@@ -250,6 +251,13 @@ bench = false
 [[bin]]
 name = "clerk_token_request"
 path = "fuzz_targets/clerk_token_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clerk_socket_frame"
+path = "fuzz_targets/clerk_socket_frame.rs"
 test = false
 doc = false
 bench = false

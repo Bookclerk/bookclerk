@@ -168,8 +168,10 @@ how it relates to other libraries:
   **library card** (the built-in OAuth client `bookclerk-clerk`, scope
   `library:member`) and uses the library's member routes with that card,
   the same routes the person's browser session may use. It has no node
-  row, node key or node socket, and the library never sends it work. A
-  clerk can later be turned into a branch.
+  row, node key or node socket, and the library never sends it work. It
+  holds a clerk socket (`/api/clerk/v1/connect`) with the same card for
+  changed topics and pages of the person's books. A clerk can later be
+  turned into a branch.
 
 This replaces the first version of this section, which made a branch with
 "Use this computer to download" turned off a **window**: a node that
@@ -189,8 +191,9 @@ a window on `main`.
      setting reaches the branch with its catalog session, and the branch
      then sends every book it lists to that library.
   6. Window mode, now replaced by clerks with library cards (see
-     [Kinds of install](#kinds-of-install)): the library side first, then
-     the client side, then the copy setting redefined as "Keep copies on
+     [Kinds of install](#kinds-of-install)): the library side first
+     (library cards, then the clerk socket that reports changes and pages
+     the person's books), then the clerk side, then the copy setting redefined as "Keep copies on
      this computer", then turning a clerk into a branch.
   7. Capacity shares between a branch's own work and each link
      (implemented).

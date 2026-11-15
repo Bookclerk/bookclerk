@@ -7,6 +7,9 @@
 //! one page of the books on the store accounts linked to the node's owner
 //! (the person), grouped by this library's works, each work with its
 //! identifiers. Only a branch this library trusts is answered.
+//! [`person_books_page`] answers the same page for a person directly: a
+//! clerk signed in with that person's library card reads it over the
+//! clerk socket (`GET /api/clerk/v1/connect`).
 //!
 //! On the window:
 //!
@@ -342,9 +345,53 @@ async fn window_books_page_by(
     let Some(person) = node.owner_user_id else {
         return Ok(None);
     };
+    person_books_page_by(store, person, after, page)
+        .await
+        .map(Some)
+}
+
+/// One page of the books this library holds for a person, as a clerk
+/// signed in with that person's library card reads them over the client
+/// socket (`GET /api/clerk/v1/connect`): the same works, grouping and
+/// limits as [`window_books_page`], for the person the card belongs to
+/// rather than a branch node's owner.
+///
+/// # Arguments
+///
+/// * `user_id` - The person: the card's user on this library.
+/// * `after` - The cursor of the previous page (0 for the first).
+///
+/// # Returns
+///
+/// The page's works and the cursor of the next page (`None` on the last).
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn person_books_page(
+    store: &LibraryStore,
+    user_id: i64,
+    after: i64,
+) -> Result<(Vec<WindowWork>, Option<i64>)> {
+    let page = u64::try_from(result_page(store)).unwrap_or(1);
+    person_books_page_by(store, user_id, after, page).await
+}
+
+/// [`person_books_page`] reading at most `page` books per database read
+/// (at least 1; never more than [`WINDOW_BOOKS_READ`]).
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn person_books_page_by(
+    store: &LibraryStore,
+    person: i64,
+    after: i64,
+    page: u64,
+) -> Result<(Vec<WindowWork>, Option<i64>)> {
     let accounts = person_accounts(store, person).await?;
     if accounts.is_empty() {
-        return Ok(Some((Vec::new(), None)));
+        return Ok((Vec::new(), None));
     }
     // Read by account id in chunks within the plugin's bind limit, then keep
     // only the rows whose plugin key matches too. Each chunk reads at most
@@ -492,7 +539,7 @@ async fn window_books_page_by(
     let next = (stopped || full)
         .then_some(last)
         .filter(|next| *next > after);
-    Ok(Some((works, next)))
+    Ok((works, next))
 }
 
 /// A stamp for one complete read of a library's window books: pass it to

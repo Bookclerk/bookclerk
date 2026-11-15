@@ -34,6 +34,14 @@ use crate::api::AppState;
 #[derive(Clone)]
 pub(crate) struct HeldClerkToken(Arc<Zeroizing<String>>);
 
+impl HeldClerkToken {
+    /// The held token, for a route that reads the card itself (the clerk
+    /// socket, [`crate::node_api::clerk_socket`]).
+    pub(crate) fn token(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
 impl std::fmt::Debug for HeldClerkToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("HeldClerkToken(..)")

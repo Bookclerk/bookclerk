@@ -21,6 +21,9 @@
 //! disabled by `auth.enabled = false`; [`transport::classify_transport`]
 //! runs before the body is read.
 //!
+//! `GET /api/clerk/v1/connect` is a clerk's live link ([`clerk_socket`]),
+//! held with a library card rather than a node key.
+//!
 //! `GET /api/node/v1/connect` is the host-node WebSocket ([`ws`]); it also
 //! sits outside those layers and authenticates with the node's enrolled
 //! Ed25519 key. `GET /api/node/v1/artifacts/{sha256}` ([`artifacts`])
@@ -32,6 +35,7 @@
 mod artifacts;
 pub mod branch;
 pub mod clerk;
+pub(crate) mod clerk_socket;
 mod host_accounts;
 mod host_catalog;
 mod host_interlibrary;
@@ -451,6 +455,9 @@ pub(crate) fn node_routes() -> OpenApiRouter<Arc<AppState>> {
         // A clerk sign-in's redeem of its approved code (code + PKCE
         // verifier) for a session token.
         .routes(routes!(clerk::post_clerk_token))
+        // A clerk's live link: its library card is the credential, after
+        // the transport policy.
+        .routes(routes!(clerk_socket::get_clerk_connect))
         // Host-node socket: the node's Ed25519 key is the credential.
         .routes(routes!(ws::get_connect))
         // Owner plugin archives: a node-signed request is the credential.

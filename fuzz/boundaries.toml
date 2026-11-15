@@ -224,6 +224,13 @@ input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.clerk_socket_frame]
+crate = "bookclerk-node-proto"
+boundary = "The clerk socket's frames, GET /api/clerk/v1/connect: what a library reads from a clerk and what a clerk reads back"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.job_cap_request]
 crate = "bookclerk-library"
 boundary = "A branch's job cap for one library, from POST /api/config/join/capacity"
