@@ -620,7 +620,8 @@ tcp = ["abs.example.com:443"]
   (an account id, a library id), since it may have restarted in between.
 - **Checks.** The host refuses, and the Rust SDK client checks before
   sending, a URL with credentials, a
-  fragment, a percent-encoded or non-canonical host (`127.1`, `0x7f.1`),
+  fragment, a percent-encoded, punycode (`xn--`) or non-canonical host
+  (`127.1`, `0x7f.1`),
   or a bad port; header names the broker owns (`Host`, `Upgrade`,
   `Connection`, `Sec-WebSocket-*` and other hop-by-hop headers); control
   bytes in a header value; frames over 256 KiB

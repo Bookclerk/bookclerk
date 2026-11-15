@@ -63,6 +63,8 @@ fn bad_urls_are_refused() {
         "ws://example.0x10",
         "ws://010.0.0.1",
         "ws://1.2.3.4.",
+        "ws://XN--s/",
+        "wss://abs.xn--bcher-kva.example/",
     ] {
         assert!(parse_socket_url(url).is_err(), "{url:?} should be refused");
     }

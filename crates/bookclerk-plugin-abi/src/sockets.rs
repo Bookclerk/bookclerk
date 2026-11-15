@@ -141,8 +141,8 @@ pub fn check_socket_close(code: u16, reason: &str) -> Result<u16> {
 ///
 /// Only `ws://` and `wss://` URLs with a host, no userinfo and no fragment
 /// are accepted, at most `maxSocketUrlBytes` long. A name host may use only
-/// letters, digits, `.`, `-` and `_`; a bracketed host must be an IPv6
-/// address. Percent-encoded hosts fail closed. Whether the host is reachable is the network grant's call, not
+/// letters, digits, `.`, `-` and `_`, with no punycode (`xn--`) label; a
+/// bracketed host must be an IPv6 address. Percent-encoded hosts fail closed. Whether the host is reachable is the network grant's call, not
 /// this function's.
 ///
 /// # Errors
@@ -198,6 +198,19 @@ pub fn parse_socket_url(url: &str) -> Result<SocketTarget> {
     {
         return Err(PluginError::invalid_params(
             "socket url host may only use letters, digits, '.', '-' and '_'",
+        ));
+    }
+    // URL parsers decode `xn--` labels as punycode and refuse invalid ones,
+    // so accepting them here could disagree with the connection about the
+    // host. Internationalized hosts are refused until the broker carries an
+    // IDNA decoder.
+    if host.split('.').any(|label| {
+        label
+            .get(..4)
+            .is_some_and(|p| p.eq_ignore_ascii_case("xn--"))
+    }) {
+        return Err(PluginError::invalid_params(
+            "socket url host may not use punycode (xn--) labels",
         ));
     }
     if ends_in_number(host) && host.parse::<std::net::Ipv4Addr>().is_err() {
