@@ -28,7 +28,9 @@ pub mod granted_http;
 pub mod inherited_link;
 pub mod invoke;
 pub mod pin;
+pub mod socket_broker;
 pub mod socket_proxy;
+pub mod socket_table;
 #[cfg(unix)]
 pub mod unix_bind;
 

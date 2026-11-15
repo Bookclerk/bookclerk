@@ -48,6 +48,15 @@ toml.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 bookclerk-tls.workspace = true
+futures.workspace = true
+# The socket broker dials TCP and TLS itself (so the egress policy decides
+# every address) and only borrows the WebSocket handshake and framing.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+  "aws_lc_rs",
+  "tls12",
+] }
+webpki-roots = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

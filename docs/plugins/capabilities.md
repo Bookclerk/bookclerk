@@ -209,9 +209,10 @@ tunnel.
 `[sockets]` (with outbound network) asks for the host-brokered WebSocket
 binding described in [Pushed sockets](abi.md#pushed-sockets-sockets). It
 grants no new reach: every socket URL must also pass the network rules
-above, and the broker owns the handshake headers, so a plugin can't use a
-socket to reach a host its grant doesn't cover. The consent token is
-`sockets`.
+above (a `domains` entry for its host, or a `tcp` entry for its host and
+port, plus the address-space rules), and the broker owns the handshake
+headers, so a plugin can't use a socket to reach a host its grant doesn't
+cover. The consent token is `sockets`.
 
 ### What a manifest can't ask for
 

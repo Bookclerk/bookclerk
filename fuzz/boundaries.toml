@@ -140,6 +140,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.socket_broker]
+crate = "bookclerk-workerd"
+boundary = "What the socket broker does with a remote WebSocket server's frames and closes and a guest's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting"
+input_from = "store"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.db_stream]
 crate = "bookclerk-plugin-abi"
 boundary = "executeStreamed frames an adapter sends, reassembled under the streamed result budget"

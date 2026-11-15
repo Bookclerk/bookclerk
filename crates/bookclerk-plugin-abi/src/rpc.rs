@@ -5288,7 +5288,8 @@ where
 #[path = "rpc_sockets.rs"]
 mod sockets_glue;
 pub use sockets_glue::{
-    roundtrip_socket_message, SocketCodec, SocketHandlerClient, SocketWireMessage, SocketsClient,
+    connect_socket_broker, roundtrip_socket_message, serve_socket_broker, SocketCodec,
+    SocketHandlerClient, SocketWireMessage, SocketsClient,
 };
 
 #[cfg(test)]

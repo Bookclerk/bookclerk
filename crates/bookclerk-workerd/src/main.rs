@@ -90,6 +90,10 @@ async fn run() -> Result<()> {
         bail!("{message}");
     }
 
+    if std::env::var(bookclerk_workerd::socket_broker::SOCKET_BROKER_ENV).as_deref() == Ok("1") {
+        return run_socket_broker(&manifest).await;
+    }
+
     if let Ok(rpc_spec) = std::env::var(bookclerk_sandbox::GATEWAY_GUEST_RPC_ENV) {
         if rpc_spec.is_empty() {
             bail!(
@@ -139,6 +143,30 @@ async fn run() -> Result<()> {
     );
 
     run_isolate(&workerd_bin, &root, &manifest, &egress, limits).await
+}
+
+/// Runs as the plugin's socket broker on stdio until the host hangs up.
+///
+/// The broker dials under the same effective egress policy the front door
+/// enforces (manifest narrowed by the operator grant the host injected).
+async fn run_socket_broker(manifest: &PluginManifest) -> Result<()> {
+    if !manifest.capabilities().sockets {
+        bail!(
+            "plugin `{}` declares no [sockets]; refusing broker mode",
+            manifest.id
+        );
+    }
+    let grant = OperatorGrantEnv::from_env();
+    let egress = grant.apply_egress(manifest, EgressProxy::from_manifest(manifest));
+    info!(
+        plugin = %manifest.id,
+        mode = ?egress.mode(),
+        domains = ?egress.allowed_initial_hosts(),
+        "starting socket broker"
+    );
+    bookclerk_workerd::socket_broker::serve_stdio(egress.policy().clone())
+        .await
+        .map_err(|err| anyhow::anyhow!("socket broker: {err}"))
 }
 
 /// Plugin install directory from `BOOKCLERK_PLUGIN_ROOT`, else the process cwd.

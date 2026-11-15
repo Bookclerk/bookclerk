@@ -23,7 +23,7 @@ use crate::sockets::{
     check_socket_attachment, check_socket_close, check_socket_frame, check_socket_id,
     validate_socket_connect,
 };
-use crate::{Result, SocketHandler, Sockets};
+use crate::{PluginError, Result, SocketHandler, Sockets};
 
 /// Checks a frame and attachment the host is about to deliver to the guest.
 ///
@@ -377,6 +377,103 @@ pub fn roundtrip_socket_message(
             Ok(SocketWireMessage::Message(first))
         }
     }
+}
+
+/// Serves the socket broker's side of the host-to-broker link.
+///
+/// The broker is a separate jailed process that holds a plugin instance's
+/// sockets while its guest sleeps. On this one connection each side serves
+/// the other: the broker's bootstrap capability is `Sockets` (the host
+/// forwards a guest's calls to it), and the host's is `SocketHandler` (the
+/// broker delivers messages and closes through it). The broker is the
+/// two-party server side; [`connect_socket_broker`] is the host's half.
+///
+/// Must run inside a `tokio::task::LocalSet`. Returns when the host hangs
+/// up.
+///
+/// # Arguments
+///
+/// * `reader` / `writer` - The link to the host.
+/// * `make` - Builds the broker's [`Sockets`] from the host's handler.
+///
+/// # Errors
+///
+/// Returns an internal error when the link fails.
+pub async fn serve_socket_broker<R, W>(
+    reader: R,
+    writer: W,
+    make: impl FnOnce(SocketHandlerClient) -> Arc<dyn Sockets>,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin + 'static,
+    W: tokio::io::AsyncWrite + Unpin + 'static,
+{
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+    let network = capnp_rpc::twoparty::VatNetwork::new(
+        reader.compat(),
+        writer.compat_write(),
+        capnp_rpc::rpc_twoparty_capnp::Side::Server,
+        Default::default(),
+    );
+    // The broker's capability is created after the host's handler is known,
+    // so the bootstrap is a local promise resolved right below.
+    let (fulfil, resolved) = tokio::sync::oneshot::channel::<sockets_capnp::Client>();
+    let sockets_client: sockets_capnp::Client = capnp_rpc::new_future_client(async move {
+        resolved
+            .await
+            .map_err(|_| capnp::Error::failed("the socket broker did not start".to_string()))
+    });
+    let mut rpc_system = capnp_rpc::RpcSystem::new(Box::new(network), Some(sockets_client.client));
+    let host: socket_handler_capnp::Client =
+        rpc_system.bootstrap(capnp_rpc::rpc_twoparty_capnp::Side::Client);
+    let inner = make(SocketHandlerClient::new(host));
+    let served: sockets_capnp::Client = capnp_rpc::new_client(SocketsServer { inner });
+    let _ = fulfil.send(served);
+    rpc_system
+        .await
+        .map_err(|err| PluginError::internal(err.to_string()))
+}
+
+/// Connects the host's side of the host-to-broker link (see
+/// [`serve_socket_broker`]).
+///
+/// Must run inside a `tokio::task::LocalSet`. The returned [`capnp_rpc::RpcSystem`] must
+/// be spawned with `tokio::task::spawn_local`; the link lasts as long as it
+/// runs.
+///
+/// # Arguments
+///
+/// * `reader` / `writer` - The link to the broker.
+/// * `handler` - Where the broker delivers messages and closes.
+///
+/// # Returns
+///
+/// The broker's [`Sockets`] and the link's RPC system.
+pub fn connect_socket_broker<R, W>(
+    reader: R,
+    writer: W,
+    handler: Arc<dyn SocketHandler>,
+) -> (
+    SocketsClient,
+    capnp_rpc::RpcSystem<capnp_rpc::rpc_twoparty_capnp::Side>,
+)
+where
+    R: tokio::io::AsyncRead + Unpin + 'static,
+    W: tokio::io::AsyncWrite + Unpin + 'static,
+{
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+    let network = capnp_rpc::twoparty::VatNetwork::new(
+        reader.compat(),
+        writer.compat_write(),
+        capnp_rpc::rpc_twoparty_capnp::Side::Client,
+        Default::default(),
+    );
+    let served: socket_handler_capnp::Client =
+        capnp_rpc::new_client(SocketHandlerServer { inner: handler });
+    let mut rpc_system = capnp_rpc::RpcSystem::new(Box::new(network), Some(served.client));
+    let broker: sockets_capnp::Client =
+        rpc_system.bootstrap(capnp_rpc::rpc_twoparty_capnp::Side::Server);
+    (SocketsClient::new(broker), rpc_system)
 }
 
 #[cfg(test)]

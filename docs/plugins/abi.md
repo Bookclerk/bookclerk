@@ -594,11 +594,10 @@ tcp = ["abs.example.com:443"]
 ```
 
 > [!NOTE]
-> This release defines the ABI shape and the host-side checks. The broker
-> that holds sockets ships next, and until it does the host never hands a
-> plugin the `Sockets` binding (`Bindings.sockets` is null), so a plugin
-> keeps its polling fallback. The SDK WebSocket API arrives with the
-> broker.
+> The broker that holds sockets is built, but the host doesn't start it
+> yet: until it does, the host never hands a plugin the `Sockets` binding
+> (`Bindings.sockets` is null), so a plugin keeps its polling fallback.
+> The SDK WebSocket API arrives with that host wiring.
 
 - **Binding.** `Sockets.connect` takes a `ws://` or `wss://` URL, the
   subprotocols to offer, extra request headers, up to 4 heartbeat pairs
@@ -630,6 +629,22 @@ tcp = ["abs.example.com:443"]
 - **Consent.** Declaring `[sockets]` adds the `sockets` binding token to
   the grant, and the target of every socket is checked against the
   network grant as any other connection is.
+- **Broker.** One broker per plugin instance holds its sockets: the
+  front door, `bookclerk-workerd`, started in broker mode inside the
+  plugin's jail under its effective network grant. A socket's host must
+  be on the grant's `domains` (a WebSocket starts as an HTTP request) or
+  have a `tcp` entry for its port, and the broker connects only to
+  resolved addresses the grant allows, with no redirects. `wss://` is
+  checked against Mozilla's root certificates. The broker sends the
+  host's `User-Agent` (see [User-Agent](capabilities.md#user-agent)) and
+  gives up on a connection after 10 seconds or a handshake after 15.
+- **Delivery.** Messages for one socket reach the plugin in order, one
+  at a time. Up to 32 may wait while the plugin starts; past that the
+  broker stops reading the socket until the plugin catches up, and keeps
+  answering heartbeats otherwise. `closed` comes after a socket's last
+  message, with code 1009 when the server sent a message over 256 KiB,
+  1005 when its close frame had no code, 1006 when the connection dropped
+  without one, and 1001 when the broker itself stopped.
 
 ## Entrypoint methods
 
