@@ -1,4 +1,5 @@
-//! Page index tests against a store under the D1-shaped kit.
+//! Page index tests against a store under the kit; the paging and
+//! rebuild tests run under every database profile.
 
 use bookclerk_resolve::{MediaKind, WorkKind};
 
@@ -6,10 +7,19 @@ use super::{WorkCursor, WorkPageQuery, WorkSort};
 use crate::models::AcquireStatus;
 use crate::store::holdings::HoldingSelection;
 use crate::store::{LibraryStore, NewBook};
+use crate::test_support::Profile;
 
 /// A store under the kit.
 async fn store() -> LibraryStore {
-    let store = crate::test_support::sqlite::store().await;
+    store_under(Profile::D1).await
+}
+
+/// A store under the kit with `profile`'s capability advertisement, holding
+/// the two test accounts.
+async fn store_under(profile: Profile) -> LibraryStore {
+    let store = crate::test_support::sqlite::memory(profile)
+        .await
+        .into_store();
     for account in ["acct-1", "acct-2"] {
         store
             .upsert_account("audible", account, "us", None, true, "audible")
@@ -38,22 +48,38 @@ async fn scan(
         .expect("a scanned title has a work")
 }
 
-/// Every row of `query`, page by page, as work titles.
-async fn walk(store: &LibraryStore, mut query: WorkPageQuery) -> Vec<String> {
-    let mut titles = Vec::new();
+/// Every row of `query`, page by page.
+async fn walk_rows(store: &LibraryStore, mut query: WorkPageQuery) -> Vec<super::LibraryWorkRow> {
+    let mut rows = Vec::new();
     loop {
         let page = store.library_works_page(&query).await.unwrap();
-        titles.extend(page.works.into_iter().map(|w| w.title));
+        rows.extend(page.works);
         match page.next {
             Some(next) => query.after = Some(next),
-            None => return titles,
+            None => return rows,
         }
     }
 }
 
+/// Every row of `query`, page by page, as work titles.
+async fn walk(store: &LibraryStore, query: WorkPageQuery) -> Vec<String> {
+    walk_rows(store, query)
+        .await
+        .into_iter()
+        .map(|w| w.title)
+        .collect()
+}
+
 #[tokio::test]
 async fn a_refresh_writes_one_row_per_held_work_and_pages_by_title() {
-    let store = store().await;
+    for profile in Profile::ALL {
+        a_refresh_writes_one_row_per_held_work_and_pages_by_title_under(profile).await;
+    }
+}
+
+/// [`a_refresh_writes_one_row_per_held_work_and_pages_by_title`] under one profile.
+async fn a_refresh_writes_one_row_per_held_work_and_pages_by_title_under(profile: Profile) {
+    let store = store_under(profile).await;
     let hobbit = scan(&store, "B001", "acct-1", "The Hobbit", "J. R. R. Tolkien").await;
     let again = scan(&store, "B001", "acct-2", "The Hobbit", "J. R. R. Tolkien").await;
     assert_eq!(hobbit, again, "one product on two accounts is one work");
@@ -73,15 +99,22 @@ async fn a_refresh_writes_one_row_per_held_work_and_pages_by_title() {
         .await
         .unwrap();
     let titles: Vec<&str> = first.works.iter().map(|w| w.title.as_str()).collect();
-    assert_eq!(titles, ["Anathem", "Dune"]);
-    let row = &store
-        .library_works_page(&WorkPageQuery {
+    // A database that caps result rows below the asked limit serves a
+    // shorter page, still in order and still with a next cursor.
+    assert!(
+        !titles.is_empty() && ["Anathem", "Dune"].starts_with(&titles),
+        "{profile:?}: {titles:?}"
+    );
+    assert!(first.next.is_some(), "{profile:?}");
+    let rows = walk_rows(
+        &store,
+        WorkPageQuery {
             limit: 10,
             ..WorkPageQuery::default()
-        })
-        .await
-        .unwrap()
-        .works[2];
+        },
+    )
+    .await;
+    let row = &rows[2];
     assert_eq!(row.work_id, hobbit);
     assert_eq!(row.kind, WorkKind::Book);
     assert_eq!(row.media_kinds, vec![MediaKind::Audio]);
@@ -242,7 +275,14 @@ async fn a_work_that_loses_its_last_holding_leaves_the_list() {
 
 #[tokio::test]
 async fn an_acquire_moves_the_works_status_and_a_rebuild_walks_every_work() {
-    let store = store().await;
+    for profile in Profile::ALL {
+        an_acquire_moves_the_works_status_and_a_rebuild_walks_every_work_under(profile).await;
+    }
+}
+
+/// [`an_acquire_moves_the_works_status_and_a_rebuild_walks_every_work`] under one profile.
+async fn an_acquire_moves_the_works_status_and_a_rebuild_walks_every_work_under(profile: Profile) {
+    let store = store_under(profile).await;
     let mut book = NewBook::minimal("B030", "acct-1", "us", "Rebuilt");
     book.authors = Some("D. Author".into());
     let saved = store.upsert_book(&book).await.unwrap();
