@@ -285,7 +285,15 @@ async fn oversized_messages_close_the_socket_with_1009() {
             let events = wait_for(&seen, 1).await;
             assert_eq!(events, vec!["closed 1009 message too big false"]);
             let log = server.await.expect("server");
-            assert_eq!(log.close, Some(1009));
+            // The broker sends a 1009 close, then drops the connection with
+            // the rest of the oversized message unread. Windows resets such
+            // a connection, which can discard the close frame before the
+            // server reads it; any close the server does see is 1009.
+            assert!(
+                matches!(log.close, None | Some(1009)),
+                "close {:?}",
+                log.close
+            );
         })
         .await;
 }
