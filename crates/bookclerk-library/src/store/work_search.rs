@@ -6,16 +6,15 @@
 //! titles and subtitles, authors, narrators, series and every identifier
 //! its listings and editions carry. The index decides how to tokenize it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 
-use super::library_index::WorkRowInputs;
 use super::library_model::find_chunked_paged;
+use super::work_batch::WorkModel;
 use super::LibraryStore;
-use crate::entities::{contributors, credits, edition_identifiers, series, series_entries, works};
+use crate::entities::edition_identifiers;
 use crate::error::Result;
-use crate::WorkKind;
 
 /// The searchable text of one held top-level work.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -39,16 +38,6 @@ pub struct WorkSearchDoc {
     pub identifiers: Vec<String>,
 }
 
-/// Adds each comma-separated, trimmed, non-empty name in `text` to `out`.
-fn add_names(out: &mut BTreeSet<String>, text: Option<&str>) {
-    for name in text.unwrap_or_default().split(',') {
-        let name = name.trim();
-        if !name.is_empty() {
-            out.insert(name.to_string());
-        }
-    }
-}
-
 impl LibraryStore {
     /// The search document of `work_id`'s top-level work.
     ///
@@ -69,24 +58,47 @@ impl LibraryStore {
         &self,
         work_id: &str,
     ) -> Result<(String, Option<WorkSearchDoc>)> {
-        let top = self
-            .top_level_works(&[work_id.to_string()])
-            .await?
-            .pop()
-            .unwrap_or_else(|| work_id.to_string());
-        let inputs = self.work_row_inputs(&top).await?;
-        let Some(work) = inputs.work.as_ref() else {
-            return Ok((top, None));
-        };
-        let held = inputs
-            .holdings
+        let mut docs = self.work_search_documents(&[work_id.to_string()]).await?;
+        Ok(docs.pop().unwrap_or_else(|| (work_id.to_string(), None)))
+    }
+
+    /// The search documents of the top-level works of `work_ids`, read
+    /// together in a few chunked lookups.
+    ///
+    /// # Arguments
+    ///
+    /// * `work_ids` - Works; an episode stands for its show.
+    ///
+    /// # Returns
+    ///
+    /// One entry per distinct top-level work, in id order: its id and its
+    /// document, or `None` for the document when the work is gone or no
+    /// longer held (its document is then removed from the index).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::LibraryError::Orm`] when a read fails.
+    pub async fn work_search_documents(
+        &self,
+        work_ids: &[String],
+    ) -> Result<Vec<(String, Option<WorkSearchDoc>)>> {
+        let tops = self.top_level_works(work_ids).await?;
+        let mut models = self.work_models(&tops).await?;
+        let held: Vec<&WorkModel> = tops
             .iter()
-            .any(|h| inputs.listing_editions.contains_key(&h.listing_id));
-        if !held {
-            return Ok((top, None));
-        }
-        let edition_ids: Vec<String> = inputs.editions.iter().map(|e| e.id.clone()).collect();
-        let listings = &inputs.listings;
+            .filter_map(|top| models.get(top))
+            .filter(|model| {
+                let inputs = &model.inputs;
+                inputs
+                    .holdings
+                    .iter()
+                    .any(|h| inputs.listing_editions.contains_key(&h.listing_id))
+            })
+            .collect();
+        let edition_ids: Vec<String> = held
+            .iter()
+            .flat_map(|model| model.inputs.editions.iter().map(|e| e.id.clone()))
+            .collect();
         let identifiers =
             find_chunked_paged::<edition_identifiers::Entity, _>(self, &edition_ids, |part| {
                 edition_identifiers::Entity::find()
@@ -97,40 +109,73 @@ impl LibraryStore {
                     .order_by_asc(edition_identifiers::Column::Marketplace)
             })
             .await?;
-        let names = self.work_names(work, &inputs).await?;
-
-        let mut titles = BTreeSet::new();
-        for edition in &inputs.editions {
-            titles.insert(edition.title.clone());
-            titles.extend(edition.subtitle.clone());
+        let mut identifiers_of: HashMap<&str, Vec<&str>> = HashMap::new();
+        for identifier in &identifiers {
+            identifiers_of
+                .entry(identifier.edition_id.as_str())
+                .or_default()
+                .push(identifier.value.as_str());
         }
-        for listing in listings {
-            titles.insert(listing.title.clone());
-            titles.extend(listing.subtitle.clone());
+        let held: HashSet<String> = held
+            .iter()
+            .filter_map(|model| model.inputs.work.as_ref().map(|w| w.id.clone()))
+            .collect();
+        let mut out = Vec::with_capacity(tops.len());
+        for top in tops {
+            let doc = match models.remove(&top) {
+                Some(model) if held.contains(&top) => search_doc(model, &identifiers_of),
+                _ => None,
+            };
+            out.push((top, doc));
         }
-        titles.remove(&work.title);
-        titles.retain(|t| !t.trim().is_empty());
-
-        let mut ids = BTreeSet::new();
-        for listing in listings {
-            ids.insert(listing.product_id.to_ascii_lowercase());
-        }
-        ids.extend(identifiers.iter().map(|i| i.value.to_ascii_lowercase()));
-        ids.retain(|id| !id.is_empty());
-
-        Ok((
-            top,
-            Some(WorkSearchDoc {
-                work_id: work.id.clone(),
-                title: work.title.clone(),
-                other_titles: titles.into_iter().collect(),
-                authors: names.authors.into_iter().collect(),
-                narrators: names.narrators.into_iter().collect(),
-                series: names.series.into_iter().collect(),
-                identifiers: ids.into_iter().collect(),
-            }),
-        ))
+        Ok(out)
     }
+}
+
+/// Builds a held work's search document from its model and its editions'
+/// identifier values.
+fn search_doc(
+    model: WorkModel,
+    identifiers_of: &HashMap<&str, Vec<&str>>,
+) -> Option<WorkSearchDoc> {
+    let WorkModel { inputs, names } = model;
+    let work = inputs.work.as_ref()?;
+    let mut titles = BTreeSet::new();
+    for edition in &inputs.editions {
+        titles.insert(edition.title.clone());
+        titles.extend(edition.subtitle.clone());
+    }
+    for listing in &inputs.listings {
+        titles.insert(listing.title.clone());
+        titles.extend(listing.subtitle.clone());
+    }
+    titles.remove(&work.title);
+    titles.retain(|t| !t.trim().is_empty());
+
+    let mut ids = BTreeSet::new();
+    for listing in &inputs.listings {
+        ids.insert(listing.product_id.to_ascii_lowercase());
+    }
+    for edition in &inputs.editions {
+        for value in identifiers_of
+            .get(edition.id.as_str())
+            .into_iter()
+            .flatten()
+        {
+            ids.insert(value.to_ascii_lowercase());
+        }
+    }
+    ids.retain(|id| !id.is_empty());
+
+    Some(WorkSearchDoc {
+        work_id: work.id.clone(),
+        title: work.title.clone(),
+        other_titles: titles.into_iter().collect(),
+        authors: names.authors.into_iter().collect(),
+        narrators: names.narrators.into_iter().collect(),
+        series: names.series.into_iter().collect(),
+        identifiers: ids.into_iter().collect(),
+    })
 }
 
 /// Every author, narrator, series and publisher name of a work, each once.
@@ -147,143 +192,6 @@ pub(crate) struct WorkNames {
     /// Publishers, from the credits on the editions and the listings'
     /// publisher text.
     pub publishers: BTreeSet<String>,
-}
-
-impl LibraryStore {
-    /// Every author, narrator, series and publisher name of the work `inputs` were
-    /// read for, not only the ones the page index row shows.
-    ///
-    /// # Arguments
-    ///
-    /// * `work` - The top-level work.
-    /// * `inputs` - What [`LibraryStore::work_row_inputs`] read for it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::LibraryError::Orm`] when a read fails.
-    pub(crate) async fn work_names(
-        &self,
-        work: &works::Model,
-        inputs: &WorkRowInputs,
-    ) -> Result<WorkNames> {
-        let mut people_targets: Vec<String> =
-            inputs.editions.iter().map(|e| e.id.clone()).collect();
-        people_targets.extend(inputs.editions.iter().map(|e| e.expression_id.clone()));
-        let narrator_names = self
-            .credited_names(&["edition", "expression"], &people_targets, "narrator")
-            .await?;
-        let author_role = if work.kind == WorkKind::Podcast.as_str() {
-            "host"
-        } else {
-            "author"
-        };
-        let mut author_targets = vec![work.id.clone()];
-        author_targets.extend(inputs.editions.iter().map(|e| e.id.clone()));
-        let author_names = self
-            .credited_names(&["work", "edition"], &author_targets, author_role)
-            .await?;
-        let edition_ids: Vec<String> = inputs.editions.iter().map(|e| e.id.clone()).collect();
-        let publisher_names = self
-            .credited_names(&["edition"], &edition_ids, "publisher")
-            .await?;
-        let mut names = WorkNames {
-            authors: author_names.into_iter().collect(),
-            narrators: narrator_names.into_iter().collect(),
-            series: self.series_names(&work.id).await?.into_iter().collect(),
-            publishers: publisher_names.into_iter().collect(),
-        };
-        for listing in &inputs.listings {
-            add_names(&mut names.authors, listing.authors.as_deref());
-            add_names(&mut names.narrators, listing.narrators.as_deref());
-            if let Some(name) = listing.publisher.as_deref().map(str::trim) {
-                if !name.is_empty() {
-                    names.publishers.insert(name.to_string());
-                }
-            }
-            if let Some(name) = listing.series.as_deref().map(str::trim) {
-                if !name.is_empty() {
-                    names.series.insert(name.to_string());
-                }
-            }
-        }
-        Ok(names)
-    }
-}
-
-impl LibraryStore {
-    /// Names of the contributors credited in `role` on any of `targets`
-    /// (ids of the `kinds` of target), each once.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::LibraryError::Orm`] when a read fails.
-    async fn credited_names(
-        &self,
-        kinds: &[&str],
-        targets: &[String],
-        role: &str,
-    ) -> Result<Vec<String>> {
-        let targets: Vec<String> = targets
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let kinds: Vec<String> = kinds.iter().map(|k| (*k).to_string()).collect();
-        let credited = find_chunked_paged::<credits::Entity, _>(self, &targets, |part| {
-            credits::Entity::find()
-                .filter(credits::Column::TargetKind.is_in(kinds.iter().cloned()))
-                .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
-                .filter(credits::Column::Role.eq(role))
-                .order_by_asc(credits::Column::TargetKind)
-                .order_by_asc(credits::Column::TargetId)
-                .order_by_asc(credits::Column::ContributorId)
-                .order_by_asc(credits::Column::Role)
-        })
-        .await?;
-        let ids: Vec<String> = credited
-            .into_iter()
-            .map(|c| c.contributor_id)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        Ok(
-            find_chunked_paged::<contributors::Entity, _>(self, &ids, |part| {
-                contributors::Entity::find()
-                    .filter(contributors::Column::Id.is_in(part.iter().cloned()))
-                    .order_by_asc(contributors::Column::Id)
-            })
-            .await?
-            .into_iter()
-            .map(|c| c.name)
-            .collect(),
-        )
-    }
-
-    /// Names of every series `work_id` belongs to.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::LibraryError::Orm`] when a read fails.
-    async fn series_names(&self, work_id: &str) -> Result<Vec<String>> {
-        let entries =
-            find_chunked_paged::<series_entries::Entity, _>(self, &[work_id.to_string()], |part| {
-                series_entries::Entity::find()
-                    .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
-                    .order_by_asc(series_entries::Column::SeriesId)
-            })
-            .await?;
-        let ids: Vec<String> = entries.into_iter().map(|e| e.series_id).collect();
-        Ok(find_chunked_paged::<series::Entity, _>(self, &ids, |part| {
-            series::Entity::find()
-                .filter(series::Column::Id.is_in(part.iter().cloned()))
-                .order_by_asc(series::Column::Id)
-        })
-        .await?
-        .into_iter()
-        .map(|s| s.name)
-        .collect())
-    }
 }
 
 #[cfg(test)]

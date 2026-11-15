@@ -376,7 +376,13 @@ library database, so the whole cluster shares one index:
   job at priority 50. It queues at most one every ten minutes while the
   index stays unbuilt. The job refreshes every top-level work in pages of
   100, reporting progress and stopping when cancelled, then records the
-  build.
+  build. A page is read in a fixed number of chunked lookups (works,
+  editions, listings, holdings, acquire rows, credits and series for all
+  100 works at once) and its rows and filter values are written in shared
+  atomic batches, so a page costs about as many round trips as one work.
+  The works search rebuild reads its documents the same way. The ignored
+  `library_index_timing` test in `bookclerk-library` times a rebuild of
+  10,000 works.
 
 Two refreshes of one work can run at once, from two deliveries or a
 delivery and the rebuild. Each stamps its row with the time it started

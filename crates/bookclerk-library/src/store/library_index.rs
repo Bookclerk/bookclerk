@@ -36,7 +36,7 @@ use uuid::Uuid;
 
 use super::library_model::find_chunked_paged;
 use super::work_search::WorkNames;
-use super::write_batches::WriteBatches;
+use super::write_batches::{CountedBatches, WriteBatches};
 use super::LibraryStore;
 use crate::control_plane::batch;
 use crate::entities::{
@@ -515,6 +515,14 @@ pub(crate) fn build_work_row(
     })
 }
 
+/// One work's write in a refresh: its id, its row (`None` when the work is
+/// gone, so its row is deleted) and its filter values.
+pub(crate) type WorkRowWrite = (
+    String,
+    Option<library_work_rows::Model>,
+    Vec<(WorkFacet, String, String)>,
+);
+
 /// Separates the series name from the position in a series sort key; below
 /// every printable character, so "Dune" sorts before "Dune Chronicles".
 const SERIES_KEY_SEPARATOR: char = '\u{1}';
@@ -684,85 +692,20 @@ impl LibraryStore {
         Ok(out)
     }
 
-    /// Reads everything `work_id`'s row is derived from.
+    /// Reads everything `work_id`'s row is derived from (empty when the
+    /// work is gone).
     ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when a read fails.
+    #[cfg(test)]
     pub(crate) async fn work_row_inputs(&self, work_id: &str) -> Result<WorkRowInputs> {
-        let db = self.db();
-        let Some(work) = works::Entity::find_by_id(work_id.to_string())
-            .one(db)
-            .await
-            .map_err(LibraryError::Orm)?
-        else {
-            return Ok(WorkRowInputs::default());
-        };
-        let mut work_ids = vec![work.id.clone()];
-        let episodes = find_chunked_paged::<works::Entity, _>(self, &work_ids, |part| {
-            works::Entity::find()
-                .filter(works::Column::ParentWorkId.is_in(part.iter().cloned()))
-                .order_by_asc(works::Column::Id)
-        })
-        .await?;
-        work_ids.extend(episodes.into_iter().map(|w| w.id));
-        let expression_ids: Vec<String> =
-            find_chunked_paged::<expressions::Entity, _>(self, &work_ids, |part| {
-                expressions::Entity::find()
-                    .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
-                    .order_by_asc(expressions::Column::Id)
-            })
+        Ok(self
+            .work_models(&[work_id.to_string()])
             .await?
-            .into_iter()
-            .map(|x| x.id)
-            .collect();
-        let editions = find_chunked_paged::<editions::Entity, _>(self, &expression_ids, |part| {
-            editions::Entity::find()
-                .filter(editions::Column::ExpressionId.is_in(part.iter().cloned()))
-                .order_by_asc(editions::Column::Id)
-        })
-        .await?;
-        let edition_ids: Vec<String> = editions.iter().map(|e| e.id.clone()).collect();
-        let listings =
-            find_chunked_paged::<store_listings::Entity, _>(self, &edition_ids, |part| {
-                store_listings::Entity::find()
-                    .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
-                    .order_by_asc(store_listings::Column::Id)
-            })
-            .await?;
-        let listing_editions: HashMap<String, String> = listings
-            .iter()
-            .map(|l| (l.id.clone(), l.edition_id.clone()))
-            .collect();
-        let listing_ids: Vec<String> = listing_editions.keys().cloned().collect();
-        let holdings = find_chunked_paged::<holdings::Entity, _>(self, &listing_ids, |part| {
-            holdings::Entity::find()
-                .filter(holdings::Column::ListingId.is_in(part.iter().cloned()))
-                .order_by_asc(holdings::Column::Id)
-        })
-        .await?;
-        let acquisitions = super::library_model::find_chunked::<edition_acquisitions::Entity, _>(
-            self,
-            &edition_ids,
-            |part| {
-                edition_acquisitions::Entity::find()
-                    .filter(edition_acquisitions::Column::EditionId.is_in(part.iter().cloned()))
-            },
-        )
-        .await?;
-        let (authors, first_author_sort) = self.work_authors(&work, &editions).await?;
-        let series = self.work_series(&work.id).await?;
-        Ok(WorkRowInputs {
-            work: Some(work),
-            editions,
-            listing_editions,
-            listings,
-            holdings,
-            authors,
-            first_author_sort,
-            series,
-            acquisitions,
-        })
+            .remove(work_id)
+            .map(|model| model.inputs)
+            .unwrap_or_default())
     }
 
     /// The display names of a work's authors (hosts for a podcast) in
@@ -862,21 +805,27 @@ impl LibraryStore {
     /// Returns [`LibraryError::Orm`] or a batch error when a read or write
     /// fails.
     pub async fn refresh_library_works(&self, work_ids: &[String]) -> Result<u64> {
-        let mut changed = 0;
-        for work_id in self.top_level_works(work_ids).await? {
-            let refreshed_at = stamp(Utc::now());
-            let inputs = self.work_row_inputs(&work_id).await?;
-            let row = build_work_row(&inputs, &refreshed_at);
-            let facets = match (&inputs.work, &row) {
-                (Some(work), Some(row)) if row.holding_count > 0 => {
-                    build_work_facets(&inputs, &self.work_names(work, &inputs).await?)
+        let tops = self.top_level_works(work_ids).await?;
+        if tops.is_empty() {
+            return Ok(0);
+        }
+        // Stamped before anything is read, so a refresh that read the works
+        // later always wins.
+        let refreshed_at = stamp(Utc::now());
+        let mut models = self.work_models(&tops).await?;
+        let mut writes = Vec::with_capacity(tops.len());
+        for work_id in tops {
+            let model = models.remove(&work_id).unwrap_or_default();
+            let row = build_work_row(&model.inputs, &refreshed_at);
+            let facets = match &row {
+                Some(row) if row.holding_count > 0 => {
+                    build_work_facets(&model.inputs, &model.names)
                 }
                 _ => Vec::new(),
             };
-            changed += self
-                .write_work_row(&work_id, row, &facets, &refreshed_at)
-                .await?;
+            writes.push((work_id, row, facets));
         }
+        let changed = self.write_work_rows(&writes, &refreshed_at).await?;
         if changed > 0 {
             self.bump_live_topic(crate::control_plane::LiveTopic::Library)
                 .await?;
@@ -884,126 +833,127 @@ impl LibraryStore {
         Ok(changed)
     }
 
-    /// Writes (or, for a work that is gone, deletes) one work's row and its
+    /// Writes (or, for a work that is gone, deletes) each work's row and its
     /// filter values, unless a refresh that started later already wrote it.
     ///
-    /// The row, the removal of its old values and as many new values as
-    /// fit go in one atomic batch; values past the database's batch limits
-    /// follow in further batches. Every value write checks that the row
+    /// Each row, with the removal of its old values, goes in one atomic
+    /// group; the rows and values of all the works share as few batches as
+    /// the database's limits allow. Every value write checks that the row
     /// still carries this refresh's stamp, so once a later refresh has
-    /// written the row, the rest of this one's values are dropped.
-    async fn write_work_row(
-        &self,
-        work_id: &str,
-        row: Option<library_work_rows::Model>,
-        facets: &[(WorkFacet, String, String)],
-        refreshed_at: &str,
-    ) -> Result<u64> {
-        let operation_id = |n: usize| format!("library-index-{n}-{}", Uuid::new_v4());
-        let Some(row) = row else {
-            // The work is gone; its values went with it.
-            let reply = self
-                .execute_host_batch(batch::request(
-                    &operation_id(0),
+    /// written a row, this one's values for it are dropped.
+    ///
+    /// # Arguments
+    ///
+    /// * `writes` - Each work's id, its row (`None` when the work is gone)
+    ///   and its filter values.
+    /// * `refreshed_at` - This refresh's stamp.
+    ///
+    /// # Returns
+    ///
+    /// How many rows were written or deleted.
+    async fn write_work_rows(&self, writes: &[WorkRowWrite], refreshed_at: &str) -> Result<u64> {
+        // Holds while the row carries this refresh's stamp.
+        const FENCE: &str =
+            "EXISTS (SELECT 1 FROM library_work_rows WHERE work_id = ? AND refreshed_at = ?)";
+        let mut plan =
+            CountedBatches::new(WriteBatches::new(self.db_capabilities(), "library index"));
+        for (work_id, row, facets) in writes {
+            let Some(row) = row else {
+                // The work is gone; its values went with it.
+                plan.push_group(
                     vec![batch::exec(
                         "DELETE FROM library_work_rows WHERE work_id = ? AND refreshed_at <= ?",
                         vec![batch::text(work_id), batch::text(refreshed_at)],
                     )],
-                ))
-                .await?;
-            return Ok(batch::rows_affected(&reply, 0).min(1));
-        };
-        let values = || {
-            vec![
-                batch::text(&row.kind),
-                batch::text(&row.title),
-                batch::text(&row.sort_title),
-                batch::text_opt(row.authors.as_deref()),
-                batch::text(&row.sort_author),
-                batch::text_opt(row.series.as_deref()),
-                batch::text_opt(row.series_position.as_deref()),
-                batch::text_opt(row.cover_edition_id.as_deref()),
-                batch::text(&row.media_kinds),
-                batch::text(&row.acquire_status),
-                batch::int(row.edition_count),
-                batch::int(row.holding_count),
-                batch::text(&row.added_at),
-                batch::text(&row.sort_series),
-                batch::int(row.length_minutes),
-                batch::text(&row.purchased_at),
-                batch::text(&row.refreshed_at),
-            ]
-        };
-        let mut insert = vec![batch::text(&row.work_id)];
-        insert.extend(values());
-        insert.push(batch::text(&row.work_id));
-        let mut update = values();
-        update.push(batch::text(&row.work_id));
-        update.push(batch::text(refreshed_at));
-        // Holds while the row carries this refresh's stamp.
-        const FENCE: &str =
-            "EXISTS (SELECT 1 FROM library_work_rows WHERE work_id = ? AND refreshed_at = ?)";
-        let row_statements = vec![
-            batch::exec(
-                "INSERT OR IGNORE INTO library_work_rows (\
-                    work_id, kind, title, sort_title, authors, sort_author, series, \
-                    series_position, cover_edition_id, media_kinds, acquire_status, \
-                    edition_count, holding_count, added_at, sort_series, length_minutes, \
-                    purchased_at, refreshed_at\
-                 ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? \
-                 WHERE EXISTS (SELECT 1 FROM works WHERE id = ?)",
-                insert,
-            ),
-            batch::exec(
-                "UPDATE library_work_rows SET kind = ?, title = ?, sort_title = ?, \
-                    authors = ?, sort_author = ?, series = ?, series_position = ?, \
-                    cover_edition_id = ?, media_kinds = ?, acquire_status = ?, \
-                    edition_count = ?, holding_count = ?, added_at = ?, sort_series = ?, \
-                    length_minutes = ?, purchased_at = ?, refreshed_at = ? \
-                 WHERE work_id = ? AND refreshed_at <= ?",
-                update,
-            ),
-            batch::exec(
-                &format!("DELETE FROM library_work_facets WHERE work_id = ? AND {FENCE}"),
+                    0,
+                )?;
+                continue;
+            };
+            let values = || {
                 vec![
-                    batch::text(work_id),
-                    batch::text(work_id),
-                    batch::text(refreshed_at),
-                ],
-            ),
-        ];
-        let mut batches = Vec::new();
-        let mut pending = WriteBatches::new(self.db_capabilities(), "library index");
-        batches.extend(pending.push_group(row_statements)?);
-        for (facet, key, value) in facets {
-            batches.extend(pending.push(batch::exec(
-                &format!(
-                    "INSERT OR IGNORE INTO library_work_facets (work_id, facet, key, value) \
-                     SELECT ?, ?, ?, ? WHERE {FENCE}"
-                ),
+                    batch::text(&row.kind),
+                    batch::text(&row.title),
+                    batch::text(&row.sort_title),
+                    batch::text_opt(row.authors.as_deref()),
+                    batch::text(&row.sort_author),
+                    batch::text_opt(row.series.as_deref()),
+                    batch::text_opt(row.series_position.as_deref()),
+                    batch::text_opt(row.cover_edition_id.as_deref()),
+                    batch::text(&row.media_kinds),
+                    batch::text(&row.acquire_status),
+                    batch::int(row.edition_count),
+                    batch::int(row.holding_count),
+                    batch::text(&row.added_at),
+                    batch::text(&row.sort_series),
+                    batch::int(row.length_minutes),
+                    batch::text(&row.purchased_at),
+                    batch::text(&row.refreshed_at),
+                ]
+            };
+            let mut insert = vec![batch::text(&row.work_id)];
+            insert.extend(values());
+            insert.push(batch::text(&row.work_id));
+            let mut update = values();
+            update.push(batch::text(&row.work_id));
+            update.push(batch::text(refreshed_at));
+            // The row's `UPDATE` (the group's second statement) counts it.
+            plan.push_group(
                 vec![
-                    batch::text(work_id),
-                    batch::text(facet.as_str()),
-                    batch::text(key),
-                    batch::text(value),
-                    batch::text(work_id),
-                    batch::text(refreshed_at),
+                    batch::exec(
+                        "INSERT OR IGNORE INTO library_work_rows (\
+                            work_id, kind, title, sort_title, authors, sort_author, series, \
+                            series_position, cover_edition_id, media_kinds, acquire_status, \
+                            edition_count, holding_count, added_at, sort_series, length_minutes, \
+                            purchased_at, refreshed_at\
+                         ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? \
+                         WHERE EXISTS (SELECT 1 FROM works WHERE id = ?)",
+                        insert,
+                    ),
+                    batch::exec(
+                        "UPDATE library_work_rows SET kind = ?, title = ?, sort_title = ?, \
+                            authors = ?, sort_author = ?, series = ?, series_position = ?, \
+                            cover_edition_id = ?, media_kinds = ?, acquire_status = ?, \
+                            edition_count = ?, holding_count = ?, added_at = ?, sort_series = ?, \
+                            length_minutes = ?, purchased_at = ?, refreshed_at = ? \
+                         WHERE work_id = ? AND refreshed_at <= ?",
+                        update,
+                    ),
+                    batch::exec(
+                        &format!("DELETE FROM library_work_facets WHERE work_id = ? AND {FENCE}"),
+                        vec![
+                            batch::text(work_id),
+                            batch::text(work_id),
+                            batch::text(refreshed_at),
+                        ],
+                    ),
                 ],
-            ))?);
+                1,
+            )?;
+            for (facet, key, value) in facets {
+                plan.push(batch::exec(
+                    &format!(
+                        "INSERT OR IGNORE INTO library_work_facets (work_id, facet, key, value) \
+                         SELECT ?, ?, ?, ? WHERE {FENCE}"
+                    ),
+                    vec![
+                        batch::text(work_id),
+                        batch::text(facet.as_str()),
+                        batch::text(key),
+                        batch::text(value),
+                        batch::text(work_id),
+                        batch::text(refreshed_at),
+                    ],
+                ))?;
+            }
         }
-        batches.extend(pending.finish());
         let mut changed = 0;
-        for (n, statements) in batches.into_iter().enumerate() {
+        for (statements, counted) in plan.finish() {
+            let operation_id = format!("library-index-{}", Uuid::new_v4());
             let reply = self
-                .execute_host_batch(batch::request(&operation_id(n), statements))
+                .execute_host_batch(batch::request(&operation_id, statements))
                 .await?;
-            if n == 0 {
-                // The row's `UPDATE` is the batch's second statement.
-                changed = batch::rows_affected(&reply, 1).min(1);
-                if changed == 0 {
-                    // A later refresh owns the row and its values.
-                    break;
-                }
+            for index in counted {
+                changed += batch::rows_affected(&reply, index).min(1);
             }
         }
         Ok(changed)
