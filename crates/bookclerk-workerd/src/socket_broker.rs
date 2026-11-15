@@ -131,6 +131,9 @@ struct Shared {
     /// per-instance limit, so a host that is slow to take deliveries
     /// cannot collect unbounded delivery work.
     lingering: Cell<usize>,
+    /// How many times a socket's delivery queue was full and the broker
+    /// paused reading it; tests use it to reach that state for certain.
+    queue_full: Cell<u64>,
 }
 
 /// The broker's [`Sockets`] for one plugin instance.
@@ -185,6 +188,7 @@ impl SocketBroker {
                 tls,
                 handler,
                 lingering: Cell::new(0),
+                queue_full: Cell::new(0),
             }),
         }
     }
@@ -608,7 +612,10 @@ async fn pump(
                     Inbound::Deliver(message) => {
                         match deliveries.try_send(Delivery::Message(message)) {
                             Ok(()) => {}
-                            Err(TrySendError::Full(item)) => held = Some(item),
+                            Err(TrySendError::Full(item)) => {
+                                shared.queue_full.set(shared.queue_full.get() + 1);
+                                held = Some(item);
+                            }
                             Err(TrySendError::Closed(_)) => {
                                 break (CLOSE_GOING_AWAY, String::new(), false);
                             }

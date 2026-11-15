@@ -280,9 +280,6 @@ struct Replier {
     broker: RefCell<Option<Rc<SocketBroker>>>,
     /// Frames to send from the first message.
     replies: usize,
-    /// Opened once the server has sent every message, so the first call
-    /// sends only after the delivery queue has filled.
-    sent_all: Arc<tokio::sync::Notify>,
     /// What it saw.
     seen: Rc<Seen>,
 }
@@ -295,13 +292,15 @@ impl SocketHandler for Replier {
         self.seen.notify.notify_one();
         let broker = self.broker.borrow().clone();
         if let (true, Some(broker)) = (first, broker) {
-            self.sent_all.notified().await;
-            // Let the broker read what the server sent, filling the
-            // delivery queue behind this call.
-            for _ in 0..50 {
-                tokio::task::yield_now().await;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Send only once the broker found this socket's delivery queue
+            // full behind this call.
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while broker.shared.queue_full.get() == 0 {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .map_err(|_| PluginError::internal("the delivery queue never filled"))?;
             for n in 0..self.replies {
                 broker
                     .send(event.socket.clone(), SocketFrame::Text(format!("r{n}")))
@@ -323,8 +322,6 @@ async fn a_handler_that_sends_while_both_queues_are_full_still_progresses() {
     const MESSAGES: usize = DELIVERY_QUEUE + 8;
     const REPLIES: usize = COMMAND_QUEUE + 4;
     let local = tokio::task::LocalSet::new();
-    let sent_all = Arc::new(tokio::sync::Notify::new());
-    let server_sent = Arc::clone(&sent_all);
     local
         .run_until(async {
             let (port, server) = serve_once(None, |mut socket| async move {
@@ -334,7 +331,6 @@ async fn a_handler_that_sends_while_both_queues_are_full_still_progresses() {
                         .await
                         .expect("message");
                 }
-                server_sent.notify_one();
                 let mut log = ServerLog::default();
                 while log.received.len() < REPLIES {
                     if !read_one(&mut socket, &mut log).await {
@@ -350,7 +346,6 @@ async fn a_handler_that_sends_while_both_queues_are_full_still_progresses() {
             let replier = Rc::new(Replier {
                 broker: RefCell::new(None),
                 replies: REPLIES,
-                sent_all: Arc::clone(&sent_all),
                 seen: Rc::clone(&seen),
             });
             let handler: Rc<dyn SocketHandler> = replier.clone();
