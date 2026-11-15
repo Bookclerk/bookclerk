@@ -244,7 +244,14 @@ async fn a_remote_close_reaches_the_host_once_with_the_attachment() {
                     }))
                     .await
                     .expect("close");
-                ServerLog::default()
+                // The broker answers the close before reporting it clean.
+                let mut log = ServerLog::default();
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Message::Close(frame) = message {
+                        log.close = frame.map(|f| u16::from(f.code));
+                    }
+                }
+                log
             })
             .await;
             let (broker, seen) = new_broker(loopback_policy());
@@ -260,7 +267,202 @@ async fn a_remote_close_reaches_the_host_once_with_the_attachment() {
                 .await
                 .expect_err("closed socket");
             assert_eq!(err.code, PluginErrorCode::NotFound);
+            let log = server.await.expect("server");
+            assert_eq!(log.close, Some(1001), "the close was answered");
+        })
+        .await;
+}
+
+/// Host handler double that, on its first message, sends `replies` frames
+/// back through the broker before returning.
+struct Replier {
+    /// The broker to send through, set once it exists.
+    broker: RefCell<Option<Rc<SocketBroker>>>,
+    /// Frames to send from the first message.
+    replies: usize,
+    /// What it saw.
+    seen: Rc<Seen>,
+}
+
+#[async_trait::async_trait(?Send)]
+impl SocketHandler for Replier {
+    async fn message(&self, event: SocketMessage) -> Result<()> {
+        let first = self.seen.events.borrow().is_empty();
+        self.seen.events.borrow_mut().push("message".into());
+        self.seen.notify.notify_one();
+        let broker = self.broker.borrow().clone();
+        if let (true, Some(broker)) = (first, broker) {
+            for n in 0..self.replies {
+                broker
+                    .send(event.socket.clone(), SocketFrame::Text(format!("r{n}")))
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn closed(&self, _event: SocketClosed) -> Result<()> {
+        self.seen.events.borrow_mut().push("closed".into());
+        self.seen.notify.notify_one();
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_handler_that_sends_while_both_queues_are_full_still_progresses() {
+    const MESSAGES: usize = DELIVERY_QUEUE + 8;
+    const REPLIES: usize = COMMAND_QUEUE + 4;
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (port, server) = serve_once(None, |mut socket| async move {
+                for n in 0..MESSAGES {
+                    socket
+                        .send(Message::text(format!("m{n}")))
+                        .await
+                        .expect("message");
+                }
+                let mut log = ServerLog::default();
+                while log.received.len() < REPLIES {
+                    if !read_one(&mut socket, &mut log).await {
+                        break;
+                    }
+                }
+                socket.close(None).await.expect("close");
+                while socket.next().await.is_some() {}
+                log
+            })
+            .await;
+            let seen = Rc::new(Seen::default());
+            let replier = Rc::new(Replier {
+                broker: RefCell::new(None),
+                replies: REPLIES,
+                seen: Rc::clone(&seen),
+            });
+            let handler: Rc<dyn SocketHandler> = replier.clone();
+            let broker = Rc::new(SocketBroker::new(
+                loopback_policy(),
+                default_tls().expect("tls"),
+                handler,
+                "t-",
+            ));
+            *replier.broker.borrow_mut() = Some(Rc::clone(&broker));
+            let mut req = request(port);
+            req.protocols.clear();
+            req.auto_responses.clear();
+            broker.connect(req).await.expect("connect");
+            let events = wait_for(&seen, MESSAGES + 1).await;
+            assert_eq!(events.last().map(String::as_str), Some("closed"));
+            let log = server.await.expect("server");
+            assert_eq!(log.received.len(), REPLIES);
+            *replier.broker.borrow_mut() = None;
+        })
+        .await;
+}
+
+/// Host handler double whose `message` waits until the test opens it.
+struct Stuck {
+    /// Opens held messages.
+    gate: Rc<tokio::sync::Notify>,
+    /// What it saw.
+    seen: Rc<Seen>,
+}
+
+#[async_trait::async_trait(?Send)]
+impl SocketHandler for Stuck {
+    async fn message(&self, _event: SocketMessage) -> Result<()> {
+        self.seen.events.borrow_mut().push("message".into());
+        self.seen.notify.notify_one();
+        self.gate.notified().await;
+        Ok(())
+    }
+
+    async fn closed(&self, _event: SocketClosed) -> Result<()> {
+        self.seen.events.borrow_mut().push("closed".into());
+        self.seen.notify.notify_one();
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_closed_socket_counts_against_the_limit_until_its_deliveries_finish() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (port, server) = serve_once(None, |mut socket| async move {
+                socket.send(Message::text("one")).await.expect("message");
+                socket.close(None).await.expect("close");
+                while socket.next().await.is_some() {}
+                ServerLog::default()
+            })
+            .await;
+            let seen = Rc::new(Seen::default());
+            let gate = Rc::new(tokio::sync::Notify::new());
+            let handler: Rc<dyn SocketHandler> = Rc::new(Stuck {
+                gate: Rc::clone(&gate),
+                seen: Rc::clone(&seen),
+            });
+            let broker = SocketBroker::new(
+                loopback_policy(),
+                default_tls().expect("tls"),
+                handler,
+                "t-",
+            );
+            let mut req = request(port);
+            req.protocols.clear();
+            broker.connect(req).await.expect("connect");
+            wait_for(&seen, 1).await;
             server.await.expect("server");
+            // The transport ended, but the close still waits behind the
+            // stuck message.
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !broker.shared.table.borrow().is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("slot freed");
+            assert_eq!(broker.shared.lingering.get(), 1);
+            broker
+                .shared
+                .lingering
+                .set(MAX_SOCKETS_PER_INSTANCE as usize);
+            let err = broker.connect(request(1)).await.expect_err("limit");
+            assert_eq!(err.code, PluginErrorCode::LimitExceeded);
+            broker.shared.lingering.set(1);
+            gate.notify_one();
+            wait_for(&seen, 2).await;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while broker.shared.lingering.get() != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("delivery task finished");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_cancelled_connect_frees_its_slot() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            // Accepts TCP but never answers the upgrade.
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let port = listener.local_addr().expect("addr").port();
+            let hold = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.expect("accept");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                drop(tcp);
+            });
+            let (broker, _seen) = new_broker(loopback_policy());
+            let cancelled =
+                tokio::time::timeout(Duration::from_millis(300), broker.connect(request(port)))
+                    .await;
+            assert!(cancelled.is_err(), "the connect was still dialing");
+            assert!(broker.shared.table.borrow().is_empty());
+            hold.abort();
         })
         .await;
 }

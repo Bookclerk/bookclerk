@@ -23,7 +23,7 @@
 //! The decisions live in [`crate::socket_table`], which the fuzz target
 //! drives without I/O.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
@@ -32,14 +32,16 @@ use std::time::Duration;
 
 use bookclerk_plugin_abi::sockets::SocketTarget;
 use bookclerk_plugin_abi::{
-    PluginError, Result, SocketClosed, SocketConnectRequest, SocketFrame, SocketHandler,
-    SocketInfo, SocketMessage, Sockets, MAX_SOCKET_FRAME_BYTES,
+    LimitExceeded, PluginError, Result, SocketClosed, SocketConnectRequest, SocketFrame,
+    SocketHandler, SocketInfo, SocketMessage, Sockets, MAX_SOCKETS_PER_INSTANCE,
+    MAX_SOCKET_FRAME_BYTES,
 };
 use bookclerk_plugin_manifest::EgressPolicy;
 use futures::{SinkExt as _, StreamExt as _};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
@@ -63,9 +65,13 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Longest the TLS and WebSocket handshakes may take together.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Longest the broker waits for the peer's close frame after sending its
-/// own.
+/// Longest a whole close may take: sending the broker's close frame and
+/// waiting for the peer's, or flushing the reply to the peer's close.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Longest one frame write may take before the broker drops a peer that
+/// stopped reading.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Messages that may wait for the guest on one socket before the broker
 /// stops reading it.
@@ -120,6 +126,11 @@ struct Shared {
     tls: Arc<ClientConfig>,
     /// The host's handler.
     handler: Rc<dyn SocketHandler>,
+    /// Sockets that ended but whose delivery task still runs (a message or
+    /// the close is still with the host). They count against the
+    /// per-instance limit, so a host that is slow to take deliveries
+    /// cannot collect unbounded delivery work.
+    lingering: Cell<usize>,
 }
 
 /// The broker's [`Sockets`] for one plugin instance.
@@ -173,7 +184,43 @@ impl SocketBroker {
                 policy,
                 tls,
                 handler,
+                lingering: Cell::new(0),
             }),
+        }
+    }
+}
+
+/// A pending socket's reservation: abandoned when `connect` ends before the
+/// socket is open, whether its dial failed or the caller cancelled it.
+struct Reservation {
+    /// The broker's state.
+    shared: Rc<Shared>,
+    /// The reserved socket id.
+    id: String,
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        // Leaves an open socket alone.
+        self.shared.table.borrow_mut().abandon(&self.id);
+    }
+}
+
+/// Counts one socket's delivery task among the lingering ones once its
+/// socket ended, until the task finishes.
+struct DeliveryTask {
+    /// The broker's state.
+    shared: Rc<Shared>,
+    /// Whether the socket ended and this task was counted.
+    counted: Cell<bool>,
+}
+
+impl Drop for DeliveryTask {
+    fn drop(&mut self) {
+        if self.counted.get() {
+            self.shared
+                .lingering
+                .set(self.shared.lingering.get().saturating_sub(1));
         }
     }
 }
@@ -181,31 +228,42 @@ impl SocketBroker {
 #[async_trait::async_trait(?Send)]
 impl Sockets for SocketBroker {
     async fn connect(&self, request: SocketConnectRequest) -> Result<SocketInfo> {
+        let held = self.shared.table.borrow().len() + self.shared.lingering.get();
+        if held >= MAX_SOCKETS_PER_INSTANCE as usize {
+            return Err(PluginError::limit_exceeded(LimitExceeded::new(
+                "maxSocketsPerInstance",
+                u64::from(MAX_SOCKETS_PER_INSTANCE),
+                u64::try_from(held + 1).unwrap_or(u64::MAX),
+            )));
+        }
         let (id, target) = self.shared.table.borrow_mut().reserve(&request)?;
-        let dialed = dial(&self.shared, &request, &target).await;
-        let (socket, protocol) = match dialed {
-            Ok(done) => done,
-            Err(err) => {
-                self.shared.table.borrow_mut().abandon(&id);
-                return Err(err);
-            }
+        let reservation = Reservation {
+            shared: Rc::clone(&self.shared),
+            id: id.clone(),
         };
+        let (socket, protocol) = dial(&self.shared, &request, &target).await?;
         let info = self
             .shared
             .table
             .borrow_mut()
             .establish(&id, protocol)
             .ok_or_else(|| PluginError::internal("socket vanished during its handshake"))?;
+        drop(reservation);
         let (commands, command_rx) = mpsc::channel(COMMAND_QUEUE);
         let (deliveries, delivery_rx) = mpsc::channel(DELIVERY_QUEUE);
         self.shared.links.borrow_mut().insert(id.clone(), commands);
-        tokio::task::spawn_local(deliver(Rc::clone(&self.shared.handler), delivery_rx));
+        let task = Rc::new(DeliveryTask {
+            shared: Rc::clone(&self.shared),
+            counted: Cell::new(false),
+        });
+        tokio::task::spawn_local(deliver(Rc::clone(&task), delivery_rx));
         tokio::task::spawn_local(pump(
             Rc::clone(&self.shared),
             id,
             socket,
             command_rx,
             deliveries,
+            task,
         ));
         Ok(info)
     }
@@ -449,10 +507,10 @@ async fn close_socket(socket: &mut Socket, code: u16, reason: &str) -> bool {
         code: CloseCode::from(code),
         reason: reason.to_string().into(),
     };
-    if socket.close(Some(frame)).await.is_err() {
-        return false;
-    }
-    let drain = async {
+    let close = async {
+        if socket.close(Some(frame)).await.is_err() {
+            return false;
+        }
         while let Some(next) = socket.next().await {
             match next {
                 Ok(Message::Close(_)) => return true,
@@ -462,25 +520,44 @@ async fn close_socket(socket: &mut Socket, code: u16, reason: &str) -> bool {
         }
         false
     };
-    tokio::time::timeout(CLOSE_TIMEOUT, drain)
+    tokio::time::timeout(CLOSE_TIMEOUT, close)
         .await
         .unwrap_or(false)
 }
 
+/// Sends one frame, giving up after [`WRITE_TIMEOUT`].
+///
+/// # Returns
+///
+/// False when the write failed or the peer stopped reading.
+async fn write(socket: &mut Socket, message: Message) -> bool {
+    matches!(
+        tokio::time::timeout(WRITE_TIMEOUT, socket.send(message)).await,
+        Ok(Ok(()))
+    )
+}
+
 /// Runs one open socket: guest commands out, remote frames in, until it
 /// ends; then reports the close through the delivery queue.
+///
+/// A full delivery queue stops reading the socket but never stops serving
+/// the guest's commands, so a handler that sends while its own messages
+/// wait cannot stall the socket.
 async fn pump(
     shared: Rc<Shared>,
     id: String,
     mut socket: Socket,
     mut commands: mpsc::Receiver<Command>,
     deliveries: mpsc::Sender<Delivery>,
+    task: Rc<DeliveryTask>,
 ) {
+    // A message waiting for room in the delivery queue.
+    let mut held: Option<Delivery> = None;
     let (code, reason, clean) = loop {
         tokio::select! {
             command = commands.recv() => match command {
                 Some(Command::Send(frame)) => {
-                    if socket.send(to_message(frame)).await.is_err() {
+                    if !write(&mut socket, to_message(frame)).await {
                         break (CLOSE_ABNORMAL, String::new(), false);
                     }
                 }
@@ -493,7 +570,12 @@ async fn pump(
                     break (CLOSE_GOING_AWAY, String::new(), clean);
                 }
             },
-            next = socket.next() => {
+            permit = deliveries.reserve(), if held.is_some() => match (permit, held.take()) {
+                (Ok(permit), Some(item)) => permit.send(item),
+                (Ok(_), None) => {}
+                (Err(_), _) => break (CLOSE_GOING_AWAY, String::new(), false),
+            },
+            next = socket.next(), if held.is_none() => {
                 let frame = match next {
                     Some(Ok(Message::Text(text))) => SocketFrame::Text(text.as_str().to_string()),
                     Some(Ok(Message::Binary(bytes))) => SocketFrame::Binary(bytes.to_vec()),
@@ -502,7 +584,13 @@ async fn pump(
                         let (code, reason) = frame.map_or((CLOSE_NO_STATUS, String::new()), |f| {
                             (u16::from(f.code), f.reason.as_str().to_string())
                         });
-                        break (code, reason, true);
+                        // tungstenite queued the reply; send it before
+                        // calling the close clean.
+                        let replied = matches!(
+                            tokio::time::timeout(CLOSE_TIMEOUT, socket.flush()).await,
+                            Ok(Ok(()) | Err(WsError::ConnectionClosed))
+                        );
+                        break (code, reason, replied);
                     }
                     Some(Err(WsError::Capacity(_))) => {
                         let _ = close_socket(&mut socket, CLOSE_TOO_BIG, "message too big").await;
@@ -513,13 +601,17 @@ async fn pump(
                 let decision = shared.table.borrow().inbound(&id, frame);
                 match decision {
                     Inbound::Reply(reply) => {
-                        if socket.send(to_message(reply)).await.is_err() {
+                        if !write(&mut socket, to_message(reply)).await {
                             break (CLOSE_ABNORMAL, String::new(), false);
                         }
                     }
                     Inbound::Deliver(message) => {
-                        if deliveries.send(Delivery::Message(message)).await.is_err() {
-                            break (CLOSE_GOING_AWAY, String::new(), false);
+                        match deliveries.try_send(Delivery::Message(message)) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(item)) => held = Some(item),
+                            Err(TrySendError::Closed(_)) => {
+                                break (CLOSE_GOING_AWAY, String::new(), false);
+                            }
                         }
                     }
                     Inbound::TooBig => {
@@ -531,15 +623,30 @@ async fn pump(
             }
         }
     };
+    // Guest sends waiting on this socket fail now rather than wait on a
+    // pump that no longer serves them.
+    drop(commands);
+    drop(socket);
     shared.links.borrow_mut().remove(&id);
     let closed = shared.table.borrow_mut().closed(&id, code, &reason, clean);
+    // The socket's slot is free, but its delivery task still holds work
+    // until the host took it.
+    task.counted.set(true);
+    shared.lingering.set(shared.lingering.get() + 1);
+    drop(task);
+    if let Some(item) = held {
+        if deliveries.send(item).await.is_err() {
+            return;
+        }
+    }
     if let Some(event) = closed {
         let _ = deliveries.send(Delivery::Closed(event)).await;
     }
 }
 
 /// Hands one socket's messages, then its close, to the host in order.
-async fn deliver(handler: Rc<dyn SocketHandler>, mut queue: mpsc::Receiver<Delivery>) {
+async fn deliver(task: Rc<DeliveryTask>, mut queue: mpsc::Receiver<Delivery>) {
+    let handler = Rc::clone(&task.shared.handler);
     while let Some(item) = queue.recv().await {
         let outcome = match item {
             Delivery::Message(message) => handler.message(message).await,

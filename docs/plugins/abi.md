@@ -637,14 +637,18 @@ tcp = ["abs.example.com:443"]
   resolved addresses the grant allows, with no redirects. `wss://` is
   checked against Mozilla's root certificates. The broker sends the
   host's `User-Agent` (see [User-Agent](capabilities.md#user-agent)) and
-  gives up on a connection after 10 seconds or a handshake after 15.
+  gives up on a connection after 10 seconds, a handshake after 15, a
+  frame write after 10 and a close after 5.
 - **Delivery.** Messages for one socket reach the plugin in order, one
   at a time. Up to 32 may wait while the plugin starts; past that the
-  broker stops reading the socket until the plugin catches up, and keeps
-  answering heartbeats otherwise. `closed` comes after a socket's last
-  message, with code 1009 when the server sent a message over 256 KiB,
-  1005 when its close frame had no code, 1006 when the connection dropped
-  without one, and 1001 when the broker itself stopped.
+  broker stops reading the socket (heartbeats included) until the plugin
+  catches up, but still sends what the plugin sends on it. A socket that
+  ended still counts against the 8-socket limit until the plugin has
+  taken its last message and its close. `closed` comes after a socket's
+  last message, with code 1009 when the server sent a message over
+  256 KiB, 1005 when its close frame had no code, 1006 when the
+  connection dropped without one, and 1001 when the broker itself
+  stopped.
 
 ## Entrypoint methods
 
