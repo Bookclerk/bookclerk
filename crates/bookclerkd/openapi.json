@@ -26700,7 +26700,7 @@
             }
           },
           "403": {
-            "description": "The transport is not allowed (`transport_insecure`).",
+            "description": "The transport is not allowed (`transport_insecure`), or the card's person must enroll a second factor first (`mfa_enrollment_required`).",
             "content": {
               "application/json": {
                 "schema": {

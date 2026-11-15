@@ -483,3 +483,41 @@ fn the_subprotocol_is_found_in_any_offer() {
     assert!(!offer(&[b"bookclerk-clerk.v1x"]));
     assert!(!offer(&[b"\xffbookclerk-clerk.v1"]), "not UTF-8");
 }
+
+#[tokio::test]
+async fn a_page_is_not_served_once_the_card_ends() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (_state, store, addr) = served(&files).await;
+    let (riley, token) = member_with_card(&store, "riley").await;
+    hold(&store, riley, "riley-acct", "B0RILEY001").await;
+    let header = card(&token);
+    let mut socket = open(
+        addr,
+        &[
+            ("authorization", &header),
+            ("sec-websocket-protocol", CLERK_SUBPROTOCOL),
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        next(&mut socket, Duration::from_secs(5)).await,
+        Next::Frame(LibraryFrame::Hello { .. })
+    ));
+    assert!(store
+        .delete_clerk_session(&hash_token(&token))
+        .await
+        .unwrap());
+    socket
+        .send(Message::Text(
+            ClerkFrame::Books { after: 0 }.encode().into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        next(&mut socket, Duration::from_secs(5)).await,
+        Next::Closed(CLOSE_UNAUTHORIZED),
+        "the page request closes the socket instead of reading books"
+    );
+}

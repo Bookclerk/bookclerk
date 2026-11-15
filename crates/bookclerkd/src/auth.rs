@@ -2264,7 +2264,7 @@ pub(crate) enum CardLookup {
 
 /// Resolves a library card's token for a route that admits only cards
 /// (the clerk socket), with the same checks the routes a card may use
-/// apply: a live client session, a user who is not disabled, and the
+/// apply: a live clerk session, a user who is not disabled, and the
 /// second-factor enrollment rule. Each successful check keeps the card
 /// signed in for another [`bookclerk_node_proto::CLERK_IDLE_DAYS`].
 ///
@@ -2278,6 +2278,29 @@ pub(crate) enum CardLookup {
 ///
 /// What the card means.
 pub(crate) async fn resolve_card(state: &AppState, token: &str, path: &str) -> CardLookup {
+    let library = state.library_snapshot().await;
+    resolve_card_in(state, &library, token, path).await
+}
+
+/// [`resolve_card`] against one library snapshot, so a caller that then
+/// reads that snapshot reads the library the card was checked in.
+///
+/// # Arguments
+///
+/// * `state` - The daemon, for the second-factor policy.
+/// * `library` - The library snapshot to check the card in.
+/// * `token` - The library card.
+/// * `path` - The request path, for the enrollment exemptions.
+///
+/// # Returns
+///
+/// What the card resolves to in `library`.
+pub(crate) async fn resolve_card_in(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    token: &str,
+    path: &str,
+) -> CardLookup {
     let Ok(mut value) = HeaderValue::from_str(&format!(
         "{} {token}",
         bookclerk_node_proto::CLERK_AUTH_SCHEME
@@ -2287,13 +2310,12 @@ pub(crate) async fn resolve_card(state: &AppState, token: &str, path: &str) -> C
     value.set_sensitive(true);
     let mut headers = HeaderMap::new();
     headers.insert(header::AUTHORIZATION, value);
-    let library = state.library_snapshot().await;
-    match portal_lookup_from_headers(&library, &headers).await {
+    match portal_lookup_from_headers(library, &headers).await {
         PortalLookup::SignedIn(identity) => {
             let Some(user_id) = identity.user_id else {
                 return CardLookup::SignedOut;
             };
-            match reject_if_enrollment_required(state, &library, user_id, path).await {
+            match reject_if_enrollment_required(state, library, user_id, path).await {
                 Some(denied) => CardLookup::Refused(denied),
                 None => CardLookup::Person(user_id),
             }

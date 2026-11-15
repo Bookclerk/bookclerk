@@ -232,11 +232,13 @@ never sends work on it.
    person owns, and the cursor for the next page (none on the last page).
    A frame it cannot read gets `error` with code `invalid`.
 
-The library checks the card again every 30 seconds and closes the socket
-with code 4401 once the card is signed out, revoked, expired or its user
-disabled. A socket the clerk leaves silent for 60 seconds is closed, and a
-library serves at most 512 clerk sockets at once (more get 503
-`clerk_sockets_busy`).
+The library checks the card again every 30 seconds, and before every page,
+and closes the socket with code 4401 once the card is signed out, revoked,
+expired, its user disabled, or its person must enroll a second factor (a
+new socket then gets 403 `mfa_enrollment_required`). A socket the clerk
+leaves silent for 60 seconds is closed, as is one that has not taken a
+frame within 10 seconds, and a library serves at most 512 clerk sockets at
+once (more get 503 `clerk_sockets_busy`).
 
 ## API endpoints
 

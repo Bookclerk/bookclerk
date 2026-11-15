@@ -24,16 +24,19 @@
 //!   of at most 16 strings, each 1 to 32 bytes of lowercase ASCII letters,
 //!   digits, `_` and `.`, and then carry the names `library` and
 //!   `discover` among them and nothing else. `error` parses exactly when
-//!   `code` is `invalid` or `unavailable`. An accepted `books.page` has an
-//!   `after` that is not negative and passes `window_page_problem`.
+//!   `code` is `invalid` or `unavailable`. `books.page` parses exactly
+//!   when `after` is an integer that is not negative, `works` is an array
+//!   of at most 100 works with distinct `work` ids, each valid by the
+//!   window boundary's own rules, and `next`, when present, is an integer
+//!   past `after`.
 //! - Every accepted frame encodes to text that parses back to the same
 //!   frame.
 
 use std::collections::BTreeSet;
 
 use bookclerk_node_proto::{
-    parse_clerk_frame, parse_library_frame, window_page_problem, ClerkFrame, ClerkSocketError,
-    ClerkTopic, LibraryFrame,
+    parse_clerk_frame, parse_library_frame, ClerkFrame, ClerkSocketError, ClerkTopic, LibraryFrame,
+    WindowWork, MAX_WINDOW_WORKS,
 };
 use serde::de::{Deserializer as _, IgnoredAny, MapAccess, Visitor};
 use serde_json::{Map, Value};
@@ -216,14 +219,8 @@ fn check_library(frame: &[u8]) -> bool {
             assert_eq!(parsed, expected, "error frame {text:?}");
         }
         _ => {
-            if let Some(LibraryFrame::BooksPage { after, works, next }) = &parsed {
-                assert!(*after >= 0, "negative cursor accepted: {text:?}");
-                assert_eq!(window_page_problem(*after, works, *next), None, "{text:?}");
-                let sent = field(&fields, "after").and_then(Value::as_i64);
-                assert_eq!(sent, Some(*after), "{text:?}");
-            } else {
-                assert!(parsed.is_none(), "{text:?} parsed as another type");
-            }
+            let expected = expected_page(frame, &fields);
+            assert_eq!(parsed, expected, "books.page frame {text:?}");
         }
     }
     if let Some(frame) = &parsed {
@@ -234,6 +231,44 @@ fn check_library(frame: &[u8]) -> bool {
         );
     }
     parsed.is_some()
+}
+
+/// The `books.page` frame `frame` should parse as, worked out here rather
+/// than by `window_page_problem`: `after` an integer that is not negative,
+/// `works` an array of at most [`MAX_WINDOW_WORKS`] works with distinct
+/// `work` ids, and `next`, when present, an integer past `after`. Each
+/// work's own fields are the window boundary's rules
+/// ([`WindowWork::problem`]), which its own target checks.
+///
+/// # Arguments
+///
+/// * `frame` - The frame's bytes, already one object of type `books.page`.
+/// * `fields` - Its top-level fields.
+fn expected_page(frame: &[u8], fields: &Map<String, Value>) -> Option<LibraryFrame> {
+    /// Just the works, read from the frame's own bytes so a nested
+    /// repeated key is refused here as it is by the parser.
+    #[derive(serde::Deserialize)]
+    struct Works {
+        /// The page's works.
+        works: Vec<WindowWork>,
+    }
+
+    let after = field(fields, "after")?
+        .as_i64()
+        .filter(|after| *after >= 0)?;
+    let next = match field(fields, "next") {
+        None => None,
+        Some(next) => Some(next.as_i64().filter(|next| *next > after)?),
+    };
+    let works = serde_json::from_slice::<Works>(frame).ok()?.works;
+    if works.len() > MAX_WINDOW_WORKS || works.iter().any(|work| work.problem().is_some()) {
+        return None;
+    }
+    let ids: BTreeSet<&str> = works.iter().map(|work| work.work.as_str()).collect();
+    if ids.len() != works.len() {
+        return None;
+    }
+    Some(LibraryFrame::BooksPage { after, works, next })
 }
 
 /// True when the top-level JSON object in `data` writes a key twice.

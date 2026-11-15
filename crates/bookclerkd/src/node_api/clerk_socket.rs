@@ -15,8 +15,9 @@
 //!    Anything else, a browser cookie or the operator's token included, is
 //!    401 `unauthorized`.
 //! 3. The card must resolve to a person ([`crate::auth::resolve_card`]):
-//!    401 `unauthorized` when it does not, 503 `session_check_unavailable`
-//!    when the library did not answer.
+//!    401 `unauthorized` when it does not, 403 `mfa_enrollment_required`
+//!    when the person must enroll a second factor first, 503
+//!    `session_check_unavailable` when the library did not answer.
 //! 4. The request must offer [`CLERK_SUBPROTOCOL`]: 400
 //!    `subprotocol_required`.
 //! 5. At most [`MAX_CLERK_SOCKETS`] clerk sockets are open at once: 503
@@ -27,17 +28,21 @@
 //! SPA's live socket reads them (the shared revision read every
 //! [`crate::live::POLL_INTERVAL`] and in-process pokes). It answers each
 //! `books` frame, in order, with `books.page` from
-//! [`person_books_page`] for the card's person, or `error`. Nothing on it
+//! [`person_books_page`] for the card's person, or `error`; the card is
+//! checked again in the library snapshot each page is read from, and a
+//! card that no longer names that person closes the socket. Nothing on it
 //! claims work, names a node, or reads another person's books.
 //!
 //! The card is checked again every [`crate::live::REAUTH_INTERVAL`]: an
 //! ended, expired or disabled card, or one that now names another person,
 //! closes the socket with [`CLOSE_UNAUTHORIZED`]. The daemon pings every
-//! 20 s; 60 s without a frame from the clerk closes it. Binary frames and
+//! 20 s; 60 s without a frame from the clerk closes it, and so does a write
+//! the clerk has not taken within [`WRITE_TIMEOUT`]. Binary frames and
 //! frames over [`MAX_CLERK_FRAME_BYTES`] close it too.
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts as _, Request, State};
@@ -55,7 +60,7 @@ use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
 use zeroize::Zeroizing;
 
 use crate::api::AppState;
-use crate::auth::{resolve_card, CardLookup};
+use crate::auth::{resolve_card, resolve_card_in, CardLookup};
 use crate::clerk_token::{clerk_token_from_headers, HeldClerkToken};
 use crate::live::{
     read_revisions, subscribe_pokes, CLOSE_UNAUTHORIZED, IDLE_TIMEOUT, PING_INTERVAL,
@@ -64,6 +69,11 @@ use crate::live::{
 
 /// Most clerk sockets open at once in this process.
 pub const MAX_CLERK_SOCKETS: usize = 512;
+
+/// Longest one write to the clerk may take. A clerk that stops reading
+/// cannot hold its socket, and its place under [`MAX_CLERK_SOCKETS`],
+/// past this.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Permits for open clerk sockets.
 static SOCKETS: LazyLock<Arc<Semaphore>> =
@@ -114,7 +124,7 @@ fn refusal(status: StatusCode, error: &str) -> Response {
         (status = 101, description = "Switching to the clerk socket: `hello` and `changed` frames name the topics that changed, and each `books` frame is answered with one page of the card's person's books (`books.page`)."),
         (status = 400, description = "The request does not offer the `bookclerk-clerk.v1` subprotocol (`subprotocol_required`)."),
         (status = 401, description = "No library card, or the card is not signed in (`unauthorized`)."),
-        (status = 403, description = "The transport is not allowed (`transport_insecure`)."),
+        (status = 403, description = "The transport is not allowed (`transport_insecure`), or the card's person must enroll a second factor first (`mfa_enrollment_required`)."),
         (status = 404, description = "The node API is not mounted here (`node_api_unmounted`)."),
         (status = 503, description = "The card could not be checked yet (`session_check_unavailable`), or too many clerk sockets are open (`clerk_sockets_busy`); retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
     ),
@@ -181,19 +191,38 @@ fn close(code: u16, reason: &'static str) -> Message {
 
 /// The answer to one clerk frame.
 ///
+/// The card is checked again in the same library snapshot the page is
+/// read from, so a page is never read for an id the card named in a
+/// library that has since been replaced.
+///
 /// # Arguments
 ///
 /// * `state` - The library to read.
-/// * `person` - The card's person.
+/// * `token` - The library card.
+/// * `person` - The card's person when the socket opened.
 /// * `frame` - The frame's bytes.
-async fn answer(state: &AppState, person: i64, frame: &[u8]) -> LibraryFrame {
+///
+/// # Returns
+///
+/// The frame to send, or `None` when the card no longer names `person`
+/// and the socket must close.
+async fn answer(state: &AppState, token: &str, person: i64, frame: &[u8]) -> Option<LibraryFrame> {
     let Some(ClerkFrame::Books { after }) = parse_clerk_frame(frame) else {
-        return LibraryFrame::Error {
+        return Some(LibraryFrame::Error {
             code: ClerkSocketError::Invalid,
-        };
+        });
     };
     let library = state.library_snapshot().await;
-    match person_books_page(&library, person, after).await {
+    match resolve_card_in(state, &library, token, CLERK_CONNECT_PATH).await {
+        CardLookup::Person(user_id) if user_id == person => {}
+        CardLookup::Unavailable => {
+            return Some(LibraryFrame::Error {
+                code: ClerkSocketError::Unavailable,
+            })
+        }
+        CardLookup::Person(_) | CardLookup::SignedOut | CardLookup::Refused(_) => return None,
+    }
+    Some(match person_books_page(&library, person, after).await {
         Ok((works, next)) => LibraryFrame::BooksPage { after, works, next },
         Err(err) => {
             tracing::warn!(error = %err, "clerk socket could not read a page of books");
@@ -201,7 +230,22 @@ async fn answer(state: &AppState, person: i64, frame: &[u8]) -> LibraryFrame {
                 code: ClerkSocketError::Unavailable,
             }
         }
-    }
+    })
+}
+
+/// Sends `message`, giving up after [`WRITE_TIMEOUT`].
+///
+/// # Returns
+///
+/// False when the send failed or timed out, and the socket must close.
+async fn send<S>(tx: &mut S, message: Message) -> bool
+where
+    S: futures::Sink<Message> + Unpin,
+{
+    matches!(
+        tokio::time::timeout(WRITE_TIMEOUT, tx.send(message)).await,
+        Ok(Ok(()))
+    )
 }
 
 /// Serves one socket until it closes. `_permit` holds its place under
@@ -221,7 +265,7 @@ async fn run(
     let hello = LibraryFrame::Hello {
         topics: ClerkTopic::ALL.into_iter().collect(),
     };
-    if tx.send(text(&hello)).await.is_err() {
+    if !send(&mut tx, text(&hello)).await {
         return;
     }
     let mut poll = tokio::time::interval(POLL_INTERVAL);
@@ -263,7 +307,7 @@ async fn run(
                     // again on the next tick.
                     CardLookup::Unavailable => {}
                     CardLookup::Person(_) | CardLookup::SignedOut | CardLookup::Refused(_) => {
-                        let _ = tx.send(close(CLOSE_UNAUTHORIZED, "signed out")).await;
+                        let _ = send(&mut tx, close(CLOSE_UNAUTHORIZED, "signed out")).await;
                         return;
                     }
                 }
@@ -271,10 +315,10 @@ async fn run(
             }
             _ = ping.tick() => {
                 if last_heard.elapsed() >= IDLE_TIMEOUT {
-                    let _ = tx.send(close(1000, "idle")).await;
+                    let _ = send(&mut tx, close(1000, "idle")).await;
                     return;
                 }
-                if tx.send(Message::Ping(Default::default())).await.is_err() {
+                if !send(&mut tx, Message::Ping(Default::default())).await {
                     return;
                 }
                 continue;
@@ -283,14 +327,18 @@ async fn run(
                 match incoming {
                     Some(Ok(Message::Text(frame))) => {
                         last_heard = tokio::time::Instant::now();
-                        let reply = answer(&state, person, frame.as_bytes()).await;
-                        if tx.send(text(&reply)).await.is_err() {
+                        let Some(reply) = answer(&state, &token, person, frame.as_bytes()).await
+                        else {
+                            let _ = send(&mut tx, close(CLOSE_UNAUTHORIZED, "signed out")).await;
+                            return;
+                        };
+                        if !send(&mut tx, text(&reply)).await {
                             return;
                         }
                         continue;
                     }
                     Some(Ok(Message::Binary(_))) => {
-                        let _ = tx.send(close(1003, "binary frames are not accepted")).await;
+                        let _ = send(&mut tx, close(1003, "binary frames are not accepted")).await;
                         return;
                     }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
@@ -305,11 +353,7 @@ async fn run(
         if topics.is_empty() {
             continue;
         }
-        if tx
-            .send(text(&LibraryFrame::Changed { topics }))
-            .await
-            .is_err()
-        {
+        if !send(&mut tx, text(&LibraryFrame::Changed { topics })).await {
             return;
         }
     }
