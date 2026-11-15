@@ -818,7 +818,9 @@ mod tests {
 
     #[test]
     fn heartbeat_db_error_is_not_fence_loss() {
-        let tick = classify_heartbeat(Err(LibraryError::NotFound("jobs".into())));
+        let tick = classify_heartbeat(Err(LibraryError::missing(
+            bookclerk_library::EntityKind::Job,
+        )));
         assert!(matches!(tick, HeartbeatTick::Transient(_)));
     }
 

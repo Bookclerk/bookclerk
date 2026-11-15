@@ -13,6 +13,7 @@
 //! at once. A row older than [`PENDING_JOIN_TTL`] is refused, and deleted
 //! when it is opened.
 
+use crate::EntityKind;
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use zeroize::Zeroizing;
@@ -253,7 +254,7 @@ pub async fn create_pending_join(
         .await
         .map_err(LibraryError::Orm)?
         .map(PendingJoin::from)
-        .ok_or_else(|| LibraryError::NotFound("pending join".into()))
+        .ok_or_else(|| LibraryError::missing(EntityKind::PendingJoin))
 }
 
 /// Reads the pending join for `state` without consuming it: its facts and

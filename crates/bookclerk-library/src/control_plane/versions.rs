@@ -13,6 +13,7 @@
 //! larger ones stay where the artifact URL points (a registry, an operator
 //! bucket, or a shared `file:` path).
 
+use crate::EntityKind;
 use chrono::Utc;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
@@ -243,7 +244,7 @@ pub async fn add_plugin_version(
         .map_err(LibraryError::Orm)?;
     let stored = load_version(store, &version.plugin_key, &version.version)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("version {}", version.plugin_key)))?;
+        .ok_or_else(|| LibraryError::not_found(EntityKind::PluginVersion, &version.plugin_key))?;
     if inserted == 0 {
         // Another publisher won the race; decide against its row.
         return same_content(stored, &version);
@@ -376,10 +377,10 @@ pub async fn load_active_version(
         .await?
         .map(Some)
         .ok_or_else(|| {
-            LibraryError::NotFound(format!(
-                "active version {plugin_key} {} is missing",
-                pointer.version
-            ))
+            LibraryError::not_found(
+                EntityKind::PluginVersion,
+                format!("{plugin_key} {}", pointer.version),
+            )
         })
 }
 
@@ -401,7 +402,9 @@ pub async fn activate_version(
     authorize(actor)?;
     let row = load_version(store, plugin_key, version)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("version {plugin_key} {version}")))?;
+        .ok_or_else(|| {
+            LibraryError::not_found(EntityKind::PluginVersion, format!("{plugin_key} {version}"))
+        })?;
     let pinned = pin_version_schema(
         store,
         &SchemaPin {
@@ -441,7 +444,7 @@ pub async fn activate_version(
         .map_err(LibraryError::Orm)?;
     let pointer = load_install(store, plugin_key)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("version pointer {plugin_key}")))?;
+        .ok_or_else(|| LibraryError::not_found(EntityKind::VersionPointer, plugin_key))?;
     notify_all_nodes(
         store,
         NodeMessage::InstallChanged {
@@ -510,13 +513,16 @@ pub async fn approve_version_grant(
         .await
         .map_err(LibraryError::Orm)?;
     if updated.rows_affected == 0 {
-        return Err(LibraryError::NotFound(format!(
-            "version {plugin_key} {version}"
-        )));
+        return Err(LibraryError::not_found(
+            EntityKind::PluginVersion,
+            format!("{plugin_key} {version}"),
+        ));
     }
     let row = load_version(store, plugin_key, version)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("version {plugin_key} {version}")))?;
+        .ok_or_else(|| {
+            LibraryError::not_found(EntityKind::PluginVersion, format!("{plugin_key} {version}"))
+        })?;
     notify_all_nodes(
         store,
         NodeMessage::InstallChanged {
