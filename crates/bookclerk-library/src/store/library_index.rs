@@ -5,8 +5,9 @@
 //! editions, listings and holdings for every request
 //! (`docs/adr/library-data-model.md`, decision 8 and *Consequences*). A
 //! row is derived data: [`LibraryStore::refresh_library_works`] reads a
-//! work's model and writes its row, or deletes it once the work has no
-//! holding left. The daemon's cluster-wide `host:library-index` consumer
+//! work's model and writes its row (a work with no holding left keeps a
+//! row with a holding count of 0, which pages skip, as the refresh fence),
+//! or deletes it once the work is gone. The daemon's cluster-wide `host:library-index` consumer
 //! calls it for the works an event touched, and a rebuild
 //! ([`LibraryStore::rebuild_library_index_page`]) walks every work when the
 //! index has no finished build of [`LIBRARY_INDEX_LAYOUT`].
@@ -529,8 +530,8 @@ impl LibraryStore {
     }
 
     /// Refreshes the page index rows of `work_ids` (an episode refreshes its
-    /// show): writes each held work's row and deletes the row of a work
-    /// that is gone or no longer held.
+    /// show): writes each work's row (an unheld work's with a holding count
+    /// of 0, which pages skip) and deletes the row of a work that is gone.
     ///
     /// # Arguments
     ///
@@ -630,8 +631,8 @@ impl LibraryStore {
     }
 
     /// Refreshes one page of the rebuild: the works with an id after
-    /// `after`, in id order, and deletes rows of works in that id range that
-    /// are no longer held.
+    /// `after`, in id order, as [`LibraryStore::refresh_library_works`]
+    /// does.
     ///
     /// # Arguments
     ///
