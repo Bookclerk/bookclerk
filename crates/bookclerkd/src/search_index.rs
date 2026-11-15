@@ -627,7 +627,10 @@ mod tests {
         assert!(!SearchEngine::is_complete(&dir));
         let works_dir = WorkSearchIndex::dir_beside(&dir);
         let works = WorkSearchIndex::open(&works_dir).expect("open works");
-        assert_eq!(works.match_ids("evented").expect("search").len(), 1);
+        assert_eq!(
+            works.match_ids("evented", 0, 10).expect("search").ids.len(),
+            1
+        );
 
         // A holding event for a listing that is gone asks for a rebuild of
         // both indexes.
@@ -636,7 +639,8 @@ mod tests {
             r#"{"listingId":"gone","holder":"x","holdingId":"h"}"#,
         );
         let engine = SearchEngine::open(&dir).expect("open");
-        std::fs::write(works_dir.join("bookclerk-works-complete-v1"), b"").expect("marker");
+        works.rebuild(&library).await.expect("works rebuild");
+        assert!(WorkSearchIndex::is_complete(&works_dir));
         let written = apply_change(
             &engine,
             &works,
@@ -825,7 +829,10 @@ mod tests {
         let works_dir = WorkSearchIndex::dir_beside(&dir);
         assert!(WorkSearchIndex::is_complete(&works_dir));
         let works = WorkSearchIndex::open(&works_dir).expect("open works");
-        assert_eq!(works.match_ids("rebuilt").expect("search").len(), 1);
+        assert_eq!(
+            works.match_ids("rebuilt", 0, 10).expect("search").ids.len(),
+            1
+        );
 
         // Only the incomplete index is rebuilt; both when neither is.
         works.mark_incomplete().expect("mark");

@@ -22,7 +22,7 @@ async fn a_held_work_reads_its_titles_people_series_and_ids() {
         let store = store(profile).await;
         let mut book = NewBook::minimal("B0DUNE", "acct", "us", "Dune");
         book.subtitle = Some("Deluxe Edition".into());
-        book.authors = Some("Frank Herbert".into());
+        book.authors = Some("Frank Herbert, Brian Herbert".into());
         book.narrators = Some("Scott Brick, Orlagh Cassidy".into());
         book.series = Some("Dune Chronicles".into());
         book.isbn = Some("9780000000001".into());
@@ -38,9 +38,11 @@ async fn a_held_work_reads_its_titles_people_series_and_ids() {
             "{doc:?}"
         );
         assert!(!doc.other_titles.contains(&"Dune".to_string()), "{doc:?}");
-        assert!(
-            doc.authors.contains(&"Frank Herbert".to_string()),
-            "{doc:?}"
+        // Two author credits read in pages under the one-row profile.
+        assert_eq!(
+            doc.authors,
+            ["Brian Herbert", "Frank Herbert"],
+            "{profile:?}"
         );
         assert_eq!(doc.narrators, ["Orlagh Cassidy", "Scott Brick"]);
         assert!(

@@ -16108,7 +16108,7 @@
             }
           },
           "400": {
-            "description": "A filter or the cursor is invalid.",
+            "description": "A filter, the query or the cursor is invalid.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16185,26 +16185,14 @@
             }
           },
           "503": {
-            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "format": "int64",
-                  "minimum": 0
-                },
-                "description": "Seconds to wait before asking again."
-              }
-            },
+            "description": "A search (`q`) arrived before the node's works search index was first built. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorJson"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "session_check_unavailable",
-                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
-                  "status": 503
+                  "error": "the search index is being built; try again shortly"
                 }
               }
             }

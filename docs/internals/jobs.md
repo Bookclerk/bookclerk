@@ -318,8 +318,12 @@ One writer runs at a time per index. A delivery that finds a rebuild (or
 the CLI) writing is retried after 10 s, for up to an hour. A CLI rebuild
 (`library search --rebuild-index`, or the one after `library scan`) that
 finds a daemon writing waits for it, pausing up to 2 s between tries, and
-gives up after five minutes. Searches read the last commit, so they keep
-answering from the old index while a rebuild runs.
+gives up after five minutes. The CLI rebuilds only the title index; the
+works index is rebuilt by the daemon's job. Searches read the last
+commit, so they keep answering from the old index while a rebuild runs.
+A works search on a node whose works index was never built (or is of an
+older layout) answers 503 until the job finishes; a search never creates
+or replaces an index.
 
 The search matches, sorts by title, pages and counts in the index, and
 only the page's titles are read from the database, so there is no hit cap.
@@ -328,11 +332,18 @@ the database filter and page them, since those columns can change without
 an event.
 
 A works search answers in relevance order (title matches weigh most, then
-authors) and ignores `sort`. The page reads the matched works' rows from
-the library index by id, applying the other filters there, so a page can
-come back with fewer rows than `limit` and still carry a `next_cursor`.
-Its cursor holds the query and how many matches earlier pages used, and is
-refused under another query.
+authors) and ignores `sort`. `author:`, `narrator:`, `series:`, `title:`
+and `identifiers:` (also spelled `asin:`, `isbn:` or `productid:`) narrow
+a term to one field; identifiers match whole and ignore case. Each request
+reads a window of at most 1,000 matches from the cursor's position, and
+only those documents, then reads the matched works' rows from the library
+index by id in chunks, applying the other filters there. A page can
+therefore come back with fewer rows than `limit` and still carry a
+`next_cursor`. The cursor holds the query, the filters and how many
+matches earlier pages used, and is refused under another query or other
+filters. Relevance is computed again for each page, so a work indexed or
+dropped between two requests can make the next page repeat or skip a
+match.
 
 ## Library index
 

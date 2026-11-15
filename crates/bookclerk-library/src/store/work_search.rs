@@ -12,8 +12,11 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 
 use super::library_model::find_chunked_paged;
 use super::LibraryStore;
-use crate::entities::{contributors, credits, edition_identifiers, store_listings};
+use crate::entities::{
+    contributors, credits, edition_identifiers, series, series_entries, store_listings,
+};
 use crate::error::Result;
+use crate::WorkKind;
 
 /// The searchable text of one held top-level work.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -102,7 +105,23 @@ impl LibraryStore {
             })
             .await?;
 
-        let narrator_names = self.narrator_names(&inputs.editions).await?;
+        let mut people_targets: Vec<String> =
+            inputs.editions.iter().map(|e| e.id.clone()).collect();
+        people_targets.extend(inputs.editions.iter().map(|e| e.expression_id.clone()));
+        let narrator_names = self
+            .credited_names(&["edition", "expression"], &people_targets, "narrator")
+            .await?;
+        let author_role = if work.kind == WorkKind::Podcast.as_str() {
+            "host"
+        } else {
+            "author"
+        };
+        let mut author_targets = vec![work.id.clone()];
+        author_targets.extend(inputs.editions.iter().map(|e| e.id.clone()));
+        let author_names = self
+            .credited_names(&["work", "edition"], &author_targets, author_role)
+            .await?;
+        let series_names = self.series_names(&work.id).await?;
 
         let mut titles = BTreeSet::new();
         for edition in &inputs.editions {
@@ -116,10 +135,11 @@ impl LibraryStore {
         titles.remove(&work.title);
         titles.retain(|t| !t.trim().is_empty());
 
-        let mut authors: BTreeSet<String> = inputs.authors.iter().cloned().collect();
+        // Every credited author and series, not only the ones the page
+        // index shows.
+        let mut authors: BTreeSet<String> = author_names.into_iter().collect();
         let mut narrators: BTreeSet<String> = narrator_names.into_iter().collect();
-        let mut series: BTreeSet<String> =
-            inputs.series.iter().map(|(name, _)| name.clone()).collect();
+        let mut series: BTreeSet<String> = series_names.into_iter().collect();
         let mut ids = BTreeSet::new();
         for listing in &listings {
             add_names(&mut authors, listing.authors.as_deref());
@@ -150,23 +170,30 @@ impl LibraryStore {
 }
 
 impl LibraryStore {
-    /// Names of the narrators credited on `editions` or their expressions.
+    /// Names of the contributors credited in `role` on any of `targets`
+    /// (ids of the `kinds` of target), each once.
     ///
     /// # Errors
     ///
     /// Returns [`crate::LibraryError::Orm`] when a read fails.
-    async fn narrator_names(
+    async fn credited_names(
         &self,
-        editions: &[crate::entities::editions::Model],
+        kinds: &[&str],
+        targets: &[String],
+        role: &str,
     ) -> Result<Vec<String>> {
-        let mut targets: BTreeSet<String> = editions.iter().map(|e| e.id.clone()).collect();
-        targets.extend(editions.iter().map(|e| e.expression_id.clone()));
-        let targets: Vec<String> = targets.into_iter().collect();
+        let targets: Vec<String> = targets
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let kinds: Vec<String> = kinds.iter().map(|k| (*k).to_string()).collect();
         let credited = find_chunked_paged::<credits::Entity, _>(self, &targets, |part| {
             credits::Entity::find()
-                .filter(credits::Column::TargetKind.is_in(["edition", "expression"]))
+                .filter(credits::Column::TargetKind.is_in(kinds.iter().cloned()))
                 .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
-                .filter(credits::Column::Role.eq("narrator"))
+                .filter(credits::Column::Role.eq(role))
                 .order_by_asc(credits::Column::TargetKind)
                 .order_by_asc(credits::Column::TargetId)
                 .order_by_asc(credits::Column::ContributorId)
@@ -190,6 +217,31 @@ impl LibraryStore {
             .map(|c| c.name)
             .collect(),
         )
+    }
+
+    /// Names of every series `work_id` belongs to.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::LibraryError::Orm`] when a read fails.
+    async fn series_names(&self, work_id: &str) -> Result<Vec<String>> {
+        let entries =
+            find_chunked_paged::<series_entries::Entity, _>(self, &[work_id.to_string()], |part| {
+                series_entries::Entity::find()
+                    .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
+                    .order_by_asc(series_entries::Column::SeriesId)
+            })
+            .await?;
+        let ids: Vec<String> = entries.into_iter().map(|e| e.series_id).collect();
+        Ok(find_chunked_paged::<series::Entity, _>(self, &ids, |part| {
+            series::Entity::find()
+                .filter(series::Column::Id.is_in(part.iter().cloned()))
+                .order_by_asc(series::Column::Id)
+        })
+        .await?
+        .into_iter()
+        .map(|s| s.name)
+        .collect())
     }
 }
 

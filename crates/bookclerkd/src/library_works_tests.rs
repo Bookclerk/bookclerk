@@ -213,6 +213,73 @@ async fn a_search_pages_its_matches_and_applies_the_filters() {
     )
     .await;
     assert!(filtered.works.is_empty(), "the filters apply to matches");
+
+    // The title search's shortcuts are plain words here, and store ids
+    // match whatever their case.
+    for q in [
+        "dune finished",
+        "dune -acquired",
+        "productid:B002",
+        "asin:b002",
+    ] {
+        let page = list(
+            &state,
+            WorksQuery {
+                q: Some(q.into()),
+                ..WorksQuery::default()
+            },
+        )
+        .await;
+        assert_eq!(page.works.len(), 1, "{q}");
+        assert_eq!(page.works[0].id, ids[1], "{q}");
+    }
+}
+
+#[tokio::test]
+async fn a_filtered_search_skips_matches_the_filters_drop() {
+    let files = tempfile::tempdir().expect("tempdir");
+    let (state, library, _ids) = library_with_three_works(&files).await;
+    library
+        .upsert_account("audible", "other", "us", None, true, "audible")
+        .await
+        .expect("account");
+    let mut book = NewBook::minimal("B004", "other", "us", "Neuromancer");
+    book.authors = Some("William Gibson".into());
+    let saved = library.upsert_book(&book).await.expect("book");
+    let other = library
+        .work_id_for_book(&saved.uuid)
+        .await
+        .expect("work read")
+        .expect("a work");
+    library
+        .refresh_library_works(std::slice::from_ref(&other))
+        .await
+        .expect("refresh");
+    index_works(&state, &library).await;
+
+    // All four match; only one is held on the other account, wherever it
+    // ranks. Paging one at a time finds it exactly once.
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = list(
+            &state,
+            WorksQuery {
+                q: Some("tolkien OR herbert OR stephenson OR gibson".into()),
+                account: Some("other".into()),
+                limit: Some(1),
+                cursor: cursor.take(),
+                ..WorksQuery::default()
+            },
+        )
+        .await;
+        seen.extend(page.works.iter().map(|w| w.id.clone()));
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(seen, [other]);
 }
 
 #[tokio::test]
@@ -249,6 +316,23 @@ async fn a_search_refuses_a_bad_query_or_another_querys_cursor() {
         refused(
             &state,
             WorksQuery {
+                q: Some("tolkien OR herbert".into()),
+                account: Some("acct".into()),
+                cursor: Some(cursor.clone()),
+                ..WorksQuery::default()
+            },
+        )
+        .await,
+        Some((
+            StatusCode::BAD_REQUEST,
+            "page cursor belongs to another query or other filters".into()
+        )),
+        "a cursor is bound to its filters"
+    );
+    assert_eq!(
+        refused(
+            &state,
+            WorksQuery {
                 q: Some("dune".into()),
                 cursor: Some(cursor),
                 ..WorksQuery::default()
@@ -257,7 +341,7 @@ async fn a_search_refuses_a_bad_query_or_another_querys_cursor() {
         .await,
         Some((
             StatusCode::BAD_REQUEST,
-            "page cursor belongs to another query".into()
+            "page cursor belongs to another query or other filters".into()
         ))
     );
     assert_eq!(
@@ -272,6 +356,22 @@ async fn a_search_refuses_a_bad_query_or_another_querys_cursor() {
         .await,
         Some((StatusCode::BAD_REQUEST, "invalid page cursor".into()))
     );
+}
+
+#[tokio::test]
+async fn a_search_before_the_works_index_is_built_is_a_503() {
+    let files = tempfile::tempdir().expect("tempdir");
+    let (state, _library, _ids) = library_with_three_works(&files).await;
+    let status = refused(
+        &state,
+        WorksQuery {
+            q: Some("dune".into()),
+            ..WorksQuery::default()
+        },
+    )
+    .await
+    .map(|(status, _)| status);
+    assert_eq!(status, Some(StatusCode::SERVICE_UNAVAILABLE));
 }
 
 #[tokio::test]

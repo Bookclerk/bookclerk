@@ -10,16 +10,22 @@ use std::path::{Path, PathBuf};
 use bookclerk_library::{LibraryStore, WorkSearchDoc};
 use tantivy::collector::{Count, TopDocs};
 use tantivy::query::{Query, QueryParser};
-use tantivy::schema::{Field, Schema, Value, STORED, STRING, TEXT};
+use tantivy::schema::{
+    Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, STORED, STRING, TEXT,
+};
+use tantivy::tokenizer::{LowerCaser, RawTokenizer, TextAnalyzer};
 use tantivy::{doc, Index, IndexWriter, ReloadPolicy, TantivyDocument, TantivyError, Term};
 
 use crate::engine::{writer_error, REFRESH_WRITER_HEAP, REPLACE_LOCK};
-use crate::query::normalize_lucene_query;
 use crate::{Result, SearchEngine, SearchError};
 
 /// Version of the works document layout; a rebuild marker of another
 /// version does not count.
-const WORKS_SCHEMA_VERSION: u32 = 1;
+const WORKS_SCHEMA_VERSION: u32 = 2;
+
+/// Tokenizer of the identifiers field: the whole value, lowercased, so a
+/// query's `B0DUNE` matches the stored `b0dune`.
+const IDENTIFIER_TOKENIZER: &str = "raw_lower";
 
 /// Works read per page by a rebuild.
 const REBUILD_PAGE: u64 = 100;
@@ -30,6 +36,66 @@ const REBUILD_WRITER_HEAP: usize = 50_000_000;
 /// Name of the file a finished rebuild leaves in the index directory.
 fn complete_marker() -> String {
     format!("bookclerk-works-complete-v{WORKS_SCHEMA_VERSION}")
+}
+
+/// One window of a query's matches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkMatches {
+    /// Work ids in the window, best match first.
+    pub ids: Vec<String>,
+    /// How many documents the query matches in all.
+    pub total: usize,
+}
+
+/// Rewrites the field names people type into the works index's own:
+/// `author:` and `narrator:` (the title search's spellings) and the store
+/// identifier names, which all search `identifiers`.
+fn normalize_work_query(input: &str) -> String {
+    let mut out = input.trim().to_string();
+    for (from, to) in [
+        ("author:", "authors:"),
+        ("narrator:", "narrators:"),
+        ("productid:", "identifiers:"),
+        ("product_id:", "identifiers:"),
+        ("asin:", "identifiers:"),
+        ("isbn:", "identifiers:"),
+    ] {
+        out = out.replace(from, to);
+    }
+    out
+}
+
+/// The works schema and its fields, in [`WorkSearchIndex`] field order.
+fn works_schema() -> (Schema, [Field; 8]) {
+    let mut builder = Schema::builder();
+    let work_id = builder.add_text_field("work_id", STRING | STORED);
+    let title = builder.add_text_field("title", TEXT);
+    let other_titles = builder.add_text_field("other_titles", TEXT);
+    let authors = builder.add_text_field("authors", TEXT);
+    let narrators = builder.add_text_field("narrators", TEXT);
+    let series = builder.add_text_field("series", TEXT);
+    let identifiers = builder.add_text_field(
+        "identifiers",
+        TextOptions::default().set_indexing_options(
+            TextFieldIndexing::default()
+                .set_tokenizer(IDENTIFIER_TOKENIZER)
+                .set_index_option(IndexRecordOption::Basic),
+        ),
+    );
+    let all = builder.add_text_field("all", TEXT);
+    (
+        builder.build(),
+        [
+            work_id,
+            title,
+            other_titles,
+            authors,
+            narrators,
+            series,
+            identifiers,
+            all,
+        ],
+    )
 }
 
 /// Maps any displayable error to [`SearchError::Index`].
@@ -83,16 +149,7 @@ impl WorkSearchIndex {
     /// opened.
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir).map_err(index_error)?;
-        let mut builder = Schema::builder();
-        let work_id = builder.add_text_field("work_id", STRING | STORED);
-        let title = builder.add_text_field("title", TEXT);
-        let other_titles = builder.add_text_field("other_titles", TEXT);
-        let authors = builder.add_text_field("authors", TEXT);
-        let narrators = builder.add_text_field("narrators", TEXT);
-        let series = builder.add_text_field("series", TEXT);
-        let identifiers = builder.add_text_field("identifiers", STRING);
-        let all = builder.add_text_field("all", TEXT);
-        let schema = builder.build();
+        let (schema, _) = works_schema();
         let index = match SearchEngine::open_index(dir, schema.clone()) {
             Err(TantivyError::SchemaError(_)) => {
                 let _replacing = REPLACE_LOCK
@@ -109,7 +166,40 @@ impl WorkSearchIndex {
             other => other,
         }
         .map_err(index_error)?;
-        Ok(Self {
+        Ok(Self::with_index(dir, index))
+    }
+
+    /// Opens the index in `dir` for searching only: nothing is created or
+    /// replaced, so a search never races a writer over the directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::NotReady`] when `dir` holds no index of the
+    /// current layout (the rebuild has not run yet), or
+    /// [`SearchError::Index`] when it cannot be opened.
+    pub fn open_for_search(dir: &Path) -> Result<Self> {
+        if !dir.join("meta.json").is_file() {
+            return Err(SearchError::NotReady);
+        }
+        let (schema, _) = works_schema();
+        match SearchEngine::open_index(dir, schema) {
+            Ok(index) => Ok(Self::with_index(dir, index)),
+            Err(TantivyError::SchemaError(_)) => Err(SearchError::NotReady),
+            Err(err) => Err(index_error(err)),
+        }
+    }
+
+    /// Wraps an open index of the works schema, registering its tokenizers.
+    fn with_index(dir: &Path, index: Index) -> Self {
+        index.tokenizers().register(
+            IDENTIFIER_TOKENIZER,
+            TextAnalyzer::builder(RawTokenizer::default())
+                .filter(LowerCaser)
+                .build(),
+        );
+        let (_, [work_id, title, other_titles, authors, narrators, series, identifiers, all]) =
+            works_schema();
+        Self {
             dir: dir.to_path_buf(),
             index,
             work_id,
@@ -120,7 +210,7 @@ impl WorkSearchIndex {
             series,
             identifiers,
             all,
-        })
+        }
     }
 
     /// True when a full rebuild of the current layout has finished in `dir`.
@@ -248,28 +338,40 @@ impl WorkSearchIndex {
         Ok(())
     }
 
-    /// Opens the index in `dir` and lists a query's matches without
-    /// blocking the caller's task (see [`Self::match_ids`]).
+    /// Opens the index in `dir` for searching and reads one window of a
+    /// query's matches without blocking the caller's task (see
+    /// [`Self::open_for_search`] and [`Self::match_ids`]).
     ///
     /// # Errors
     ///
-    /// Propagates index-open and query failures.
-    pub async fn open_and_match_ids(dir: PathBuf, query: String) -> Result<Vec<String>> {
-        tokio::task::spawn_blocking(move || Self::open(&dir)?.match_ids(&query))
-            .await
-            .map_err(|err| SearchError::Index(format!("search task join error: {err}")))?
+    /// Propagates open and query failures.
+    pub async fn open_and_match_ids(
+        dir: PathBuf,
+        query: String,
+        offset: usize,
+        limit: usize,
+    ) -> Result<WorkMatches> {
+        tokio::task::spawn_blocking(move || {
+            Self::open_for_search(&dir)?.match_ids(&query, offset, limit)
+        })
+        .await
+        .map_err(|err| SearchError::Index(format!("search task join error: {err}")))?
     }
 
-    /// The work id of every document `raw_query` matches, best match
-    /// first (ties in index order). Blocking.
+    /// The work ids of the `limit` matches of `raw_query` after the first
+    /// `offset`, best first (ties in index order), and the total match
+    /// count. Only the window's documents are read. Blocking.
     ///
     /// # Errors
     ///
     /// Returns [`SearchError::Query`] for a query that does not parse, or
     /// [`SearchError::Index`] when the index cannot be read.
-    pub fn match_ids(&self, raw_query: &str) -> Result<Vec<String>> {
+    pub fn match_ids(&self, raw_query: &str, offset: usize, limit: usize) -> Result<WorkMatches> {
         let Some(query) = self.parse(raw_query)? else {
-            return Ok(Vec::new());
+            return Ok(WorkMatches {
+                ids: Vec::new(),
+                total: 0,
+            });
         };
         let searcher = self
             .index
@@ -278,12 +380,11 @@ impl WorkSearchIndex {
             .try_into()
             .map(|reader: tantivy::IndexReader| reader.searcher())
             .map_err(index_error)?;
-        let total = searcher.search(&query, &Count).map_err(index_error)?;
-        if total == 0 {
-            return Ok(Vec::new());
-        }
-        let docs = searcher
-            .search(&query, &TopDocs::with_limit(total).order_by_score())
+        let window = TopDocs::with_limit(limit.max(1))
+            .and_offset(offset)
+            .order_by_score();
+        let (total, docs) = searcher
+            .search(&query, &(Count, window))
             .map_err(index_error)?;
         let mut ids = Vec::with_capacity(docs.len());
         for (_, addr) in docs {
@@ -292,7 +393,7 @@ impl WorkSearchIndex {
                 ids.push(id.to_string());
             }
         }
-        Ok(ids)
+        Ok(WorkMatches { ids, total })
     }
 
     /// Parses a Lucene-style query over the searchable fields, or `None`
@@ -302,7 +403,7 @@ impl WorkSearchIndex {
     ///
     /// Returns [`SearchError::Query`] when the query does not parse.
     fn parse(&self, raw_query: &str) -> Result<Option<Box<dyn Query>>> {
-        let query = normalize_lucene_query(raw_query);
+        let query = normalize_work_query(raw_query);
         if query.is_empty() {
             return Ok(None);
         }
@@ -359,6 +460,11 @@ mod tests {
         (library, works)
     }
 
+    /// Every match of `q` in `index`, best first.
+    fn ids(index: &WorkSearchIndex, q: &str) -> Vec<String> {
+        index.match_ids(q, 0, 1000).unwrap().ids
+    }
+
     #[tokio::test]
     async fn a_rebuild_finds_works_by_title_author_and_id() {
         let dir = tempfile::tempdir().unwrap();
@@ -371,15 +477,29 @@ mod tests {
         assert!(!WorkSearchIndex::is_complete(dir.path()));
         assert_eq!(index.rebuild(&library).await.unwrap(), 2);
         assert!(WorkSearchIndex::is_complete(dir.path()));
-        assert_eq!(index.match_ids("hobbit").unwrap(), [works[0].clone()]);
-        assert_eq!(index.match_ids("herbert").unwrap(), [works[1].clone()]);
-        assert_eq!(index.match_ids("b0dune").unwrap(), [works[1].clone()]);
-        assert!(index.match_ids("   ").unwrap().is_empty());
-        assert!(index.match_ids("nothing-like-it").unwrap().is_empty());
-        let found = WorkSearchIndex::open_and_match_ids(dir.path().to_path_buf(), "dune".into())
-            .await
-            .unwrap();
-        assert_eq!(found, [works[1].clone()]);
+        assert_eq!(ids(&index, "hobbit"), [works[0].clone()]);
+        assert_eq!(ids(&index, "herbert"), [works[1].clone()]);
+        assert_eq!(ids(&index, "b0dune"), [works[1].clone()]);
+        assert!(ids(&index, "   ").is_empty());
+        assert!(ids(&index, "nothing-like-it").is_empty());
+        assert_eq!(ids(&index, "identifiers:B0DUNE"), [works[1].clone()]);
+        assert_eq!(ids(&index, "asin:B0DUNE"), [works[1].clone()]);
+        assert_eq!(ids(&index, "author:herbert"), [works[1].clone()]);
+        assert_eq!(
+            ids(&index, "dune acquired finished"),
+            [works[1].clone()],
+            "the title search's shortcuts are plain words here"
+        );
+        let found = WorkSearchIndex::open_and_match_ids(
+            dir.path().to_path_buf(),
+            "tolkien OR herbert".into(),
+            1,
+            5,
+        )
+        .await
+        .unwrap();
+        assert_eq!(found.total, 2);
+        assert_eq!(found.ids.len(), 1, "the window skips the first match");
         index.mark_incomplete().unwrap();
         index.mark_incomplete().unwrap();
         assert!(!WorkSearchIndex::is_complete(dir.path()));
@@ -392,13 +512,25 @@ mod tests {
         let index = WorkSearchIndex::open(dir.path()).unwrap();
         assert_eq!(index.refresh_works(&library, &works).await.unwrap(), 1);
         assert_eq!(index.refresh_works(&library, &works).await.unwrap(), 1);
-        assert_eq!(index.match_ids("dune").unwrap(), works, "written once");
+        assert_eq!(ids(&index, "dune"), works, "written once");
         library
             .remove_account_holdings("audible", "acct", bookclerk_library::HoldingSelection::All)
             .await
             .unwrap();
         assert_eq!(index.refresh_works(&library, &works).await.unwrap(), 0);
-        assert!(index.match_ids("dune").unwrap().is_empty());
+        assert!(ids(&index, "dune").is_empty());
+    }
+
+    #[test]
+    fn a_search_before_the_first_build_is_not_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("search_index_works");
+        assert!(matches!(
+            WorkSearchIndex::open_for_search(&missing),
+            Err(SearchError::NotReady)
+        ));
+        assert!(!missing.exists(), "a search creates nothing");
+        assert!(WorkSearchIndex::open_for_search(dir.path()).is_err());
     }
 
     #[test]

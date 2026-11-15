@@ -477,24 +477,35 @@ impl LibraryStore {
         let mut targets: Vec<(&str, &str)> = vec![("work", work.id.as_str())];
         targets.extend(editions.iter().map(|e| ("edition", e.id.as_str())));
         for (kind, id) in targets {
-            let credits = credits::Entity::find()
-                .filter(credits::Column::TargetKind.eq(kind))
-                .filter(credits::Column::TargetId.eq(id))
-                .filter(credits::Column::Role.eq(role))
-                .order_by_asc(credits::Column::Position)
-                .order_by_asc(credits::Column::ContributorId)
-                .all(self.db())
-                .await
-                .map_err(LibraryError::Orm)?;
+            // Paged, so a target with more credits than the database
+            // returns per statement still reads them all.
+            let credits = super::library_model::find_chunked_paged::<credits::Entity, _>(
+                self,
+                &[id.to_string()],
+                |part| {
+                    credits::Entity::find()
+                        .filter(credits::Column::TargetKind.eq(kind))
+                        .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
+                        .filter(credits::Column::Role.eq(role))
+                        .order_by_asc(credits::Column::Position)
+                        .order_by_asc(credits::Column::ContributorId)
+                },
+            )
+            .await?;
             if credits.is_empty() {
                 continue;
             }
             let ids: Vec<String> = credits.iter().map(|c| c.contributor_id.clone()).collect();
             let people: HashMap<String, contributors::Model> =
-                super::library_model::find_chunked::<contributors::Entity, _>(self, &ids, |part| {
-                    contributors::Entity::find()
-                        .filter(contributors::Column::Id.is_in(part.iter().cloned()))
-                })
+                super::library_model::find_chunked_paged::<contributors::Entity, _>(
+                    self,
+                    &ids,
+                    |part| {
+                        contributors::Entity::find()
+                            .filter(contributors::Column::Id.is_in(part.iter().cloned()))
+                            .order_by_asc(contributors::Column::Id)
+                    },
+                )
                 .await?
                 .into_iter()
                 .map(|c| (c.id.clone(), c))

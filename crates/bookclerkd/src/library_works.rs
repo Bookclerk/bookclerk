@@ -10,7 +10,10 @@
 //! With `q`, the node's works search index
 //! ([`bookclerk_search::WorkSearchIndex`]) matches works best first, and the
 //! page index supplies their rows and applies the filters; the cursor is
-//! then a position in the matches, valid only for the same query.
+//! then a position in the matches, valid only for the same query and
+//! filters. Relevance is computed again for each page, so unlike the
+//! keyset pages a search page can repeat or skip a work when the index
+//! changes between two requests.
 
 use std::sync::Arc;
 
@@ -542,14 +545,34 @@ fn detail_json(
     }
 }
 
+/// Matches of a search one request examines at most; a page whose
+/// filters reject them all comes back short, with a cursor past them.
+const SEARCH_SCAN_BUDGET: usize = 1_000;
+
+/// Match ids read from the page index per query while filling a search
+/// page.
+const SEARCH_CHUNK: usize = 200;
+
 /// Where the next page of a search starts: how many of the query's
 /// matches earlier pages consumed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SearchCursor {
     /// The query the cursor was issued for; refused under another.
     q: String,
+    /// The filters it was issued under ([`search_filter_key`]); refused
+    /// under others.
+    filters: String,
     /// Matches consumed so far.
     at: usize,
+}
+
+/// A stable key of the filters a search page applies (not its limit), so
+/// a cursor is refused under other filters.
+fn search_filter_key(filters: &WorkPageQuery) -> String {
+    format!(
+        "{:?}|{:?}|{:?}|{:?}",
+        filters.media_kind, filters.kind, filters.status, filters.account
+    )
 }
 
 impl SearchCursor {
@@ -581,14 +604,16 @@ fn bad_request(message: impl Into<String>) -> WorksError {
 
 /// One page of `q`'s matches that pass `filters`, best first.
 ///
-/// The matches are walked from the cursor's position in chunks; the page
-/// index drops the ones the filters exclude, so a page holds at most
-/// `limit` rows and the next cursor points just past the last match it
-/// used.
+/// A window of at most [`SEARCH_SCAN_BUDGET`] matches is read from the
+/// cursor's position and walked in chunks; the page index drops the ones
+/// the filters exclude. A page holds at most `limit` rows, and the next
+/// cursor points just past the last match it used, or past the window
+/// when the filters rejected too many to fill the page.
 ///
 /// # Errors
 ///
-/// A 400 for a query that does not parse or a cursor of another query, a
+/// A 400 for a query that does not parse or a cursor of another query or
+/// other filters, a 503 before the node's works index is first built, a
 /// 500 when the index or the library cannot be read.
 async fn search_page(
     state: &AppState,
@@ -596,56 +621,73 @@ async fn search_page(
     cursor: Option<&str>,
     filters: &WorkPageQuery,
 ) -> Result<(Vec<LibraryWorkRow>, Option<String>), WorksError> {
+    let filter_key = search_filter_key(filters);
     let start = match cursor {
         Some(token) => match SearchCursor::decode(token) {
-            Some(cursor) if cursor.q == q => cursor.at,
-            Some(_) => return Err(bad_request("page cursor belongs to another query")),
+            Some(cursor) if cursor.q == q && cursor.filters == filter_key => cursor.at,
+            Some(_) => {
+                return Err(bad_request(
+                    "page cursor belongs to another query or other filters",
+                ))
+            }
             None => return Err(bad_request("invalid page cursor")),
         },
         None => 0,
     };
     let dir = state.config.read().await.paths().search_index_dir.clone();
-    let matches = WorkSearchIndex::open_and_match_ids(WorkSearchIndex::dir_beside(&dir), q.into())
-        .await
-        .map_err(|err| match err {
-            SearchError::Query(message) => bad_request(format!("invalid search query: {message}")),
-            other => {
-                tracing::warn!(error = %other, "GET /api/library/works: search failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorMessage::new("the search index could not be read")),
-                )
-            }
-        })?;
+    let window = WorkSearchIndex::open_and_match_ids(
+        WorkSearchIndex::dir_beside(&dir),
+        q.into(),
+        start,
+        SEARCH_SCAN_BUDGET,
+    )
+    .await
+    .map_err(|err| match err {
+        SearchError::Query(message) => bad_request(format!("invalid search query: {message}")),
+        SearchError::NotReady => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorMessage::new(
+                "the search index is being built; try again shortly",
+            )),
+        ),
+        other => {
+            tracing::warn!(error = %other, "GET /api/library/works: search failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage::new("the search index could not be read")),
+            )
+        }
+    })?;
     let library = state.library_snapshot().await;
     let limit = usize::try_from(filters.limit).unwrap_or(usize::MAX);
     let mut rows = Vec::new();
-    let mut at = start.min(matches.len());
-    while rows.len() < limit && at < matches.len() {
-        let chunk = &matches[at..matches.len().min(at.saturating_add(limit))];
+    // Matches of the window used so far.
+    let mut used = 0;
+    for chunk in window.ids.chunks(SEARCH_CHUNK.max(limit)) {
         let found = library
             .library_works_by_ids(chunk, filters)
             .await
             .map_err(|err| read_failed("GET /api/library/works", &err))?;
         let wanted = limit - rows.len();
-        if found.len() > wanted {
+        if found.len() >= wanted {
             // The page fills inside this chunk: stop just past the last
             // match it takes.
             let last = &found[wanted - 1].work_id;
-            let used = chunk
+            used += chunk
                 .iter()
                 .position(|id| id == last)
                 .map_or(chunk.len(), |i| i + 1);
             rows.extend(found.into_iter().take(wanted));
-            at += used;
             break;
         }
         rows.extend(found);
-        at += chunk.len();
+        used += chunk.len();
     }
-    let next = (at < matches.len()).then(|| {
+    let at = start.saturating_add(used);
+    let next = (at < window.total).then(|| {
         SearchCursor {
             q: q.to_string(),
+            filters: filter_key,
             at,
         }
         .encode()
@@ -665,8 +707,9 @@ async fn search_page(
     params(WorksQuery),
     responses(
         (status = 200, description = "A page of works.", body = WorksPage),
-        (status = 400, description = "A filter or the cursor is invalid.", body = ErrorMessage, example = json!({"error": "invalid page cursor"})),
+        (status = 400, description = "A filter, the query or the cursor is invalid.", body = ErrorMessage, example = json!({"error": "invalid page cursor"})),
         (status = 500, description = "The library could not be read.", body = ErrorMessage, example = json!({"error": "the library could not be read"})),
+        (status = 503, description = "A search (`q`) arrived before the node's works search index was first built.", body = ErrorMessage, example = json!({"error": "the search index is being built; try again shortly"})),
     ),
 )]
 pub(crate) async fn list_works(
