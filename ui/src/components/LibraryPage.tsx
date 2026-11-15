@@ -119,6 +119,8 @@ export function LibraryPage({
   // only the facet does not reload the list.
   const appliedFacet = facetValue === null ? "all" : facet;
   const appliedValue = appliedFacet === "all" ? null : facetValue;
+  // Bumped by Refresh to read the facet menu again.
+  const [facetReads, setFacetReads] = useState(0);
   const [facetMenu, setFacetMenu] = useState<{
     facet: WorkFacet;
     values: { value: string; label: string }[];
@@ -151,7 +153,8 @@ export function LibraryPage({
     return () => window.clearTimeout(t);
   }, [q]);
 
-  // Reads the value menu of the chosen facet.
+  // Reads the value menu of the chosen facet, again on every Refresh (so a
+  // failed read can be retried).
   useEffect(() => {
     if (facet === "all") return;
     let current = true;
@@ -165,7 +168,7 @@ export function LibraryPage({
     return () => {
       current = false;
     };
-  }, [facet]);
+  }, [facet, facetReads]);
   const facetValues = facetMenu && facetMenu.facet === facet ? facetMenu.values : null;
 
   /**
@@ -271,6 +274,7 @@ export function LibraryPage({
   }, [canAcquire]);
 
   const refresh = useCallback(async () => {
+    setFacetReads((n) => n + 1);
     await Promise.all([loadWorks("replace"), refreshMeta()]);
   }, [loadWorks, refreshMeta]);
 

@@ -470,12 +470,13 @@ pub(crate) fn build_work_row(
     };
     let held_listings: HashSet<&str> = held.iter().map(|h| h.listing_id.as_str()).collect();
     // The longest held edition's runtime; a listing's when no held edition
-    // has one.
+    // has one. A runtime of 0 or less is unknown, not a runtime.
     let length_minutes = inputs
         .editions
         .iter()
         .filter(|e| held_editions.contains(e.id.as_str()))
         .filter_map(|e| e.duration_minutes)
+        .filter(|minutes| *minutes > 0)
         .max()
         .or_else(|| {
             inputs
@@ -483,10 +484,10 @@ pub(crate) fn build_work_row(
                 .iter()
                 .filter(|l| held_listings.contains(l.id.as_str()))
                 .filter_map(|l| l.length_minutes)
+                .filter(|minutes| *minutes > 0)
                 .max()
         })
-        .unwrap_or(0)
-        .max(0);
+        .unwrap_or(0);
     let purchased_at = held
         .iter()
         .filter_map(|h| h.purchased_at.as_deref())
@@ -1719,6 +1720,56 @@ mod tests {
         assert_eq!(row.acquire_status, "acquired");
         assert_eq!(row.authors, None);
         assert_eq!(row.sort_author, "");
+    }
+
+    fn listing(id: &str, edition: &str, length: Option<i64>) -> store_listings::Model {
+        store_listings::Model {
+            id: id.into(),
+            plugin_key: "p".into(),
+            marketplace: "us".into(),
+            product_id: id.into(),
+            edition_id: edition.into(),
+            title: "The Dispossessed".into(),
+            categories: None,
+            subtitle: None,
+            authors: None,
+            narrators: None,
+            series: None,
+            series_index: None,
+            description: None,
+            publisher: None,
+            published_at: None,
+            length_minutes: length,
+            language: None,
+            cover_url: None,
+            url: None,
+            rating_overall: None,
+            rating_count: None,
+            is_abridged: None,
+            observed_at: "2026-01-01T00:00:00Z".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn a_zero_edition_runtime_falls_back_to_the_listings() {
+        let mut zero = edition("e1", "audio", false);
+        zero.duration_minutes = Some(0);
+        let inputs = WorkRowInputs {
+            work: Some(work("w1")),
+            editions: vec![zero],
+            listing_editions: HashMap::from([("l1".into(), "e1".into())]),
+            listings: vec![listing("l1", "e1", Some(600))],
+            holdings: vec![holding("h1", "l1", "2026-02-01T00:00:00Z")],
+            ..WorkRowInputs::default()
+        };
+        assert_eq!(build_work_row(&inputs, "now").unwrap().length_minutes, 600);
+        let unknown = WorkRowInputs {
+            listings: vec![listing("l1", "e1", Some(0))],
+            ..inputs
+        };
+        assert_eq!(build_work_row(&unknown, "now").unwrap().length_minutes, 0);
     }
 
     #[test]
