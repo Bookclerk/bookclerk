@@ -454,6 +454,16 @@ move_into_cgroup() {
   fi
 }
 
+# A library that has been running has its search indexes; without them the
+# daemon builds both in a job that races the timed load. The seed built the
+# library page index the same way.
+prebuild_log="${FILES}/envelope-prebuild.log"
+if ! BOOKCLERK_FILES_DIR="${FILES}" "${CLI}" library search --rebuild-index --limit 0 Title \
+  >"${prebuild_log}" 2>&1; then
+  cat "${prebuild_log}" >&2
+  fail "search index prebuild failed"
+fi
+
 drop_file_cache
 # From here a failed step still writes envelope-metrics.json.
 METRICS_STARTED=1

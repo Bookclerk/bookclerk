@@ -318,8 +318,10 @@ One writer runs at a time per index. A delivery that finds a rebuild (or
 the CLI) writing is retried after 10 s, for up to an hour. A CLI rebuild
 (`library search --rebuild-index`, or the one after `library scan`) that
 finds a daemon writing waits for it, pausing up to 2 s between tries, and
-gives up after five minutes. The CLI rebuilds only the title index; the
-works index is rebuilt by the daemon's job. Searches read the last
+gives up after five minutes. `library search --rebuild-index` rebuilds the
+title index and then the works index; the rebuild after `library scan`
+rebuilds only the title index, and leaves the works index to the daemon's
+job and its event refreshes. Searches read the last
 commit, so they keep answering from the old index while a rebuild runs.
 A works search on a node whose works index was never built (or is of an
 older layout) answers 503 until the job finishes; a search never creates

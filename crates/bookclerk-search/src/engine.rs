@@ -60,10 +60,10 @@ pub(crate) const REFRESH_WRITER_HEAP: usize = 15_000_000;
 
 /// First pause [`SearchEngine::rebuild_waiting`] takes after finding the
 /// index busy; each later pause doubles up to [`BUSY_PAUSE_MAX`].
-const BUSY_PAUSE_FIRST: std::time::Duration = std::time::Duration::from_millis(100);
+pub(crate) const BUSY_PAUSE_FIRST: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Longest pause between [`SearchEngine::rebuild_waiting`] attempts.
-const BUSY_PAUSE_MAX: std::time::Duration = std::time::Duration::from_secs(2);
+pub(crate) const BUSY_PAUSE_MAX: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Maps a Tantivy error to [`SearchError::Busy`] when another writer holds
 /// the index lock, else to [`SearchError::Index`].

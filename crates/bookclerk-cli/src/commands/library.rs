@@ -6,7 +6,7 @@ use bookclerk_acquire::{
 use bookclerk_config::{AudioQuality, Config};
 use bookclerk_library::{AcquireStatus, LibraryStore};
 use bookclerk_plugin_host::HostControlPlane;
-use bookclerk_search::SearchEngine;
+use bookclerk_search::{SearchEngine, WorkSearchIndex};
 use bookclerk_source::{source_scope, DownloadOptions, FetchOptions};
 use bookclerk_storage::StorageBackend;
 use clap::Subcommand;
@@ -178,7 +178,7 @@ pub enum LibraryCommand {
         /// Print ASINs only.
         #[arg(short, long)]
         bare: bool,
-        /// Rebuild the search index before querying.
+        /// Rebuild the title and works search indexes before querying.
         #[arg(long)]
         rebuild_index: bool,
         /// Run a saved quick filter by name.
@@ -583,6 +583,10 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             if rebuild_index {
                 let n = engine.rebuild_waiting(&store, INDEX_WRITER_WAIT).await?;
                 println!("search index rebuilt: {n} book(s)");
+                let works =
+                    WorkSearchIndex::open(&WorkSearchIndex::dir_beside(&paths.search_index_dir))?;
+                let n = works.rebuild_waiting(&store, INDEX_WRITER_WAIT).await?;
+                println!("works search index rebuilt: {n} work(s)");
             }
             let query_text = if let Some(name) = filter {
                 store

@@ -1,7 +1,8 @@
 //! Ignored fixture for the 1 vCPU / 1 GiB envelope harness.
 //!
 //! Deletes `library.db` (and its wal/shm) and the local object root under
-//! `BOOKCLERK_FILES_DIR`, then writes 10,000 books and 100,001 one-byte objects.
+//! `BOOKCLERK_FILES_DIR`, then writes 10,000 books, builds the library page
+//! index over their works, and writes 100,001 one-byte objects.
 //! Do not point this at a files directory you still need.
 //!
 //! ```text
@@ -68,6 +69,7 @@ root = "objects"
         .await
         .unwrap_or_else(|err| panic!("open library: {err}"));
     seed_books(&store).await;
+    build_library_index(&store).await;
     seed_objects(&objects);
 
     let db_bytes = std::fs::metadata(files.join("library.db")).unwrap().len();
@@ -153,6 +155,27 @@ async fn seed_books(store: &LibraryStore) {
     assert_eq!(first.acquire_status, AcquireStatus::Error);
     assert_eq!(first.title, "Title 00000");
     eprintln!("books ready in {} ms", started.elapsed().as_millis());
+}
+
+/// Builds the library page index the works routes read, as the daemon's
+/// `library_index_rebuild` job would, so the envelope times the routes
+/// rather than a first build racing its load.
+async fn build_library_index(store: &LibraryStore) {
+    let started = Instant::now();
+    let mut after: Option<String> = None;
+    while let Some(last) = store
+        .rebuild_library_index_page(after.as_deref())
+        .await
+        .unwrap()
+    {
+        after = Some(last);
+    }
+    store.finish_library_index_build().await.unwrap();
+    assert!(store.library_index_built().await.unwrap());
+    eprintln!(
+        "library index built in {} ms",
+        started.elapsed().as_millis()
+    );
 }
 
 /// Writes 100,000 `fNNNNNN.bin` bodies plus `nest/deep/z.bin`.

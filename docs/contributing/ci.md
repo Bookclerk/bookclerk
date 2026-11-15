@@ -786,7 +786,9 @@ are selected, so the hosts are compiled once per run.
    into both release caches. Without that, they compile from scratch and the
    job gets slower, not faster.
 2. `docker run --memory=1g --memory-swap=1g --cpus=1` runs the seed (10,000
-   titles written 200 at a time, the way a scan page writes them), the
+   titles written 200 at a time, the way a scan page writes them, then the
+   works page index built over them), a `bookclerk library search
+   --rebuild-index` that builds the title and works search indexes, the
    daemon and the load in an Ubuntu container of the runner's own release
    (`ubuntu:<VERSION_ID>` from `/etc/os-release`, or `ubuntu:24.04` on a
    non-Ubuntu host), because the hosts link the runner's glibc and libssl.
@@ -801,9 +803,11 @@ What is gated:
 
 - The works routes must return 200 with at least one work each: the first
   page by title and by author, the `status` and `account` filters, a page
-  8,000 works in (by following `next_cursor`), and `q=Title`. Before they
-  are timed, the harness waits up to 900 s for the daemon's works page index
-  and works search index rebuilds to finish.
+  8,000 works in (by following `next_cursor`), and `q=Title`. The indexes
+  are built before the daemon starts, as a library that has been running
+  has them, so the daemon queues no rebuild of its own; before the routes
+  are timed, the harness still waits up to 900 s for any index rebuild job
+  to finish and for both indexes to answer.
 - Daemon anonymous memory stays under 256 MiB after idle and during the API
   windows. That is `RssAnon` when `/proc/<pid>/status` reports it,
   otherwise `memory.stat` `anon`, or `memory.current` when anon is absent.
