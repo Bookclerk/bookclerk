@@ -81,7 +81,7 @@ pub use db_atomic::{
     db_atomic_operation_id, db_atomic_request_hash, execute_db_atomic, execute_named_atomic,
 };
 pub use email::gravatar_hash;
-pub use error::{LibraryError, Result};
+pub use error::{EntityKind, LibraryError, Missing, Result};
 pub use host_schema::{
     apply_host_schema, apply_host_schema_with_batch, apply_host_schema_with_batch_opts,
     apply_host_schema_with_options, current_schema_state, current_schema_state_in,
@@ -121,9 +121,9 @@ pub use models::{
     EventSubscriberCatalogRecord, EventSubscriberNodeRecord, EventWakeGrant, GlobalQueueEntry,
     JobClaimCursor, JobClaimPage, JobFence, JobKind, JobPayload, JobRecord, JobResourceClass,
     JobState, JobTempPath, JobTrigger, ListeningProgressRecord, OidcClientRecord,
-    OperatorSessionRecord, PendingWakeProgress, PortalIdentity, PortalSessionRecord,
-    PublishDomainEventOutcome, PublishDomainEventSpec, QueueWisher, RequestStatus,
-    SecurityAuditEvent, StoredPasskey, TasteHolder, TasteTitle, TitleRequestRecord,
+    OperatorSessionRecord, PendingWakeProgress, PortalIdentity, PortalSessionKind,
+    PortalSessionRecord, PublishDomainEventOutcome, PublishDomainEventSpec, QueueWisher,
+    RequestStatus, SecurityAuditEvent, StoredPasskey, TasteHolder, TasteTitle, TitleRequestRecord,
     TitleRequestSourceRecord, UserIntegrationHint, UserInviteRecord, UserListeningHint,
     UserPreferences, UserPresenceExtras, UserRecord, UserRole, UserSsoPicture, UserStatus,
     UserTitleState, WishlistPurchaseHint, WishlistStoreEdition, WorkRecord, CORE_EVENTS_QUEUE,
@@ -186,12 +186,12 @@ pub use store::{
     scan_state::{plan_pass, PassStart, ScanState, FULL_PASS_INTERVAL, RESUME_CURSOR_TTL},
     search_feed::ListingRef,
     set_dispatch_chunk_for_test, AcquiredBookKey, BookPage, CandidateRef, CatalogEnrichmentFields,
-    DiscoverSubject, EditionFile, FileOwner, FileRole, HeldIdentifiers, HoldingSelection,
-    LibraryStore, NewBook, NewListeningProgress, NewTitleRequest, NewTitleRequestSource,
-    NodeHoldingSelection, QueueRank, SavedFilterRecord, ScannedTitle, SeedScope, StoreCallHit,
-    StoredCandidate, StoredDiscoverTaste, StoredFeed, StoredQueueRank, UserBookFields, WishWork,
-    ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
-    HOLDING_REMOVED, MAX_QUEUE_REASONS,
+    DiscoverSubject, EditionAcquisition, EditionFile, FileOwner, FileRole, HeldIdentifiers,
+    HoldingSelection, LibraryStore, NewBook, NewListeningProgress, NewTitleRequest,
+    NewTitleRequestSource, NodeHoldingSelection, QueueRank, SavedFilterRecord, ScannedTitle,
+    SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste, StoredFeed, StoredQueueRank,
+    UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT,
+    BOOK_PAGE_MAX_LIMIT, HOLDING_REMOVED, MAX_QUEUE_REASONS,
 };
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

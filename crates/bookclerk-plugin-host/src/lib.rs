@@ -55,6 +55,7 @@ mod enrollment_tests;
 #[cfg(test)]
 static PROCESS_DEK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+mod activation;
 mod authority;
 mod bundled_platform;
 mod callback_proxy;
@@ -74,6 +75,8 @@ mod instance_bindings;
 mod jail;
 mod kv_binding;
 mod manifest;
+mod on_demand;
+mod on_demand_source;
 mod queue_producer;
 mod registry;
 mod remote_consent;
@@ -92,6 +95,7 @@ pub use bookclerk_plugin_sdk::{
     SyncListeningResult, PRODUCT_API_VERSION, PROTOCOL_NAME,
 };
 
+pub use activation::OnDemandStatus;
 pub use authority::{
     apply_grant_store, authority_revision, fence_plugin_key, fence_stale_grant_revisions,
     fence_stale_sessions, is_fenced, live_session_count, notify_grants_changed,
@@ -153,8 +157,8 @@ pub use host::{
     backup_adapter_id, database_connect_bindings, export_registered_plugin_units,
     load_external_database, migrate_database_plugin, migrate_library_schema, open_library_store,
     open_library_store_for_plugin, restore_plugin_backup_units, DatabaseRegistry,
-    DestinationRegistry, ExternalDatabase, ExternalIntegration, ExternalSource,
-    RefreshedCredentialSink,
+    DestinationRegistry, ExternalDatabase, ExternalIntegration, ExternalSource, HandedPass,
+    HandedScan, RefreshedCredentialSink,
 };
 pub use host_control_plane::{
     allow_credential_login, enroll_node, open_host_control_plane,
@@ -184,6 +188,10 @@ pub use manifest::{
     ModuleSpec, NamedBinding, NetworkCapabilities, NetworkMode, PluginFamily, PluginManifest,
     PluginRuntimeKind, TriggersManifest, WorkerdLimits, WorkerdRuntimeManifest, ALL_ENTRYPOINTS,
     MAX_EMBEDDED_LOGO_BYTES,
+};
+pub use on_demand::{activates_on_demand, OnDemandIntegration, TRIGGER_IDLE_TIMEOUT};
+pub use on_demand_source::{
+    storefront_activates_on_demand, OnDemandSource, STOREFRONT_IDLE_TIMEOUT,
 };
 pub use queue_producer::{OutboxQueueProducer, QueueOutbox};
 pub use registry::{

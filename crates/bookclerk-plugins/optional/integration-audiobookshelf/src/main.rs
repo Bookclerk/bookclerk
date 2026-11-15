@@ -9,13 +9,13 @@ use bookclerk_plugin_integration_audiobookshelf::guest::{
     guest_authenticate_user, guest_diagnose, guest_event_poll, guest_health, guest_on_event,
     guest_scan_library, guest_start, guest_sync_listening, AbsGuestState,
 };
-use bookclerk_plugin_integration_audiobookshelf::BRAND;
+use bookclerk_plugin_integration_audiobookshelf::{BRAND, LISTENING_STATE_BINDING};
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    serve, AuthenticateUserParams, Bindings, Brand, DomainEvent, Entrypoints, EventConsumer,
-    EventResult, ExternalUser, HealthOk, Invocation, ListeningProgress, Oidc, OidcClientTemplate,
-    PluginDescribe, PluginError, PluginWorker, RemoteLibrary, ScalarLimits, ScanLibraryParams,
-    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    serve, AuthenticateUserParams, Bindings, Brand, DatabaseBinding, DomainEvent, Entrypoints,
+    EventConsumer, EventResult, ExternalUser, HealthOk, Invocation, ListeningProgress, Oidc,
+    OidcClientTemplate, PluginDescribe, PluginError, PluginMigration, PluginWorker, RemoteLibrary,
+    ScalarLimits, ScanLibraryParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -82,24 +82,41 @@ impl PluginWorker for AbsRoot {
     async fn open(
         &self,
         _invocation: Invocation,
-        bindings: Bindings,
+        mut bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
         let state = self.state_from_bindings(&bindings).await?;
+        let listening =
+            DatabaseBinding::take_named_from_bindings(&mut bindings, LISTENING_STATE_BINDING);
         Ok(Entrypoints {
             event_consumer: Some(Box::new(AbsIntegration {
                 state: Arc::clone(&state),
+                listening: None,
             })),
             remote_library: Some(Box::new(AbsIntegration {
                 state: Arc::clone(&state),
+                listening,
             })),
-            oidc: Some(Box::new(AbsIntegration { state })),
+            oidc: Some(Box::new(AbsIntegration {
+                state,
+                listening: None,
+            })),
             ..Entrypoints::default()
         })
+    }
+
+    async fn database_migrations(
+        &self,
+        binding: &str,
+    ) -> Result<Vec<PluginMigration>, PluginError> {
+        Ok(bookclerk_plugin_integration_audiobookshelf::listening_migrations_for(binding))
     }
 }
 
 struct AbsIntegration {
     state: Arc<Mutex<AbsGuestState>>,
+    /// `LISTENING_STATE` on the remote-library entrypoint, once the operator
+    /// approved it: what the last listening sync sent.
+    listening: Option<DatabaseBinding>,
 }
 
 #[async_trait(?Send)]
@@ -177,7 +194,7 @@ impl RemoteLibrary for AbsIntegration {
     }
 
     async fn sync_listening(&self) -> Result<Vec<ListeningProgress>, PluginError> {
-        guest_sync_listening(&self.state)
+        guest_sync_listening(&self.state, self.listening.as_ref())
             .await
             .map_err(|e| PluginError::internal(e.to_string()))
     }

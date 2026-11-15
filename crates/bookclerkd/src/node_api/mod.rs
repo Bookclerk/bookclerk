@@ -31,6 +31,7 @@
 
 mod artifacts;
 pub mod branch;
+pub mod client;
 mod host_accounts;
 mod host_catalog;
 mod host_interlibrary;
@@ -267,7 +268,7 @@ pub(crate) struct PostNodeInvite {
             ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
-        (status = 404, description = "No such user.", body = crate::http_error::ErrorMessage, example = json!({"error": "book not found: user 7"})),
+        (status = 404, description = "No such user.", body = crate::http_error::ErrorMessage, example = json!({"error": "user 7 not found"})),
         (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
         (status = 503, description = "The node API's certificate pin is not available yet (`node_api_pin_unavailable`).", body = crate::http_error::ErrorMessage, example = json!({"error": "node_api_pin_unavailable"})),
     ),
@@ -391,7 +392,7 @@ pub async fn get_node_invites(
             ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
-        (status = 404, description = "No such link, or not one the caller may see.", body = crate::http_error::ErrorMessage, example = json!({"error": "book not found: enrollment link 5f1e2d3c4b5a69788796a5b4c3d2e1f0"})),
+        (status = 404, description = "No such link, or not one the caller may see.", body = crate::http_error::ErrorMessage, example = json!({"error": "enrollment link 5f1e2d3c4b5a69788796a5b4c3d2e1f0 not found"})),
         (status = 409, description = "The link was already redeemed; revoke the node instead.", body = crate::http_error::ErrorMessage, example = json!({"error": "enrollment link 5f1e2d3c4b5a69788796a5b4c3d2e1f0 was already redeemed; revoke the node instead"})),
         (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
@@ -447,6 +448,9 @@ pub(crate) fn node_routes() -> OpenApiRouter<Arc<AppState>> {
         // the redeem of an approved code (code + PKCE verifier).
         .routes(routes!(branch::get_info))
         .routes(routes!(branch::post_enroll_oauth))
+        // A client sign-in's redeem of its approved code (code + PKCE
+        // verifier) for a session token.
+        .routes(routes!(client::post_client_token))
         // Host-node socket: the node's Ed25519 key is the credential.
         .routes(routes!(ws::get_connect))
         // Owner plugin archives: a node-signed request is the credential.
@@ -480,7 +484,7 @@ where
 /// runs [`classify_transport`]. Answers 404 `node_api_unmounted` while a
 /// TLS mode has no certificate, or 403 `transport_insecure` when the
 /// connection is refused.
-async fn check_transport(
+pub(crate) async fn check_transport(
     state: &Arc<AppState>,
     parts: &mut Parts,
     what: &'static str,
@@ -559,7 +563,7 @@ fn credential_json(credential: &NodeCredential) -> NodeCredentialView {
             ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
-        (status = 404, description = "No such host, or not one the caller may see.", body = crate::http_error::ErrorMessage, example = json!({"error": "book not found: node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"})),
+        (status = 404, description = "No such host, or not one the caller may see.", body = crate::http_error::ErrorMessage, example = json!({"error": "node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c not found"})),
         (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]

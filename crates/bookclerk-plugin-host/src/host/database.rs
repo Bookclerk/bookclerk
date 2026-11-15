@@ -16,6 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use bookclerk_config::{resolve_d1_api_token, resolve_postgres_url, Config, DatabasePluginKind};
 use bookclerk_db_exec::db_value_from_sea;
+use bookclerk_library::EntityKind;
 use bookclerk_plugin_abi::{
     binding_values_from_params, catalog_page_statement, reserved_catalog_relation_missing,
     sql_catalog_page_rows, AdapterExecuteRequest, DbBootstrap, DbCapabilities, DbConnectParams,
@@ -2277,7 +2278,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
             .await?;
         if let Some(err) = atomic_app_err(
             &result.status,
-            bookclerk_library::LibraryError::NotFound(format!("user {id}")),
+            bookclerk_library::LibraryError::not_found(EntityKind::User, id),
         ) {
             return Err(err);
         }
@@ -2297,7 +2298,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
             .await?;
         if let Some(err) = atomic_app_err(
             &result.status,
-            bookclerk_library::LibraryError::NotFound(format!("user {id}")),
+            bookclerk_library::LibraryError::not_found(EntityKind::User, id),
         ) {
             return Err(err);
         }
@@ -2317,7 +2318,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
             .await?;
         if let Some(err) = atomic_app_err(
             &result.status,
-            bookclerk_library::LibraryError::NotFound(format!("user {id}")),
+            bookclerk_library::LibraryError::not_found(EntityKind::User, id),
         ) {
             return Err(err);
         }
@@ -2337,7 +2338,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
             .await?;
         if let Some(err) = atomic_app_err(
             &result.status,
-            bookclerk_library::LibraryError::NotFound(format!("user {id}")),
+            bookclerk_library::LibraryError::not_found(EntityKind::User, id),
         ) {
             return Err(err);
         }
@@ -2388,7 +2389,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
         }
         if let Some(err) = atomic_app_err(
             &result.status,
-            bookclerk_library::LibraryError::NotFound("oidc rp state".into()),
+            bookclerk_library::LibraryError::missing(EntityKind::OidcState),
         ) {
             return Err(err);
         }
@@ -2418,7 +2419,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
         }
         if let Some(err) = atomic_app_err(
             &result.status,
-            bookclerk_library::LibraryError::NotFound("webauthn challenge".into()),
+            bookclerk_library::LibraryError::missing(EntityKind::WebauthnChallenge),
         ) {
             return Err(err);
         }
@@ -2501,7 +2502,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
         }
         if let Some(err) = atomic_app_err(
             &result.status,
-            bookclerk_library::LibraryError::NotFound("job".into()),
+            bookclerk_library::LibraryError::missing(EntityKind::Job),
         ) {
             return Err(err);
         }
@@ -2562,7 +2563,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
             .await?;
         if let Some(err) = atomic_app_err(
             &result.status,
-            bookclerk_library::LibraryError::NotFound("user".into()),
+            bookclerk_library::LibraryError::missing(EntityKind::User),
         ) {
             return Err(err);
         }
@@ -2575,7 +2576,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
             .await?;
         if let Some(err) = atomic_app_err(
             &result.status,
-            bookclerk_library::LibraryError::NotFound("user".into()),
+            bookclerk_library::LibraryError::missing(EntityKind::User),
         ) {
             return Err(err);
         }
@@ -2690,7 +2691,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
             .await?;
         if let Some(err) = atomic_app_err(
             &result.status,
-            bookclerk_library::LibraryError::NotFound(format!("event {event_id}")),
+            bookclerk_library::LibraryError::not_found(EntityKind::DomainEvent, event_id),
         ) {
             return Err(err);
         }
@@ -2733,7 +2734,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
         }
         if let Some(err) = atomic_app_err(
             &result.status,
-            bookclerk_library::LibraryError::NotFound("event delivery".into()),
+            bookclerk_library::LibraryError::missing(EntityKind::EventDelivery),
         ) {
             return Err(err);
         }
@@ -2743,6 +2744,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
     async fn set_acquire_status(
         &self,
         book_uuid: &str,
+        edition_id: Option<&str>,
         status: bookclerk_library::AcquireStatus,
         storage_key: Option<&str>,
         error_message: Option<&str>,
@@ -2755,6 +2757,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
         let result = self
             .call(DbAtomicParams::SetAcquireStatus {
                 book_uuid: book_uuid.to_string(),
+                edition_id: edition_id.map(str::to_string),
                 status: status.as_str().to_string(),
                 storage_key: storage_key.map(str::to_string),
                 error_message: error_message.map(str::to_string),
@@ -2772,7 +2775,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
             .await?;
         if let Some(err) = atomic_app_err(
             &result.status,
-            bookclerk_library::LibraryError::NotFound(format!("book {book_uuid}")),
+            bookclerk_library::LibraryError::not_found(EntityKind::Book, book_uuid),
         ) {
             return Err(err);
         }

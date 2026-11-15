@@ -206,12 +206,22 @@ POSTGRES_STEPS: dict[str, tuple[str, list[str]]] = {
 # Cargo subcommands kept in build-only runs: each leaves artifacts in
 # `target/` that the dependency cache saves.
 BUILD_SUBCOMMANDS = frozenset({"build", "build-app", "check", "clippy", "install-platform"})
+# Generates the API reference (`api_docs`); a build-only run keeps it, since
+# its `cargo doc --all-features` dependencies are cached nowhere else.
+API_DOCS_SCRIPT = "./scripts/generate-api-docs.sh"
 # Jobs that save the dependency caches other runs restore (see ci.yml
 # `save-if`). Build-only runs skip every other job.
 BUILD_ONLY_JOBS = frozenset({"check", "test", "native-gateway", "release"})
-# Checks in a build-only job that only measure or test, so a build-only run
-# drops them (the small-VPS envelope shares the release job).
-BUILD_ONLY_SKIPPED_CHECKS = frozenset({"envelope"})
+# The envelope seed is a load generator, not a shipped binary: compiled
+# without LTO and with parallel codegen it builds in about half the time of
+# the shipping profile (98 s against 173 s locally after a source change),
+# and it runs no slower, since the seed waits on SQLite. Its dependencies are
+# then their own artifacts, which the build-only run compiles into the
+# release caches (docs/contributing/ci.md#small-vps-envelope).
+ENVELOPE_SEED_PROFILE = {
+    "CARGO_PROFILE_RELEASE_LTO": "off",
+    "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "16",
+}
 # Jobs a draft pull request runs: lints, docs and the Rust unit and
 # integration tests, the fast feedback a draft needs. Every other selected
 # job (e2e, release, the confinement and gateway matrices, macOS, Postgres,
@@ -227,6 +237,14 @@ DRAFT_JOBS = frozenset({"check", "test"})
 # there, so a platform failure keeps the pull request out of `main`
 # (docs/contributing/ci.md#platform-legs-in-the-merge-queue).
 QUEUE_ONLY_CHECKS = frozenset({"windows_cluster"})
+# Checks whose own job never saves a cache, compiled on a build-only push by
+# another job's leg on the same runner OS, which saves them into its cache.
+# `windows_cluster` runs only in the queue, on Windows: without this its
+# `bookclerk-cli` and `bookclerk-library` test builds, whose dependency
+# features no other Windows command unifies to, compiled about 250
+# dependencies (about 13 of its 17 minutes) on every queue run
+# (docs/contributing/ci.md#build-only-main-pushes).
+BUILD_ONLY_HOSTED_CHECKS = {"windows_cluster": "native-gateway"}
 # Runner labels of the matrix jobs' `os` legs (`os_matrix` plan output).
 LINUX_RUNNERS = ("ubuntu-latest",)
 ALL_RUNNERS = ("ubuntu-latest", "windows-latest")
@@ -356,13 +374,16 @@ def resolve(
         execution = predicted
     if build_only:
         execution = plan_from_dict(plan_to_dict(execution))
-        execution.checks = {
+        own = {c: v for c, v in execution.checks.items() if CHECK_JOB[c] in BUILD_ONLY_JOBS}
+        # A job whose only checks were dropped has nothing to build.
+        kept = {CHECK_JOB[c] for c in own}
+        # A hosted check rides along only when its host job runs anyway.
+        hosted = {
             c: v
             for c, v in execution.checks.items()
-            if CHECK_JOB[c] in BUILD_ONLY_JOBS and c not in BUILD_ONLY_SKIPPED_CHECKS
+            if c not in own and BUILD_ONLY_HOSTED_CHECKS.get(c) in kept
         }
-        # A job whose only checks were dropped has nothing to build.
-        kept = {CHECK_JOB[c] for c in execution.checks}
+        execution.checks = {**own, **hosted}
         execution.jobs = {job: on and job in BUILD_ONLY_JOBS and job in kept for job, on in execution.jobs.items()}
     deferred: list[str] = []
     if draft:
@@ -416,6 +437,8 @@ def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
     for job in STEP_GATED_JOBS:
         for check in JOB_CHECKS[job]:
             out[f"check_{check}"] = _b(plan.selected(check))
+    for check in BUILD_ONLY_HOSTED_CHECKS:
+        out[f"check_{check}"] = _b(plan.selected(check))
     check_job = [c for c in JOB_CHECKS["check"] if plan.selected(c)]
     out["check_needs_cargo"] = _b(any(c not in NON_CARGO_CHECKS for c in check_job))
     docs = plan.params("api_docs")
@@ -1147,8 +1170,8 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         ]
     if check == "api_docs":
         if params.get("all"):
-            return [Command("API docs (all)", ["./scripts/generate-api-docs.sh", "--check", "--all"])]
-        argv = ["./scripts/generate-api-docs.sh", "--check"]
+            return [Command("API docs (all)", [API_DOCS_SCRIPT, "--check", "--all"])]
+        argv = [API_DOCS_SCRIPT, "--check"]
         for p in params.get("rust_packages", []):
             argv += ["--rust-package", p]
         if params.get("typescript"):
@@ -1450,7 +1473,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
                     "envelope_seed",
                     "--no-run",
                 ],
-                env=env,
+                env={**env, **ENVELOPE_SEED_PROFILE},
             ),
             Command(
                 "1 vCPU / 1 GiB envelope",
@@ -1514,13 +1537,64 @@ def planned_commands(
     return out
 
 
+# The dependency cache each build-only job saves into (ci.yml `shared-key`).
+BUILD_ONLY_CACHE = {"check": "lint", "test": "debug", "native-gateway": "debug", "release": "release"}
+# The workflow variable that carries each cache's build plan digest; every
+# cache step lists its own in `env-vars` (docs/contributing/ci.md#caches).
+BUILD_PLAN_ENV = {"lint": "CI_BUILD_PLAN_LINT", "debug": "CI_BUILD_PLAN_DEBUG", "release": "CI_BUILD_PLAN_RELEASE"}
+
+
+def build_plan_digests(artifact: Mapping[str, Any], workspace: Path) -> dict[str, str]:
+    """Digests of what a build-only push compiles into each dependency cache.
+
+    rust-cache keys cover the lockfile, the manifests, the toolchain and the
+    listed environment, not the commands that fill the cache. A change that
+    makes a build-only job compile something new (a command, a feature set,
+    a profile override) would keep the old key: the build-only push finds it
+    saved and skips the build, and every later run compiles the new
+    dependencies cold until the next lockfile change. Carrying these digests
+    in the cache keys re-keys exactly the caches whose builds changed.
+
+    Args:
+        artifact: A build-only, full-suite plan artifact.
+        workspace: The repository root, for scripts whose contents decide
+            what they compile (`API_DOCS_SCRIPT`).
+
+    Returns:
+        A 16-hex digest per shared key (`lint`, `debug`, `release`), over
+        each OS's build-only commands (argv and Cargo/Rust environment) in
+        the jobs that save that cache, hosted checks included.
+    """
+    plan = execution_plan(artifact)
+    entries: dict[str, list[Any]] = {key: [] for key in BUILD_PLAN_ENV}
+    for os_name in ("Linux", "Windows", "Darwin"):
+        tmp = Path("/ci-tmp")
+        ctx = Context(Path("/workspace"), os_name, tmp, tmp / "files", tmp / "artifacts")
+        for check in sorted(plan.checks):
+            job = BUILD_ONLY_HOSTED_CHECKS.get(check, CHECK_JOB[check])
+            for _, cmd in planned_commands(artifact, check, ctx):
+                env = sorted((k, v) for k, v in cmd.env.items() if k.startswith(("CARGO", "RUST")))
+                entry: list[Any] = [os_name, cmd.argv, env]
+                if cmd.argv[0] == API_DOCS_SCRIPT:
+                    script = (workspace / API_DOCS_SCRIPT).read_bytes()
+                    entry.append(hashlib.sha256(script).hexdigest())
+                entries[BUILD_ONLY_CACHE[job]].append(entry)
+    return {
+        key: hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()[:16]
+        for key, value in entries.items()
+    }
+
+
 def build_only_command(cmd: Command) -> Command | None:
     """``cmd`` reduced to compiling, or ``None`` when it only runs or lints.
 
     Builds, Clippy, installs and ``cargo bench --no-run`` keep running (they
     produce the cached artifacts); test commands compile their targets with
-    ``--no-run``;
-    doctests, formatting, scripts and runtime assertions are dropped.
+    ``--no-run``. Doctests and the API docs run whole: Cargo has no way to
+    only compile them, and each builds its dependencies with a feature set
+    no other command uses (``--all-features``), which the queue's check job
+    would otherwise compile from scratch on every run. Formatting, other
+    scripts and runtime assertions are dropped.
     """
     argv = cmd.argv
     if argv[:3] == ["cargo", "nextest", "run"]:
@@ -1538,12 +1612,14 @@ def build_only_command(cmd: Command) -> Command | None:
     if argv[:2] == ["cargo", "test"]:
         cargo_args = argv[2 : argv.index("--")] if "--" in argv else argv[2:]
         if "--doc" in cargo_args:
-            return None
+            return cmd
         no_run = [] if "--no-run" in cargo_args else ["--no-run"]
         return Command(cmd.label + " (build only)", ["cargo", "test", *cargo_args, *no_run], cmd.cwd, cmd.env)
     if argv[:2] == ["cargo", "bench"] and "--no-run" in argv:
         return cmd
     if argv[0] == "cargo" and len(argv) > 1 and argv[1] in BUILD_SUBCOMMANDS:
+        return cmd
+    if argv[0] == API_DOCS_SCRIPT:
         return cmd
     return None
 
@@ -1766,6 +1842,10 @@ __all__ = [
     "ARTIFACT_NAME",
     "DRAFT_JOBS",
     "QUEUE_ONLY_CHECKS",
+    "BUILD_ONLY_HOSTED_CHECKS",
+    "BUILD_ONLY_CACHE",
+    "BUILD_PLAN_ENV",
+    "build_plan_digests",
     "Command",
     "Context",
     "ExecError",

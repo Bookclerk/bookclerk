@@ -1602,6 +1602,11 @@ pub async fn commit_upload(
         };
         Some(model)
     };
+    // The title's edition takes the files too (`edition_acquisitions`).
+    let edition = match &model {
+        Some(model) => store.edition_of_book(&model.uuid).await?,
+        None => None,
+    };
     let now = stamp(Utc::now());
     let gate_sql = "EXISTS (SELECT 1 FROM node_upload_sessions \
                      WHERE upload_id = ? AND state = 'committed' AND committed_at = ?)";
@@ -1676,8 +1681,52 @@ pub async fn commit_upload(
                 binds,
             ));
         }
-        let event =
-            prepare_publish_domain_event(book_acquired_spec(model, Some(&session.primary_key)))?;
+        if let Some(edition) = edition.as_deref() {
+            let mut binds = vec![
+                text(edition),
+                text(&session.primary_key),
+                text(&session.book_uuid),
+                text(&now),
+                text(edition),
+            ];
+            binds.extend(gate());
+            statements.push(exec(
+                &format!(
+                    "INSERT OR IGNORE INTO edition_acquisitions (\
+                        edition_id, status, storage_key, error_message, title_uuid, updated_at\
+                     ) SELECT ?, 'acquired', ?, NULL, ?, ? \
+                     WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?) AND {gate_sql}"
+                ),
+                binds,
+            ));
+            let mut binds = vec![
+                text(&session.primary_key),
+                text(&session.book_uuid),
+                text(&now),
+                text(edition),
+                text(&session.book_uuid),
+            ];
+            binds.extend(gate());
+            // Another live title that acquired this edition keeps it, as in
+            // `plan_set_acquire_status`.
+            statements.push(exec(
+                &format!(
+                    "UPDATE edition_acquisitions SET status = 'acquired', storage_key = ?, \
+                       error_message = NULL, title_uuid = ?, updated_at = ? \
+                      WHERE edition_id = ? \
+                        AND (status != 'acquired' OR title_uuid = ? \
+                             OR NOT EXISTS (SELECT 1 FROM books \
+                                            WHERE uuid = edition_acquisitions.title_uuid)) \
+                        AND {gate_sql}"
+                ),
+                binds,
+            ));
+        }
+        let event = prepare_publish_domain_event(book_acquired_spec(
+            model,
+            Some(&session.primary_key),
+            edition.as_deref(),
+        ))?;
         let mut binds = vec![
             text(&event.id),
             text(&event.event_type),

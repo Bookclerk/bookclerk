@@ -8,6 +8,7 @@
 //! batches ([`DbAtomicParams::WriteCredits`]); a crash between the two only
 //! leaves them for the next scan to write.
 
+use crate::EntityKind;
 use std::collections::BTreeSet;
 
 use bookclerk_resolve as resolve;
@@ -2331,7 +2332,7 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
         else {
-            return Err(LibraryError::NotFound(format!("work {work_id}")));
+            return Err(LibraryError::not_found(EntityKind::Work, work_id));
         };
         let mut am: works::ActiveModel = existing.clone().into();
         am.description = Set(enrichment.description.clone().or(existing.description));
@@ -2771,7 +2772,7 @@ mod store_tests {
                     isbn: isbn.map(str::to_string),
                     notes: None,
                     status: crate::RequestStatus::Open,
-                    resolved_book_uuid: None,
+                    resolved_edition_id: None,
                     cover_url: None,
                 })
                 .await
@@ -2873,7 +2874,7 @@ mod store_tests {
             isbn: isbn.map(str::to_string),
             notes: None,
             status: crate::RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         };
         let by_isbn = store

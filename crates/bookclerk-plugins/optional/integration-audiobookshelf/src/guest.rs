@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use bookclerk_integrations::{ExternalUser, IntegrationError, Result};
 use bookclerk_plugin_sdk::{
-    EventPollResult, ExternalUser as AbiExternalUser, HealthOk, ListeningProgress,
+    DatabaseBinding, EventPollResult, ExternalUser as AbiExternalUser, HealthOk, ListeningProgress,
 };
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 
 use crate::client::AbsApiClient;
 use crate::integration::AudiobookshelfConfig;
-use crate::listening::collect_listening_snapshots;
+use crate::listening::collect_listening_changes;
 
 /// Integration id written on listening rows and external-user records.
 const PROVIDER: &str = "audiobookshelf";
@@ -276,13 +276,20 @@ pub async fn guest_scan_library(state: &Mutex<AbsGuestState>, force: bool) -> Re
 
 /// Collect listening progress as typed ABI rows (host upserts).
 ///
+/// With the `LISTENING_STATE` database only rows that changed since the
+/// last sync come back, and each user's whole snapshot once a day (see
+/// [`collect_listening_changes`]); without it every row does.
+///
 /// # Errors
 ///
-/// Returns an error when the operation fails.
-pub async fn guest_sync_listening(state: &Mutex<AbsGuestState>) -> Result<Vec<ListeningProgress>> {
+/// Returns an error when ABS cannot list its users.
+pub async fn guest_sync_listening(
+    state: &Mutex<AbsGuestState>,
+    memory: Option<&DatabaseBinding>,
+) -> Result<Vec<ListeningProgress>> {
     let g = state.lock().await;
     let client = g.require_client()?;
-    let snapshots = collect_listening_snapshots(client).await?;
+    let snapshots = collect_listening_changes(client, memory, chrono::Utc::now()).await?;
     Ok(snapshots
         .into_iter()
         .map(|row| ListeningProgress {

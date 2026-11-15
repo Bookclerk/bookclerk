@@ -31,9 +31,11 @@ use sea_orm::{ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter
 
 use super::{now_str, LibraryStore};
 use crate::entities::{
-    books, edition_files, editions, holdings, node_upload_sessions, store_listings,
+    books, edition_acquisitions, edition_files, editions, holdings, node_upload_sessions,
+    store_listings,
 };
 use crate::error::{LibraryError, Result};
+use crate::models::AcquireStatus;
 
 /// The `writer` of a key an acquire run on this node wrote.
 pub const ACQUIRE_WRITER: &str = "acquire";
@@ -175,6 +177,37 @@ pub struct EditionFile {
     pub sha256: Option<String>,
 }
 
+/// An edition's acquire state (`edition_acquisitions`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditionAcquisition {
+    /// The edition id.
+    pub edition_id: String,
+    /// Where the edition's acquire stands; a status this build does not
+    /// know reads as [`AcquireStatus::NotAcquired`].
+    pub status: AcquireStatus,
+    /// Primary destination key of the edition's audio once acquired.
+    pub storage_key: Option<String>,
+    /// Last acquire failure message.
+    pub error_message: Option<String>,
+    /// The library title (`books.uuid`) whose write set the state.
+    pub title_uuid: String,
+    /// RFC 3339 time of that write.
+    pub updated_at: String,
+}
+
+impl From<edition_acquisitions::Model> for EditionAcquisition {
+    fn from(row: edition_acquisitions::Model) -> Self {
+        Self {
+            status: AcquireStatus::parse(&row.status).unwrap_or_default(),
+            edition_id: row.edition_id,
+            storage_key: row.storage_key,
+            error_message: row.error_message,
+            title_uuid: row.title_uuid,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
 /// A row read back into an [`EditionFile`]; `None` for a row whose
 /// `owner_kind` this build does not know, which holds its key against
 /// every claim.
@@ -225,6 +258,25 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
             .map(|listing| listing.edition_id))
+    }
+
+    /// An edition's acquire state; `None` when no title of it was ever
+    /// queued or acquired.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn edition_acquisition(
+        &self,
+        edition_id: &str,
+    ) -> Result<Option<EditionAcquisition>> {
+        Ok(
+            edition_acquisitions::Entity::find_by_id(edition_id.to_string())
+                .one(self.db())
+                .await
+                .map_err(LibraryError::Orm)?
+                .map(EditionAcquisition::from),
+        )
     }
 
     /// The file owner of a library title: its edition

@@ -34,7 +34,11 @@
 //! [`ARTIFACTS_PATH`] with a request signed by [`sign_artifact_request`].
 //!
 //! A scan run on a host returns its rows in fenced [`Body::ScanResults`]
-//! batches; the owner validates and writes them. An acquire asks
+//! batches; the owner validates and writes them. Each account's pass then
+//! reports the ids a delta pass found gone ([`Body::ScanRemoved`]) and how
+//! it ended ([`Body::ScanPassEnd`]), so the owner keeps the account's sync
+//! token ([`WorkJob::scan_tokens`] hands it back) and prunes after a
+//! complete full pass. An acquire asks
 //! [`Body::AcquirePlan`] for its titles, then for each title asks
 //! [`Body::UploadGrant`] and streams the files over HTTP at
 //! [`UPLOADS_PATH`] with the token sealed in [`Body::UploadGranted`]; the
@@ -71,12 +75,18 @@
 //! accounts as an [`AccountBundle`] sealed the same way, when the user
 //! chose to bring them.
 //!
+//! An install can also sign in to a library as a person rather than join
+//! it as a node: a client ([`CLIENT_CLIENT_ID`], [`ClientTokenAnswer`]),
+//! whose session token travels as `Authorization: Bookclerk-Client`
+//! ([`parse_client_authorization`]).
+//!
 //! This crate is pure: no I/O, no clock, no randomness. The daemon (owner)
 //! and the host client share it so both sides sign and check the same
 //! bytes.
 
 mod accounts;
 mod catalog;
+mod client;
 mod frames;
 mod join;
 mod keys;
@@ -101,14 +111,23 @@ pub use catalog::{
     MAX_CATALOG_BATCH_TITLES, MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_TITLE_BYTES,
     MAX_CATALOG_WANTED, MAX_MARKETPLACE_BYTES,
 };
+pub use client::{
+    client_exchange_matches, client_request_problem, is_client_name, is_client_token,
+    is_s256_challenge, parse_client_authorization, parse_client_query, parse_client_token_request,
+    ClientAuthorizeParams, ClientTokenAnswer, ClientTokenRequest, ClientUser, StoredClientCode,
+    CLIENT_AUTH_SCHEME, CLIENT_CLIENT_ID, CLIENT_CODE_TTL_SECS, CLIENT_IDLE_DAYS, CLIENT_SCOPE,
+    CLIENT_TOKEN_LEN, CLIENT_TOKEN_PATH, MAX_CLIENT_NAME_BYTES, MAX_CLIENT_STATE_BYTES,
+};
 pub use ed25519_dalek::SigningKey;
 pub use frames::{
-    is_destination_id, is_storage_key, AcquireTarget, Body, ClaimFilter, ClaimScope, FileCopy,
-    Frame, FrameError, HeldFence, JobStatusEntry, KeeperOutcome, LibraryId, PlanDestination,
-    RemoteArtifact, RemoteDeployment, RemoteVersion, ScanImport, UploadAnswer, UploadCommitRequest,
-    UploadFile, WorkJob, ITEM_JOB, MAX_DESTINATION_ID_BYTES, MAX_LIBRARY_ID_BYTES,
-    MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_STATUS_JOBS, MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES,
-    MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_KEY_BYTES,
+    is_destination_id, is_storage_key, scan_pass_end_problem, scan_removed_problem, AcquireTarget,
+    Body, ClaimFilter, ClaimScope, FileCopy, Frame, FrameError, HeldFence, JobStatusEntry,
+    KeeperOutcome, LibraryId, PlanDestination, RemoteArtifact, RemoteDeployment, RemoteVersion,
+    ScanImport, ScanToken, UploadAnswer, UploadCommitRequest, UploadFile, WorkJob, ITEM_JOB,
+    MAX_DESTINATION_ID_BYTES, MAX_LIBRARY_ID_BYTES, MAX_SCAN_BATCH_ROWS, MAX_SCAN_PRODUCT_ID_BYTES,
+    MAX_SCAN_REMOVED_IDS, MAX_SCAN_ROW_BYTES, MAX_SCAN_SYNC_TOKEN_BYTES, MAX_SCAN_TOKENS,
+    MAX_STATUS_JOBS, MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_BYTES,
+    MAX_UPLOAD_KEY_BYTES,
 };
 pub use join::{
     is_branch_name, is_branch_redirect_uri, is_library_name, pkce_challenge, OAuthEnrollAnswer,

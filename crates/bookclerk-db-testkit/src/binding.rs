@@ -250,7 +250,7 @@ mod tests {
         )));
         assert_eq!(orm.code, PluginErrorCode::DeadlineExceeded);
 
-        let other = library_error(LibraryError::NotFound("book".into()));
+        let other = library_error(LibraryError::missing(bookclerk_library::EntityKind::Book));
         assert_eq!(other.code, PluginErrorCode::Internal);
         assert!(other.message.contains("book"), "{other}");
     }

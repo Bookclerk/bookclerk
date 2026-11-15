@@ -697,15 +697,19 @@ export async function fetchSigninMethods(): Promise<{
 /**
  * Clears the operator cookie session via `POST /api/auth/logout`.
  *
- * @returns Resolves when the logout request finishes.
+ * @returns Resolves when the library answered that the sign-out is done.
+ * @throws {ApiError} When the library answers anything else.
  */
 export async function logout(): Promise<void> {
-  await fetch("/api/auth/logout", {
+  const res = await fetch("/api/auth/logout", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: "{}",
   });
+  if (!res.ok) {
+    throw new ApiError(res.status, `Sign-out failed (${res.status})`);
+  }
 }
 
 /**
@@ -1275,6 +1279,8 @@ export interface ListedSession {
   client_label?: string | null;
   device_type?: string | null;
   user_agent?: string | null;
+  /** For a portal session: `browser`, or `client` for a clerk's library card. */
+  channel?: "browser" | "client" | null;
 }
 
 /**
@@ -3352,7 +3358,7 @@ export type DiscoverFeedState = "ready" | "refreshing" | "preparing";
  * Wishlist / title-request row from `/api/wishlist`.
  *
  * Represents a user ask for a work (and optional acquire queue linkage via
- * `resolved_book_uuid`).
+ * `resolved_edition_id`, the edition that fulfilled it).
  */
 export interface TitleRequest {
   id: number;
@@ -3370,7 +3376,7 @@ export interface TitleRequest {
   work_id: string;
   /** Edition the wish named, when its identifiers reached exactly one. */
   edition_id?: string | null;
-  resolved_book_uuid: string | null;
+  resolved_edition_id: string | null;
   cover_url?: string | null;
   /** Same-origin path of this cover's processed images; see {@link coverSrc}. */
   cover_path?: string | null;

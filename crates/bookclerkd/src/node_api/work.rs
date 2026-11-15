@@ -49,8 +49,8 @@ use bookclerk_library::control_plane::{
 use bookclerk_library::{JobResourceClass, LibraryStore};
 use bookclerk_node_proto::{
     open_secret_update, seal_instance_secrets, seal_secrets, Body, ClaimFilter, Frame, HeldFence,
-    RemoteArtifact, RemoteDeployment, RemoteVersion, ScanImport, SecretEntry, SecretRef,
-    SecretValue, WorkJob, ITEM_JOB, MAX_FRAME_BYTES,
+    RemoteArtifact, RemoteDeployment, RemoteVersion, ScanImport, ScanToken, SecretEntry, SecretRef,
+    SecretValue, WorkJob, ITEM_JOB, MAX_FRAME_BYTES, MAX_SCAN_SYNC_TOKEN_BYTES, MAX_SCAN_TOKENS,
 };
 use rand::RngCore as _;
 use zeroize::{Zeroize as _, Zeroizing};
@@ -410,6 +410,61 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             )
             .await
         }
+        Body::ScanRemoved {
+            job_id,
+            fence,
+            plugin_key,
+            account_id,
+            batch,
+            product_ids,
+        } => {
+            super::host_results::scan_pass_report(
+                library,
+                host,
+                id.clone(),
+                job_id,
+                fence,
+                super::host_results::ScanPass {
+                    plugin_key: &plugin_key,
+                    account_id: &account_id,
+                    report: super::host_results::PassReport::Removed {
+                        batch,
+                        product_ids: &product_ids,
+                    },
+                },
+            )
+            .await
+        }
+        Body::ScanPassEnd {
+            job_id,
+            fence,
+            plugin_key,
+            account_id,
+            sync_token,
+            complete,
+            full,
+        } => {
+            super::host_results::scan_pass_report(
+                library,
+                host,
+                id.clone(),
+                job_id,
+                fence,
+                super::host_results::ScanPass {
+                    plugin_key: &plugin_key,
+                    account_id: &account_id,
+                    report: super::host_results::PassReport::End(
+                        bookclerk_library::control_plane::HandedPassEnd {
+                            account_id: &account_id,
+                            sync_token: &sync_token,
+                            complete,
+                            full,
+                        },
+                    ),
+                },
+            )
+            .await
+        }
         Body::ScanRequest {
             account,
             plugin_instance_id,
@@ -569,6 +624,48 @@ async fn scan_import(host: &HostContext, kind: bookclerk_library::JobKind) -> Op
     })
 }
 
+/// For a scan job, the sync token this owner holds for each store account
+/// whose credentials go with it (see
+/// [`bookclerk_library::control_plane::handed_sync_token`]); accounts
+/// without one are left out, so the host runs a full pass for them.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+async fn scan_tokens(
+    library: &LibraryStore,
+    kind: bookclerk_library::JobKind,
+    source_plugin_key: Option<&str>,
+    secrets: &[bookclerk_library::control_plane::JobSecret],
+) -> bookclerk_library::Result<Vec<ScanToken>> {
+    let (bookclerk_library::JobKind::Scan, Some(plugin_key)) = (kind, source_plugin_key) else {
+        return Ok(Vec::new());
+    };
+    let accounts: std::collections::BTreeSet<&str> = secrets
+        .iter()
+        .map(|secret| &secret.secret_ref)
+        .filter(|r| {
+            r.kind == bookclerk_library::secrets::secret_kind::SOURCE_AUTH
+                && r.provider == plugin_key
+                && !r.account_id.is_empty()
+        })
+        .map(|r| r.account_id.as_str())
+        .collect();
+    let mut tokens = Vec::new();
+    for account_id in accounts.into_iter().take(MAX_SCAN_TOKENS) {
+        let sync_token =
+            bookclerk_library::control_plane::handed_sync_token(library, plugin_key, account_id)
+                .await?;
+        if !sync_token.is_empty() && sync_token.len() <= MAX_SCAN_SYNC_TOKEN_BYTES {
+            tokens.push(ScanToken {
+                account_id: account_id.to_string(),
+                sync_token,
+            });
+        }
+    }
+    Ok(tokens)
+}
+
 /// `claim`: the next trusted job, its fence, and its sealed secrets.
 async fn claim(
     library: &LibraryStore,
@@ -625,6 +722,8 @@ async fn claim(
         ephemeral.zeroize();
         sealed.map(Some)
     };
+    let scan_tokens =
+        scan_tokens(library, job.kind, source_plugin_key.as_deref(), &secrets).await?;
     drop(secrets);
     let scan_import = scan_import(host, job.kind).await;
     let work = sealed.ok().map(|sealed_secrets| {
@@ -639,6 +738,7 @@ async fn claim(
                     attempt: job.attempt_count,
                     scan_import,
                     for_node_owner,
+                    scan_tokens,
                 },
                 fence,
                 lease_secs: host.settings.lease_secs,

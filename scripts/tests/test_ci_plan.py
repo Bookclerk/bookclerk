@@ -25,6 +25,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from ci_plan import execute  # noqa: E402
 from ci_plan.execute import (  # noqa: E402
+    BUILD_ONLY_HOSTED_CHECKS,
     BUILD_ONLY_JOBS,
     DRAFT_JOBS,
     NEXTEST_RUN,
@@ -1594,7 +1595,8 @@ class ExecutionTests(unittest.TestCase):
             set(out),
             {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs", "test_parts"}
             | {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
-            | {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]},
+            | {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]}
+            | {f"check_{c}" for c in BUILD_ONLY_HOSTED_CHECKS},
         )
 
     def test_validate(self) -> None:
@@ -2017,7 +2019,7 @@ class EnvelopeTests(unittest.TestCase):
         self.assertEqual(out["check_release"], "false")
         self.assertEqual(out["release_mode"], "none")
 
-    def test_build_only_main_push_builds_release_but_skips_the_envelope(self) -> None:
+    def test_build_only_main_push_builds_release_and_the_envelope_seed(self) -> None:
         art = resolve(
             base=None,
             head=None,
@@ -2035,9 +2037,10 @@ class EnvelopeTests(unittest.TestCase):
         out = job_outputs(art)
         self.assertEqual(out["job_release"], "true")
         self.assertEqual(out["check_release"], "true")
-        self.assertEqual(out["check_envelope"], "false")
+        # Kept so the seed's own dependency artifacts land in the release caches.
+        self.assertEqual(out["check_envelope"], "true")
 
-    def test_build_only_push_of_an_envelope_input_runs_no_release_job(self) -> None:
+    def test_build_only_push_of_an_envelope_input_builds_only_the_envelope(self) -> None:
         art = resolve(
             base=None,
             head=None,
@@ -2052,8 +2055,86 @@ class EnvelopeTests(unittest.TestCase):
         )
         self.assertTrue(plan_from_dict(art["predicted"]).selected("envelope"))
         out = job_outputs(art)
-        self.assertEqual(out["job_release"], "false")
-        self.assertEqual(out["check_envelope"], "false")
+        self.assertEqual(out["job_release"], "true")
+        self.assertEqual(out["check_release"], "false")
+        self.assertEqual(out["check_envelope"], "true")
+
+    def test_build_only_push_compiles_windows_cluster_in_the_gateway_job(self) -> None:
+        art = resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="push",
+            force_full=True,
+            build_only=True,
+            paths=["Cargo.lock"],
+            metadata=META,
+            workspace=REPO,
+        )
+        out = job_outputs(art)
+        self.assertEqual(out["job_windows_cluster"], "false")
+        self.assertEqual(out["job_native_gateway"], "true")
+        self.assertEqual(out["check_windows_cluster"], "true")
+        cmds = [build_only_command(c) for _, c in planned_commands(art, "windows_cluster", CTX) if not _]
+        kept = [c.argv for c in cmds if c is not None]
+        self.assertTrue(kept)
+        self.assertTrue(all(argv[:2] == ["cargo", "test"] and argv[-1] == "--no-run" for argv in kept), kept)
+
+    def test_hosted_check_needs_its_host_job_in_a_build_only_push(self) -> None:
+        art = resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="push",
+            build_only=True,
+            paths=["scripts/bench/small-vps.sh"],
+            metadata=META,
+            workspace=REPO,
+        )
+        self.assertEqual(job_outputs(art)["check_windows_cluster"], "false")
+
+    def test_build_only_envelope_compiles_the_platform_and_seed_only(self) -> None:
+        p = plan("crates/bookclerk-library/tests/envelope_seed.rs")
+        cmds = [build_only_command(c) for _, c in planned_commands(artifact(p), "envelope", CTX) if not _]
+        kept = [c for c in cmds if c is not None]
+        self.assertEqual([c.argv[:2] for c in kept], [["cargo", "install-platform"], ["cargo", "test"]])
+        self.assertIn("envelope_seed", kept[1].argv)
+
+    def test_build_plan_digest_rekeys_only_the_cache_whose_builds_changed(self) -> None:
+        art = resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="push",
+            force_full=True,
+            build_only=True,
+            paths=["Cargo.lock"],
+            metadata=META,
+            workspace=REPO,
+        )
+        before = execute.build_plan_digests(art, REPO)
+        self.assertEqual(before, execute.build_plan_digests(art, REPO))
+        with mock.patch.dict(execute.ENVELOPE_SEED_PROFILE, {"CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "8"}):
+            after = execute.build_plan_digests(art, REPO)
+        self.assertNotEqual(before["release"], after["release"])
+        self.assertEqual(before["lint"], after["lint"])
+        self.assertEqual(before["debug"], after["debug"])
+        # A hosted check counts toward its host job's cache.
+        with mock.patch.dict(execute.BUILD_ONLY_HOSTED_CHECKS, {"windows_cluster": "release"}):
+            moved = execute.build_plan_digests(art, REPO)
+        self.assertNotEqual(before["debug"], moved["debug"])
+
+    def test_envelope_seed_compiles_without_lto(self) -> None:
+        p = plan("crates/bookclerk-library/tests/envelope_seed.rs")
+        seed = [c for _, c in planned_commands(artifact(p), "envelope", CTX) if not _][1]
+        self.assertEqual(seed.env["CARGO_PROFILE_RELEASE_LTO"], "off")
+        self.assertEqual(seed.env["CARGO_PROFILE_RELEASE_CODEGEN_UNITS"], "16")
 
 
 class RunnerLayoutTests(unittest.TestCase):
@@ -2152,6 +2233,8 @@ class RunnerLayoutTests(unittest.TestCase):
         art = self.build_only_artifact()
         execution = plan_from_dict(art["execution"])
         for check in execution.checks:
+            if check in ("doctest", "api_docs"):
+                continue  # Run whole; see test_build_only_runs_doctests_and_api_docs.
             for key, cmd in planned_commands(art, check, CTX):
                 with self.subTest(check=check, argv=cmd.argv):
                     self.assertEqual(cmd.argv[0], "cargo", cmd.argv)
@@ -2189,6 +2272,17 @@ class RunnerLayoutTests(unittest.TestCase):
         assert kept is not None
         self.assertEqual(kept.argv, bench)
         self.assertIsNone(build_only_command(Command("bench run", bench[:-1])))
+
+    def test_build_only_runs_doctests_and_api_docs(self) -> None:
+        # Both build `--all-features` dependencies no other command builds,
+        # so the main push runs them whole to leave those in the lint cache.
+        art = self.build_only_artifact()
+        doctests = [c.argv for _, c in planned_commands(art, "doctest", CTX)]
+        self.assertEqual(doctests, [["cargo", "test", "--workspace", "--exclude", "bookclerk-desktop", "--doc", "--all-features"]])
+        api_docs = [c.argv for _, c in planned_commands(art, "api_docs", CTX)]
+        self.assertEqual(api_docs, [["./scripts/generate-api-docs.sh", "--check", "--all"]])
+        # Other scripts still drop out.
+        self.assertIsNone(build_only_command(Command("store-free host scan", ["./scripts/check-store-free-hosts.sh"])))
 
     def draft_artifact(self, *paths: str, force_full: bool = False) -> dict:
         return resolve(

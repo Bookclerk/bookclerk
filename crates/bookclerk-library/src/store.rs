@@ -8,6 +8,7 @@
 //! backend-portable. Timestamps live in the DB as RFC 3339 `TEXT`; records
 //! expose `chrono::DateTime<Utc>` and conversions happen at the record boundary.
 
+use crate::EntityKind;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -780,7 +781,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(account_id.into()))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Account, account_id))?;
         let mut am: accounts::ActiveModel = model.into();
         am.scan_enabled = Set(i64::from(scan_enabled));
         am.updated_at = Set(now_str());
@@ -800,7 +801,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(account_id.into()))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Account, account_id))?;
         let mut am: accounts::ActiveModel = model.into();
         am.connection_status = Set(String::from("active"));
         am.scan_enabled = Set(1);
@@ -836,7 +837,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(account_id.into()))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Account, account_id))?;
         let mut am: accounts::ActiveModel = model.into();
         am.scan_enabled = Set(0);
         am.connection_status = Set(String::from("revoked"));
@@ -959,7 +960,7 @@ impl LibraryStore {
             .await?;
         self.get_user(id)
             .await?
-            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))
     }
 
     /// Writes a loaded title's changed columns and bumps the library topic
@@ -1003,7 +1004,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(format!("title row {id}")))
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Book, id))
     }
 
     /// Writes a loaded user's changed columns and bumps the users topic in
@@ -1021,7 +1022,7 @@ impl LibraryStore {
             .await?;
         self.get_user(id)
             .await?
-            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))
     }
 
     /// Look up a first-party user by id.
@@ -1334,7 +1335,7 @@ impl LibraryStore {
             .one(txn)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let current = map_user(model);
         if matches!(current.role, UserRole::Owner)
             && matches!(current.status, UserStatus::Active)
@@ -1481,7 +1482,7 @@ impl LibraryStore {
             .one(txn)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let current = map_user(model.clone());
         if matches!(status, UserStatus::Disabled)
             && matches!(current.role, UserRole::Owner)
@@ -1514,7 +1515,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let mut am: users::ActiveModel = model.into();
         am.display_name = Set(display_name
             .map(str::trim)
@@ -1551,7 +1552,7 @@ impl LibraryStore {
             .one(txn)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let next_sv = model.security_version.saturating_add(1);
         let mut am: users::ActiveModel = model.into();
         am.password_hash = Set(password_hash.map(str::to_string));
@@ -1576,7 +1577,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let mut am: users::ActiveModel = model.into();
         am.login_name = Set(normalize_login_name(login_name));
         am.updated_at = Set(now_str());
@@ -1593,7 +1594,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let mut am: users::ActiveModel = model.into();
         am.email = Set(crate::email::normalize_user_email(email)?);
         am.updated_at = Set(now_str());
@@ -1616,7 +1617,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let mut am: users::ActiveModel = model.into();
         am.avatar_source = Set(source
             .map(str::trim)
@@ -1654,7 +1655,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound("portal identity".into()))?;
+            .ok_or_else(|| LibraryError::missing(EntityKind::PortalIdentity))?;
         let mut am: portal_identities::ActiveModel = model.into();
         am.picture_url = Set(next);
         am.update(&self.db).await.map_err(LibraryError::Orm)?;
@@ -1822,7 +1823,7 @@ impl LibraryStore {
             .one(txn)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let current = map_user(model.clone());
         if !matches!(role, UserRole::Owner)
             && matches!(current.role, UserRole::Owner)
@@ -2323,7 +2324,7 @@ impl LibraryStore {
                     .one(txn)
                     .await
                     .map_err(LibraryError::Orm)?
-                    .ok_or_else(|| LibraryError::NotFound(format!("user {user_id}")))?;
+                    .ok_or_else(|| LibraryError::not_found(EntityKind::User, user_id))?;
                 if user.password_hash.is_none() {
                     let Some(hash) = new_password_hash else {
                         return Err(LibraryError::Other(anyhow::anyhow!(
@@ -2351,6 +2352,9 @@ impl LibraryStore {
             user_agent: Set(client.and_then(|c| c.user_agent.clone())),
             device_type: Set(client.map(|c| c.device_type.clone())),
             client_label: Set(client.map(|c| c.client_label.clone())),
+            kind: Set(crate::models::PortalSessionKind::Browser
+                .as_str()
+                .to_string()),
         };
         session.insert(txn).await.map_err(LibraryError::Orm)?;
         if let Some(user_id) = identity.user_id {
@@ -2397,10 +2401,77 @@ impl LibraryStore {
             user_agent: Set(client.and_then(|c| c.user_agent.clone())),
             device_type: Set(client.map(|c| c.device_type.clone())),
             client_label: Set(client.map(|c| c.client_label.clone())),
+            kind: Set(crate::models::PortalSessionKind::Browser
+                .as_str()
+                .to_string()),
         };
         am.insert(&self.db).await.map_err(LibraryError::Orm)?;
         Self::set_last_seen_for_identity_on(&self.db, identity_id, &now).await?;
         Ok(())
+    }
+
+    /// Creates a client sign-in session: a token a clerk presents
+    /// as `Authorization: Bookclerk-Client`, never as a cookie.
+    ///
+    /// # Arguments
+    ///
+    /// * `token_hash` - SHA-256 hex of the token (the token is never stored).
+    /// * `identity_id` - The user's portal identity.
+    /// * `expires_at` - First expiry; each use moves it forward
+    ///   ([`Self::get_client_session_identity`]).
+    /// * `label` - The name the clerk gave itself, shown in the
+    ///   user's session list.
+    ///
+    /// # Returns
+    ///
+    /// The new session's row id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the insert fails.
+    pub async fn insert_client_session(
+        &self,
+        token_hash: &str,
+        identity_id: i64,
+        expires_at: chrono::DateTime<Utc>,
+        label: &str,
+    ) -> Result<i64> {
+        let now = now_str();
+        let am = portal_sessions::ActiveModel {
+            id: NotSet,
+            token_hash: Set(token_hash.to_string()),
+            identity_id: Set(identity_id),
+            expires_at: Set(expires_at.to_rfc3339()),
+            created_at: Set(now.clone()),
+            last_used_at: Set(Some(now.clone())),
+            user_agent: Set(None),
+            device_type: Set(Some(String::from("client"))),
+            client_label: Set(Some(label.to_string())),
+            kind: Set(crate::models::PortalSessionKind::Client
+                .as_str()
+                .to_string()),
+        };
+        let row = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Self::set_last_seen_for_identity_on(&self.db, identity_id, &now).await?;
+        Ok(row.id)
+    }
+
+    /// Deletes a client sign-in session by token hash (the client signing
+    /// itself out). A browser session with that hash is left alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the delete fails.
+    pub async fn delete_client_session(&self, token_hash: &str) -> Result<bool> {
+        let result = portal_sessions::Entity::delete_many()
+            .filter(portal_sessions::Column::TokenHash.eq(token_hash))
+            .filter(
+                portal_sessions::Column::Kind.eq(crate::models::PortalSessionKind::Client.as_str()),
+            )
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(result.rows_affected > 0)
     }
 
     /// Delete a portal session by token hash (logout / revoke).
@@ -2452,15 +2523,20 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
             .into_iter()
-            .map(|r| crate::models::PortalSessionRecord {
-                id: r.id,
-                token_hash: r.token_hash,
-                created_at: r.created_at,
-                expires_at: r.expires_at,
-                last_used_at: r.last_used_at,
-                user_agent: r.user_agent,
-                device_type: r.device_type,
-                client_label: r.client_label,
+            .filter_map(|r| {
+                // The column's CHECK admits only known kinds.
+                let kind = crate::models::PortalSessionKind::parse(&r.kind)?;
+                Some(crate::models::PortalSessionRecord {
+                    id: r.id,
+                    token_hash: r.token_hash,
+                    created_at: r.created_at,
+                    expires_at: r.expires_at,
+                    last_used_at: r.last_used_at,
+                    user_agent: r.user_agent,
+                    device_type: r.device_type,
+                    client_label: r.client_label,
+                    kind,
+                })
             })
             .collect())
     }
@@ -2502,11 +2578,13 @@ impl LibraryStore {
             .map_err(LibraryError::Orm)
     }
 
-    /// Resolve a valid portal session to its identity.
+    /// Resolve a valid browser (cookie) session to its identity.
     ///
     /// Refreshes `portal_sessions.last_used_at` and `users.last_seen_at` at most
     /// once per minute so administrator presence can tell active from idle
     /// without a write on every request. `last_seen_at` is kept after logout.
+    /// A client sign-in's token is not a browser session and resolves to
+    /// nothing here.
     ///
     /// # Errors
     ///
@@ -2515,9 +2593,49 @@ impl LibraryStore {
         &self,
         token_hash: &str,
     ) -> Result<Option<crate::models::PortalIdentity>> {
+        self.session_identity(token_hash, crate::models::PortalSessionKind::Browser, None)
+            .await
+    }
+
+    /// Resolve a valid client sign-in session to its identity.
+    ///
+    /// Like [`Self::get_portal_session_identity`], but only for a `client`
+    /// session, and each touch (at most once a minute) also moves its expiry
+    /// to `idle` from now, so a client in use stays signed in and one left
+    /// unused for `idle` is signed out.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
+    pub async fn get_client_session_identity(
+        &self,
+        token_hash: &str,
+        idle: chrono::Duration,
+    ) -> Result<Option<crate::models::PortalIdentity>> {
+        self.session_identity(
+            token_hash,
+            crate::models::PortalSessionKind::Client,
+            Some(idle),
+        )
+        .await
+    }
+
+    /// Resolves a live session of one kind, touching it at most once a
+    /// minute and, with `slide`, moving its expiry to `slide` from now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read or the touch fails.
+    async fn session_identity(
+        &self,
+        token_hash: &str,
+        kind: crate::models::PortalSessionKind,
+        slide: Option<chrono::Duration>,
+    ) -> Result<Option<crate::models::PortalIdentity>> {
         let now = now_str();
         let Some(session) = portal_sessions::Entity::find()
             .filter(portal_sessions::Column::TokenHash.eq(token_hash))
+            .filter(portal_sessions::Column::Kind.eq(kind.as_str()))
             .filter(portal_sessions::Column::ExpiresAt.gt(&now))
             .one(&self.db)
             .await
@@ -2533,6 +2651,9 @@ impl LibraryStore {
         if should_touch {
             let mut am: portal_sessions::ActiveModel = session.into();
             am.last_used_at = Set(Some(now.clone()));
+            if let Some(idle) = slide {
+                am.expires_at = Set((Utc::now() + idle).to_rfc3339());
+            }
             am.update(&self.db).await.map_err(LibraryError::Orm)?;
         }
         let identity = self.get_portal_identity_by_id(identity_id).await?;
@@ -2770,7 +2891,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound("operator session".into()))?;
+            .ok_or_else(|| LibraryError::missing(EntityKind::OperatorSession))?;
         let mut am: operator_sessions::ActiveModel = session.into();
         am.impersonating_user_id = Set(user_id);
         am.last_used_at = Set(Some(now));
@@ -2926,7 +3047,7 @@ impl LibraryStore {
                     .one(&self.db)
                     .await
                     .map_err(LibraryError::Orm)?
-                    .ok_or_else(|| LibraryError::NotFound("portal identity".into()))?;
+                    .ok_or_else(|| LibraryError::missing(EntityKind::PortalIdentity))?;
                 let mut am: portal_identities::ActiveModel = model.into();
                 am.user_id = Set(Some(user_id));
                 if label.is_some() {
@@ -3137,7 +3258,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound("passkey".into()))?;
+            .ok_or_else(|| LibraryError::missing(EntityKind::Passkey))?;
         let mut am: webauthn_credentials::ActiveModel = model.into();
         am.passkey_json = Set(passkey_json.to_string());
         am.last_used_at = Set(Some(now_str()));
@@ -3196,7 +3317,7 @@ impl LibraryStore {
             ))
             .await?;
         if batch::rows_affected(&reply, 0) == 0 {
-            return Err(LibraryError::NotFound("user".into()));
+            return Err(LibraryError::missing(EntityKind::User));
         }
         Ok(())
     }
@@ -3211,7 +3332,7 @@ impl LibraryStore {
             .one(txn)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound("user".into()))?;
+            .ok_or_else(|| LibraryError::missing(EntityKind::User))?;
         let mut am: users::ActiveModel = model.into();
         am.totp_enabled = Set(i64::from(enabled));
         am.updated_at = Set(now_str());
@@ -4094,7 +4215,7 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         if res.rows_affected == 0 {
-            return Err(LibraryError::NotFound(account_id.into()));
+            return Err(LibraryError::not_found(EntityKind::Account, account_id));
         }
         Ok(())
     }
@@ -4599,7 +4720,7 @@ impl LibraryStore {
     async fn resolve_book(&self, title_id: &str, account_id: &str) -> Result<books::Model> {
         self.resolve_book_in(None, title_id, account_id)
             .await?
-            .ok_or_else(|| LibraryError::NotFound(title_id.into()))
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Book, title_id))
     }
 
     /// Best match for `title_id` on `account_id`, optionally within one plugin.
@@ -4776,9 +4897,10 @@ impl LibraryStore {
         reason: Option<&str>,
     ) -> Result<()> {
         let Some((plugin_key, product_id)) = self.ignore_key(title_id, account_id).await? else {
-            return Err(LibraryError::NotFound(format!(
-                "title `{title_id}` is not in the library for account `{account_id}`"
-            )));
+            return Err(LibraryError::not_found(
+                EntityKind::Book,
+                format!("{title_id} of account {account_id}"),
+            ));
         };
         if ignored {
             let existing = ignored_titles::Entity::find()
@@ -4829,6 +4951,12 @@ impl LibraryStore {
 
     /// Updates acquire status, storage key, and optional error message.
     ///
+    /// The title's edition records the write too (`edition_acquisitions`,
+    /// read with [`Self::edition_acquisition`]) in the same batch, and an
+    /// acquired title's `book_acquired` event names that edition. An
+    /// edition another title acquired keeps its state whatever this title
+    /// writes, while that title stays in the library.
+    ///
     /// # Arguments
     ///
     /// * `title_id` - Product id / ASIN / ISBN used as the title key.
@@ -4853,16 +4981,24 @@ impl LibraryStore {
         error_message: Option<&str>,
     ) -> Result<()> {
         let model = self.resolve_book(title_id, account_id).await?;
+        let edition = self.edition_of_book(&model.uuid).await?;
         if let Some(atomic) = &self.atomic {
             let event = if status == AcquireStatus::Acquired {
                 Some(event_outbox::prepare_publish_domain_event(
-                    event_outbox::book_acquired_spec(&model, storage_key),
+                    event_outbox::book_acquired_spec(&model, storage_key, edition.as_deref()),
                 )?)
             } else {
                 None
             };
             return atomic
-                .set_acquire_status(&model.uuid, status, storage_key, error_message, event)
+                .set_acquire_status(
+                    &model.uuid,
+                    edition.as_deref(),
+                    status,
+                    storage_key,
+                    error_message,
+                    event,
+                )
                 .await;
         }
         // In-process fallback for a store opened without an atomic backend
@@ -4870,8 +5006,15 @@ impl LibraryStore {
         // atomic operation above; an external adapter refuses this `begin()`.
         #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        match event_outbox::set_acquire_status_on(&txn, model, status, storage_key, error_message)
-            .await
+        match event_outbox::set_acquire_status_on(
+            &txn,
+            model,
+            edition.as_deref(),
+            status,
+            storage_key,
+            error_message,
+        )
+        .await
         {
             Ok(()) => {
                 txn.commit().await.map_err(LibraryError::Orm)?;
@@ -5026,7 +5169,7 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         if res.rows_affected == 0 {
-            return Err(LibraryError::NotFound(name.into()));
+            return Err(LibraryError::not_found(EntityKind::SavedFilter, name));
         }
         Ok(())
     }
@@ -5129,7 +5272,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(book_uuid.into()))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Book, book_uuid))?;
         let mut am: books::ActiveModel = model.into();
         if let Some(v) = &fields.description {
             am.description = Set(Some(v.clone()));
@@ -5391,7 +5534,7 @@ impl LibraryStore {
             notes: Set(req.notes.clone()),
             status: Set(req.status.as_str().to_string()),
             preferred_source: NotSet,
-            resolved_book_uuid: Set(req.resolved_book_uuid.clone()),
+            resolved_edition_id: Set(req.resolved_edition_id.clone()),
             cover_url: Set(req.cover_url.clone()),
             created_at: Set(now.clone()),
             updated_at: Set(now),
@@ -5401,7 +5544,7 @@ impl LibraryStore {
             .await;
         self.get_title_request_by_id(model.id)
             .await?
-            .ok_or_else(|| LibraryError::NotFound(model.uuid))
+            .ok_or_else(|| LibraryError::not_found(EntityKind::TitleRequest, model.uuid))
     }
 
     /// Publishes `wishlist_changed` for one wishlist row, after its write.
@@ -5515,7 +5658,7 @@ impl LibraryStore {
         let mut row = self
             .get_title_request_by_id(title_request_id)
             .await?
-            .ok_or_else(|| LibraryError::NotFound(title_request_id.to_string()))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::TitleRequest, title_request_id))?;
         // Persist merged identity fields onto the parent when still blank.
         if let Some(model) = title_requests::Entity::find_by_id(title_request_id)
             .one(&self.db)
@@ -5752,7 +5895,7 @@ impl LibraryStore {
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(existing.uuid.clone()))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::TitleRequest, &existing.uuid))?;
         let mut am: title_requests::ActiveModel = model.into();
         am.cover_url = Set(Some(cover.to_string()));
         am.updated_at = Set(now_str());
@@ -5760,7 +5903,7 @@ impl LibraryStore {
         self.hydrate_requests(vec![model])
             .await?
             .pop()
-            .ok_or_else(|| LibraryError::NotFound(existing.uuid.clone()))
+            .ok_or_else(|| LibraryError::not_found(EntityKind::TitleRequest, &existing.uuid))
     }
 
     /// Open wish of this identity for `work_id`, if any.
@@ -6034,7 +6177,7 @@ impl LibraryStore {
     ///
     /// * `uuid` - Book UUID.
     /// * `status` - Acquire or request status value.
-    /// * `resolved_book_uuid` - `resolved_book_uuid` argument for this call.
+    /// * `resolved_edition_id` - Edition that fulfilled the request, when it is now held.
     ///
     /// # Returns
     ///
@@ -6047,18 +6190,18 @@ impl LibraryStore {
         &self,
         uuid: &str,
         status: RequestStatus,
-        resolved_book_uuid: Option<&str>,
+        resolved_edition_id: Option<&str>,
     ) -> Result<()> {
         let model = title_requests::Entity::find()
             .filter(title_requests::Column::Uuid.eq(uuid))
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::NotFound(uuid.into()))?;
+            .ok_or_else(|| LibraryError::not_found(EntityKind::TitleRequest, uuid))?;
         let mut am: title_requests::ActiveModel = model.into();
         am.status = Set(status.as_str().to_string());
-        if let Some(v) = resolved_book_uuid {
-            am.resolved_book_uuid = Set(Some(v.to_string()));
+        if let Some(v) = resolved_edition_id {
+            am.resolved_edition_id = Set(Some(v.to_string()));
         }
         am.updated_at = Set(now_str());
         let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
@@ -6619,8 +6762,8 @@ pub struct NewTitleRequest {
     pub notes: Option<String>,
     /// Lifecycle status for the row (user, request, …).
     pub status: RequestStatus,
-    /// Library `books.uuid` once the wishlist item is fulfilled.
-    pub resolved_book_uuid: Option<String>,
+    /// Edition (`editions.id`) the library holds once the wishlist item is fulfilled.
+    pub resolved_edition_id: Option<String>,
     /// HTTPS URL for cover art when known.
     pub cover_url: Option<String>,
 }
@@ -7187,7 +7330,7 @@ fn map_request(m: title_requests::Model) -> TitleRequestRecord {
         work_key: String::new(),
         work_id: m.work_id,
         edition_id: m.edition_id,
-        resolved_book_uuid: m.resolved_book_uuid,
+        resolved_edition_id: m.resolved_edition_id,
         cover_url: m.cover_url,
         sources: Vec::new(),
         description: None,
@@ -7719,7 +7862,7 @@ pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
     StoredFeed,
 };
-pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
+pub use edition_files::{EditionAcquisition, EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};
 pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};

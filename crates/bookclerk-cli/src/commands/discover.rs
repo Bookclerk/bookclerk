@@ -297,7 +297,7 @@ fn wish_request(
         isbn,
         notes,
         status: RequestStatus::Open,
-        resolved_book_uuid: None,
+        resolved_edition_id: None,
         cover_url: None,
     }
 }

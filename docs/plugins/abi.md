@@ -262,7 +262,10 @@ The host `EventPublisher` writes straight into the library outbox
 - **Host-emitted types.** Some domain events belong to the host.
   `book_acquired` is one: a source plugin's acquire handler returns the
   book, then the host's acquire pipeline records it and publishes
-  `book_acquired` in the same transaction as the library row.
+  `book_acquired` in the same transaction as the library row. Its payload
+  names the title (`titleId`), its edition (`editionId`, `null` before the
+  title resolves to one), `source`, `asin`, `isbn`, `accountId` and the
+  written `pathKeys`.
   `edition_linked`, `edition_updated` and `holding_added` are written by
   the library model resolver in the same batch as the store listing they
   describe, `holding_removed` in the batch that deletes the holding, and `wishlist_changed` and `listening_synced` by the library

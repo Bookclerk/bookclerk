@@ -16,7 +16,10 @@ pub use client::{
 };
 pub use guest::AbsGuestState;
 pub use integration::{AbsIntegration, AudiobookshelfConfig};
-pub use listening::{collect_listening_snapshots, sync_listening_progress};
+pub use listening::{
+    collect_listening_changes, collect_listening_snapshots, migrations as listening_migrations,
+    migrations_for as listening_migrations_for, sync_listening_progress, LISTENING_STATE_BINDING,
+};
 
 /// Integration id used in describe() and `[integrations.audiobookshelf]`.
 pub const ID: &str = "audiobookshelf";

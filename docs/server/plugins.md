@@ -265,6 +265,38 @@ existing `plugin-grants.json` approval carried onto it.
   place, unless the database connection changed. Then every guest is
   retired, and the reconciler brings the present deployments back.
 
+### Plugins that sleep when idle
+
+Some plugins only answer triggers and lookups: events, queue messages,
+cron fires, metadata lookups and cover fetches. The reconciler starts one
+of these once, checks its health, and then lets it sleep:
+
+1. After 60 seconds with no call in flight, the host stops the guest
+   process. The deployment stays healthy and keeps its subscriptions,
+   schedules and placement budget.
+2. The next delivery, cron fire or lookup starts the guest again before
+   the call goes through. On a 1-CPU machine a native or JavaScript
+   plugin starts in about 60 to 80 ms.
+3. If the guest cannot start, the call fails and the event or job is
+   retried the usual way.
+
+While a plugin sleeps, its health reads "asleep; starts on its next call"
+without waking it.
+
+Storefronts sleep the same way, after 5 minutes without a call, because
+their work comes in bursts: a scan pages through a library and an acquire
+fetches several parts. A sign-in, scan, fetch, catalog search or Discover
+lookup starts the store's guest again. Listing a store's accounts reads
+the library and does not wake it. Credentials a guest refreshes are
+written back as they change, so a guest started later begins from the
+stored ones.
+
+> [!NOTE]
+> Storage destinations, remote libraries such as Audiobookshelf, sign-in
+> providers (`oidc`), plugins that belong to more than one family, and
+> Python plugins stay running for now. Python guests take several seconds
+> to start.
+
 ### How a node hears about a change
 
 Each node consumes its own queue, `node.<node_id>`, on the outbox.

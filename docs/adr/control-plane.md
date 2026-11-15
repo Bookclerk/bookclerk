@@ -1510,6 +1510,28 @@ the handed credentials only. There is no in-process fallback.
   node's trust (with its owner's accounts) are confirmed again before each
   row is written, so a lease lost or trust withdrawn mid-batch stops the
   rows not yet written.
+- **Scan passes.** A Host's scan keeps the owner's sync state, so a Host
+  pass is a delta pass whenever a local one would be. The `work` frame
+  carries `scan_tokens`: the owner's token per handed account whose last
+  complete pass is under 7 days old (`handed_sync_token`). After the
+  rows, each account's pass sends the ids a delta pass found gone
+  (`scan.removed`, at most 500 per frame) and how it ended
+  (`scan.pass_end {sync_token, complete, full}`). Both pass the same
+  checks as a row naming that account. Every row stamps its holding with
+  a pass id derived from the job and fence (`handed_pass_id`), so a
+  complete full pass's end removes the account's holdings no row of that
+  attempt listed, and then stores the token as a local pass's end does.
+  A record that maps onto no library row (an ebook, say) still stamps its
+  holding, so the prune keeps it. The Host sends all of a pass's rows
+  before its removals, so it reconciles them in page order first: a title
+  removed on one page and listed on a later one is sent only as a row,
+  and one listed and then removed only as a removal. A Host that skipped a row too large to send reports no complete pass
+  and no token, so the next pass is full rather than pruning or skipping
+  that title. Plugin databases are not granted on a Host, so a plugin
+  whose tokens name state in its own database (the hash-delta
+  storefronts) refuses the owner's token there and the pass restarts
+  once as a full pass; tokens that name only store state (Audible's)
+  carry over.
 - **Acquire plan.** `acquire.plan` answers `acquire.targets {targets,
   destinations}`: the owner's pending titles the job covers and every
   output destination deployed on the answering owner node, each with an
@@ -1725,6 +1747,15 @@ names are unchanged.
   operator alone) checks the user is active, `core.host_enrollment` is on
   and `classify_transport` allows the connection, then stores a
   single-use code (hashed, 60 s) in `oidc_auth_codes`.
+- **Library cards (2026-11-13).** A second built-in public client,
+  `bookclerk-client` (scope `library:member`, same redirect and PKCE
+  rules), signs a clerk in as the person. Its code is redeemed only
+  at `POST /api/client/v1/token` for an opaque session token
+  (`portal_sessions`, `kind = client`, 90 idle days), sent as
+  `Authorization: Bookclerk-Client <token>` and accepted only on the
+  routes a browser session may use for the person's own library, never on
+  administration or as a cookie. No node is enrolled; see
+  [ADR: Library catalog network](library-catalog-network.md#kinds-of-install).
 - **One redeem batch.** `POST /api/node/v1/enroll/oauth` consumes the code,
   checks client, redirect URI, scope and verifier, and records an
   enrollment link whose id and secret derive from the code and verifier

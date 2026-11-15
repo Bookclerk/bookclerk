@@ -1,5 +1,6 @@
 //! Helpers to persist acquire success as a durable `book_acquired` outbox event.
 
+use bookclerk_library::EntityKind;
 use bookclerk_library::{LibraryStore, PublishDomainEventOutcome};
 
 /// Look up the acquired book and publish `book_acquired` to the durable outbox.
@@ -30,13 +31,16 @@ pub async fn emit_book_acquired(
     }
 
     let Some(book) = book else {
-        return Err(bookclerk_library::LibraryError::NotFound(format!(
-            "no book row for acquire event `{product_or_uuid}`"
-        )));
+        return Err(bookclerk_library::LibraryError::not_found(
+            EntityKind::Book,
+            product_or_uuid,
+        ));
     };
 
+    let edition = library.edition_of_book(&book.uuid).await?;
     let payload = serde_json::json!({
         "titleId": book.uuid,
+        "editionId": edition,
         "source": book.source,
         "asin": book.asin,
         "isbn": book.isbn,

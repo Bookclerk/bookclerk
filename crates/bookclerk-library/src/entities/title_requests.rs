@@ -25,8 +25,8 @@ pub struct Model {
     pub status: String,
     /// Preferred storefront plugin id for fulfilling a wishlist item.
     pub preferred_source: Option<String>,
-    /// Library `books.uuid` once the wishlist item is fulfilled.
-    pub resolved_book_uuid: Option<String>,
+    /// Edition (`editions.id`) the library holds once the wishlist item is fulfilled.
+    pub resolved_edition_id: Option<String>,
     /// HTTPS URL for cover art when known.
     pub cover_url: Option<String>,
     /// RFC 3339 timestamp when the row was inserted.

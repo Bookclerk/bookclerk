@@ -136,7 +136,7 @@ mod tests {
             isbn: Some(isbn.into()),
             notes: None,
             status: RequestStatus::Open,
-            resolved_book_uuid: None,
+            resolved_edition_id: None,
             cover_url: None,
         }
     }

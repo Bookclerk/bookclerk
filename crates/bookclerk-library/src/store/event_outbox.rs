@@ -2,6 +2,7 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
+use crate::EntityKind;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::anyhow;
@@ -19,8 +20,8 @@ use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
 use crate::column_read::SelectColumnExt;
 use crate::control_plane::{bump_if_stamped, bump_on, exec_bumped_via, sea_probe, Bump, LiveTopic};
 use crate::entities::{
-    books, domain_events, event_deliveries, event_outbox_stats, event_subscriber_nodes,
-    plugin_instances,
+    books, domain_events, edition_acquisitions, event_deliveries, event_outbox_stats,
+    event_subscriber_nodes, plugin_instances,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{
@@ -515,7 +516,7 @@ impl LibraryStore {
                 .one(&self.db)
                 .await
                 .map_err(LibraryError::Orm)?
-                .ok_or_else(|| LibraryError::NotFound(format!("domain event {event_id}")))?;
+                .ok_or_else(|| LibraryError::not_found(EntityKind::DomainEvent, event_id))?;
             // The subscriber snapshot is frozen for the pages of the first
             // dispatch only, so a page that resumes after a crash sees the
             // same list. Once the event is dispatched, a call adds deliveries
@@ -615,7 +616,7 @@ impl LibraryStore {
                 .one(&self.db)
                 .await
                 .map_err(LibraryError::Orm)?
-                .ok_or_else(|| LibraryError::NotFound(format!("domain event {event_id}")))?;
+                .ok_or_else(|| LibraryError::not_found(EntityKind::DomainEvent, event_id))?;
             return parse_dispatch_snapshot(event_id, &row.dispatch_snapshot_json);
         }
         Ok(subscribers.to_vec())
@@ -3007,9 +3008,13 @@ pub fn prepare_publish_domain_event(
 }
 
 /// Build the `book_acquired` outbox spec for a library row.
+///
+/// `edition_id` is the title's edition (`editionId` in the payload, `null`
+/// when the title has no edition yet).
 pub(crate) fn book_acquired_spec(
     book: &books::Model,
     storage_key: Option<&str>,
+    edition_id: Option<&str>,
 ) -> PublishDomainEventSpec {
     let key = storage_key
         .map(str::to_string)
@@ -3022,6 +3027,7 @@ pub(crate) fn book_acquired_spec(
     };
     let payload = serde_json::json!({
         "titleId": book.uuid,
+        "editionId": edition_id,
         "source": book.source,
         "asin": book.asin,
         "isbn": book.isbn,
@@ -3044,9 +3050,13 @@ pub(crate) fn book_acquired_spec(
 }
 
 /// Apply acquire status and, when becoming acquired, publish the outbox row.
+///
+/// `edition_id` is the title's edition, whose `edition_acquisitions` row is
+/// written too ([`update_edition_acquisition_on`]).
 pub(crate) async fn set_acquire_status_on<C: ConnectionTrait>(
     db: &C,
     model: books::Model,
+    edition_id: Option<&str>,
     status: AcquireStatus,
     storage_key: Option<&str>,
     error_message: Option<&str>,
@@ -3055,13 +3065,69 @@ pub(crate) async fn set_acquire_status_on<C: ConnectionTrait>(
         Some(prepare_publish_domain_event(book_acquired_spec(
             &model,
             storage_key,
+            edition_id,
         ))?)
     } else {
         None
     };
+    if let Some(edition_id) = edition_id {
+        update_edition_acquisition_on(
+            db,
+            edition_id,
+            &model.uuid,
+            status,
+            storage_key,
+            error_message,
+        )
+        .await?;
+    }
     update_acquire_status_on(db, model, status, storage_key, error_message).await?;
     if let Some(spec) = spec {
         publish_domain_event_on(db, spec).await?;
+    }
+    Ok(())
+}
+
+/// Write an edition's acquire state for a write from title `title_uuid`:
+/// creates the row when missing, and leaves an edition another title
+/// still in the library acquired alone, since that title's writes alone
+/// change it (the same rule as the named atomic operation's plan).
+pub(crate) async fn update_edition_acquisition_on<C: ConnectionTrait>(
+    db: &C,
+    edition_id: &str,
+    title_uuid: &str,
+    status: AcquireStatus,
+    storage_key: Option<&str>,
+    error_message: Option<&str>,
+) -> Result<()> {
+    let row = edition_acquisitions::ActiveModel {
+        edition_id: Set(edition_id.to_string()),
+        status: Set(status.as_str().to_string()),
+        storage_key: Set(storage_key.map(str::to_string)),
+        error_message: Set(error_message.map(str::to_string)),
+        title_uuid: Set(title_uuid.to_string()),
+        updated_at: Set(now_str()),
+    };
+    match edition_acquisitions::Entity::find_by_id(edition_id.to_string())
+        .one(db)
+        .await
+        .map_err(LibraryError::Orm)?
+    {
+        None => {
+            row.insert(db).await.map_err(LibraryError::Orm)?;
+        }
+        Some(current)
+            if current.status == AcquireStatus::Acquired.as_str()
+                && current.title_uuid != title_uuid
+                && books::Entity::find()
+                    .filter(books::Column::Uuid.eq(&current.title_uuid))
+                    .one(db)
+                    .await
+                    .map_err(LibraryError::Orm)?
+                    .is_some() => {}
+        Some(_) => {
+            row.update(db).await.map_err(LibraryError::Orm)?;
+        }
     }
     Ok(())
 }
@@ -4020,7 +4086,7 @@ mod placeholder_tests {
         let mut calls = 0;
         let err = shrink_on_large_result::<u64, _, _>(4, |_| {
             calls += 1;
-            async { Err(LibraryError::NotFound("gone".into())) }
+            async { Err(LibraryError::missing(EntityKind::DomainEvent)) }
         })
         .await
         .expect_err("other errors pass through");

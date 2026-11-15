@@ -24,6 +24,7 @@
 //! compare-and-swap, so a scheduler that lost its lease mid-pass can at worst
 //! place one replica too many, which the next pass removes.
 
+use crate::EntityKind;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -418,9 +419,10 @@ pub async fn put_plugin_placement(
     authorize(actor)?;
     let spec = spec.normalized()?;
     let Some(instance) = load_plugin_instance(store, instance_id).await? else {
-        return Err(LibraryError::NotFound(format!(
-            "plugin instance {instance_id}"
-        )));
+        return Err(LibraryError::not_found(
+            EntityKind::PluginInstance,
+            instance_id,
+        ));
     };
     // H-2: a node-local instance is never scheduled across the cluster.
     if let Some(owner) = instance.owner_node_id.as_deref() {
@@ -491,7 +493,7 @@ pub async fn put_plugin_placement(
     }
     let stored = load_plugin_placement(store, instance_id)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("placement {instance_id}")))?;
+        .ok_or_else(|| LibraryError::not_found(EntityKind::Placement, instance_id))?;
     notify_all_nodes(
         store,
         NodeMessage::PlacementChanged {
@@ -672,7 +674,7 @@ pub async fn set_node_labels(
         .await
         .map_err(LibraryError::Orm)?;
     if res.rows_affected == 0 {
-        return Err(LibraryError::NotFound(format!("node {node_id}")));
+        return Err(LibraryError::not_found(EntityKind::Node, node_id));
     }
     notify_all_nodes(
         store,

@@ -39,6 +39,16 @@ pub struct AcquireStatusCounts {
 }
 
 impl AcquireStatus {
+    /// Every status, in pipeline order (the `edition_acquisitions.status`
+    /// CHECK lists the same strings).
+    pub const ALL: [Self; 5] = [
+        Self::NotAcquired,
+        Self::Queued,
+        Self::Downloading,
+        Self::Acquired,
+        Self::Error,
+    ];
+
     /// Returns the canonical snake_case / lowercase wire string.
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -457,6 +467,41 @@ pub struct OperatorSessionRecord {
     pub client_label: Option<String>,
 }
 
+/// Where a user's session token is presented.
+///
+/// A token works only in its own place: a browser token only as the session
+/// cookie, a client token only as `Authorization: Bookclerk-Client`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PortalSessionKind {
+    /// A browser's session cookie.
+    Browser,
+    /// A client sign-in: a clerk that shows the user's books from
+    /// this library without joining it as a node.
+    Client,
+}
+
+impl PortalSessionKind {
+    /// Returns the column value.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Browser => "browser",
+            Self::Client => "client",
+        }
+    }
+
+    /// Parses the column value; returns `None` when unknown.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "browser" => Some(Self::Browser),
+            "client" => Some(Self::Client),
+            _ => None,
+        }
+    }
+}
+
 /// Portal session row for session lists (includes hash for current-session match).
 #[derive(Debug, Clone)]
 pub struct PortalSessionRecord {
@@ -474,8 +519,11 @@ pub struct PortalSessionRecord {
     pub user_agent: Option<String>,
     /// Best-effort device class.
     pub device_type: Option<String>,
-    /// Best-effort OS / client label.
+    /// Best-effort OS / client label; for a client sign-in, the name the
+    /// clerk gave itself.
     pub client_label: Option<String>,
+    /// Where the token is presented.
+    pub kind: PortalSessionKind,
 }
 
 /// Security audit event (elevate / impersonate / login / provision).
@@ -1098,9 +1146,9 @@ pub struct TitleRequestRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(example = "0b8e3f2a-5c1d-5e7f-9a2b-4c6d8e0f1a3b")]
     pub edition_id: Option<String>,
-    /// Library `books.uuid` once the wishlist item is fulfilled.
+    /// Edition (`editions.id`) the library holds once the wishlist item is fulfilled.
     #[schema(example = "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31")]
-    pub resolved_book_uuid: Option<String>,
+    pub resolved_edition_id: Option<String>,
     /// HTTPS URL for cover art when known.
     #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,
