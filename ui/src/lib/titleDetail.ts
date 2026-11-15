@@ -8,6 +8,7 @@ import type {
   StoreEdition,
   TitleReview,
 } from "@/lib/api";
+import { acquirableEditions } from "@/lib/api";
 import { withAudibleEditionFromAsin, type CatalogTitle } from "@/lib/catalogTitle";
 
 /**
@@ -27,6 +28,12 @@ export type TitleDetail = {
   cover_path?: string | null;
   /** Prefer local library cover when present. */
   library_uuid?: string | null;
+  /**
+   * Held editions not yet acquired or on their way, for a library work.
+   * When set, the dialog offers acquire while it is above zero, even if
+   * another edition is already acquired; otherwise `acquire_status` decides.
+   */
+  acquirable_editions?: number | null;
   /** An acquired edition whose local cover is preferred when present. */
   library_edition_id?: string | null;
   /** The library work this detail shows, when it is one. */
@@ -213,6 +220,7 @@ export function titleDetailFromWork(work: WorkDetail, status: AcquireStatus): Ti
     rating_performance: work.state?.rating_performance ?? null,
     rating_story: work.state?.rating_story ?? null,
     acquire_status: status,
+    acquirable_editions: acquirableEditions(work).length,
     source: listing?.plugin_key ?? null,
     marketplace: listing?.marketplace ?? null,
     product_id: listing?.product_id ?? null,

@@ -489,10 +489,14 @@ export function LibraryPage({
           detail={titleDetailFromWork(selectedDetail, selected.acquire_status)}
           busy={busyKey !== null}
           showAcquire={canAcquire}
-          onClose={() => setSelected(null)}
+          onClose={() => {
+            setSelected(null);
+            setLoadedDetail(null);
+          }}
           onAcquire={() => void onAcquireWork(selected, selectedDetail)}
           onMetaSearch={(kind: TitleMetaSearchKind, value: string) => {
             setSelected(null);
+            setLoadedDetail(null);
             setQ(metaSearchQuery(kind, value));
           }}
         />

@@ -248,8 +248,25 @@ export interface WorksPage {
 }
 
 /** Who holds a listing: a store account, or a branch library's node. */
-export type Holder =
-  { kind: "account"; plugin_key: string; account_id: string } | { kind: "node"; node_id: string };
+export type Holder = AccountHolder | NodeHolder;
+
+/** A listing held by a store account. */
+export interface AccountHolder {
+  /** Discriminant. */
+  kind: "account";
+  /** The account's storefront plugin (`audible`, `libro`, ...). */
+  plugin_key: string;
+  /** The account's id on that storefront. */
+  account_id: string;
+}
+
+/** A listing held by a branch library's node. */
+export interface NodeHolder {
+  /** Discriminant. */
+  kind: "node";
+  /** The holding node's id. */
+  node_id: string;
+}
 
 /** One holding of a store listing. */
 export interface Holding {

@@ -188,6 +188,15 @@ function GenreTagsRow({
   );
 }
 
+/**
+ * Whether the dialog offers acquire: a library work while it has held
+ * editions left to acquire, anything else while it is not acquired.
+ */
+function canAcquireMore(detail: TitleDetail): boolean {
+  if (typeof detail.acquirable_editions === "number") return detail.acquirable_editions > 0;
+  return Boolean(detail.acquire_status) && detail.acquire_status !== "acquired";
+}
+
 function coversFor(detail: TitleDetail): string[] {
   const out: string[] = [];
   if (detail.library_edition_id) out.push(editionCoverUrl(detail.library_edition_id));
@@ -541,9 +550,15 @@ export function TitleDetailModal({
         const res = await fetchWorks({ q: search.q, limit: 8 });
         if (cancelled) return;
         const needle = initial.title.trim().toLowerCase();
+        // Two works can share a title; by title, the author must match too.
+        const author = (initial.authors ?? "").split(",")[0]?.trim().toLowerCase() ?? "";
         const match = search.byId
           ? res.works[0]
-          : res.works.find((w) => w.title.trim().toLowerCase() === needle);
+          : res.works.find(
+              (w) =>
+                w.title.trim().toLowerCase() === needle &&
+                (author === "" || (w.authors ?? "").toLowerCase().includes(author)),
+            );
         if (!match) return;
         const work = await fetchWork(match.id);
         if (cancelled) return;
@@ -560,6 +575,7 @@ export function TitleDetailModal({
     initial.asin,
     initial.isbn,
     initial.title,
+    initial.authors,
     initial.description,
     initial.work_id,
   ]);
@@ -1146,10 +1162,7 @@ export function TitleDetailModal({
               Wishlisted
             </Button>
           ) : null}
-          {showAcquire &&
-          onAcquire &&
-          detail.acquire_status &&
-          detail.acquire_status !== "acquired" ? (
+          {showAcquire && onAcquire && canAcquireMore(detail) ? (
             <Button
               onClick={() => onAcquire(detail)}
               disabled={busy || detail.acquire_status === "downloading"}

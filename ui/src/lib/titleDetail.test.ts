@@ -110,10 +110,23 @@ describe("titleDetailFromWork", () => {
       tags: "scifi",
       rating_overall: 4,
       acquire_status: "acquired",
+      acquirable_editions: 0,
       source: "audible",
       content_kind: "book",
       showCommerce: false,
     });
+  });
+
+  it("counts held editions left to acquire beside an acquired one", () => {
+    const detail = titleDetailFromWork(
+      work([
+        edition("audio", { acquire_status: "acquired" }),
+        edition("ebook", { media_kind: "ebook" }),
+      ]),
+      "acquired",
+    );
+    expect(detail.acquire_status).toBe("acquired");
+    expect(detail.acquirable_editions).toBe(1);
   });
 
   it("leaves unknown fields empty", () => {
