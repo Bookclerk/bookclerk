@@ -133,7 +133,7 @@ fn fuzz_corpus_client_authorize_replays() {
 #[test]
 // A missing or unreadable seed is the test failing.
 #[allow(clippy::expect_used)]
-fn fuzz_corpus_client_token_request_replays() {
+fn fuzz_corpus_clerk_token_request_replays() {
     let (mut accepted, mut refused) = (0, 0);
     for path in corpus_files("clerk_token_request") {
         let data = std::fs::read(&path).expect("read");

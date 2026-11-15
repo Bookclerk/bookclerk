@@ -33,6 +33,7 @@
 //! an automatic approval ([`RemoteApprover::Platform`]) never overrides it,
 //! only the operator approving again does.
 
+use crate::EntityKind;
 use chrono::{SecondsFormat, Utc};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
@@ -414,7 +415,7 @@ pub async fn record_remote_plugin_request(
         .await?;
     load_remote_plugin_consent(store, cluster_id, plugin_key)
         .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("remote plugin consent {plugin_key}")))
+        .ok_or_else(|| LibraryError::not_found(EntityKind::RemoteConsent, plugin_key))
 }
 
 /// Who gives an approval.
@@ -489,10 +490,13 @@ pub async fn approve_remote_plugin(
     let Some(existing) =
         load_remote_plugin_consent(store, approval.cluster_id, approval.plugin_key).await?
     else {
-        return Err(LibraryError::NotFound(format!(
-            "no request from cluster {} for plugin {}",
-            approval.cluster_id, approval.plugin_key
-        )));
+        return Err(LibraryError::not_found(
+            EntityKind::RemoteConsent,
+            format!(
+                "{} from library {}",
+                approval.plugin_key, approval.cluster_id
+            ),
+        ));
     };
     let automatic = matches!(approval.approver, RemoteApprover::Platform);
     if automatic && existing.is_revoked() {
@@ -597,9 +601,7 @@ pub async fn approve_remote_plugin(
     }
     load_remote_plugin_consent(store, approval.cluster_id, approval.plugin_key)
         .await?
-        .ok_or_else(|| {
-            LibraryError::NotFound(format!("remote plugin consent {}", approval.plugin_key))
-        })
+        .ok_or_else(|| LibraryError::not_found(EntityKind::RemoteConsent, approval.plugin_key))
 }
 
 /// Clears the approval of `plugin_key` of `cluster_id`, keeping its

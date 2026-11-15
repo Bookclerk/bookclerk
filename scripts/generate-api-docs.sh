@@ -201,6 +201,13 @@ fi
 if [[ "${SKIP_PYTHON:-0}" != "1" ]] && [[ "$DO_PYTHON" -eq 1 ]]; then
   echo "==> pdoc (bookclerk-plugin-sdk)"
   VENV="${ROOT}/target/api-docs-venv"
+  # A directory that lost its pyvenv.cfg (a partly restored or pruned target/
+  # cache) is not a virtual environment any more: uv would query bin/python,
+  # see the system interpreter and sync into the system site-packages. Start
+  # such a directory over instead.
+  if [[ -e "$VENV" && ! -f "$VENV/pyvenv.cfg" ]]; then
+    rm -rf "$VENV"
+  fi
   # pdoc and its dependencies at the versions pinned in uv.lock (the lockfile
   # the dependency scans read); a no-op when the venv is already in sync. The
   # SDK itself is documented from its source tree, not built.

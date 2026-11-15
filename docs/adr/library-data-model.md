@@ -382,5 +382,13 @@ title once that one has left the library, can change its state. `book_acquired`
 names the edition (`editionId`), and a wishlist item records the edition
 that fulfilled it (`resolved_edition_id`).
 
+Step 6 also adds the page index the *Consequences* call for:
+`library_work_rows`, one row per held top-level work, refreshed by a
+cluster-wide `host:library-index` event consumer and rebuilt by a
+`library_index_rebuild` job when the index has no finished build of the
+current layout. `GET /api/library/works` pages it by keyset cursor, and
+`GET /api/library/works/{id}` reads one work with its editions, listings,
+holdings and the caller's own state.
+
 User-facing pages (the glossary, *Where books go*, *Branches*, the plugin ABI
 reference) change with the step that changes their behaviour.

@@ -1194,8 +1194,9 @@ mod tests {
             ..bookclerk_config::OutputConfig::default()
         };
         let missing = Err(anyhow::Error::new(
-            bookclerk_library::LibraryError::NotFound(
-                "configuration core.output is not initialized".into(),
+            bookclerk_library::LibraryError::not_found(
+                bookclerk_library::EntityKind::Configuration,
+                "core.output",
             ),
         ));
         let body = bare_output_body(missing, &seed).expect("seed fallback");
@@ -1205,8 +1206,9 @@ mod tests {
 
     #[test]
     fn a_document_not_imported_yet_is_not_reported_as_unavailable() {
-        let missing = anyhow::Error::new(bookclerk_library::LibraryError::NotFound(
-            "configuration core.output is not initialized".into(),
+        let missing = anyhow::Error::new(bookclerk_library::LibraryError::not_found(
+            bookclerk_library::EntityKind::Configuration,
+            "core.output",
         ));
         let detail = safe_events_load_error(&missing);
         assert!(!detail.contains("unavailable"), "{detail}");
@@ -1217,8 +1219,9 @@ mod tests {
 
     #[test]
     fn only_a_missing_document_is_treated_as_not_imported() {
-        let missing = anyhow::Error::new(bookclerk_library::LibraryError::NotFound(
-            "configuration core.output is not initialized".into(),
+        let missing = anyhow::Error::new(bookclerk_library::LibraryError::not_found(
+            bookclerk_library::EntityKind::Configuration,
+            "core.output",
         ));
         assert!(document_not_imported(&missing));
         // An unsupported or corrupt stored row is kept by bootstrap, so the

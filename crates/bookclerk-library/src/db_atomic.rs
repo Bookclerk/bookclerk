@@ -8,6 +8,7 @@ use crate::atomic_ops::{atomic_status, DbAtomicParams, DbAtomicResult};
 use crate::atomic_txn::AtomicTxnBackend;
 use crate::in_process_atomic::InProcessSqliteAtomic;
 use crate::sql_plan::CompiledAtomic;
+use crate::EntityKind;
 use chrono::{DateTime, Utc};
 use sea_orm::DatabaseConnection;
 use serde_json::Value as JsonValue;
@@ -216,10 +217,10 @@ pub(crate) fn confirm_totp_params(user_id: i64, record: &EncryptedSecretRecord) 
 }
 
 /// Turns an atomic status back into `LibraryError` for crate-internal callers.
-pub(crate) fn app_err(status: &str, not_found: String) -> Option<LibraryError> {
+pub(crate) fn app_err(status: &str, not_found: LibraryError) -> Option<LibraryError> {
     match status {
         s if s == atomic_status::OK => None,
-        s if s == atomic_status::NOT_FOUND => Some(LibraryError::NotFound(not_found)),
+        s if s == atomic_status::NOT_FOUND => Some(not_found),
         s if s == atomic_status::LAST_OWNER => Some(LibraryError::LastOwner),
         s if s == atomic_status::CLAIM_INVALID => Some(LibraryError::Other(anyhow::anyhow!(
             "claim ticket invalid, expired, or already redeemed"
@@ -237,7 +238,7 @@ pub(crate) fn app_err(status: &str, not_found: String) -> Option<LibraryError> {
 }
 
 /// Accepts an OK unit result or maps a non-OK status onto `LibraryError`.
-pub(crate) fn unit_from_atomic(result: DbAtomicResult, not_found: String) -> Result<()> {
+pub(crate) fn unit_from_atomic(result: DbAtomicResult, not_found: LibraryError) -> Result<()> {
     if let Some(err) = app_err(&result.status, not_found) {
         return Err(err);
     }
@@ -245,7 +246,10 @@ pub(crate) fn unit_from_atomic(result: DbAtomicResult, not_found: String) -> Res
 }
 
 /// Decodes a user record from an OK payload, or maps status onto `LibraryError`.
-pub(crate) fn user_from_atomic(result: DbAtomicResult, not_found: String) -> Result<UserRecord> {
+pub(crate) fn user_from_atomic(
+    result: DbAtomicResult,
+    not_found: LibraryError,
+) -> Result<UserRecord> {
     if let Some(err) = app_err(&result.status, not_found) {
         return Err(err);
     }
@@ -254,7 +258,10 @@ pub(crate) fn user_from_atomic(result: DbAtomicResult, not_found: String) -> Res
 
 /// Decodes a portal identity from an OK payload, or maps status onto `LibraryError`.
 pub(crate) fn identity_from_atomic(result: DbAtomicResult) -> Result<PortalIdentity> {
-    if let Some(err) = app_err(&result.status, "claim ticket not found".into()) {
+    if let Some(err) = app_err(
+        &result.status,
+        LibraryError::missing(EntityKind::ClaimTicket),
+    ) {
         return Err(err);
     }
     decode_payload(result.payload, "portal identity")

@@ -268,7 +268,9 @@ The host `EventPublisher` writes straight into the library outbox
   written `pathKeys`.
   `edition_linked`, `edition_updated` and `holding_added` are written by
   the library model resolver in the same batch as the store listing they
-  describe, `holding_removed` in the batch that deletes the holding, and `wishlist_changed` and `listening_synced` by the library
+  describe, `holding_removed` in the batch that deletes the holding,
+  `edition_acquire_changed` with an acquire state change other than
+  becoming acquired, and `wishlist_changed` and `listening_synced` by the library
   after a wishlist or listening write. A plugin can consume them under
   `[[events.consumers]]`, but can't declare them under
   `[[events.producers]]` (`check` and load fail), and the host publisher
@@ -795,6 +797,12 @@ piling up work.
 `domain_events` in the same transaction as the library acquire-status
 change (book uuid, storage key, product ids; never media bytes). It sets
 the envelope `source` to the book's storefront plugin id.
+
+**`edition_acquire_changed`.** Any other acquire state change of a title
+with an edition (queued, downloading, failed, or reset to not acquired)
+writes `edition_acquire_changed` (`editionId`, `titleId`, `status`, one of
+`not_acquired`, `queued`, `downloading` or `error`) in the same
+transaction. Its `source` is the book's storefront plugin id too.
 
 **Library model events.** Recording a store listing publishes, in the same
 batch as its rows:
