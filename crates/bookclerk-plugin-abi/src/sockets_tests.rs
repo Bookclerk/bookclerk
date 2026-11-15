@@ -156,3 +156,40 @@ fn frames_and_attachments_are_capped() {
     assert!(check_socket_attachment(&[0; 2048]).is_ok());
     assert!(check_socket_attachment(&[0; 2049]).is_err());
 }
+
+#[test]
+fn connect_requests_refuse_each_list_and_value_bound() {
+    let base = request("wss://example.com");
+
+    let mut protocols = base.clone();
+    protocols.protocols = (0..17).map(|i| format!("p{i}")).collect();
+    assert!(validate_socket_connect(&protocols).is_err());
+
+    let mut name = base.clone();
+    name.headers = vec![SocketHeader {
+        name: "bad name".into(),
+        value: String::new(),
+    }];
+    assert!(validate_socket_connect(&name).is_err());
+
+    let mut long = base.clone();
+    long.headers = vec![SocketHeader {
+        name: "X-Long".into(),
+        value: "v".repeat(2049),
+    }];
+    assert!(validate_socket_connect(&long).is_err());
+
+    let mut tab = base.clone();
+    tab.headers = vec![SocketHeader {
+        name: "X-Tab".into(),
+        value: "a\tb".into(),
+    }];
+    assert!(validate_socket_connect(&tab).is_ok(), "a tab is allowed");
+
+    let mut heartbeat = base;
+    heartbeat.auto_responses = vec![SocketAutoResponse {
+        request: text("2"),
+        response: SocketFrame::Binary(vec![0; 257]),
+    }];
+    assert!(validate_socket_connect(&heartbeat).is_err());
+}

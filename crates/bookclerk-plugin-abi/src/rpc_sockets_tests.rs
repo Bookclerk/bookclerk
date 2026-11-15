@@ -225,3 +225,171 @@ async fn a_handler_that_ignores_messages_says_so() {
         .await
         .expect("closed is ignored by default");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_guest_client_refuses_before_sending() {
+    let host = Arc::new(RecordingSockets::default());
+    let client = client_over(Arc::clone(&host));
+    let bad_url = client
+        .connect(SocketConnectRequest {
+            url: "ws://127.1/".into(),
+            ..SocketConnectRequest::default()
+        })
+        .await
+        .expect_err("non-canonical host");
+    assert_eq!(bad_url.code, PluginErrorCode::InvalidParams);
+    let bad_id = client
+        .send("a/b".into(), SocketFrame::Text("x".into()))
+        .await
+        .expect_err("bad id");
+    assert_eq!(bad_id.code, PluginErrorCode::InvalidParams);
+    let big = client
+        .send("s-1".into(), SocketFrame::Binary(vec![0; 262_145]))
+        .await
+        .expect_err("oversized frame");
+    assert_eq!(big.code, PluginErrorCode::PayloadTooLarge);
+    let heavy = client
+        .set_attachment("s-1".into(), vec![0; 2049])
+        .await
+        .expect_err("oversized attachment");
+    assert_eq!(heavy.code, PluginErrorCode::PayloadTooLarge);
+    let code = client
+        .close("s-1".into(), 1015, String::new())
+        .await
+        .expect_err("reserved code");
+    assert_eq!(code.code, PluginErrorCode::InvalidParams);
+    assert!(host.calls.borrow().is_empty(), "nothing reached the host");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_host_server_refuses_oversized_attachments() {
+    let host = Arc::new(RecordingSockets::default());
+    let raw: sockets_capnp::Client = capnp_rpc::new_client(SocketsServer {
+        inner: Arc::clone(&host) as Arc<dyn Sockets>,
+    });
+    let mut req = raw.set_attachment_request();
+    req.get().set_socket("s-1");
+    req.get().set_attachment(&[0; 2049]);
+    let reply = req.send().promise.await.expect("rpc");
+    let err = read_unit(reply.get().expect("reply").get_result().expect("result"))
+        .expect_err("oversized");
+    assert_eq!(err.code, PluginErrorCode::PayloadTooLarge);
+    assert!(host.calls.borrow().is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn listing_returns_the_hosts_sockets() {
+    struct Listing;
+    #[async_trait::async_trait(?Send)]
+    impl Sockets for Listing {
+        async fn connect(&self, _request: SocketConnectRequest) -> Result<SocketInfo> {
+            Err(PluginError::unsupported("connect"))
+        }
+        async fn send(&self, _socket: String, _frame: SocketFrame) -> Result<()> {
+            Err(PluginError::unsupported("send"))
+        }
+        async fn close(&self, _socket: String, _code: u16, _reason: String) -> Result<()> {
+            Err(PluginError::unsupported("close"))
+        }
+        async fn set_attachment(&self, _socket: String, _attachment: Vec<u8>) -> Result<()> {
+            Err(PluginError::unsupported("set_attachment"))
+        }
+        async fn list(&self) -> Result<Vec<SocketInfo>> {
+            Ok(vec![SocketInfo {
+                socket: "s-2".into(),
+                url: "ws://10.0.0.5:13378/".into(),
+                protocol: None,
+                attachment: b"a".to_vec(),
+            }])
+        }
+    }
+    let client = SocketsClient::new(capnp_rpc::new_client(SocketsServer {
+        inner: Arc::new(Listing),
+    }));
+    let sockets = client.list().await.expect("list");
+    assert_eq!(sockets.len(), 1);
+    assert_eq!(sockets[0].socket, "s-2");
+    assert_eq!(sockets[0].protocol, None);
+    let err = client
+        .send("s-2".into(), SocketFrame::Text("x".into()))
+        .await
+        .expect_err("host error passes through");
+    assert_eq!(err.code, PluginErrorCode::Unsupported);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_guest_server_refuses_bad_deliveries() {
+    let guest = Arc::new(RecordingHandler::default());
+    // A raw capability skips the host client's checks, so only the guest
+    // server's own checks apply.
+    let raw: socket_handler_capnp::Client = capnp_rpc::new_client(SocketHandlerServer {
+        inner: Arc::clone(&guest) as Arc<dyn SocketHandler>,
+    });
+    let mut req = raw.message_request();
+    {
+        let mut event = req.get().init_event();
+        event.set_socket("../s");
+        event.init_frame().set_text("x");
+    }
+    let reply = req.send().promise.await.expect("rpc");
+    let err =
+        read_unit(reply.get().expect("reply").get_result().expect("result")).expect_err("bad id");
+    assert_eq!(err.code, PluginErrorCode::InvalidParams);
+
+    let mut req = raw.closed_request();
+    {
+        let mut event = req.get().init_event();
+        event.set_socket("s-1");
+        event.set_attachment(&[0; 2049]);
+    }
+    let reply = req.send().promise.await.expect("rpc");
+    let err = read_unit(reply.get().expect("reply").get_result().expect("result"))
+        .expect_err("oversized attachment");
+    assert_eq!(err.code, PluginErrorCode::PayloadTooLarge);
+    assert!(guest.seen.borrow().is_empty(), "nothing reached the guest");
+
+    let host_side = SocketHandlerClient::new(raw);
+    let err = host_side
+        .closed(SocketClosed {
+            socket: String::new(),
+            ..SocketClosed::default()
+        })
+        .await
+        .expect_err("the host client checks the id too");
+    assert_eq!(err.code, PluginErrorCode::InvalidParams);
+}
+
+#[test]
+fn socket_messages_round_trip_through_the_codec() {
+    let request = SocketConnectRequest {
+        url: "wss://abs.example/".into(),
+        protocols: vec!["chat".into()],
+        attachment: vec![1],
+        ..SocketConnectRequest::default()
+    };
+    let mut message = capnp::message::Builder::new_default();
+    write_socket_connect_request(message.init_root(), &request).expect("encode");
+    let bytes = capnp::serialize::write_message_to_words(&message);
+    assert_eq!(
+        roundtrip_socket_message(SocketCodec::ConnectRequest, &bytes).expect("decode"),
+        SocketWireMessage::ConnectRequest(request)
+    );
+
+    let event = SocketMessage {
+        socket: "s-1".into(),
+        frame: SocketFrame::Binary(vec![7]),
+        attachment: Vec::new(),
+    };
+    let mut message = capnp::message::Builder::new_default();
+    write_socket_message(message.init_root(), &event).expect("encode");
+    let bytes = capnp::serialize::write_message_to_words(&message);
+    assert_eq!(
+        roundtrip_socket_message(SocketCodec::Message, &bytes).expect("decode"),
+        SocketWireMessage::Message(event)
+    );
+
+    assert!(matches!(
+        roundtrip_socket_message(SocketCodec::Message, &[1, 2, 3]),
+        Err(RoundTripFailure::Rejected(_))
+    ));
+}
