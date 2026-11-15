@@ -20,7 +20,7 @@ use crate::api::AppState;
 use crate::live::{poke, CLOSE_UNAUTHORIZED, REAUTH_INTERVAL};
 
 /// The operator token of the served daemon.
-const TOKEN: &str = "client-socket-operator-token";
+const TOKEN: &str = "clerk-socket-operator-token";
 
 /// The store plugin the test books come from.
 const PLUGIN: &str = "path:file:///tmp/store#audible";
@@ -373,4 +373,113 @@ async fn a_binary_frame_closes_the_socket() {
         next(&mut socket, Duration::from_secs(5)).await,
         Next::Closed(1003)
     );
+}
+
+#[tokio::test]
+async fn a_person_who_must_enroll_a_second_factor_is_refused_and_closed() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store, addr) = served(&files).await;
+    let (_, token) = member_with_card(&store, "riley").await;
+    let header = card(&token);
+    let headers = [
+        ("authorization", header.as_str()),
+        ("sec-websocket-protocol", CLERK_SUBPROTOCOL),
+    ];
+    let mut socket = open(addr, &headers).await.expect("a card is admitted");
+    assert!(matches!(
+        next(&mut socket, Duration::from_secs(5)).await,
+        Next::Frame(LibraryFrame::Hello { .. })
+    ));
+
+    state.config.write().await.daemon.auth.require_second_factor = true;
+    assert_eq!(
+        open(addr, &headers).await.err(),
+        Some(403),
+        "a new socket is refused until the person enrolls"
+    );
+    let mut closed = None;
+    for _ in 0..10 {
+        match next(&mut socket, REAUTH_INTERVAL * 4).await {
+            Next::Closed(code) => {
+                closed = Some(code);
+                break;
+            }
+            Next::Frame(_) => continue,
+            Next::Quiet => break,
+        }
+    }
+    assert_eq!(
+        closed,
+        Some(CLOSE_UNAUTHORIZED),
+        "an open socket closes at the next card check"
+    );
+}
+
+#[tokio::test]
+async fn a_full_house_is_refused_with_retry_after() {
+    // Every socket test holds the process key lock, so no other socket is
+    // admitted while this one holds every permit.
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (_state, store, addr) = served(&files).await;
+    let (_, token) = member_with_card(&store, "riley").await;
+    let header = card(&token);
+    let headers = [
+        ("authorization", header.as_str()),
+        ("sec-websocket-protocol", CLERK_SUBPROTOCOL),
+    ];
+    let all = u32::try_from(super::MAX_CLERK_SOCKETS).unwrap();
+    let permits = Arc::clone(&super::SOCKETS)
+        .try_acquire_many_owned(all)
+        .unwrap();
+    assert_eq!(open(addr, &headers).await.err(), Some(503));
+    drop(permits);
+    assert!(
+        open(addr, &headers).await.is_ok(),
+        "admitted once a place frees"
+    );
+}
+
+#[test]
+fn only_library_and_discover_reach_a_clerk() {
+    use super::clerk_topic;
+    let reported: Vec<ClerkTopic> = [
+        LiveTopic::Library,
+        LiveTopic::Discover,
+        LiveTopic::Jobs,
+        LiveTopic::Deliveries,
+        LiveTopic::Nodes,
+        LiveTopic::Config,
+        LiveTopic::Consents,
+        LiveTopic::Clusters,
+        LiveTopic::Users,
+    ]
+    .into_iter()
+    .filter_map(clerk_topic)
+    .collect();
+    assert_eq!(reported, vec![ClerkTopic::Library, ClerkTopic::Discover]);
+}
+
+#[test]
+fn the_subprotocol_is_found_in_any_offer() {
+    use super::offers_subprotocol;
+    use axum::http::{header::SEC_WEBSOCKET_PROTOCOL, HeaderMap};
+    let offer = |values: &[&[u8]]| {
+        let mut headers = HeaderMap::new();
+        for value in values {
+            headers.append(
+                SEC_WEBSOCKET_PROTOCOL,
+                HeaderValue::from_bytes(value).unwrap(),
+            );
+        }
+        offers_subprotocol(&headers)
+    };
+    assert!(offer(&[CLERK_SUBPROTOCOL.as_bytes()]));
+    assert!(offer(&[format!("chat, {CLERK_SUBPROTOCOL}").as_bytes()]));
+    assert!(offer(&[b"chat", CLERK_SUBPROTOCOL.as_bytes()]));
+    assert!(!offer(&[]));
+    assert!(!offer(&[b"chat, bookclerk-clerk.v2"]));
+    assert!(!offer(&[b"bookclerk-clerk.v1x"]));
+    assert!(!offer(&[b"\xffbookclerk-clerk.v1"]), "not UTF-8");
 }

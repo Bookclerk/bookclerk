@@ -69,7 +69,7 @@ pub const MAX_CLERK_SOCKETS: usize = 512;
 static SOCKETS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(MAX_CLERK_SOCKETS)));
 
-/// The client topic a live topic is reported as, or `None` for a topic a
+/// The clerk topic a live topic is reported as, or `None` for a topic a
 /// clerk does not hear about.
 ///
 /// # Arguments
