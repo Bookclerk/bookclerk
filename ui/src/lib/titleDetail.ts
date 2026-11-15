@@ -1,12 +1,14 @@
 import type {
   AcquireStatus,
   BookRecord,
+  WorkDetail,
   BranchAvailability,
   PurchaseHint,
   QueueWisher,
   StoreEdition,
   TitleReview,
 } from "@/lib/api";
+import { acquirableEditions } from "@/lib/api";
 import { withAudibleEditionFromAsin, type CatalogTitle } from "@/lib/catalogTitle";
 
 /**
@@ -26,6 +28,16 @@ export type TitleDetail = {
   cover_path?: string | null;
   /** Prefer local library cover when present. */
   library_uuid?: string | null;
+  /**
+   * Held editions not yet acquired or on their way, for a library work.
+   * When set, the dialog offers acquire while it is above zero, even if
+   * another edition is already acquired; otherwise `acquire_status` decides.
+   */
+  acquirable_editions?: number | null;
+  /** An acquired edition whose local cover is preferred when present. */
+  library_edition_id?: string | null;
+  /** The library work this detail shows, when it is one. */
+  work_id?: string | null;
   description?: string | null;
   publisher?: string | null;
   length_minutes?: number | null;
@@ -156,6 +168,63 @@ export function titleDetailFromBook(book: BookRecord): TitleDetail {
     error_message: book.error_message,
     created_at: book.created_at,
     updated_at: book.updated_at,
+    showCommerce: false,
+  };
+}
+
+/**
+ * Builds a {@link TitleDetail} from a library work's detail.
+ *
+ * The work's own fields come first; edition fields (subtitle, runtime,
+ * cover, store ids) come from its first edition that has them, audio
+ * editions first.
+ *
+ * @param work - The work from `/api/library/works/{id}`.
+ * @param status - The work's acquire state from its list row.
+ * @returns Detail model with commerce disabled.
+ */
+export function titleDetailFromWork(work: WorkDetail, status: AcquireStatus): TitleDetail {
+  const editions = [...work.editions].sort(
+    (a, b) => Number(b.media_kind === "audio") - Number(a.media_kind === "audio"),
+  );
+  const first = <T>(pick: (e: (typeof editions)[number]) => T | null | undefined) => {
+    for (const e of editions) {
+      const v = pick(e);
+      if (v !== null && v !== undefined && v !== "") return v;
+    }
+    return null;
+  };
+  const listings = editions.flatMap((e) => e.listings);
+  const isAsin = (id: string) => /^B0[0-9A-Z]{8}$/i.test(id);
+  const isIsbn = (id: string) => /^(97[89])?\d{9}[\dXx]$/.test(id.replace(/-/g, ""));
+  const abridgement = first((e) => (e.abridgement === "unknown" ? null : e.abridgement));
+  const listing = listings[0];
+  return {
+    title: work.title,
+    subtitle: first((e) => e.subtitle),
+    authors: work.authors.length > 0 ? work.authors.join(", ") : null,
+    series: work.series,
+    series_index: work.series_position,
+    asin: listings.find((l) => isAsin(l.product_id))?.product_id ?? null,
+    isbn: listings.find((l) => isIsbn(l.product_id))?.product_id ?? null,
+    cover_path: first((e) => e.cover_path),
+    library_edition_id: first((e) => (e.acquire_status === "acquired" ? e.id : null)),
+    work_id: work.id,
+    description: work.description,
+    length_minutes: first((e) => e.duration_minutes),
+    published_at: first((e) => e.published_at),
+    language: first((e) => e.language),
+    is_abridged: abridgement === null ? null : abridgement === "abridged",
+    tags: work.state?.tags ?? null,
+    rating_overall: work.state?.rating_overall ?? null,
+    rating_performance: work.state?.rating_performance ?? null,
+    rating_story: work.state?.rating_story ?? null,
+    acquire_status: status,
+    acquirable_editions: acquirableEditions(work).length,
+    source: listing?.plugin_key ?? null,
+    marketplace: listing?.marketplace ?? null,
+    product_id: listing?.product_id ?? null,
+    content_kind: work.kind,
     showCommerce: false,
   };
 }
