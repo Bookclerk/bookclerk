@@ -6,7 +6,7 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -455,21 +455,179 @@ async fn load_physical_env(
 /// does not hold a reserved lock across paged catalog/physical loads. Nested
 /// execute on an open transaction still snapshots inside that transaction.
 ///
+/// On a SQLite file, an autocommit snapshot is remembered per database file
+/// under [`SQLITE_SNAPSHOT_KEY_SQL`]'s key and reused while the key is
+/// unchanged, so a batch costs one small key read instead of a full reload.
+///
 /// # Errors
 ///
 /// Returns [`DbErr`] when the catalog or physical snapshot cannot be loaded.
 async fn catalog_env_for_typed(
     conn: &impl ConnectionTrait,
     session: &AtomicSession,
+    memo: SnapshotMemoUse,
 ) -> Result<SqlTypeEnv, DbErr> {
-    let catalog = load_sql_type_env(conn).await?;
-    if session.type_env.is_empty() {
+    let physical = !session.type_env.is_empty();
+    let key = match memo {
+        SnapshotMemoUse::Autocommit => sqlite_snapshot_key(conn).await,
+        SnapshotMemoUse::InTransaction => None,
+    };
+    let (catalog, physical_env) = match key {
+        Some((file, key)) => match memo_lookup(&file, &key, physical) {
+            Some(hit) => hit,
+            None => {
+                let loaded = load_snapshot(conn, physical).await?;
+                memo_store(file, key, &loaded);
+                loaded
+            }
+        },
+        None => load_snapshot(conn, physical).await?,
+    };
+    let Some(mut env) = physical_env else {
         return Ok(catalog);
-    }
-    let mut env = load_physical_sql_type_env(conn).await?;
+    };
     env.merge(&catalog);
     env.merge(&session.type_env);
     Ok(env)
+}
+
+/// Whether [`catalog_env_for_typed`] may reuse a remembered snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotMemoUse {
+    /// The snapshot is read in autocommit, before the batch's `BEGIN`: what
+    /// it sees is committed, so it may be remembered and reused.
+    Autocommit,
+    /// The snapshot is read inside an open transaction, which may hold
+    /// schema changes that are later rolled back: always read it afresh.
+    InTransaction,
+}
+
+/// The binding catalog and, when `physical`, the live physical tables, as
+/// [`catalog_env_for_typed`] merges them.
+///
+/// # Errors
+///
+/// Returns [`DbErr`] when either snapshot cannot be loaded.
+async fn load_snapshot(
+    conn: &impl ConnectionTrait,
+    physical: bool,
+) -> Result<(SqlTypeEnv, Option<SqlTypeEnv>), DbErr> {
+    let catalog = load_sql_type_env(conn).await?;
+    let physical = if physical {
+        Some(load_physical_sql_type_env(conn).await?)
+    } else {
+        None
+    };
+    Ok((catalog, physical))
+}
+
+/// What a SQLite catalog snapshot depends on, read in one statement: the
+/// database file, its schema version, and the schema ledger's rows (each
+/// table's fingerprint and identity column) with the binding catalog's row
+/// count.
+///
+/// Loading the snapshot reads about a thousand rows and parses every table's
+/// `CREATE` statement, which costs far more than most statements it types
+/// (about 5 ms against 30 µs for a keyed read), and the guest used to do it
+/// before every statement. SQLite bumps `schema_version` on every change to
+/// `sqlite_master`, by any connection, and the binding catalog and ledger
+/// rows are only written by the companions of a `CREATE` or `DROP` in the
+/// same transaction, so the key changes whenever the snapshot would. The
+/// ledger rows and catalog count are part of the key as well, so even a
+/// ledger row edited without DDL is seen on the next batch.
+const SQLITE_SNAPSHOT_KEY_SQL: &str = "SELECT \
+    (SELECT file FROM pragma_database_list WHERE name = 'main') AS db_file, \
+    (SELECT schema_version FROM pragma_schema_version) AS schema_version, \
+    (SELECT count(*) FROM bookclerk_sql_catalog) AS catalog_rows, \
+    (SELECT group_concat( \
+        length(table_name) || ':' || table_name || \
+        length(fingerprint) || ':' || fingerprint || \
+        length(ifnull(identity_column, '')) || ':' || ifnull(identity_column, ''), '') \
+        FROM bookclerk_sql_schema) AS ledger_rows";
+
+/// The database file and [`SQLITE_SNAPSHOT_KEY_SQL`] key of the snapshot
+/// `conn` sees now, or `None` when the snapshot is loaded without the memo:
+/// the connection is not SQLite, the database has no file (in-memory), or
+/// the key cannot be read (a library with no catalog yet).
+#[doc(hidden)]
+pub async fn sqlite_snapshot_key(conn: &impl ConnectionTrait) -> Option<(String, String)> {
+    let backend = conn.get_database_backend();
+    if backend != sea_orm::DatabaseBackend::Sqlite {
+        return None;
+    }
+    let _guard = suspend_execute_row_cap();
+    let row = conn
+        .query_one_raw(Statement::from_string(
+            backend,
+            SQLITE_SNAPSHOT_KEY_SQL.to_string(),
+        ))
+        .await
+        .ok()??;
+    let file = query_result_text(&row, "db_file");
+    if file.is_empty() {
+        return None;
+    }
+    let version = query_result_i64(&row, "schema_version")?;
+    let catalog_rows = query_result_i64(&row, "catalog_rows")?;
+    let ledger = query_result_text(&row, "ledger_rows");
+    Some((file, format!("{version}:{catalog_rows}:{ledger}")))
+}
+
+/// The last SQLite snapshot [`catalog_env_for_typed`] loaded for one
+/// database file, with the key it was loaded under.
+struct SnapshotMemo {
+    /// [`sqlite_snapshot_key`] of the snapshot.
+    key: String,
+    /// The binding catalog.
+    catalog: SqlTypeEnv,
+    /// The live physical tables, when a host batch loaded them.
+    physical: Option<SqlTypeEnv>,
+}
+
+/// Most database files [`SNAPSHOT_MEMO`] remembers (the library and the
+/// plugins' own databases); past this it starts over.
+const SNAPSHOT_MEMO_FILES: usize = 64;
+
+/// The process's [`SnapshotMemo`]s, by database file.
+static SNAPSHOT_MEMO: std::sync::Mutex<Option<HashMap<String, SnapshotMemo>>> =
+    std::sync::Mutex::new(None);
+
+/// The memoized snapshot of `file` for `key`, when it holds what the
+/// caller needs (the physical tables too, when `physical`).
+fn memo_lookup(file: &str, key: &str, physical: bool) -> Option<(SqlTypeEnv, Option<SqlTypeEnv>)> {
+    let memo = SNAPSHOT_MEMO.lock().ok()?;
+    let entry = memo.as_ref()?.get(file).filter(|entry| entry.key == key)?;
+    if physical {
+        let tables = entry.physical.clone()?;
+        Some((entry.catalog.clone(), Some(tables)))
+    } else {
+        Some((entry.catalog.clone(), None))
+    }
+}
+
+/// Remembers `loaded` as `file`'s snapshot for `key`, keeping physical
+/// tables an earlier load under the same key already found.
+fn memo_store(file: String, key: String, loaded: &(SqlTypeEnv, Option<SqlTypeEnv>)) {
+    let Ok(mut memo) = SNAPSHOT_MEMO.lock() else {
+        return;
+    };
+    let files = memo.get_or_insert_with(HashMap::new);
+    let physical = match (&loaded.1, files.get(&file)) {
+        (Some(tables), _) => Some(tables.clone()),
+        (None, Some(entry)) if entry.key == key => entry.physical.clone(),
+        (None, _) => None,
+    };
+    if files.len() >= SNAPSHOT_MEMO_FILES && !files.contains_key(&file) {
+        files.clear();
+    }
+    files.insert(
+        file,
+        SnapshotMemo {
+            key,
+            catalog: loaded.0.clone(),
+            physical,
+        },
+    );
 }
 
 /// # Errors
@@ -2282,7 +2440,7 @@ where
     let backend = engine.backend();
     let req = req.clone();
     let sql_started = Instant::now();
-    let mut env = catalog_env_for_typed(txn, &session).await?;
+    let mut env = catalog_env_for_typed(txn, &session, SnapshotMemoUse::InTransaction).await?;
     let proofs = proofs_for_request(&env, &req, stamped, require_stamped)?;
     let mut statements = Vec::with_capacity(req.statements.len());
     let skip_guest_on_prior = !guest_receipt.is_absent();
@@ -2490,7 +2648,7 @@ where
     // The live catalog is loaded first so a later index-only step types its
     // keys from existing tables instead of emitting a different index.
     let wire = req.clone();
-    let mut env = catalog_env_for_typed(db, &session).await?;
+    let mut env = catalog_env_for_typed(db, &session, SnapshotMemoUse::Autocommit).await?;
     let (req, schema_groups) =
         crate::schema_postgres::expand_host_schema_execute_request_grouped_with(
             backend,
