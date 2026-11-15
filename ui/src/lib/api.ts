@@ -204,7 +204,30 @@ export type Abridgement = "unknown" | "unabridged" | "abridged";
 export type Entitlement = "purchase" | "plus" | "loan" | "free";
 
 /** How `/api/library/works` orders a page (ignored while searching). */
-export type WorkSort = "title" | "author" | "added";
+export type WorkSort = "title" | "author" | "series" | "purchased" | "added" | "length";
+
+/**
+ * What `facet` and `value` filter works by: a value list of the page index,
+ * the caller's own tags, or their progress (`finished` / `not_finished`).
+ */
+export type WorkFacet =
+  "author" | "narrator" | "series" | "genre" | "publisher" | "source" | "tag" | "progress";
+
+/** One value of a facet, from `GET /api/library/works/facets/{facet}`. */
+export interface FacetValue {
+  /** The value, as {@link WorksQuery.value} takes it. */
+  value: string;
+  /** How many held works have it. */
+  works: number;
+}
+
+/** A page of a facet's values and the cursor of the next one. */
+export interface FacetValuesPage {
+  /** The page's values, by their lower-cased spelling. */
+  values: FacetValue[];
+  /** Pass as `cursor` for the next page; absent on the last. */
+  next_cursor?: string | null;
+}
 
 /**
  * One work row from `GET /api/library/works`: a book or podcast once,
@@ -237,6 +260,10 @@ export interface WorkSummary {
   holding_count: number;
   /** When the newest holding was added (ISO-8601). */
   added_at: string;
+  /** Runtime in minutes of the longest held edition, when known. */
+  length_minutes?: number | null;
+  /** When the newest purchase a store reported happened (ISO-8601). */
+  purchased_at?: string | null;
 }
 
 /** A page of works and the cursor of the next one. */
@@ -3121,6 +3148,10 @@ export interface WorksQuery {
   status?: AcquireStatus | "all";
   /** Only works held on this account id. */
   account?: string;
+  /** Only works with {@link WorksQuery.value} under this facet. */
+  facet?: WorkFacet;
+  /** The facet's value; an empty series value means works in no series. */
+  value?: string;
   /** The previous page's `next_cursor`. */
   cursor?: string;
   /** Page size (the daemon caps it at 200). */
@@ -3141,11 +3172,35 @@ export async function fetchWorks(query: WorksQuery): Promise<WorksPage> {
   if (query.kind) sp.set("kind", query.kind);
   if (query.status && query.status !== "all") sp.set("status", query.status);
   if (query.account) sp.set("account", query.account);
+  if (query.facet) {
+    sp.set("facet", query.facet);
+    sp.set("value", query.value ?? "");
+  }
   if (query.cursor) sp.set("cursor", query.cursor);
   sp.set("limit", String(query.limit ?? 40));
   const res = await fetchRetryingBusy(`/api/library/works?${sp}`, {
     credentials: "include",
   });
+  return parseJson(res);
+}
+
+/**
+ * Fetches one page of a facet's values across the library's held works.
+ *
+ * @param facet - The facet (not `progress`, whose values are fixed).
+ * @param cursor - The previous page's `next_cursor`; omitted for the first.
+ * @returns The page and the next page's cursor.
+ */
+export async function fetchFacetValues(
+  facet: Exclude<WorkFacet, "progress">,
+  cursor?: string,
+): Promise<FacetValuesPage> {
+  const sp = new URLSearchParams({ limit: "500" });
+  if (cursor) sp.set("cursor", cursor);
+  const res = await fetchRetryingBusy(
+    `/api/library/works/facets/${encodeURIComponent(facet)}?${sp}`,
+    { credentials: "include" },
+  );
   return parseJson(res);
 }
 

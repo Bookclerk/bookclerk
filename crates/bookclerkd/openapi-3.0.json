@@ -16173,7 +16173,10 @@
               "enum": [
                 "title",
                 "author",
-                "added"
+                "added",
+                "series",
+                "purchased",
+                "length"
               ]
             }
           },
@@ -16227,6 +16230,35 @@
             "name": "account",
             "in": "query",
             "description": "Only works held by this store account id.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "facet",
+            "in": "query",
+            "description": "Only works with `value` under this facet. Values match ignoring\ncase; `tag` and `progress` read the caller's own state.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "What `facet` and `value` filter works by, or whose values\n`GET /api/library/works/facets/{facet}` lists.",
+              "enum": [
+                "author",
+                "narrator",
+                "series",
+                "genre",
+                "publisher",
+                "source",
+                "tag",
+                "progress"
+              ]
+            }
+          },
+          {
+            "name": "value",
+            "in": "query",
+            "description": "The value `facet` must have, as `GET /api/library/works/facets/{facet}`\nlists it (or `finished` / `not_finished` for `progress`).",
             "required": false,
             "schema": {
               "type": "string"
@@ -16482,6 +16514,197 @@
                 },
                 "example": {
                   "error": "work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
+    "/api/library/works/facets/{facet}": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Lists the values a facet has across the library's held works, with\nhow many works have each, for the library page's filter menus. `tag`\nlists the caller's own tags (none for an operator token).",
+        "operationId": "list_facet_values",
+        "parameters": [
+          {
+            "name": "facet",
+            "in": "path",
+            "description": "The facet; `progress` has no value list.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "What `facet` and `value` filter works by, or whose values\n`GET /api/library/works/facets/{facet}` lists.",
+              "enum": [
+                "author",
+                "narrator",
+                "series",
+                "genre",
+                "publisher",
+                "source",
+                "tag",
+                "progress"
+              ]
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` of the previous page of the same facet.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped to 1–500 (default 200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of values.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FacetValuesJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`progress` was asked for, or the cursor is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid page cursor"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
@@ -33589,6 +33812,50 @@
           "original_audio"
         ]
       },
+      "FacetValueJson": {
+        "type": "object",
+        "description": "One value of a facet.",
+        "required": [
+          "value",
+          "works"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "description": "The value, as `value` of `GET /api/library/works` takes it.",
+            "example": "Science Fiction"
+          },
+          "works": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many held works have it.",
+            "example": 12,
+            "minimum": 0
+          }
+        }
+      },
+      "FacetValuesJson": {
+        "type": "object",
+        "description": "A page of `GET /api/library/works/facets/{facet}`.",
+        "required": [
+          "values"
+        ],
+        "properties": {
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FacetValueJson"
+            },
+            "description": "The values, in order of their lower-cased spelling."
+          },
+          "next_cursor": {
+            "type": "string",
+            "description": "Pass as `cursor` for the next page; absent on the last page.",
+            "example": "c2NpZW5jZSBmaWN0aW9u",
+            "nullable": true
+          }
+        }
+      },
       "FeedState": {
         "type": "string",
         "description": "How current a stored Discover feed is.",
@@ -44679,6 +44946,20 @@
             "type": "string",
             "description": "RFC 3339 time of the newest holding.",
             "example": "2026-11-14T09:30:00.000000Z"
+          },
+          "length_minutes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Runtime in minutes of the longest held edition, when known.",
+            "example": 1212,
+            "minimum": 0,
+            "nullable": true
+          },
+          "purchased_at": {
+            "type": "string",
+            "description": "RFC 3339 time of the newest purchase a store reported.",
+            "example": "2024-03-02T18:04:11Z",
+            "nullable": true
           }
         }
       },

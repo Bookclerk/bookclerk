@@ -1,8 +1,9 @@
 //! The library's works: `GET /api/library/works` pages the page index
 //! (`library_work_rows`), `GET /api/library/works/{id}` reads one work
 //! with its editions, store listings, holdings and the caller's own state,
-//! and `GET /api/library/editions/{id}/cover` serves the cover an acquire
-//! wrote beside an edition's file.
+//! `GET /api/library/works/facets/{facet}` lists the values a page can be
+//! filtered by, and `GET /api/library/editions/{id}/cover` serves the cover
+//! an acquire wrote beside an edition's file.
 //!
 //! Pages use a keyset cursor, so a page costs the same at any depth and a
 //! row added or removed between two requests never shifts the next page.
@@ -25,8 +26,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::{
     Abridgement, AcquireStatus, EditionDetail, EditionListing, Entitlement, ExpressionKind,
-    HoldingHolder, LibraryWorkRow, ListingHolding, MediaKind, UserTitleState, WorkCursor,
-    WorkDetail, WorkKind, WorkPageQuery, WorkSort,
+    FacetValuesOf, HoldingHolder, LibraryWorkRow, ListingHolding, MediaKind, UserTitleState,
+    WorkCursor, WorkDetail, WorkFacet, WorkFilter, WorkKind, WorkPageQuery, WorkSort,
 };
 use bookclerk_search::{SearchError, WorkSearchIndex};
 use serde::{Deserialize, Serialize};
@@ -54,6 +55,14 @@ pub(crate) enum WorkSortParam {
     Author,
     /// Most recently added first.
     Added,
+    /// By first series and position in it, then title; works in no series
+    /// last.
+    Series,
+    /// Most recently purchased first; works no store reported a purchase
+    /// time for last.
+    Purchased,
+    /// Longest runtime first; works with no known runtime last.
+    Length,
 }
 
 impl From<WorkSortParam> for WorkSort {
@@ -62,8 +71,107 @@ impl From<WorkSortParam> for WorkSort {
             WorkSortParam::Title => Self::Title,
             WorkSortParam::Author => Self::Author,
             WorkSortParam::Added => Self::Added,
+            WorkSortParam::Series => Self::Series,
+            WorkSortParam::Purchased => Self::Purchased,
+            WorkSortParam::Length => Self::Length,
         }
     }
+}
+
+/// What `facet` and `value` filter works by, or whose values
+/// `GET /api/library/works/facets/{facet}` lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkFacetParam {
+    /// An author (a host, for a podcast).
+    Author,
+    /// A narrator.
+    Narrator,
+    /// A series; an empty `value` matches works in no series.
+    Series,
+    /// A genre (store category).
+    Genre,
+    /// A publisher.
+    Publisher,
+    /// The storefront plugin a holding comes through.
+    Source,
+    /// One of the caller's own tags.
+    Tag,
+    /// The caller's progress: `value` is `finished` or `not_finished`. Not
+    /// a value list.
+    Progress,
+}
+
+impl WorkFacetParam {
+    /// The page index facet this names, when it is one.
+    fn indexed(self) -> Option<WorkFacet> {
+        match self {
+            Self::Author => Some(WorkFacet::Author),
+            Self::Narrator => Some(WorkFacet::Narrator),
+            Self::Series => Some(WorkFacet::Series),
+            Self::Genre => Some(WorkFacet::Genre),
+            Self::Publisher => Some(WorkFacet::Publisher),
+            Self::Source => Some(WorkFacet::Source),
+            Self::Tag | Self::Progress => None,
+        }
+    }
+}
+
+/// The filter of a `facet` and `value` pair.
+///
+/// # Arguments
+///
+/// * `facet` - What to filter by; no filter without one.
+/// * `value` - The value; missing reads as empty.
+/// * `user_id` - The caller (`users.id`), for tags and progress.
+///
+/// # Errors
+///
+/// Returns a 400 answer for a progress value other than `finished` or
+/// `not_finished`, or an empty value for any facet but series.
+fn work_filter(
+    facet: Option<WorkFacetParam>,
+    value: Option<&str>,
+    user_id: Option<i64>,
+) -> Result<Option<WorkFilter>, WorksError> {
+    let Some(facet) = facet else {
+        return Ok(None);
+    };
+    let value = value.unwrap_or_default().trim();
+    if value.is_empty() && facet != WorkFacetParam::Series {
+        return Err(bad_request("`facet` needs a `value`"));
+    }
+    if let Some(indexed) = facet.indexed() {
+        return Ok(Some(WorkFilter::Facet {
+            facet: indexed,
+            value: value.to_string(),
+        }));
+    }
+    Ok(Some(match facet {
+        WorkFacetParam::Progress => WorkFilter::Finished {
+            user_id,
+            finished: match value {
+                "finished" => true,
+                "not_finished" => false,
+                _ => {
+                    return Err(bad_request(
+                        "a progress `value` is `finished` or `not_finished`",
+                    ))
+                }
+            },
+        },
+        WorkFacetParam::Tag => WorkFilter::Tag {
+            user_id,
+            tag: value.to_string(),
+        },
+        // Answered by `indexed` above.
+        WorkFacetParam::Author
+        | WorkFacetParam::Narrator
+        | WorkFacetParam::Series
+        | WorkFacetParam::Genre
+        | WorkFacetParam::Publisher
+        | WorkFacetParam::Source => return Ok(None),
+    }))
 }
 
 /// Book or podcast (`works.kind`).
@@ -223,6 +331,13 @@ pub(crate) struct WorksQuery {
     status: Option<AcquireStatus>,
     /// Only works held by this store account id.
     account: Option<String>,
+    /// Only works with `value` under this facet. Values match ignoring
+    /// case; `tag` and `progress` read the caller's own state.
+    #[param(inline)]
+    facet: Option<WorkFacetParam>,
+    /// The value `facet` must have, as `GET /api/library/works/facets/{facet}`
+    /// lists it (or `finished` / `not_finished` for `progress`).
+    value: Option<String>,
     /// `next_cursor` of the previous page, under the same `sort` (or the
     /// same `q`).
     cursor: Option<String>,
@@ -269,6 +384,12 @@ pub(crate) struct WorkSummaryJson {
     /// RFC 3339 time of the newest holding.
     #[schema(example = "2026-11-14T09:30:00.000000Z")]
     added_at: String,
+    /// Runtime in minutes of the longest held edition, when known.
+    #[schema(example = 1_212)]
+    length_minutes: Option<u64>,
+    /// RFC 3339 time of the newest purchase a store reported.
+    #[schema(example = "2024-03-02T18:04:11Z")]
+    purchased_at: Option<String>,
 }
 
 /// A page of `GET /api/library/works`.
@@ -436,6 +557,14 @@ pub(crate) struct WorkDetailJson {
     state: Option<WorkStateJson>,
 }
 
+/// The signed-in caller's user (`users.id`); `None` for an operator token
+/// or a session with no user.
+async fn caller_user_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
+    crate::auth::caller_portal_identity(state, headers)
+        .await
+        .and_then(|identity| identity.user_id)
+}
+
 /// Logs a failed read and returns the 500 answer.
 fn read_failed(route: &str, err: &bookclerk_library::LibraryError) -> WorksError {
     tracing::error!(error = %err, route, "library works read failed");
@@ -461,6 +590,8 @@ fn summary(row: LibraryWorkRow, cover_path: Option<String>) -> WorkSummaryJson {
         edition_count: row.edition_count,
         holding_count: row.holding_count,
         added_at: row.added_at,
+        length_minutes: row.length_minutes,
+        purchased_at: row.purchased_at,
     }
 }
 
@@ -573,8 +704,8 @@ struct SearchCursor {
 /// a cursor is refused under other filters.
 fn search_filter_key(filters: &WorkPageQuery) -> String {
     format!(
-        "{:?}|{:?}|{:?}|{:?}",
-        filters.media_kind, filters.kind, filters.status, filters.account
+        "{:?}|{:?}|{:?}|{:?}|{:?}",
+        filters.media_kind, filters.kind, filters.status, filters.account, filters.filter
     )
 }
 
@@ -756,15 +887,24 @@ async fn search_page(
 )]
 pub(crate) async fn list_works(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<WorksQuery>,
 ) -> Result<Json<WorksPage>, WorksError> {
     let cursor = query.cursor.as_deref().filter(|c| !c.is_empty());
+    let user_id = match query.facet {
+        Some(WorkFacetParam::Tag | WorkFacetParam::Progress) => {
+            caller_user_id(&state, &headers).await
+        }
+        _ => None,
+    };
+    let filter = work_filter(query.facet, query.value.as_deref(), user_id)?;
     let mut filters = WorkPageQuery {
         sort: query.sort.unwrap_or_default().into(),
         media_kind: query.media_kind.map(Into::into),
         kind: query.kind.map(Into::into),
         status: query.status,
         account: query.account.filter(|a| !a.is_empty()),
+        filter,
         after: None,
         limit: query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT),
     };
@@ -841,9 +981,7 @@ pub(crate) async fn get_work(
                 )),
             )
         })?;
-    let user_id = crate::auth::caller_portal_identity(&state, &headers)
-        .await
-        .and_then(|identity| identity.user_id);
+    let user_id = caller_user_id(&state, &headers).await;
     let user_state = match user_id {
         Some(user_id) => library
             .user_title_state(user_id, &detail.id)
@@ -852,6 +990,127 @@ pub(crate) async fn get_work(
         None => None,
     };
     Ok(Json(detail_json(detail, user_state, &state.covers)))
+}
+
+/// Default page size of `GET /api/library/works/facets/{facet}`.
+const DEFAULT_FACET_LIMIT: u64 = 200;
+
+/// Largest page size of `GET /api/library/works/facets/{facet}`.
+const MAX_FACET_LIMIT: u64 = 500;
+
+/// Query string of `GET /api/library/works/facets/{facet}`.
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct FacetValuesQuery {
+    /// `next_cursor` of the previous page of the same facet.
+    cursor: Option<String>,
+    /// Page size, clamped to 1–500 (default 200).
+    limit: Option<u64>,
+}
+
+/// One value of a facet.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct FacetValueJson {
+    /// The value, as `value` of `GET /api/library/works` takes it.
+    #[schema(example = "Science Fiction")]
+    value: String,
+    /// How many held works have it.
+    #[schema(example = 12)]
+    works: u64,
+}
+
+/// A page of `GET /api/library/works/facets/{facet}`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct FacetValuesJson {
+    /// The values, in order of their lower-cased spelling.
+    values: Vec<FacetValueJson>,
+    /// Pass as `cursor` for the next page; absent on the last page.
+    #[schema(example = "c2NpZW5jZSBmaWN0aW9u")]
+    next_cursor: Option<String>,
+}
+
+/// Encodes a facet key as an opaque cursor.
+fn facet_cursor(key: &str) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.as_bytes())
+}
+
+/// Decodes [`facet_cursor`].
+fn facet_cursor_key(token: &str) -> Option<String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(token.as_bytes())
+        .ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+/// Lists the values a facet has across the library's held works, with
+/// how many works have each, for the library page's filter menus. `tag`
+/// lists the caller's own tags (none for an operator token).
+#[utoipa::path(
+    get,
+    path = "/api/library/works/facets/{facet}",
+    params(
+        ("facet" = inline(WorkFacetParam), Path, description = "The facet; `progress` has no value list."),
+        FacetValuesQuery,
+    ),
+    responses(
+        (status = 200, description = "A page of values.", body = FacetValuesJson),
+        (status = 400, description = "`progress` was asked for, or the cursor is invalid.", body = ErrorMessage, example = json!({"error": "invalid page cursor"})),
+        (status = 500, description = "The library could not be read.", body = ErrorMessage, example = json!({"error": "the library could not be read"})),
+    ),
+)]
+pub(crate) async fn list_facet_values(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(facet): AxumPath<WorkFacetParam>,
+    Query(query): Query<FacetValuesQuery>,
+) -> Result<Json<FacetValuesJson>, WorksError> {
+    const ROUTE: &str = "GET /api/library/works/facets/{facet}";
+    let after = match query.cursor.as_deref().filter(|c| !c.is_empty()) {
+        Some(token) => {
+            Some(facet_cursor_key(token).ok_or_else(|| bad_request("invalid page cursor"))?)
+        }
+        None => None,
+    };
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_FACET_LIMIT)
+        .clamp(1, MAX_FACET_LIMIT);
+    let of = match facet.indexed() {
+        Some(indexed) => FacetValuesOf::Facet(indexed),
+        None if facet == WorkFacetParam::Tag => match caller_user_id(&state, &headers).await {
+            Some(user_id) => FacetValuesOf::Tags(user_id),
+            None => {
+                return Ok(Json(FacetValuesJson {
+                    values: Vec::new(),
+                    next_cursor: None,
+                }))
+            }
+        },
+        None => {
+            return Err(bad_request(
+                "progress has no value list: its values are `finished` and `not_finished`",
+            ))
+        }
+    };
+    let page = state
+        .library_snapshot()
+        .await
+        .library_facet_values(of, after.as_deref(), limit)
+        .await
+        .map_err(|err| read_failed(ROUTE, &err))?;
+    Ok(Json(FacetValuesJson {
+        values: page
+            .values
+            .into_iter()
+            .map(|v| FacetValueJson {
+                value: v.value,
+                works: v.works,
+            })
+            .collect(),
+        next_cursor: page.next.as_deref().map(facet_cursor),
+    }))
 }
 
 /// Serves the JPEG cover written beside an edition's acquired file on this

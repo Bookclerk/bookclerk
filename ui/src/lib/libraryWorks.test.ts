@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { WorkSummary, WorksPage, WorksQuery } from "@/lib/api";
-import { MAX_WORKS_PAGE, metaSearchQuery, readWorks } from "@/lib/libraryWorks";
+import type { FacetValuesPage, WorkFacet, WorkSummary, WorksPage, WorksQuery } from "@/lib/api";
+import {
+  MAX_WORKS_PAGE,
+  NO_SERIES,
+  facetQuery,
+  metaSearchQuery,
+  readFacetValues,
+  readWorks,
+} from "@/lib/libraryWorks";
 
 /**
  * A work row named `id`.
@@ -112,5 +119,45 @@ describe("readWorks", () => {
     );
     expect(read.works.map((w) => w.id)).toEqual(["a"]);
     expect(asked).toHaveLength(1);
+  });
+});
+
+describe("readFacetValues", () => {
+  it("reads every page of a facet's values with their counts", async () => {
+    const asked: (string | undefined)[] = [];
+    const pages: Record<string, FacetValuesPage> = {
+      first: { values: [{ value: "Fantasy", works: 2 }], next_cursor: "c1" },
+      c1: { values: [{ value: "Science Fiction", works: 5 }], next_cursor: null },
+    };
+    const values = await readFacetValues(async (facet: WorkFacet, cursor?: string) => {
+      expect(facet).toBe("genre");
+      asked.push(cursor);
+      return pages[cursor ?? "first"];
+    }, "genre");
+    expect(asked).toEqual([undefined, "c1"]);
+    expect(values).toEqual([
+      { value: "Fantasy", label: "Fantasy (2)" },
+      { value: "Science Fiction", label: "Science Fiction (5)" },
+    ]);
+  });
+
+  it("offers no series first and fixed progress choices", async () => {
+    const empty = async () => ({ values: [], next_cursor: null });
+    expect(await readFacetValues(empty, "series")).toEqual([
+      { value: NO_SERIES, label: "No series" },
+    ]);
+    const progress = await readFacetValues(async () => {
+      throw new Error("progress has no value list");
+    }, "progress");
+    expect(progress.map((p) => p.value)).toEqual(["finished", "not_finished"]);
+  });
+});
+
+describe("facetQuery", () => {
+  it("sends a facet only once a value is chosen", () => {
+    expect(facetQuery("all", "x")).toEqual({});
+    expect(facetQuery("genre", null)).toEqual({});
+    expect(facetQuery("genre", "Fantasy")).toEqual({ facet: "genre", value: "Fantasy" });
+    expect(facetQuery("series", NO_SERIES)).toEqual({ facet: "series", value: "" });
   });
 });

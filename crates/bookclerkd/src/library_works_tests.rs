@@ -39,7 +39,7 @@ async fn library_with_three_works(
 
 /// Lists works with `query`, unwrapping a success.
 async fn list(state: &Arc<AppState>, query: WorksQuery) -> WorksPage {
-    list_works(State(state.clone()), Query(query))
+    list_works(State(state.clone()), HeaderMap::new(), Query(query))
         .await
         .map(|Json(page)| page)
         .map_err(|(status, Json(body))| (status, body.error))
@@ -107,6 +107,7 @@ async fn a_bad_cursor_or_one_of_another_order_is_a_400() {
     let (state, _library, _ids) = library_with_three_works(&files).await;
     let refused = list_works(
         State(state.clone()),
+        HeaderMap::new(),
         Query(WorksQuery {
             cursor: Some("not a cursor".into()),
             ..WorksQuery::default()
@@ -132,6 +133,7 @@ async fn a_bad_cursor_or_one_of_another_order_is_a_400() {
     .expect("more pages");
     let status = list_works(
         State(state.clone()),
+        HeaderMap::new(),
         Query(WorksQuery {
             sort: Some(WorkSortParam::Added),
             cursor: Some(title_cursor),
@@ -153,7 +155,7 @@ async fn index_works(state: &Arc<AppState>, library: &LibraryStore) {
 
 /// Lists works with `query`, unwrapping a refusal into its status and message.
 async fn refused(state: &Arc<AppState>, query: WorksQuery) -> Option<(StatusCode, String)> {
-    list_works(State(state.clone()), Query(query))
+    list_works(State(state.clone()), HeaderMap::new(), Query(query))
         .await
         .err()
         .map(|(status, Json(body))| (status, body.error))
@@ -601,4 +603,194 @@ fn wire_enums_round_trip_every_stored_value() {
         let json = serde_json::to_value(EntitlementJson::from(*value)).expect("json");
         assert_eq!(json, value.as_str());
     }
+}
+
+#[test]
+fn a_facet_and_value_make_one_filter() {
+    let refusal = |facet, value| {
+        work_filter(Some(facet), value, Some(7))
+            .err()
+            .map(|(status, Json(body))| (status, body.error))
+    };
+    assert_eq!(work_filter(None, Some("x"), None).ok(), Some(None));
+    assert_eq!(
+        refusal(WorkFacetParam::Genre, Some("  ")),
+        Some((StatusCode::BAD_REQUEST, "`facet` needs a `value`".into()))
+    );
+    assert_eq!(
+        refusal(WorkFacetParam::Progress, Some("halfway")).map(|(status, _)| status),
+        Some(StatusCode::BAD_REQUEST)
+    );
+    assert_eq!(
+        work_filter(Some(WorkFacetParam::Series), None, None).ok(),
+        Some(Some(WorkFilter::Facet {
+            facet: WorkFacet::Series,
+            value: String::new(),
+        })),
+        "an empty series is works in no series"
+    );
+    assert_eq!(
+        work_filter(Some(WorkFacetParam::Tag), Some(" reread "), Some(7)).ok(),
+        Some(Some(WorkFilter::Tag {
+            user_id: Some(7),
+            tag: "reread".into(),
+        }))
+    );
+    assert_eq!(
+        work_filter(
+            Some(WorkFacetParam::Progress),
+            Some("not_finished"),
+            Some(7)
+        )
+        .ok(),
+        Some(Some(WorkFilter::Finished {
+            user_id: Some(7),
+            finished: false,
+        }))
+    );
+    for (param, facet) in [
+        (WorkFacetParam::Author, WorkFacet::Author),
+        (WorkFacetParam::Narrator, WorkFacet::Narrator),
+        (WorkFacetParam::Genre, WorkFacet::Genre),
+        (WorkFacetParam::Publisher, WorkFacet::Publisher),
+        (WorkFacetParam::Source, WorkFacet::Source),
+    ] {
+        assert_eq!(param.indexed(), Some(facet));
+    }
+    assert_eq!(WorkFacetParam::Tag.indexed(), None);
+}
+
+#[tokio::test]
+async fn works_filter_by_a_facet_value() {
+    let files = tempfile::tempdir().expect("tempdir");
+    let (state, _library, _ids) = library_with_three_works(&files).await;
+    let titles = |page: WorksPage| page.works.into_iter().map(|w| w.title).collect::<Vec<_>>();
+    let by_author = list(
+        &state,
+        WorksQuery {
+            facet: Some(WorkFacetParam::Author),
+            value: Some("frank herbert".into()),
+            ..WorksQuery::default()
+        },
+    )
+    .await;
+    assert_eq!(titles(by_author), ["Dune"]);
+    // The operator has no own state: nothing is finished, everything is not.
+    let finished = list(
+        &state,
+        WorksQuery {
+            facet: Some(WorkFacetParam::Progress),
+            value: Some("finished".into()),
+            ..WorksQuery::default()
+        },
+    )
+    .await;
+    assert!(finished.works.is_empty());
+    let unfinished = list(
+        &state,
+        WorksQuery {
+            facet: Some(WorkFacetParam::Progress),
+            value: Some("not_finished".into()),
+            sort: Some(WorkSortParam::Length),
+            ..WorksQuery::default()
+        },
+    )
+    .await;
+    assert_eq!(unfinished.works.len(), 3);
+    assert_eq!(
+        refused(
+            &state,
+            WorksQuery {
+                facet: Some(WorkFacetParam::Tag),
+                ..WorksQuery::default()
+            },
+        )
+        .await
+        .map(|(status, _)| status),
+        Some(StatusCode::BAD_REQUEST)
+    );
+}
+
+/// Lists `facet`'s values, unwrapping the answer into status or page.
+async fn facet_values(
+    state: &Arc<AppState>,
+    facet: WorkFacetParam,
+    query: FacetValuesQuery,
+) -> Result<FacetValuesJson, (StatusCode, String)> {
+    list_facet_values(
+        State(state.clone()),
+        HeaderMap::new(),
+        AxumPath(facet),
+        Query(query),
+    )
+    .await
+    .map(|Json(page)| page)
+    .map_err(|(status, Json(body))| (status, body.error))
+}
+
+#[tokio::test]
+async fn facet_values_page_by_cursor() {
+    let files = tempfile::tempdir().expect("tempdir");
+    let (state, _library, _ids) = library_with_three_works(&files).await;
+    let mut authors = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = facet_values(
+            &state,
+            WorkFacetParam::Author,
+            FacetValuesQuery {
+                cursor: cursor.take(),
+                limit: Some(1),
+            },
+        )
+        .await
+        .expect("values");
+        authors.extend(page.values.into_iter().map(|v| (v.value, v.works)));
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(
+        authors,
+        [
+            ("Frank Herbert".to_string(), 1),
+            ("J. R. R. Tolkien".to_string(), 1),
+            ("Neal Stephenson".to_string(), 1),
+        ]
+    );
+    let sources = facet_values(&state, WorkFacetParam::Source, FacetValuesQuery::default())
+        .await
+        .expect("values");
+    assert_eq!(sources.values.len(), 1);
+    assert_eq!(sources.values[0].works, 3);
+
+    let tags = facet_values(&state, WorkFacetParam::Tag, FacetValuesQuery::default())
+        .await
+        .expect("values");
+    assert!(tags.values.is_empty(), "the operator has no tags");
+    assert_eq!(
+        facet_values(
+            &state,
+            WorkFacetParam::Progress,
+            FacetValuesQuery::default()
+        )
+        .await
+        .err()
+        .map(|(status, _)| status),
+        Some(StatusCode::BAD_REQUEST)
+    );
+    assert_eq!(
+        facet_values(
+            &state,
+            WorkFacetParam::Genre,
+            FacetValuesQuery {
+                cursor: Some("not a cursor!".into()),
+                limit: None,
+            },
+        )
+        .await
+        .err(),
+        Some((StatusCode::BAD_REQUEST, "invalid page cursor".into()))
+    );
 }

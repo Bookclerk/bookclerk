@@ -18,6 +18,12 @@
 //!
 //! A podcast episode is a child work: its show is the work that gets a row,
 //! and the show's row counts the episodes' editions and holdings.
+//!
+//! The same refresh writes the work's filter values (`library_work_facets`:
+//! authors, narrators, series, genres, publishers and sources), fenced by
+//! the row's stamp, so a page can filter by one value without joining the
+//! model. Tags and progress are per person and filter through
+//! `user_work_tags` and `user_title_state` instead.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -29,11 +35,14 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::library_model::find_chunked_paged;
+use super::work_search::WorkNames;
+use super::write_batches::WriteBatches;
 use super::LibraryStore;
 use crate::control_plane::batch;
 use crate::entities::{
     contributors, credits, edition_acquisitions, editions, expressions, holdings,
-    library_index_builds, library_work_rows, series, series_entries, store_listings, works,
+    library_index_builds, library_work_facets, library_work_rows, series, series_entries,
+    store_listings, user_title_state, user_work_tags, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::AcquireStatus;
@@ -85,6 +94,97 @@ pub enum WorkSort {
     Author,
     /// Newest holding first ("recently added").
     Added,
+    /// By first series name and position, then title; works in no series
+    /// last.
+    Series,
+    /// Newest purchase first; works no store reported a purchase time for
+    /// last.
+    Purchased,
+    /// Longest runtime first; works with no known runtime last.
+    Length,
+}
+
+/// A filter value list of the page index (`library_work_facets`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkFacet {
+    /// Authors (hosts, for a podcast).
+    Author,
+    /// Narrators.
+    Narrator,
+    /// Series names.
+    Series,
+    /// Genres (store categories).
+    Genre,
+    /// Publishers.
+    Publisher,
+    /// Storefront plugins the work is held through.
+    Source,
+}
+
+impl WorkFacet {
+    /// Every facet, in the order a work's values are written.
+    pub const ALL: [Self; 6] = [
+        Self::Author,
+        Self::Narrator,
+        Self::Series,
+        Self::Genre,
+        Self::Publisher,
+        Self::Source,
+    ];
+
+    /// The stored `facet` value.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Author => "author",
+            Self::Narrator => "narrator",
+            Self::Series => "series",
+            Self::Genre => "genre",
+            Self::Publisher => "publisher",
+            Self::Source => "source",
+        }
+    }
+}
+
+/// The key a facet value or tag is stored and matched under: trimmed and
+/// lower-cased, so "Fantasy" and "fantasy " are one value.
+///
+/// # Arguments
+///
+/// * `value` - A value as shown or as a client sent it.
+#[must_use]
+pub fn facet_key(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+/// One filter on a page of library works.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkFilter {
+    /// Works with this value under a facet (matched by [`facet_key`]). An
+    /// empty series value matches works in no series.
+    Facet {
+        /// The facet.
+        facet: WorkFacet,
+        /// The value.
+        value: String,
+    },
+    /// Works the user tagged with this tag (matched by [`facet_key`]). With
+    /// no user (an operator token), nothing matches.
+    Tag {
+        /// The user (`users.id`) whose tags count.
+        user_id: Option<i64>,
+        /// The tag.
+        tag: String,
+    },
+    /// Works the user marked finished, or did not. With no user, no work is
+    /// finished.
+    Finished {
+        /// The user (`users.id`) whose state counts.
+        user_id: Option<i64>,
+        /// `true` for finished works, `false` for the rest.
+        finished: bool,
+    },
 }
 
 /// Where the next page of a [`WorkSort`] order starts: the sort values of
@@ -93,11 +193,11 @@ pub enum WorkSort {
 pub struct WorkCursor {
     /// The order the cursor belongs to; a cursor is refused under another.
     pub sort: WorkSort,
-    /// The last row's primary sort value (sort title, sort author or
-    /// added-at stamp).
+    /// The last row's primary sort value (sort title, sort author, added-at
+    /// stamp, series key, purchase stamp or runtime in minutes).
     pub key: String,
-    /// The last row's sort title; set for [`WorkSort::Author`], whose ties
-    /// break on title.
+    /// The last row's sort title; set for [`WorkSort::Author`] and
+    /// [`WorkSort::Series`], whose ties break on title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// The last row's work id, the final tie-break.
@@ -143,6 +243,8 @@ pub struct WorkPageQuery {
     pub status: Option<AcquireStatus>,
     /// Only works held by this store account id (any plugin).
     pub account: Option<String>,
+    /// Only works that pass this filter.
+    pub filter: Option<WorkFilter>,
     /// Continue after this cursor.
     pub after: Option<WorkCursor>,
     /// Most rows to return; at least 1.
@@ -176,6 +278,10 @@ pub struct LibraryWorkRow {
     pub holding_count: u64,
     /// RFC 3339 time of the newest holding.
     pub added_at: String,
+    /// Runtime in minutes of the longest held edition, when known.
+    pub length_minutes: Option<u64>,
+    /// RFC 3339 time of the newest purchase a store reported.
+    pub purchased_at: Option<String>,
 }
 
 /// One page of library works.
@@ -185,6 +291,36 @@ pub struct WorkPage {
     pub works: Vec<LibraryWorkRow>,
     /// Where the next page starts; `None` on the last page.
     pub next: Option<WorkCursor>,
+}
+
+/// Whose values a facet value list reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FacetValuesOf {
+    /// A facet of the page index.
+    Facet(WorkFacet),
+    /// One user's tags (`users.id`).
+    Tags(i64),
+}
+
+/// One value of a facet value list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FacetValue {
+    /// The value's [`facet_key`], the list's order and cursor.
+    pub key: String,
+    /// The value as shown (one of its spellings).
+    pub value: String,
+    /// How many held works have it.
+    pub works: u64,
+}
+
+/// One page of a facet value list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FacetValuesPage {
+    /// The values, by key.
+    pub values: Vec<FacetValue>,
+    /// The last key returned, where the next page starts; `None` on the
+    /// last page.
+    pub next: Option<String>,
 }
 
 /// Parses a stored comma-joined media kind set, skipping unknown values.
@@ -217,6 +353,8 @@ impl LibraryWorkRow {
             series_position: model.series_position,
             cover_edition_id: model.cover_edition_id,
             added_at: model.added_at,
+            length_minutes: (model.length_minutes > 0).then(|| count(model.length_minutes)),
+            purchased_at: (!model.purchased_at.is_empty()).then_some(model.purchased_at),
         })
     }
 }
@@ -244,6 +382,8 @@ pub(crate) struct WorkRowInputs {
     pub editions: Vec<editions::Model>,
     /// Listing id to edition id, for the editions above.
     pub listing_editions: HashMap<String, String>,
+    /// The listings of those editions, in id order.
+    pub listings: Vec<store_listings::Model>,
     /// Holdings of those listings.
     pub holdings: Vec<holdings::Model>,
     /// Display names of the work's authors (or hosts), in billing order.
@@ -328,6 +468,31 @@ pub(crate) fn build_work_row(
         Some((name, position)) => (Some(name.clone()), position.clone()),
         None => (None, None),
     };
+    let held_listings: HashSet<&str> = held.iter().map(|h| h.listing_id.as_str()).collect();
+    // The longest held edition's runtime; a listing's when no held edition
+    // has one. A runtime of 0 or less is unknown, not a runtime.
+    let length_minutes = inputs
+        .editions
+        .iter()
+        .filter(|e| held_editions.contains(e.id.as_str()))
+        .filter_map(|e| e.duration_minutes)
+        .filter(|minutes| *minutes > 0)
+        .max()
+        .or_else(|| {
+            inputs
+                .listings
+                .iter()
+                .filter(|l| held_listings.contains(l.id.as_str()))
+                .filter_map(|l| l.length_minutes)
+                .filter(|minutes| *minutes > 0)
+                .max()
+        })
+        .unwrap_or(0);
+    let purchased_at = held
+        .iter()
+        .filter_map(|h| h.purchased_at.as_deref())
+        .max()
+        .unwrap_or_default();
     Some(library_work_rows::Model {
         work_id: work.id.clone(),
         kind: work.kind.clone(),
@@ -343,8 +508,145 @@ pub(crate) fn build_work_row(
         edition_count: i64::try_from(inputs.editions.len()).unwrap_or(i64::MAX),
         holding_count: i64::try_from(held.len()).unwrap_or(i64::MAX),
         added_at: added_at.to_string(),
+        sort_series: series_sort_key(inputs.series.as_ref()),
+        length_minutes,
+        purchased_at: purchased_at.to_string(),
         refreshed_at: refreshed_at.to_string(),
     })
+}
+
+/// Separates the series name from the position in a series sort key; below
+/// every printable character, so "Dune" sorts before "Dune Chronicles".
+const SERIES_KEY_SEPARATOR: char = '\u{1}';
+
+/// The series sort key of a work: `0`, the lower-cased series name, a
+/// separator and the position key; `1` for a work in no series, so those
+/// sort last.
+///
+/// The position key is the first number in the position, its whole part
+/// zero-padded to ten digits so "2" sorts before "10", or `~` (after every
+/// digit) when the position has no number.
+///
+/// # Arguments
+///
+/// * `series` - The work's first series name and its position there.
+fn series_sort_key(series: Option<&(String, Option<String>)>) -> String {
+    let Some((name, position)) = series else {
+        return "1".to_string();
+    };
+    let position = position.as_deref().and_then(first_number).map_or_else(
+        || "~".to_string(),
+        |(whole, fraction)| match fraction {
+            Some(fraction) => format!("{whole:0>10}.{fraction}"),
+            None => format!("{whole:0>10}"),
+        },
+    );
+    format!(
+        "0{}{SERIES_KEY_SEPARATOR}{position}",
+        name.trim().to_lowercase()
+    )
+}
+
+/// The first number in `text` (as in "Book 3" or "#3.5"): its whole part
+/// without leading zeros and its fractional digits, if any.
+fn first_number(text: &str) -> Option<(String, Option<String>)> {
+    let start = text.find(|c: char| c.is_ascii_digit())?;
+    let rest = &text[start..];
+    let whole_len = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    let whole = rest[..whole_len].trim_start_matches('0');
+    let whole = if whole.is_empty() { "0" } else { whole };
+    let fraction = rest[whole_len..].strip_prefix('.').and_then(|tail| {
+        let len = tail
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(tail.len());
+        (len > 0).then(|| tail[..len].to_string())
+    });
+    Some((whole.to_string(), fraction))
+}
+
+/// Longest facet value (in bytes) the index stores; a longer one is left
+/// out rather than fail the row's write against the database's cell limit.
+const MAX_FACET_VALUE_BYTES: usize = 256;
+
+/// Splits a store's category text into genres: on commas, semicolons and
+/// bars, trimmed, empty pieces dropped.
+fn split_genres(text: &str) -> impl Iterator<Item = &str> {
+    text.split([',', ';', '|'])
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+}
+
+/// Derives a work's filter values: `(facet, key, value)`, one per key and
+/// facet, the first spelling of a key kept. An unheld work has none.
+///
+/// # Arguments
+///
+/// * `inputs` - What [`LibraryStore::work_row_inputs`] read.
+/// * `names` - The work's authors, narrators, series and publishers
+///   ([`LibraryStore::work_names`]).
+pub(crate) fn build_work_facets(
+    inputs: &WorkRowInputs,
+    names: &WorkNames,
+) -> Vec<(WorkFacet, String, String)> {
+    let held_listings: HashSet<&str> = inputs
+        .holdings
+        .iter()
+        .filter(|h| inputs.listing_editions.contains_key(&h.listing_id))
+        .map(|h| h.listing_id.as_str())
+        .collect();
+    let Some(work) = inputs.work.as_ref() else {
+        return Vec::new();
+    };
+    if held_listings.is_empty() {
+        return Vec::new();
+    }
+    let mut values: Vec<(WorkFacet, &str)> = Vec::new();
+    values.extend(
+        names
+            .authors
+            .iter()
+            .map(|n| (WorkFacet::Author, n.as_str())),
+    );
+    values.extend(
+        names
+            .narrators
+            .iter()
+            .map(|n| (WorkFacet::Narrator, n.as_str())),
+    );
+    values.extend(names.series.iter().map(|n| (WorkFacet::Series, n.as_str())));
+    values.extend(
+        names
+            .publishers
+            .iter()
+            .map(|n| (WorkFacet::Publisher, n.as_str())),
+    );
+    values.extend(
+        split_genres(work.categories.as_deref().unwrap_or_default()).map(|g| (WorkFacet::Genre, g)),
+    );
+    for listing in &inputs.listings {
+        values.extend(
+            split_genres(listing.categories.as_deref().unwrap_or_default())
+                .map(|g| (WorkFacet::Genre, g)),
+        );
+        if held_listings.contains(listing.id.as_str()) {
+            values.push((WorkFacet::Source, listing.plugin_key.as_str()));
+        }
+    }
+    let mut seen: HashSet<(WorkFacet, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for (facet, value) in values {
+        let value = value.trim();
+        let key = facet_key(value);
+        if key.is_empty() || value.len() > MAX_FACET_VALUE_BYTES {
+            continue;
+        }
+        if seen.insert((facet, key.clone())) {
+            out.push((facet, key, value.to_string()));
+        }
+    }
+    out
 }
 
 impl LibraryStore {
@@ -421,15 +723,16 @@ impl LibraryStore {
         })
         .await?;
         let edition_ids: Vec<String> = editions.iter().map(|e| e.id.clone()).collect();
-        let listing_editions: HashMap<String, String> =
+        let listings =
             find_chunked_paged::<store_listings::Entity, _>(self, &edition_ids, |part| {
                 store_listings::Entity::find()
                     .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
                     .order_by_asc(store_listings::Column::Id)
             })
-            .await?
-            .into_iter()
-            .map(|l| (l.id, l.edition_id))
+            .await?;
+        let listing_editions: HashMap<String, String> = listings
+            .iter()
+            .map(|l| (l.id.clone(), l.edition_id.clone()))
             .collect();
         let listing_ids: Vec<String> = listing_editions.keys().cloned().collect();
         let holdings = find_chunked_paged::<holdings::Entity, _>(self, &listing_ids, |part| {
@@ -453,6 +756,7 @@ impl LibraryStore {
             work: Some(work),
             editions,
             listing_editions,
+            listings,
             holdings,
             authors,
             first_author_sort,
@@ -563,7 +867,15 @@ impl LibraryStore {
             let refreshed_at = stamp(Utc::now());
             let inputs = self.work_row_inputs(&work_id).await?;
             let row = build_work_row(&inputs, &refreshed_at);
-            changed += self.write_work_row(&work_id, row, &refreshed_at).await?;
+            let facets = match (&inputs.work, &row) {
+                (Some(work), Some(row)) if row.holding_count > 0 => {
+                    build_work_facets(&inputs, &self.work_names(work, &inputs).await?)
+                }
+                _ => Vec::new(),
+            };
+            changed += self
+                .write_work_row(&work_id, row, &facets, &refreshed_at)
+                .await?;
         }
         if changed > 0 {
             self.bump_live_topic(crate::control_plane::LiveTopic::Library)
@@ -572,73 +884,129 @@ impl LibraryStore {
         Ok(changed)
     }
 
-    /// Writes (or, for a work that is gone, deletes) one work's row, unless
-    /// a refresh that started later already wrote it.
+    /// Writes (or, for a work that is gone, deletes) one work's row and its
+    /// filter values, unless a refresh that started later already wrote it.
+    ///
+    /// The row, the removal of its old values and as many new values as
+    /// fit go in one atomic batch; values past the database's batch limits
+    /// follow in further batches. Every value write checks that the row
+    /// still carries this refresh's stamp, so once a later refresh has
+    /// written the row, the rest of this one's values are dropped.
     async fn write_work_row(
         &self,
         work_id: &str,
         row: Option<library_work_rows::Model>,
+        facets: &[(WorkFacet, String, String)],
         refreshed_at: &str,
     ) -> Result<u64> {
-        let operation_id = format!("library-index-{}", Uuid::new_v4());
-        let statements = match row {
-            None => vec![batch::exec(
-                "DELETE FROM library_work_rows WHERE work_id = ? AND refreshed_at <= ?",
-                vec![batch::text(work_id), batch::text(refreshed_at)],
-            )],
-            Some(row) => {
-                let values = || {
-                    vec![
-                        batch::text(&row.kind),
-                        batch::text(&row.title),
-                        batch::text(&row.sort_title),
-                        batch::text_opt(row.authors.as_deref()),
-                        batch::text(&row.sort_author),
-                        batch::text_opt(row.series.as_deref()),
-                        batch::text_opt(row.series_position.as_deref()),
-                        batch::text_opt(row.cover_edition_id.as_deref()),
-                        batch::text(&row.media_kinds),
-                        batch::text(&row.acquire_status),
-                        batch::int(row.edition_count),
-                        batch::int(row.holding_count),
-                        batch::text(&row.added_at),
-                        batch::text(&row.refreshed_at),
-                    ]
-                };
-                let mut insert = vec![batch::text(&row.work_id)];
-                insert.extend(values());
-                let mut update = values();
-                update.push(batch::text(&row.work_id));
-                update.push(batch::text(refreshed_at));
-                vec![
-                    batch::exec(
-                        "INSERT OR IGNORE INTO library_work_rows (\
-                            work_id, kind, title, sort_title, authors, sort_author, series, \
-                            series_position, cover_edition_id, media_kinds, acquire_status, \
-                            edition_count, holding_count, added_at, refreshed_at\
-                         ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? \
-                         WHERE EXISTS (SELECT 1 FROM works WHERE id = ?)",
-                        {
-                            let mut binds = insert;
-                            binds.push(batch::text(&row.work_id));
-                            binds
-                        },
-                    ),
-                    batch::exec(
-                        "UPDATE library_work_rows SET kind = ?, title = ?, sort_title = ?, \
-                            authors = ?, sort_author = ?, series = ?, series_position = ?, \
-                            cover_edition_id = ?, media_kinds = ?, acquire_status = ?, \
-                            edition_count = ?, holding_count = ?, added_at = ?, refreshed_at = ? \
-                         WHERE work_id = ? AND refreshed_at <= ?",
-                        update,
-                    ),
-                ]
-            }
+        let operation_id = |n: usize| format!("library-index-{n}-{}", Uuid::new_v4());
+        let Some(row) = row else {
+            // The work is gone; its values went with it.
+            let reply = self
+                .execute_host_batch(batch::request(
+                    &operation_id(0),
+                    vec![batch::exec(
+                        "DELETE FROM library_work_rows WHERE work_id = ? AND refreshed_at <= ?",
+                        vec![batch::text(work_id), batch::text(refreshed_at)],
+                    )],
+                ))
+                .await?;
+            return Ok(batch::rows_affected(&reply, 0).min(1));
         };
-        let reply = self
-            .execute_host_batch(batch::request(&operation_id, statements))
-            .await?;
-        Ok(batch::rows_affected(&reply, reply.statements.len().saturating_sub(1)).min(1))
+        let values = || {
+            vec![
+                batch::text(&row.kind),
+                batch::text(&row.title),
+                batch::text(&row.sort_title),
+                batch::text_opt(row.authors.as_deref()),
+                batch::text(&row.sort_author),
+                batch::text_opt(row.series.as_deref()),
+                batch::text_opt(row.series_position.as_deref()),
+                batch::text_opt(row.cover_edition_id.as_deref()),
+                batch::text(&row.media_kinds),
+                batch::text(&row.acquire_status),
+                batch::int(row.edition_count),
+                batch::int(row.holding_count),
+                batch::text(&row.added_at),
+                batch::text(&row.sort_series),
+                batch::int(row.length_minutes),
+                batch::text(&row.purchased_at),
+                batch::text(&row.refreshed_at),
+            ]
+        };
+        let mut insert = vec![batch::text(&row.work_id)];
+        insert.extend(values());
+        insert.push(batch::text(&row.work_id));
+        let mut update = values();
+        update.push(batch::text(&row.work_id));
+        update.push(batch::text(refreshed_at));
+        // Holds while the row carries this refresh's stamp.
+        const FENCE: &str =
+            "EXISTS (SELECT 1 FROM library_work_rows WHERE work_id = ? AND refreshed_at = ?)";
+        let row_statements = vec![
+            batch::exec(
+                "INSERT OR IGNORE INTO library_work_rows (\
+                    work_id, kind, title, sort_title, authors, sort_author, series, \
+                    series_position, cover_edition_id, media_kinds, acquire_status, \
+                    edition_count, holding_count, added_at, sort_series, length_minutes, \
+                    purchased_at, refreshed_at\
+                 ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? \
+                 WHERE EXISTS (SELECT 1 FROM works WHERE id = ?)",
+                insert,
+            ),
+            batch::exec(
+                "UPDATE library_work_rows SET kind = ?, title = ?, sort_title = ?, \
+                    authors = ?, sort_author = ?, series = ?, series_position = ?, \
+                    cover_edition_id = ?, media_kinds = ?, acquire_status = ?, \
+                    edition_count = ?, holding_count = ?, added_at = ?, sort_series = ?, \
+                    length_minutes = ?, purchased_at = ?, refreshed_at = ? \
+                 WHERE work_id = ? AND refreshed_at <= ?",
+                update,
+            ),
+            batch::exec(
+                &format!("DELETE FROM library_work_facets WHERE work_id = ? AND {FENCE}"),
+                vec![
+                    batch::text(work_id),
+                    batch::text(work_id),
+                    batch::text(refreshed_at),
+                ],
+            ),
+        ];
+        let mut batches = Vec::new();
+        let mut pending = WriteBatches::new(self.db_capabilities(), "library index");
+        batches.extend(pending.push_group(row_statements)?);
+        for (facet, key, value) in facets {
+            batches.extend(pending.push(batch::exec(
+                &format!(
+                    "INSERT OR IGNORE INTO library_work_facets (work_id, facet, key, value) \
+                     SELECT ?, ?, ?, ? WHERE {FENCE}"
+                ),
+                vec![
+                    batch::text(work_id),
+                    batch::text(facet.as_str()),
+                    batch::text(key),
+                    batch::text(value),
+                    batch::text(work_id),
+                    batch::text(refreshed_at),
+                ],
+            ))?);
+        }
+        batches.extend(pending.finish());
+        let mut changed = 0;
+        for (n, statements) in batches.into_iter().enumerate() {
+            let reply = self
+                .execute_host_batch(batch::request(&operation_id(n), statements))
+                .await?;
+            if n == 0 {
+                // The row's `UPDATE` is the batch's second statement.
+                changed = batch::rows_affected(&reply, 1).min(1);
+                if changed == 0 {
+                    // A later refresh owns the row and its values.
+                    break;
+                }
+            }
+        }
+        Ok(changed)
     }
 
     /// Refreshes one page of the rebuild: the works with an id after
@@ -806,6 +1174,107 @@ impl LibraryStore {
         Ok(ids.iter().filter_map(|id| found.remove(id)).collect())
     }
 
+    /// One page of the values a facet has across the held works, by key.
+    ///
+    /// # Arguments
+    ///
+    /// * `of` - The facet, or the user whose tags to list.
+    /// * `after` - The `next` key of the previous page; `None` to start.
+    /// * `limit` - Most values to return; at least 1, further capped at the
+    ///   database's result-row limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    pub async fn library_facet_values(
+        &self,
+        of: FacetValuesOf,
+        after: Option<&str>,
+        limit: u64,
+    ) -> Result<FacetValuesPage> {
+        /// One group of the read, decoded by column name.
+        #[derive(Debug, sea_orm::FromQueryResult)]
+        struct Group {
+            /// The value's key.
+            key: String,
+            /// One spelling of the value.
+            value: String,
+            /// Works in the group.
+            works: i64,
+        }
+        let cap = self.result_row_cap();
+        let limit = limit.max(1).min(cap);
+        let probe = limit.saturating_add(1).min(cap);
+        let held = || {
+            Query::select()
+                .column(library_work_rows::Column::WorkId)
+                .from(library_work_rows::Entity)
+                .and_where(library_work_rows::Column::HoldingCount.gt(0))
+                .to_owned()
+        };
+        let mut groups = match of {
+            FacetValuesOf::Facet(facet) => {
+                use library_work_facets::Column as F;
+                let mut select = library_work_facets::Entity::find()
+                    .select_only()
+                    .column(F::Key)
+                    .column_as(F::Value.min(), "value")
+                    .column_as(F::WorkId.count(), "works")
+                    .filter(F::Facet.eq(facet.as_str()));
+                if let Some(after) = after {
+                    select = select.filter(F::Key.gt(after));
+                }
+                select
+                    .group_by(F::Key)
+                    .order_by_asc(F::Key)
+                    .limit(probe)
+                    .into_model::<Group>()
+                    .all(self.db())
+                    .await
+            }
+            FacetValuesOf::Tags(user_id) => {
+                use user_work_tags::Column as T;
+                let mut select = user_work_tags::Entity::find()
+                    .select_only()
+                    .column_as(T::TagKey, "key")
+                    .column_as(T::Tag.min(), "value")
+                    .column_as(T::WorkId.count(), "works")
+                    .filter(T::UserId.eq(user_id))
+                    .filter(T::WorkId.in_subquery(held()));
+                if let Some(after) = after {
+                    select = select.filter(T::TagKey.gt(after));
+                }
+                select
+                    .group_by(T::TagKey)
+                    .order_by_asc(T::TagKey)
+                    .limit(probe)
+                    .into_model::<Group>()
+                    .all(self.db())
+                    .await
+            }
+        }
+        .map_err(LibraryError::Orm)?;
+        let fetched = u64::try_from(groups.len()).unwrap_or(u64::MAX);
+        let more = fetched > limit || (probe == limit && fetched == limit);
+        groups.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        let next = if more {
+            groups.last().map(|g| g.key.clone())
+        } else {
+            None
+        };
+        Ok(FacetValuesPage {
+            values: groups
+                .into_iter()
+                .map(|g| FacetValue {
+                    key: g.key,
+                    value: g.value,
+                    works: count(g.works),
+                })
+                .collect(),
+            next,
+        })
+    }
+
     /// One page of the library's works from the page index.
     ///
     /// # Arguments
@@ -858,6 +1327,38 @@ impl LibraryStore {
                         .add(C::AddedAt.eq(&after.key))
                         .add(C::WorkId.lt(&after.work_id)),
                 ),
+                WorkSort::Series => {
+                    let title = after.title.clone().unwrap_or_default();
+                    Condition::any()
+                        .add(C::SortSeries.gt(&after.key))
+                        .add(
+                            Condition::all()
+                                .add(C::SortSeries.eq(&after.key))
+                                .add(C::SortTitle.gt(&title)),
+                        )
+                        .add(
+                            Condition::all()
+                                .add(C::SortSeries.eq(&after.key))
+                                .add(C::SortTitle.eq(&title))
+                                .add(C::WorkId.gt(&after.work_id)),
+                        )
+                }
+                WorkSort::Purchased => Condition::any().add(C::PurchasedAt.lt(&after.key)).add(
+                    Condition::all()
+                        .add(C::PurchasedAt.eq(&after.key))
+                        .add(C::WorkId.lt(&after.work_id)),
+                ),
+                WorkSort::Length => {
+                    let minutes: i64 = after
+                        .key
+                        .parse()
+                        .map_err(|_| LibraryError::Invalid("invalid page cursor".into()))?;
+                    Condition::any().add(C::LengthMinutes.lt(minutes)).add(
+                        Condition::all()
+                            .add(C::LengthMinutes.eq(minutes))
+                            .add(C::WorkId.lt(&after.work_id)),
+                    )
+                }
             });
         }
         select = match query.sort {
@@ -867,6 +1368,16 @@ impl LibraryStore {
                 .order_by_asc(C::SortTitle)
                 .order_by_asc(C::WorkId),
             WorkSort::Added => select.order_by_desc(C::AddedAt).order_by_desc(C::WorkId),
+            WorkSort::Series => select
+                .order_by_asc(C::SortSeries)
+                .order_by_asc(C::SortTitle)
+                .order_by_asc(C::WorkId),
+            WorkSort::Purchased => select
+                .order_by_desc(C::PurchasedAt)
+                .order_by_desc(C::WorkId),
+            WorkSort::Length => select
+                .order_by_desc(C::LengthMinutes)
+                .order_by_desc(C::WorkId),
         };
         let mut models = select
             .limit(probe)
@@ -883,8 +1394,12 @@ impl LibraryStore {
                     WorkSort::Title => last.sort_title.clone(),
                     WorkSort::Author => last.sort_author.clone(),
                     WorkSort::Added => last.added_at.clone(),
+                    WorkSort::Series => last.sort_series.clone(),
+                    WorkSort::Purchased => last.purchased_at.clone(),
+                    WorkSort::Length => last.length_minutes.to_string(),
                 },
-                title: (query.sort == WorkSort::Author).then(|| last.sort_title.clone()),
+                title: matches!(query.sort, WorkSort::Author | WorkSort::Series)
+                    .then(|| last.sort_title.clone()),
                 work_id: last.work_id.clone(),
             })
         } else {
@@ -924,7 +1439,66 @@ fn filtered_rows(query: &WorkPageQuery) -> sea_orm::Select<library_work_rows::En
     if let Some(account) = &query.account {
         select = select.filter(C::WorkId.in_subquery(account_works_subquery(account)));
     }
+    if let Some(filter) = &query.filter {
+        select = select.filter(filter_condition(filter));
+    }
     select
+}
+
+/// The condition a [`WorkFilter`] puts on `library_work_rows`.
+fn filter_condition(filter: &WorkFilter) -> Condition {
+    use library_work_rows::Column as C;
+    match filter {
+        WorkFilter::Facet { facet, value } => {
+            let key = facet_key(value);
+            let mut works = Query::select()
+                .column(library_work_facets::Column::WorkId)
+                .from(library_work_facets::Entity)
+                .and_where(library_work_facets::Column::Facet.eq(facet.as_str()))
+                .to_owned();
+            if *facet == WorkFacet::Series && key.is_empty() {
+                // In no series: no series value at all.
+                Condition::all().add(C::WorkId.not_in_subquery(works))
+            } else {
+                works.and_where(library_work_facets::Column::Key.eq(key));
+                Condition::all().add(C::WorkId.in_subquery(works))
+            }
+        }
+        WorkFilter::Tag { user_id, tag } => match user_id {
+            Some(user_id) => Condition::all().add(
+                C::WorkId.in_subquery(
+                    Query::select()
+                        .column(user_work_tags::Column::WorkId)
+                        .from(user_work_tags::Entity)
+                        .and_where(user_work_tags::Column::UserId.eq(*user_id))
+                        .and_where(user_work_tags::Column::TagKey.eq(facet_key(tag)))
+                        .to_owned(),
+                ),
+            ),
+            // No user, no tags: the work id is never null, so nothing matches.
+            None => Condition::all().add(C::WorkId.is_null()),
+        },
+        WorkFilter::Finished { user_id, finished } => {
+            let Some(user_id) = user_id else {
+                return if *finished {
+                    Condition::all().add(C::WorkId.is_null())
+                } else {
+                    Condition::all()
+                };
+            };
+            let done = Query::select()
+                .column(user_title_state::Column::WorkId)
+                .from(user_title_state::Entity)
+                .and_where(user_title_state::Column::UserId.eq(*user_id))
+                .and_where(user_title_state::Column::IsFinished.ne(0))
+                .to_owned();
+            if *finished {
+                Condition::all().add(C::WorkId.in_subquery(done))
+            } else {
+                Condition::all().add(C::WorkId.not_in_subquery(done))
+            }
+        }
+    }
 }
 
 /// The top-level works an account id holds a listing of: the works of the
@@ -1086,6 +1660,7 @@ mod tests {
                 ("l2".into(), "e2".into()),
                 ("l3".into(), "e3".into()),
             ]),
+            listings: Vec::new(),
             holdings: vec![
                 holding("h1", "l1", "2026-02-01T00:00:00Z"),
                 holding("h2", "l2", "2026-03-01T00:00:00Z"),
@@ -1147,6 +1722,56 @@ mod tests {
         assert_eq!(row.sort_author, "");
     }
 
+    fn listing(id: &str, edition: &str, length: Option<i64>) -> store_listings::Model {
+        store_listings::Model {
+            id: id.into(),
+            plugin_key: "p".into(),
+            marketplace: "us".into(),
+            product_id: id.into(),
+            edition_id: edition.into(),
+            title: "The Dispossessed".into(),
+            categories: None,
+            subtitle: None,
+            authors: None,
+            narrators: None,
+            series: None,
+            series_index: None,
+            description: None,
+            publisher: None,
+            published_at: None,
+            length_minutes: length,
+            language: None,
+            cover_url: None,
+            url: None,
+            rating_overall: None,
+            rating_count: None,
+            is_abridged: None,
+            observed_at: "2026-01-01T00:00:00Z".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn a_zero_edition_runtime_falls_back_to_the_listings() {
+        let mut zero = edition("e1", "audio", false);
+        zero.duration_minutes = Some(0);
+        let inputs = WorkRowInputs {
+            work: Some(work("w1")),
+            editions: vec![zero],
+            listing_editions: HashMap::from([("l1".into(), "e1".into())]),
+            listings: vec![listing("l1", "e1", Some(600))],
+            holdings: vec![holding("h1", "l1", "2026-02-01T00:00:00Z")],
+            ..WorkRowInputs::default()
+        };
+        assert_eq!(build_work_row(&inputs, "now").unwrap().length_minutes, 600);
+        let unknown = WorkRowInputs {
+            listings: vec![listing("l1", "e1", Some(0))],
+            ..inputs
+        };
+        assert_eq!(build_work_row(&unknown, "now").unwrap().length_minutes, 0);
+    }
+
     #[test]
     fn stored_rows_read_back_typed() {
         let model = library_work_rows::Model {
@@ -1164,6 +1789,9 @@ mod tests {
             edition_count: 2,
             holding_count: -1,
             added_at: "a".into(),
+            sort_series: "1".into(),
+            length_minutes: 0,
+            purchased_at: String::new(),
             refreshed_at: "r".into(),
         };
         let row = LibraryWorkRow::from_model(model.clone()).unwrap();

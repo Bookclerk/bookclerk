@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import {
   acquirableEditions,
   fetchEventDeliveries,
+  fetchFacetValues,
   fetchJobs,
   fetchStatus,
   fetchWork,
@@ -27,10 +28,17 @@ import {
   type MediaKind,
   type StatusResponse,
   type WorkDetail,
+  type WorkFacet,
   type WorkSort,
   type WorkSummary,
 } from "@/lib/api";
-import { metaSearchQuery, readWorks } from "@/lib/libraryWorks";
+import {
+  FACET_OPTIONS,
+  facetQuery,
+  metaSearchQuery,
+  readFacetValues,
+  readWorks,
+} from "@/lib/libraryWorks";
 import { canChangeBranchSharing } from "@/lib/join";
 import { useLiveRefresh } from "@/lib/live";
 import { cn, pageWidthClass } from "@/lib/utils";
@@ -62,7 +70,10 @@ const MEDIA_OPTIONS: { value: MediaKind | "all"; label: string }[] = [
 const SORT_OPTIONS: { value: WorkSort; label: string }[] = [
   { value: "title", label: "Title" },
   { value: "author", label: "Author" },
+  { value: "series", label: "Series" },
+  { value: "purchased", label: "Purchase date" },
   { value: "added", label: "Date added" },
+  { value: "length", label: "Duration" },
 ];
 
 const selectClassName =
@@ -100,6 +111,20 @@ export function LibraryPage({
   const [statusFilter, setStatusFilter] = useState<AcquireStatus | "all">("all");
   const [mediaFilter, setMediaFilter] = useState<MediaKind | "all">("all");
   const [sortKey, setSortKey] = useState<WorkSort>("title");
+  const [facet, setFacet] = useState<WorkFacet | "all">("all");
+  // The chosen value of `facet`; null until one is chosen.
+  const [facetValue, setFacetValue] = useState<string | null>(null);
+  // The menu of `facet`'s values, with the facet it was read for.
+  // The filter in force: a facet counts once a value is chosen, so picking
+  // only the facet does not reload the list.
+  const appliedFacet = facetValue === null ? "all" : facet;
+  const appliedValue = appliedFacet === "all" ? null : facetValue;
+  // Bumped by Refresh to read the facet menu again.
+  const [facetReads, setFacetReads] = useState(0);
+  const [facetMenu, setFacetMenu] = useState<{
+    facet: WorkFacet;
+    values: { value: string; label: string }[];
+  } | null>(null);
   const [selected, setSelected] = useState<WorkSummary | null>(null);
   // The detail read for an opened work, with the id it was read for.
   const [loadedDetail, setLoadedDetail] = useState<WorkDetail | null>(null);
@@ -127,6 +152,24 @@ export function LibraryPage({
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
     return () => window.clearTimeout(t);
   }, [q]);
+
+  // Reads the value menu of the chosen facet, again on every Refresh (so a
+  // failed read can be retried).
+  useEffect(() => {
+    if (facet === "all") return;
+    let current = true;
+    readFacetValues(fetchFacetValues, facet)
+      .then((values) => {
+        if (current) setFacetMenu({ facet, values });
+      })
+      .catch((err: unknown) => {
+        if (current) setError(err instanceof Error ? err.message : "Failed to load filter values");
+      });
+    return () => {
+      current = false;
+    };
+  }, [facet, facetReads]);
+  const facetValues = facetMenu && facetMenu.facet === facet ? facetMenu.values : null;
 
   /**
    * Loads works for the current search, filters and order.
@@ -166,6 +209,7 @@ export function LibraryPage({
             sort: sortKey,
             status: statusFilter,
             media_kind: mediaFilter === "all" ? undefined : mediaFilter,
+            ...facetQuery(appliedFacet, appliedValue),
           },
           wanted,
           kind === "append" ? (cursorRef.current ?? undefined) : undefined,
@@ -203,7 +247,7 @@ export function LibraryPage({
         }
       }
     },
-    [debouncedQ, sortKey, statusFilter, mediaFilter],
+    [debouncedQ, sortKey, statusFilter, mediaFilter, appliedFacet, appliedValue],
   );
   // Declared before the effects that load, so a queued load runs the
   // version for the current search and filter.
@@ -230,6 +274,7 @@ export function LibraryPage({
   }, [canAcquire]);
 
   const refresh = useCallback(async () => {
+    setFacetReads((n) => n + 1);
     await Promise.all([loadWorks("replace"), refreshMeta()]);
   }, [loadWorks, refreshMeta]);
 
@@ -389,14 +434,44 @@ export function LibraryPage({
               )
             }
           />
-          <div className="flex flex-col gap-2 lg:flex-row">
+          <div className="flex flex-col gap-2">
             <Input
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Search title, author:, narrator:, series:, asin:…"
-              className="lg:flex-1"
             />
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+              <select
+                value={facet}
+                onChange={(e) => {
+                  setFacet(e.target.value as WorkFacet | "all");
+                  setFacetValue(null);
+                }}
+                className={selectClassName}
+                aria-label="Filter by"
+              >
+                {FACET_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.value === "all" ? opt.label : `Filter: ${opt.label}`}
+                  </option>
+                ))}
+              </select>
+              {facet !== "all" ? (
+                <select
+                  value={facetValue ?? ""}
+                  onChange={(e) => setFacetValue(e.target.value === "" ? null : e.target.value)}
+                  className={selectClassName}
+                  aria-label="Filter value"
+                  disabled={facetValues === null}
+                >
+                  <option value="">{facetValues === null ? "Loading…" : "Any"}</option>
+                  {(facetValues ?? []).map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value as AcquireStatus | "all")}
@@ -497,7 +572,14 @@ export function LibraryPage({
           onMetaSearch={(kind: TitleMetaSearchKind, value: string) => {
             setSelected(null);
             setLoadedDetail(null);
-            setQ(metaSearchQuery(kind, value));
+            if (kind === "genres") {
+              // Genres are not in the search index: filter by the genre.
+              setQ("");
+              setFacet("genre");
+              setFacetValue(value);
+            } else {
+              setQ(metaSearchQuery(kind, value));
+            }
           }}
         />
       ) : null}

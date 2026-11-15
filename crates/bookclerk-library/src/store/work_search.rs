@@ -10,11 +10,10 @@ use std::collections::BTreeSet;
 
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 
+use super::library_index::WorkRowInputs;
 use super::library_model::find_chunked_paged;
 use super::LibraryStore;
-use crate::entities::{
-    contributors, credits, edition_identifiers, series, series_entries, store_listings,
-};
+use crate::entities::{contributors, credits, edition_identifiers, series, series_entries, works};
 use crate::error::Result;
 use crate::WorkKind;
 
@@ -87,13 +86,7 @@ impl LibraryStore {
             return Ok((top, None));
         }
         let edition_ids: Vec<String> = inputs.editions.iter().map(|e| e.id.clone()).collect();
-        let listings =
-            find_chunked_paged::<store_listings::Entity, _>(self, &edition_ids, |part| {
-                store_listings::Entity::find()
-                    .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
-                    .order_by_asc(store_listings::Column::Id)
-            })
-            .await?;
+        let listings = &inputs.listings;
         let identifiers =
             find_chunked_paged::<edition_identifiers::Entity, _>(self, &edition_ids, |part| {
                 edition_identifiers::Entity::find()
@@ -104,7 +97,75 @@ impl LibraryStore {
                     .order_by_asc(edition_identifiers::Column::Marketplace)
             })
             .await?;
+        let names = self.work_names(work, &inputs).await?;
 
+        let mut titles = BTreeSet::new();
+        for edition in &inputs.editions {
+            titles.insert(edition.title.clone());
+            titles.extend(edition.subtitle.clone());
+        }
+        for listing in listings {
+            titles.insert(listing.title.clone());
+            titles.extend(listing.subtitle.clone());
+        }
+        titles.remove(&work.title);
+        titles.retain(|t| !t.trim().is_empty());
+
+        let mut ids = BTreeSet::new();
+        for listing in listings {
+            ids.insert(listing.product_id.to_ascii_lowercase());
+        }
+        ids.extend(identifiers.iter().map(|i| i.value.to_ascii_lowercase()));
+        ids.retain(|id| !id.is_empty());
+
+        Ok((
+            top,
+            Some(WorkSearchDoc {
+                work_id: work.id.clone(),
+                title: work.title.clone(),
+                other_titles: titles.into_iter().collect(),
+                authors: names.authors.into_iter().collect(),
+                narrators: names.narrators.into_iter().collect(),
+                series: names.series.into_iter().collect(),
+                identifiers: ids.into_iter().collect(),
+            }),
+        ))
+    }
+}
+
+/// Every author, narrator, series and publisher name of a work, each once.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct WorkNames {
+    /// Authors (hosts, for a podcast), from the model's credits on the work
+    /// and its editions and the listings' author text.
+    pub authors: BTreeSet<String>,
+    /// Narrators, from the credits on the editions and expressions and the
+    /// listings' narrator text.
+    pub narrators: BTreeSet<String>,
+    /// Series names, from the model and the listings.
+    pub series: BTreeSet<String>,
+    /// Publishers, from the credits on the editions and the listings'
+    /// publisher text.
+    pub publishers: BTreeSet<String>,
+}
+
+impl LibraryStore {
+    /// Every author, narrator, series and publisher name of the work `inputs` were
+    /// read for, not only the ones the page index row shows.
+    ///
+    /// # Arguments
+    ///
+    /// * `work` - The top-level work.
+    /// * `inputs` - What [`LibraryStore::work_row_inputs`] read for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::LibraryError::Orm`] when a read fails.
+    pub(crate) async fn work_names(
+        &self,
+        work: &works::Model,
+        inputs: &WorkRowInputs,
+    ) -> Result<WorkNames> {
         let mut people_targets: Vec<String> =
             inputs.editions.iter().map(|e| e.id.clone()).collect();
         people_targets.extend(inputs.editions.iter().map(|e| e.expression_id.clone()));
@@ -121,51 +182,31 @@ impl LibraryStore {
         let author_names = self
             .credited_names(&["work", "edition"], &author_targets, author_role)
             .await?;
-        let series_names = self.series_names(&work.id).await?;
-
-        let mut titles = BTreeSet::new();
-        for edition in &inputs.editions {
-            titles.insert(edition.title.clone());
-            titles.extend(edition.subtitle.clone());
-        }
-        for listing in &listings {
-            titles.insert(listing.title.clone());
-            titles.extend(listing.subtitle.clone());
-        }
-        titles.remove(&work.title);
-        titles.retain(|t| !t.trim().is_empty());
-
-        // Every credited author and series, not only the ones the page
-        // index shows.
-        let mut authors: BTreeSet<String> = author_names.into_iter().collect();
-        let mut narrators: BTreeSet<String> = narrator_names.into_iter().collect();
-        let mut series: BTreeSet<String> = series_names.into_iter().collect();
-        let mut ids = BTreeSet::new();
-        for listing in &listings {
-            add_names(&mut authors, listing.authors.as_deref());
-            add_names(&mut narrators, listing.narrators.as_deref());
-            if let Some(name) = listing.series.as_deref().map(str::trim) {
+        let edition_ids: Vec<String> = inputs.editions.iter().map(|e| e.id.clone()).collect();
+        let publisher_names = self
+            .credited_names(&["edition"], &edition_ids, "publisher")
+            .await?;
+        let mut names = WorkNames {
+            authors: author_names.into_iter().collect(),
+            narrators: narrator_names.into_iter().collect(),
+            series: self.series_names(&work.id).await?.into_iter().collect(),
+            publishers: publisher_names.into_iter().collect(),
+        };
+        for listing in &inputs.listings {
+            add_names(&mut names.authors, listing.authors.as_deref());
+            add_names(&mut names.narrators, listing.narrators.as_deref());
+            if let Some(name) = listing.publisher.as_deref().map(str::trim) {
                 if !name.is_empty() {
-                    series.insert(name.to_string());
+                    names.publishers.insert(name.to_string());
                 }
             }
-            ids.insert(listing.product_id.to_ascii_lowercase());
+            if let Some(name) = listing.series.as_deref().map(str::trim) {
+                if !name.is_empty() {
+                    names.series.insert(name.to_string());
+                }
+            }
         }
-        ids.extend(identifiers.iter().map(|i| i.value.to_ascii_lowercase()));
-        ids.retain(|id| !id.is_empty());
-
-        Ok((
-            top,
-            Some(WorkSearchDoc {
-                work_id: work.id.clone(),
-                title: work.title.clone(),
-                other_titles: titles.into_iter().collect(),
-                authors: authors.into_iter().collect(),
-                narrators: narrators.into_iter().collect(),
-                series: series.into_iter().collect(),
-                identifiers: ids.into_iter().collect(),
-            }),
-        ))
+        Ok(names)
     }
 }
 
