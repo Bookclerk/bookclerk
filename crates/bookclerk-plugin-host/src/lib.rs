@@ -83,6 +83,7 @@ mod registry;
 mod remote_consent;
 mod rpc;
 mod rpc_session;
+mod socket_broker;
 mod spawn_plan;
 mod spawn_stdio;
 
@@ -212,6 +213,7 @@ pub use rpc_session::{
     plugin_instance_key, ExecutorIdentity, GuestDatabaseFactory, PluginSession, PluginStorage,
     RpcBackupOps, SessionServices, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
+pub use socket_broker::{BrokerSockets, SocketBroker, SocketEvent, SocketSink};
 pub use spawn_plan::{
     GuestRuntimeKind, SpawnPlan, SpawnTransport, WorkerdFrontDoor, WORKERD_BIN_ENV,
     WORKERD_LAUNCHER_ENV,

@@ -1404,6 +1404,18 @@ async fn spawn_integration(
 ) -> SpawnHealth {
     let allow_credential_login =
         crate::host_control_plane::allow_credential_login(&prepared.granted_config);
+    // The instance's socket broker belongs to the deployment, so every guest
+    // it starts (and each on-demand wake) shares the sockets. It reaches the
+    // network the deployed guest would.
+    let mut services = services;
+    if plugin.manifest.sockets.is_some() {
+        services.sockets = Some(crate::SocketBroker::new(
+            plugin.clone(),
+            config.clone(),
+            crate::host::integration::deployed_endpoint_for(plugin, &prepared.granted_config),
+        ));
+    }
+    let broker = services.sockets.clone();
     let starter = crate::activates_on_demand(&plugin.manifest).then(|| ExternalStarter {
         plugin: plugin.clone(),
         config: config.clone(),
@@ -1469,12 +1481,20 @@ async fn spawn_integration(
                         shared,
                         runtime.on_demand_idle,
                     );
+                    if let Some(broker) = &broker {
+                        let sink: Arc<dyn crate::SocketSink> = proxy.clone();
+                        broker.set_sink(Arc::downgrade(&sink));
+                    }
                     (proxy.clone(), GuestProcess::OnDemand(proxy))
                 }
-                None => (
-                    Arc::new(integration),
-                    GuestProcess::Resident(resident_session),
-                ),
+                None => {
+                    let integration = Arc::new(integration);
+                    if let Some(broker) = &broker {
+                        let sink: Arc<dyn crate::SocketSink> = integration.clone();
+                        broker.set_sink(Arc::downgrade(&sink));
+                    }
+                    (integration, GuestProcess::Resident(resident_session))
+                }
             };
             if let Err(err) = registered.start(context.clone()).await {
                 for previous in retired {

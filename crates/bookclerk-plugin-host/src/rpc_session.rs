@@ -83,6 +83,9 @@ type MetadataCall = EntrypointCall<dyn bookclerk_plugin_sdk::MetadataProvider>;
 /// Typed cover-fetch call against the opened `covers` entrypoint.
 type CoversCall = EntrypointCall<dyn bookclerk_plugin_sdk::CoverFetcher>;
 
+/// Typed call against the opened `socketHandler` entrypoint.
+type SocketHandlerCall = EntrypointCall<dyn bookclerk_plugin_abi::SocketHandler>;
+
 /// `!Send` boxed future pinned for the vat's `LocalSet`.
 type LocalBoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 
@@ -180,6 +183,11 @@ enum Work {
     Covers {
         /// Typed call; replies through the sender it captured.
         call: CoversCall,
+    },
+    /// One socket event for the opened `socketHandler` entrypoint.
+    SocketHandler {
+        /// Typed call; replies through the sender it captured.
+        call: SocketHandlerCall,
     },
     /// One typed `remoteLibrary` method on the opened primary entrypoints.
     RemoteLibrary {
@@ -567,6 +575,13 @@ pub struct SessionServices {
     /// TCP list; `Some(None)` records that the document names none; `None`
     /// means this spawn is not a deployed instance of such a plugin.
     pub deployed_endpoint: Option<Option<String>>,
+    /// The instance's socket broker, behind the `SOCKETS` binding.
+    ///
+    /// Owned by the deployment so sockets outlive the guest process. The
+    /// session hands it out only when the manifest declares `[sockets]` and
+    /// the covering grant has the `sockets` token; `None` never exposes
+    /// `SOCKETS`.
+    pub sockets: Option<crate::SocketBroker>,
 }
 
 impl SessionServices {
@@ -579,6 +594,7 @@ impl SessionServices {
             selected_instance_id: None,
             local_output_root: None,
             deployed_endpoint: None,
+            sockets: None,
         }
     }
 
@@ -591,6 +607,7 @@ impl SessionServices {
             selected_instance_id: None,
             local_output_root: None,
             deployed_endpoint: None,
+            sockets: None,
         }
     }
 
@@ -606,6 +623,7 @@ impl SessionServices {
             selected_instance_id: None,
             local_output_root: None,
             deployed_endpoint: None,
+            sockets: None,
         }
     }
 }
@@ -812,6 +830,9 @@ impl PluginSession {
         let kv = services
             .event_outbox
             .and_then(|store| KvNamespaces::new(store, &id, &manifest, &grant));
+        // `SOCKETS` needs the deployment's broker, a `[sockets]` declaration
+        // and the `sockets` grant token.
+        let sockets = crate::socket_broker::granted(services.sockets, &manifest, &grant);
         let spawn_config = spawned.spawn_config.clone();
         #[cfg(windows)]
         let package_sid = spawned.package_sid.clone();
@@ -903,7 +924,12 @@ impl PluginSession {
                     guard,
                     manifest,
                     vat_account,
-                    BindingHooks { events, queues, kv },
+                    BindingHooks {
+                        events,
+                        queues,
+                        kv,
+                        sockets,
+                    },
                     rx,
                     ready_tx,
                 )
@@ -1322,6 +1348,25 @@ impl PluginSession {
     {
         self.entrypoint_call(call, |call| Work::Covers { call })
             .await
+    }
+
+    /// Hands one socket event to the guest's `socketHandler` entrypoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the guest did not export `socketHandler`
+    /// or its handler failed.
+    pub async fn deliver_socket_event(&self, event: crate::SocketEvent) -> Result<()> {
+        self.entrypoint_call(
+            move |handler: Box<dyn bookclerk_plugin_abi::SocketHandler>| async move {
+                match event {
+                    crate::SocketEvent::Message(message) => handler.message(message).await,
+                    crate::SocketEvent::Closed(closed) => handler.closed(closed).await,
+                }
+            },
+            |call| Work::SocketHandler { call },
+        )
+        .await
     }
 
     /// Sends one typed call against the named entrypoint `S` to the vat
@@ -2285,6 +2330,8 @@ struct PrimaryState {
     queues: Option<QueueOutbox>,
     /// `[[kv_namespaces]]` hook; `None` when no row is granted.
     kv: Option<KvNamespaces>,
+    /// `SOCKETS` broker; `None` unless `[sockets]` is declared and granted.
+    sockets: Option<crate::SocketBroker>,
 }
 
 /// Host-served bindings every `open` of one session receives: the `EVENTS`
@@ -2296,6 +2343,8 @@ struct BindingHooks {
     queues: Option<QueueOutbox>,
     /// `[[kv_namespaces]]` hook.
     kv: Option<KvNamespaces>,
+    /// `SOCKETS` broker.
+    sockets: Option<crate::SocketBroker>,
 }
 
 impl PrimaryState {
@@ -2306,7 +2355,15 @@ impl PrimaryState {
             events: hooks.events,
             queues: hooks.queues,
             kv: hooks.kv,
+            sockets: hooks.sockets,
         }
+    }
+
+    /// The `SOCKETS` binding, when the broker is granted.
+    fn sockets_binding(&self) -> Option<Arc<dyn bookclerk_plugin_abi::Sockets>> {
+        self.sockets.clone().map(|broker| {
+            Arc::new(crate::BrokerSockets::new(broker)) as Arc<dyn bookclerk_plugin_abi::Sockets>
+        })
     }
 
     /// KV namespace bindings, when any are granted.
@@ -2376,6 +2433,7 @@ async fn primary_entrypoints<'a>(
                     events: primary.events_for(&invocation),
                     queues: primary.queues_for(&invocation),
                     kv: primary.kv_bindings(),
+                    sockets: primary.sockets_binding(),
                     ..HostBindings::from_values(want.clone())
                 },
             )
@@ -2742,7 +2800,7 @@ fn abandoned_revoke_failed(
 /// On Windows the session directory is removed only after the ACL journal
 /// revokes. A failed revoke leaves `acl-journals/<session>.json` beside that
 /// directory, where the gateway cannot delete it.
-fn abandon_spawned(mut spawned: crate::spawn_stdio::SpawnedStdio) {
+pub(crate) fn abandon_spawned(mut spawned: crate::spawn_stdio::SpawnedStdio) {
     spawned.identities.kill_matching();
     let _ = spawned.child.start_kill();
     if let Some(guest) = spawned.guest.as_mut() {
@@ -3280,6 +3338,22 @@ fn vat_thread(
                                 |eps| {
                                     eps.covers.clone().map(|stub| {
                                         Box::new(stub) as Box<dyn bookclerk_plugin_sdk::CoverFetcher>
+                                    })
+                                },
+                                call,
+                            );
+                            let _ = with_session(&session_cancel, &mut child, &mut guest, open)
+                                .await;
+                        }
+                        Work::SocketHandler { call } => {
+                            let open = run_entrypoint_call(
+                                &client,
+                                &account_id,
+                                &mut primary,
+                                "socketHandler",
+                                |eps| {
+                                    eps.socket_handler.clone().map(|stub| {
+                                        Box::new(stub) as Box<dyn bookclerk_plugin_abi::SocketHandler>
                                     })
                                 },
                                 call,
