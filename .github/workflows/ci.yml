@@ -249,6 +249,7 @@ jobs:
           "$PY" scripts/tests/test_cflite_artifacts.py
           "$PY" scripts/tests/test_dev_env.py
           "$PY" scripts/tests/test_tool_versions.py
+          "$PY" scripts/tests/test_visual_baselines.py
 
       - name: Database plugin isolation
         run: python3 scripts/tests/test_db_plugin_isolation.py -q
@@ -1642,13 +1643,33 @@ jobs:
       - name: Validate CI plan
         run: python3 scripts/ci-exec.py validate
 
-      # No baselines repository yet: the run records a fresh set and the
-      # artifact below carries it. axe-core violations still fail the run.
+      # The baselines commit this tree is checked against: `none` until a
+      # set is approved, then a commit of the public baselines repository.
+      - name: Read the baselines lock
+        id: lock
+        run: python3 scripts/visual_baselines.py lock ui/visual/baselines.lock >> "$GITHUB_OUTPUT"
+
+      # Public, so no token: a fork's pull request fetches it the same way.
+      - name: Check out the baselines
+        if: steps.lock.outputs.sha != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository_owner }}/bookclerk-visual-baselines
+          ref: ${{ steps.lock.outputs.sha }}
+          path: visual-baselines
+          persist-credentials: false
+
+      # Records a full set for the artifact below, and compares with the
+      # checked-out baselines when there are any. axe-core violations and
+      # screenshot differences fail the run.
       - name: Visual and accessibility checks
+        env:
+          CI_VISUAL_BASELINES: ${{ steps.lock.outputs.sha != '' && format('{0}/visual-baselines', github.workspace) || '' }}
         run: python3 scripts/ci-exec.py run ui_visual
 
-      # The screenshots this run took (and, once runs compare, the diffs
-      # and the HTML report of a failure). Not for an unpublished OSV
+      # The recorded set (`baselines/`, which the label workflow commits as
+      # new baselines) and the reports, with each mismatch's expected,
+      # actual and diff images under `compare/`. Not for an unpublished OSV
       # remediation bump.
       - name: Upload the visual results
         if: ${{ !cancelled() && !inputs.private-head }}

@@ -1173,25 +1173,37 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         ]
     if check == "ui_visual":
         # Storybook's static build, then every story checked with axe-core
-        # and compared with its baseline screenshot, inside the pinned
-        # Playwright image. With no baselines checked out (`CI_VISUAL_BASELINES`
-        # unset) the run records a fresh set instead, for the artifact
+        # inside the pinned Playwright image. The first run always records a
+        # full set into the artifact (what the label workflow commits as new
+        # baselines); with baselines checked out (`CI_VISUAL_BASELINES`), a
+        # second run compares against them and fails on any difference
         # (docs/contributing/ui/visual-testing.md).
         ui = str(ctx.workspace / "ui")
         out = ctx.tmp / "ui-visual"
         baselines = os.environ.get(VISUAL_BASELINES_ENV)
-        env = {
-            "VISUAL_OUTPUT_DIR": str(out),
-            "VISUAL_BASELINES_DIR": baselines or str(out / "baselines"),
-        }
-        argv = ["npm", "run", "test:visual"]
-        if not baselines:
-            argv += ["--", "--update-snapshots=all"]
-        return [
+        cmds = [
             Command("npm ci (ui)", ["npm", "ci"], cwd=ui),
             Command("storybook build (ui)", ["npm", "run", "storybook:build"], cwd=ui),
-            Command("visual and accessibility checks (ui)", argv, cwd=ui, env=env),
+            Command(
+                "record screenshots + axe-core (ui)",
+                ["npm", "run", "test:visual", "--", "--update-snapshots=all"],
+                cwd=ui,
+                env={"VISUAL_OUTPUT_DIR": str(out / "record"), "VISUAL_BASELINES_DIR": str(out / "baselines")},
+            ),
+            # Only a set whose recording passed is complete enough to propose
+            # (scripts/visual_baselines_bot.py).
+            Command("mark the recorded set complete", ["touch", str(out / "record-complete")]),
         ]
+        if baselines:
+            cmds.append(
+                Command(
+                    "compare with baselines (ui)",
+                    ["npm", "run", "test:visual"],
+                    cwd=ui,
+                    env={"VISUAL_OUTPUT_DIR": str(out / "compare"), "VISUAL_BASELINES_DIR": baselines},
+                )
+            )
+        return cmds
     if check == "api_docs":
         if params.get("all"):
             return [Command("API docs (all)", [API_DOCS_SCRIPT, "--check", "--all"])]

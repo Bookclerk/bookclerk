@@ -96,13 +96,14 @@ run renders with the same browser, fonts and system libraries. The image's
 version must match `@playwright/test` in `ui/package.json`. When they
 differ, Playwright can't find its browser and the job fails.
 
-The job uploads a `ui-visual` artifact with the screenshots it took and the
-HTML report.
+Each run first records a full set of screenshots, then, once a set is
+approved, compares with it. The job uploads a `ui-visual` artifact:
+`baselines/` holds the recorded set, `record/` and `compare/` the HTML
+reports, with the expected, actual and diff image of each mismatch.
 
 > [!NOTE]
-> Until the baselines repository exists, the job records a fresh set of
-> screenshots on every run instead of comparing. The accessibility checks
-> still fail the run. The artifact holds the recorded set.
+> While `ui/visual/baselines.lock` says `none`, the job only records. The
+> accessibility checks still fail the run.
 
 ## Baselines
 
@@ -111,65 +112,94 @@ PNGs would make every clone much larger. They live in a separate public
 repository, `Bookclerk/bookclerk-visual-baselines`, in the same way the
 built docs live in `Bookclerk/bookclerk-docs`.
 
-> [!NOTE]
-> The repository and the workflows below are planned and not built yet.
-
 ### Layout
 
 - Each baseline set is one commit in the baselines repository, with one
   folder per viewport: `desktop/<story-id>--<theme>.png` and
   `phone/<story-id>--<theme>.png`.
 - `ui/visual/baselines.lock` in this repository names the commit a
-  Bookclerk commit is checked against. So every Bookclerk commit, including
-  a release tag, pins the exact images it was approved with.
+  Bookclerk commit is checked against (or `none`). So every Bookclerk
+  commit, including a release tag, pins the exact images it was approved
+  with.
+- `pending/pr-<number>` holds the set a pull request proposes;
+  `approved/<commit>` tags keep every approved set.
 
 ### How CI compares
 
-The `ui-visual` job checks out the baselines repository at the commit in
-`baselines.lock`. The repository is public, so this needs no token and
-works the same on a pull request from a fork. It then sets
-`CI_VISUAL_BASELINES` to that checkout, and the check compares instead of
-recording.
-
-A failing run's artifact holds every screenshot the run took, with the
-expected, actual and diff image of each mismatch in the HTML report.
+The `ui-visual` job reads the lock with `scripts/visual_baselines.py lock`
+and checks the baselines repository out at that commit. The repository is
+public, so this needs no token and works the same on a pull request from a
+fork. It then sets `CI_VISUAL_BASELINES` to that checkout, and the check
+compares after recording.
 
 ### How a pull request changes them
 
 A pull request that changes how a component looks fails `ui-visual` until
-its baselines are approved:
+its new screenshots are approved. The `Visual baselines` workflow
+(`.github/workflows/visual-baselines.yml`) handles the rest:
 
-1. A reviewer opens the `ui-visual` artifact of the pull request's latest
-   run and checks that the diffs are the intended change.
-2. A maintainer applies the `visual-baselines` label.
-3. A trusted workflow, triggered by the label, downloads that run's
-   artifact. It accepts only PNG files with the expected names, sizes and
-   folders, commits them as a new set to the baselines repository, and
-   creates a ref for it.
-4. For a branch in this repository, the workflow commits the new
-   `baselines.lock` to the pull request through the API, so the commit is
-   signed. For a fork, it comments the new lock line for the author to
-   commit.
-5. The next run compares against the new set and passes.
+1. When CI finishes, the workflow reads the run's recorded set. If it
+   differs from the set the pull request's lock names, it pushes the set to
+   `pending/pr-<number>` and posts one comment on the pull request. The
+   comment shows the approved and proposed image of each changed
+   screenshot, and an approval checkbox for that head commit.
+2. An approver ticks the checkbox. Ticking needs write access, so a visual
+   reviewer without it replies `/approve-visuals` instead.
+3. The workflow checks the approver and that the comment is still for the
+   pull request's head. It then tags the set `approved/<commit>` and commits
+   the new lock to the pull request's branch through the API, so GitHub
+   signs the commit. For a fork, the comment gives the author the lock line
+   to commit.
+4. The next run compares against the new set and passes.
+
+A tick from anyone else is undone with the reason. A push after the
+comment makes it stale: the approval is refused, and the next CI run
+updates the comment for the new head.
 
 Because the pull request carries its own lock, the merge queue checks each
 pull request against its own approved images, and two pull requests that
 change baselines at once don't break each other.
 
-### Authentication
+### Who can approve
 
-Only the label workflow writes. It mints an installation token of the
-automation App with `contents: write` on the baselines repository alone, as
-the docs publisher does for `bookclerk-docs`. The `ui-visual` job itself
-holds no secrets, so it runs the same for every contributor.
+- Anyone with the admin or maintain role on this repository.
+- Any active member of the `visual-reviewers` organization team. The team
+  grants nothing else, so it can hold a designer without code access.
+
+### Safety
+
+The workflow runs from the default branch through `workflow_run` and
+`issue_comment`, and never checks out or runs pull request code. The
+recorded set comes from a run of the pull request's own code, so it is
+untrusted. `scripts/visual_baselines.py` accepts only PNG files with the
+expected names, folders and sizes, and only a comment edit that ticks the
+box and changes nothing else (see
+[Fuzzing](../fuzzing.md#visual-baselines-python)).
+
+The `ui-visual` job holds no secrets. The workflow's App tokens are
+narrowed per step: Contents on the baselines repository alone for sets and
+tags, and Pull requests, Contents and organization Members (read) on this
+repository for the comment, the lock and the team check.
+
+### Setup
+
+Before the first approval, an organization owner:
+
+1. Creates the public repository `Bookclerk/bookclerk-visual-baselines`,
+   with a ruleset that blocks deleting or force-pushing `approved/*` tags.
+2. Installs the automation App on it with Contents read and write.
+3. Grants the App the organization Members (read) permission.
+4. Creates the `visual-reviewers` team and adds the approvers.
+
+The lock stays `none` until the first set is approved.
 
 ### Keeping the repository small
 
 - Screenshots cover each story's own box, not the whole viewport, so most
   images are a few kilobytes. The first sets average about 22 KB per image.
-- Only sets that a `main` commit or a release tag points at need to be kept.
-  A scheduled cleanup can delete the refs of sets from pull requests that
-  never merged.
+- Only sets that an `approved/*` tag points at need to be kept. Pending
+  refs are overwritten on each proposal, so a pull request that never
+  merges leaves at most one pending set behind.
 
 ## Next steps
 

@@ -779,7 +779,9 @@ the plan scripts, builds Storybook and runs the checks in about two minutes,
 and uploads the `ui-visual` artifact.
 
 Only a change under `ui/` selects it, not a change to the host that serves
-`ui/dist`. Baselines live in a separate repository; see
+`ui/dist`. Baselines live in a separate repository, named by
+`ui/visual/baselines.lock`; the job records a set every run and compares
+with the locked one when there is one. See
 [Visual and accessibility testing](ui/visual-testing.md#baselines).
 
 ### Small-VPS envelope
