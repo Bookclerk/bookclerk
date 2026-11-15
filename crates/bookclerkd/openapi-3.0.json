@@ -16130,9 +16130,18 @@
           "Library"
         ],
         "summary": "Lists the library's works, one page at a time.",
-        "description": "Each work appears once however many editions, stores and accounts hold\nit; a podcast is listed as its show. Pass `next_cursor` back as\n`cursor` (with the same `sort`) for the next page.",
+        "description": "Each work appears once however many editions, stores and accounts hold\nit; a podcast is listed as its show. Pass `next_cursor` back as\n`cursor` (with the same `sort`) for the next page. With `q`, works that\nmatch come best first; pass `next_cursor` back with the same `q`.",
         "operationId": "list_works",
         "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Search text (Lucene-style); matches titles, authors, narrators,\nseries and store ids. Works then come best match first and `sort`\nis not used.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "name": "sort",
             "in": "query",
@@ -16206,7 +16215,7 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "`next_cursor` of the previous page, under the same `sort`.",
+            "description": "`next_cursor` of the previous page, under the same `sort` (or the\nsame `q`).",
             "required": false,
             "schema": {
               "type": "string"
@@ -16236,7 +16245,7 @@
             }
           },
           "400": {
-            "description": "A filter or the cursor is invalid.",
+            "description": "A filter, the query or the cursor is invalid.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16313,7 +16322,7 @@
             }
           },
           "503": {
-            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "description": "A search (`q`) arrived before the node's works search index was first built; that answer carries no `Retry-After`. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -16321,18 +16330,16 @@
                   "format": "int64",
                   "minimum": 0
                 },
-                "description": "Seconds to wait before asking again."
+                "description": "Seconds to wait before asking again; sent only when the sign-in could not be checked."
               }
             },
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorJson"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "session_check_unavailable",
-                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
-                  "status": 503
+                  "error": "the search index is being built; try again shortly"
                 }
               }
             }

@@ -6,6 +6,14 @@
 //! row added or removed between two requests never shifts the next page.
 //! The index is filled by the `host:library-index` consumer and the
 //! `library_index_rebuild` job ([`crate::library_index`]).
+//!
+//! With `q`, the node's works search index
+//! ([`bookclerk_search::WorkSearchIndex`]) matches works best first, and the
+//! page index supplies their rows and applies the filters; the cursor is
+//! then a position in the matches, valid only for the same query and
+//! filters. Relevance is computed again for each page, so unlike the
+//! keyset pages a search page can repeat or skip a work when the index
+//! changes between two requests.
 
 use std::sync::Arc;
 
@@ -17,6 +25,7 @@ use bookclerk_library::{
     HoldingHolder, LibraryWorkRow, ListingHolding, MediaKind, UserTitleState, WorkCursor,
     WorkDetail, WorkKind, WorkPageQuery, WorkSort,
 };
+use bookclerk_search::{SearchError, WorkSearchIndex};
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
@@ -193,6 +202,10 @@ impl From<Entitlement> for EntitlementJson {
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct WorksQuery {
+    /// Search text (Lucene-style); matches titles, authors, narrators,
+    /// series and store ids. Works then come best match first and `sort`
+    /// is not used.
+    q: Option<String>,
     /// Order of the page (default `title`).
     #[param(inline)]
     sort: Option<WorkSortParam>,
@@ -207,7 +220,8 @@ pub(crate) struct WorksQuery {
     status: Option<AcquireStatus>,
     /// Only works held by this store account id.
     account: Option<String>,
-    /// `next_cursor` of the previous page, under the same `sort`.
+    /// `next_cursor` of the previous page, under the same `sort` (or the
+    /// same `q`).
     cursor: Option<String>,
     /// Page size, clamped to 1–200 (default 40).
     limit: Option<u64>,
@@ -531,55 +545,245 @@ fn detail_json(
     }
 }
 
+/// Matches of a search one request examines at most; a page whose
+/// filters reject them all comes back short, with a cursor past them.
+const SEARCH_SCAN_BUDGET: usize = 1_000;
+
+/// Match ids read from the page index per query while filling a search
+/// page.
+const SEARCH_CHUNK: usize = 200;
+
+/// Where the next page of a search starts: how many of the query's
+/// matches earlier pages consumed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SearchCursor {
+    /// The query the cursor was issued for; refused under another.
+    q: String,
+    /// The filters it was issued under ([`search_filter_key`]); refused
+    /// under others.
+    filters: String,
+    /// Matches consumed so far.
+    at: usize,
+}
+
+/// A stable key of the filters a search page applies (not its limit), so
+/// a cursor is refused under other filters.
+fn search_filter_key(filters: &WorkPageQuery) -> String {
+    format!(
+        "{:?}|{:?}|{:?}|{:?}",
+        filters.media_kind, filters.kind, filters.status, filters.account
+    )
+}
+
+impl SearchCursor {
+    /// The opaque token: URL-safe base64 of the JSON.
+    fn encode(&self) -> String {
+        use base64::Engine as _;
+        // Serializing a string and a number cannot fail.
+        let json = serde_json::to_vec(self).unwrap_or_default();
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
+    }
+
+    /// Parses a token from [`Self::encode`]; `None` when it is not one.
+    fn decode(token: &str) -> Option<Self> {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(token.as_bytes())
+            .ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+}
+
+/// A 400 answer with `message`.
+fn bad_request(message: impl Into<String>) -> WorksError {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorMessage::new(message.into())),
+    )
+}
+
+/// Fills one search page from `window` (match ids, best first): looks up
+/// `chunk` ids at a time with `lookup`, which returns the rows that pass
+/// the filters in the same order, until `limit` rows are found or the
+/// window runs out.
+///
+/// # Returns
+///
+/// The page's rows and how many of the window's matches it used: just
+/// past the last match it took when the page filled, or the whole window
+/// when it did not (the next page then starts past the window).
+///
+/// # Errors
+///
+/// Propagates the first `lookup` failure.
+async fn fill_search_page<T, E, F, Fut>(
+    window: &[String],
+    limit: usize,
+    chunk: usize,
+    id_of: fn(&T) -> &str,
+    mut lookup: F,
+) -> Result<(Vec<T>, usize), E>
+where
+    F: FnMut(Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<T>, E>>,
+{
+    let mut rows = Vec::new();
+    let mut used = 0;
+    if limit == 0 {
+        return Ok((rows, used));
+    }
+    for part in window.chunks(chunk.max(1)) {
+        let found = lookup(part.to_vec()).await?;
+        let wanted = limit - rows.len();
+        if found.len() >= wanted {
+            // The page fills inside this chunk: stop just past the last
+            // match it takes.
+            let last = id_of(&found[wanted - 1]).to_string();
+            used += part
+                .iter()
+                .position(|id| *id == last)
+                .map_or(part.len(), |i| i + 1);
+            rows.extend(found.into_iter().take(wanted));
+            return Ok((rows, used));
+        }
+        rows.extend(found);
+        used += part.len();
+    }
+    Ok((rows, used))
+}
+
+/// One page of `q`'s matches that pass `filters`, best first.
+///
+/// A window of at most [`SEARCH_SCAN_BUDGET`] matches is read from the
+/// cursor's position and walked in chunks; the page index drops the ones
+/// the filters exclude. A page holds at most `limit` rows, and the next
+/// cursor points just past the last match it used, or past the window
+/// when the filters rejected too many to fill the page.
+///
+/// # Errors
+///
+/// A 400 for a query that does not parse or a cursor of another query or
+/// other filters, a 503 before the node's works index is first built, a
+/// 500 when the index or the library cannot be read.
+async fn search_page(
+    state: &AppState,
+    q: &str,
+    cursor: Option<&str>,
+    filters: &WorkPageQuery,
+) -> Result<(Vec<LibraryWorkRow>, Option<String>), WorksError> {
+    let filter_key = search_filter_key(filters);
+    let start = match cursor {
+        Some(token) => match SearchCursor::decode(token) {
+            Some(cursor) if cursor.q == q && cursor.filters == filter_key => cursor.at,
+            Some(_) => {
+                return Err(bad_request(
+                    "page cursor belongs to another query or other filters",
+                ))
+            }
+            None => return Err(bad_request("invalid page cursor")),
+        },
+        None => 0,
+    };
+    let dir = state.config.read().await.paths().search_index_dir.clone();
+    let window = WorkSearchIndex::open_and_match_ids(
+        WorkSearchIndex::dir_beside(&dir),
+        q.into(),
+        start,
+        SEARCH_SCAN_BUDGET,
+    )
+    .await
+    .map_err(|err| match err {
+        SearchError::Query(message) => bad_request(format!("invalid search query: {message}")),
+        SearchError::NotReady => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorMessage::new(
+                "the search index is being built; try again shortly",
+            )),
+        ),
+        other => {
+            tracing::warn!(error = %other, "GET /api/library/works: search failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage::new("the search index could not be read")),
+            )
+        }
+    })?;
+    let library = state.library_snapshot().await;
+    let limit = usize::try_from(filters.limit).unwrap_or(usize::MAX);
+    let (rows, used) = fill_search_page(
+        &window.ids,
+        limit,
+        SEARCH_CHUNK.max(limit),
+        |row: &LibraryWorkRow| row.work_id.as_str(),
+        |chunk| {
+            let library = library.clone();
+            async move { library.library_works_by_ids(&chunk, filters).await }
+        },
+    )
+    .await
+    .map_err(|err| read_failed("GET /api/library/works", &err))?;
+    let at = start.saturating_add(used);
+    let next = (at < window.total).then(|| {
+        SearchCursor {
+            q: q.to_string(),
+            filters: filter_key,
+            at,
+        }
+        .encode()
+    });
+    Ok((rows, next))
+}
+
 /// Lists the library's works, one page at a time.
 ///
 /// Each work appears once however many editions, stores and accounts hold
 /// it; a podcast is listed as its show. Pass `next_cursor` back as
-/// `cursor` (with the same `sort`) for the next page.
+/// `cursor` (with the same `sort`) for the next page. With `q`, works that
+/// match come best first; pass `next_cursor` back with the same `q`.
 #[utoipa::path(
     get,
     path = "/api/library/works",
     params(WorksQuery),
     responses(
         (status = 200, description = "A page of works.", body = WorksPage),
-        (status = 400, description = "A filter or the cursor is invalid.", body = ErrorMessage, example = json!({"error": "invalid page cursor"})),
+        (status = 400, description = "A filter, the query or the cursor is invalid.", body = ErrorMessage, example = json!({"error": "invalid page cursor"})),
         (status = 500, description = "The library could not be read.", body = ErrorMessage, example = json!({"error": "the library could not be read"})),
+        (status = 503, description = "A search (`q`) arrived before the node's works search index was first built; that answer carries no `Retry-After`.", body = ErrorMessage, headers(("Retry-After" = u64, description = "Seconds to wait before asking again; sent only when the sign-in could not be checked.")), example = json!({"error": "the search index is being built; try again shortly"})),
     ),
 )]
 pub(crate) async fn list_works(
     State(state): State<Arc<AppState>>,
     Query(query): Query<WorksQuery>,
 ) -> Result<Json<WorksPage>, WorksError> {
-    let sort: WorkSort = query.sort.unwrap_or_default().into();
-    let after = match query.cursor.as_deref().filter(|c| !c.is_empty()) {
-        Some(token) => Some(WorkCursor::decode(token).map_err(|err| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorMessage::new(err.to_string())),
-            )
-        })?),
-        None => None,
+    let cursor = query.cursor.as_deref().filter(|c| !c.is_empty());
+    let mut filters = WorkPageQuery {
+        sort: query.sort.unwrap_or_default().into(),
+        media_kind: query.media_kind.map(Into::into),
+        kind: query.kind.map(Into::into),
+        status: query.status,
+        account: query.account.filter(|a| !a.is_empty()),
+        after: None,
+        limit: query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT),
     };
     let library = state.library_snapshot().await;
-    let page = library
-        .library_works_page(&WorkPageQuery {
-            sort,
-            media_kind: query.media_kind.map(Into::into),
-            kind: query.kind.map(Into::into),
-            status: query.status,
-            account: query.account.filter(|a| !a.is_empty()),
-            after,
-            limit: query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT),
-        })
-        .await
-        .map_err(|err| match err {
-            bookclerk_library::LibraryError::Invalid(message) => {
-                (StatusCode::BAD_REQUEST, Json(ErrorMessage::new(message)))
+    let (rows, next_cursor) = match query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+        Some(q) => search_page(&state, q, cursor, &filters).await?,
+        None => {
+            if let Some(token) = cursor {
+                filters.after =
+                    Some(WorkCursor::decode(token).map_err(|err| bad_request(err.to_string()))?);
             }
-            other => read_failed("GET /api/library/works", &other),
-        })?;
-    let cover_ids: Vec<String> = page
-        .works
+            let page = library
+                .library_works_page(&filters)
+                .await
+                .map_err(|err| match err {
+                    bookclerk_library::LibraryError::Invalid(message) => bad_request(message),
+                    other => read_failed("GET /api/library/works", &other),
+                })?;
+            (page.works, page.next.map(|c| c.encode()))
+        }
+    };
+    let cover_ids: Vec<String> = rows
         .iter()
         .filter_map(|w| w.cover_edition_id.clone())
         .collect();
@@ -587,8 +791,7 @@ pub(crate) async fn list_works(
         .edition_cover_urls(&cover_ids)
         .await
         .map_err(|err| read_failed("GET /api/library/works", &err))?;
-    let works = page
-        .works
+    let works = rows
         .into_iter()
         .map(|row| {
             let cover_path = row
@@ -599,10 +802,7 @@ pub(crate) async fn list_works(
             summary(row, cover_path)
         })
         .collect();
-    Ok(Json(WorksPage {
-        works,
-        next_cursor: page.next.map(|c| c.encode()),
-    }))
+    Ok(Json(WorksPage { works, next_cursor }))
 }
 
 /// Reads one work with its editions, listings, holdings and the caller's

@@ -7856,6 +7856,7 @@ pub(crate) mod storage_scan;
 pub(crate) mod taste_titles;
 pub(crate) mod user_title_state;
 pub(crate) mod work_detail;
+pub(crate) mod work_search;
 pub(crate) mod write_batches;
 pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
