@@ -418,9 +418,9 @@ fn desktop_bundles() -> &'static str {
 }
 
 /// The packaging configs `cargo tauri build` merges, in order, on this
-/// platform. On macOS an overlay drops `favicon.ico` from the icons: every
-/// icon goes into the app's `.icns`, which has no slot for the `.ico`'s
-/// largest (48 px) image.
+/// platform. On macOS an overlay lists the 16 to 512 px icons only: every
+/// icon goes into the app's `.icns`, which has no 1x slot for a 1024 px
+/// image (that size only exists as 512 px @2x).
 fn desktop_configs() -> &'static [&'static str] {
     if cfg!(target_os = "macos") {
         &["tauri.packaging.json", "tauri.packaging.macos.json"]
