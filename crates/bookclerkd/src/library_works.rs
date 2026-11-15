@@ -1,8 +1,9 @@
 //! The library's works: `GET /api/library/works` pages the page index
 //! (`library_work_rows`), `GET /api/library/works/{id}` reads one work
 //! with its editions, store listings, holdings and the caller's own state,
-//! `GET /api/library/works/facets/{facet}` lists the values a page can be
-//! filtered by, and `GET /api/library/editions/{id}/cover` serves the cover
+//! `PUT /api/library/works/{id}/state` changes the caller's own finished
+//! flag, ratings and tags, `GET /api/library/works/facets/{facet}` lists
+//! the values a page can be filtered by, and `GET /api/library/editions/{id}/cover` serves the cover
 //! an acquire wrote beside an edition's file.
 //!
 //! Pages use a keyset cursor, so a page costs the same at any depth and a
@@ -555,6 +556,11 @@ pub(crate) struct WorkDetailJson {
     /// The caller's own state; absent for the operator or when the caller
     /// recorded nothing.
     state: Option<WorkStateJson>,
+    /// Whether the caller can keep their own state for the work
+    /// (`PUT /api/library/works/{id}/state`): false when the session has no
+    /// library user, such as the operator token.
+    #[schema(example = true)]
+    can_edit_state: bool,
 }
 
 /// The signed-in caller's user (`users.id`); `None` for an operator token
@@ -654,6 +660,7 @@ fn edition_json(edition: EditionDetail, covers: &crate::covers::CoverService) ->
 fn detail_json(
     detail: WorkDetail,
     state: Option<UserTitleState>,
+    can_edit_state: bool,
     covers: &crate::covers::CoverService,
 ) -> WorkDetailJson {
     WorkDetailJson {
@@ -669,13 +676,8 @@ fn detail_json(
             .into_iter()
             .map(|e| edition_json(e, covers))
             .collect(),
-        state: state.map(|s| WorkStateJson {
-            is_finished: s.is_finished,
-            rating_overall: s.rating_overall,
-            rating_performance: s.rating_performance,
-            rating_story: s.rating_story,
-            tags: s.tags,
-        }),
+        state: state.map(state_json),
+        can_edit_state,
     }
 }
 
@@ -989,7 +991,202 @@ pub(crate) async fn get_work(
             .map_err(|err| read_failed("GET /api/library/works/{id}", &err))?,
         None => None,
     };
-    Ok(Json(detail_json(detail, user_state, &state.covers)))
+    Ok(Json(detail_json(
+        detail,
+        user_state,
+        user_id.is_some(),
+        &state.covers,
+    )))
+}
+
+/// Longest `tags` string `PUT /api/library/works/{id}/state` accepts, in
+/// bytes (the minimum database profile's cell size).
+const MAX_TAGS_BYTES: usize = 1024;
+
+/// Most distinct tags one work's state may carry, so the write (two state
+/// statements, one delete and one insert per tag) stays one batch under
+/// the minimum database profile's 40 statements.
+const MAX_TAGS: usize = 32;
+
+/// Longest single tag, in bytes.
+const MAX_TAG_BYTES: usize = 64;
+
+/// `PUT /api/library/works/{id}/state` body: the fields of the caller's
+/// own state to change. A field left out keeps its stored value; `null`
+/// clears a rating or the tags.
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WorkStateEdit {
+    /// Whether the caller finished the work.
+    #[serde(default)]
+    #[schema(example = true)]
+    is_finished: Option<bool>,
+    /// Overall rating, 0 to 5; `null` clears it.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<f64>, nullable, example = 4.5)]
+    rating_overall: Option<Option<f64>>,
+    /// Narration rating, 0 to 5; `null` clears it.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<f64>, nullable, example = 4.0)]
+    rating_performance: Option<Option<f64>>,
+    /// Story rating, 0 to 5; `null` clears it.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<f64>, nullable, example = 5.0)]
+    rating_story: Option<Option<f64>>,
+    /// Tags separated by whitespace (at most 32, each at most 64 bytes,
+    /// 1024 bytes in all); `null` or an empty string clears them.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<String>, nullable, example = "classics reread")]
+    tags: Option<Option<String>>,
+}
+
+/// Deserializes a field that was present, so `Option<Option<T>>` tells an
+/// explicit `null` (`Some(None)`) from a missing field (`None`, by
+/// `serde(default)`).
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// Checks one rating field and maps it to the store's edit.
+///
+/// # Arguments
+///
+/// * `name` - The field's wire name, for the error message.
+/// * `value` - The field as sent.
+///
+/// # Errors
+///
+/// A 400 answer when the rating is not a number from 0 to 5.
+fn rating_edit(
+    name: &str,
+    value: Option<Option<f64>>,
+) -> Result<bookclerk_library::FieldEdit<f64>, WorksError> {
+    use bookclerk_library::FieldEdit;
+    match value {
+        None => Ok(FieldEdit::Keep),
+        Some(None) => Ok(FieldEdit::Clear),
+        Some(Some(rating)) if rating.is_finite() && (0.0..=5.0).contains(&rating) => {
+            Ok(FieldEdit::Set(rating))
+        }
+        Some(Some(_)) => Err(bad_request(format!("{name} must be from 0 to 5"))),
+    }
+}
+
+/// Checks the tags field and maps it to the store's edit: whitespace runs
+/// collapse to one space and an empty value clears the tags.
+///
+/// # Errors
+///
+/// A 400 answer when the tags are too long, too many, or contain a control
+/// character.
+fn tags_edit(
+    value: Option<Option<String>>,
+) -> Result<bookclerk_library::FieldEdit<String>, WorksError> {
+    use bookclerk_library::FieldEdit;
+    let Some(value) = value else {
+        return Ok(FieldEdit::Keep);
+    };
+    let Some(raw) = value else {
+        return Ok(FieldEdit::Clear);
+    };
+    if raw.len() > MAX_TAGS_BYTES {
+        return Err(bad_request("tags must be at most 1024 bytes"));
+    }
+    let tags: Vec<&str> = raw.split_whitespace().collect();
+    if tags.is_empty() {
+        return Ok(FieldEdit::Clear);
+    }
+    if tags.iter().any(|tag| tag.chars().any(char::is_control)) {
+        return Err(bad_request("tags must not contain control characters"));
+    }
+    if tags.iter().any(|tag| tag.len() > MAX_TAG_BYTES) {
+        return Err(bad_request("each tag must be at most 64 bytes"));
+    }
+    let distinct: std::collections::BTreeSet<String> = tags
+        .iter()
+        .map(|tag| bookclerk_library::facet_key(tag))
+        .collect();
+    if distinct.len() > MAX_TAGS {
+        return Err(bad_request("a work takes at most 32 tags"));
+    }
+    Ok(FieldEdit::Set(tags.join(" ")))
+}
+
+/// Changes the caller's own state for a work: finished, ratings and tags.
+///
+/// The state belongs to the signed-in library user, so members who share
+/// a storefront account each keep their own. Fields left out keep their
+/// value.
+#[utoipa::path(
+    put,
+    path = "/api/library/works/{id}/state",
+    params(("id" = String, Path, description = "Work id (a podcast's show).")),
+    request_body = WorkStateEdit,
+    responses(
+        (status = 200, description = "The caller's state after the change.", body = WorkStateJson),
+        (status = 400, description = "A rating is outside 0 to 5, or the tags are too long or too many.", body = ErrorMessage, example = json!({"error": "rating_overall must be from 0 to 5"})),
+        (status = 403, description = "The session has no library user to keep the state for.", body = ErrorMessage, example = json!({"error": "this session has no library user"})),
+        (status = 404, description = "No such work.", body = ErrorMessage, example = json!({"error": "work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b not found"})),
+        (status = 500, description = "The state could not be written.", body = ErrorMessage, example = json!({"error": "the state could not be written"})),
+    ),
+)]
+pub(crate) async fn put_work_state(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<WorkStateEdit>,
+) -> Result<Json<WorkStateJson>, WorksError> {
+    let edit = bookclerk_library::UserStateEdit {
+        is_finished: body.is_finished,
+        rating_overall: rating_edit("rating_overall", body.rating_overall)?,
+        rating_performance: rating_edit("rating_performance", body.rating_performance)?,
+        rating_story: rating_edit("rating_story", body.rating_story)?,
+        tags: tags_edit(body.tags)?,
+    };
+    let Some(user_id) = caller_user_id(&state, &headers).await else {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorMessage::new("this session has no library user")),
+        ));
+    };
+    let library = state.library_snapshot().await;
+    let stored = library
+        .edit_user_title_state(user_id, &id, &edit)
+        .await
+        .map_err(|err| {
+            tracing::error!(error = %err, "work state write failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage::new("the state could not be written")),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorMessage::new(
+                    bookclerk_library::LibraryError::not_found(
+                        bookclerk_library::EntityKind::Work,
+                        &id,
+                    ),
+                )),
+            )
+        })?;
+    Ok(Json(state_json(stored)))
+}
+
+/// The wire form of one user's state.
+fn state_json(s: UserTitleState) -> WorkStateJson {
+    WorkStateJson {
+        is_finished: s.is_finished,
+        rating_overall: s.rating_overall,
+        rating_performance: s.rating_performance,
+        rating_story: s.rating_story,
+        tags: s.tags,
+    }
 }
 
 /// Default page size of `GET /api/library/works/facets/{facet}`.

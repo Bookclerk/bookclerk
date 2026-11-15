@@ -35,6 +35,7 @@ import { titleDetailFromCatalog, titleDetailFromWork, type TitleDetail } from "@
 import { formatDate, formatDuration } from "@/lib/libraryFilters";
 import { StoreLogo } from "@/components/StoreLogo";
 import { WisherAvatars } from "@/components/WisherAvatars";
+import { WorkStateEditor } from "@/components/WorkStateEditor";
 import { decodeHtmlEntities, parseGuidedReviewBody, prepareDescriptionHtml } from "@/lib/safeHtml";
 import { cn, titleDetailDialogClass } from "@/lib/utils";
 
@@ -1031,6 +1032,24 @@ export function TitleDetailModal({
                 </ul>
               )}
             </div>
+          ) : null}
+
+          {detail.work_id && detail.can_edit_state ? (
+            <WorkStateEditor
+              key={detail.work_id}
+              workId={detail.work_id}
+              state={detail.user_state ?? null}
+              onSaved={(state) =>
+                setDetail((d) => ({
+                  ...d,
+                  user_state: state,
+                  tags: state.tags,
+                  rating_overall: state.rating_overall,
+                  rating_performance: state.rating_performance,
+                  rating_story: state.rating_story,
+                }))
+              }
+            />
           ) : null}
 
           {detail.description ? (

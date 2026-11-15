@@ -146,6 +146,20 @@ describe("titleDetailFromWork", () => {
   });
 });
 
+describe("titleDetailFromWork state", () => {
+  it("carries the caller's own state and whether they can edit it", () => {
+    const detail = titleDetailFromWork({ ...work([edition("e")]), can_edit_state: true });
+    expect(detail.user_state?.tags).toBe("scifi");
+    expect(detail.can_edit_state).toBe(true);
+  });
+
+  it("cannot edit when the server does not say so", () => {
+    const detail = titleDetailFromWork({ ...work([edition("e")]), state: null });
+    expect(detail.user_state).toBeNull();
+    expect(detail.can_edit_state).toBe(false);
+  });
+});
+
 describe("acquirableEditions", () => {
   it("names held editions that are not acquired or on their way", () => {
     const editions = [

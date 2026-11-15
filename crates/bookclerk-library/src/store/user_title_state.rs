@@ -56,6 +56,48 @@ impl LibraryStore {
         Ok(())
     }
 
+    /// Applies `edit` to `user_id`'s state for `work_id` and returns the
+    /// state as stored afterwards.
+    ///
+    /// Unlike [`LibraryStore::set_user_title_state`], a field can be
+    /// cleared as well as kept or set. New tags also replace the work's
+    /// `user_work_tags` rows. The write is one atomic batch, and every
+    /// statement in it requires the work to exist, so an unknown work
+    /// writes nothing.
+    ///
+    /// # Arguments
+    ///
+    /// * `user_id` - The user (`users.id`).
+    /// * `work_id` - The work (`works.id`).
+    /// * `edit` - What to change.
+    ///
+    /// # Returns
+    ///
+    /// The stored state, or `None` when no such work exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    pub async fn edit_user_title_state(
+        &self,
+        user_id: i64,
+        work_id: &str,
+        edit: &UserStateEdit,
+    ) -> Result<Option<UserTitleState>> {
+        let mut statements = user_title_state_edit(user_id, work_id, edit, &now_str()).to_vec();
+        match &edit.tags {
+            FieldEdit::Keep => {}
+            FieldEdit::Clear => statements.extend(user_work_tags_replace(user_id, work_id, "")),
+            FieldEdit::Set(tags) => {
+                statements.extend(user_work_tags_replace(user_id, work_id, tags));
+            }
+        }
+        let operation_id = format!("user-title-state-{}", uuid::Uuid::new_v4());
+        self.execute_host_batch(batch::request(&operation_id, statements))
+            .await?;
+        self.user_title_state(user_id, work_id).await
+    }
+
     /// Every work state of the given users, read in chunks.
     ///
     /// # Arguments
@@ -144,6 +186,122 @@ fn real_opt(value: Option<f32>) -> DbValue {
     }
 }
 
+/// One field of a [`UserStateEdit`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum FieldEdit<T> {
+    /// Leave the stored value as it is.
+    #[default]
+    Keep,
+    /// Remove the stored value.
+    Clear,
+    /// Store this value.
+    Set(T),
+}
+
+impl<T> FieldEdit<T> {
+    /// The bind pair for `col = CASE WHEN ? = 1 THEN ? ELSE col END`:
+    /// whether to write, and the value written (NULL when clearing).
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - Maps a set value to its bind.
+    /// * `null` - The typed NULL for the column.
+    fn binds(&self, value: impl Fn(&T) -> DbValue, null: DbValue) -> (DbValue, DbValue) {
+        match self {
+            Self::Keep => (batch::int(0), null),
+            Self::Clear => (batch::int(1), null),
+            Self::Set(v) => (batch::int(1), value(v)),
+        }
+    }
+}
+
+/// A change to one user's state for one work, applied by
+/// [`LibraryStore::edit_user_title_state`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct UserStateEdit {
+    /// The finished flag to store; `None` keeps it (a new row starts
+    /// unfinished).
+    pub is_finished: Option<bool>,
+    /// Overall rating, 0 to 5.
+    pub rating_overall: FieldEdit<f64>,
+    /// Narration rating, 0 to 5.
+    pub rating_performance: FieldEdit<f64>,
+    /// Story rating, 0 to 5.
+    pub rating_story: FieldEdit<f64>,
+    /// Tags, whitespace-separated.
+    pub tags: FieldEdit<String>,
+}
+
+/// The two statements that apply `edit` to one user's state for one work,
+/// each guarded so nothing is written for an unknown work.
+///
+/// # Arguments
+///
+/// * `user_id` - The user.
+/// * `work_id` - The work.
+/// * `edit` - What to change.
+/// * `now` - The write time (RFC 3339).
+fn user_title_state_edit(
+    user_id: i64,
+    work_id: &str,
+    edit: &UserStateEdit,
+    now: &str,
+) -> [TypedDbStatement; 2] {
+    let real = |v: &f64| DbValue::Float64(*v);
+    let null_real = || DbValue::Null(DbType::Float64);
+    let (overall_set, overall) = edit.rating_overall.binds(real, null_real());
+    let (performance_set, performance) = edit.rating_performance.binds(real, null_real());
+    let (story_set, story) = edit.rating_story.binds(real, null_real());
+    let (tags_set, tags) = edit
+        .tags
+        .binds(|v: &String| batch::text(v), DbValue::Null(DbType::Text));
+    let finished = batch::int_opt(edit.is_finished.map(i64::from));
+    [
+        batch::exec(
+            "UPDATE user_title_state SET \
+             is_finished = COALESCE(?, is_finished), \
+             rating_overall = CASE WHEN ? = 1 THEN ? ELSE rating_overall END, \
+             rating_performance = CASE WHEN ? = 1 THEN ? ELSE rating_performance END, \
+             rating_story = CASE WHEN ? = 1 THEN ? ELSE rating_story END, \
+             tags = CASE WHEN ? = 1 THEN ? ELSE tags END, \
+             updated_at = ? \
+             WHERE user_id = ? AND work_id = ?",
+            vec![
+                finished.clone(),
+                overall_set,
+                overall.clone(),
+                performance_set,
+                performance.clone(),
+                story_set,
+                story.clone(),
+                tags_set,
+                tags.clone(),
+                batch::text(now),
+                batch::int(user_id),
+                batch::text(work_id),
+            ],
+        ),
+        batch::exec(
+            "INSERT OR IGNORE INTO user_title_state \
+             (user_id, work_id, is_finished, rating_overall, rating_performance, rating_story, \
+              tags, updated_at) \
+             SELECT ?, ?, COALESCE(?, 0), ?, ?, ?, ?, ? \
+             WHERE EXISTS (SELECT 1 FROM works WHERE id = ?)",
+            vec![
+                batch::int(user_id),
+                batch::text(work_id),
+                finished,
+                overall,
+                performance,
+                story,
+                tags,
+                batch::text(now),
+                batch::text(work_id),
+            ],
+        ),
+    ]
+}
+
 /// The two statements that store one user's state for one work.
 ///
 /// `UPDATE` first, keeping each stored field the caller left out with
@@ -206,7 +364,7 @@ fn user_title_state_upsert(
 
 /// The statements that replace one user's `user_work_tags` rows for one
 /// work with `tags`: whitespace-separated, each distinct [`facet_key`] once,
-/// its first spelling kept.
+/// its first spelling kept. Nothing is inserted for an unknown work.
 ///
 /// # Arguments
 ///
@@ -224,12 +382,13 @@ fn user_work_tags_replace(user_id: i64, work_id: &str, tags: &str) -> Vec<TypedD
         if seen.insert(key.clone()) {
             statements.push(batch::exec(
                 "INSERT OR IGNORE INTO user_work_tags (user_id, work_id, tag_key, tag) \
-                 VALUES (?, ?, ?, ?)",
+                 SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM works WHERE id = ?)",
                 vec![
                     batch::int(user_id),
                     batch::text(work_id),
                     batch::text(&key),
                     batch::text(tag),
+                    batch::text(work_id),
                 ],
             ));
         }
@@ -268,6 +427,90 @@ mod tests {
             .await
             .unwrap()
             .0
+    }
+
+    #[tokio::test]
+    async fn an_edit_keeps_clears_and_sets_fields_and_skips_unknown_works() {
+        for profile in Profile::ALL {
+            let kit = sqlite::memory(profile).await;
+            let store = kit.store();
+            let name = profile.name();
+            let ana = store
+                .create_user(UserRole::Owner, Some("Ana"), None)
+                .await
+                .unwrap();
+            let left_hand = work(store, "The Left Hand of Darkness").await;
+
+            let first = store
+                .edit_user_title_state(
+                    ana.id,
+                    &left_hand,
+                    &UserStateEdit {
+                        is_finished: Some(true),
+                        rating_overall: FieldEdit::Set(4.5),
+                        rating_story: FieldEdit::Set(5.0),
+                        tags: FieldEdit::Set("classic reread".into()),
+                        ..UserStateEdit::default()
+                    },
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(first.is_finished, "{name}");
+            assert_eq!(first.rating_overall, Some(4.5), "{name}");
+            assert_eq!(first.rating_performance, None, "{name}");
+            assert_eq!(first.rating_story, Some(5.0), "{name}");
+            assert_eq!(first.tags.as_deref(), Some("classic reread"), "{name}");
+
+            let second = store
+                .edit_user_title_state(
+                    ana.id,
+                    &left_hand,
+                    &UserStateEdit {
+                        rating_overall: FieldEdit::Clear,
+                        rating_performance: FieldEdit::Set(3.0),
+                        tags: FieldEdit::Clear,
+                        ..UserStateEdit::default()
+                    },
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(second.is_finished, "{name}: kept");
+            assert_eq!(second.rating_overall, None, "{name}: cleared");
+            assert_eq!(second.rating_performance, Some(3.0), "{name}: set");
+            assert_eq!(second.rating_story, Some(5.0), "{name}: kept");
+            assert_eq!(second.tags, None, "{name}: cleared");
+            let tag_rows = crate::entities::user_work_tags::Entity::find()
+                .filter(crate::entities::user_work_tags::Column::UserId.eq(ana.id))
+                .all(store.db())
+                .await
+                .unwrap();
+            assert!(tag_rows.is_empty(), "{name}: tag rows cleared");
+
+            let missing = store
+                .edit_user_title_state(
+                    ana.id,
+                    "no-such-work",
+                    &UserStateEdit {
+                        is_finished: Some(true),
+                        tags: FieldEdit::Set("ghost".into()),
+                        ..UserStateEdit::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(missing, None, "{name}: unknown work writes nothing");
+            let tag_rows = crate::entities::user_work_tags::Entity::find()
+                .filter(crate::entities::user_work_tags::Column::UserId.eq(ana.id))
+                .all(store.db())
+                .await
+                .unwrap();
+            assert!(
+                tag_rows.is_empty(),
+                "{name}: no tag row for an unknown work"
+            );
+        }
     }
 
     #[tokio::test]
