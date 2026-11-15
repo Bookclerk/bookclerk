@@ -1640,6 +1640,11 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
             });
         }
     }
+    let sockets: Option<Box<dyn crate::Sockets>> = if b.has_sockets() {
+        Some(Box::new(SocketsClient::new(b.get_sockets()?)))
+    } else {
+        None
+    };
     Ok(Bindings {
         config,
         secrets,
@@ -1650,6 +1655,7 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
         storage,
         queues,
         kv,
+        sockets,
     })
 }
 
@@ -1716,6 +1722,11 @@ fn fill_entrypoints(mut b: entrypoints::Builder<'_>, eps: Entrypoints, window: u
         b.set_covers(capnp_rpc::new_client(CoverFetcherServer {
             inner: Arc::from(x),
             window,
+        }));
+    }
+    if let Some(x) = eps.socket_handler {
+        b.set_socket_handler(capnp_rpc::new_client(sockets_glue::SocketHandlerServer {
+            inner: Arc::from(x),
         }));
     }
 }
@@ -3536,6 +3547,8 @@ pub struct HostBindings {
     pub queues: Vec<(String, String, Arc<dyn QueueProducer>)>,
     /// Named `[[kv_namespaces]]` namespaces as `(binding, namespace, kv)`.
     pub kv: Vec<(String, String, Arc<dyn KvNamespace>)>,
+    /// `SOCKETS` broker link; `None` unless `[sockets]` is granted.
+    pub sockets: Option<Arc<dyn crate::Sockets>>,
 }
 
 impl HostBindings {
@@ -3550,6 +3563,7 @@ impl HostBindings {
             storage: None,
             queues: Vec::new(),
             kv: Vec::new(),
+            sockets: None,
         }
     }
 }
@@ -3588,6 +3602,8 @@ pub struct OpenedEntrypoints {
     pub metadata: Option<MetadataProviderClient>,
     /// `covers` entrypoint.
     pub covers: Option<CoverFetcherClient>,
+    /// `[sockets]` handler.
+    pub socket_handler: Option<SocketHandlerClient>,
 }
 
 /// Host bootstrap client for a plugin vat.
@@ -3721,6 +3737,12 @@ impl PluginClient {
                     entry.set_kv(capnp_rpc::new_client(KvNamespaceServer { inner: kv }));
                 }
             }
+            if let Some(sockets) = bindings.sockets {
+                b.reborrow()
+                    .set_sockets(capnp_rpc::new_client(sockets_glue::SocketsServer {
+                        inner: sockets,
+                    }));
+            }
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -3824,6 +3846,11 @@ impl PluginClient {
             },
             covers: if eps.has_covers() {
                 Some(CoverFetcherClient::new(eps.get_covers()?, self.window))
+            } else {
+                None
+            },
+            socket_handler: if eps.has_socket_handler() {
+                Some(SocketHandlerClient::new(eps.get_socket_handler()?))
             } else {
                 None
             },
@@ -5257,6 +5284,12 @@ where
         rpc_system,
     )
 }
+
+#[path = "rpc_sockets.rs"]
+mod sockets_glue;
+pub use sockets_glue::{
+    roundtrip_socket_message, SocketCodec, SocketHandlerClient, SocketWireMessage, SocketsClient,
+};
 
 #[cfg(test)]
 #[allow(clippy::missing_panics_doc, clippy::missing_errors_doc)]
@@ -8046,6 +8079,7 @@ mod tests {
                             storage: None,
                             queues: Vec::new(),
                             kv: Vec::new(),
+                            sockets: None,
                         },
                     )
                     .await

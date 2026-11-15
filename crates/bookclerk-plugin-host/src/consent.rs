@@ -183,7 +183,14 @@ pub fn effective_cpu_cores(value: Option<f64>) -> f64 {
 }
 
 /// Host binding names operators may grant (widen or narrow).
-pub const KNOWN_HOST_BINDINGS: &[&str] = &["config", "secrets", "plugin_kv", "work_fs", "oauth"];
+pub const KNOWN_HOST_BINDINGS: &[&str] = &[
+    "config",
+    "secrets",
+    "plugin_kv",
+    "work_fs",
+    "oauth",
+    "sockets",
+];
 
 /// Grant-entry prefix for named plugin database bindings (`database:<NAME>`).
 pub const DATABASE_BINDING_PREFIX: &str = "database:";
@@ -1041,6 +1048,9 @@ pub fn consent_request_alias(manifest: &PluginManifest) -> PluginGrant {
     }
     if b.oauth {
         bindings.insert("oauth".into());
+    }
+    if b.sockets {
+        bindings.insert("sockets".into());
     }
     for name in &b.databases {
         bindings.insert(format!("{DATABASE_BINDING_PREFIX}{name}"));
@@ -2481,13 +2491,13 @@ pub fn grant_has_binding(grant: &PluginGrant, name: &str) -> bool {
 
 /// Maps a `describe()` env binding name onto the persisted grant token.
 ///
-/// Host bindings (`CONFIG`, `[secrets]`, `[work_fs]`, `[oauth]`, KV) are
+/// Host bindings (`CONFIG`, `[secrets]`, `[work_fs]`, `[oauth]`, `[sockets]`, KV) are
 /// authorized through [`PluginGrant::bindings`]. Producer `EVENTS` names are
 /// authorized through [`PluginGrant::producers`] instead.
 fn grant_binding_for_described(manifest: &PluginManifest, env_name: &str) -> Option<&'static str> {
     use bookclerk_plugin_manifest::{
         CONFIG_BINDING, DEFAULT_KV_BINDING, DEFAULT_OAUTH_BINDING, DEFAULT_SECRETS_BINDING,
-        DEFAULT_WORK_FS_BINDING,
+        DEFAULT_SOCKETS_BINDING, DEFAULT_WORK_FS_BINDING,
     };
     // Queue producer bindings are checked by `validate_described_capabilities`
     // through `queue_producers`; the env name itself needs no grant token here.
@@ -2522,6 +2532,13 @@ fn grant_binding_for_described(manifest: &PluginManifest, env_name: &str) -> Opt
         .is_some_and(|binding| env_name == binding.name_or(DEFAULT_OAUTH_BINDING))
     {
         return Some("oauth");
+    }
+    if manifest
+        .sockets
+        .as_ref()
+        .is_some_and(|binding| env_name == binding.name_or(DEFAULT_SOCKETS_BINDING))
+    {
+        return Some("sockets");
     }
     if manifest
         .kv_namespaces

@@ -1897,21 +1897,38 @@ def _rs_struct_type(ctx: _RsCtx, st: cs.Struct) -> list[str]:
 
 def _rs_union_type(ctx: _RsCtx, st: cs.Struct) -> list[str]:
     out = _rs_doc(st.doc)
+    # A Cap'n Proto union reads as its first member when nothing was set, so
+    # that member (with a zero payload) is the Rust default too. This lets a
+    # plain struct carry a union-typed field. A unit first member derives the
+    # default; a payload member gets a hand-written impl.
+    first = st.union_fields[0]
+    unit_first = first.type.name == "Void" and first.type.inner is None
     derives = ["Debug", "Clone", "PartialEq"]
     if ctx.is_eq(st.name):
         derives.append("Eq")
+    if unit_first:
+        derives.append("Default")
     derives.extend(["Serialize", "Deserialize"])
     out.append(f"#[derive({', '.join(derives)})]")
     out.append('#[serde(tag = "kind", content = "value", rename_all = "camelCase")]')
     out.append(f"pub enum {st.name} {{")
-    for f in st.union_fields:
+    for index, f in enumerate(st.union_fields):
         out.extend(_rs_doc(f.doc, "    "))
+        if index == 0 and unit_first:
+            out.append("    #[default]")
         if f.type.name == "Void" and f.type.inner is None:
             out.append(f"    {_pascal(f.name)},")
         else:
             out.append(f"    {_pascal(f.name)}({ctx.rust_type(f.type)}),")
     out.append("}")
     out.append("")
+    if not unit_first:
+        out.append(f"impl Default for {st.name} {{")
+        out.append("    fn default() -> Self {")
+        out.append(f"        Self::{_pascal(first.name)}(Default::default())")
+        out.append("    }")
+        out.append("}")
+        out.append("")
     return out
 
 

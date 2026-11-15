@@ -323,6 +323,12 @@ export interface Bindings {
    * binding, scoped to this plugin. Empty when the manifest declares none.
    */
   kv: NamedKv[];
+  /**
+   * `SOCKETS`: host-brokered outbound WebSockets that stay open while the
+   * guest sleeps; null unless `[sockets]` is declared and granted.
+   * Null when the guest does not export this capability.
+   */
+  sockets?: Sockets | null;
 }
 
 /**
@@ -391,6 +397,11 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   covers?: CoverFetcher | null;
+  /**
+   * `[sockets]` handler: messages and closes on host-brokered sockets.
+   * Null when the guest does not export this capability.
+   */
+  socketHandler?: SocketHandler | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -1090,6 +1101,75 @@ export interface NamedKv {
 }
 
 /**
+ * Host-brokered outbound WebSockets, granted through `Bindings.sockets`.
+ *
+ * The guest asks for a socket; a broker the host runs for the plugin
+ * instance dials it under the plugin's network grant and keeps it open while
+ * the guest sleeps, in the manner of hibernatable Workers WebSockets. Each
+ * incoming message wakes the guest and arrives on
+ * `Entrypoints.socketHandler`. Heartbeat pairs declared at connect are
+ * answered by the broker without waking the guest.
+ */
+export interface Sockets {
+  /**
+   * Open a socket; it is owned by the plugin instance, not this invocation.
+   *
+   * @param request - Target, subprotocols, headers, heartbeats.
+   * @returns {@link SocketConnectReply}
+   */
+  connect(request: SocketConnectRequest): Promise<SocketConnectReply>;
+  /**
+   * Send one message on an open socket.
+   *
+   * @param socket - Socket id from `connect` or `list`.
+   * @param frame - Message, at most `maxSocketFrameBytes`.
+   * @returns {@link EmptyReply}
+   */
+  send(socket: string, frame: SocketFrame): Promise<EmptyReply>;
+  /**
+   * Close a socket; closing an unknown or closed socket is not an error.
+   *
+   * @param socket - Socket id.
+   * @param code - WebSocket close code; zero sends 1000.
+   * @param reason - Close reason, at most 123 UTF-8 bytes.
+   * @returns {@link EmptyReply}
+   */
+  close(socket: string, code: number, reason: string): Promise<EmptyReply>;
+  /**
+   * Replace the attachment the host keeps for a socket.
+   *
+   * @param socket - Socket id.
+   * @param attachment - Opaque bytes, at most `maxSocketAttachmentBytes`.
+   * @returns {@link EmptyReply}
+   */
+  setAttachment(socket: string, attachment: Uint8Array): Promise<EmptyReply>;
+  /**
+   * The instance's open sockets, for a guest that just woke.
+   *
+   * @returns {@link SocketListReply}
+   */
+  list(): Promise<SocketListReply>;
+}
+
+/** Guest handler for host-brokered sockets (`Entrypoints.socketHandler`). */
+export interface SocketHandler {
+  /**
+   * One message arrived on an open socket.
+   *
+   * @param event - Socket, frame, and attachment.
+   * @returns {@link EmptyReply}
+   */
+  message(event: SocketMessage): Promise<EmptyReply>;
+  /**
+   * A socket closed, by the remote side, the network, or the host.
+   *
+   * @param event - Socket, close code, and attachment.
+   * @returns {@link EmptyReply}
+   */
+  closed(event: SocketClosed): Promise<EmptyReply>;
+}
+
+/**
  * Storefront content source (not byte Source). Every method takes and
  * returns typed structs from the "Typed method payloads" section.
  */
@@ -1398,6 +1478,11 @@ export interface PluginCapabilities {
    * single spaces.
    */
   crons: string[];
+  /**
+   * True when the guest declared `[sockets]`: it receives the host-brokered
+   * `Sockets` binding and may export a `SocketHandler` for pushed messages.
+   */
+  sockets: boolean;
 }
 
 /**
@@ -3118,6 +3203,105 @@ export interface CoverImages {
 export type CoverImagesReply =
   | { kind: "ok"; value: CoverImages } // Success: one entry per requested URL.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** One WebSocket message. */
+export type SocketFrame =
+  | { kind: "text"; value: string } // Text message, UTF-8.
+  | { kind: "binary"; value: Uint8Array }; // Binary message.
+
+/** One request header on `Sockets.connect`. */
+export interface SocketHeader {
+  /** Header name; the broker refuses hop-by-hop and WebSocket handshake names. */
+  name: string;
+  /** Header value. May carry a credential: the host never logs it. */
+  value: string;
+}
+
+/**
+ * A heartbeat the broker answers itself: when `request` arrives byte for byte,
+ * it sends `response` and does not wake the guest.
+ */
+export interface SocketAutoResponse {
+  /** Frame to match, at most `maxSocketAutoResponseBytes`. */
+  request: SocketFrame;
+  /** Frame to send back, at most `maxSocketAutoResponseBytes`. */
+  response: SocketFrame;
+}
+
+/** Arguments of `Sockets.connect`. */
+export interface SocketConnectRequest {
+  /**
+   * `wss://` or `ws://` URL, at most `maxSocketUrlBytes`. The host must be on
+   * the plugin's network grant.
+   */
+  url: string;
+  /** Requested subprotocols, at most `maxSocketHeaders`. */
+  protocols: string[];
+  /** Extra request headers, at most `maxSocketHeaders`. */
+  headers: SocketHeader[];
+  /** Heartbeats the broker answers, at most `maxSocketAutoResponses`. */
+  autoResponses: SocketAutoResponse[];
+  /** Initial attachment, at most `maxSocketAttachmentBytes`. */
+  attachment: Uint8Array;
+}
+
+/** One open host-brokered socket. */
+export interface SocketInfo {
+  /** Host-minted socket id, stable for the socket's life. */
+  socket: string;
+  /** URL the socket was opened to, without credentials. */
+  url: string;
+  /**
+   * Subprotocol the server chose; empty when none.
+   * Omitted when absent (wire zero value).
+   */
+  protocol?: string;
+  /** Current attachment. */
+  attachment: Uint8Array;
+}
+
+/** Result union of `Sockets.connect`. */
+export type SocketConnectReply =
+  | { kind: "ok"; value: SocketInfo } // Success: the handshake finished and the socket is open.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Success payload of `Sockets.list`. */
+export interface SocketList {
+  /** Open sockets, oldest first. */
+  sockets: SocketInfo[];
+}
+
+/** Result union of `Sockets.list`. */
+export type SocketListReply =
+  | { kind: "ok"; value: SocketList } // Success: the open sockets.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Argument of `SocketHandler.message`. */
+export interface SocketMessage {
+  /** Socket the message arrived on. */
+  socket: string;
+  /** The message. */
+  frame: SocketFrame;
+  /** The socket's attachment when the message arrived. */
+  attachment: Uint8Array;
+}
+
+/** Argument of `SocketHandler.closed`. */
+export interface SocketClosed {
+  /** Socket that closed; its id is not reused. */
+  socket: string;
+  /** WebSocket close code; 1006 when the connection dropped without one. */
+  code: number;
+  /**
+   * Close reason the peer sent; empty when none.
+   * Omitted when absent (wire zero value).
+   */
+  reason?: string;
+  /** True when the close handshake completed. */
+  clean: boolean;
+  /** The socket's last attachment. */
+  attachment: Uint8Array;
+}
 
 /** One typed SQL cell or bind parameter. */
 export type DbValue =

@@ -576,6 +576,60 @@ frozen `ScheduledController` (`cron`, `scheduled_time`, `fire_id`,
 > Fires run only on library nodes. An owned host node (one that runs work
 > for a single member) doesn't claim `plugin_scheduled` jobs.
 
+## Pushed sockets (`[sockets]`)
+
+Some services push changes over a WebSocket instead of being polled
+(Audiobookshelf's Socket.io channel, for example). Holding that socket
+open would keep the plugin running forever, so the host holds it instead,
+as Durable Objects' hibernatable WebSockets do: the plugin opens a socket
+through its binding, the host keeps the connection while the plugin
+sleeps, and each real message wakes the plugin's socket handler.
+
+```toml
+[sockets]                 # env.SOCKETS; `binding = "PUSH"` renames it
+
+[capabilities.network]
+mode = "outbound"
+tcp = ["abs.example.com:443"]
+```
+
+> [!NOTE]
+> This release defines the ABI shape and the host-side checks. The broker
+> that holds sockets ships next, and until it does the host never hands a
+> plugin the `Sockets` binding (`Bindings.sockets` is null), so a plugin
+> keeps its polling fallback. The SDK WebSocket API arrives with the
+> broker.
+
+- **Binding.** `Sockets.connect` takes a `ws://` or `wss://` URL, the
+  subprotocols to offer, extra request headers, up to 4 heartbeat pairs
+  and an attachment, and returns the socket's id. `send`, `close`,
+  `setAttachment` and `list` act on the plugin's own sockets only. An
+  instance holds at most 8 sockets (`maxSocketsPerInstance`).
+- **Handler.** A plugin that declares `[sockets]` may return a
+  `SocketHandler` from `open`. The host calls `message` with each frame
+  and the socket's attachment, and `closed` once when the socket ends,
+  with the close code, the reason and whether the close was clean. A
+  plugin that returns no handler gets no pushed messages.
+- **Heartbeats.** Each pair names a request frame and its reply. When an
+  incoming frame equals a request exactly (same kind and bytes), the host
+  sends the reply and doesn't wake the plugin, so a Socket.io ping `2`
+  answered with `3` costs no start. Frames are 1 to 256 bytes.
+- **Attachment.** Up to 2 KiB of plugin bytes stored with the socket and
+  handed back with every message, as `serializeAttachment` is for
+  Durable Objects. A plugin keeps what it needs to handle a message there
+  (an account id, a library id), since it may have restarted in between.
+- **Checks.** The host refuses, and the Rust SDK client checks before
+  sending, a URL with credentials, a
+  fragment, a percent-encoded or non-canonical host (`127.1`, `0x7f.1`),
+  or a bad port; header names the broker owns (`Host`, `Upgrade`,
+  `Connection`, `Sec-WebSocket-*` and other hop-by-hop headers); control
+  bytes in a header value; frames over 256 KiB
+  (`maxSocketFrameBytes`); and close codes a peer may not send. Header
+  values may be credentials, so errors never repeat them.
+- **Consent.** Declaring `[sockets]` adds the `sockets` binding token to
+  the grant, and the target of every socket is checked against the
+  network grant as any other connection is.
+
 ## Entrypoint methods
 
 The methods each capability entrypoint answers, by capability.

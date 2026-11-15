@@ -143,6 +143,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "socket_request"
+path = "fuzz_targets/socket_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "abi_decode"
 path = "fuzz_targets/abi_decode.rs"
 test = false

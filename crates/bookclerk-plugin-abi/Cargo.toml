@@ -30,6 +30,8 @@ tokio-util.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# The socket_request corpus oracle compares accepted URLs with a WHATWG parse.
+url.workspace = true
 toml.workspace = true
 tokio = { workspace = true, features = ["io-util", "io-std", "macros", "rt", "sync", "time", "rt-multi-thread"] }
 

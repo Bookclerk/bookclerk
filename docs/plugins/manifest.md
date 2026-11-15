@@ -271,6 +271,11 @@ The isolate runs at that applied date.
   `[[events.producers]]`, which are the bindings of the host's own
   `core.events` queue.
 
+- `[sockets]` asks for host-brokered WebSockets (`env.SOCKETS`, or the
+  name in `binding`). It needs `[capabilities.network] mode =
+  "outbound"`, and every URL must still pass the network grant (see
+  [Pushed sockets](abi.md#pushed-sockets-sockets)).
+
 ### `[triggers]`
 
 `[triggers]` declares handlers on the default export that the host calls

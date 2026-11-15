@@ -13,7 +13,7 @@ use crate::generated::{
     MetadataChaptersParams, MetadataLookupParams, MetadataRecord, MetadataSearchParams, PlainFetch,
     PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintsParams,
     RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams,
-    SourceAccount,
+    SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo, SocketMessage, SourceAccount,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
@@ -244,6 +244,41 @@ pub struct NamedKvBinding {
     pub namespace: String,
     /// Host-served namespace.
     pub kv: Box<dyn KvNamespace>,
+}
+
+/// Host-brokered outbound WebSockets granted on [`Bindings::sockets`].
+///
+/// A broker the host runs for the plugin instance holds each socket, so a
+/// socket outlives the invocation that opened it and stays open while the
+/// guest sleeps. Messages arrive on [`Entrypoints::socket_handler`].
+#[async_trait::async_trait(?Send)]
+pub trait Sockets {
+    /// Opens a socket to `request.url`, which must be on the plugin's
+    /// network grant, and returns it once the handshake finished.
+    async fn connect(&self, request: SocketConnectRequest) -> Result<SocketInfo>;
+    /// Sends one message on an open socket.
+    async fn send(&self, socket: String, frame: SocketFrame) -> Result<()>;
+    /// Closes a socket; closing an unknown or closed socket is not an error.
+    /// A zero `code` sends 1000.
+    async fn close(&self, socket: String, code: u16, reason: String) -> Result<()>;
+    /// Replaces the attachment the host keeps for a socket.
+    async fn set_attachment(&self, socket: String, attachment: Vec<u8>) -> Result<()>;
+    /// The instance's open sockets, oldest first.
+    async fn list(&self) -> Result<Vec<SocketInfo>>;
+}
+
+/// `[sockets]` handler: what arrives on host-brokered sockets.
+#[async_trait::async_trait(?Send)]
+pub trait SocketHandler {
+    /// One message arrived on an open socket.
+    async fn message(&self, _event: SocketMessage) -> Result<()> {
+        Err(PluginError::unsupported("message"))
+    }
+
+    /// A socket closed. The default ignores it.
+    async fn closed(&self, _event: SocketClosed) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// One granted `[[queues.producers]]` binding on [`Bindings::queues`].
@@ -729,6 +764,9 @@ pub struct Bindings {
     pub queues: Vec<NamedQueueBinding>,
     /// Named `[[kv_namespaces]]` bindings; empty when none is granted.
     pub kv: Vec<NamedKvBinding>,
+    /// `SOCKETS`: host-brokered WebSockets; `None` unless `[sockets]` is
+    /// granted.
+    pub sockets: Option<Box<dyn Sockets>>,
 }
 
 impl Bindings {
@@ -746,6 +784,7 @@ impl Bindings {
             storage: None,
             queues: Vec::new(),
             kv: Vec::new(),
+            sockets: None,
         }
     }
 
@@ -812,6 +851,8 @@ pub struct Entrypoints {
     pub metadata: Option<Box<dyn MetadataProvider>>,
     /// `covers` entrypoint.
     pub covers: Option<Box<dyn CoverFetcher>>,
+    /// `[sockets]` handler.
+    pub socket_handler: Option<Box<dyn SocketHandler>>,
 }
 
 /// Root `PluginWorker` capability (`describe` / `open` / `shutdown`).
