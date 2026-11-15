@@ -728,15 +728,24 @@ library holds as works, expressions and editions:
 - `library_work_rows`: the page index, one row per top-level work that
   has ever been held (title and author sort keys, first series, cover
   edition, media kinds, furthest acquire state, edition and holding
-  counts, newest holding time); pages skip rows with no holding left. It
+  counts, newest holding time, and the series, runtime and purchase-time
+  sort keys); pages skip rows with no holding left. It
   is derived data, refreshed by edition, holding and acquire events (not
   by a credit or series write alone) and rebuilt
   when `library_index_builds` has no row for the current layout; see
   [Library index](../internals/jobs.md#library-index).
+- `library_work_facets`: the page index's filter values, one row per
+  author, narrator, series, genre, publisher or source a held top-level
+  work has, keyed by the lower-cased value. Written with the work's
+  `library_work_rows` row and fenced by its refresh stamp; an unheld work
+  has none.
 - `user_title_state`: one user's finished flag, ratings and tags for a
   work, keyed `(user_id, work_id)`. Fields imported for an account reach
   every user linked to that account. Discover reads its taste from here,
   not from `books`.
+- `user_work_tags`: one user's tags on a work, one row per tag, written
+  in the same batch as `user_title_state.tags` so the library page can
+  filter by a tag.
 
 Per-person rows point at works instead of copying a title:
 `listening_progress` (one row per listener and work, with the edition when

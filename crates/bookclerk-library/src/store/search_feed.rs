@@ -13,8 +13,9 @@
 //! whose row is gone: the consumer deletes every document carrying the
 //! listing's [`ListingRef::term`] and re-adds the titles that still sell it.
 
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 
+use super::library_model::find_chunked_paged;
 use super::{map_book, LibraryStore};
 use crate::entities::{books, store_listings};
 use crate::error::{LibraryError, Result};
@@ -92,14 +93,21 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when the read fails.
     pub async fn listing_refs_of_edition(&self, edition_id: &str) -> Result<Vec<ListingRef>> {
-        Ok(store_listings::Entity::find()
-            .filter(store_listings::Column::EditionId.eq(edition_id))
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(ListingRef::of_row)
-            .collect())
+        // Paged: an edition sold on more listings than one result holds is
+        // still read whole.
+        Ok(find_chunked_paged::<store_listings::Entity, _>(
+            self,
+            &[edition_id.to_string()],
+            |part| {
+                store_listings::Entity::find()
+                    .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
+                    .order_by_asc(store_listings::Column::Id)
+            },
+        )
+        .await?
+        .into_iter()
+        .map(ListingRef::of_row)
+        .collect())
     }
 
     /// The listing stored under `listing_id`, or `None` when it is gone.
@@ -133,20 +141,22 @@ impl LibraryStore {
             .split_whitespace()
             .next()
             .unwrap_or_default();
-        books::Entity::find()
-            .filter(books::Column::PluginKey.eq(listing.plugin_key.as_str()))
-            .filter(books::Column::ProductId.contains(first_word))
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .filter(|row| {
-                bookclerk_resolve::stored_product_id(&row.product_id) == listing.product_id
-                    && bookclerk_resolve::stored_marketplace(&row.marketplace)
-                        == listing.marketplace
-            })
-            .map(map_book)
-            .collect()
+        // Paged: a listing held on more accounts than one result holds is
+        // still read whole.
+        find_chunked_paged::<books::Entity, _>(self, &[first_word.to_string()], |part| {
+            books::Entity::find()
+                .filter(books::Column::PluginKey.eq(listing.plugin_key.as_str()))
+                .filter(books::Column::ProductId.contains(part.first().map_or("", String::as_str)))
+                .order_by_asc(books::Column::Id)
+        })
+        .await?
+        .into_iter()
+        .filter(|row| {
+            bookclerk_resolve::stored_product_id(&row.product_id) == listing.product_id
+                && bookclerk_resolve::stored_marketplace(&row.marketplace) == listing.marketplace
+        })
+        .map(map_book)
+        .collect()
     }
 }
 

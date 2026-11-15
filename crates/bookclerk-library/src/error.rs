@@ -14,6 +14,8 @@ pub enum EntityKind {
     Book,
     /// A work of the library data model.
     Work,
+    /// An edition of the library data model.
+    Edition,
     /// A title request (wishlist entry).
     TitleRequest,
     /// A user.
@@ -72,10 +74,11 @@ pub enum EntityKind {
 
 impl EntityKind {
     /// Every kind, in declaration order.
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 31] = [
         Self::Account,
         Self::Book,
         Self::Work,
+        Self::Edition,
         Self::TitleRequest,
         Self::User,
         Self::PortalIdentity,
@@ -112,6 +115,7 @@ impl EntityKind {
             Self::Account => "account",
             Self::Book => "book",
             Self::Work => "work",
+            Self::Edition => "edition",
             Self::TitleRequest => "title request",
             Self::User => "user",
             Self::PortalIdentity => "portal identity",

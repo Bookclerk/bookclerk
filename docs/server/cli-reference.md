@@ -226,7 +226,7 @@ Options:
 
 - `-n, --limit <LIMIT>`: Max results (0 = all) (default `10`)
 - `-b, --bare`: Print ASINs only
-- `--rebuild-index`: Rebuild the search index before querying
+- `--rebuild-index`: Rebuild the title and works search indexes before querying
 - `--filter <FILTER>`: Run a saved quick filter by name
 
 ### `bookclerk library export`

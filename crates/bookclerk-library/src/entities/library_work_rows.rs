@@ -42,6 +42,16 @@ pub struct Model {
     /// RFC 3339 timestamp of the work's newest holding, for "recently
     /// added".
     pub added_at: String,
+    /// Sort key of the series order: `0`, the lower-cased first series
+    /// name, a separator and the zero-padded position; `1` when the work is
+    /// in no series, so those sort last.
+    pub sort_series: String,
+    /// Runtime in minutes of the work's longest held edition; 0 when no
+    /// store reported one.
+    pub length_minutes: i64,
+    /// RFC 3339 timestamp of the newest purchase a store reported for the
+    /// work's holdings; empty when none did.
+    pub purchased_at: String,
     /// RFC 3339 timestamp at which the refresh that wrote this row read the
     /// model; a refresh that read earlier never overwrites it.
     pub refreshed_at: String,

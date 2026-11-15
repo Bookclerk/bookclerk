@@ -1436,6 +1436,11 @@ impl LibraryStore {
             .exec(txn)
             .await
             .map_err(LibraryError::Orm)?;
+        crate::entities::user_work_tags::Entity::delete_many()
+            .filter(crate::entities::user_work_tags::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
 
         portal_identities::Entity::delete_many()
             .filter(portal_identities::Column::UserId.eq(id))

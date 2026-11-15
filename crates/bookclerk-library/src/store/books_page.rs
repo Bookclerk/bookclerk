@@ -1,7 +1,8 @@
-//! SQL page for `GET /api/library/books`.
+//! SQL pages of `books` rows, for readers that walk titles (Discover's
+//! metadata enrichment, for one) until `books` is retired.
 //!
 //! Filtering, case-insensitive title order, and `LIMIT`/`OFFSET` run in the
-//! database. The handler hydrates only the page. `total` is `COUNT(*)` of the
+//! database. The caller hydrates only the page. `total` is `COUNT(*)` of the
 //! same `WHERE`, not the length of a fully loaded catalog.
 
 use bookclerk_plugin_abi::{

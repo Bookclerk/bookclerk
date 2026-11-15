@@ -13,7 +13,7 @@ describe("coverSrc", () => {
     expect(coverSrc(undefined, 128)).toBeNull();
     expect(coverSrc("  ", 128)).toBeNull();
     expect(coverSrc("https://img.example/c.jpg", 128)).toBeNull();
-    expect(coverSrc("/api/library/books/x/cover", 128)).toBeNull();
+    expect(coverSrc("/api/library/editions/x/cover", 128)).toBeNull();
     expect(coverSrc("/api/covers/abc?x=1", 128)).toBeNull();
   });
 });

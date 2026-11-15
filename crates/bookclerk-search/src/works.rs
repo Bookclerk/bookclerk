@@ -325,6 +325,44 @@ impl WorkSearchIndex {
         Ok(count)
     }
 
+    /// [`Self::rebuild`], waiting while another writer holds the index.
+    ///
+    /// A running daemon refreshes this index from library events, and each
+    /// refresh holds the writer for a moment. A rebuild that finds the
+    /// index busy has written nothing, so it pauses (100 ms, doubling to
+    /// 2 s) and tries again until `max_wait` has passed.
+    ///
+    /// # Arguments
+    ///
+    /// * `library` - The library the works are read from.
+    /// * `max_wait` - How long to keep trying while the index is busy.
+    ///
+    /// # Returns
+    ///
+    /// How many documents were written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::Busy`] when the index is still busy after
+    /// `max_wait`, and any other error of [`Self::rebuild`] at once.
+    pub async fn rebuild_waiting(
+        &self,
+        library: &LibraryStore,
+        max_wait: std::time::Duration,
+    ) -> Result<usize> {
+        let deadline = tokio::time::Instant::now() + max_wait;
+        let mut pause = crate::engine::BUSY_PAUSE_FIRST;
+        loop {
+            match self.rebuild(library).await {
+                Err(SearchError::Busy) if tokio::time::Instant::now() + pause <= deadline => {
+                    tokio::time::sleep(pause).await;
+                    pause = (pause * 2).min(crate::engine::BUSY_PAUSE_MAX);
+                }
+                outcome => return outcome,
+            }
+        }
+    }
+
     /// Adds one work's document.
     fn add(&self, writer: &mut IndexWriter, work: &WorkSearchDoc) -> Result<()> {
         let all = [

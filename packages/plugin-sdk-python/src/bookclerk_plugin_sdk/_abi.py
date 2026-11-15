@@ -67,6 +67,29 @@ The host ignores a longer header the fetcher returns.
 MAX_KV_KEY_BYTES: int = 512
 """Longest `KvNamespace` key in UTF-8 bytes."""
 
+MAX_SOCKET_FRAME_BYTES: int = 262144
+"""Largest WebSocket message, text or binary, that `Sockets.send` accepts or
+`SocketHandler.message` delivers.
+"""
+
+MAX_SOCKET_ATTACHMENT_BYTES: int = 2048
+"""Largest per-socket attachment the host keeps for a sleeping guest."""
+
+MAX_SOCKETS_PER_INSTANCE: int = 8
+"""Most host-brokered sockets one plugin instance may hold open at once."""
+
+MAX_SOCKET_AUTO_RESPONSES: int = 4
+"""Most heartbeat pairs one `Sockets.connect` may declare."""
+
+MAX_SOCKET_AUTO_RESPONSE_BYTES: int = 256
+"""Largest heartbeat request or response frame, in bytes."""
+
+MAX_SOCKET_URL_BYTES: int = 2048
+"""Longest `SocketConnectRequest.url`, in bytes."""
+
+MAX_SOCKET_HEADERS: int = 16
+"""Most request headers, and separately subprotocols, on one `Sockets.connect`."""
+
 MAX_KV_METADATA_BYTES: int = 1024
 """Largest `KvNamespace` metadata JSON text in bytes."""
 
@@ -243,6 +266,13 @@ __all__ = [
     "MAX_COVER_BYTES",
     "MAX_COVER_HEADER_BYTES",
     "MAX_KV_KEY_BYTES",
+    "MAX_SOCKET_FRAME_BYTES",
+    "MAX_SOCKET_ATTACHMENT_BYTES",
+    "MAX_SOCKETS_PER_INSTANCE",
+    "MAX_SOCKET_AUTO_RESPONSES",
+    "MAX_SOCKET_AUTO_RESPONSE_BYTES",
+    "MAX_SOCKET_URL_BYTES",
+    "MAX_SOCKET_HEADERS",
     "MAX_KV_METADATA_BYTES",
     "MAX_PLUGIN_MIGRATION_OPS",
     "MAX_PLUGIN_MIGRATION_TOTAL_OPS",

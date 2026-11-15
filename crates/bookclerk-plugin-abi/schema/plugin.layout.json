@@ -962,7 +962,7 @@
       "name": "Bindings",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 9,
+      "pointerCount": 10,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -1064,6 +1064,16 @@
             }
           },
           "offset": 8
+        },
+        {
+          "name": "sockets",
+          "codeOrder": 9,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "Sockets"
+          },
+          "offset": 9
         }
       ]
     },
@@ -4503,7 +4513,7 @@
       "name": "Entrypoints",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 12,
+      "pointerCount": 13,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -4626,6 +4636,16 @@
             "name": "CoverFetcher"
           },
           "offset": 11
+        },
+        {
+          "name": "socketHandler",
+          "codeOrder": 12,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "SocketHandler"
+          },
+          "offset": 12
         }
       ]
     },
@@ -9421,7 +9441,7 @@
     "PluginCapabilities": {
       "name": "PluginCapabilities",
       "file": "plugin.capnp",
-      "dataWords": 0,
+      "dataWords": 1,
       "pointerCount": 9,
       "discriminantCount": 0,
       "discriminantOffset": 0,
@@ -9535,6 +9555,15 @@
             }
           },
           "offset": 8
+        },
+        {
+          "name": "sockets",
+          "codeOrder": 9,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
         }
       ]
     },
@@ -12306,6 +12335,683 @@
         }
       ]
     },
+    "SocketAutoResponse": {
+      "name": "SocketAutoResponse",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketFrame"
+          },
+          "offset": 0
+        },
+        {
+          "name": "response",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketFrame"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "SocketClosed": {
+      "name": "SocketClosed",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "socket",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "code",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint16"
+          },
+          "offset": 0
+        },
+        {
+          "name": "reason",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "clean",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 16
+        },
+        {
+          "name": "attachment",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "SocketConnectReply": {
+      "name": "SocketConnectReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "SocketInfo"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketConnectRequest": {
+      "name": "SocketConnectRequest",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 5,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "url",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "protocols",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 1
+        },
+        {
+          "name": "headers",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "SocketHeader"
+            }
+          },
+          "offset": 2
+        },
+        {
+          "name": "autoResponses",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "SocketAutoResponse"
+            }
+          },
+          "offset": 3
+        },
+        {
+          "name": "attachment",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 4
+        }
+      ]
+    },
+    "SocketFrame": {
+      "name": "SocketFrame",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "text",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "binary",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketHandler.closed$Params": {
+      "name": "SocketHandler.closed$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "event",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketClosed"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketHandler.closed$Results": {
+      "name": "SocketHandler.closed$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketHandler.message$Params": {
+      "name": "SocketHandler.message$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "event",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketMessage"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketHandler.message$Results": {
+      "name": "SocketHandler.message$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketHeader": {
+      "name": "SocketHeader",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "value",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "SocketInfo": {
+      "name": "SocketInfo",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 4,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "socket",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "url",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "protocol",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        },
+        {
+          "name": "attachment",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 3
+        }
+      ]
+    },
+    "SocketList": {
+      "name": "SocketList",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "sockets",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "SocketInfo"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketListReply": {
+      "name": "SocketListReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "SocketList"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "SocketMessage": {
+      "name": "SocketMessage",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "socket",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "frame",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketFrame"
+          },
+          "offset": 1
+        },
+        {
+          "name": "attachment",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "Sockets.close$Params": {
+      "name": "Sockets.close$Params",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "socket",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "code",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint16"
+          },
+          "offset": 0
+        },
+        {
+          "name": "reason",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "Sockets.close$Results": {
+      "name": "Sockets.close$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Sockets.connect$Params": {
+      "name": "Sockets.connect$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketConnectRequest"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Sockets.connect$Results": {
+      "name": "Sockets.connect$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketConnectReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Sockets.list$Params": {
+      "name": "Sockets.list$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "Sockets.list$Results": {
+      "name": "Sockets.list$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketListReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Sockets.send$Params": {
+      "name": "Sockets.send$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "socket",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "frame",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SocketFrame"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "Sockets.send$Results": {
+      "name": "Sockets.send$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Sockets.setAttachment$Params": {
+      "name": "Sockets.setAttachment$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "socket",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "attachment",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "Sockets.setAttachment$Results": {
+      "name": "Sockets.setAttachment$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "Source.open$Params": {
       "name": "Source.open$Params",
       "file": "plugin.capnp",
@@ -13661,6 +14367,60 @@
         }
       ]
     },
+    "SocketHandler": {
+      "name": "SocketHandler",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "message",
+          "ordinal": 0,
+          "params": "SocketHandler.message$Params",
+          "results": "SocketHandler.message$Results"
+        },
+        {
+          "name": "closed",
+          "ordinal": 1,
+          "params": "SocketHandler.closed$Params",
+          "results": "SocketHandler.closed$Results"
+        }
+      ]
+    },
+    "Sockets": {
+      "name": "Sockets",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "connect",
+          "ordinal": 0,
+          "params": "Sockets.connect$Params",
+          "results": "Sockets.connect$Results"
+        },
+        {
+          "name": "send",
+          "ordinal": 1,
+          "params": "Sockets.send$Params",
+          "results": "Sockets.send$Results"
+        },
+        {
+          "name": "close",
+          "ordinal": 2,
+          "params": "Sockets.close$Params",
+          "results": "Sockets.close$Results"
+        },
+        {
+          "name": "setAttachment",
+          "ordinal": 3,
+          "params": "Sockets.setAttachment$Params",
+          "results": "Sockets.setAttachment$Results"
+        },
+        {
+          "name": "list",
+          "ordinal": 4,
+          "params": "Sockets.list$Params",
+          "results": "Sockets.list$Results"
+        }
+      ]
+    },
     "Source": {
       "name": "Source",
       "file": "plugin.capnp",
@@ -13794,6 +14554,41 @@
       "name": "maxScanPageBooks",
       "file": "plugin.capnp",
       "value": 500
+    },
+    "maxSocketAttachmentBytes": {
+      "name": "maxSocketAttachmentBytes",
+      "file": "plugin.capnp",
+      "value": 2048
+    },
+    "maxSocketAutoResponseBytes": {
+      "name": "maxSocketAutoResponseBytes",
+      "file": "plugin.capnp",
+      "value": 256
+    },
+    "maxSocketAutoResponses": {
+      "name": "maxSocketAutoResponses",
+      "file": "plugin.capnp",
+      "value": 4
+    },
+    "maxSocketFrameBytes": {
+      "name": "maxSocketFrameBytes",
+      "file": "plugin.capnp",
+      "value": 262144
+    },
+    "maxSocketHeaders": {
+      "name": "maxSocketHeaders",
+      "file": "plugin.capnp",
+      "value": 16
+    },
+    "maxSocketUrlBytes": {
+      "name": "maxSocketUrlBytes",
+      "file": "plugin.capnp",
+      "value": 2048
+    },
+    "maxSocketsPerInstance": {
+      "name": "maxSocketsPerInstance",
+      "file": "plugin.capnp",
+      "value": 8
     },
     "maxStreamWindowBytes": {
       "name": "maxStreamWindowBytes",

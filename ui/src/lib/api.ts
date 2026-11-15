@@ -85,107 +85,209 @@ export interface AuthSession {
   second_factor?: AuthSecondFactor;
 }
 
+/** What a work is: a book, or a podcast (its show). */
+export type WorkKind = "book" | "podcast";
+
+/** How an edition is consumed. */
+export type MediaKind = "audio" | "ebook" | "print";
+
+/** How an expression renders its work. */
+export type ExpressionKind = "text" | "narration" | "dramatisation" | "graphic" | "original_audio";
+
+/** Whether an expression is abridged. */
+export type Abridgement = "unknown" | "unabridged" | "abridged";
+
+/** How a holder came to hold a listing. */
+export type Entitlement = "purchase" | "plus" | "loan" | "free";
+
+/** How `/api/library/works` orders a page (ignored while searching). */
+export type WorkSort = "title" | "author" | "series" | "purchased" | "added" | "length";
+
 /**
- * Library book row from `/api/library/books`.
- *
- * Field names match the daemon JSON (`snake_case`). Use `uuid` for acquire /
- * cover URLs; `asin` / `isbn` are store product ids when known.
+ * What `facet` and `value` filter works by: a value list of the page index,
+ * the caller's own tags, or their progress (`finished` / `not_finished`).
  */
-export interface BookRecord {
-  /** Library row primary key. */
-  id: number;
-  /** Stable book uuid used by acquire / cover / detail APIs. */
-  uuid: string;
-  /** Storefront plugin id (`audible`, `libro`, …). */
-  source: string;
-  /** Sealed account id that owns this title. */
-  account_id: string;
-  /** Store-native product id (ASIN, ISBN, UUID, …). */
-  product_id: string;
-  /** Audible ASIN when the source provides one. */
-  asin: string | null;
-  /** ISBN-13 / ISBN-10 when the source provides one. */
-  isbn: string | null;
-  /** Marketplace / locale code (`us`, `uk`, …). */
-  marketplace: string;
-  /** Display title. */
-  title: string;
-  /** Semicolon- or comma-separated author list. */
-  authors: string | null;
-  /** Semicolon- or comma-separated narrator list. */
-  narrators: string | null;
-  /** Series name when known. */
-  series: string | null;
-  /** Position within the series (string to preserve `#1.5` styles). */
-  series_index: string | null;
-  /** Audible series / podcast-parent ASIN when known. */
-  series_asin: string | null;
-  /** Pipeline state for the main audio acquire job. */
-  acquire_status: AcquireStatus;
-  /** Destination object key after a successful acquire. */
-  storage_key: string | null;
-  /** Last acquire / scan error message when status is `error`. */
-  error_message: string | null;
-  /** Purchase / library-add timestamp from the store (ISO-8601). */
-  purchased_at: string | null;
-  /** Space-separated user tags. */
-  tags: string | null;
-  /** Overall community rating (0–5) when enriched. */
-  rating_overall: number | null;
-  /** Performance / narrator rating when enriched. */
-  rating_performance: number | null;
-  /** Story rating when enriched. */
-  rating_story: number | null;
-  /** Whether the listener marked the title finished. */
-  is_finished: boolean;
-  /** Pipeline state for companion PDF acquire. */
-  pdf_status: AcquireStatus;
-  /** Destination key for an acquired companion PDF. */
-  pdf_storage_key: string | null;
-  /** Publisher name when known. */
-  publisher: string | null;
-  /** Runtime length in minutes when known. */
-  length_minutes: number | null;
-  /** True when the edition is abridged. */
-  is_abridged: boolean;
-  /** Content kind slug (`audiobook`, `podcast`, …). */
-  content_kind: string;
-  /** Genre / category list from the store (often `;`- or `,`-separated). */
-  categories: string | null;
-  /** Subtitle when the store provides one. */
-  subtitle: string | null;
-  /** Original publication date (ISO-8601 date or datetime). */
-  published_at: string | null;
-  /** Long-form description / blurb (may contain light HTML). */
-  description: string | null;
-  /** BCP-47-ish language code from the store. */
-  language: string | null;
-  /** Remote or proxied cover image URL. */
-  cover_url: string | null;
-  /** Same-origin path of this cover's processed images; see {@link coverSrc}. */
-  cover_path?: string | null;
-  /** Subject / BISAC-style tags when enriched. */
-  subjects: string | null;
-  /** Enrichment provider id that last wrote metadata. */
-  enrich_source: string | null;
-  /** Enrichment confidence score (0–1) when present. */
-  enrich_confidence: number | null;
-  /** When enrichment last ran (ISO-8601). */
-  enrich_updated_at: string | null;
-  /** Row insert time (ISO-8601). */
-  created_at: string;
-  /** Row last update time (ISO-8601). */
-  updated_at: string;
+export type WorkFacet =
+  "author" | "narrator" | "series" | "genre" | "publisher" | "source" | "tag" | "progress";
+
+/** One value of a facet, from `GET /api/library/works/facets/{facet}`. */
+export interface FacetValue {
+  /** The value, as {@link WorksQuery.value} takes it. */
+  value: string;
+  /** How many held works have it. */
+  works: number;
+}
+
+/** A page of a facet's values and the cursor of the next one. */
+export interface FacetValuesPage {
+  /** The page's values, by their lower-cased spelling. */
+  values: FacetValue[];
+  /** Pass as `cursor` for the next page; absent on the last. */
+  next_cursor?: string | null;
 }
 
 /**
- * Paginated library books list payload.
+ * One work row from `GET /api/library/works`: a book or podcast once,
+ * however many editions and accounts hold it.
  */
-export interface BooksResponse {
-  books: BookRecord[];
-  total: number;
-  limit: number;
-  offset: number;
+export interface WorkSummary {
+  /** Work id; opens the detail at `/api/library/works/{id}`. */
+  id: string;
+  /** Book or podcast. */
+  kind: WorkKind;
+  /** Display title. */
+  title: string;
+  /** Authors (or hosts), comma-separated, when known. */
+  authors: string | null;
+  /** Series name when the work is in one. */
+  series: string | null;
+  /** Position within the series (text, so `1.5` keeps its spelling). */
+  series_position: string | null;
+  /** Edition whose cover the row shows. */
+  cover_edition_id: string | null;
+  /** Same-origin path of that cover's processed images; see {@link coverSrc}. */
+  cover_path: string | null;
+  /** Media kinds the work's editions come in. */
+  media_kinds: MediaKind[];
+  /** The work's acquire state, summed over its editions. */
+  acquire_status: AcquireStatus;
+  /** Editions of the work in the library. */
+  edition_count: number;
+  /** Holdings of the work's listings. */
+  holding_count: number;
+  /** When the newest holding was added (ISO-8601). */
+  added_at: string;
+  /** Runtime in minutes of the longest held edition, when known. */
+  length_minutes?: number | null;
+  /** When the newest purchase a store reported happened (ISO-8601). */
+  purchased_at?: string | null;
+}
+
+/** A page of works and the cursor of the next one. */
+export interface WorksPage {
+  /** The page's works. */
+  works: WorkSummary[];
+  /** Pass as `cursor` for the next page; absent on the last. */
+  next_cursor?: string | null;
+}
+
+/** Who holds a listing: a store account, or a branch library's node. */
+export type Holder = AccountHolder | NodeHolder;
+
+/** A listing held by a store account. */
+export interface AccountHolder {
+  /** Discriminant. */
+  kind: "account";
+  /** The account's storefront plugin (`audible`, `libro`, ...). */
+  plugin_key: string;
+  /** The account's id on that storefront. */
+  account_id: string;
+}
+
+/** A listing held by a branch library's node. */
+export interface NodeHolder {
+  /** Discriminant. */
+  kind: "node";
+  /** The holding node's id. */
+  node_id: string;
+}
+
+/** One holding of a store listing. */
+export interface Holding {
+  /** Holding id. */
+  id: string;
+  /** Who holds it. */
+  holder: Holder;
+  /** How it is held. */
+  entitlement: Entitlement;
+  /** When the store says it was bought (ISO-8601), when known. */
+  purchased_at: string | null;
+  /** When the library first saw it (ISO-8601). */
+  added_at: string;
+}
+
+/** One store listing of an edition. */
+export interface Listing {
+  /** Listing id. */
+  id: string;
+  /** Storefront plugin (`audible`, `libro`, …). */
+  plugin_key: string;
+  /** Marketplace code (`us`, `uk`, …). */
+  marketplace: string;
+  /** The store's product id (ASIN, ISBN, …). */
+  product_id: string;
+  /** The listing's store page, when known. */
+  url: string | null;
+  /** Who holds it. */
+  holdings: Holding[];
+}
+
+/** One edition of a work, with its listings. */
+export interface Edition {
+  /** Edition id; acquire takes it in `editions`. */
+  id: string;
+  /** The work it belongs to (an episode for a podcast's editions). */
+  work_id: string;
+  /** Its expression. */
+  expression_id: string;
+  /** How the expression renders the work. */
+  expression_kind: ExpressionKind;
+  /** Language code, when known. */
+  language: string | null;
+  /** Whether it is abridged. */
+  abridgement: Abridgement;
+  /** How it is consumed. */
+  media_kind: MediaKind;
+  /** Edition title. */
+  title: string;
+  /** Subtitle, when known. */
+  subtitle: string | null;
+  /** Publication date (ISO-8601), when known. */
+  published_at: string | null;
+  /** Runtime in minutes, when known. */
+  duration_minutes: number | null;
+  /** Same-origin path of its processed cover; see {@link coverSrc}. */
+  cover_path: string | null;
+  /** Its acquire state. */
+  acquire_status: AcquireStatus;
+  /** Store listings that sell it. */
+  listings: Listing[];
+}
+
+/** The caller's own state for a work. */
+export interface WorkState {
+  /** Whether they finished it. */
+  is_finished: boolean;
+  /** Overall rating (0–5). */
+  rating_overall: number | null;
+  /** Performance rating (0–5). */
+  rating_performance: number | null;
+  /** Story rating (0–5). */
+  rating_story: number | null;
+  /** Space-separated tags. */
+  tags: string | null;
+}
+
+/** One work from `GET /api/library/works/{id}`. */
+export interface WorkDetail {
+  /** Work id. */
+  id: string;
+  /** Book or podcast. */
+  kind: WorkKind;
+  /** Display title. */
+  title: string;
+  /** Description, when known (may contain light HTML). */
+  description: string | null;
+  /** Authors (or hosts). */
+  authors: string[];
+  /** Series name, when in one. */
+  series: string | null;
+  /** Position within the series. */
+  series_position: string | null;
+  /** Its editions. */
+  editions: Edition[];
+  /** The caller's own state; absent when they recorded none. */
+  state?: WorkState | null;
 }
 
 /**
@@ -2903,30 +3005,106 @@ export async function fetchJobs(): Promise<JobInfo[]> {
   return parseJson(res);
 }
 
-/**
- * Fetches one page of library books for the Library table.
- *
- * Omits `status` (or passes `all`) to include every acquire state. Default page
- * size is 40 when `limit` is omitted.
- *
- * @param params - Optional search string, acquire-status filter, and pagination.
- * @returns Paginated books plus total count for the pager.
- */
-export async function fetchBooks(params: {
+/** Filters and paging for {@link fetchWorks}. */
+export interface WorksQuery {
+  /** Search text; matches come best first and `sort` is ignored. */
   q?: string;
-  status?: string;
+  /** Page order without `q`. */
+  sort?: WorkSort;
+  /** Only works with an edition of this media kind. */
+  media_kind?: MediaKind;
+  /** Only books or only podcasts. */
+  kind?: WorkKind;
+  /** Only works in this acquire state (`all` or omitted for every state). */
+  status?: AcquireStatus | "all";
+  /** Only works held on this account id. */
+  account?: string;
+  /** Only works with {@link WorksQuery.value} under this facet. */
+  facet?: WorkFacet;
+  /** The facet's value; an empty series value means works in no series. */
+  value?: string;
+  /** The previous page's `next_cursor`. */
+  cursor?: string;
+  /** Page size (the daemon caps it at 200). */
   limit?: number;
-  offset?: number;
-}): Promise<BooksResponse> {
+}
+
+/**
+ * Fetches one page of the library's works.
+ *
+ * @param query - Filters, order and the cursor of the page to read.
+ * @returns The page and the next page's cursor.
+ */
+export async function fetchWorks(query: WorksQuery): Promise<WorksPage> {
   const sp = new URLSearchParams();
-  if (params.q) sp.set("q", params.q);
-  if (params.status && params.status !== "all") sp.set("status", params.status);
-  sp.set("limit", String(params.limit ?? 40));
-  sp.set("offset", String(params.offset ?? 0));
-  const res = await fetchRetryingBusy(`/api/library/books?${sp}`, {
+  if (query.q) sp.set("q", query.q);
+  if (query.sort && !query.q) sp.set("sort", query.sort);
+  if (query.media_kind) sp.set("media_kind", query.media_kind);
+  if (query.kind) sp.set("kind", query.kind);
+  if (query.status && query.status !== "all") sp.set("status", query.status);
+  if (query.account) sp.set("account", query.account);
+  if (query.facet) {
+    sp.set("facet", query.facet);
+    sp.set("value", query.value ?? "");
+  }
+  if (query.cursor) sp.set("cursor", query.cursor);
+  sp.set("limit", String(query.limit ?? 40));
+  const res = await fetchRetryingBusy(`/api/library/works?${sp}`, {
     credentials: "include",
   });
   return parseJson(res);
+}
+
+/**
+ * Fetches one page of a facet's values across the library's held works.
+ *
+ * @param facet - The facet (not `progress`, whose values are fixed).
+ * @param cursor - The previous page's `next_cursor`; omitted for the first.
+ * @returns The page and the next page's cursor.
+ */
+export async function fetchFacetValues(
+  facet: Exclude<WorkFacet, "progress">,
+  cursor?: string,
+): Promise<FacetValuesPage> {
+  const sp = new URLSearchParams({ limit: "500" });
+  if (cursor) sp.set("cursor", cursor);
+  const res = await fetchRetryingBusy(
+    `/api/library/works/facets/${encodeURIComponent(facet)}?${sp}`,
+    { credentials: "include" },
+  );
+  return parseJson(res);
+}
+
+/**
+ * Fetches one work with its editions, listings, holdings and own state.
+ *
+ * @param id - Work id.
+ * @returns The work.
+ */
+export async function fetchWork(id: string): Promise<WorkDetail> {
+  const res = await fetchRetryingBusy(`/api/library/works/${encodeURIComponent(id)}`, {
+    credentials: "include",
+  });
+  return parseJson(res);
+}
+
+/**
+ * The editions of `work` an acquire should queue: those someone holds
+ * that are not acquired or on their way.
+ *
+ * @param work - A work's detail.
+ * @returns Edition ids for {@link triggerAcquire}'s `editions`.
+ */
+export function acquirableEditions(work: WorkDetail): string[] {
+  return work.editions
+    .filter(
+      (e) =>
+        e.listings.some((l) => l.holdings.length > 0) &&
+        e.acquire_status !== "acquired" &&
+        e.acquire_status !== "queued" &&
+        e.acquire_status !== "downloading",
+    )
+    .map((e) => e.id);
 }
 
 /**
@@ -2948,12 +3126,15 @@ export async function triggerScan(): Promise<ActionResponse> {
 }
 
 /**
- * Queues acquire for a library book by uuid and/or ASIN.
+ * Queues an acquire: everything pending when the body names nothing, or
+ * the named editions or title.
  *
- * @param body - Target identifiers (`uuid` and/or `asin`).
+ * @param body - `editions` (ids from a work's detail), or a title by
+ *   `uuid` / `asin`.
  * @returns Action ack including `job_id`.
  */
 export async function triggerAcquire(body: {
+  editions?: string[];
   uuid?: string;
   asin?: string;
 }): Promise<ActionResponse> {
@@ -3051,13 +3232,14 @@ export function resumeEventDelivery(id: string): Promise<ActionResponse> {
 }
 
 /**
- * Builds the authenticated cover image URL for a library book.
+ * Builds the authenticated URL of the cover an acquire wrote beside an
+ * edition's file (404 when this node has none).
  *
- * @param uuid - Book uuid.
- * @returns Relative URL under `/api/library/books/.../cover`.
+ * @param editionId - Edition id.
+ * @returns Relative URL under `/api/library/editions/.../cover`.
  */
-export function coverUrl(uuid: string): string {
-  return `/api/library/books/${encodeURIComponent(uuid)}/cover`;
+export function editionCoverUrl(editionId: string): string {
+  return `/api/library/editions/${encodeURIComponent(editionId)}/cover`;
 }
 
 /** A processed cover size the daemon serves: thumbnail, card, or full size. */

@@ -349,6 +349,11 @@ pub struct BindingCapabilities {
     /// With native outbound, this upgrades jail network need to
     /// [`JailNetworkNeed::Listen`].
     pub oauth: bool,
+    /// Guest may open host-brokered WebSockets (`[sockets]`): the
+    /// `Sockets` binding plus the `SocketHandler` entrypoint that receives
+    /// pushed messages while the process sleeps. Every target must also pass
+    /// the `[capabilities.network]` grant.
+    pub sockets: bool,
     /// Named plugin-owned database bindings (`[[databases]] binding = "DB"`).
     pub databases: Vec<String>,
 }
@@ -505,6 +510,8 @@ pub const DEFAULT_SECRETS_BINDING: &str = "SECRETS";
 pub const DEFAULT_WORK_FS_BINDING: &str = "WORK_FS";
 /// Default `binding` for `[oauth]`.
 pub const DEFAULT_OAUTH_BINDING: &str = "OAUTH";
+/// Default `binding` for `[sockets]`.
+pub const DEFAULT_SOCKETS_BINDING: &str = "SOCKETS";
 /// Default `binding` for `[[kv_namespaces]]`.
 pub const DEFAULT_KV_BINDING: &str = "KV";
 /// Default `binding` for `[[events.producers]]`.
@@ -1073,6 +1080,15 @@ pub struct PluginManifest {
     /// OAuth callback tunnel binding (`[oauth]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth: Option<NamedBinding>,
+    /// Host-brokered WebSocket binding (`[sockets]`, default `SOCKETS`).
+    ///
+    /// The host holds each socket the guest opens, answers declared
+    /// heartbeats itself, and wakes the guest's `SocketHandler` only when a
+    /// real message arrives, so the guest process may sleep in between. Needs
+    /// `[capabilities.network] mode = "outbound"`; every URL must also pass
+    /// the network grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sockets: Option<NamedBinding>,
     /// How the store accounts this storefront connects may be shared
     /// between Bookclerk instances (`credentials`); see
     /// [`CredentialSharing`] and [`Self::credential_sharing`]. Only a
@@ -1350,6 +1366,7 @@ impl PluginManifest {
             plugin_kv: !self.kv_namespaces.is_empty(),
             work_fs: self.work_fs.is_some(),
             oauth: self.oauth.is_some(),
+            sockets: self.sockets.is_some(),
             databases: self.databases.iter().map(|d| d.binding.clone()).collect(),
         }
     }
@@ -1538,6 +1555,7 @@ impl PluginManifest {
             bindings: self.binding_names(),
             queue_consumers: self.queue_consumer_names(),
             queue_producers: self.queue_producer_names(),
+            sockets: self.sockets.is_some(),
         }
     }
 
@@ -1546,7 +1564,7 @@ impl PluginManifest {
     /// # Returns
     ///
     /// `CONFIG` (when `[vars]` is present), the resolved `[secrets]`,
-    /// `[work_fs]`, `[oauth]` names, every `[[kv_namespaces]]` binding,
+    /// `[work_fs]`, `[oauth]`, `[sockets]` names, every `[[kv_namespaces]]` binding,
     /// every distinct `[[events.producers]]` binding, and every
     /// `[[queues.producers]]` binding, in that order.
     #[must_use]
@@ -1563,6 +1581,9 @@ impl PluginManifest {
         }
         if let Some(b) = &self.oauth {
             names.push(b.name_or(DEFAULT_OAUTH_BINDING).to_string());
+        }
+        if let Some(b) = &self.sockets {
+            names.push(b.name_or(DEFAULT_SOCKETS_BINDING).to_string());
         }
         for kv in &self.kv_namespaces {
             names.push(kv.name_or(DEFAULT_KV_BINDING).to_string());
@@ -1833,6 +1854,12 @@ impl PluginManifest {
                 )?;
             }
         }
+        if self.sockets.is_some() && self.capabilities.network.mode != NetworkMode::Outbound {
+            return Err(Error::message(
+                "plugin.toml: [sockets] needs capabilities.network.mode = \"outbound\" \
+                 (every socket URL must pass the network grant)",
+            ));
+        }
         if self.runtime == PluginRuntimeKind::Native
             && !self.capabilities.network.domains.is_empty()
         {
@@ -1951,6 +1978,9 @@ impl PluginManifest {
             }
             if let Some(b) = &self.oauth {
                 named.push(("oauth", b.name_or(DEFAULT_OAUTH_BINDING), 0));
+            }
+            if let Some(b) = &self.sockets {
+                named.push(("sockets", b.name_or(DEFAULT_SOCKETS_BINDING), 0));
             }
             for (index, b) in self.kv_namespaces.iter().enumerate() {
                 named.push(("kv_namespaces", b.name_or(DEFAULT_KV_BINDING), index));
@@ -2993,6 +3023,44 @@ mode = "outbound"
         let many = manifest(&["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9"])
             .expect_err("over max bindings");
         assert!(many.to_string().contains("max is"), "{many}");
+    }
+
+    #[test]
+    fn sockets_need_outbound_network() {
+        let denied = PluginManifest::parse(&native("[sockets]\n")).expect_err("deny mode");
+        assert!(denied.to_string().contains("[sockets]"), "{denied}");
+
+        let outbound = |extra: &str| {
+            format!(
+                r#"
+api_version = 3
+id = "echo"
+runtime = "native"
+command = "./echo"
+entrypoints = ["remoteLibrary"]
+[capabilities.network]
+mode = "outbound"
+{extra}
+"#
+            )
+        };
+        let m = PluginManifest::parse(&outbound("[sockets]\n")).expect("outbound sockets");
+        assert!(m.bindings().sockets);
+        assert!(m
+            .binding_names()
+            .contains(&DEFAULT_SOCKETS_BINDING.to_string()));
+        let renamed = PluginManifest::parse(&outbound("[sockets]\nbinding = \"PUSH\"\n"))
+            .expect("renamed binding");
+        assert!(renamed.binding_names().contains(&"PUSH".to_string()));
+        let bad = PluginManifest::parse(&outbound("[sockets]\nbinding = \"push\"\n"))
+            .expect_err("lowercase binding");
+        assert!(bad.to_string().contains("[sockets]"), "{bad}");
+        assert!(
+            !PluginManifest::parse(&native(""))
+                .unwrap()
+                .bindings()
+                .sockets
+        );
     }
 
     #[test]

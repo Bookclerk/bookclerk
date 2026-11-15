@@ -74,6 +74,21 @@ const maxCoverBytes :UInt32 = 10485760;
 const maxCoverHeaderBytes :UInt32 = 1024;
 # Longest `KvNamespace` key in UTF-8 bytes.
 const maxKvKeyBytes :UInt32 = 512;
+# Largest WebSocket message, text or binary, that `Sockets.send` accepts or
+# `SocketHandler.message` delivers.
+const maxSocketFrameBytes :UInt32 = 262144;
+# Largest per-socket attachment the host keeps for a sleeping guest.
+const maxSocketAttachmentBytes :UInt32 = 2048;
+# Most host-brokered sockets one plugin instance may hold open at once.
+const maxSocketsPerInstance :UInt32 = 8;
+# Most heartbeat pairs one `Sockets.connect` may declare.
+const maxSocketAutoResponses :UInt32 = 4;
+# Largest heartbeat request or response frame, in bytes.
+const maxSocketAutoResponseBytes :UInt32 = 256;
+# Longest `SocketConnectRequest.url`, in bytes.
+const maxSocketUrlBytes :UInt32 = 2048;
+# Most request headers, and separately subprotocols, on one `Sockets.connect`.
+const maxSocketHeaders :UInt32 = 16;
 # Largest `KvNamespace` metadata JSON text in bytes.
 const maxKvMetadataBytes :UInt32 = 1024;
 # Plugin `databaseMigrations` is a startup-time scalar (not a stream). Count is
@@ -335,6 +350,9 @@ struct Bindings {
   # Named `[[kv_namespaces]]` bindings: one host-served durable namespace per
   # binding, scoped to this plugin. Empty when the manifest declares none.
   kv @8 :List(NamedKv);
+  # `SOCKETS`: host-brokered outbound WebSockets that stay open while the
+  # guest sleeps; null unless `[sockets]` is declared and granted.
+  sockets @9 :Sockets;
 }
 
 # Exported entrypoints returned by `PluginWorker.open`. One capability per
@@ -365,6 +383,8 @@ struct Entrypoints {
   metadata @10 :MetadataProvider;
   # `covers` entrypoint.
   covers @11 :CoverFetcher;
+  # `[sockets]` handler: messages and closes on host-brokered sockets.
+  socketHandler @12 :SocketHandler;
 }
 
 # Result union of `PluginWorker.open`.
@@ -1011,6 +1031,51 @@ struct NamedKv {
   kv @2 :KvNamespace;
 }
 
+# Host-brokered outbound WebSockets, granted through `Bindings.sockets`.
+#
+# The guest asks for a socket; a broker the host runs for the plugin
+# instance dials it under the plugin's network grant and keeps it open while
+# the guest sleeps, in the manner of hibernatable Workers WebSockets. Each
+# incoming message wakes the guest and arrives on
+# `Entrypoints.socketHandler`. Heartbeat pairs declared at connect are
+# answered by the broker without waking the guest.
+interface Sockets {
+  # Open a socket; it is owned by the plugin instance, not this invocation.
+  connect @0 (
+      request :SocketConnectRequest  # Target, subprotocols, headers, heartbeats.
+  ) -> (result :SocketConnectReply);
+  # Send one message on an open socket.
+  send @1 (
+      socket :Text,  # Socket id from `connect` or `list`.
+      frame :SocketFrame  # Message, at most `maxSocketFrameBytes`.
+  ) -> (result :EmptyReply);
+  # Close a socket; closing an unknown or closed socket is not an error.
+  close @2 (
+      socket :Text,  # Socket id.
+      code :UInt16,  # WebSocket close code; zero sends 1000.
+      reason :Text  # Close reason, at most 123 UTF-8 bytes.
+  ) -> (result :EmptyReply);
+  # Replace the attachment the host keeps for a socket.
+  setAttachment @3 (
+      socket :Text,  # Socket id.
+      attachment :Data  # Opaque bytes, at most `maxSocketAttachmentBytes`.
+  ) -> (result :EmptyReply);
+  # The instance's open sockets, for a guest that just woke.
+  list @4 () -> (result :SocketListReply);
+}
+
+# Guest handler for host-brokered sockets (`Entrypoints.socketHandler`).
+interface SocketHandler {
+  # One message arrived on an open socket.
+  message @0 (
+      event :SocketMessage  # Socket, frame, and attachment.
+  ) -> (result :EmptyReply);
+  # A socket closed, by the remote side, the network, or the host.
+  closed @1 (
+      event :SocketClosed  # Socket, close code, and attachment.
+  ) -> (result :EmptyReply);
+}
+
 # Storefront content source (not byte Source). Every method takes and
 # returns typed structs from the "Typed method payloads" section.
 interface ContentSource {
@@ -1274,6 +1339,9 @@ struct PluginCapabilities {
   # (`scheduled(controller)` trigger, `[triggers] crons`), normalized to
   # single spaces.
   crons @8 :List(Text);
+  # True when the guest declared `[sockets]`: it receives the host-brokered
+  # `Sockets` binding and may export a `SocketHandler` for pushed messages.
+  sockets @9 :Bool;
 }
 
 # Catalog behaviours a storefront declares in `describe()`. Catalog search
@@ -2823,6 +2891,110 @@ struct CoverImagesReply {
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }
+}
+
+# One WebSocket message.
+struct SocketFrame {
+  union {
+    # Text message, UTF-8.
+    text @0 :Text;
+    # Binary message.
+    binary @1 :Data;
+  }
+}
+
+# One request header on `Sockets.connect`.
+struct SocketHeader {
+  # Header name; the broker refuses hop-by-hop and WebSocket handshake names.
+  name @0 :Text;
+  # Header value. May carry a credential: the host never logs it.
+  value @1 :Text;
+}
+
+# A heartbeat the broker answers itself: when `request` arrives byte for byte,
+# it sends `response` and does not wake the guest.
+struct SocketAutoResponse {
+  # Frame to match, at most `maxSocketAutoResponseBytes`.
+  request @0 :SocketFrame;
+  # Frame to send back, at most `maxSocketAutoResponseBytes`.
+  response @1 :SocketFrame;
+}
+
+# Arguments of `Sockets.connect`.
+struct SocketConnectRequest {
+  # `wss://` or `ws://` URL, at most `maxSocketUrlBytes`. The host must be on
+  # the plugin's network grant.
+  url @0 :Text;
+  # Requested subprotocols, at most `maxSocketHeaders`.
+  protocols @1 :List(Text);
+  # Extra request headers, at most `maxSocketHeaders`.
+  headers @2 :List(SocketHeader);
+  # Heartbeats the broker answers, at most `maxSocketAutoResponses`.
+  autoResponses @3 :List(SocketAutoResponse);
+  # Initial attachment, at most `maxSocketAttachmentBytes`.
+  attachment @4 :Data;
+}
+
+# One open host-brokered socket.
+struct SocketInfo {
+  # Host-minted socket id, stable for the socket's life.
+  socket @0 :Text;
+  # URL the socket was opened to, without credentials.
+  url @1 :Text;
+  # Subprotocol the server chose; empty when none.
+  protocol @2 :Text $optional;
+  # Current attachment.
+  attachment @3 :Data;
+}
+
+# Result union of `Sockets.connect`.
+struct SocketConnectReply {
+  union {
+    # Success: the handshake finished and the socket is open.
+    ok @0 :SocketInfo;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Success payload of `Sockets.list`.
+struct SocketList {
+  # Open sockets, oldest first.
+  sockets @0 :List(SocketInfo);
+}
+
+# Result union of `Sockets.list`.
+struct SocketListReply {
+  union {
+    # Success: the open sockets.
+    ok @0 :SocketList;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Argument of `SocketHandler.message`.
+struct SocketMessage {
+  # Socket the message arrived on.
+  socket @0 :Text;
+  # The message.
+  frame @1 :SocketFrame;
+  # The socket's attachment when the message arrived.
+  attachment @2 :Data;
+}
+
+# Argument of `SocketHandler.closed`.
+struct SocketClosed {
+  # Socket that closed; its id is not reused.
+  socket @0 :Text;
+  # WebSocket close code; 1006 when the connection dropped without one.
+  code @1 :UInt16;
+  # Close reason the peer sent; empty when none.
+  reason @2 :Text $optional;
+  # True when the close handshake completed.
+  clean @3 :Bool;
+  # The socket's last attachment.
+  attachment @4 :Data;
 }
 
 # --- rust-generated: end ---

@@ -190,11 +190,10 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/jobs", "allow"],
   ["POST", "/api/jobs/{id}/cancel", "allow"],
   ["POST", "/api/library/acquire", "deny"],
-  ["GET", "/api/library/books", "allow"],
-  ["GET", "/api/library/books/{uuid}", "allow"],
-  ["GET", "/api/library/books/{uuid}/cover", "allow"],
   ["GET", "/api/library/works", "allow"],
   ["GET", "/api/library/works/{id}", "allow"],
+  ["GET", "/api/library/works/facets/{facet}", "allow"],
+  ["GET", "/api/library/editions/{id}/cover", "allow"],
   // Same-origin cover images; the token only names URLs the API handed out.
   ["GET", "/api/covers/{token}/{size}", "allow"],
   // Same-origin Gravatars (fixed host, validated hash) and store icons (from

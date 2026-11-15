@@ -69,6 +69,30 @@ export const MAX_COVER_HEADER_BYTES = 1024 as const;
 /** Longest `KvNamespace` key in UTF-8 bytes. */
 export const MAX_KV_KEY_BYTES = 512 as const;
 
+/**
+ * Largest WebSocket message, text or binary, that `Sockets.send` accepts or
+ * `SocketHandler.message` delivers.
+ */
+export const MAX_SOCKET_FRAME_BYTES = 262144 as const;
+
+/** Largest per-socket attachment the host keeps for a sleeping guest. */
+export const MAX_SOCKET_ATTACHMENT_BYTES = 2048 as const;
+
+/** Most host-brokered sockets one plugin instance may hold open at once. */
+export const MAX_SOCKETS_PER_INSTANCE = 8 as const;
+
+/** Most heartbeat pairs one `Sockets.connect` may declare. */
+export const MAX_SOCKET_AUTO_RESPONSES = 4 as const;
+
+/** Largest heartbeat request or response frame, in bytes. */
+export const MAX_SOCKET_AUTO_RESPONSE_BYTES = 256 as const;
+
+/** Longest `SocketConnectRequest.url`, in bytes. */
+export const MAX_SOCKET_URL_BYTES = 2048 as const;
+
+/** Most request headers, and separately subprotocols, on one `Sockets.connect`. */
+export const MAX_SOCKET_HEADERS = 16 as const;
+
 /** Largest `KvNamespace` metadata JSON text in bytes. */
 export const MAX_KV_METADATA_BYTES = 1024 as const;
 

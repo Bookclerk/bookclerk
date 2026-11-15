@@ -281,7 +281,7 @@ Reserved classes (no worker in this release): `media`, `transcription`,
 ## Search index
 
 Searches read Tantivy indexes on the node's own disk, so each daemon keeps
-its own copies current. `GET /api/library/books?q=` reads the title index
+its own copies current. `bookclerk library search` reads the title index
 under `search_index/`; `GET /api/library/works?q=` reads the works index
 beside it, under `search_index_works/`, with one document per held
 top-level work (its titles, authors, narrators, series and store
@@ -318,8 +318,10 @@ One writer runs at a time per index. A delivery that finds a rebuild (or
 the CLI) writing is retried after 10 s, for up to an hour. A CLI rebuild
 (`library search --rebuild-index`, or the one after `library scan`) that
 finds a daemon writing waits for it, pausing up to 2 s between tries, and
-gives up after five minutes. The CLI rebuilds only the title index; the
-works index is rebuilt by the daemon's job. Searches read the last
+gives up after five minutes. `library search --rebuild-index` rebuilds the
+title index and then the works index; the rebuild after `library scan`
+rebuilds only the title index, and leaves the works index to the daemon's
+job and its event refreshes. Searches read the last
 commit, so they keep answering from the old index while a rebuild runs.
 A works search on a node whose works index was never built (or is of an
 older layout) answers 503 until the job finishes; a search never creates
@@ -383,10 +385,27 @@ refresh never overwrites a newer one. Keeping an unheld work's row (rather
 than deleting it) keeps that stamp, so a slow refresh that read the work
 while it was still held cannot add it back.
 
-Pages use a keyset cursor (the last row's sort values, sent back as an
-opaque `cursor`), so every page costs the same and a row added between two
-requests never shifts the next page. A cursor issued for one `sort` is
-refused under another.
+Each row carries the sort keys of every order the page offers: title,
+first author, newest holding, series then position (works in no series
+last), newest reported purchase and longest held runtime (works with no
+purchase time or runtime last). Pages use a keyset cursor (the last row's
+sort values, sent back as an opaque `cursor`), so every page costs the
+same and a row added between two requests never shifts the next page. A
+cursor issued for one `sort` is refused under another.
+
+The same refresh writes the work's filter values to
+`library_work_facets`: its authors and narrators (from credits and
+listings), series, genres (the work's and listings' categories, split on
+commas, semicolons and bars), publishers and the storefronts it is held
+through, each under its lower-cased key. The row write, the removal of
+the old values and as many new values as fit share one atomic batch; the
+rest follow in further batches, each checking that the row still carries
+this refresh's stamp, so a later refresh's values are never mixed with an
+older one's. `facet` and `value` on `GET /api/library/works` filter by one
+value, and `GET /api/library/works/facets/{facet}` pages a facet's values
+with how many held works have each. Tags and progress are per person, so
+they are read from the caller's own `user_work_tags` and
+`user_title_state` rows instead.
 
 ## Admission and backpressure
 
@@ -448,8 +467,15 @@ Every scan and acquire is admitted through a planner, whoever asks:
   own a named account and every library row a named title matches (403
   otherwise); with neither, they get one job per account they wholly own.
   `POST /api/library/acquire` takes `{account, plugin_instance_id, titles,
-  force, pdf_only}` and answers a multi-job plan like a scan (`job_ids`;
-  200, 409, 429, or 422 `nothing_to_acquire` for an empty plan).
+  editions, force, pdf_only}` and answers a multi-job plan like a scan
+  (`job_ids`; 200, 409, 429, or 422 `nothing_to_acquire` for an empty
+  plan).
+- `editions` names editions (the ids a work's detail lists). Each becomes
+  one title: of the library titles that sell it, the first in an account
+  the caller may acquire for (and in `account` when that is set). The
+  edition's titles share its files, so one is enough. An edition with no
+  title (or none in `account`) is 400; one whose titles are all in other
+  people's accounts is 403. The title is then planned like any other.
 - `force` (re-download acquired titles) and `pdf_only` (companion PDFs only)
   are part of the acquire's dedup key and run only on owner nodes; a host
   is never handed such a job. A pinned instance is part of the key too, so

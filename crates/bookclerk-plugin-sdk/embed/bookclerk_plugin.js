@@ -11589,7 +11589,8 @@ var TRIGGER_FAMILIES = Object.freeze({
   eventConsumer: "eventConsumer",
   queueConsumer: "queueConsumer",
   scheduledHandler: "scheduledHandler",
-  jobRunner: "jobRunner"
+  jobRunner: "jobRunner",
+  socketHandler: "socketHandler"
 });
 function scheduledControllerOf(wire) {
   const w = wire && typeof wire === "object" ? wire : {};
@@ -11625,6 +11626,9 @@ function allowedEntrypointFamilies(capabilities, requested) {
         out.push(name);
     } else if (name === TRIGGER_FAMILIES.jobRunner) {
       if (jobs.length > 0 || exportsStorage)
+        out.push(name);
+    } else if (name === TRIGGER_FAMILIES.socketHandler) {
+      if (capabilities.sockets === true)
         out.push(name);
     } else if (name in ENTRYPOINT_BINDINGS && entrypoints.includes(name)) {
       out.push(name);

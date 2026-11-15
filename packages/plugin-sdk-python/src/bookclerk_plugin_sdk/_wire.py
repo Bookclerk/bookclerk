@@ -260,7 +260,7 @@ def _write_plugin_describe(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(1, v["displayName"])
     s.set_text_list(2, v["rpcFeatures"])
     _scalar_limits_codec.write(s.init_struct(3, 2, 0), v["scalarLimits"], caps)
-    _plugin_capabilities_codec.write(s.init_struct(4, 0, 9), v["capabilities"], caps)
+    _plugin_capabilities_codec.write(s.init_struct(4, 1, 9), v["capabilities"], caps)
     s.set_u16(2, _ord(A.PORTAL_AUTH_MODES, v["portalAuthMode"], "PortalAuthMode"))
     if v.get("passwordEnvVar") is not None:
         s.set_text(5, v["passwordEnvVar"])
@@ -282,7 +282,7 @@ def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
         "displayName": s.get_text(1),
         "rpcFeatures": s.get_text_list(2),
         "scalarLimits": _scalar_limits_codec.read(s.get_struct(3, 2, 0), caps),
-        "capabilities": _plugin_capabilities_codec.read(s.get_struct(4, 0, 9), caps),
+        "capabilities": _plugin_capabilities_codec.read(s.get_struct(4, 1, 9), caps),
         "portalAuthMode": _from_ord(A.PORTAL_AUTH_MODES, s.get_u16(2), "PortalAuthMode"),
         "aliases": s.get_text_list(6),
         "sortKey": s.get_u32(2),
@@ -409,6 +409,9 @@ def _write_bindings(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     items = s.init_struct_list(8, len(v["kv"]), 0, 3)
     for item, elem in zip(items, v["kv"], strict=True):
         _named_kv_codec.write(item, elem, caps)
+    if v.get("sockets") is not None:
+        if v["sockets"] is not None:
+            s.set_cap(9, caps.export_cap(v["sockets"]))
 
 
 def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
@@ -429,11 +432,14 @@ def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
     storage = caps.import_cap(s.get_cap_index(6))
     if not (storage is None):
         out["storage"] = storage
+    sockets = caps.import_cap(s.get_cap_index(9))
+    if not (sockets is None):
+        out["sockets"] = sockets
     return out
 
 
-_bindings_codec = _Codec(0, 9, _write_bindings, _read_bindings)
-"""Wire codec for ``Bindings`` (0 data words, 9 pointers)."""
+_bindings_codec = _Codec(0, 10, _write_bindings, _read_bindings)
+"""Wire codec for ``Bindings`` (0 data words, 10 pointers)."""
 
 
 def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -473,6 +479,9 @@ def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("covers") is not None:
         if v["covers"] is not None:
             s.set_cap(11, caps.export_cap(v["covers"]))
+    if v.get("socketHandler") is not None:
+        if v["socketHandler"] is not None:
+            s.set_cap(12, caps.export_cap(v["socketHandler"]))
 
 
 def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
@@ -514,18 +523,21 @@ def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
     covers = caps.import_cap(s.get_cap_index(11))
     if not (covers is None):
         out["covers"] = covers
+    socket_handler = caps.import_cap(s.get_cap_index(12))
+    if not (socket_handler is None):
+        out["socketHandler"] = socket_handler
     return out
 
 
-_entrypoints_codec = _Codec(0, 12, _write_entrypoints, _read_entrypoints)
-"""Wire codec for ``Entrypoints`` (0 data words, 12 pointers)."""
+_entrypoints_codec = _Codec(0, 13, _write_entrypoints, _read_entrypoints)
+"""Wire codec for ``Entrypoints`` (0 data words, 13 pointers)."""
 
 
 def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _entrypoints_codec.write(s.init_struct(0, 0, 12), v["value"], caps)
+        _entrypoints_codec.write(s.init_struct(0, 0, 13), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -536,7 +548,7 @@ def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_entrypoints_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 12), caps)}
+        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 13), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown EntrypointsReply union member: {disc}")
@@ -1528,6 +1540,7 @@ def _write_plugin_capabilities(s: _CapnpStruct, v: Any, caps: _CapTable) -> None
     s.set_text_list(6, v["queueConsumers"])
     s.set_text_list(7, v["queueProducers"])
     s.set_text_list(8, v["crons"])
+    s.set_bool(0, v["sockets"])
 
 
 def _read_plugin_capabilities(s: _StructReader, caps: _CapTable) -> Any:
@@ -1541,11 +1554,12 @@ def _read_plugin_capabilities(s: _StructReader, caps: _CapTable) -> Any:
         "queueConsumers": s.get_text_list(6),
         "queueProducers": s.get_text_list(7),
         "crons": s.get_text_list(8),
+        "sockets": s.get_bool(0),
     }
 
 
-_plugin_capabilities_codec = _Codec(0, 9, _write_plugin_capabilities, _read_plugin_capabilities)
-"""Wire codec for ``PluginCapabilities`` (0 data words, 9 pointers)."""
+_plugin_capabilities_codec = _Codec(1, 9, _write_plugin_capabilities, _read_plugin_capabilities)
+"""Wire codec for ``PluginCapabilities`` (1 data words, 9 pointers)."""
 
 
 def _write_catalog_capabilities(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -4286,6 +4300,223 @@ _cover_images_reply_codec = _Codec(1, 1, _write_cover_images_reply, _read_cover_
 """Wire codec for ``CoverImagesReply`` (1 data words, 1 pointers)."""
 
 
+def _write_socket_frame(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "text":
+        s.set_u16(0, 0)
+        s.set_text(0, v["value"])
+    elif kind == "binary":
+        s.set_u16(0, 1)
+        s.set_data(0, v["value"])
+    else:
+        raise ValueError(f"unknown SocketFrame union member: {kind}")
+
+
+def _read_socket_frame(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "text", "value": s.get_text(0)}
+    elif disc == 1:
+        return {"kind": "binary", "value": s.get_data(0)}
+    raise ValueError(f"unknown SocketFrame union member: {disc}")
+
+
+_socket_frame_codec = _Codec(1, 1, _write_socket_frame, _read_socket_frame)
+"""Wire codec for ``SocketFrame`` (1 data words, 1 pointers)."""
+
+
+def _write_socket_header(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["name"])
+    s.set_text(1, v["value"])
+
+
+def _read_socket_header(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "name": s.get_text(0),
+        "value": s.get_text(1),
+    }
+
+
+_socket_header_codec = _Codec(0, 2, _write_socket_header, _read_socket_header)
+"""Wire codec for ``SocketHeader`` (0 data words, 2 pointers)."""
+
+
+def _write_socket_auto_response(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _socket_frame_codec.write(s.init_struct(0, 1, 1), v["request"], caps)
+    _socket_frame_codec.write(s.init_struct(1, 1, 1), v["response"], caps)
+
+
+def _read_socket_auto_response(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "request": _socket_frame_codec.read(s.get_struct(0, 1, 1), caps),
+        "response": _socket_frame_codec.read(s.get_struct(1, 1, 1), caps),
+    }
+
+
+_socket_auto_response_codec = _Codec(0, 2, _write_socket_auto_response, _read_socket_auto_response)
+"""Wire codec for ``SocketAutoResponse`` (0 data words, 2 pointers)."""
+
+
+def _write_socket_connect_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["url"])
+    s.set_text_list(1, v["protocols"])
+    items = s.init_struct_list(2, len(v["headers"]), 0, 2)
+    for item, elem in zip(items, v["headers"], strict=True):
+        _socket_header_codec.write(item, elem, caps)
+    items = s.init_struct_list(3, len(v["autoResponses"]), 0, 2)
+    for item, elem in zip(items, v["autoResponses"], strict=True):
+        _socket_auto_response_codec.write(item, elem, caps)
+    s.set_data(4, v["attachment"])
+
+
+def _read_socket_connect_request(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "url": s.get_text(0),
+        "protocols": s.get_text_list(1),
+        "headers": [_socket_header_codec.read(item, caps) for item in s.get_struct_list(2, 0, 2)],
+        "autoResponses": [_socket_auto_response_codec.read(item, caps) for item in s.get_struct_list(3, 0, 2)],
+        "attachment": s.get_data(4),
+    }
+
+
+_socket_connect_request_codec = _Codec(0, 5, _write_socket_connect_request, _read_socket_connect_request)
+"""Wire codec for ``SocketConnectRequest`` (0 data words, 5 pointers)."""
+
+
+def _write_socket_info(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["socket"])
+    s.set_text(1, v["url"])
+    if v.get("protocol") is not None:
+        s.set_text(2, v["protocol"])
+    s.set_data(3, v["attachment"])
+
+
+def _read_socket_info(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "socket": s.get_text(0),
+        "url": s.get_text(1),
+        "attachment": s.get_data(3),
+    }
+    protocol = s.get_text(2)
+    if not (protocol == ""):
+        out["protocol"] = protocol
+    return out
+
+
+_socket_info_codec = _Codec(0, 4, _write_socket_info, _read_socket_info)
+"""Wire codec for ``SocketInfo`` (0 data words, 4 pointers)."""
+
+
+def _write_socket_connect_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _socket_info_codec.write(s.init_struct(0, 0, 4), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown SocketConnectReply union member: {kind}")
+
+
+def _read_socket_connect_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _socket_info_codec.read(s.get_struct(0, 0, 4), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown SocketConnectReply union member: {disc}")
+
+
+_socket_connect_reply_codec = _Codec(1, 1, _write_socket_connect_reply, _read_socket_connect_reply)
+"""Wire codec for ``SocketConnectReply`` (1 data words, 1 pointers)."""
+
+
+def _write_socket_list(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["sockets"]), 0, 4)
+    for item, elem in zip(items, v["sockets"], strict=True):
+        _socket_info_codec.write(item, elem, caps)
+
+
+def _read_socket_list(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "sockets": [_socket_info_codec.read(item, caps) for item in s.get_struct_list(0, 0, 4)],
+    }
+
+
+_socket_list_codec = _Codec(0, 1, _write_socket_list, _read_socket_list)
+"""Wire codec for ``SocketList`` (0 data words, 1 pointers)."""
+
+
+def _write_socket_list_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _socket_list_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown SocketListReply union member: {kind}")
+
+
+def _read_socket_list_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _socket_list_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown SocketListReply union member: {disc}")
+
+
+_socket_list_reply_codec = _Codec(1, 1, _write_socket_list_reply, _read_socket_list_reply)
+"""Wire codec for ``SocketListReply`` (1 data words, 1 pointers)."""
+
+
+def _write_socket_message(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["socket"])
+    _socket_frame_codec.write(s.init_struct(1, 1, 1), v["frame"], caps)
+    s.set_data(2, v["attachment"])
+
+
+def _read_socket_message(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "socket": s.get_text(0),
+        "frame": _socket_frame_codec.read(s.get_struct(1, 1, 1), caps),
+        "attachment": s.get_data(2),
+    }
+
+
+_socket_message_codec = _Codec(0, 3, _write_socket_message, _read_socket_message)
+"""Wire codec for ``SocketMessage`` (0 data words, 3 pointers)."""
+
+
+def _write_socket_closed(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["socket"])
+    s.set_u16(0, v["code"])
+    if v.get("reason") is not None:
+        s.set_text(1, v["reason"])
+    s.set_bool(16, v["clean"])
+    s.set_data(2, v["attachment"])
+
+
+def _read_socket_closed(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "socket": s.get_text(0),
+        "code": s.get_u16(0),
+        "clean": s.get_bool(16),
+        "attachment": s.get_data(2),
+    }
+    reason = s.get_text(1)
+    if not (reason == ""):
+        out["reason"] = reason
+    return out
+
+
+_socket_closed_codec = _Codec(1, 3, _write_socket_closed, _read_socket_closed)
+"""Wire codec for ``SocketClosed`` (1 data words, 3 pointers)."""
+
+
 def _write_db_value(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "null":
@@ -5962,6 +6193,208 @@ _kv_namespace_list_results_codec = _Codec(0, 1, _write_kv_namespace_list_results
 """Wire codec for ``KvNamespaceListResults`` (0 data words, 1 pointers)."""
 
 
+def _write_sockets_connect_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _socket_connect_request_codec.write(s.init_struct(0, 0, 5), v["request"], caps)
+
+
+def _read_sockets_connect_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "request": _socket_connect_request_codec.read(s.get_struct(0, 0, 5), caps),
+    }
+
+
+_sockets_connect_params_codec = _Codec(0, 1, _write_sockets_connect_params, _read_sockets_connect_params)
+"""Wire codec for ``SocketsConnectParams`` (0 data words, 1 pointers)."""
+
+
+def _write_sockets_connect_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _socket_connect_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_sockets_connect_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _socket_connect_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_sockets_connect_results_codec = _Codec(0, 1, _write_sockets_connect_results, _read_sockets_connect_results)
+"""Wire codec for ``SocketsConnectResults`` (0 data words, 1 pointers)."""
+
+
+def _write_sockets_send_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["socket"])
+    _socket_frame_codec.write(s.init_struct(1, 1, 1), v["frame"], caps)
+
+
+def _read_sockets_send_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "socket": s.get_text(0),
+        "frame": _socket_frame_codec.read(s.get_struct(1, 1, 1), caps),
+    }
+
+
+_sockets_send_params_codec = _Codec(0, 2, _write_sockets_send_params, _read_sockets_send_params)
+"""Wire codec for ``SocketsSendParams`` (0 data words, 2 pointers)."""
+
+
+def _write_sockets_send_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_sockets_send_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_sockets_send_results_codec = _Codec(0, 1, _write_sockets_send_results, _read_sockets_send_results)
+"""Wire codec for ``SocketsSendResults`` (0 data words, 1 pointers)."""
+
+
+def _write_sockets_close_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["socket"])
+    s.set_u16(0, v["code"])
+    s.set_text(1, v["reason"])
+
+
+def _read_sockets_close_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "socket": s.get_text(0),
+        "code": s.get_u16(0),
+        "reason": s.get_text(1),
+    }
+
+
+_sockets_close_params_codec = _Codec(1, 2, _write_sockets_close_params, _read_sockets_close_params)
+"""Wire codec for ``SocketsCloseParams`` (1 data words, 2 pointers)."""
+
+
+def _write_sockets_close_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_sockets_close_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_sockets_close_results_codec = _Codec(0, 1, _write_sockets_close_results, _read_sockets_close_results)
+"""Wire codec for ``SocketsCloseResults`` (0 data words, 1 pointers)."""
+
+
+def _write_sockets_set_attachment_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["socket"])
+    s.set_data(1, v["attachment"])
+
+
+def _read_sockets_set_attachment_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "socket": s.get_text(0),
+        "attachment": s.get_data(1),
+    }
+
+
+_sockets_set_attachment_params_codec = _Codec(0, 2, _write_sockets_set_attachment_params, _read_sockets_set_attachment_params)
+"""Wire codec for ``SocketsSetAttachmentParams`` (0 data words, 2 pointers)."""
+
+
+def _write_sockets_set_attachment_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_sockets_set_attachment_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_sockets_set_attachment_results_codec = _Codec(0, 1, _write_sockets_set_attachment_results, _read_sockets_set_attachment_results)
+"""Wire codec for ``SocketsSetAttachmentResults`` (0 data words, 1 pointers)."""
+
+
+def _write_sockets_list_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    pass
+
+
+def _read_sockets_list_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {}
+
+
+_sockets_list_params_codec = _Codec(0, 0, _write_sockets_list_params, _read_sockets_list_params)
+"""Wire codec for ``SocketsListParams`` (0 data words, 0 pointers)."""
+
+
+def _write_sockets_list_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _socket_list_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_sockets_list_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _socket_list_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_sockets_list_results_codec = _Codec(0, 1, _write_sockets_list_results, _read_sockets_list_results)
+"""Wire codec for ``SocketsListResults`` (0 data words, 1 pointers)."""
+
+
+def _write_socket_handler_message_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _socket_message_codec.write(s.init_struct(0, 0, 3), v["event"], caps)
+
+
+def _read_socket_handler_message_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "event": _socket_message_codec.read(s.get_struct(0, 0, 3), caps),
+    }
+
+
+_socket_handler_message_params_codec = _Codec(0, 1, _write_socket_handler_message_params, _read_socket_handler_message_params)
+"""Wire codec for ``SocketHandlerMessageParams`` (0 data words, 1 pointers)."""
+
+
+def _write_socket_handler_message_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_socket_handler_message_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_socket_handler_message_results_codec = _Codec(0, 1, _write_socket_handler_message_results, _read_socket_handler_message_results)
+"""Wire codec for ``SocketHandlerMessageResults`` (0 data words, 1 pointers)."""
+
+
+def _write_socket_handler_closed_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _socket_closed_codec.write(s.init_struct(0, 1, 3), v["event"], caps)
+
+
+def _read_socket_handler_closed_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "event": _socket_closed_codec.read(s.get_struct(0, 1, 3), caps),
+    }
+
+
+_socket_handler_closed_params_codec = _Codec(0, 1, _write_socket_handler_closed_params, _read_socket_handler_closed_params)
+"""Wire codec for ``SocketHandlerClosedParams`` (0 data words, 1 pointers)."""
+
+
+def _write_socket_handler_closed_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_socket_handler_closed_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_socket_handler_closed_results_codec = _Codec(0, 1, _write_socket_handler_closed_results, _read_socket_handler_closed_results)
+"""Wire codec for ``SocketHandlerClosedResults`` (0 data words, 1 pointers)."""
+
+
 def _write_content_source_login_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _login_params_codec.write(s.init_struct(0, 2, 10), v["params"], caps)
 
@@ -7325,13 +7758,13 @@ _plugin_worker_describe_results_codec = _Codec(0, 1, _write_plugin_worker_descri
 
 def _write_plugin_worker_open_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _invocation_codec.write(s.init_struct(0, 1, 4), v["invocation"], caps)
-    _bindings_codec.write(s.init_struct(1, 0, 9), v["bindings"], caps)
+    _bindings_codec.write(s.init_struct(1, 0, 10), v["bindings"], caps)
 
 
 def _read_plugin_worker_open_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "invocation": _invocation_codec.read(s.get_struct(0, 1, 4), caps),
-        "bindings": _bindings_codec.read(s.get_struct(1, 0, 9), caps),
+        "bindings": _bindings_codec.read(s.get_struct(1, 0, 10), caps),
     }
 
 

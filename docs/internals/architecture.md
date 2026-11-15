@@ -163,10 +163,9 @@ the API. Config reload swaps auth before listen rebind. See [sign-in.md](../serv
 | `GET` | `/api/jobs`, `/jobs` | yes | Job list |
 | `POST` | `/api/library/scan`, `/scan` | yes | Queue scan |
 | `POST` | `/api/library/acquire`, `/acquire` | yes | Queue acquire |
-| `GET` | `/api/library/books` | yes | Paginated book rows |
-| `GET` | `/api/library/books/{uuid}/cover` | yes | Best-effort local cover |
 | `GET` | `/api/library/works` | yes | Works from the page index, by cursor, or matching a search (`q`) |
 | `GET` | `/api/library/works/{id}` | yes | One work with editions, listings, holdings and own state |
+| `GET` | `/api/library/editions/{id}/cover` | yes | Best-effort local cover of an acquired edition |
 | static | `/` | no | Built React UI (`ui/dist`) when present |
 
 Portal claim sessions use `bookclerk_portal_session` (`Path=/`) via `/api/portal/*`.

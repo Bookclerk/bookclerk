@@ -1031,6 +1031,127 @@ pub async fn plan_acquire(
     Ok(out)
 }
 
+/// The library titles an acquire by edition queues: for each edition, one
+/// title (`books.uuid`) that sells it in an account `requester` may
+/// acquire for, and in `account` when one is named.
+///
+/// An edition's titles share its files, so acquiring one of them acquires
+/// the edition. Each title is still planned by [`plan_acquire`], which
+/// checks the requester again.
+///
+/// # Arguments
+///
+/// * `store` - The library.
+/// * `requester` - Who asks; a member is limited to their own accounts.
+/// * `account` - When named (an id or label), only titles in that account.
+/// * `plugin_instance_id` - When the acquire is pinned to a plugin
+///   instance, only titles on that instance's plugin, so the title picked
+///   is one the pinned plan keeps.
+/// * `editions` - Edition ids (`editions.id`); blanks and repeats are
+///   skipped.
+///
+/// # Returns
+///
+/// One title uuid per edition, in the order the editions were given.
+///
+/// # Errors
+///
+/// - [`LibraryError::Invalid`] when every edition id given is blank, the
+///   pinned instance id does not parse, or an edition has no title in the
+///   library (or none in `account` or on the pinned plugin).
+/// - [`LibraryError::Forbidden`] when an edition's titles are all in
+///   accounts the requester may not acquire for.
+/// - [`LibraryError::Orm`] when a read fails.
+pub async fn acquire_titles_of_editions(
+    store: &LibraryStore,
+    requester: ScanRequester,
+    account: Option<&str>,
+    plugin_instance_id: Option<&str>,
+    editions: &[String],
+) -> Result<Vec<String>> {
+    let account = named_account(account)?;
+    // An unknown pin is refused by the plan (or at run time), as for titles;
+    // it narrows nothing here.
+    let pinned_key = match plugin_instance_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(raw) => {
+            let id = PluginInstanceId::parse(raw)
+                .map_err(|err| LibraryError::Invalid(format!("plugin instance id: {err}")))?;
+            load_plugin_instance(store, &id)
+                .await?
+                .map(|instance| instance.plugin_key)
+        }
+        None => None,
+    };
+    let mut seen = BTreeSet::new();
+    let editions: Vec<&str> = editions
+        .iter()
+        .map(|e| e.trim())
+        .filter(|e| !e.is_empty() && seen.insert(*e))
+        .collect();
+    if editions.is_empty() {
+        return Err(LibraryError::Invalid(
+            "every edition id given is blank".into(),
+        ));
+    }
+    let owned = match requester_scope(store, requester).await? {
+        Some(user_id) => Some(accounts_owned_by(store, user_id).await?),
+        None => None,
+    };
+    // The accounts the filter names, matched by id or label as a job's
+    // account filter is; an unknown name matches by id only.
+    let named = match account {
+        Some(needle) => Some((needle, accounts_named(store, needle, None).await?)),
+        None => None,
+    };
+    let mut out = Vec::with_capacity(editions.len());
+    for edition in editions {
+        let mut titles: Vec<BookRecord> = Vec::new();
+        for listing in store.listing_refs_of_edition(edition).await? {
+            titles.extend(store.books_of_listing(&listing).await?);
+        }
+        if titles.is_empty() {
+            return Err(LibraryError::Invalid(format!(
+                "edition {edition} has no title in the library"
+            )));
+        }
+        titles.sort_by(|a, b| a.uuid.cmp(&b.uuid));
+        let on_pin = |book: &BookRecord| {
+            pinned_key
+                .as_deref()
+                .is_none_or(|key| key == book.plugin_key)
+        };
+        let in_account = |book: &BookRecord| match &named {
+            None => true,
+            Some((needle, keys)) if keys.is_empty() => book.account_id == *needle,
+            Some((_, keys)) => keys.contains(&(book.plugin_key.clone(), book.account_id.clone())),
+        };
+        let titles: Vec<BookRecord> = titles
+            .into_iter()
+            .filter(|book| on_pin(book) && in_account(book))
+            .collect();
+        if titles.is_empty() {
+            return Err(LibraryError::Invalid(format!(
+                "edition {edition} has no title in that account or on the pinned plugin"
+            )));
+        }
+        let allowed = titles.iter().find(|book| {
+            owned.as_ref().is_none_or(|owned| {
+                owned.contains(&(book.plugin_key.clone(), book.account_id.clone()))
+            })
+        });
+        let Some(book) = allowed else {
+            return Err(LibraryError::Forbidden(
+                "that edition is not in a store account linked to this user".into(),
+            ));
+        };
+        out.push(book.uuid.clone());
+    }
+    Ok(out)
+}
+
 /// `None` when `requester` may act on every account (operator authority,
 /// an Owner or an Administrator), otherwise the user whose accounts bound
 /// the request.

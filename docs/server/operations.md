@@ -65,10 +65,10 @@ OS.
 | `GET`/`PUT /api/auth/mfa-policy` | Owner or operator | `require_second_factor`: password sign-in needs TOTP or a passkey |
 | `GET /api/status` (also `/status`) | Yes | Status snapshot |
 | `POST /api/library/scan` (also `/scan`) | Yes | Queue a scan. Any user may call `/api/library/scan`; a Member or Host scans only the store accounts linked to them. The `/scan` alias stays with Administrators |
-| `POST /api/library/acquire` (also `/acquire`) | Yes | Queue an acquire. Any user may call `/api/library/acquire`; a Member or Host acquires only from the store accounts linked to them. The `/acquire` alias stays with Administrators |
-| `GET /api/library/books` | Yes | Book rows for the web app |
+| `POST /api/library/acquire` (also `/acquire`) | Yes | Queue an acquire. Any user may call `/api/library/acquire`; a Member or Host acquires only from the store accounts linked to them. `editions` queues editions from a work's detail. The `/acquire` alias stays with Administrators |
 | `GET /api/library/works` | Yes | The library's works, one row per work, paged by cursor and filterable by media kind, kind, acquire status and account; `q` searches titles, people, series and store identifiers |
 | `GET /api/library/works/{id}` | Yes | One work with its editions, store listings, holdings and the caller's own state |
+| `GET /api/library/editions/{id}/cover` | Yes | The JPEG cover written beside an acquired edition's file, when this node runs a local destination |
 | `GET /api/jobs` (also `/jobs`) | Yes | The durable job list: progress, attempts, times |
 | `POST /api/jobs/{id}/cancel` | Yes | Cancel pending work, or ask running work to stop |
 | `/` | None | The web app, when `ui/dist` is present |

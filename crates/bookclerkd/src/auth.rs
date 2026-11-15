@@ -5359,7 +5359,7 @@ pub(crate) mod tests {
         // owner, node owner, administrator and user-scoped.
         for uri in [
             "/api/auth/me",
-            "/api/library/books",
+            "/api/library/works",
             "/api/auth/mfa-policy",
             "/api/config/nodes",
             "/status",
@@ -5568,6 +5568,80 @@ pub(crate) mod tests {
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         assert_eq!(body["error"], "forbidden");
+
+        // By edition: the member's own title of it is queued; an edition
+        // held only on someone else's account is refused, and an unknown
+        // one names nothing to acquire.
+        let mine = library
+            .scope("pk", "test")
+            .upsert_book(&bookclerk_library::NewBook {
+                uuid: None,
+                product_id: "mine-book".into(),
+                plugin_key: "pk".into(),
+                source: "test".into(),
+                account_id: "mine".into(),
+                asin: Some("B0MINE".into()),
+                isbn: None,
+                marketplace: "us".into(),
+                title: "Mine".into(),
+                authors: None,
+                narrators: None,
+                series: None,
+                series_index: None,
+                series_asin: None,
+                purchased_at: None,
+                publisher: None,
+                length_minutes: None,
+                is_abridged: false,
+                content_kind: "book".into(),
+                categories: None,
+                subtitle: None,
+                published_at: None,
+            })
+            .await
+            .unwrap();
+        let edition_of = |uuid: String| {
+            let library = library.clone();
+            async move {
+                library
+                    .edition_of_book(&uuid)
+                    .await
+                    .unwrap()
+                    .expect("edition")
+            }
+        };
+        let (mine_edition, foreign_edition) = (
+            edition_of(mine.uuid.clone()).await,
+            edition_of(foreign.uuid.clone()).await,
+        );
+        let (status, body) = send(post(
+            "/api/library/acquire",
+            Some(&cookie),
+            serde_json::json!({ "editions": [mine_edition] }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let job_id = body["job_id"].as_str().expect("job id").to_string();
+        let job = library.get_job(&job_id).await.unwrap().expect("job");
+        assert_eq!(job.payload.title.as_deref(), Some(mine.uuid.as_str()));
+        assert_eq!(job.payload.account.as_deref(), Some("mine"));
+        for (editions, want, slug) in [
+            (vec![foreign_edition], StatusCode::FORBIDDEN, "forbidden"),
+            (
+                vec!["no-such-edition".to_string()],
+                StatusCode::BAD_REQUEST,
+                "invalid",
+            ),
+        ] {
+            let (status, body) = send(post(
+                "/api/library/acquire",
+                Some(&cookie),
+                serde_json::json!({ "editions": editions }),
+            ))
+            .await;
+            assert_eq!(status, want, "{body}");
+            assert_eq!(body["error"], slug, "{body}");
+        }
 
         // The operator token still plans for every account through the
         // same layer.
@@ -6033,30 +6107,20 @@ pub(crate) mod tests {
         assert!(body.contains("impersonating"));
         assert!(body.contains(&user_id.to_string()));
 
-        // Portal-scoped library: member has no links → empty (not full library).
-        // Seed a book on an unlinked account; impersonation should hide it.
-        let _ = library
-            .upsert_account(
-                "audible",
-                "acct-hidden",
-                "us",
-                Some("Hidden"),
-                true,
-                "audible",
-            )
-            .await;
-        let books = app
+        // Authenticated callers share the full library, so the works page
+        // answers for the impersonated member as it does for the operator.
+        let works = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/library/books")
+                    .uri("/api/library/works")
                     .header(header::COOKIE, &op_cookie)
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(books.status(), StatusCode::OK);
+        assert_eq!(works.status(), StatusCode::OK);
 
         let events = library.list_security_audit_events(20).await.unwrap();
         assert!(events.iter().any(|e| e.action == "impersonate_start"));

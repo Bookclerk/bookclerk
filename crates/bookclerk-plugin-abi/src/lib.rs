@@ -94,6 +94,7 @@ mod rpc_types;
 pub mod scan_page;
 mod sdk_wire;
 pub mod settings_schema;
+pub mod sockets;
 pub mod sql_desugar;
 mod sql_overflow;
 mod sql_proof;
@@ -252,7 +253,9 @@ pub use limits::{
     MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
     MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS,
     MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
-    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    MAX_SOCKETS_PER_INSTANCE, MAX_SOCKET_ATTACHMENT_BYTES, MAX_SOCKET_AUTO_RESPONSES,
+    MAX_SOCKET_AUTO_RESPONSE_BYTES, MAX_SOCKET_FRAME_BYTES, MAX_SOCKET_HEADERS,
+    MAX_SOCKET_URL_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 pub use media::{
     check_record_kinds, decode_plain_fetch_bytes, encode_plain_fetch_bytes, media_support_is_empty,
@@ -263,18 +266,20 @@ pub use roles::{
     CoverFetcher, Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
     JobController, JobRunner, KvNamespace, MetadataProvider, NamedKvBinding, NamedQueueBinding,
     NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer,
-    ReadResult, RemoteLibrary, ScheduledHandler, Source, PURCHASE_HINTS_BUDGET,
+    ReadResult, RemoteLibrary, ScheduledHandler, SocketHandler, Sockets, Source,
+    PURCHASE_HINTS_BUDGET,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
 pub use rpc::{
     byte_source_from_async_read, connect_plugin, pull_byte_source_to_writer,
-    roundtrip_event_read_message, serve_plugin, serve_plugin_stdio, ContentSourceClient,
-    CoverFetcherClient, DatabaseClient, DestinationClient, DestinationServer, EventConsumerClient,
-    EventPublisherClient, EventReadCodec, EventReadMessage, HostBindings, JobRunnerClient,
-    KvNamespaceClient, MetadataProviderClient, OidcClient, OpenedEntrypoints, PluginCliClient,
-    PluginClient, PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient,
-    ScheduledHandlerClient, SourceClient, SourceServer,
+    roundtrip_event_read_message, roundtrip_socket_message, serve_plugin, serve_plugin_stdio,
+    ContentSourceClient, CoverFetcherClient, DatabaseClient, DestinationClient, DestinationServer,
+    EventConsumerClient, EventPublisherClient, EventReadCodec, EventReadMessage, HostBindings,
+    JobRunnerClient, KvNamespaceClient, MetadataProviderClient, OidcClient, OpenedEntrypoints,
+    PluginCliClient, PluginClient, PluginServer, QueueConsumerClient, QueueProducerClient,
+    RemoteLibraryClient, ScheduledHandlerClient, SocketCodec, SocketHandlerClient,
+    SocketWireMessage, SocketsClient, SourceClient, SourceServer,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,

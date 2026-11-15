@@ -390,7 +390,11 @@ current layout. `GET /api/library/works` pages it by keyset cursor, and
 `GET /api/library/works/{id}` reads one work with its editions, listings,
 holdings and the caller's own state. With `q`, the list route searches a
 per-node works index kept beside the title search index, fed by the same
-events and rebuilt by the same job.
+events and rebuilt by the same job. `GET /api/library/editions/{id}/cover`
+serves the cover an acquire wrote beside an edition's file, and
+`POST /api/library/acquire` takes `editions`, each queued as one of its
+titles until `books` is retired. The web app lists works, and
+`/api/library/books` (with `/{uuid}` and `/{uuid}/cover`) is removed.
 
 User-facing pages (the glossary, *Where books go*, *Branches*, the plugin ABI
 reference) change with the step that changes their behaviour.

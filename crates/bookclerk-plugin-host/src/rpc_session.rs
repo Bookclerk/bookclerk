@@ -4038,6 +4038,9 @@ async fn run_stream_copy(
                 storage: None,
                 queues,
                 kv,
+                // The stream-copy job never needs a pushed socket; the
+                // broker hands sockets only to a deployment's own open.
+                sockets: None,
             },
         )
         .await

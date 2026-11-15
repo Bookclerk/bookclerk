@@ -14,14 +14,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Json;
 use axum::Router;
-use bookclerk_acquire::sidecar_key;
 use bookclerk_config::{Config, ListenAddrs};
 use bookclerk_integrations::{portal_spa_routes, IntegrationRegistry, PortalState};
 use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::{
-    hash_token, AcquireStatus, BookRecord, ClaimTicketRecord, JobRecord, JobTrigger, LibraryError,
-    LibraryStore, NewTitleRequest, NewTitleRequestSource, QueueWisher, RequestStatus,
-    TitleRequestRecord,
+    hash_token, ClaimTicketRecord, JobRecord, JobTrigger, LibraryError, LibraryStore,
+    NewTitleRequest, NewTitleRequestSource, QueueWisher, RequestStatus, TitleRequestRecord,
 };
 use bookclerk_plugin_host::{
     consent_request, consent_summary, cores_to_percent, effective_cpu_cores, format_cpu_cores,
@@ -33,7 +31,6 @@ use bookclerk_plugin_host::{
     PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX, PLUGIN_STATE_BUDGET_MIB_DEFAULT,
     PLUGIN_STATE_BUDGET_MIB_MAX,
 };
-use bookclerk_search::SearchEngine;
 use bookclerk_source::SourceRegistry;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -625,7 +622,7 @@ struct PluginConsentLimits {
     #[schema(example = 62)]
     max_extra_processes: u32,
     /// Suggested / default host bindings operators may grant.
-    #[schema(example = json!(["config", "secrets", "plugin_kv", "work_fs", "oauth"]))]
+    #[schema(example = json!(["config", "secrets", "plugin_kv", "work_fs", "oauth", "sockets"]))]
     known_bindings: Vec<&'static str>,
 }
 
@@ -1008,6 +1005,13 @@ pub struct AcquireRequestBody {
     #[serde(default)]
     #[schema(example = json!(["8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"]))]
     pub titles: Vec<String>,
+    /// Editions to acquire (`id` of an edition in a work's detail). Each
+    /// becomes one job for a title that sells it in an account the caller
+    /// may acquire for (in `account` when that is set); the edition's
+    /// titles share its files.
+    #[serde(default)]
+    #[schema(example = json!(["0f3a5c7e-2b4d-4f6a-8c1e-3d5b7f9a1c2e"]))]
+    pub editions: Vec<String>,
     /// Re-download titles already acquired.
     #[serde(default)]
     #[schema(example = false)]
@@ -1047,40 +1051,6 @@ struct DatabaseMigrateRequest {
     #[serde(default)]
     #[schema(example = false)]
     apply: bool,
-}
-
-#[derive(Debug, Deserialize, Default, utoipa::ToSchema, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-/// Query string for `GET /api/library/books`.
-struct BooksQuery {
-    /// Restrict results to this store account id.
-    account: Option<String>,
-    /// Optional `AcquireStatus` wire-string filter.
-    status: Option<String>,
-    /// Full-text search over this node's search index. Hits are sorted by
-    /// title and every hit counts toward `total` (there is no hit cap); an
-    /// empty value skips the index.
-    q: Option<String>,
-    /// Page size, clamped to 1–500 (default 40).
-    limit: Option<usize>,
-    /// Number of matching titles to skip.
-    offset: Option<usize>,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-/// Paginated library listing.
-struct BooksResponse {
-    /// Current page of title records.
-    books: Vec<BookRecord>,
-    /// Match count before pagination.
-    #[schema(example = 412)]
-    total: usize,
-    /// Applied page size.
-    #[schema(example = 50)]
-    limit: usize,
-    /// Applied skip count.
-    #[schema(example = 0)]
-    offset: usize,
 }
 
 /// Every documented route group served under the root, with who may call it.
@@ -1337,11 +1307,10 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
 #[inline(never)]
 fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
-        .routes(routes!(list_books))
-        .routes(routes!(get_book))
-        .routes(routes!(get_book_cover))
         .routes(routes!(crate::library_works::list_works))
         .routes(routes!(crate::library_works::get_work))
+        .routes(routes!(crate::library_works::list_facet_values))
+        .routes(routes!(crate::library_works::get_edition_cover))
         .routes(routes!(crate::covers::get_cover))
         .routes(routes!(crate::covers::get_image))
         .routes(routes!(crate::covers::get_gravatar))
@@ -4447,7 +4416,7 @@ fn plan_response(kind: &str, admits: Vec<AdmitJob>) -> Response {
     request_body = Option<AcquireRequestBody>,
     responses(
         (status = 200, description = "The acquire jobs were accepted.", body = ScanPlanResponse, example = json!({"ok": true, "message": "acquire job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted", "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b", "job_ids": ["acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"]})),
-        (status = 400, description = "The body names no valid title.", body = ActionResponse, example = json!({"ok": false, "message": "every title id given is blank", "job_id": "", "error": "invalid"})),
+        (status = 400, description = "The body names no valid title or edition.", body = ActionResponse, example = json!({"ok": false, "message": "every title id given is blank", "job_id": "", "error": "invalid"})),
         (status = 403, description = "The caller may not acquire for these accounts.", body = ActionResponse, example = json!({"ok": false, "message": "that title is not in a store account linked to this user", "job_id": "", "error": "forbidden"})),
         (status = 409, description = "The same acquire is already pending or running, or no node can run it.", body = PlanConflict, examples(("duplicate" = (summary = "Every planned job is already pending or running", value = json!({"ok": false, "message": "acquire already pending or running", "job_id": "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"}))), ("unroutable" = (summary = "No node runs every plugin instance the job requires", value = json!({"ok": false, "message": "no node runs all of the plugin instances this acquire job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node", "job_id": "", "error": "unroutable"}))))),
         (status = 422, description = "No account of the caller's can acquire.", body = ScanPlanResponse, example = json!({"ok": false, "message": "no store account of yours to acquire from", "job_id": "", "job_ids": [], "error": "nothing_to_acquire"})),
@@ -4473,6 +4442,25 @@ async fn trigger_acquire(
         .into_iter()
         .collect();
     titles.extend(body.titles);
+    if !body.editions.is_empty() {
+        let library = state.library_snapshot().await;
+        match bookclerk_library::control_plane::acquire_titles_of_editions(
+            &library,
+            requester,
+            body.account.as_deref(),
+            body.plugin_instance_id.as_deref(),
+            &body.editions,
+        )
+        .await
+        {
+            Ok(of_editions) => titles.extend(of_editions),
+            Err(LibraryError::Forbidden(message)) => return planner_error_response(None, &message),
+            Err(LibraryError::Invalid(message)) => {
+                return planner_error_response(Some(StatusCode::BAD_REQUEST), &message)
+            }
+            Err(err) => return enqueue_error_response(err.into()),
+        }
+    }
     let ask = crate::jobs::AcquireAsk {
         titles,
         account: body.account,
@@ -5340,167 +5328,6 @@ async fn trigger_integration_scan(
         Ok(admit) => admit_response("integration_scan", admit),
         Err(err) => enqueue_error_response(err),
     }
-}
-
-/// Lists or searches library titles with optional account/status filters and pagination.
-#[utoipa::path(
-    get,
-    path = "/api/library/books",
-    params(BooksQuery),
-    responses(
-        (status = 200, description = "A page of titles.", body = BooksResponse),
-        (status = 400, description = "A filter is invalid."),
-        (status = 500, description = "The library could not be read.", body = crate::http_error::ErrorJson),
-    ),
-)]
-async fn list_books(
-    State(state): State<Arc<AppState>>,
-    _headers: HeaderMap,
-    Query(query): Query<BooksQuery>,
-) -> Result<Json<BooksResponse>, (StatusCode, Json<crate::http_error::ErrorJson>)> {
-    let library = state.library_snapshot().await;
-    let limit = query.limit.unwrap_or(40).clamp(1, 500);
-    let offset = query.offset.unwrap_or(0);
-    let status = query
-        .status
-        .as_deref()
-        .and_then(AcquireStatus::parse)
-        .map(AcquireStatus::as_str);
-    let account = query.account.as_deref().filter(|value| !value.is_empty());
-
-    // Authenticated callers (operator or user) share the full library for
-    // browsing. Account *linking* and acquire remain capability-gated; store
-    // connect is User-only.
-    //
-    // Without a query, filtering, sorting and paging run in SQL. With one,
-    // the node's search index matches, sorts by title, pages and counts,
-    // so no hit cap applies; only the page's uuids are hydrated from SQL.
-    // Account and status are read from SQL, not the index, so a filtered
-    // search takes every hit and lets SQL filter and page them.
-
-    let page = if let Some(q) = query.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        let index_dir = state.config.read().await.paths().search_index_dir.clone();
-        // Offloaded: Tantivy query work would otherwise block this request task.
-        if account.is_none() && status.is_none() {
-            let hits = SearchEngine::open_and_search_page(index_dir, q.to_string(), offset, limit)
-                .await
-                .map_err(books_query_error)?;
-            let mut page = library
-                .list_books_by_uuid_page(&hits.uuids, None, None, limit as u64, 0)
-                .await
-                .map_err(books_query_error)?;
-            page.total = hits.total;
-            page
-        } else {
-            let uuids = SearchEngine::open_and_match_uuids(index_dir, q.to_string())
-                .await
-                .map_err(books_query_error)?;
-            library
-                .list_books_by_uuid_page(&uuids, account, status, limit as u64, offset as u64)
-                .await
-                .map_err(books_query_error)?
-        }
-    } else {
-        library
-            .list_books_filtered_page(account, status, limit as u64, offset as u64)
-            .await
-            .map_err(books_query_error)?
-    };
-    let mut books = page.books;
-    for book in &mut books {
-        state
-            .covers
-            .decorate(book.cover_url.as_deref(), &mut book.cover_path);
-    }
-    Ok(Json(BooksResponse {
-        books,
-        total: page.total,
-        limit,
-        offset,
-    }))
-}
-
-/// Logs one library-books failure and returns the branded internal-error body.
-fn books_query_error(
-    err: impl std::fmt::Display,
-) -> (StatusCode, Json<crate::http_error::ErrorJson>) {
-    tracing::error!(error = %err, "GET /api/library/books failed");
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(crate::http_error::ErrorJson::for_status(
-            StatusCode::INTERNAL_SERVER_ERROR,
-        )),
-    )
-}
-
-/// Returns one title by UUID, or 404 when it is absent.
-#[utoipa::path(
-    get,
-    path = "/api/library/books/{uuid}",
-    params(("uuid" = String, Path, description = "Title UUID.")),
-    responses(
-        (status = 200, description = "The title.", body = bookclerk_library::BookRecord),
-        (status = 404, description = "No such title.", body = crate::http_error::ErrorJson),
-        (status = 500, description = "The library could not be read.", body = crate::http_error::ErrorJson),
-    ),
-)]
-async fn get_book(
-    State(state): State<Arc<AppState>>,
-    AxumPath(uuid): AxumPath<String>,
-) -> Result<Json<BookRecord>, StatusCode> {
-    let library = state.library_snapshot().await;
-    let mut book = library
-        .get_book_by_uuid(&uuid)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    state
-        .covers
-        .decorate(book.cover_url.as_deref(), &mut book.cover_path);
-    Ok(Json(book))
-}
-
-/// Serves the JPEG cover sidecar from the deployed local destination, or 404
-/// when no local destination runs on this node.
-#[utoipa::path(
-    get,
-    path = "/api/library/books/{uuid}/cover",
-    params(("uuid" = String, Path, description = "Title UUID.")),
-    responses(
-        (status = 200, description = "The cover.", content_type = "image/jpeg"),
-        (status = 404, description = "No such title, or it has no cover.", body = crate::http_error::ErrorJson),
-    ),
-)]
-async fn get_book_cover(
-    State(state): State<Arc<AppState>>,
-    AxumPath(uuid): AxumPath<String>,
-) -> Result<Response, StatusCode> {
-    // Without a local destination there is no sidecar to serve, so answer
-    // before reading the library.
-    let local = state
-        .destinations
-        .read()
-        .await
-        .local()
-        .ok_or(StatusCode::NOT_FOUND)?;
-    let library = state.library_snapshot().await;
-    let book = library
-        .get_book_by_uuid(&uuid)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    let storage_key = book.storage_key.as_deref().ok_or(StatusCode::NOT_FOUND)?;
-    let cover_key = sidecar_key(storage_key, "jpg");
-    let bytes = local
-        .get(&cover_key)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "image/jpeg")],
-        bytes,
-    )
-        .into_response())
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -6858,26 +6685,6 @@ mod tests {
     fn a_wish_asks_the_stores_within_its_route_budget() {
         let route = super::api_timeout_for_path("/api/wishlist");
         assert!(super::WISH_ENRICH_BUDGET + std::time::Duration::from_secs(2) <= route);
-    }
-
-    #[test]
-    fn books_query_error_returns_the_branded_internal_error_body() {
-        let (status, axum::Json(body)) = super::books_query_error("boom");
-        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        let body = serde_json::to_value(body).unwrap();
-        assert_eq!(body["status"], 500);
-        assert_eq!(body["error"], "internal_error");
-        assert_eq!(
-            body["message"],
-            "Something went wrong on the Bookclerk daemon."
-        );
-        assert_eq!(
-            body,
-            serde_json::to_value(crate::http_error::ErrorJson::for_status(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            ))
-            .unwrap()
-        );
     }
 
     use super::{
@@ -9014,303 +8821,5 @@ tcp = {tcp}
         );
         let missing = super::serve_invite_spa(&dist.path().join("gone.html")).await;
         assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
-    }
-
-    /// Library pages filter, sort, and paginate in SQL, including the search path.
-    #[tokio::test]
-    async fn library_books_page_filters_in_sql_and_limits_search_hydration() {
-        use std::sync::Arc;
-
-        use axum::extract::{Query, State};
-        use axum::http::HeaderMap;
-        use bookclerk_integrations::IntegrationRegistry;
-        use bookclerk_library::{AcquireStatus, LibraryStore, NewBook};
-        use bookclerk_plugin_host::{DatabaseRegistry, DestinationRegistry};
-        use bookclerk_search::SearchEngine;
-        use bookclerk_source::SourceRegistry;
-        use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
-
-        use crate::api::AppState;
-        use crate::auth::OperatorAuthState;
-
-        let files = tempfile::tempdir().unwrap();
-        let mut cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
-        cfg.daemon.auth.enabled = false;
-        let store = LibraryStore::from_connection(
-            bookclerk_plugin_database_sqlite::open_memory()
-                .await
-                .unwrap(),
-        );
-        store
-            .upsert_account("audible", "envelope-a", "us", None, false, "audible")
-            .await
-            .unwrap();
-        store
-            .upsert_account("audible", "envelope-b", "us", None, false, "audible")
-            .await
-            .unwrap();
-        for i in 0..20u32 {
-            let account = if i < 16 { "envelope-a" } else { "envelope-b" };
-            let book = NewBook::minimal(format!("B{i:05}"), account, "us", format!("Title {i:05}"));
-            let saved = store.upsert_book(&book).await.unwrap();
-            let status = if i % 10 == 0 {
-                AcquireStatus::Error
-            } else {
-                AcquireStatus::Acquired
-            };
-            store
-                .set_acquire_status(&saved.uuid, &saved.account_id, status, None, None)
-                .await
-                .unwrap();
-            if i == 0 {
-                store
-                    .update_catalog_enrichment(
-                        &saved.uuid,
-                        &bookclerk_library::CatalogEnrichmentFields {
-                            cover_url: Some("https://img.example/c.jpg".into()),
-                            ..Default::default()
-                        },
-                    )
-                    .await
-                    .unwrap();
-            }
-        }
-        SearchEngine::open(&cfg.paths().search_index_dir)
-            .unwrap()
-            .rebuild(&store)
-            .await
-            .unwrap();
-
-        let state = Arc::new(AppState {
-            config: Arc::new(RwLock::new(cfg)),
-            library: Arc::new(RwLock::new(store)),
-            database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
-            job_notify: Arc::new(Notify::new()),
-            capacity: Arc::new(crate::cluster_link::capacity::CapacityShares::new()),
-            job_runtime: Arc::new(RwLock::new(())),
-            work_lock: Mutex::new(()),
-            discover_gate: Arc::new(Semaphore::new(1)),
-            integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
-            sources: Arc::new(RwLock::new(SourceRegistry::new())),
-            destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
-            auth: Arc::new(RwLock::new(Arc::new(OperatorAuthState::new(
-                String::new(),
-                12,
-                false,
-                5,
-                30,
-            )))),
-            reload_lock: Mutex::new(()),
-            listen_reload: Arc::new(Notify::new()),
-            last_bound_listen: RwLock::new(None),
-            tray: RwLock::new(None),
-            tray_handoff: Mutex::new(None),
-            deployment_runtime: std::sync::OnceLock::new(),
-            node_api_tls_bound: std::sync::OnceLock::new(),
-            library_swaps: tokio::sync::watch::Sender::new(0),
-            covers: Arc::new(crate::covers::CoverService::detached()),
-        });
-
-        let page = super::list_books(
-            State(state.clone()),
-            HeaderMap::new(),
-            Query(super::BooksQuery {
-                account: None,
-                status: None,
-                q: None,
-                limit: Some(5),
-                offset: Some(0),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(page.total, 20);
-        assert_eq!(page.books.len(), 5);
-        assert_eq!(page.limit, 5);
-        assert_eq!(page.books[0].title, "Title 00000");
-        assert!(page.books[0].title < page.books[4].title);
-        // A remote cover gets a same-origin path; a title without one doesn't.
-        let first = &page.books[0];
-        let path = first.cover_path.as_deref().expect("cover path");
-        assert!(path.starts_with("/api/covers/"), "{path}");
-        assert_eq!(
-            state
-                .covers
-                .open_token(&path["/api/covers/".len()..])
-                .as_deref(),
-            Some("https://img.example/c.jpg")
-        );
-        assert_eq!(page.books[1].cover_path, None);
-        let one = super::get_book(
-            State(state.clone()),
-            axum::extract::Path(first.uuid.clone()),
-        )
-        .await
-        .unwrap();
-        assert_eq!(one.cover_path.as_deref(), Some(path));
-        assert_eq!(
-            super::get_book(State(state.clone()), axum::extract::Path("missing".into()))
-                .await
-                .map(|_| ())
-                .unwrap_err(),
-            axum::http::StatusCode::NOT_FOUND
-        );
-        // Gravatars and store icons come through the same service: a hash
-        // that is not a SHA-256 or a store nobody deployed is a 404, and a
-        // node with no cover cache answers 503.
-        let status = |res: axum::response::Response| res.status();
-        let gravatar = |hash: &str| {
-            crate::covers::get_gravatar(
-                State(state.clone()),
-                axum::extract::Path(hash.to_owned()),
-                HeaderMap::new(),
-            )
-        };
-        assert_eq!(
-            status(
-                crate::covers::get_image(
-                    State(state.clone()),
-                    axum::extract::Path("forged.token".into()),
-                    HeaderMap::new()
-                )
-                .await
-            ),
-            axum::http::StatusCode::NOT_FOUND
-        );
-        assert_eq!(
-            status(gravatar("not-a-hash").await),
-            axum::http::StatusCode::NOT_FOUND
-        );
-        assert_eq!(
-            status(gravatar(&"a".repeat(64)).await),
-            axum::http::StatusCode::SERVICE_UNAVAILABLE
-        );
-        assert_eq!(
-            status(
-                crate::covers::get_store_icon(
-                    State(state.clone()),
-                    axum::extract::Path("nowhere".into()),
-                    HeaderMap::new()
-                )
-                .await
-            ),
-            axum::http::StatusCode::NOT_FOUND
-        );
-
-        let acquired = super::list_books(
-            State(state.clone()),
-            HeaderMap::new(),
-            Query(super::BooksQuery {
-                account: None,
-                status: Some("acquired".into()),
-                q: None,
-                limit: Some(40),
-                offset: Some(0),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(acquired.total, 18);
-        assert_eq!(acquired.books.len(), 18);
-        assert!(acquired
-            .books
-            .iter()
-            .all(|book| book.acquire_status == AcquireStatus::Acquired));
-
-        let searched = super::list_books(
-            State(state.clone()),
-            HeaderMap::new(),
-            Query(super::BooksQuery {
-                account: None,
-                status: None,
-                q: Some("Title".into()),
-                limit: Some(8),
-                offset: Some(0),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(searched.books.len(), 8);
-        assert_eq!(searched.total, 20, "every hit counts, not only one page");
-        assert_eq!(searched.books[0].title, "Title 00000");
-        // The index pages in title order, so the next page continues it.
-        let next = super::list_books(
-            State(state.clone()),
-            HeaderMap::new(),
-            Query(super::BooksQuery {
-                account: None,
-                status: None,
-                q: Some("Title".into()),
-                limit: Some(8),
-                offset: Some(16),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(next.total, 20);
-        let titles: Vec<&str> = next.books.iter().map(|b| b.title.as_str()).collect();
-        assert_eq!(
-            titles,
-            ["Title 00016", "Title 00017", "Title 00018", "Title 00019"]
-        );
-        // A status filter is read from the database, not the index.
-        let failed = super::list_books(
-            State(state.clone()),
-            HeaderMap::new(),
-            Query(super::BooksQuery {
-                account: None,
-                status: Some("error".into()),
-                q: Some("Title".into()),
-                limit: Some(40),
-                offset: Some(0),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(failed.total, 2);
-
-        let account_b = super::list_books(
-            State(state),
-            HeaderMap::new(),
-            Query(super::BooksQuery {
-                account: Some("envelope-b".into()),
-                status: None,
-                q: Some("Title".into()),
-                limit: Some(40),
-                offset: Some(0),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(account_b.total, 4);
-        assert_eq!(account_b.books.len(), 4);
-        assert!(account_b
-            .books
-            .iter()
-            .all(|book| book.account_id == "envelope-b"));
-    }
-
-    /// With no local destination on the node, a title's sidecar cover is a
-    /// 404 whether or not the title exists, answered without a library read.
-    #[tokio::test]
-    async fn book_cover_is_not_found_without_a_local_destination() {
-        use axum::body::Body;
-        use axum::http::{header, Request, StatusCode};
-        use tower::ServiceExt;
-
-        let (state, app, _library) = crate::auth::tests::phase2_harness("op-token-cover").await;
-        assert!(state.destinations.read().await.local().is_none());
-        let cookie = crate::auth::operator_session_cookie(&state).await;
-        let res = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/library/books/no-such-title/cover")
-                    .header(header::COOKIE, &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 }

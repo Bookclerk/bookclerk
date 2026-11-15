@@ -1,6 +1,6 @@
 # ADR: Event delivery follows the Workers model
 
-- **Status:** Accepted (decisions 1 to 7); later phases proposed
+- **Status:** Accepted (decisions 1 to 8); later phases proposed
 - **Date:** 2026-11-11
 
 ## Context
@@ -112,11 +112,25 @@ callers await a promise, and long work is a durable job.
    and copy support are captured from the first guest, so placement and
    dedupe never wake it. Other storage guests have no host backend to
    proxy and stay running.
+8. **Pushed sockets are host-brokered.** A plugin that listens on a
+   WebSocket can still sleep, as with Durable Objects' hibernatable
+   WebSockets. It opens sockets through a `[sockets]` binding; the host
+   holds each one, answers declared heartbeat pairs itself, and wakes the
+   plugin's `SocketHandler` only for a real message, handing back up to
+   2 KiB of attachment the plugin stored with the socket. Sockets are
+   held by a jailed broker per plugin instance (the front door in a
+   broker mode, under the plugin's network grant and egress checks), not
+   by the daemon, so a socket gives a plugin no reach its grant lacks and
+   untrusted frames are never parsed in the daemon. Remote libraries
+   without a push channel move to a host-scheduled poll instead. The ABI
+   shape and checks land first; the broker, the SDK WebSocket API and
+   on-demand remote libraries woken by socket messages follow.
 
 The following phases are proposed and get their own pull requests and
 updates to this record:
 
-- **On-demand activation for the rest.** Remote libraries and the
+- **On-demand activation for the rest.** Remote libraries (woken by
+  pushed socket messages, decision 8, or a host-scheduled poll) and the
   remaining storage guests sleep too, with an idle timeout per family.
   Python guests need a faster start (snapshots or prewarming) before
   they can.
@@ -147,7 +161,13 @@ updates to this record:
 - Decisions 1 to 3 needed no `plugin.capnp` change: `EventConsumer.event`
   already takes a batch and `PluginWorker.shutdown` already exists.
   Decision 4 appends `EventPublisher.read`, its request, page and reply
-  structs, and `maxEventCursorBytes`.
+  structs, and `maxEventCursorBytes`. Decision 8 appends `Bindings.sockets`,
+  `Entrypoints.socketHandler`, `PluginCapabilities.sockets`, the `Sockets`
+  and `SocketHandler` interfaces, their structs and the `maxSocket*`
+  limits.
+- Untrusted socket requests and deliveries are a new boundary with the
+  `socket_request` fuzz target.
 - See [Entrypoints, events and the ABI](../plugins/abi.md#how-events-are-delivered),
+  [Pushed sockets](../plugins/abi.md#pushed-sockets-sockets),
   [Reading past events](../plugins/abi.md#reading-past-events-enveventsread)
   and [Durable job queue](../internals/jobs.md).
