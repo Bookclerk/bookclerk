@@ -1031,6 +1031,99 @@ pub async fn plan_acquire(
     Ok(out)
 }
 
+/// The library titles an acquire by edition queues: for each edition, one
+/// title (`books.uuid`) that sells it in an account `requester` may
+/// acquire for, and in `account` when one is named.
+///
+/// An edition's titles share its files, so acquiring one of them acquires
+/// the edition. Each title is still planned by [`plan_acquire`], which
+/// checks the requester again.
+///
+/// # Arguments
+///
+/// * `store` - The library.
+/// * `requester` - Who asks; a member is limited to their own accounts.
+/// * `account` - When named (an id or label), only titles in that account.
+/// * `editions` - Edition ids (`editions.id`); blanks and repeats are
+///   skipped.
+///
+/// # Returns
+///
+/// One title uuid per edition, in the order the editions were given.
+///
+/// # Errors
+///
+/// - [`LibraryError::Invalid`] when every edition id given is blank, or an
+///   edition has no title in the library (or none in `account`).
+/// - [`LibraryError::Forbidden`] when an edition's titles are all in
+///   accounts the requester may not acquire for.
+/// - [`LibraryError::Orm`] when a read fails.
+pub async fn acquire_titles_of_editions(
+    store: &LibraryStore,
+    requester: ScanRequester,
+    account: Option<&str>,
+    editions: &[String],
+) -> Result<Vec<String>> {
+    let account = named_account(account)?;
+    let mut seen = BTreeSet::new();
+    let editions: Vec<&str> = editions
+        .iter()
+        .map(|e| e.trim())
+        .filter(|e| !e.is_empty() && seen.insert(*e))
+        .collect();
+    if editions.is_empty() {
+        return Err(LibraryError::Invalid(
+            "every edition id given is blank".into(),
+        ));
+    }
+    let owned = match requester_scope(store, requester).await? {
+        Some(user_id) => Some(accounts_owned_by(store, user_id).await?),
+        None => None,
+    };
+    // The accounts the filter names, matched by id or label as a job's
+    // account filter is; an unknown name matches by id only.
+    let named = match account {
+        Some(needle) => Some((needle, accounts_named(store, needle, None).await?)),
+        None => None,
+    };
+    let mut out = Vec::with_capacity(editions.len());
+    for edition in editions {
+        let mut titles: Vec<BookRecord> = Vec::new();
+        for listing in store.listing_refs_of_edition(edition).await? {
+            titles.extend(store.books_of_listing(&listing).await?);
+        }
+        if titles.is_empty() {
+            return Err(LibraryError::Invalid(format!(
+                "edition {edition} has no title in the library"
+            )));
+        }
+        titles.sort_by(|a, b| a.uuid.cmp(&b.uuid));
+        let in_account = |book: &BookRecord| match &named {
+            None => true,
+            Some((needle, keys)) if keys.is_empty() => book.account_id == *needle,
+            Some((_, keys)) => keys.contains(&(book.plugin_key.clone(), book.account_id.clone())),
+        };
+        let titles: Vec<BookRecord> = titles.into_iter().filter(in_account).collect();
+        if titles.is_empty() {
+            return Err(LibraryError::Invalid(format!(
+                "edition {edition} has no title in that account"
+            )));
+        }
+        let allowed = titles.iter().find(|book| {
+            owned.as_ref().is_none_or(|owned| {
+                owned.contains(&(book.plugin_key.clone(), book.account_id.clone()))
+            })
+        });
+        let Some(book) = allowed else {
+            return Err(LibraryError::Forbidden(
+                "that edition is not in a store account linked to this user".into(),
+            ));
+        };
+        out.push(book.uuid.clone());
+    }
+    Ok(out)
+}
+
 /// `None` when `requester` may act on every account (operator authority,
 /// an Owner or an Administrator), otherwise the user whose accounts bound
 /// the request.

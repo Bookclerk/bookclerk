@@ -260,8 +260,8 @@ pub use shared_branches::{
 };
 pub use template::{strip_install_state, TemplateStrip};
 pub use trust::{
-    accounts_owned_by, book_matches_title, claimant_may_run, handoff_routed_job,
-    job_for_node_owner, job_item_accounts, job_trusted, node_may_claim_job,
+    accounts_owned_by, acquire_titles_of_editions, book_matches_title, claimant_may_run,
+    handoff_routed_job, job_for_node_owner, job_item_accounts, job_trusted, node_may_claim_job,
     node_may_claim_job_in_scope, node_trust, node_trust_in_scope, plan_acquire, plan_scan,
     remote_node_may_view_job, remote_node_requester, AccountKey, Claimant, NodeTrust,
     ScanRequester,

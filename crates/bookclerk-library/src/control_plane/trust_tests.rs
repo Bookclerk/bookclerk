@@ -1463,3 +1463,95 @@ async fn postgres_shared_account_id_pins_a_members_title() {
     let (a, b) = postgres_stores().await;
     shared_account_id_pins_a_members_title(a, b).await;
 }
+
+#[tokio::test]
+async fn an_acquire_by_edition_picks_a_title_the_requester_may_acquire() {
+    for profile in crate::test_support::Profile::ALL {
+        let store = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        for account in ["a1", "a2"] {
+            store
+                .upsert_account("audible", account, "us", None, true, "audible")
+                .await
+                .unwrap();
+        }
+        let riley = user(&store, UserRole::Member, "Riley").await;
+        let sam = user(&store, UserRole::Member, "Sam").await;
+        link(&store, riley, "audible", "a1").await;
+        link(&store, sam, "audible", "a2").await;
+        let save = |product: &'static str, account: &'static str| {
+            let store = store.clone();
+            async move {
+                store
+                    .upsert_book(&crate::NewBook::minimal(product, account, "us", product))
+                    .await
+                    .unwrap()
+                    .uuid
+            }
+        };
+        let both_a1 = save("B0BOTH", "a1").await;
+        let both_a2 = save("B0BOTH", "a2").await;
+        let only_sam = save("B0SAM", "a2").await;
+        let both = store.edition_of_book(&both_a1).await.unwrap().unwrap();
+        assert_eq!(
+            store.edition_of_book(&both_a2).await.unwrap().as_deref(),
+            Some(both.as_str()),
+            "one edition, held on two accounts"
+        );
+        let sams = store.edition_of_book(&only_sam).await.unwrap().unwrap();
+        let ids = |ids: &[&str]| ids.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        let first = both_a1.clone().min(both_a2.clone());
+
+        // Privileged: the edition's first title, once however often named;
+        // both titles' accounts reach it (read in pages on every profile).
+        let picked = acquire_titles_of_editions(
+            &store,
+            ScanRequester::Operator,
+            None,
+            &ids(&[&both, &format!(" {both} "), &sams]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(picked, vec![first.clone(), only_sam.clone()], "{profile:?}");
+        let picked =
+            acquire_titles_of_editions(&store, ScanRequester::Operator, Some("a2"), &ids(&[&both]))
+                .await
+                .unwrap();
+        assert_eq!(picked, vec![both_a2.clone()], "{profile:?}");
+
+        // A member: the title in their own account.
+        for (who, title) in [(riley, &both_a1), (sam, &both_a2)] {
+            let picked =
+                acquire_titles_of_editions(&store, ScanRequester::User(who), None, &ids(&[&both]))
+                    .await
+                    .unwrap();
+            assert_eq!(&picked, &vec![title.clone()], "{profile:?}");
+        }
+        for (account, edition) in [(None, &sams), (Some("a2"), &both)] {
+            let err = acquire_titles_of_editions(
+                &store,
+                ScanRequester::User(riley),
+                account,
+                &ids(&[edition]),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, LibraryError::Forbidden(_)), "{err}");
+        }
+
+        // Nothing to acquire: blanks, an unknown edition, another account.
+        for (account, editions) in [
+            (None, ids(&["", " "])),
+            (None, ids(&["no-such-edition"])),
+            (Some("missing"), ids(&[&both])),
+            (Some(" "), ids(&[&both])),
+        ] {
+            let err =
+                acquire_titles_of_editions(&store, ScanRequester::Operator, account, &editions)
+                    .await
+                    .unwrap_err();
+            assert!(matches!(err, LibraryError::Invalid(_)), "{err}");
+        }
+    }
+}
