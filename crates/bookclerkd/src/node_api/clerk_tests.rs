@@ -454,7 +454,7 @@ async fn a_library_card_opens_the_library_routes_and_nothing_else() {
     let app = served(app, LOOPBACK);
     let card = (header::AUTHORIZATION, format!("Bookclerk-Clerk {token}"));
 
-    let (status, body) = with_header(&app, "GET", "/api/library/books", card.clone()).await;
+    let (status, body) = with_header(&app, "GET", "/api/library/works", card.clone()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = with_header(&app, "GET", "/api/auth/sessions", card.clone()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -492,14 +492,14 @@ async fn a_library_card_opens_the_library_routes_and_nothing_else() {
         header::COOKIE,
         format!("{}={token}", crate::auth::PORTAL_SESSION_COOKIE),
     );
-    let (status, _) = with_header(&app, "GET", "/api/library/books", cookie).await;
+    let (status, _) = with_header(&app, "GET", "/api/library/works", cookie).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let browser = crate::auth::tests::portal_cookie_for(&store, "test", "member-ext").await;
     let browser_raw = browser.split_once('=').unwrap().1.to_owned();
     let (status, _) = with_header(
         &app,
         "GET",
-        "/api/library/books",
+        "/api/library/works",
         (
             header::AUTHORIZATION,
             format!("Bookclerk-Clerk {browser_raw}"),
@@ -513,7 +513,7 @@ async fn a_library_card_opens_the_library_routes_and_nothing_else() {
         crate::auth::tests::phase2_harness("operator-token").await.1,
         LAN,
     );
-    let (status, body) = with_header(&lan, "GET", "/api/library/books", card.clone()).await;
+    let (status, body) = with_header(&lan, "GET", "/api/library/works", card.clone()).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["error"], "transport_insecure");
     // In the standard error body the library routes declare.
@@ -523,7 +523,7 @@ async fn a_library_card_opens_the_library_routes_and_nothing_else() {
     // Signing out ends the session.
     let (status, _) = with_header(&app, "POST", "/api/auth/logout", card.clone()).await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = with_header(&app, "GET", "/api/library/books", card).await;
+    let (status, _) = with_header(&app, "GET", "/api/library/works", card).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 

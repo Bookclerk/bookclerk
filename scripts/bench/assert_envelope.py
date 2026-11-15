@@ -12,13 +12,16 @@ from pathlib import Path
 # are gated on the maximum anonymous sample taken during the window.
 ANON_LIMIT_BYTES = 256 * 1024 * 1024
 
-# Books routes the harness must exercise. A missing or empty route is a failure.
-EXPECTED_BOOKS_ROUTES = (
-    "GET /api/library/books?limit=40&offset=0",
-    "GET /api/library/books?limit=40&offset=8000&status=acquired",
-    "GET /api/library/books?account=envelope-b&limit=40",
-    "GET /api/library/books?q=Title&limit=40",
-    "GET /api/library/books?q=Title&limit=8",
+# Library routes the harness must exercise. A missing route, a non-200 or a
+# page with no works is a failure: every one reads a populated works index.
+EXPECTED_LIBRARY_ROUTES = (
+    "GET /api/library/works?limit=40",
+    "GET /api/library/works?limit=40&sort=author",
+    "GET /api/library/works?limit=40&status=acquired",
+    "GET /api/library/works?account=envelope-b&limit=40",
+    "GET /api/library/works?limit=40&cursor=(8000 in)",
+    "GET /api/library/works?q=Title&limit=40",
+    "GET /api/library/works?q=Title&limit=8",
 )
 
 
@@ -66,7 +69,7 @@ def assert_envelope(doc: dict) -> list[str]:
     if not isinstance(api, dict):
         problems.append("api per_route must be an object")
         api = {}
-    for name in EXPECTED_BOOKS_ROUTES:
+    for name in EXPECTED_LIBRARY_ROUTES:
         stats = api.get(name)
         if not isinstance(stats, dict):
             problems.append(f"{name} is missing")
@@ -77,9 +80,9 @@ def assert_envelope(doc: dict) -> list[str]:
         errors = stats.get("errors")
         if errors != 0:
             problems.append(f"{name} returned non-200 ({errors} errors)")
-        total = stats.get("min_total")
-        if "q=Title" in name and not (isinstance(total, int) and total > 0):
-            problems.append(f"{name} did not hit a populated index (min_total={total!r})")
+        works = stats.get("min_works")
+        if not (isinstance(works, int) and works > 0):
+            problems.append(f"{name} did not hit a populated index (min_works={works!r})")
 
     for label in ("api", "api_with_rebuild"):
         mix = ((windows.get(label) or {}).get("mix_60s") or {})

@@ -5359,7 +5359,7 @@ pub(crate) mod tests {
         // owner, node owner, administrator and user-scoped.
         for uri in [
             "/api/auth/me",
-            "/api/library/books",
+            "/api/library/works",
             "/api/auth/mfa-policy",
             "/api/config/nodes",
             "/status",
@@ -6107,30 +6107,20 @@ pub(crate) mod tests {
         assert!(body.contains("impersonating"));
         assert!(body.contains(&user_id.to_string()));
 
-        // Portal-scoped library: member has no links → empty (not full library).
-        // Seed a book on an unlinked account; impersonation should hide it.
-        let _ = library
-            .upsert_account(
-                "audible",
-                "acct-hidden",
-                "us",
-                Some("Hidden"),
-                true,
-                "audible",
-            )
-            .await;
-        let books = app
+        // Authenticated callers share the full library, so the works page
+        // answers for the impersonated member as it does for the operator.
+        let works = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/library/books")
+                    .uri("/api/library/works")
                     .header(header::COOKIE, &op_cookie)
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(books.status(), StatusCode::OK);
+        assert_eq!(works.status(), StatusCode::OK);
 
         let events = library.list_security_audit_events(20).await.unwrap();
         assert!(events.iter().any(|e| e.action == "impersonate_start"));

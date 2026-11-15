@@ -430,9 +430,13 @@ paths = [
     "scripts/bench/envelope_limits.py",
     "scripts/bench/assert_envelope.py",
     "crates/bookclerk-library/tests/envelope_seed.rs",
-    "crates/bookclerk-library/src/store/books_page.rs",
+    "crates/bookclerk-library/src/store/library_index.rs",
     "crates/bookclerkd/src/api.rs",
+    "crates/bookclerkd/src/library_works.rs",
+    "crates/bookclerkd/src/library_index.rs",
+    "crates/bookclerkd/src/search_index.rs",
     "crates/bookclerk-search/src/engine.rs",
+    "crates/bookclerk-search/src/works.rs",
 ]
 
 # Native-behind-workerd gateway smoke (3 OS): `bookclerk-plugin-e2e --test

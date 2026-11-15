@@ -93,14 +93,14 @@ describe("route list", () => {
     for (const p of [
       "/api/library/%61cquire",
       "/api/library/acquire%2F",
-      "/api/library/books/../acquire",
-      "/api/library/books/%2e%2e/acquire",
+      "/api/library/works/../acquire",
+      "/api/library/works/%2e%2e/acquire",
       "/api//library/acquire",
       "/api/library/acquire/",
       "/API/library/acquire",
-      "/api/library/books/a%2Fb",
-      "/api/library/books/%",
-      "/api/library/books/%00",
+      "/api/library/works/a%2Fb",
+      "/api/library/works/%",
+      "/api/library/works/%00",
     ]) {
       assert.equal(classify("POST", p).verdict, "deny", p);
       assert.equal(classify("GET", p).verdict, "deny", p);

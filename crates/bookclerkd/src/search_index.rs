@@ -1,8 +1,9 @@
-//! This node's full-text search index, kept current by library events.
+//! This node's full-text search indexes, kept current by library events.
 //!
-//! `GET /api/library/books?q=` reads a Tantivy index under the node's own
-//! `search_index/`, so every daemon keeps its own copy. Two pieces keep it
-//! current without a CLI run:
+//! `GET /api/library/works?q=` reads the works index under the node's own
+//! `search_index_works/`, and `bookclerk library search` reads the title
+//! index under `search_index/`, so every daemon keeps its own copies. Two
+//! pieces keep them current without a CLI run:
 //!
 //! - **Event consumer.** Each node registers its own consumer,
 //!   `host:search-index:<node id>`, on the durable outbox for the library

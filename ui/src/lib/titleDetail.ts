@@ -1,6 +1,5 @@
 import type {
   AcquireStatus,
-  BookRecord,
   WorkDetail,
   BranchAvailability,
   PurchaseHint,
@@ -26,8 +25,6 @@ export type TitleDetail = {
   cover_url?: string | null;
   /** Same-origin path of the processed cover (see `coverSrc`). */
   cover_path?: string | null;
-  /** Prefer local library cover when present. */
-  library_uuid?: string | null;
   /**
    * Held editions not yet acquired or on their way, for a library work.
    * When set, the dialog offers acquire while it is above zero, even if
@@ -126,50 +123,6 @@ export function titleDetailFromCatalog(
     showCommerce: true,
     ...extras,
   });
-}
-
-/**
- * Builds a {@link TitleDetail} from a library {@link BookRecord}.
- *
- * @param book - Library row.
- * @returns Detail model with commerce disabled.
- */
-export function titleDetailFromBook(book: BookRecord): TitleDetail {
-  return {
-    title: book.title,
-    subtitle: book.subtitle,
-    authors: book.authors,
-    narrators: book.narrators,
-    series: book.series,
-    series_index: book.series_index,
-    asin: book.asin,
-    isbn: book.isbn,
-    cover_url: book.cover_url,
-    cover_path: book.cover_path,
-    library_uuid: book.uuid,
-    description: book.description,
-    publisher: book.publisher,
-    length_minutes: book.length_minutes,
-    published_at: book.published_at,
-    categories: book.categories,
-    tags: book.tags,
-    language: book.language,
-    is_abridged: book.is_abridged,
-    rating_overall: book.rating_overall,
-    rating_performance: book.rating_performance,
-    rating_story: book.rating_story,
-    acquire_status: book.acquire_status,
-    source: book.source,
-    marketplace: book.marketplace,
-    account_id: book.account_id,
-    product_id: book.product_id,
-    content_kind: book.content_kind,
-    storage_key: book.storage_key,
-    error_message: book.error_message,
-    created_at: book.created_at,
-    updated_at: book.updated_at,
-    showCommerce: false,
-  };
 }
 
 /**

@@ -771,8 +771,8 @@ host change that breaks the window. Windows and macOS don't run it yet.
 ### Small-VPS envelope
 
 The check makes sure Bookclerk fits a small VPS. Its paths are the harness,
-the seed, the search rebuild, the library book page and the books HTTP
-handler. It runs in the release job, after the release build step when both
+the seed, the search rebuilds, the works page index and the works HTTP
+handlers. It runs in the release job, after the release build step when both
 are selected, so the hosts are compiled once per run.
 
 1. On the `ubuntu-latest` VM, `install-platform --release` builds what the
@@ -786,7 +786,9 @@ are selected, so the hosts are compiled once per run.
    into both release caches. Without that, they compile from scratch and the
    job gets slower, not faster.
 2. `docker run --memory=1g --memory-swap=1g --cpus=1` runs the seed (10,000
-   titles written 200 at a time, the way a scan page writes them), the
+   titles written 200 at a time, the way a scan page writes them, then the
+   works page index built over them), a `bookclerk library search
+   --rebuild-index` that builds the title and works search indexes, the
    daemon and the load in an Ubuntu container of the runner's own release
    (`ubuntu:<VERSION_ID>` from `/etc/os-release`, or `ubuntu:24.04` on a
    non-Ubuntu host), because the hosts link the runner's glibc and libssl.
@@ -799,7 +801,13 @@ later step fails.
 
 What is gated:
 
-- Books routes must return 200, and `q=Title` must hit the rebuilt index.
+- The works routes must return 200 with at least one work each: the first
+  page by title and by author, the `status` and `account` filters, a page
+  8,000 works in (by following `next_cursor`), and `q=Title`. The indexes
+  are built before the daemon starts, as a library that has been running
+  has them, so the daemon queues no rebuild of its own; before the routes
+  are timed, the harness still waits up to 900 s for any index rebuild job
+  to finish and for both indexes to answer.
 - Daemon anonymous memory stays under 256 MiB after idle and during the API
   windows. That is `RssAnon` when `/proc/<pid>/status` reports it,
   otherwise `memory.stat` `anon`, or `memory.current` when anon is absent.

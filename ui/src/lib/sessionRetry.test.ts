@@ -20,7 +20,7 @@ describe("fetchRetryingBusy", () => {
     const answers = [busy("2"), busy("1"), new Response("{}", { status: 200 })];
     const waits: number[] = [];
     const res = await fetchRetryingBusy(
-      "/api/library/books",
+      "/api/library/works",
       undefined,
       () => Promise.resolve(answers.shift() as Response),
       (ms) => {
