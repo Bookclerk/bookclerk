@@ -8,12 +8,13 @@ import { Button } from "@/components/ui/button";
 import {
   coverSrc,
   coverUrl,
-  fetchBooks,
+  editionCoverUrl,
+  fetchWork,
+  fetchWorks,
   fetchPurchaseHints,
   fetchTitleMeta,
   fetchTitleReviews,
   type AcquireStatus,
-  type BookRecord,
   type PurchaseHint,
   type StoreEdition,
   type TitleMeta,
@@ -31,7 +32,7 @@ import {
   withAudibleEditionFromAsin,
   type CatalogTitle,
 } from "@/lib/catalogTitle";
-import { titleDetailFromCatalog, type TitleDetail } from "@/lib/titleDetail";
+import { titleDetailFromCatalog, titleDetailFromWork, type TitleDetail } from "@/lib/titleDetail";
 import { formatDate, formatDuration } from "@/lib/libraryFilters";
 import { StoreLogo } from "@/components/StoreLogo";
 import { WisherAvatars } from "@/components/WisherAvatars";
@@ -189,6 +190,7 @@ function GenreTagsRow({
 
 function coversFor(detail: TitleDetail): string[] {
   const out: string[] = [];
+  if (detail.library_edition_id) out.push(editionCoverUrl(detail.library_edition_id));
   if (detail.library_uuid) out.push(coverUrl(detail.library_uuid));
   // The storefront's cover only through the daemon, never from its own site.
   const remote = coverSrc(detail.cover_path, "full");
@@ -197,30 +199,43 @@ function coversFor(detail: TitleDetail): string[] {
   return out;
 }
 
-function mergeLibraryBook(detail: TitleDetail, book: BookRecord): TitleDetail {
+/** Fills `detail`'s gaps from the library's own copy of the title. */
+function mergeLibraryWork(detail: TitleDetail, work: TitleDetail): TitleDetail {
   return {
     ...detail,
-    subtitle: detail.subtitle ?? book.subtitle,
-    narrators: detail.narrators ?? book.narrators,
-    series: detail.series ?? book.series,
-    series_index: detail.series_index ?? book.series_index,
-    description: pickBetterDescription(detail.description, book.description),
-    publisher: detail.publisher ?? book.publisher,
-    length_minutes: detail.length_minutes ?? book.length_minutes,
-    published_at: detail.published_at ?? book.published_at,
-    categories: detail.categories ?? book.categories,
-    tags: detail.tags ?? book.tags,
-    language: detail.language ?? book.language,
-    is_abridged: detail.is_abridged ?? book.is_abridged,
-    rating_overall: detail.rating_overall ?? book.rating_overall,
-    rating_performance: detail.rating_performance ?? book.rating_performance,
-    rating_story: detail.rating_story ?? book.rating_story,
-    cover_url: detail.cover_url ?? book.cover_url,
-    cover_path: detail.cover_url ? detail.cover_path : book.cover_path,
-    library_uuid: detail.library_uuid ?? book.uuid,
-    asin: detail.asin ?? book.asin,
-    isbn: detail.isbn ?? book.isbn,
+    subtitle: detail.subtitle ?? work.subtitle,
+    series: detail.series ?? work.series,
+    series_index: detail.series_index ?? work.series_index,
+    description: pickBetterDescription(detail.description, work.description),
+    length_minutes: detail.length_minutes ?? work.length_minutes,
+    published_at: detail.published_at ?? work.published_at,
+    tags: detail.tags ?? work.tags,
+    language: detail.language ?? work.language,
+    is_abridged: detail.is_abridged ?? work.is_abridged,
+    rating_overall: detail.rating_overall ?? work.rating_overall,
+    rating_performance: detail.rating_performance ?? work.rating_performance,
+    rating_story: detail.rating_story ?? work.rating_story,
+    cover_path: detail.cover_url ? detail.cover_path : (detail.cover_path ?? work.cover_path),
+    library_edition_id: detail.library_edition_id ?? work.library_edition_id,
+    work_id: detail.work_id ?? work.work_id,
+    asin: detail.asin ?? work.asin,
+    isbn: detail.isbn ?? work.isbn,
   };
+}
+
+/**
+ * The works search for a title: by ASIN or ISBN when known (they match
+ * whole), else the title as one phrase.
+ */
+function librarySearchFor(
+  d: Pick<TitleDetail, "title" | "asin" | "isbn">,
+): { q: string; byId: boolean } | null {
+  const asin = d.asin?.trim();
+  if (asin) return { q: `asin:${asin.replace(/[^0-9A-Za-z]/g, "")}`, byId: true };
+  const isbn = d.isbn?.replace(/[^0-9Xx]/g, "");
+  if (isbn) return { q: `isbn:${isbn}`, byId: true };
+  const title = d.title.replace(/["\\]/g, " ").trim();
+  return title ? { q: `"${title}"`, byId: false } : null;
 }
 
 function nonempty(v: string | null | undefined): string | null {
@@ -276,7 +291,14 @@ function formatCount(n: number): string {
 }
 
 function detailIdentityKey(d: TitleDetail): string {
-  return [d.work_key ?? "", d.library_uuid ?? "", d.asin ?? "", d.isbn ?? "", d.title].join("|");
+  return [
+    d.work_key ?? "",
+    d.work_id ?? "",
+    d.library_uuid ?? "",
+    d.asin ?? "",
+    d.isbn ?? "",
+    d.title,
+  ].join("|");
 }
 
 function ReviewBlock({ review }: { review: TitleReview }) {
@@ -507,33 +529,40 @@ export function TitleDetailModal({
 
   // Hydrate missing bibliographic fields from the local library when possible.
   useEffect(() => {
-    const q = (initial.asin || initial.isbn || initial.title || "").trim();
-    if (!q || descriptionLooksComplete(initial.description)) return;
+    const search = librarySearchFor({
+      title: initial.title,
+      asin: initial.asin,
+      isbn: initial.isbn,
+    });
+    if (!search || initial.work_id || descriptionLooksComplete(initial.description)) return;
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetchBooks({ q, limit: 8 });
+        const res = await fetchWorks({ q: search.q, limit: 8 });
         if (cancelled) return;
-        const needleAsin = initial.asin?.toUpperCase();
-        const needleIsbn = initial.isbn?.replace(/[^0-9Xx]/g, "").toUpperCase();
-        const match =
-          res.books.find(
-            (b) =>
-              (needleAsin && b.asin?.toUpperCase() === needleAsin) ||
-              (needleIsbn && b.isbn?.replace(/[^0-9Xx]/g, "").toUpperCase() === needleIsbn),
-          ) ??
-          res.books.find(
-            (b) => b.title.trim().toLowerCase() === initial.title.trim().toLowerCase(),
-          );
-        if (match) setDetail((d) => mergeLibraryBook(d, match));
+        const needle = initial.title.trim().toLowerCase();
+        const match = search.byId
+          ? res.works[0]
+          : res.works.find((w) => w.title.trim().toLowerCase() === needle);
+        if (!match) return;
+        const work = await fetchWork(match.id);
+        if (cancelled) return;
+        setDetail((d) => mergeLibraryWork(d, titleDetailFromWork(work, match.acquire_status)));
       } catch {
-        // optional enrichment
+        // optional enrichment (also before the node's works search is built)
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [identityKey, initial.asin, initial.isbn, initial.title, initial.description]);
+  }, [
+    identityKey,
+    initial.asin,
+    initial.isbn,
+    initial.title,
+    initial.description,
+    initial.work_id,
+  ]);
 
   // Public Audnexus / catalog blurb, runtime, publisher, ratings (all detail surfaces).
   useEffect(() => {

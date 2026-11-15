@@ -8,9 +8,11 @@ gives you.
 
 - **Discover**: suggestions and catalog search across every store. See
   [Discover and wishlist](discover.md).
-- **Library**: every book in the household's library, whoever bought it.
-  People allowed to download books also see **Scan** and **Acquire
-  pending** here.
+- **Library**: every book in the household's library, whoever bought it,
+  once however many accounts or formats it has. Search by title, or by
+  `author:`, `narrator:`, `series:`, `asin:` or `isbn:`, and filter by
+  acquire status and format. People allowed to download books also see
+  **Scan** and **Acquire pending** here.
 - **Wishlist**: your wishlist and the Global queue everyone shares.
 - **Accounts**: connect and disconnect your store accounts. See
   [Stores](stores.md).

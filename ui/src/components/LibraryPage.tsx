@@ -3,53 +3,75 @@ import { RefreshCw, ScanSearch } from "lucide-react";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { TitleDetailModal, type TitleMetaSearchKind } from "@/components/TitleDetailModal";
-import { titleDetailFromBook } from "@/lib/titleDetail";
-import { BookRow } from "@/components/BookRow";
+import { titleDetailFromWork } from "@/lib/titleDetail";
+import { WorkRow } from "@/components/WorkRow";
 import { JobsStrip } from "@/components/JobsStrip";
 import { WaveformThrobber } from "@/components/WaveformThrobber";
 import { WindowBooksSection } from "@/components/WindowBooksSection";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  fetchBooks,
+  acquirableEditions,
   fetchEventDeliveries,
   fetchJobs,
   fetchStatus,
+  fetchWork,
+  fetchWorks,
   signOut,
   triggerAcquire,
   triggerScan,
+  type AcquireStatus,
   type AuthRole,
-  type BookRecord,
   type EventDeliveryInfo,
   type JobInfo,
+  type MediaKind,
   type StatusResponse,
+  type WorkDetail,
+  type WorkSort,
+  type WorkSummary,
 } from "@/lib/api";
-import {
-  FILTER_KINDS,
-  SORT_OPTIONS,
-  bookMatchesFilter,
-  filterValuesForKind,
-  sortBooks,
-  type FilterKind,
-  type SortKey,
-} from "@/lib/libraryFilters";
+import { metaSearchQuery, readWorks } from "@/lib/libraryWorks";
 import { canChangeBranchSharing } from "@/lib/join";
 import { useLiveRefresh } from "@/lib/live";
 import { cn, pageWidthClass } from "@/lib/utils";
 
 const PAGE_SIZE = 40;
 
-/** Most titles one request may ask for (the daemon's own cap). */
-const MAX_RELOAD = 500;
-
-/** What a title load does; see `loadBooks` in {@link LibraryPage}. */
+/** What a title load does; see `loadWorks` in {@link LibraryPage}. */
 type LoadKind = "replace" | "reload" | "append";
+
+/** Acquire-status filter options (`all` sends none). */
+const STATUS_OPTIONS: { value: AcquireStatus | "all"; label: string }[] = [
+  { value: "all", label: "Any status" },
+  { value: "not_acquired", label: "Not acquired" },
+  { value: "queued", label: "Queued" },
+  { value: "downloading", label: "Downloading" },
+  { value: "acquired", label: "Acquired" },
+  { value: "error", label: "Error" },
+];
+
+/** Media-kind filter options (`all` sends none). */
+const MEDIA_OPTIONS: { value: MediaKind | "all"; label: string }[] = [
+  { value: "all", label: "Any format" },
+  { value: "audio", label: "Audio" },
+  { value: "ebook", label: "Ebook" },
+  { value: "print", label: "Print" },
+];
+
+/** Page orders; a search orders by relevance instead. */
+const SORT_OPTIONS: { value: WorkSort; label: string }[] = [
+  { value: "title", label: "Title" },
+  { value: "author", label: "Author" },
+  { value: "added", label: "Date added" },
+];
 
 const selectClassName =
   "rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
 
 /**
- * Library view — searchable, filterable owned titles with acquire actions.
+ * Library view — the library's works, searchable and filterable, with
+ * acquire actions. Each book or podcast is one row however many editions
+ * and accounts hold it.
  *
  * @param props - Logout, acquire permission, nav, and optional role.
  */
@@ -64,40 +86,42 @@ export function LibraryPage({
   nav: AppNavProps;
   role?: AuthRole;
 }) {
-  const [books, setBooks] = useState<BookRecord[]>([]);
+  const [works, setWorks] = useState<WorkSummary[]>([]);
   // False until the first load answers, so the list shows that it is
   // loading rather than "no books".
   const [loaded, setLoaded] = useState(false);
-  const [total, setTotal] = useState(0);
+  // Cursor of the page after those shown; null once the last is shown.
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [jobs, setJobs] = useState<JobInfo[]>([]);
   const [deliveries, setDeliveries] = useState<EventDeliveryInfo[]>([]);
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
-  const [filterKind, setFilterKind] = useState<FilterKind>("all");
-  const [filterValue, setFilterValue] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("title");
-  const [selected, setSelected] = useState<BookRecord | null>(null);
+  const [statusFilter, setStatusFilter] = useState<AcquireStatus | "all">("all");
+  const [mediaFilter, setMediaFilter] = useState<MediaKind | "all">("all");
+  const [sortKey, setSortKey] = useState<WorkSort>("title");
+  const [selected, setSelected] = useState<WorkSummary | null>(null);
+  // The detail read for an opened work, with the id it was read for.
+  const [loadedDetail, setLoadedDetail] = useState<WorkDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-  // One title load runs at a time; a request made meanwhile waits in
-  // `pendingRef` and runs when it finishes (see `loadBooks`).
+  // One load runs at a time; a request made meanwhile waits in
+  // `pendingRef` and runs when it finishes (see `loadWorks`).
   const loadingRef = useRef(false);
   const pendingRef = useRef<"replace" | "reload" | null>(null);
   // Bumped by every load that replaces the list, so an answer for a
   // previous search or filter never lands on top of it.
   const generationRef = useRef(0);
-  // Titles in `books`, kept in step with every write so the next load's
-  // offset is right before React re-renders.
+  // Works shown and the cursor after them, kept in step with every write
+  // so the next load reads from the right place before React re-renders.
   const loadedRef = useRef(0);
-  const loadBooksRef = useRef<(kind: LoadKind) => Promise<void>>(async () => {});
+  const cursorRef = useRef<string | null>(null);
+  const loadWorksRef = useRef<(kind: LoadKind) => Promise<void>>(async () => {});
   // Bumped after each successful load so the scroll sentinel checks again
   // whether it is still in view (the list may not have grown).
   const [sentinelCheck, setSentinelCheck] = useState(0);
-
-  const serverStatus = filterKind === "status" && filterValue ? filterValue : "all";
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
@@ -105,16 +129,16 @@ export function LibraryPage({
   }, [q]);
 
   /**
-   * Loads titles for the current search and status filter.
+   * Loads works for the current search, filters and order.
    *
    * `replace` reads the first page (a new search or filter, or an explicit
-   * refresh) and supersedes a load in flight. `reload` re-reads the titles
+   * refresh) and supersedes a load in flight. `reload` re-reads the works
    * already shown (at least one page), keeping how far the list was
    * scrolled; it waits for a load in flight instead of discarding it.
    * `append` reads the next page and is dropped while another load runs
    * (the sentinel asks again afterwards).
    */
-  const loadBooks = useCallback(
+  const loadWorks = useCallback(
     async (kind: LoadKind) => {
       if (loadingRef.current) {
         if (kind === "replace") {
@@ -125,11 +149,9 @@ export function LibraryPage({
         }
         return;
       }
+      if (kind === "append" && cursorRef.current === null) return;
       loadingRef.current = true;
       const generation = kind === "append" ? generationRef.current : ++generationRef.current;
-      const offset = kind === "append" ? loadedRef.current : 0;
-      // A reload fetches again every page already shown (so the titles in
-      // view and the scroll stay), in requests of at most MAX_RELOAD rows.
       const wanted =
         kind === "reload"
           ? Math.max(1, Math.ceil(loadedRef.current / PAGE_SIZE)) * PAGE_SIZE
@@ -137,39 +159,29 @@ export function LibraryPage({
       if (kind === "append") setLoadingMore(true);
       let succeeded = false;
       try {
-        const fetched: BookRecord[] = [];
-        let booksRes = await fetchBooks({
-          q: debouncedQ || undefined,
-          status: serverStatus,
-          limit: Math.min(MAX_RELOAD, wanted),
-          offset,
-        });
-        fetched.push(...booksRes.books);
-        while (
-          kind === "reload" &&
-          fetched.length < wanted &&
-          booksRes.books.length > 0 &&
-          fetched.length < booksRes.total
-        ) {
-          if (generation !== generationRef.current) return;
-          booksRes = await fetchBooks({
+        const read = await readWorks(
+          fetchWorks,
+          {
             q: debouncedQ || undefined,
-            status: serverStatus,
-            limit: Math.min(MAX_RELOAD, wanted - fetched.length),
-            offset: fetched.length,
-          });
-          fetched.push(...booksRes.books);
-        }
+            sort: sortKey,
+            status: statusFilter,
+            media_kind: mediaFilter === "all" ? undefined : mediaFilter,
+          },
+          wanted,
+          kind === "append" ? (cursorRef.current ?? undefined) : undefined,
+          () => generation === generationRef.current,
+        );
         if (generation !== generationRef.current) return;
         if (kind === "append") {
-          loadedRef.current += fetched.length;
-          setBooks((prev) => [...prev, ...fetched]);
+          loadedRef.current += read.works.length;
+          setWorks((prev) => [...prev, ...read.works]);
         } else {
-          loadedRef.current = fetched.length;
-          setBooks(fetched);
+          loadedRef.current = read.works.length;
+          setWorks(read.works);
         }
+        cursorRef.current = read.next;
+        setNextCursor(read.next);
         setLoaded(true);
-        setTotal(booksRes.total);
         setError(null);
         succeeded = true;
       } catch (err) {
@@ -184,22 +196,22 @@ export function LibraryPage({
         if (next) {
           // The latest search and filter (a replace may have been asked
           // for by a newer render).
-          void loadBooksRef.current(next);
+          void loadWorksRef.current(next);
         } else if (succeeded) {
           // Not after a failure, which would retry in a loop.
           setSentinelCheck((n) => n + 1);
         }
       }
     },
-    [debouncedQ, serverStatus],
+    [debouncedQ, sortKey, statusFilter, mediaFilter],
   );
   // Declared before the effects that load, so a queued load runs the
   // version for the current search and filter.
   useEffect(() => {
-    loadBooksRef.current = loadBooks;
-  }, [loadBooks]);
+    loadWorksRef.current = loadWorks;
+  }, [loadWorks]);
 
-  const reloadBooks = useCallback(() => loadBooks("reload"), [loadBooks]);
+  const reloadWorks = useCallback(() => loadWorks("reload"), [loadWorks]);
 
   const refreshMeta = useCallback(async () => {
     if (!canAcquire) return;
@@ -218,8 +230,8 @@ export function LibraryPage({
   }, [canAcquire]);
 
   const refresh = useCallback(async () => {
-    await Promise.all([loadBooks("replace"), refreshMeta()]);
-  }, [loadBooks, refreshMeta]);
+    await Promise.all([loadWorks("replace"), refreshMeta()]);
+  }, [loadWorks, refreshMeta]);
 
   useEffect(() => {
     void refresh();
@@ -234,14 +246,14 @@ export function LibraryPage({
     openPollMs: 30_000,
     enabled: canAcquire,
   });
-  // Titles follow the `library` topic for everyone who can browse them (a
+  // Works follow the `library` topic for everyone who can browse them (a
   // scan or acquire on any node), keeping the search, filter and scroll.
   // While the socket is down the list is not polled, as before; the
   // reconnect refreshes it. While it is up a slow reconciliation runs: a
   // change stamped earlier than the newest one the socket compared (a
   // write that committed late, or an owner node whose clock runs behind)
   // does not move the revision.
-  useLiveRefresh(["library"], reloadBooks, { pollMs: 0, openPollMs: 120_000 });
+  useLiveRefresh(["library"], reloadWorks, { pollMs: 0, openPollMs: 120_000 });
 
   useEffect(() => {
     const el = sentinelRef.current;
@@ -250,8 +262,8 @@ export function LibraryPage({
       (entries) => {
         const hit = entries.some((e) => e.isIntersecting);
         if (!hit) return;
-        if (loadedRef.current >= total) return;
-        void loadBooks("append");
+        if (cursorRef.current === null) return;
+        void loadWorks("append");
       },
       { root: null, rootMargin: "200px", threshold: 0 },
     );
@@ -259,24 +271,33 @@ export function LibraryPage({
     // so re-creating it after each load keeps pagination going.
     obs.observe(el);
     return () => obs.disconnect();
-  }, [books.length, total, loadBooks, sentinelCheck]);
+  }, [works.length, nextCursor, loadWorks, sentinelCheck]);
 
-  const filterValueOptions = useMemo(
-    () => filterValuesForKind(books, filterKind),
-    [books, filterKind],
-  );
-
-  const visibleBooks = useMemo(() => {
-    const filtered =
-      filterKind === "all" || filterKind === "status" || !filterValue
-        ? books
-        : books.filter((book) => bookMatchesFilter(book, { kind: filterKind, value: filterValue }));
-    return sortBooks(filtered, sortKey);
-  }, [books, filterKind, filterValue, sortKey]);
+  // The open work's detail, read when a row is opened; a detail read for
+  // another work is never shown.
+  const selectedId = selected?.id ?? null;
+  const selectedDetail = loadedDetail?.id === selectedId ? loadedDetail : null;
+  useEffect(() => {
+    if (selectedId === null) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const detail = await fetchWork(selectedId);
+        if (!cancelled) setLoadedDetail(detail);
+      } catch (err) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Failed to load the title");
+        setSelected(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
 
   const pendingCount = useMemo(
-    () => status?.pending ?? books.filter((b) => b.acquire_status === "not_acquired").length,
-    [status, books],
+    () => status?.pending ?? works.filter((w) => w.acquire_status === "not_acquired").length,
+    [status, works],
   );
 
   async function onScan() {
@@ -303,14 +324,19 @@ export function LibraryPage({
     }
   }
 
-  async function onAcquireBook(book: BookRecord) {
-    setBusyKey(book.uuid);
+  /** Queues every held edition of `work` that is not acquired yet. */
+  async function onAcquireWork(work: WorkSummary, known?: WorkDetail | null) {
+    setBusyKey(work.id);
     try {
-      await triggerAcquire({ uuid: book.uuid });
+      const detail = known ?? (await fetchWork(work.id));
+      const editions = acquirableEditions(detail);
+      if (editions.length === 0) {
+        setError(`Nothing of “${work.title}” is waiting to be acquired.`);
+        return;
+      }
+      await triggerAcquire({ editions });
       await refresh();
-      setSelected((prev) =>
-        prev?.uuid === book.uuid ? { ...book, acquire_status: "queued" } : prev,
-      );
+      setSelected((prev) => (prev?.id === work.id ? { ...prev, acquire_status: "queued" } : prev));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Acquire failed");
     } finally {
@@ -367,45 +393,42 @@ export function LibraryPage({
             <Input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Search title, author, series, tags…"
+              placeholder="Search title, author:, narrator:, series:, asin:…"
               className="lg:flex-1"
             />
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
               <select
-                value={filterKind}
-                onChange={(e) => {
-                  setFilterKind(e.target.value as FilterKind);
-                  setFilterValue("");
-                }}
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as AcquireStatus | "all")}
                 className={selectClassName}
-                aria-label="Filter by"
+                aria-label="Acquire status"
               >
-                {FILTER_KINDS.map((opt) => (
+                {STATUS_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     {opt.label}
                   </option>
                 ))}
               </select>
               <select
-                value={filterValue}
-                onChange={(e) => setFilterValue(e.target.value)}
+                value={mediaFilter}
+                onChange={(e) => setMediaFilter(e.target.value as MediaKind | "all")}
                 className={selectClassName}
-                aria-label="Filter value"
-                disabled={filterKind === "all" || filterValueOptions.length === 0}
+                aria-label="Format"
               >
-                <option value="">{filterKind === "all" ? "Any value" : "Select value"}</option>
-                {filterValueOptions.map((opt) => (
+                {MEDIA_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     {opt.label}
                   </option>
                 ))}
               </select>
               <select
-                value={sortKey}
-                onChange={(e) => setSortKey(e.target.value as SortKey)}
+                value={debouncedQ ? "relevance" : sortKey}
+                onChange={(e) => setSortKey(e.target.value as WorkSort)}
                 className={selectClassName}
                 aria-label="Sort by"
+                disabled={Boolean(debouncedQ)}
               >
+                {debouncedQ ? <option value="relevance">Sort: Best match</option> : null}
                 {SORT_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     Sort: {opt.label}
@@ -420,11 +443,9 @@ export function LibraryPage({
             </p>
           ) : (
             <p className="text-xs text-ink/50">
-              Showing {visibleBooks.length} of {total} loaded titles
+              Showing {works.length} {works.length === 1 ? "title" : "titles"}
+              {nextCursor !== null ? " · scroll for more" : ""}
               {loadingMore ? " · loading more…" : ""}
-              {filterKind !== "all" && filterKind !== "status" && filterValue
-                ? " · client filter on loaded pages"
-                : ""}
             </p>
           )}
         </div>
@@ -435,25 +456,25 @@ export function LibraryPage({
           {/* On a window: the books the libraries it joined hold for its person. */}
           {canChangeBranchSharing(role) ? <WindowBooksSection query={debouncedQ} /> : null}
           <div className="animate-[rowIn_500ms_ease-out] bg-card shadow-[inset_0_1px_0_rgba(11,53,83,0.06)]">
-            {visibleBooks.length === 0 && !loaded ? (
+            {works.length === 0 && !loaded ? (
               <div className="flex justify-center px-4 py-16" role="status">
                 <WaveformThrobber size="sm" />
                 <span className="sr-only">Loading the library…</span>
               </div>
-            ) : visibleBooks.length === 0 ? (
+            ) : works.length === 0 && nextCursor === null ? (
               <p className="px-4 py-16 text-center text-sm text-ink/60">
                 No books match this view.
                 {canAcquire ? " Run a scan or adjust filters." : " Link a store under Accounts."}
               </p>
             ) : (
-              visibleBooks.map((book) => (
-                <BookRow
-                  key={book.uuid}
-                  book={book}
+              works.map((work) => (
+                <WorkRow
+                  key={work.id}
+                  work={work}
                   busy={busyKey !== null}
                   showAcquire={canAcquire}
                   onOpen={setSelected}
-                  onAcquire={(b) => void onAcquireBook(b)}
+                  onAcquire={(w) => void onAcquireWork(w)}
                 />
               ))
             )}
@@ -462,22 +483,17 @@ export function LibraryPage({
         </main>
       </div>
 
-      {selected ? (
+      {selected && selectedDetail ? (
         <TitleDetailModal
-          key={selected.uuid}
-          detail={titleDetailFromBook(selected)}
+          key={selected.id}
+          detail={titleDetailFromWork(selectedDetail, selected.acquire_status)}
           busy={busyKey !== null}
           showAcquire={canAcquire}
           onClose={() => setSelected(null)}
-          onAcquire={() => void onAcquireBook(selected)}
+          onAcquire={() => void onAcquireWork(selected, selectedDetail)}
           onMetaSearch={(kind: TitleMetaSearchKind, value: string) => {
             setSelected(null);
-            setFilterKind(kind);
-            setFilterValue(value);
-            setQ("");
-            if (kind === "series") {
-              setSortKey("series");
-            }
+            setQ(metaSearchQuery(kind, value));
           }}
         />
       ) : null}
