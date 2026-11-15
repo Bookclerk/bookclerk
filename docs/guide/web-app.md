@@ -13,8 +13,11 @@ gives you.
   `author:`, `narrator:`, `series:`, `asin:` or `isbn:`. Filter by acquire
   status, format, or one author, series, genre, narrator, publisher,
   store, your own tags or your progress, and sort by title, author,
-  series, purchase date, date added or duration. People allowed to
-  download books also see **Scan** and **Acquire pending** here.
+  series, purchase date, date added or duration. Open a book to mark it
+  finished, rate it (overall, story and narration) and give it your own
+  tags under **Your copy**; these are yours alone, even when you share a
+  store account. People allowed to download books also see **Scan** and
+  **Acquire pending** here.
 - **Wishlist**: your wishlist and the Global queue everyone shares.
 - **Accounts**: connect and disconnect your store accounts. See
   [Stores](stores.md).

@@ -1309,6 +1309,7 @@ fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(crate::library_works::list_works))
         .routes(routes!(crate::library_works::get_work))
+        .routes(routes!(crate::library_works::put_work_state))
         .routes(routes!(crate::library_works::list_facet_values))
         .routes(routes!(crate::library_works::get_edition_cover))
         .routes(routes!(crate::covers::get_cover))

@@ -1,6 +1,7 @@
 import type {
   AcquireStatus,
   WorkDetail,
+  WorkState,
   BranchAvailability,
   PurchaseHint,
   QueueWisher,
@@ -35,6 +36,10 @@ export type TitleDetail = {
   library_edition_id?: string | null;
   /** The library work this detail shows, when it is one. */
   work_id?: string | null;
+  /** The caller's own state for the library work, when they recorded one. */
+  user_state?: WorkState | null;
+  /** Whether the caller can keep their own state for the library work. */
+  can_edit_state?: boolean;
   description?: string | null;
   publisher?: string | null;
   length_minutes?: number | null;
@@ -163,6 +168,8 @@ export function titleDetailFromWork(work: WorkDetail, status: AcquireStatus): Ti
     cover_path: first((e) => e.cover_path),
     library_edition_id: first((e) => (e.acquire_status === "acquired" ? e.id : null)),
     work_id: work.id,
+    user_state: work.state ?? null,
+    can_edit_state: work.can_edit_state ?? false,
     description: work.description,
     length_minutes: first((e) => e.duration_minutes),
     published_at: first((e) => e.published_at),

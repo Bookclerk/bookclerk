@@ -1,7 +1,7 @@
 //! Tests of the library works routes, driven through their handlers.
 
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use bookclerk_library::{LibraryStore, NewBook};
 use chrono::Utc;
 
@@ -565,10 +565,12 @@ async fn the_detail_carries_the_callers_state_and_every_holder() {
         tags: None,
         updated_at: Utc::now(),
     };
-    let json = serde_json::to_value(detail_json(detail, Some(state), &app.covers)).expect("json");
+    let json =
+        serde_json::to_value(detail_json(detail, Some(state), true, &app.covers)).expect("json");
     assert_eq!(json["kind"], "podcast");
     assert_eq!(json["state"]["is_finished"], true);
     assert_eq!(json["state"]["rating_overall"], 4.5);
+    assert_eq!(json["can_edit_state"], true);
     let edition = &json["editions"][0];
     assert_eq!(edition["expression_kind"], "original_audio");
     assert_eq!(edition["abridgement"], "unknown");
@@ -793,4 +795,157 @@ async fn facet_values_page_by_cursor() {
         .err(),
         Some((StatusCode::BAD_REQUEST, "invalid page cursor".into()))
     );
+}
+
+/// Sends `PUT /api/library/works/{work}/state` with `body` and `cookie`
+/// through the router; returns the status and decoded body.
+async fn put_state(
+    app: &axum::Router,
+    cookie: Option<&str>,
+    work: &str,
+    body: &str,
+) -> (StatusCode, serde_json::Value) {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let mut request = axum::http::Request::builder()
+        .method("PUT")
+        .uri(format!("/api/library/works/{work}/state"))
+        .header(header::CONTENT_TYPE, "application/json");
+    request = match cookie {
+        Some(cookie) => request.header(header::COOKIE, cookie),
+        None => request.header(header::AUTHORIZATION, "Bearer op-token-state"),
+    };
+    let response = app
+        .clone()
+        .oneshot(
+            request
+                .body(axum::body::Body::from(body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let status = response.status();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+#[tokio::test]
+async fn a_member_edits_their_own_work_state() {
+    let (_state, app, library) = crate::auth::tests::phase2_harness("op-token-state").await;
+    library
+        .upsert_account("audible", "acct", "us", None, true, "audible")
+        .await
+        .expect("account");
+    let work = scan(&library, "B001", "The Hobbit", "J. R. R. Tolkien").await;
+    let cookie = crate::auth::tests::portal_cookie_for(&library, "test", "member-ext").await;
+
+    let (status, json) = put_state(
+        &app,
+        Some(&cookie),
+        &work,
+        r#"{"is_finished": true, "rating_overall": 4.5, "tags": "  classic\treread "}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["is_finished"], true);
+    assert_eq!(json["rating_overall"], 4.5);
+    assert_eq!(json["tags"], "classic reread");
+    let detail = {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/api/library/works/{work}"))
+                    .header(header::COOKIE, &cookie)
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+    };
+    assert_eq!(detail["can_edit_state"], true);
+    assert_eq!(detail["state"]["tags"], "classic reread");
+
+    let (status, json) = put_state(
+        &app,
+        Some(&cookie),
+        &work,
+        r#"{"rating_overall": null, "rating_story": 5}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["is_finished"], true, "left out, kept");
+    assert!(json["rating_overall"].is_null(), "null clears");
+    assert_eq!(json["rating_story"], 5.0);
+    assert_eq!(json["tags"], "classic reread", "left out, kept");
+
+    let (status, json) = put_state(&app, Some(&cookie), &work, r#"{"rating_story": 6}"#).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"], "rating_story must be from 0 to 5");
+    let many: Vec<String> = (0..33).map(|n| format!("t{n}")).collect();
+    let (status, _) = put_state(
+        &app,
+        Some(&cookie),
+        &work,
+        &serde_json::json!({ "tags": many.join(" ") }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "33 tags are too many");
+    let (status, _) = put_state(
+        &app,
+        Some(&cookie),
+        &work,
+        &serde_json::json!({ "tags": "x".repeat(65) }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a 65-byte tag is too long");
+
+    let (status, json) = put_state(&app, Some(&cookie), "no-such-work", "{}").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json["error"], "work no-such-work not found");
+
+    let (status, json) = put_state(&app, None, &work, r#"{"is_finished": false}"#).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the operator token has no user"
+    );
+    assert_eq!(json["error"], "this session has no library user");
+}
+
+#[test]
+fn tags_collapse_whitespace_and_clear_when_empty() {
+    use bookclerk_library::FieldEdit;
+    assert_eq!(tags_edit(None).expect("keep"), FieldEdit::Keep);
+    assert_eq!(tags_edit(Some(None)).expect("null"), FieldEdit::Clear);
+    assert_eq!(
+        tags_edit(Some(Some(" \t ".into()))).expect("blank"),
+        FieldEdit::Clear
+    );
+    assert_eq!(
+        tags_edit(Some(Some("a  b\nA".into()))).expect("set"),
+        FieldEdit::Set("a b A".into())
+    );
+    assert!(tags_edit(Some(Some("bad\u{7}tag".into()))).is_err());
+    assert!(tags_edit(Some(Some("y".repeat(1025)))).is_err());
+    assert_eq!(rating_edit("r", None).expect("keep"), FieldEdit::Keep);
+    assert!(rating_edit("r", Some(Some(f64::NAN))).is_err());
+    assert!(rating_edit("r", Some(Some(-0.5))).is_err());
 }

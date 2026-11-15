@@ -741,7 +741,8 @@ library holds as works, expressions and editions:
   has none.
 - `user_title_state`: one user's finished flag, ratings and tags for a
   work, keyed `(user_id, work_id)`. Fields imported for an account reach
-  every user linked to that account. Discover reads its taste from here,
+  every user linked to that account, and each user edits their own with
+  `PUT /api/library/works/{id}/state`. Discover reads its taste from here,
   not from `books`.
 - `user_work_tags`: one user's tags on a work, one row per tag, written
   in the same batch as `user_title_state.tags` so the library page can

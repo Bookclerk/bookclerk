@@ -288,6 +288,25 @@ export interface WorkDetail {
   editions: Edition[];
   /** The caller's own state; absent when they recorded none. */
   state?: WorkState | null;
+  /** Whether the caller can keep their own state (false for the operator token). */
+  can_edit_state?: boolean;
+}
+
+/**
+ * A change to the caller's own state for a work. A field left out keeps
+ * its value; `null` clears a rating or the tags.
+ */
+export interface WorkStateEdit {
+  /** Whether they finished it. */
+  is_finished?: boolean;
+  /** Overall rating (0–5). */
+  rating_overall?: number | null;
+  /** Performance rating (0–5). */
+  rating_performance?: number | null;
+  /** Story rating (0–5). */
+  rating_story?: number | null;
+  /** Whitespace-separated tags (at most 32, each at most 64 bytes). */
+  tags?: string | null;
 }
 
 /**
@@ -3084,6 +3103,23 @@ export async function fetchFacetValues(
 export async function fetchWork(id: string): Promise<WorkDetail> {
   const res = await fetchRetryingBusy(`/api/library/works/${encodeURIComponent(id)}`, {
     credentials: "include",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Changes the caller's own finished flag, ratings or tags for a work.
+ *
+ * @param id - The work.
+ * @param edit - The fields to change.
+ * @returns The caller's state after the change.
+ */
+export async function putWorkState(id: string, edit: WorkStateEdit): Promise<WorkState> {
+  const res = await fetch(`/api/library/works/${encodeURIComponent(id)}/state`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(edit),
   });
   return parseJson(res);
 }

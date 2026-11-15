@@ -15912,6 +15912,245 @@
         "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
+    "/api/library/works/{id}/state": {
+      "put": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Changes the caller's own state for a work: finished, ratings and tags.",
+        "description": "The state belongs to the signed-in library user, so members who share\na storefront account each keep their own. Fields left out keep their\nvalue.",
+        "operationId": "put_work_state",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Work id (a podcast's show).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkStateEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The caller's state after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkStateJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A rating is outside 0 to 5, or the tags are too long or too many. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "rating_overall must be from 0 to 5"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session has no library user to keep the state for. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/ErrorMessage"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ErrorJson"
+                            }
+                          ]
+                        },
+                        {
+                          "$ref": "#/components/schemas/ErrorJson"
+                        }
+                      ]
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "this session has no library user"
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b not found"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: tags: invalid type: integer `1`, expected a string at line 1 column 9"
+              }
+            }
+          },
+          "500": {
+            "description": "The state could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the state could not be written"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
     "/api/library/works/facets/{facet}": {
       "get": {
         "tags": [
@@ -42821,7 +43060,8 @@
           "kind",
           "title",
           "authors",
-          "editions"
+          "editions",
+          "can_edit_state"
         ],
         "properties": {
           "id": {
@@ -42889,6 +43129,11 @@
                 "type": "null"
               }
             ]
+          },
+          "can_edit_state": {
+            "type": "boolean",
+            "description": "Whether the caller can keep their own state for the work\n(`PUT /api/library/works/{id}/state`): false when the session has no\nlibrary user, such as the operator token.",
+            "example": true
           }
         }
       },
@@ -42899,6 +43144,56 @@
           "book",
           "podcast"
         ]
+      },
+      "WorkStateEdit": {
+        "type": "object",
+        "description": "`PUT /api/library/works/{id}/state` body: the fields of the caller's\nown state to change. A field left out keeps its stored value; `null`\nclears a rating or the tags.",
+        "properties": {
+          "is_finished": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the caller finished the work.",
+            "example": true
+          },
+          "rating_overall": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Overall rating, 0 to 5; `null` clears it.",
+            "example": 4.5
+          },
+          "rating_performance": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Narration rating, 0 to 5; `null` clears it.",
+            "example": 4.0
+          },
+          "rating_story": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Story rating, 0 to 5; `null` clears it.",
+            "example": 5.0
+          },
+          "tags": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Tags separated by whitespace (at most 32, each at most 64 bytes,\n1024 bytes in all); `null` or an empty string clears them.",
+            "example": "classics reread"
+          }
+        },
+        "additionalProperties": false
       },
       "WorkStateJson": {
         "type": "object",
