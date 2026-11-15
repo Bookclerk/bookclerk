@@ -2044,7 +2044,7 @@ mod tests {
         for (method, path) in [
             ("get", "/api/wishlist"),
             ("post", "/api/library/scan"),
-            ("get", "/api/library/books"),
+            ("get", "/api/library/works"),
             ("get", "/api/status"),
             ("get", "/api/config/nodes"),
             ("get", "/api/auth/oidc/clients"),
@@ -3129,8 +3129,8 @@ mod tests {
             reload["x-bookclerk-access"],
             serde_json::json!(Access::Operator.rule())
         );
-        let books = find("get", "/api/library/books");
-        assert!(books["security"]
+        let works = find("get", "/api/library/works");
+        assert!(works["security"]
             .as_array()
             .is_some_and(|s| s.contains(&serde_json::json!({ PORTAL_SESSION: [] }))));
         // The Accounts routes are nested under their mount point.

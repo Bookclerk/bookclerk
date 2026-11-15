@@ -535,9 +535,8 @@ impl SearchEngine {
     /// Both [`SearchEngine::open`] and [`SearchEngine::search`] do synchronous
     /// disk work — opening builds the schema and touches the index directory,
     /// and querying reads and scores segments. Calling them directly from an
-    /// async handler stalls a runtime worker for the whole query, which on the
-    /// daemon's `/api/library/books?q=` path meant one search could hold up
-    /// unrelated requests.
+    /// async handler stalls a runtime worker for the whole query, so one
+    /// search could hold up unrelated requests.
     ///
     /// # Errors
     ///

@@ -281,7 +281,7 @@ Reserved classes (no worker in this release): `media`, `transcription`,
 ## Search index
 
 Searches read Tantivy indexes on the node's own disk, so each daemon keeps
-its own copies current. `GET /api/library/books?q=` reads the title index
+its own copies current. `bookclerk library search` reads the title index
 under `search_index/`; `GET /api/library/works?q=` reads the works index
 beside it, under `search_index_works/`, with one document per held
 top-level work (its titles, authors, narrators, series and store

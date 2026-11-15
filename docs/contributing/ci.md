@@ -771,8 +771,8 @@ host change that breaks the window. Windows and macOS don't run it yet.
 ### Small-VPS envelope
 
 The check makes sure Bookclerk fits a small VPS. Its paths are the harness,
-the seed, the search rebuild, the library book page and the books HTTP
-handler. It runs in the release job, after the release build step when both
+the seed, the search rebuilds, the works page index and the works HTTP
+handlers. It runs in the release job, after the release build step when both
 are selected, so the hosts are compiled once per run.
 
 1. On the `ubuntu-latest` VM, `install-platform --release` builds what the
@@ -799,7 +799,11 @@ later step fails.
 
 What is gated:
 
-- Books routes must return 200, and `q=Title` must hit the rebuilt index.
+- The works routes must return 200 with at least one work each: the first
+  page by title and by author, the `status` and `account` filters, a page
+  8,000 works in (by following `next_cursor`), and `q=Title`. Before they
+  are timed, the harness waits up to 900 s for the daemon's works page index
+  and works search index rebuilds to finish.
 - Daemon anonymous memory stays under 256 MiB after idle and during the API
   windows. That is `RssAnon` when `/proc/<pid>/status` reports it,
   otherwise `memory.stat` `anon`, or `memory.current` when anon is absent.

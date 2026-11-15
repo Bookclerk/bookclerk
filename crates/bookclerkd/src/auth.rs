@@ -5359,7 +5359,7 @@ pub(crate) mod tests {
         // owner, node owner, administrator and user-scoped.
         for uri in [
             "/api/auth/me",
-            "/api/library/books",
+            "/api/library/works",
             "/api/auth/mfa-policy",
             "/api/config/nodes",
             "/status",
@@ -6123,7 +6123,7 @@ pub(crate) mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/library/books")
+                    .uri("/api/library/works")
                     .header(header::COOKIE, &op_cookie)
                     .body(Body::empty())
                     .unwrap(),

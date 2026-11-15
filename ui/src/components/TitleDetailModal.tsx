@@ -7,7 +7,6 @@ import { storeBadgeSources } from "@/lib/storeBadges";
 import { Button } from "@/components/ui/button";
 import {
   coverSrc,
-  coverUrl,
   editionCoverUrl,
   fetchWork,
   fetchWorks,
@@ -200,7 +199,6 @@ function canAcquireMore(detail: TitleDetail): boolean {
 function coversFor(detail: TitleDetail): string[] {
   const out: string[] = [];
   if (detail.library_edition_id) out.push(editionCoverUrl(detail.library_edition_id));
-  if (detail.library_uuid) out.push(coverUrl(detail.library_uuid));
   // The storefront's cover only through the daemon, never from its own site.
   const remote = coverSrc(detail.cover_path, "full");
   if (remote) out.push(remote);
@@ -300,14 +298,7 @@ function formatCount(n: number): string {
 }
 
 function detailIdentityKey(d: TitleDetail): string {
-  return [
-    d.work_key ?? "",
-    d.work_id ?? "",
-    d.library_uuid ?? "",
-    d.asin ?? "",
-    d.isbn ?? "",
-    d.title,
-  ].join("|");
+  return [d.work_key ?? "", d.work_id ?? "", d.asin ?? "", d.isbn ?? "", d.title].join("|");
 }
 
 function ReviewBlock({ review }: { review: TitleReview }) {

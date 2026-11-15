@@ -86,36 +86,48 @@ class AssertionTests(unittest.TestCase):
                 },
                 "api": {
                     "per_route": {
-                        "GET /health": {"errors": 0, "samples": 40, "p50_ms": 50_000, "min_total": None},
-                        "GET /api/library/books?limit=40&offset=0": {
+                        "GET /health": {"errors": 0, "samples": 40, "p50_ms": 50_000, "min_works": None},
+                        "GET /api/library/works?limit=40": {
                             "errors": 0,
                             "samples": 40,
                             "p50_ms": 80_000,
-                            "min_total": 10_000,
+                            "min_works": 40,
                         },
-                        "GET /api/library/books?limit=40&offset=8000&status=acquired": {
+                        "GET /api/library/works?limit=40&sort=author": {
                             "errors": 0,
                             "samples": 40,
                             "p50_ms": 80_000,
-                            "min_total": 8_000,
+                            "min_works": 40,
                         },
-                        "GET /api/library/books?account=envelope-b&limit=40": {
+                        "GET /api/library/works?limit=40&status=acquired": {
                             "errors": 0,
                             "samples": 40,
                             "p50_ms": 80_000,
-                            "min_total": 2_000,
+                            "min_works": 40,
                         },
-                        "GET /api/library/books?q=Title&limit=40": {
+                        "GET /api/library/works?account=envelope-b&limit=40": {
+                            "errors": 0,
+                            "samples": 40,
+                            "p50_ms": 80_000,
+                            "min_works": 40,
+                        },
+                        "GET /api/library/works?limit=40&cursor=(8000 in)": {
+                            "errors": 0,
+                            "samples": 40,
+                            "p50_ms": 80_000,
+                            "min_works": 40,
+                        },
+                        "GET /api/library/works?q=Title&limit=40": {
                             "errors": 0,
                             "samples": 40,
                             "p50_ms": 90_000,
-                            "min_total": 500,
+                            "min_works": 40,
                         },
-                        "GET /api/library/books?q=Title&limit=8": {
+                        "GET /api/library/works?q=Title&limit=8": {
                             "errors": 0,
                             "samples": 40,
                             "p50_ms": 90_000,
-                            "min_total": 8,
+                            "min_works": 8,
                         },
                     },
                     "mix_60s": {"requests": 100, "errors": 0},
@@ -138,14 +150,18 @@ class AssertionTests(unittest.TestCase):
     def test_measured_shape_passes_without_a_latency_gate(self) -> None:
         self.assertEqual(assertions.assert_envelope(self._doc()), [])
 
-    def test_books_errors_peak_pool_and_empty_index_fail(self) -> None:
-        books = self._doc()
-        books["windows"]["api"]["per_route"]["GET /api/library/books?limit=40&offset=0"]["errors"] = 2
-        self.assertTrue(any("non-200" in item for item in assertions.assert_envelope(books)))
+    def test_library_errors_peak_pool_and_empty_index_fail(self) -> None:
+        works = self._doc()
+        works["windows"]["api"]["per_route"]["GET /api/library/works?limit=40"]["errors"] = 2
+        self.assertTrue(any("non-200" in item for item in assertions.assert_envelope(works)))
 
         empty = self._doc()
-        empty["windows"]["api"]["per_route"]["GET /api/library/books?q=Title&limit=40"]["min_total"] = 0
+        empty["windows"]["api"]["per_route"]["GET /api/library/works?q=Title&limit=40"]["min_works"] = 0
         self.assertTrue(any("populated index" in item for item in assertions.assert_envelope(empty)))
+
+        deep = self._doc()
+        deep["windows"]["api"]["per_route"]["GET /api/library/works?limit=40&cursor=(8000 in)"]["min_works"] = None
+        self.assertTrue(any("populated index" in item for item in assertions.assert_envelope(deep)))
 
         peak = self._doc()
         peak["windows"]["api"]["anon_max"] = 256 * 1024 * 1024
@@ -175,11 +191,11 @@ class AssertionTests(unittest.TestCase):
         self.assertTrue(any("affinity" in item for item in assertions.assert_envelope(missing)))
 
         absent = self._doc()
-        del absent["windows"]["api"]["per_route"]["GET /api/library/books?limit=40&offset=0"]
+        del absent["windows"]["api"]["per_route"]["GET /api/library/works?limit=40"]
         self.assertTrue(any("is missing" in item for item in assertions.assert_envelope(absent)))
 
         empty = self._doc()
-        empty["windows"]["api"]["per_route"]["GET /api/library/books?q=Title&limit=8"]["samples"] = 0
+        empty["windows"]["api"]["per_route"]["GET /api/library/works?q=Title&limit=8"]["samples"] = 0
         self.assertTrue(any("no samples" in item for item in assertions.assert_envelope(empty)))
 
         no_poll = self._doc()

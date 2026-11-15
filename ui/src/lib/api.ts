@@ -85,109 +85,6 @@ export interface AuthSession {
   second_factor?: AuthSecondFactor;
 }
 
-/**
- * Library book row from `/api/library/books`.
- *
- * Field names match the daemon JSON (`snake_case`). Use `uuid` for acquire /
- * cover URLs; `asin` / `isbn` are store product ids when known.
- */
-export interface BookRecord {
-  /** Library row primary key. */
-  id: number;
-  /** Stable book uuid used by acquire / cover / detail APIs. */
-  uuid: string;
-  /** Storefront plugin id (`audible`, `libro`, …). */
-  source: string;
-  /** Sealed account id that owns this title. */
-  account_id: string;
-  /** Store-native product id (ASIN, ISBN, UUID, …). */
-  product_id: string;
-  /** Audible ASIN when the source provides one. */
-  asin: string | null;
-  /** ISBN-13 / ISBN-10 when the source provides one. */
-  isbn: string | null;
-  /** Marketplace / locale code (`us`, `uk`, …). */
-  marketplace: string;
-  /** Display title. */
-  title: string;
-  /** Semicolon- or comma-separated author list. */
-  authors: string | null;
-  /** Semicolon- or comma-separated narrator list. */
-  narrators: string | null;
-  /** Series name when known. */
-  series: string | null;
-  /** Position within the series (string to preserve `#1.5` styles). */
-  series_index: string | null;
-  /** Audible series / podcast-parent ASIN when known. */
-  series_asin: string | null;
-  /** Pipeline state for the main audio acquire job. */
-  acquire_status: AcquireStatus;
-  /** Destination object key after a successful acquire. */
-  storage_key: string | null;
-  /** Last acquire / scan error message when status is `error`. */
-  error_message: string | null;
-  /** Purchase / library-add timestamp from the store (ISO-8601). */
-  purchased_at: string | null;
-  /** Space-separated user tags. */
-  tags: string | null;
-  /** Overall community rating (0–5) when enriched. */
-  rating_overall: number | null;
-  /** Performance / narrator rating when enriched. */
-  rating_performance: number | null;
-  /** Story rating when enriched. */
-  rating_story: number | null;
-  /** Whether the listener marked the title finished. */
-  is_finished: boolean;
-  /** Pipeline state for companion PDF acquire. */
-  pdf_status: AcquireStatus;
-  /** Destination key for an acquired companion PDF. */
-  pdf_storage_key: string | null;
-  /** Publisher name when known. */
-  publisher: string | null;
-  /** Runtime length in minutes when known. */
-  length_minutes: number | null;
-  /** True when the edition is abridged. */
-  is_abridged: boolean;
-  /** Content kind slug (`audiobook`, `podcast`, …). */
-  content_kind: string;
-  /** Genre / category list from the store (often `;`- or `,`-separated). */
-  categories: string | null;
-  /** Subtitle when the store provides one. */
-  subtitle: string | null;
-  /** Original publication date (ISO-8601 date or datetime). */
-  published_at: string | null;
-  /** Long-form description / blurb (may contain light HTML). */
-  description: string | null;
-  /** BCP-47-ish language code from the store. */
-  language: string | null;
-  /** Remote or proxied cover image URL. */
-  cover_url: string | null;
-  /** Same-origin path of this cover's processed images; see {@link coverSrc}. */
-  cover_path?: string | null;
-  /** Subject / BISAC-style tags when enriched. */
-  subjects: string | null;
-  /** Enrichment provider id that last wrote metadata. */
-  enrich_source: string | null;
-  /** Enrichment confidence score (0–1) when present. */
-  enrich_confidence: number | null;
-  /** When enrichment last ran (ISO-8601). */
-  enrich_updated_at: string | null;
-  /** Row insert time (ISO-8601). */
-  created_at: string;
-  /** Row last update time (ISO-8601). */
-  updated_at: string;
-}
-
-/**
- * Paginated library books list payload.
- */
-export interface BooksResponse {
-  books: BookRecord[];
-  total: number;
-  limit: number;
-  offset: number;
-}
-
 /** What a work is: a book, or a podcast (its show). */
 export type WorkKind = "book" | "podcast";
 
@@ -3108,32 +3005,6 @@ export async function fetchJobs(): Promise<JobInfo[]> {
   return parseJson(res);
 }
 
-/**
- * Fetches one page of library books for the Library table.
- *
- * Omits `status` (or passes `all`) to include every acquire state. Default page
- * size is 40 when `limit` is omitted.
- *
- * @param params - Optional search string, acquire-status filter, and pagination.
- * @returns Paginated books plus total count for the pager.
- */
-export async function fetchBooks(params: {
-  q?: string;
-  status?: string;
-  limit?: number;
-  offset?: number;
-}): Promise<BooksResponse> {
-  const sp = new URLSearchParams();
-  if (params.q) sp.set("q", params.q);
-  if (params.status && params.status !== "all") sp.set("status", params.status);
-  sp.set("limit", String(params.limit ?? 40));
-  sp.set("offset", String(params.offset ?? 0));
-  const res = await fetchRetryingBusy(`/api/library/books?${sp}`, {
-    credentials: "include",
-  });
-  return parseJson(res);
-}
-
 /** Filters and paging for {@link fetchWorks}. */
 export interface WorksQuery {
   /** Search text; matches come best first and `sort` is ignored. */
@@ -3358,16 +3229,6 @@ export function cancelEventDelivery(id: string): Promise<ActionResponse> {
  */
 export function resumeEventDelivery(id: string): Promise<ActionResponse> {
   return postEventDeliveryAction(id, "resume");
-}
-
-/**
- * Builds the authenticated cover image URL for a library book.
- *
- * @param uuid - Book uuid.
- * @returns Relative URL under `/api/library/books/.../cover`.
- */
-export function coverUrl(uuid: string): string {
-  return `/api/library/books/${encodeURIComponent(uuid)}/cover`;
 }
 
 /**
