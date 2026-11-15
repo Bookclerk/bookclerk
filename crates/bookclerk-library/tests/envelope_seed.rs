@@ -145,6 +145,28 @@ async fn seed_books(store: &LibraryStore) {
     )
     .await
     .unwrap();
+    // The works index reads acquire state per edition, as an acquire job
+    // records it with `set_acquire_status`; one statement here instead of
+    // 10,000 calls.
+    let recorded = sea_orm::ConnectionTrait::execute_raw(
+        store.db(),
+        sea_orm::Statement::from_string(
+            backend,
+            "INSERT OR IGNORE INTO edition_acquisitions \
+                (edition_id, status, storage_key, error_message, title_uuid, updated_at) \
+             SELECT l.edition_id, b.acquire_status, NULL, NULL, b.uuid, b.updated_at \
+             FROM books b JOIN store_listings l \
+               ON l.plugin_key = b.plugin_key AND l.product_id = b.product_id"
+                .to_string(),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        recorded.rows_affected(),
+        10_000,
+        "every seeded title's edition records its acquire state"
+    );
     let total = store.count_books(None).await.unwrap();
     assert_eq!(total, 10_000, "re-seeding the same ids must be idempotent");
     let first = store
