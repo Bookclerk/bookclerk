@@ -1537,6 +1537,54 @@ def planned_commands(
     return out
 
 
+# The dependency cache each build-only job saves into (ci.yml `shared-key`).
+BUILD_ONLY_CACHE = {"check": "lint", "test": "debug", "native-gateway": "debug", "release": "release"}
+# The workflow variable that carries each cache's build plan digest; every
+# cache step lists its own in `env-vars` (docs/contributing/ci.md#caches).
+BUILD_PLAN_ENV = {"lint": "CI_BUILD_PLAN_LINT", "debug": "CI_BUILD_PLAN_DEBUG", "release": "CI_BUILD_PLAN_RELEASE"}
+
+
+def build_plan_digests(artifact: Mapping[str, Any], workspace: Path) -> dict[str, str]:
+    """Digests of what a build-only push compiles into each dependency cache.
+
+    rust-cache keys cover the lockfile, the manifests, the toolchain and the
+    listed environment, not the commands that fill the cache. A change that
+    makes a build-only job compile something new (a command, a feature set,
+    a profile override) would keep the old key: the build-only push finds it
+    saved and skips the build, and every later run compiles the new
+    dependencies cold until the next lockfile change. Carrying these digests
+    in the cache keys re-keys exactly the caches whose builds changed.
+
+    Args:
+        artifact: A build-only, full-suite plan artifact.
+        workspace: The repository root, for scripts whose contents decide
+            what they compile (`API_DOCS_SCRIPT`).
+
+    Returns:
+        A 16-hex digest per shared key (`lint`, `debug`, `release`), over
+        each OS's build-only commands (argv and Cargo/Rust environment) in
+        the jobs that save that cache, hosted checks included.
+    """
+    plan = execution_plan(artifact)
+    entries: dict[str, list[Any]] = {key: [] for key in BUILD_PLAN_ENV}
+    for os_name in ("Linux", "Windows", "Darwin"):
+        tmp = Path("/ci-tmp")
+        ctx = Context(Path("/workspace"), os_name, tmp, tmp / "files", tmp / "artifacts")
+        for check in sorted(plan.checks):
+            job = BUILD_ONLY_HOSTED_CHECKS.get(check, CHECK_JOB[check])
+            for _, cmd in planned_commands(artifact, check, ctx):
+                env = sorted((k, v) for k, v in cmd.env.items() if k.startswith(("CARGO", "RUST")))
+                entry: list[Any] = [os_name, cmd.argv, env]
+                if cmd.argv[0] == API_DOCS_SCRIPT:
+                    script = (workspace / API_DOCS_SCRIPT).read_bytes()
+                    entry.append(hashlib.sha256(script).hexdigest())
+                entries[BUILD_ONLY_CACHE[job]].append(entry)
+    return {
+        key: hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()[:16]
+        for key, value in entries.items()
+    }
+
+
 def build_only_command(cmd: Command) -> Command | None:
     """``cmd`` reduced to compiling, or ``None`` when it only runs or lints.
 
@@ -1795,6 +1843,9 @@ __all__ = [
     "DRAFT_JOBS",
     "QUEUE_ONLY_CHECKS",
     "BUILD_ONLY_HOSTED_CHECKS",
+    "BUILD_ONLY_CACHE",
+    "BUILD_PLAN_ENV",
+    "build_plan_digests",
     "Command",
     "Context",
     "ExecError",

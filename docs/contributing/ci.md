@@ -289,6 +289,26 @@ change starts a new key that the next `main` push saves. The workflow
 contract test fails until the digest matches `Cargo.toml` and prints the new
 value.
 
+The same gap opens when a change makes a build-only job compile something
+new without touching `Cargo.lock` or a manifest: a new command, a new
+feature set, or a profile override on one command. The build-only push would
+find its key saved and skip the build, so queue runs would compile the new
+dependencies from scratch until the next lockfile change. So each cache
+also carries a digest of its build-only builds: `CI_BUILD_PLAN_LINT`,
+`CI_BUILD_PLAN_DEBUG` and `CI_BUILD_PLAN_RELEASE`
+(`build_plan_digests` in `scripts/ci_plan/execute.py`). Each covers every
+OS's build-only commands, with their Cargo and Rust environment, in the jobs
+that save that cache, plus the contents of `generate-api-docs.sh`. Each cache
+step lists only its own, so a change re-keys only the caches whose builds
+changed. The contract test fails until the values match and prints the new
+ones. Until the next `main` push saves the new key, runs build that cache
+cold.
+
+The digest doesn't see inside a cargo alias (`cargo build-app` and
+`cargo install-platform` run `bookclerk-dev`). A change to what those
+compile should also change a digest, for example through the command line
+the planner passes them.
+
 The `test` job instruments its build for [coverage](#coverage) and still
 uses the `debug` key: the instrumentation applies only to workspace crates,
 which no cache holds, so the cached dependencies match. The build-only
