@@ -55,9 +55,9 @@ const UPLOAD_TOKEN: &str = "uploadToken";
 /// Security scheme: an access token this daemon issued as an OIDC provider.
 const OIDC_ACCESS_TOKEN: &str = "oidcAccessToken";
 
-/// Security scheme: a client sign-in's session token (a library card), as
-/// `Authorization: Bookclerk-Client <token>`.
-const CLIENT_TOKEN: &str = "clientToken";
+/// Security scheme: a library card (a library card), as
+/// `Authorization: Bookclerk-Clerk <token>`.
+const CLERK_TOKEN: &str = "clerkToken";
 
 /// Who a route group admits, as enforced by its auth layer.
 ///
@@ -118,7 +118,7 @@ impl Access {
                 OPERATOR_TOKEN,
                 OPERATOR_SESSION,
                 PORTAL_SESSION,
-                CLIENT_TOKEN,
+                CLERK_TOKEN,
             ],
         }
     }
@@ -143,7 +143,7 @@ impl Access {
             }
             Access::OperatorOrUser => "The operator, or any signed-in user.",
             Access::OperatorOrPortal => {
-                "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+                "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
             }
         }
     }
@@ -155,7 +155,7 @@ impl Access {
 ///
 /// (name, scheme) for the operator Bearer token, the two session cookies, and
 /// the credentials single routes check themselves: node signatures, upload
-/// tokens, OIDC access tokens and client sign-in tokens.
+/// tokens, OIDC access tokens and clerk sign-in tokens.
 fn security_schemes() -> [(&'static str, SecurityScheme); 7] {
     [
         (
@@ -209,10 +209,10 @@ fn security_schemes() -> [(&'static str, SecurityScheme); 7] {
             ),
         ),
         (
-            CLIENT_TOKEN,
+            CLERK_TOKEN,
             SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
                 "Authorization",
-                "A client sign-in's session token (`POST /api/client/v1/token`), as `Authorization: Bookclerk-Client <token>`. Accepted only on routes any library session may use, over TLS except on loopback.",
+                "A library card (`POST /api/clerk/v1/token`), as `Authorization: Bookclerk-Clerk <token>`. Accepted only on routes any library session may use, over TLS except on loopback.",
             ))),
         ),
     ]
@@ -260,7 +260,7 @@ const TAGS: &[(&str, &str, &str)] = &[
     ("Cluster", "/api/config/cluster-consents", "Nodes, branches, joining a library and host enrollment."),
     ("Cluster", "/api/config/clusters", "Nodes, branches, joining a library and host enrollment."),
     ("Accounts", "/api/portal", "Store accounts a library user connects (the Accounts page)."),
-    ("Client sign-in", "/api/client/v1", "A clerk's sign-in as a person: redeem an approved code for a session token."),
+    ("Clerk sign-in", "/api/clerk/v1", "A clerk's sign-in as a person: redeem an approved code for a session token."),
     ("Node protocol", "/api/node/v1", "Node-to-node enrollment, socket, artifacts and uploads; each route checks its own credential."),
     ("OIDC provider", "/.well-known", "Bookclerk as an OpenID Connect provider for other apps."),
     ("OIDC provider", "/oidc", "Bookclerk as an OpenID Connect provider for other apps."),
@@ -710,8 +710,8 @@ const MANUAL_JSON_BODIES: &[&str] = &[
     "/api/node/v1/enroll/oauth",
     "/api/auth/branch-consent",
     "/api/node/v1/uploads/{upload_id}/commit",
-    "/api/auth/client-consent",
-    "/api/client/v1/token",
+    "/api/auth/clerk-consent",
+    "/api/clerk/v1/token",
 ];
 
 /// The three refusals axum's `Json` extractor writes before a handler
@@ -1189,21 +1189,21 @@ struct MiddlewareRefusal {
     message: &'static str,
 }
 
-/// The two refusals [`crate::client_token::admit_client_token`] answers in
+/// The two refusals [`crate::clerk_token::admit_clerk_token`] answers in
 /// front of every [`Access::OperatorOrPortal`] route when a library card
 /// fails the transport check or the node API is not mounted.
 const CLIENT_TRANSPORT_REFUSALS: [MiddlewareRefusal; 2] = [
     MiddlewareRefusal {
-        slug: crate::client_token::TRANSPORT_INSECURE,
+        slug: crate::clerk_token::TRANSPORT_INSECURE,
         summary: "A library card over plain HTTP from another machine",
         sentence: "A library card sent over plain HTTP from another machine gets `transport_insecure`.",
-        message: crate::client_token::TRANSPORT_INSECURE_MESSAGE,
+        message: crate::clerk_token::TRANSPORT_INSECURE_MESSAGE,
     },
     MiddlewareRefusal {
-        slug: crate::client_token::CLIENT_SIGN_IN_UNAVAILABLE,
+        slug: crate::clerk_token::CLERK_SIGN_IN_UNAVAILABLE,
         summary: "A library card on a listener without the node API",
-        sentence: "A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
-        message: crate::client_token::CLIENT_SIGN_IN_UNAVAILABLE_MESSAGE,
+        sentence: "A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
+        message: crate::clerk_token::CLERK_SIGN_IN_UNAVAILABLE_MESSAGE,
     },
 ];
 
@@ -2076,7 +2076,7 @@ mod tests {
         assert_eq!(
             examples("get", "/api/wishlist"),
             [
-                "client_sign_in_unavailable",
+                "clerk_sign_in_unavailable",
                 "mfa_enrollment_required",
                 "transport_insecure"
             ]
@@ -2084,7 +2084,7 @@ mod tests {
         assert_eq!(
             examples("post", "/api/wishlist"),
             [
-                "client_sign_in_unavailable",
+                "clerk_sign_in_unavailable",
                 "forbidden",
                 "mfa_enrollment_required",
                 "transport_insecure"

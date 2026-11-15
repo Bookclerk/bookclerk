@@ -203,23 +203,23 @@ input_from = "operator"
 side = "host"
 artifacts = ["bookclerk"]
 
-[targets.client_authorization]
+[targets.clerk_authorization]
 crate = "bookclerk-node-proto"
-boundary = "A clerk's library card, the Authorization: Bookclerk-Client header value"
+boundary = "A clerk's library card, the Authorization: Bookclerk-Clerk header value"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
-[targets.client_authorize]
+[targets.clerk_authorize]
 crate = "bookclerk-node-proto"
 boundary = "A clerk's authorization request, the /oidc/authorize query that leads to the library card consent page"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
-[targets.client_token_request]
+[targets.clerk_token_request]
 crate = "bookclerk-node-proto"
-boundary = "A library card's token exchange, the POST /api/client/v1/token body and its match against the stored code"
+boundary = "A library card's token exchange, the POST /api/clerk/v1/token body and its match against the stored code"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]

@@ -76,9 +76,9 @@
 //! chose to bring them.
 //!
 //! An install can also sign in to a library as a person rather than join
-//! it as a node: a client ([`CLIENT_CLIENT_ID`], [`ClientTokenAnswer`]),
-//! whose session token travels as `Authorization: Bookclerk-Client`
-//! ([`parse_client_authorization`]).
+//! it as a node: a client ([`CLERK_CLIENT_ID`], [`ClerkTokenAnswer`]),
+//! whose session token travels as `Authorization: Bookclerk-Clerk`
+//! ([`parse_clerk_authorization`]).
 //!
 //! This crate is pure: no I/O, no clock, no randomness. The daemon (owner)
 //! and the host client share it so both sides sign and check the same
@@ -86,7 +86,7 @@
 
 mod accounts;
 mod catalog;
-mod client;
+mod clerk;
 mod frames;
 mod join;
 mod keys;
@@ -111,12 +111,12 @@ pub use catalog::{
     MAX_CATALOG_BATCH_TITLES, MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_TITLE_BYTES,
     MAX_CATALOG_WANTED, MAX_MARKETPLACE_BYTES,
 };
-pub use client::{
-    client_exchange_matches, client_request_problem, is_client_name, is_client_token,
-    is_s256_challenge, parse_client_authorization, parse_client_query, parse_client_token_request,
-    ClientAuthorizeParams, ClientTokenAnswer, ClientTokenRequest, ClientUser, StoredClientCode,
-    CLIENT_AUTH_SCHEME, CLIENT_CLIENT_ID, CLIENT_CODE_TTL_SECS, CLIENT_IDLE_DAYS, CLIENT_SCOPE,
-    CLIENT_TOKEN_LEN, CLIENT_TOKEN_PATH, MAX_CLIENT_NAME_BYTES, MAX_CLIENT_STATE_BYTES,
+pub use clerk::{
+    clerk_exchange_matches, clerk_request_problem, is_clerk_name, is_clerk_token,
+    is_s256_challenge, parse_clerk_authorization, parse_clerk_query, parse_clerk_token_request,
+    ClerkAuthorizeParams, ClerkTokenAnswer, ClerkTokenRequest, ClerkUser, StoredClerkCode,
+    CLERK_AUTH_SCHEME, CLERK_CLIENT_ID, CLERK_CODE_TTL_SECS, CLERK_IDLE_DAYS, CLERK_SCOPE,
+    CLERK_TOKEN_LEN, CLERK_TOKEN_PATH, MAX_CLERK_NAME_BYTES, MAX_CLERK_STATE_BYTES,
 };
 pub use ed25519_dalek::SigningKey;
 pub use frames::{

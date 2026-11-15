@@ -772,9 +772,9 @@ pub struct PortalSessionView {
     /// Raw User-Agent captured when the session was created.
     #[schema(example = "Mozilla/5.0 (Linux; Android 15) Chrome/131.0 Mobile")]
     pub user_agent: Option<String>,
-    /// How the session is used: `browser` for a browser session, `client`
-    /// for a client sign-in (a library card), whose `client_label` is the
-    /// name the client gave itself.
+    /// How the session is used: `browser` for a browser session, `clerk`
+    /// for a library card, whose `client_label` is the name the clerk gave
+    /// itself.
     #[schema(example = "browser")]
     pub channel: bookclerk_library::PortalSessionKind,
 }
@@ -1311,19 +1311,19 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
             tracing::warn!(error = %err, "failed to revoke portal session on operator logout");
         }
     }
-    // A client signing itself out ends its own session.
-    if let Some(token) = crate::client_token::client_token_from_headers(&headers) {
-        match library.delete_client_session(&hash_token(token)).await {
+    // A clerk signing itself out ends its own library card.
+    if let Some(token) = crate::clerk_token::clerk_token_from_headers(&headers) {
+        match library.delete_clerk_session(&hash_token(token)).await {
             Ok(true) => {
                 let _ = library
-                    .insert_security_audit_event("client", "client_sign_out", None)
+                    .insert_security_audit_event("clerk", "clerk_sign_out", None)
                     .await;
             }
             Ok(false) => {}
             Err(err) => {
                 // Unlike a browser, whose cookies are cleared below, a card
                 // stays signed in until its row is gone: say so.
-                tracing::warn!(error = %err, "failed to end a client session");
+                tracing::warn!(error = %err, "failed to end a clerk session");
                 return json_auth_error(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "sign_out_failed",
@@ -2188,10 +2188,10 @@ pub(crate) async fn portal_lookup_from_headers(
 ) -> PortalLookup {
     let lookup = if let Some(raw) = cookie_value(headers, PORTAL_SESSION_COOKIE) {
         timeout(AUTH_DB_TIMEOUT, identity_from_session(library, &raw)).await
-    } else if let Some(token) = crate::client_token::client_token_from_headers(headers) {
+    } else if let Some(token) = crate::clerk_token::clerk_token_from_headers(headers) {
         // Only an admitted request still carries the token
-        // (`crate::client_token`).
-        timeout(AUTH_DB_TIMEOUT, client_identity_from_token(library, token)).await
+        // (`crate::clerk_token`).
+        timeout(AUTH_DB_TIMEOUT, clerk_identity_from_token(library, token)).await
     } else {
         return PortalLookup::SignedOut;
     };
@@ -2227,20 +2227,20 @@ pub(crate) async fn portal_lookup_from_headers(
     PortalLookup::SignedIn(identity)
 }
 
-/// Resolves a client sign-in's session token to its identity, keeping the
-/// session signed in for another [`bookclerk_node_proto::CLIENT_IDLE_DAYS`].
+/// Resolves a library card to its identity, keeping the
+/// session signed in for another [`bookclerk_node_proto::CLERK_IDLE_DAYS`].
 ///
 /// # Errors
 ///
 /// Returns the store's error when the read fails.
-async fn client_identity_from_token(
+async fn clerk_identity_from_token(
     library: &bookclerk_library::LibraryStore,
     token: &str,
 ) -> bookclerk_integrations::Result<Option<PortalIdentity>> {
     Ok(library
-        .get_client_session_identity(
+        .get_clerk_session_identity(
             &hash_token(token),
-            ChronoDuration::days(bookclerk_node_proto::CLIENT_IDLE_DAYS),
+            ChronoDuration::days(bookclerk_node_proto::CLERK_IDLE_DAYS),
         )
         .await?)
 }
@@ -4351,7 +4351,7 @@ pub async fn list_sessions(
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let current_portal = cookie_value(&headers, PORTAL_SESSION_COOKIE)
         .map(|raw| hash_token(&raw))
-        .or_else(|| crate::client_token::client_token_from_headers(&headers).map(hash_token));
+        .or_else(|| crate::clerk_token::clerk_token_from_headers(&headers).map(hash_token));
     Ok(Json(SessionsResponse {
         sessions: portal_session_rows(&library, identity.id, current_portal.as_deref()).await?,
     }))

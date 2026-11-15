@@ -4,7 +4,7 @@ import type { AppView } from "@/lib/api";
 export const JOIN_APPROVE_PATH = "/join/approve";
 
 /** The library's consent page for a clerk's sign-in (a library card). */
-export const CLIENT_APPROVE_PATH = "/client/approve";
+export const CLERK_APPROVE_PATH = "/clerk/approve";
 
 /** Where a library sends the joining install's browser back. */
 export const JOIN_CALLBACK_PATH = "/join/callback";
@@ -24,15 +24,15 @@ const APP_PATHS = new Set([
   JOIN_APPROVE_PATH,
   JOIN_CALLBACK_PATH,
   // A clerk's sign-in: the library's consent page.
-  CLIENT_APPROVE_PATH,
+  CLERK_APPROVE_PATH,
 ]);
 
 /**
  * A page that sign-in flows from other installs own: a branch's consent
- * (`approve`), a clerk's consent (`client-approve`), or the joining
+ * (`approve`), a clerk's consent (`clerk-approve`), or the joining
  * install's callback (`callback`).
  */
-export type JoinPage = "approve" | "client-approve" | "callback";
+export type JoinPage = "approve" | "clerk-approve" | "callback";
 
 /**
  * True for a consent page, which keeps its address across a sign-in.
@@ -41,21 +41,21 @@ export type JoinPage = "approve" | "client-approve" | "callback";
  * @returns Whether it is a branch's or a clerk's consent page.
  */
 export function isConsentPage(page: JoinPage | null): boolean {
-  return page === "approve" || page === "client-approve";
+  return page === "approve" || page === "clerk-approve";
 }
 
 /**
  * Which Join a library page this document is, if any.
  *
  * @param pathname - Document pathname.
- * @returns `approve`, `client-approve`, `callback`, or `null`.
+ * @returns `approve`, `clerk-approve`, `callback`, or `null`.
  */
 export function joinPage(pathname: string = window.location.pathname): JoinPage | null {
   switch (normalizePathname(pathname)) {
     case JOIN_APPROVE_PATH:
       return "approve";
-    case CLIENT_APPROVE_PATH:
-      return "client-approve";
+    case CLERK_APPROVE_PATH:
+      return "clerk-approve";
     case JOIN_CALLBACK_PATH:
       return "callback";
     default:

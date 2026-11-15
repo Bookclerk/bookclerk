@@ -27,7 +27,7 @@ pub struct Model {
     /// Best-effort OS / client label (`Windows`, `Android`, `API`, …).
     pub client_label: Option<String>,
     /// Where the token is presented: `browser` (the session cookie) or
-    /// `client` (a client sign-in's `Authorization: Bookclerk-Client`
+    /// `clerk` (a library card, sent as `Authorization: Bookclerk-Clerk`
     /// header); see [`crate::models::PortalSessionKind`].
     pub kind: String,
 }

@@ -8616,12 +8616,12 @@ async fn missing_rows_name_their_kind() {
     );
 }
 
-/// Client sign-in sessions under every database profile: a client token
-/// resolves only as a client session, each touch slides its expiry, an
+/// Clerk sign-in sessions under every database profile: a library card
+/// resolves only as a clerk session, each touch slides its expiry, an
 /// expired one resolves to nothing, and revoking it leaves browser
 /// sessions alone.
 #[tokio::test]
-async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
+async fn library_cards_slide_expire_and_stay_apart_from_browser_sessions() {
     use crate::entities::portal_sessions;
     use crate::hash_token;
     use crate::models::UserRole;
@@ -8648,13 +8648,13 @@ async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
             .await
             .unwrap();
         let client_id = store
-            .insert_client_session(&client, identity.id, Utc::now() + idle, "Pat's laptop")
+            .insert_clerk_session(&client, identity.id, Utc::now() + idle, "Pat's laptop")
             .await
             .unwrap();
 
         // Each kind resolves only through its own lookup.
         let found = store
-            .get_client_session_identity(&client, idle)
+            .get_clerk_session_identity(&client, idle)
             .await
             .unwrap();
         assert_eq!(found.map(|row| row.id), Some(identity.id), "{name}");
@@ -8668,7 +8668,7 @@ async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
         );
         assert!(
             store
-                .get_client_session_identity(&browser, idle)
+                .get_clerk_session_identity(&browser, idle)
                 .await
                 .unwrap()
                 .is_none(),
@@ -8681,7 +8681,7 @@ async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(row.kind, "client", "{name}");
+        assert_eq!(row.kind, "clerk", "{name}");
         assert_eq!(row.client_label.as_deref(), Some("Pat's laptop"), "{name}");
         let mut am: portal_sessions::ActiveModel = row.into();
         am.last_used_at = Set(Some(
@@ -8690,7 +8690,7 @@ async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
         am.expires_at = Set((Utc::now() + ChronoDuration::minutes(1)).to_rfc3339());
         am.update(kit.connection()).await.unwrap();
         assert!(store
-            .get_client_session_identity(&client, idle)
+            .get_clerk_session_identity(&client, idle)
             .await
             .unwrap()
             .is_some());
@@ -8711,16 +8711,16 @@ async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
         am.update(kit.connection()).await.unwrap();
         assert!(
             store
-                .get_client_session_identity(&client, idle)
+                .get_clerk_session_identity(&client, idle)
                 .await
                 .unwrap()
                 .is_none(),
             "{name}: expired"
         );
 
-        // Revoking deletes only client sessions.
+        // Revoking deletes only clerk sessions.
         assert!(
-            !store.delete_client_session(&browser).await.unwrap(),
+            !store.delete_clerk_session(&browser).await.unwrap(),
             "{name}"
         );
         assert!(store
@@ -8728,12 +8728,9 @@ async fn client_sessions_slide_expire_and_stay_apart_from_browser_sessions() {
             .await
             .unwrap()
             .is_some());
-        assert!(
-            store.delete_client_session(&client).await.unwrap(),
-            "{name}"
-        );
+        assert!(store.delete_clerk_session(&client).await.unwrap(), "{name}");
         let left = portal_sessions::Entity::find()
-            .filter(portal_sessions::Column::Kind.eq("client"))
+            .filter(portal_sessions::Column::Kind.eq("clerk"))
             .all(kit.connection())
             .await
             .unwrap();
