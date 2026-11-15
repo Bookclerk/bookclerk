@@ -596,7 +596,7 @@ def works_ready():
         return False
     rebuilding = any(
         job.get("kind") in ("search_index_rebuild", "library_index_rebuild")
-        and job.get("status") in ("queued", "running")
+        and job.get("status") in ("pending", "running")
         for job in jobs
     )
     if rebuilding:
@@ -617,7 +617,11 @@ DEEP_PAGE = "GET /api/library/works?limit=40&cursor=(8000 in)"
 def routes():
     """The timed routes; the deep page follows a cursor 8,000 works in."""
     cursor = deep_cursor()
-    deep = "/api/library/works?limit=40&cursor=" + urllib.parse.quote(cursor or "", safe="")
+    if not cursor:
+        # An empty cursor would time the first page under the deep label.
+        print("envelope: no works cursor 8000 in; the library is too small", file=sys.stderr)
+        sys.exit(1)
+    deep = "/api/library/works?limit=40&cursor=" + urllib.parse.quote(cursor, safe="")
     return [
         ("GET /health", "/health", False),
         ("GET /api/status", "/api/status", True),
