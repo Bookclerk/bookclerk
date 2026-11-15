@@ -15987,6 +15987,408 @@
         "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
       }
     },
+    "/api/library/works": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Lists the library's works, one page at a time.",
+        "description": "Each work appears once however many editions, stores and accounts hold\nit; a podcast is listed as its show. Pass `next_cursor` back as\n`cursor` (with the same `sort`) for the next page.",
+        "operationId": "list_works",
+        "parameters": [
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "Order of the page (default `title`).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "How a page of works is ordered.",
+              "enum": [
+                "title",
+                "author",
+                "added"
+              ]
+            }
+          },
+          {
+            "name": "media_kind",
+            "in": "query",
+            "description": "Only works with an edition on this carrier.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Carrier of an edition (`editions.media_kind`).",
+              "enum": [
+                "audio",
+                "ebook",
+                "print"
+              ]
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Only works of this kind.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Book or podcast (`works.kind`).",
+              "enum": [
+                "book",
+                "podcast"
+              ]
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Only works whose furthest acquire state is this one.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Acquire / download state for a title.",
+              "enum": [
+                "not_acquired",
+                "queued",
+                "downloading",
+                "acquired",
+                "error"
+              ]
+            }
+          },
+          {
+            "name": "account",
+            "in": "query",
+            "description": "Only works held by this store account id.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` of the previous page, under the same `sort`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped to 1–200 (default 40).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of works.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorksPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A filter or the cursor is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid page cursor"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clientToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
+    "/api/library/works/{id}": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Reads one work with its editions, listings, holdings and the caller's\nown state.",
+        "operationId": "get_work",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Work id (a podcast's show).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkDetailJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `client_sign_in_unavailable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "client_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "client_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clientToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a client sign-in's token (refused with 403 `transport_insecure` off loopback without TLS, or `client_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
     "/api/covers/{token}/{size}": {
       "get": {
         "tags": [
@@ -28122,6 +28524,15 @@
   },
   "components": {
     "schemas": {
+      "AbridgementJson": {
+        "type": "string",
+        "description": "Whether an expression is abridged.",
+        "enum": [
+          "unknown",
+          "unabridged",
+          "abridged"
+        ]
+      },
       "AccountRef": {
         "type": "object",
         "description": "One store account, by storefront plugin key and store account id.",
@@ -31832,6 +32243,107 @@
           }
         }
       },
+      "EditionJson": {
+        "type": "object",
+        "description": "One edition of a work.",
+        "required": [
+          "id",
+          "work_id",
+          "expression_id",
+          "expression_kind",
+          "abridgement",
+          "media_kind",
+          "title",
+          "acquire_status",
+          "listings"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Edition id.",
+            "example": "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+          },
+          "work_id": {
+            "type": "string",
+            "description": "The work it realises: this work, or one of a show's episodes.",
+            "example": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b"
+          },
+          "expression_id": {
+            "type": "string",
+            "description": "The expression it carries.",
+            "example": "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d"
+          },
+          "expression_kind": {
+            "$ref": "#/components/schemas/ExpressionKindJson",
+            "description": "How the expression realises the work."
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The expression's language tag, when known.",
+            "example": "en"
+          },
+          "abridgement": {
+            "$ref": "#/components/schemas/AbridgementJson",
+            "description": "Whether the expression is abridged."
+          },
+          "media_kind": {
+            "$ref": "#/components/schemas/MediaKindJson",
+            "description": "Carrier of the edition."
+          },
+          "title": {
+            "type": "string",
+            "description": "The edition's title.",
+            "example": "The Left Hand of Darkness"
+          },
+          "subtitle": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The edition's subtitle.",
+            "example": "A Hainish Novel"
+          },
+          "published_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Publication date as the store gave it.",
+            "example": "2009-11-25"
+          },
+          "duration_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Running time in minutes, for audio.",
+            "example": 682
+          },
+          "cover_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Same-origin path of the edition's cover, when it has one.",
+            "example": "/api/covers/eyJ1IjoiaHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGcifQ"
+          },
+          "acquire_status": {
+            "$ref": "#/components/schemas/AcquireStatus",
+            "description": "The edition's acquire state."
+          },
+          "listings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListingJson"
+            },
+            "description": "The edition's store listings."
+          }
+        }
+      },
       "ElevateRequest": {
         "type": "object",
         "description": "JSON body for Owner password re-auth before issuing an elevated operator cookie.",
@@ -32020,6 +32532,16 @@
             "example": "pending"
           }
         }
+      },
+      "EntitlementJson": {
+        "type": "string",
+        "description": "On what terms a holder has a listing.",
+        "enum": [
+          "purchase",
+          "plus",
+          "loan",
+          "free"
+        ]
       },
       "ErrorAnswer": {
         "anyOf": [
@@ -32360,6 +32882,17 @@
           }
         }
       },
+      "ExpressionKindJson": {
+        "type": "string",
+        "description": "How an expression realises its work (`expressions.kind`).",
+        "enum": [
+          "text",
+          "narration",
+          "dramatisation",
+          "graphic",
+          "original_audio"
+        ]
+      },
       "FeedState": {
         "type": "string",
         "description": "How current a stored Discover feed is.",
@@ -32412,6 +32945,97 @@
             "type": "string",
             "description": "Always `ok` when the process can serve HTTP.",
             "example": "ok"
+          }
+        }
+      },
+      "HolderJson": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A store account.",
+            "required": [
+              "plugin_key",
+              "account_id",
+              "kind"
+            ],
+            "properties": {
+              "plugin_key": {
+                "type": "string",
+                "description": "The account's storefront plugin.",
+                "example": "audible"
+              },
+              "account_id": {
+                "type": "string",
+                "description": "The account id at that plugin.",
+                "example": "acct-7f3a"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "account"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A branch library's node.",
+            "required": [
+              "node_id",
+              "kind"
+            ],
+            "properties": {
+              "node_id": {
+                "type": "string",
+                "description": "The node id.",
+                "example": "9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "node"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Who holds a listing."
+      },
+      "HoldingJson": {
+        "type": "object",
+        "description": "One holding of a listing.",
+        "required": [
+          "id",
+          "holder",
+          "entitlement",
+          "added_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Holding id.",
+            "example": "4d5e6f70-8192-4a3b-9c4d-5e6f708192a3"
+          },
+          "holder": {
+            "$ref": "#/components/schemas/HolderJson",
+            "description": "Who holds the listing."
+          },
+          "entitlement": {
+            "$ref": "#/components/schemas/EntitlementJson",
+            "description": "On what terms."
+          },
+          "purchased_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 purchase time, when the store reported one.",
+            "example": "2024-03-02T18:04:11Z"
+          },
+          "added_at": {
+            "type": "string",
+            "description": "RFC 3339 time the holding was first recorded.",
+            "example": "2026-11-14T09:30:00.000000Z"
           }
         }
       },
@@ -32844,6 +33468,7 @@
           "discover_request_queue",
           "cache_sweep",
           "search_index_rebuild",
+          "library_index_rebuild",
           "branch_request",
           "invalid"
         ]
@@ -33187,6 +33812,54 @@
           }
         }
       },
+      "ListingJson": {
+        "type": "object",
+        "description": "One store listing of an edition.",
+        "required": [
+          "id",
+          "plugin_key",
+          "marketplace",
+          "product_id",
+          "holdings"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Listing id.",
+            "example": "3c4d5e6f-7081-4923-8a4b-5c6d7e8f9012"
+          },
+          "plugin_key": {
+            "type": "string",
+            "description": "The storefront plugin that lists it.",
+            "example": "audible"
+          },
+          "marketplace": {
+            "type": "string",
+            "description": "Store marketplace; empty when the store has one.",
+            "example": "us"
+          },
+          "product_id": {
+            "type": "string",
+            "description": "The store's product id.",
+            "example": "B002V0QK4C"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The product page, when known.",
+            "example": "https://www.audible.com/pd/B002V0QK4C"
+          },
+          "holdings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HoldingJson"
+            },
+            "description": "The listing's holdings."
+          }
+        }
+      },
       "LoginBegin": {
         "type": "object",
         "description": "Login-name or email used to start a discoverable-less passkey login.",
@@ -33324,6 +33997,15 @@
             "example": "Dana Reader"
           }
         }
+      },
+      "MediaKindJson": {
+        "type": "string",
+        "description": "Carrier of an edition (`editions.media_kind`).",
+        "enum": [
+          "audio",
+          "ebook",
+          "print"
+        ]
       },
       "MembersBooksBody": {
         "type": "object",
@@ -42426,6 +43108,266 @@
             "type": "string",
             "description": "Storefront product id (ASIN, ISBN, UUID, …).",
             "example": "9780441478125"
+          }
+        }
+      },
+      "WorkDetailJson": {
+        "type": "object",
+        "description": "`GET /api/library/works/{id}` answer.",
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "authors",
+          "editions"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Work id.",
+            "example": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WorkKindJson",
+            "description": "Book or podcast."
+          },
+          "title": {
+            "type": "string",
+            "description": "Display title.",
+            "example": "The Left Hand of Darkness"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Blurb or synopsis (may contain HTML).",
+            "example": "An envoy to the planet Gethen must win the trust of a people who have no fixed gender."
+          },
+          "authors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Authors (hosts for a podcast), in billing order.",
+            "example": [
+              "Ursula K. Le Guin"
+            ]
+          },
+          "series": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "First series the work belongs to.",
+            "example": "Hainish Cycle"
+          },
+          "series_position": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Position in `series`.",
+            "example": "4"
+          },
+          "editions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EditionJson"
+            },
+            "description": "Editions; a show's episodes' editions included."
+          },
+          "state": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorkStateJson",
+                "description": "The caller's own state; absent for the operator or when the caller\nrecorded nothing."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "WorkKindJson": {
+        "type": "string",
+        "description": "Book or podcast (`works.kind`).",
+        "enum": [
+          "book",
+          "podcast"
+        ]
+      },
+      "WorkStateJson": {
+        "type": "object",
+        "description": "The caller's own state for a work.",
+        "required": [
+          "is_finished"
+        ],
+        "properties": {
+          "is_finished": {
+            "type": "boolean",
+            "description": "Whether the caller finished the work.",
+            "example": true
+          },
+          "rating_overall": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Overall rating, 0 to 5.",
+            "example": 4.5
+          },
+          "rating_performance": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Narration rating, 0 to 5.",
+            "example": 4.0
+          },
+          "rating_story": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Story rating, 0 to 5.",
+            "example": 5.0
+          },
+          "tags": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The caller's tags, as one serialized string.",
+            "example": "classics"
+          }
+        }
+      },
+      "WorkSummaryJson": {
+        "type": "object",
+        "description": "One work in a page of `GET /api/library/works`.",
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "media_kinds",
+          "acquire_status",
+          "edition_count",
+          "holding_count",
+          "added_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Work id.",
+            "example": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WorkKindJson",
+            "description": "Book or podcast."
+          },
+          "title": {
+            "type": "string",
+            "description": "Display title.",
+            "example": "The Left Hand of Darkness"
+          },
+          "authors": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Authors (hosts for a podcast), joined for display.",
+            "example": "Ursula K. Le Guin"
+          },
+          "series": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "First series the work belongs to.",
+            "example": "Hainish Cycle"
+          },
+          "series_position": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Position in `series`, as the store gave it.",
+            "example": "4"
+          },
+          "cover_edition_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The edition whose cover the list shows.",
+            "example": "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+          },
+          "cover_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Same-origin path of that cover, when it has one.",
+            "example": "/api/covers/eyJ1IjoiaHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGcifQ"
+          },
+          "media_kinds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MediaKindJson"
+            },
+            "description": "Carriers of the work's editions."
+          },
+          "acquire_status": {
+            "$ref": "#/components/schemas/AcquireStatus",
+            "description": "The furthest acquire state any edition reached."
+          },
+          "edition_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many editions the work has.",
+            "example": 2,
+            "minimum": 0
+          },
+          "holding_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many holdings the work's listings have.",
+            "example": 3,
+            "minimum": 0
+          },
+          "added_at": {
+            "type": "string",
+            "description": "RFC 3339 time of the newest holding.",
+            "example": "2026-11-14T09:30:00.000000Z"
+          }
+        }
+      },
+      "WorksPage": {
+        "type": "object",
+        "description": "A page of `GET /api/library/works`.",
+        "required": [
+          "works"
+        ],
+        "properties": {
+          "works": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkSummaryJson"
+            },
+            "description": "The works, in the requested order."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` for the next page; absent on the last page.",
+            "example": "eyJzb3J0IjoidGl0bGUiLCJrZXkiOiJsZWZ0IGhhbmQiLCJ3b3JrX2lkIjoiMGI4ZiJ9"
           }
         }
       }

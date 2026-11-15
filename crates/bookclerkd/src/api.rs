@@ -1262,6 +1262,8 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(list_books))
         .routes(routes!(get_book))
         .routes(routes!(get_book_cover))
+        .routes(routes!(crate::library_works::list_works))
+        .routes(routes!(crate::library_works::get_work))
         .routes(routes!(crate::covers::get_cover))
         .routes(routes!(crate::covers::get_image))
         .routes(routes!(crate::covers::get_gravatar))

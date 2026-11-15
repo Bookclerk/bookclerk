@@ -3049,7 +3049,66 @@ pub(crate) fn book_acquired_spec(
     }
 }
 
-/// Apply acquire status and, when becoming acquired, publish the outbox row.
+/// Build the `edition_acquire_changed` outbox spec for a title's edition.
+///
+/// Published with any acquire state change other than becoming acquired
+/// (which publishes [`book_acquired_spec`]), so consumers of an edition's
+/// acquire state, such as the library page index, see queued, downloading,
+/// failed and reset states too. Every change gets its own dedup key, since
+/// an edition can pass through the same state many times.
+pub(crate) fn edition_acquire_changed_spec(
+    book: &books::Model,
+    edition_id: &str,
+    status: AcquireStatus,
+) -> PublishDomainEventSpec {
+    let payload = serde_json::json!({
+        "editionId": edition_id,
+        "titleId": book.uuid,
+        "status": status.as_str(),
+    });
+    PublishDomainEventSpec {
+        id: String::new(),
+        event_type: crate::EDITION_ACQUIRE_CHANGED.into(),
+        schema_version: 1,
+        account_id: book.account_id.clone(),
+        source: book.source.clone(),
+        correlation_id: book.uuid.clone(),
+        causation_id: String::new(),
+        dedup_key: format!(
+            "{}:{edition_id}:{}",
+            crate::EDITION_ACQUIRE_CHANGED,
+            Uuid::new_v4()
+        ),
+        payload: serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into()),
+        ordering_key: book.uuid.clone(),
+        ..PublishDomainEventSpec::default()
+    }
+}
+
+/// The outbox row an acquire state change publishes, if any.
+///
+/// Becoming acquired publishes `book_acquired`; any other state publishes
+/// `edition_acquire_changed` when the title has an edition, and nothing
+/// when it has none yet.
+///
+/// # Errors
+///
+/// Returns an error when the spec fails [`prepare_publish_domain_event`].
+pub(crate) fn acquire_status_event(
+    book: &books::Model,
+    edition_id: Option<&str>,
+    status: AcquireStatus,
+    storage_key: Option<&str>,
+) -> Result<Option<PublishDomainEventSpec>> {
+    let spec = match (status, edition_id) {
+        (AcquireStatus::Acquired, _) => book_acquired_spec(book, storage_key, edition_id),
+        (_, Some(edition)) => edition_acquire_changed_spec(book, edition, status),
+        (_, None) => return Ok(None),
+    };
+    prepare_publish_domain_event(spec).map(Some)
+}
+
+/// Apply acquire status and publish its outbox row ([`acquire_status_event`]).
 ///
 /// `edition_id` is the title's edition, whose `edition_acquisitions` row is
 /// written too ([`update_edition_acquisition_on`]).
@@ -3061,15 +3120,7 @@ pub(crate) async fn set_acquire_status_on<C: ConnectionTrait>(
     storage_key: Option<&str>,
     error_message: Option<&str>,
 ) -> Result<()> {
-    let spec = if status == AcquireStatus::Acquired {
-        Some(prepare_publish_domain_event(book_acquired_spec(
-            &model,
-            storage_key,
-            edition_id,
-        ))?)
-    } else {
-        None
-    };
+    let spec = acquire_status_event(&model, edition_id, status, storage_key)?;
     if let Some(edition_id) = edition_id {
         update_edition_acquisition_on(
             db,

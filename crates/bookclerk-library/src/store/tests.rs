@@ -108,6 +108,38 @@ async fn account_and_book_roundtrip() {
 }
 
 #[tokio::test]
+async fn a_status_other_than_acquired_publishes_its_edition_change() {
+    for store in [kit_store().await, in_process_store().await] {
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let book = store
+            .upsert_book(&NewBook::minimal("B00Q", "user-1", "us", "Queued"))
+            .await
+            .unwrap();
+        let edition = store.edition_of_book(&book.uuid).await.unwrap().unwrap();
+        for status in [AcquireStatus::Queued, AcquireStatus::Error] {
+            store
+                .set_acquire_status("B00Q", "user-1", status, None, Some("x"))
+                .await
+                .unwrap();
+            let event = next_event_of(&store, crate::EDITION_ACQUIRE_CHANGED).await;
+            assert_eq!(event.ordering_key, book.uuid);
+            assert_eq!(event.source, "audible");
+            let payload: serde_json::Value = serde_json::from_str(&event.payload).unwrap();
+            assert_eq!(payload["editionId"], edition.as_str());
+            assert_eq!(payload["titleId"], book.uuid.as_str());
+            assert_eq!(payload["status"], status.as_str());
+            store
+                .dispatch_event_deliveries(&event.id, &[], &Uuid::new_v4().to_string())
+                .await
+                .unwrap();
+        }
+    }
+}
+
+#[tokio::test]
 async fn status_counts_come_from_one_grouped_read_under_every_profile() {
     for profile in crate::test_support::Profile::ALL {
         let kit = crate::test_support::sqlite::memory(profile).await;

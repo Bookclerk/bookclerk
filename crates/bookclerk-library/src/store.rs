@@ -4983,13 +4983,12 @@ impl LibraryStore {
         let model = self.resolve_book(title_id, account_id).await?;
         let edition = self.edition_of_book(&model.uuid).await?;
         if let Some(atomic) = &self.atomic {
-            let event = if status == AcquireStatus::Acquired {
-                Some(event_outbox::prepare_publish_domain_event(
-                    event_outbox::book_acquired_spec(&model, storage_key, edition.as_deref()),
-                )?)
-            } else {
-                None
-            };
+            let event = event_outbox::acquire_status_event(
+                &model,
+                edition.as_deref(),
+                status,
+                storage_key,
+            )?;
             return atomic
                 .set_acquire_status(
                     &model.uuid,
@@ -7845,6 +7844,7 @@ pub(crate) mod discover;
 pub(crate) mod edition_files;
 pub(crate) mod event_outbox;
 pub(crate) mod holdings;
+pub(crate) mod library_index;
 pub(crate) mod library_model;
 pub(crate) mod listening;
 pub(crate) mod listing_reads;
@@ -7857,6 +7857,7 @@ pub(crate) mod search_feed;
 pub(crate) mod storage_scan;
 pub(crate) mod taste_titles;
 pub(crate) mod user_title_state;
+pub(crate) mod work_detail;
 pub(crate) mod write_batches;
 pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,

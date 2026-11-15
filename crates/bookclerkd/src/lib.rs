@@ -35,6 +35,8 @@ mod http_error;
 mod job_handler;
 mod job_worker;
 mod jobs;
+mod library_index;
+mod library_works;
 mod live;
 mod maintenance;
 mod node_api;
