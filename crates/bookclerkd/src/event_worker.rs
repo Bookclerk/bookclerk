@@ -111,6 +111,24 @@ fn spawn_dispatcher(state: Arc<AppState>) {
     });
 }
 
+/// The host's own consumers this node claims deliveries for, beside the
+/// loaded plugins: the node queue, Discover, this node's search index and
+/// the library's page index.
+///
+/// # Arguments
+///
+/// * `files_dir` - The node's files directory (its queue identity).
+/// * `node_id` - This node's id (its search index consumer).
+fn host_consumer_ids(files_dir: &std::path::Path, node_id: &str) -> Vec<String> {
+    let mut ids: Vec<String> = crate::node_queue::consumer_id(files_dir)
+        .into_iter()
+        .collect();
+    ids.push(crate::discover_events::DISCOVER_CONSUMER_ID.to_string());
+    ids.push(crate::search_index::consumer_id(node_id));
+    ids.push(crate::library_index::LIBRARY_INDEX_CONSUMER_ID.to_string());
+    ids
+}
+
 /// Claim and run deliveries, reclaiming expired leases between idle waits.
 fn spawn_delivery_worker(state: Arc<AppState>) {
     tokio::spawn(async move {
@@ -127,9 +145,7 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
             let max_in_flight = state.config.read().await.events.concurrency.max(1);
             let node_id = event_node_id(&files_dir);
             let mut claim_ids = loaded_plugin_ids(&state).await;
-            claim_ids.extend(crate::node_queue::consumer_id(&files_dir));
-            claim_ids.push(crate::discover_events::DISCOVER_CONSUMER_ID.to_string());
-            claim_ids.push(crate::search_index::consumer_id(&node_id));
+            claim_ids.extend(host_consumer_ids(&files_dir, &node_id));
             let groups = claim_groups(
                 &claim_ids,
                 ranks.get(&library, &files_dir, &claim_ids).await,
@@ -2431,6 +2447,20 @@ message_retention_period = 120
         let prefix = bookclerk_library::HOST_CONSUMER_PREFIX;
         assert!(crate::discover_events::DISCOVER_CONSUMER_ID.starts_with(prefix));
         assert!(crate::search_index::consumer_id("n1").starts_with(prefix));
+        assert!(crate::library_index::LIBRARY_INDEX_CONSUMER_ID.starts_with(prefix));
+    }
+
+    #[test]
+    fn the_worker_claims_every_host_consumer() {
+        let files = tempfile::tempdir().expect("tempdir");
+        let ids = super::host_consumer_ids(files.path(), "n1");
+        for wanted in [
+            crate::discover_events::DISCOVER_CONSUMER_ID.to_string(),
+            crate::search_index::consumer_id("n1"),
+            crate::library_index::LIBRARY_INDEX_CONSUMER_ID.to_string(),
+        ] {
+            assert!(ids.contains(&wanted), "{wanted} is not claimed");
+        }
     }
 
     #[test]

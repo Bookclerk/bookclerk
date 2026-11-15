@@ -146,6 +146,15 @@ fn listing_holding(model: holdings::Model) -> Option<ListingHolding> {
     })
 }
 
+/// An edition's acquire state from its stored row: never acquired without
+/// one, `None` (the edition is skipped) for text that names no state.
+fn edition_status(stored: Option<&String>) -> Option<AcquireStatus> {
+    match stored {
+        None => Some(AcquireStatus::NotAcquired),
+        Some(text) => AcquireStatus::parse(text),
+    }
+}
+
 impl LibraryStore {
     /// One top-level work with its editions, listings and holdings.
     ///
@@ -241,14 +250,16 @@ impl LibraryStore {
                     holdings,
                 });
         }
-        let statuses: HashMap<String, AcquireStatus> =
+        // Stored text, so an unknown status (skipped) stays apart from no
+        // acquire row at all (never acquired).
+        let statuses: HashMap<String, String> =
             find_chunked::<edition_acquisitions::Entity, _>(self, &edition_ids, |part| {
                 edition_acquisitions::Entity::find()
                     .filter(edition_acquisitions::Column::EditionId.is_in(part.iter().cloned()))
             })
             .await?
             .into_iter()
-            .filter_map(|a| Some((a.edition_id, AcquireStatus::parse(&a.status)?)))
+            .map(|a| (a.edition_id, a.status))
             .collect();
         let (authors, _) = self.work_authors(&work, &edition_rows).await?;
         let series = self.work_series(&work.id).await?;
@@ -262,10 +273,7 @@ impl LibraryStore {
                     language: expression.language.clone(),
                     abridgement: Abridgement::parse(&expression.abridgement)?,
                     media_kind: MediaKind::parse(&edition.media_kind)?,
-                    acquire_status: statuses
-                        .get(&edition.id)
-                        .copied()
-                        .unwrap_or(AcquireStatus::NotAcquired),
+                    acquire_status: edition_status(statuses.get(&edition.id))?,
                     listings: listings_by_edition.remove(&edition.id).unwrap_or_default(),
                     expression_id: edition.expression_id,
                     title: edition.title,
@@ -377,6 +385,16 @@ mod tests {
             created_at: "2026-11-14T00:00:00Z".into(),
             updated_at: "2026-11-14T00:00:00Z".into(),
         }
+    }
+
+    #[test]
+    fn an_unknown_acquire_status_is_skipped_not_read_as_never_acquired() {
+        assert_eq!(edition_status(None), Some(AcquireStatus::NotAcquired));
+        assert_eq!(
+            edition_status(Some(&"acquired".to_string())),
+            Some(AcquireStatus::Acquired)
+        );
+        assert_eq!(edition_status(Some(&"archived".to_string())), None);
     }
 
     #[test]

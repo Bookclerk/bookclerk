@@ -11,7 +11,8 @@
 //!   id, so the catalog collapses them into one subscriber and each event
 //!   is handled once in the cluster. An edition event refreshes the
 //!   edition's work, a holding event the work of its listing, and
-//!   `book_acquired` the work of its edition (or title).
+//!   `book_acquired` the work of its edition (or title), and
+//!   `edition_acquire_changed` the work of its edition.
 //! - **Rebuild job.** When the library has no finished build of
 //!   [`bookclerk_library::LIBRARY_INDEX_LAYOUT`] (a new library, a database
 //!   copied to another backend, a new layout), the heartbeat queues one
@@ -46,8 +47,9 @@ pub const LIBRARY_INDEX_CONSUMER_ID: &str = "host:library-index";
 /// Every one is a host event type
 /// ([`bookclerk_plugin_manifest::HOST_EVENT_TYPES`]), which no plugin may
 /// produce, so the payloads come from the host.
-pub const INDEX_EVENT_TYPES: [&str; 5] = [
+pub const INDEX_EVENT_TYPES: [&str; 6] = [
     "edition_linked",
+    "edition_acquire_changed",
     "edition_updated",
     "holding_added",
     "holding_removed",
@@ -110,7 +112,8 @@ pub async fn upsert_catalog_row(library: &LibraryStore, node_id: &str) {
 /// What an event changed, in the terms the index refreshes by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Change {
-    /// An edition's metadata or links (`edition_linked`, `edition_updated`).
+    /// An edition's metadata, links or acquire state (`edition_linked`,
+    /// `edition_updated`, `edition_acquire_changed`).
     Edition(String),
     /// One listing's holders (`holding_added`, `holding_removed`).
     Listing(String),
@@ -160,7 +163,7 @@ struct AcquiredPayload {
 fn parse_change(event: &DomainEventRecord) -> Result<Change, String> {
     let bad = |err: serde_json::Error| format!("bad {} payload: {err}", event.event_type);
     match event.event_type.as_str() {
-        "edition_linked" | "edition_updated" => {
+        "edition_linked" | "edition_updated" | "edition_acquire_changed" => {
             serde_json::from_str::<EditionPayload>(&event.payload)
                 .map(|p| Change::Edition(p.edition_id))
                 .map_err(bad)
@@ -391,7 +394,11 @@ mod tests {
 
     #[test]
     fn events_parse_into_what_they_changed() {
-        for kind in ["edition_linked", "edition_updated"] {
+        for kind in [
+            "edition_linked",
+            "edition_updated",
+            "edition_acquire_changed",
+        ] {
             assert_eq!(
                 parse_change(&event(kind, r#"{"editionId":"ed"}"#)),
                 Ok(Change::Edition("ed".into()))

@@ -255,8 +255,13 @@ pub(crate) struct WorkRowInputs {
     pub acquisitions: Vec<edition_acquisitions::Model>,
 }
 
-/// Derives a work's page index row; `None` when the work is gone or no
-/// holding of any of its listings is left (the row is then deleted).
+/// Derives a work's page index row; `None` when the work is gone (the row
+/// is then deleted).
+///
+/// A work with no holding left keeps a row with a `holding_count` of 0,
+/// which list views skip. The row is the refresh fence: its `refreshed_at`
+/// stops a refresh that read the work while it was still held from writing
+/// it back.
 ///
 /// # Arguments
 ///
@@ -272,7 +277,11 @@ pub(crate) fn build_work_row(
         .iter()
         .filter(|h| inputs.listing_editions.contains_key(&h.listing_id))
         .collect();
-    let added_at = held.iter().map(|h| h.created_at.as_str()).max()?;
+    let added_at = held
+        .iter()
+        .map(|h| h.created_at.as_str())
+        .max()
+        .unwrap_or(work.created_at.as_str());
     let held_editions: HashSet<&str> = held
         .iter()
         .filter_map(|h| inputs.listing_editions.get(&h.listing_id))
@@ -338,6 +347,15 @@ pub(crate) fn build_work_row(
 }
 
 impl LibraryStore {
+    /// Most rows one read may return: the database plugin's advertised
+    /// `maxResultRows`, or no cap when it advertises none. At least 1.
+    fn result_row_cap(&self) -> u64 {
+        match self.db_capabilities().max_result_rows {
+            0 => u64::MAX,
+            rows => u64::from(rows),
+        }
+    }
+
     /// The top-level works of `work_ids`: a podcast episode's show stands
     /// in for the episode, and ids with no work are kept (their rows are
     /// deleted by the refresh).
@@ -542,8 +560,8 @@ impl LibraryStore {
         Ok(changed)
     }
 
-    /// Writes (or, for `None`, deletes) one work's row, unless a refresh
-    /// that started later already wrote it.
+    /// Writes (or, for a work that is gone, deletes) one work's row, unless
+    /// a refresh that started later already wrote it.
     async fn write_work_row(
         &self,
         work_id: &str,
@@ -631,7 +649,7 @@ impl LibraryStore {
         let mut query = works::Entity::find()
             .filter(works::Column::ParentWorkId.is_null())
             .order_by_asc(works::Column::Id)
-            .limit(REBUILD_PAGE);
+            .limit(REBUILD_PAGE.min(self.result_row_cap()));
         if let Some(after) = after {
             query = query.filter(works::Column::Id.gt(after));
         }
@@ -736,8 +754,13 @@ impl LibraryStore {
     /// order, or [`LibraryError::Orm`] when the read fails.
     pub async fn library_works_page(&self, query: &WorkPageQuery) -> Result<WorkPage> {
         use library_work_rows::Column as C;
-        let limit = query.limit.max(1);
-        let mut select = library_work_rows::Entity::find();
+        let cap = self.result_row_cap();
+        let limit = query.limit.max(1).min(cap);
+        // One row past the page tells whether another follows; an adapter
+        // that answers fewer rows than that gets a cursor after every full
+        // page (the last one may come back empty).
+        let probe = limit.saturating_add(1).min(cap);
+        let mut select = library_work_rows::Entity::find().filter(C::HoldingCount.gt(0));
         if let Some(kind) = query.media_kind {
             let kind = kind.as_str();
             select = select.filter(
@@ -801,11 +824,12 @@ impl LibraryStore {
             WorkSort::Added => select.order_by_desc(C::AddedAt).order_by_desc(C::WorkId),
         };
         let mut models = select
-            .limit(limit.saturating_add(1))
+            .limit(probe)
             .all(self.db())
             .await
             .map_err(LibraryError::Orm)?;
-        let more = u64::try_from(models.len()).unwrap_or(u64::MAX) > limit;
+        let fetched = u64::try_from(models.len()).unwrap_or(u64::MAX);
+        let more = fetched > limit || (probe == limit && fetched == limit);
         models.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         let next = if more {
             models.last().map(|last| WorkCursor {
@@ -963,14 +987,16 @@ mod tests {
     }
 
     #[test]
-    fn a_work_without_holdings_has_no_row() {
+    fn a_work_without_holdings_keeps_an_unheld_row() {
         let inputs = WorkRowInputs {
             work: Some(work("w1")),
             editions: vec![edition("e1", "audio", true)],
             listing_editions: HashMap::from([("l1".into(), "e1".into())]),
             ..WorkRowInputs::default()
         };
-        assert_eq!(build_work_row(&inputs, "now"), None);
+        let row = build_work_row(&inputs, "now").expect("an unheld work keeps its fence row");
+        assert_eq!(row.holding_count, 0);
+        assert_eq!(row.added_at, work("w1").created_at);
         assert_eq!(build_work_row(&WorkRowInputs::default(), "now"), None);
     }
 

@@ -725,10 +725,12 @@ library holds as works, expressions and editions:
   storage key, last error) and the title whose write set it, written with
   the title's own status. Only that title changes an acquired edition, so
   a sibling title's failed attempt never hides its files.
-- `library_work_rows`: the page index, one row per held top-level work
-  (title and author sort keys, first series, cover edition, media kinds,
-  furthest acquire state, edition and holding counts, newest holding
-  time). It is derived data, kept current by library events and rebuilt
+- `library_work_rows`: the page index, one row per top-level work that
+  has ever been held (title and author sort keys, first series, cover
+  edition, media kinds, furthest acquire state, edition and holding
+  counts, newest holding time); pages skip rows with no holding left. It
+  is derived data, refreshed by edition, holding and acquire events (not
+  by a credit or series write alone) and rebuilt
   when `library_index_builds` has no row for the current layout; see
   [Library index](../internals/jobs.md#library-index).
 - `user_title_state`: one user's finished flag, ratings and tags for a

@@ -191,7 +191,7 @@ async fn a_cursor_of_another_order_is_refused() {
 }
 
 #[tokio::test]
-async fn a_work_that_loses_its_last_holding_loses_its_row() {
+async fn a_work_that_loses_its_last_holding_leaves_the_list() {
     let store = store().await;
     let work = scan(&store, "B020", "acct-1", "Gone Soon", "C. Author").await;
     store
@@ -382,4 +382,41 @@ async fn a_users_state_for_one_work_reads_back() {
         .unwrap()
         .expect("the state was written");
     assert!(state.is_finished);
+}
+
+#[tokio::test]
+async fn a_stale_refresh_cannot_bring_back_a_work_that_lost_its_holdings() {
+    let store = store().await;
+    let work = scan(&store, "B030", "acct-1", "Briefly Held", "D. Author").await;
+    // A refresh reads the work while it is still held, then stalls.
+    let stale_stamp = "2000-01-01T00:00:00.000000Z";
+    let stale = super::build_work_row(&store.work_row_inputs(&work).await.unwrap(), stale_stamp)
+        .expect("a held work has a row");
+    assert_eq!(stale.holding_count, 1);
+    // Meanwhile the holding goes and a later refresh records it.
+    store
+        .remove_account_holdings("audible", "acct-1", HoldingSelection::All)
+        .await
+        .unwrap();
+    store
+        .refresh_library_works(std::slice::from_ref(&work))
+        .await
+        .unwrap();
+    // The stalled refresh now writes: the fence row refuses it.
+    assert_eq!(
+        store
+            .write_work_row(&work, Some(stale), stale_stamp)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(walk(
+        &store,
+        WorkPageQuery {
+            limit: 5,
+            ..WorkPageQuery::default()
+        }
+    )
+    .await
+    .is_empty());
 }

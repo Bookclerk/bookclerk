@@ -4983,13 +4983,12 @@ impl LibraryStore {
         let model = self.resolve_book(title_id, account_id).await?;
         let edition = self.edition_of_book(&model.uuid).await?;
         if let Some(atomic) = &self.atomic {
-            let event = if status == AcquireStatus::Acquired {
-                Some(event_outbox::prepare_publish_domain_event(
-                    event_outbox::book_acquired_spec(&model, storage_key, edition.as_deref()),
-                )?)
-            } else {
-                None
-            };
+            let event = event_outbox::acquire_status_event(
+                &model,
+                edition.as_deref(),
+                status,
+                storage_key,
+            )?;
             return atomic
                 .set_acquire_status(
                     &model.uuid,

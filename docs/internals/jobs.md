@@ -329,13 +329,17 @@ library database, so the whole cluster shares one index:
 
 - **From events.** Every daemon registers the same consumer,
   `host:library-index`, for `edition_linked`, `edition_updated`,
-  `holding_added`, `holding_removed` and `book_acquired`. The catalog
-  folds the registrations into one subscriber, so each event is handled
-  once in the cluster. An edition event refreshes its edition's work, a
-  holding event the work of its listing, and `book_acquired` the work of
-  its edition (or of its title, when the payload names no edition). A
-  refresh reads the work as it is now and writes its row, or deletes the
-  row once no holding is left. A failed refresh is retried up to ten
+  `edition_acquire_changed`, `holding_added`, `holding_removed` and
+  `book_acquired`. The catalog folds the registrations into one
+  subscriber, so each event is handled once in the cluster. An edition
+  event refreshes its edition's work, a holding event the work of its
+  listing, and `book_acquired` the work of its edition (or of its title,
+  when the payload names no edition). A refresh reads the work as it is
+  now and writes its whole row, so a row's authors and series are as
+  current as the last of these events: a credit or series change alone
+  does not refresh it. A work whose last holding is gone keeps its row
+  with a holding count of 0, which pages skip, and the row is deleted
+  only when the work itself is. A failed refresh is retried up to ten
   times, then dead-lettered.
 - **Rebuild job.** A finished rebuild records the index layout in
   `library_index_builds`. When the current layout has no row (a new
@@ -349,7 +353,9 @@ library database, so the whole cluster shares one index:
 Two refreshes of one work can run at once, from two deliveries or a
 delivery and the rebuild. Each stamps its row with the time it started
 reading, and a write only replaces a row stamped no later, so a slow
-refresh never overwrites a newer one.
+refresh never overwrites a newer one. Keeping an unheld work's row (rather
+than deleting it) keeps that stamp, so a slow refresh that read the work
+while it was still held cannot add it back.
 
 Pages use a keyset cursor (the last row's sort values, sent back as an
 opaque `cursor`), so every page costs the same and a row added between two

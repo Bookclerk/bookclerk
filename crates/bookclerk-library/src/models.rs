@@ -2330,6 +2330,10 @@ pub enum PublishDomainEventOutcome {
     },
 }
 
+/// Host event type published with an edition's acquire state change other
+/// than becoming acquired (payload `editionId`, `titleId`, `status`).
+pub const EDITION_ACQUIRE_CHANGED: &str = "edition_acquire_changed";
+
 /// Default delivery resource class (`network`).
 pub const EVENT_RESOURCE_CLASS_NETWORK: &str = "network";
 /// Queue that carries the domain-event bus (`[events]` producers and consumers).
