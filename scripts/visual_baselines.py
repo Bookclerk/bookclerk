@@ -15,7 +15,8 @@ here, so both are parsed sans-IO:
   token, so only PNG screenshots with the names, sizes and folders the
   checks produce are accepted.
 
-- An ``issue_comment`` ``created`` event whose body is ``/approve-visuals``,
+- An ``issue_comment`` ``created`` event whose body is
+  ``@<bot> approve-visuals``,
   the approval of someone without write access, and the team membership
   answer that decides it.
 - The ``issue_comment`` ``edited`` event of the bot's review comment. Anyone
@@ -184,9 +185,11 @@ APPROVER_ROLES = frozenset({"admin", "maintain"})
 #: without write access (a designer, say).
 APPROVER_TEAM = "visual-reviewers"
 
-#: The reply that approves the pending set for someone who cannot tick the
-#: bot's checkbox (that needs write access).
-APPROVE_COMMAND = "/approve-visuals"
+#: The word of the reply that approves the pending set for someone who
+#: cannot tick the bot's checkbox (that needs write access). The reply
+#: mentions the bot first, like the CLA check's ``recheck``:
+#: ``@bookclerk approve-visuals`` (see ``approve_command``).
+APPROVE_WORD = "approve-visuals"
 
 #: Every ``role_name`` GitHub returns for a collaborator (custom roles
 #: aside, which never approve).
@@ -252,6 +255,7 @@ def render_comment(
     approved_commit: str | None,
     changes: list[tuple[str, str]],
     raw_base: str,
+    bot_login: str,
 ) -> str:
     """Renders the bot's review comment for a proposed set.
 
@@ -295,7 +299,7 @@ def render_comment(
         "",
         checkbox(head, False),
         "",
-        f"Without write access, a visual reviewer approves by replying `{APPROVE_COMMAND}`.",
+        f"Without write access, a visual reviewer approves by replying `{approve_command(bot_login)}`.",
         "",
     ]
     return "\n".join(lines)
@@ -341,15 +345,30 @@ def parse_membership(raw: bytes) -> bool:
     return state == "active"
 
 
-def parse_command(raw: bytes) -> tuple[int, str] | None:
+def approve_command(bot_login: str) -> str:
+    """Returns the approval reply for bot ``bot_login``, such as ``@bookclerk approve-visuals``.
+
+    # Arguments
+    * ``bot_login``: the App's login, ``<slug>[bot]``; it is mentioned by
+      its slug.
+
+    # Returns
+    The command text.
+    """
+    return f"@{bot_login.removesuffix('[bot]')} {APPROVE_WORD}"
+
+
+def parse_command(raw: bytes, bot_login: str) -> tuple[int, str] | None:
     """Reads an ``issue_comment`` ``created`` event as an approval command.
 
     # Arguments
     * ``raw``: the event payload.
+    * ``bot_login``: the App's login, such as ``bookclerk[bot]``.
 
     # Returns
     ``(pull request number, sender login)`` when a user commented exactly
-    ``APPROVE_COMMAND`` (surrounding whitespace aside) on a pull request;
+    ``approve_command(bot_login)`` (surrounding whitespace and ASCII case
+    aside, like a mention) on a pull request;
     ``None`` for any other comment.
 
     # Errors
@@ -363,7 +382,9 @@ def parse_command(raw: bytes) -> tuple[int, str] | None:
     sender = _field(event, "sender", dict, "sender")
     if sender.get("type") != "User" or not isinstance(issue.get("pull_request"), dict):
         return None
-    if _field(comment, "body", str, "comment body").strip() != APPROVE_COMMAND:
+    body = _field(comment, "body", str, "comment body")
+    text = body.strip()
+    if not text.isascii() or text.lower() != approve_command(bot_login).lower():
         return None
     number = _field(issue, "number", int, "issue number")
     login = _field(sender, "login", str, "sender login")

@@ -6,10 +6,12 @@
 #   validates the set (PNG screenshots with the expected names and sizes
 #   only), force-pushes it to `pending/pr-<number>` in the public baselines
 #   repository, and posts or updates one review comment with the approved
-#   and proposed images and an approval checkbox.
+#   and proposed images and an approval checkbox, then requests a review
+#   from the `visual-reviewers` team (best effort).
 # - A maintainer (admin or maintain role) or an active member of the
 #   `visual-reviewers` org team approves by ticking that checkbox (which
-#   needs write access) or by replying `/approve-visuals`. `approve` checks
+#   needs write access) or by replying `@<app> approve-visuals` (the same
+#   mention form as the CLA check's `recheck`). `approve` checks
 #   the approver and that the comment is still for the pull request's head,
 #   tags the set `approved/<commit>` so it is kept, and commits the new lock
 #   to the pull request's branch through the API (signed by GitHub for the
@@ -119,14 +121,14 @@ jobs:
 
   approve:
     name: Approve visual baselines
-    # A user's edit of the bot's comment, or a user's `/approve-visuals`
+    # A user's edit of the bot's comment, or a user's `@<app> approve-visuals`
     # reply; the script re-checks every field.
     if: >-
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
       github.event.sender.type == 'User' &&
       ((github.event.action == 'edited' && contains(github.event.comment.body, 'bookclerk-visual-baselines v1')) ||
-       (github.event.action == 'created' && contains(github.event.comment.body, '/approve-visuals')))
+       (github.event.action == 'created' && contains(github.event.comment.body, 'approve-visuals')))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:

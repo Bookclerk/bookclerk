@@ -142,9 +142,12 @@ its new screenshots are approved. The `Visual baselines` workflow
    differs from the set the pull request's lock names, it pushes the set to
    `pending/pr-<number>` and posts one comment on the pull request. The
    comment shows the approved and proposed image of each changed
-   screenshot, and an approval checkbox for that head commit.
+   screenshot, and an approval checkbox for that head commit. The workflow
+   then requests a review from the `visual-reviewers` team, so its members
+   are notified.
 2. An approver ticks the checkbox. Ticking needs write access, so a visual
-   reviewer without it replies `/approve-visuals` instead.
+   reviewer without it replies `@bookclerk approve-visuals` instead, the
+   same form as the other bot commands.
 3. The workflow checks the approver and that the comment is still for the
    pull request's head. It then tags the set `approved/<commit>` and commits
    the new lock to the pull request's branch through the API, so GitHub
@@ -179,7 +182,8 @@ box and changes nothing else (see
 The `ui-visual` job holds no secrets. The workflow's App tokens are
 narrowed per step: Contents on the baselines repository alone for sets and
 tags, and Pull requests, Contents and organization Members (read) on this
-repository for the comment, the lock and the team check.
+repository for the comment, the review request, the lock and the team
+check.
 
 ### Setup
 
@@ -189,7 +193,10 @@ Before the first approval, an organization owner:
    with a ruleset that blocks deleting or force-pushing `approved/*` tags.
 2. Installs the automation App on it with Contents read and write.
 3. Grants the App the organization Members (read) permission.
-4. Creates the `visual-reviewers` team and adds the approvers.
+4. Creates the `visual-reviewers` team, adds the approvers, and gives the
+   team Read access to this repository. GitHub only accepts a review
+   request for a team that can see the repository; Read grants no code
+   write.
 
 The lock stays `none` until the first set is approved.
 

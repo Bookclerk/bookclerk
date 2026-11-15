@@ -10,9 +10,10 @@ it never checks out or runs pull request code
   pull request's ``baselines.lock`` names, and when they differ commits it
   to ``pending/pr-<number>`` in the baselines repository and posts (or
   updates) one review comment with the approved and proposed images and an
-  approval checkbox.
+  approval checkbox, then requests a review from the ``visual-reviewers``
+  team.
 - ``approve`` (``issue_comment`` ``edited``): when a user ticks that
-  checkbox, or replies ``/approve-visuals`` (for someone without write
+  checkbox, or replies ``@<app> approve-visuals`` (for someone without write
   access), checks that they are a maintainer or in the ``visual-reviewers``
   team and that the comment is
   still for the pull request's head, tags the set ``approved/<commit>`` so
@@ -323,10 +324,39 @@ def propose(env: dict[str, str], send: Transport, write: Transport) -> str:
             repository,
             number,
             comment_id,
-            vb.render_comment(head.sha, commit, lock, changes, raw_base),
+            vb.render_comment(head.sha, commit, lock, changes, raw_base, bot_login),
         )
-        done.append(f"#{number}: proposed {commit} ({len(changes)} changes)")
+        done.append(
+            f"#{number}: proposed {commit} ({len(changes)} changes)"
+            + request_review(write, repository, number)
+        )
     return "; ".join(done)
+
+
+def request_review(write: Transport, repository: str, number: int) -> str:
+    """Asks the ``APPROVER_TEAM`` team to review pull request ``number``.
+
+    Best effort: the proposal stands without it, so a refusal (the team
+    missing, or lacking access to the repository) is only logged. GitHub
+    keeps one request per team, so asking again on each proposal is
+    harmless.
+
+    # Arguments
+    * ``write``: requests reviewers, as the App.
+    * ``repository``: ``owner/name``.
+    * ``number``: the pull request.
+
+    # Returns
+    An empty string, or a note for the log when the request failed.
+    """
+    status, _ = write(
+        "POST",
+        f"repos/{repository}/pulls/{number}/requested_reviewers",
+        {"team_reviewers": [vb.APPROVER_TEAM]},
+    )
+    if status in (200, 201):
+        return ""
+    return f", review request for {vb.APPROVER_TEAM} refused (HTTP {status})"
 
 
 def may_approve(
@@ -371,7 +401,7 @@ def approve(
 ) -> str:
     """Runs ``approve`` and returns what it did, for the log.
 
-    A tick of the bot's checkbox (``edited``) or an ``APPROVE_COMMAND`` reply
+    A tick of the bot's checkbox (``edited``) or an ``approve_command`` reply
     (``created``) approves the set the bot's comment proposes, once the
     approver passes ``may_approve`` and the comment is still for the pull
     request's head.
@@ -396,7 +426,7 @@ def approve(
             vb.checkbox(approval.head, True), vb.checkbox(approval.head, False)
         )
     else:
-        command = vb.parse_command(raw)
+        command = vb.parse_command(raw, bot_login)
         if command is None:
             return "not an approval"
         number, sender = command

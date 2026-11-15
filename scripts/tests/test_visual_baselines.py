@@ -202,7 +202,8 @@ def oracle_command(raw: bytes) -> tuple | None | Exception:
         return None
     if type(c.get("body")) is not str:
         return ValueError()
-    if c["body"].strip() != "/approve-visuals":
+    text = c["body"].strip()
+    if not text.isascii() or text.lower() != "@bookclerk approve-visuals":
         return None
     if type(i.get("number")) is not int or type(s.get("login")) is not str:
         return ValueError()
@@ -252,7 +253,10 @@ def assert_matches(test: unittest.TestCase, kind: str, raw: bytes, msg: str) -> 
     elif kind == "approval":
         got, want = verdict(module_approval, raw), oracle_approval(raw)
     elif kind == "command":
-        got, want = verdict(vb.parse_command, raw), oracle_command(raw)
+        got, want = (
+            verdict(lambda r: vb.parse_command(r, BOT), raw),
+            oracle_command(raw),
+        )
     elif kind == "membership":
         got, want = verdict(vb.parse_membership, raw), oracle_membership(raw)
     elif kind == "role":
@@ -488,8 +492,10 @@ class DiffAndRenderTests(unittest.TestCase):
             "c" * 40,
             [("desktop/x--light.png", "changed")] * 50,
             "https://r",
+            BOT,
         )
         self.assertIn("and 10 more", body)
+        self.assertIn("`@bookclerk approve-visuals`", body)
         event = {
             "action": "edited",
             "comment": {
@@ -543,7 +549,12 @@ class BotTests(unittest.TestCase):
 
     def approval_event(self, sender: str = "maint") -> str:
         body = vb.render_comment(
-            "a" * 40, "b" * 40, None, [("desktop/x--light.png", "added")], "https://r"
+            "a" * 40,
+            "b" * 40,
+            None,
+            [("desktop/x--light.png", "added")],
+            "https://r",
+            BOT,
         )
         self.event(
             {
@@ -604,7 +615,12 @@ class BotTests(unittest.TestCase):
                 ("GET", f"{repo}/issues/990/comments?per_page=100&page=1"): (200, []),
             }
         )
-        write = FakeGitHub({("POST", f"{repo}/issues/990/comments"): (201, {})})
+        write = FakeGitHub(
+            {
+                ("POST", f"{repo}/issues/990/comments"): (201, {}),
+                ("POST", f"{repo}/pulls/990/requested_reviewers"): (201, {}),
+            }
+        )
         pushed = []
         with unittest.mock.patch.object(
             self.bot,
@@ -624,6 +640,15 @@ class BotTests(unittest.TestCase):
             ],
         )
         self.assertIn("set=" + "e" * 40, write.sent[0][2]["body"])
+        self.assertEqual(
+            write.sent[1],
+            (
+                "POST",
+                f"{repo}/pulls/990/requested_reviewers",
+                {"team_reviewers": ["visual-reviewers"]},
+            ),
+        )
+        self.assertNotIn("refused", out)
 
     def test_propose_skips_an_incomplete_set(self) -> None:
         self.env["ARTIFACT_DIR"] = str(self.root)
@@ -655,7 +680,12 @@ class BotTests(unittest.TestCase):
 
     def test_a_visual_reviewer_without_write_approves_by_reply(self) -> None:
         body = vb.render_comment(
-            "a" * 40, "b" * 40, None, [("desktop/x--light.png", "added")], "https://r"
+            "a" * 40,
+            "b" * 40,
+            None,
+            [("desktop/x--light.png", "added")],
+            "https://r",
+            BOT,
         )
         self.event(
             {
@@ -663,7 +693,7 @@ class BotTests(unittest.TestCase):
                 "comment": {
                     "id": 9,
                     "user": {"login": "designer", "type": "User"},
-                    "body": " /approve-visuals \n",
+                    "body": " @Bookclerk Approve-Visuals \n",
                 },
                 "issue": {"number": 990, "pull_request": {}},
                 "sender": {"login": "designer", "type": "User"},

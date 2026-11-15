@@ -504,7 +504,9 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     lowercase hex digits), of the PNG signature and `IHDR` header with
     hand-decoded big-endian sizes, of each path piece by piece, and of
     each event by exact JSON types, accepting an edit only when ticking the
-    one checkbox turns the old body into the new one.
+    one checkbox turns the old body into the new one, and a reply only when
+    it is exactly `@bookclerk approve-visuals` in ASCII, case and
+    surrounding whitespace aside (look-alike letters are refused).
 
 ### CodeQL language chooser (Python)
 
