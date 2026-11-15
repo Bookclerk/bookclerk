@@ -1,4 +1,4 @@
-import type { WorkSummary, WorksPage, WorksQuery } from "@/lib/api";
+import type { FacetValuesPage, WorkFacet, WorkSummary, WorksPage, WorksQuery } from "@/lib/api";
 
 /** The detail dialog's clickable metadata kinds (see `TitleDetailModal`). */
 export type MetaSearchKind = "authors" | "narrators" | "series" | "genres";
@@ -76,4 +76,74 @@ export async function readWorks(
     first = false;
   }
   return { works, next };
+}
+
+/** The library page's facet filter choices (`all` filters by none). */
+export const FACET_OPTIONS: { value: WorkFacet | "all"; label: string }[] = [
+  { value: "all", label: "No filter" },
+  { value: "author", label: "Author" },
+  { value: "series", label: "Series" },
+  { value: "genre", label: "Genre" },
+  { value: "narrator", label: "Narrator" },
+  { value: "publisher", label: "Publisher" },
+  { value: "source", label: "Store" },
+  { value: "tag", label: "My tags" },
+  { value: "progress", label: "My progress" },
+];
+
+/** The select value standing for "in no series" (sent as an empty value). */
+export const NO_SERIES = "__none__";
+
+/** Most values {@link readFacetValues} reads for one menu. */
+export const MAX_FACET_VALUES = 5000;
+
+/**
+ * The value choices of a facet filter's menu.
+ *
+ * Progress has fixed choices; series adds "No series" first; every other
+ * facet lists the values the library's works have, read page by page (up
+ * to {@link MAX_FACET_VALUES}).
+ *
+ * @param fetchPage - Reads one page of values (`fetchFacetValues`).
+ * @param facet - The facet.
+ * @returns Value and label pairs, in menu order.
+ */
+export async function readFacetValues(
+  fetchPage: (facet: Exclude<WorkFacet, "progress">, cursor?: string) => Promise<FacetValuesPage>,
+  facet: WorkFacet,
+): Promise<{ value: string; label: string }[]> {
+  if (facet === "progress") {
+    return [
+      { value: "finished", label: "Finished" },
+      { value: "not_finished", label: "Not finished" },
+    ];
+  }
+  const out: { value: string; label: string }[] =
+    facet === "series" ? [{ value: NO_SERIES, label: "No series" }] : [];
+  let cursor: string | undefined;
+  let read = 0;
+  do {
+    const page = await fetchPage(facet, cursor);
+    for (const v of page.values) {
+      out.push({ value: v.value, label: `${v.value} (${v.works})` });
+    }
+    read += page.values.length;
+    cursor = page.next_cursor ?? undefined;
+  } while (cursor && read < MAX_FACET_VALUES);
+  return out;
+}
+
+/**
+ * The `facet` and `value` a works query sends for the menus' choice.
+ *
+ * @param facet - The chosen facet, or `all`.
+ * @param value - The chosen value; `null` while none is chosen.
+ * @returns The query fields; empty when no filter applies.
+ */
+export function facetQuery(
+  facet: WorkFacet | "all",
+  value: string | null,
+): Pick<WorksQuery, "facet" | "value"> {
+  if (facet === "all" || value === null) return {};
+  return { facet, value: value === NO_SERIES ? "" : value };
 }

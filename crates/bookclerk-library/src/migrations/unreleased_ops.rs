@@ -1569,6 +1569,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // read the model, and a refresh never overwrites one that read later.
     // `media_kinds` is the sorted, comma-joined set of the work's edition
     // media kinds; `acquire_status` the furthest state any edition reached.
+    // `sort_series`, `length_minutes` and `purchased_at` are sort keys:
+    // series then position (works with no series last), the longest held
+    // edition's runtime (0 when unknown) and the newest purchase time
+    // (empty when no store reported one).
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS library_work_rows (
         work_id TEXT PRIMARY KEY NOT NULL REFERENCES works(id) ON DELETE CASCADE,
@@ -1585,6 +1589,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         edition_count INTEGER NOT NULL,
         holding_count INTEGER NOT NULL,
         added_at TEXT NOT NULL,
+        sort_series TEXT NOT NULL,
+        length_minutes INTEGER NOT NULL,
+        purchased_at TEXT NOT NULL,
         refreshed_at TEXT NOT NULL
     )",
     ),
@@ -1596,6 +1603,47 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_library_work_rows_added ON library_work_rows(added_at, work_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_library_work_rows_series ON library_work_rows(sort_series, sort_title, work_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_library_work_rows_purchased ON library_work_rows(purchased_at, work_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_library_work_rows_length ON library_work_rows(length_minutes, work_id)",
+    ),
+    // The page index's filter values: one row per value a held top-level
+    // work has under a facet (author, narrator, series, genre, publisher,
+    // source). `key` is the lower-cased value the filter matches; `value`
+    // is how it is shown. Written with the work's `library_work_rows` row
+    // and fenced by its `refreshed_at`; an unheld work has none.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS library_work_facets (
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        facet TEXT NOT NULL CHECK (facet IN ('author', 'narrator', 'series', 'genre', 'publisher', 'source')),
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (work_id, facet, key)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_library_work_facets_key ON library_work_facets(facet, key, work_id)",
+    ),
+    // One user's tags on a work, one row per tag, written with
+    // `user_title_state.tags` so the library can filter by a tag. `tag_key`
+    // is the lower-cased tag.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS user_work_tags (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        tag_key TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        PRIMARY KEY (user_id, tag_key, work_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_user_work_tags_work ON user_work_tags(work_id)",
     ),
     // Finished page index builds by layout: a layout with no row has never
     // been built on this library, so the heartbeat queues a rebuild.

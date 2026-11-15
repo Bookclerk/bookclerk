@@ -19,13 +19,16 @@ use crate::control_plane::batch;
 use crate::entities::{account_links, portal_identities, user_title_state};
 use crate::error::{LibraryError, Result};
 use crate::models::UserTitleState;
+use crate::store::library_index::facet_key;
 use crate::store::UserBookFields;
 
 impl LibraryStore {
     /// Records `fields` as `user_id`'s state for `work_id`.
     ///
     /// Fields left `None` keep their stored value (a new row starts
-    /// unfinished, unrated and untagged). The write is one atomic batch.
+    /// unfinished, unrated and untagged). New tags also replace the work's
+    /// `user_work_tags` rows, which the library page filters by. The write
+    /// is one atomic batch.
     ///
     /// # Arguments
     ///
@@ -43,9 +46,12 @@ impl LibraryStore {
         work_id: &str,
         fields: &UserBookFields,
     ) -> Result<()> {
-        let statements = user_title_state_upsert(user_id, work_id, fields, &now_str());
+        let mut statements = user_title_state_upsert(user_id, work_id, fields, &now_str()).to_vec();
+        if let Some(tags) = fields.tags.as_deref() {
+            statements.extend(user_work_tags_replace(user_id, work_id, tags));
+        }
         let operation_id = format!("user-title-state-{}", uuid::Uuid::new_v4());
-        self.execute_host_batch(batch::request(&operation_id, statements.to_vec()))
+        self.execute_host_batch(batch::request(&operation_id, statements))
             .await?;
         Ok(())
     }
@@ -196,6 +202,39 @@ fn user_title_state_upsert(
             ],
         ),
     ]
+}
+
+/// The statements that replace one user's `user_work_tags` rows for one
+/// work with `tags`: whitespace-separated, each distinct [`facet_key`] once,
+/// its first spelling kept.
+///
+/// # Arguments
+///
+/// * `user_id` - The user.
+/// * `work_id` - The work.
+/// * `tags` - The tags as stored in `user_title_state.tags`.
+fn user_work_tags_replace(user_id: i64, work_id: &str, tags: &str) -> Vec<TypedDbStatement> {
+    let mut statements = vec![batch::exec(
+        "DELETE FROM user_work_tags WHERE user_id = ? AND work_id = ?",
+        vec![batch::int(user_id), batch::text(work_id)],
+    )];
+    let mut seen = BTreeSet::new();
+    for tag in tags.split_whitespace() {
+        let key = facet_key(tag);
+        if seen.insert(key.clone()) {
+            statements.push(batch::exec(
+                "INSERT OR IGNORE INTO user_work_tags (user_id, work_id, tag_key, tag) \
+                 VALUES (?, ?, ?, ?)",
+                vec![
+                    batch::int(user_id),
+                    batch::text(work_id),
+                    batch::text(&key),
+                    batch::text(tag),
+                ],
+            ));
+        }
+    }
+    statements
 }
 
 /// Maps a stored row; `is_finished` is stored as 0/1.

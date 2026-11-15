@@ -383,10 +383,27 @@ refresh never overwrites a newer one. Keeping an unheld work's row (rather
 than deleting it) keeps that stamp, so a slow refresh that read the work
 while it was still held cannot add it back.
 
-Pages use a keyset cursor (the last row's sort values, sent back as an
-opaque `cursor`), so every page costs the same and a row added between two
-requests never shifts the next page. A cursor issued for one `sort` is
-refused under another.
+Each row carries the sort keys of every order the page offers: title,
+first author, newest holding, series then position (works in no series
+last), newest reported purchase and longest held runtime (works with no
+purchase time or runtime last). Pages use a keyset cursor (the last row's
+sort values, sent back as an opaque `cursor`), so every page costs the
+same and a row added between two requests never shifts the next page. A
+cursor issued for one `sort` is refused under another.
+
+The same refresh writes the work's filter values to
+`library_work_facets`: its authors and narrators (from credits and
+listings), series, genres (the work's and listings' categories, split on
+commas, semicolons and bars), publishers and the storefronts it is held
+through, each under its lower-cased key. The row write, the removal of
+the old values and as many new values as fit share one atomic batch; the
+rest follow in further batches, each checking that the row still carries
+this refresh's stamp, so a later refresh's values are never mixed with an
+older one's. `facet` and `value` on `GET /api/library/works` filter by one
+value, and `GET /api/library/works/facets/{facet}` pages a facet's values
+with how many held works have each. Tags and progress are per person, so
+they are read from the caller's own `user_work_tags` and
+`user_title_state` rows instead.
 
 ## Admission and backpressure
 
