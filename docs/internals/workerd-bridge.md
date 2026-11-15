@@ -30,6 +30,13 @@ gateway ends) so a blocking stdin read cannot lock stdout.
 | RPC (Cap'n Proto) | Unix `BOOKCLERK_GATEWAY_GUEST_RPC=fd:3`. Windows `BOOKCLERK_GATEWAY_GUEST_RPC=handle:<read>` and `BOOKCLERK_GATEWAY_GUEST_RPC_WRITE=handle:<write>` | stdin + stdout |
 | CONNECT mux | Production: served by the unsandboxed host (no gateway env). Unjailed conformance may set Unix `BOOKCLERK_GATEWAY_PROXY=fd:4` or Windows `BOOKCLERK_GATEWAY_PROXY=handle:<read>` plus `BOOKCLERK_GATEWAY_PROXY_WRITE=handle:<write>` | Unix `BOOKCLERK_SOCKET_PROXY=fd:3`. Windows `BOOKCLERK_SOCKET_PROXY=handle:<read>` and `BOOKCLERK_SOCKET_PROXY_WRITE=handle:<write>` |
 
+With `BOOKCLERK_SOCKET_BROKER=1` the front door starts as the plugin's
+socket broker instead: no isolate and no guest, just the plugin ABI's
+`Sockets` served on stdio, with the host's `SocketHandler` on the same
+connection, under the same effective egress policy (see
+[Pushed sockets](../plugins/abi.md#pushed-sockets-sockets)). A manifest
+without `[sockets]` refuses broker mode.
+
 `BOOKCLERK_WORKERD_STATE_DIR` is the host-owned `session-<nonce>/` directory
 (also the gateway `TMPDIR`). The guest `TMPDIR` is its own scratch, so it
 cannot read gateway state. See [guest-jail.md](guest-jail.md) and

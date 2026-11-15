@@ -393,3 +393,71 @@ fn socket_messages_round_trip_through_the_codec() {
         Err(RoundTripFailure::Rejected(_))
     ));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn host_and_broker_serve_each_other_over_one_link() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (host_end, broker_end) = tokio::io::duplex(64 * 1024);
+            let broker_sockets = Arc::new(RecordingSockets::default());
+            let handler_slot: Rc<RefCell<Option<SocketHandlerClient>>> = Rc::default();
+            let (broker_read, broker_write) = tokio::io::split(broker_end);
+            let served = Arc::clone(&broker_sockets);
+            let slot = Rc::clone(&handler_slot);
+            let broker = tokio::task::spawn_local(serve_socket_broker(
+                broker_read,
+                broker_write,
+                move |handler| {
+                    *slot.borrow_mut() = Some(handler);
+                    served as Arc<dyn Sockets>
+                },
+            ));
+
+            let host_handler = Arc::new(RecordingHandler::default());
+            let (host_read, host_write) = tokio::io::split(host_end);
+            let (sockets, rpc) = connect_socket_broker(
+                host_read,
+                host_write,
+                Arc::clone(&host_handler) as Arc<dyn SocketHandler>,
+            );
+            let rpc = tokio::task::spawn_local(rpc);
+
+            // Host to broker: a guest's call forwarded through the link.
+            let info = sockets
+                .connect(SocketConnectRequest {
+                    url: "wss://abs.example.com/socket.io/".into(),
+                    ..SocketConnectRequest::default()
+                })
+                .await
+                .expect("connect through the link");
+            assert_eq!(info.socket, "s-1");
+            assert_eq!(
+                *broker_sockets.calls.borrow(),
+                vec!["connect wss://abs.example.com/socket.io/".to_string()]
+            );
+
+            // Broker to host: a delivery through the host's bootstrap.
+            let handler = handler_slot
+                .borrow()
+                .clone()
+                .expect("broker got the handler");
+            handler
+                .message(SocketMessage {
+                    socket: "s-1".into(),
+                    frame: SocketFrame::Text("42".into()),
+                    attachment: Vec::new(),
+                })
+                .await
+                .expect("deliver through the link");
+            assert_eq!(
+                *host_handler.seen.borrow(),
+                vec!["message s-1 Text(\"42\")".to_string()]
+            );
+
+            drop((sockets, handler));
+            rpc.abort();
+            let _ = broker.await;
+        })
+        .await;
+}
