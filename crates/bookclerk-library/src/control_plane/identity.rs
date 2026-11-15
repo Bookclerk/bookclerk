@@ -3,6 +3,7 @@
 //! The identity file is bootstrap material. Hostname text is never an input.
 //! A process incarnation is memory-only and is written as a heartbeat observation.
 
+use crate::EntityKind;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -534,7 +535,7 @@ pub async fn load_node(store: &LibraryStore, node_id: &str) -> Result<NodeRecord
         .one(store.db())
         .await
         .map_err(LibraryError::Orm)?
-        .ok_or_else(|| LibraryError::NotFound(format!("node {node_id}")))?;
+        .ok_or_else(|| LibraryError::not_found(EntityKind::Node, node_id))?;
     Ok(record_from_model(row))
 }
 

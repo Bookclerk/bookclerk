@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "active": true,
+    "publisher": "Bookclerk",
+    "category": "Utility",
+    "shortDescription": "Your audiobook library",
+    "longDescription": "Bookclerk keeps your audiobook purchases from every store in one library.",
+    "icon": [
+      "../../assets/brand/png/mark/bookclerk-mark-32.png",
+      "../../assets/brand/png/mark/bookclerk-mark-128.png",
+      "../../assets/brand/png/mark/bookclerk-mark-256.png",
+      "../../assets/brand/png/mark/bookclerk-mark-512.png",
+      "../../assets/brand/png/mark/bookclerk-mark-1024.png",
+      "../../assets/brand/web/favicon.ico"
+    ],
+    "resources": {
+      "../../target/desktop-runtime/": "runtime/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

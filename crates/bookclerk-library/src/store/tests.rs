@@ -108,6 +108,38 @@ async fn account_and_book_roundtrip() {
 }
 
 #[tokio::test]
+async fn a_status_other_than_acquired_publishes_its_edition_change() {
+    for store in [kit_store().await, in_process_store().await] {
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let book = store
+            .upsert_book(&NewBook::minimal("B00Q", "user-1", "us", "Queued"))
+            .await
+            .unwrap();
+        let edition = store.edition_of_book(&book.uuid).await.unwrap().unwrap();
+        for status in [AcquireStatus::Queued, AcquireStatus::Error] {
+            store
+                .set_acquire_status("B00Q", "user-1", status, None, Some("x"))
+                .await
+                .unwrap();
+            let event = next_event_of(&store, crate::EDITION_ACQUIRE_CHANGED).await;
+            assert_eq!(event.ordering_key, book.uuid);
+            assert_eq!(event.source, "audible");
+            let payload: serde_json::Value = serde_json::from_str(&event.payload).unwrap();
+            assert_eq!(payload["editionId"], edition.as_str());
+            assert_eq!(payload["titleId"], book.uuid.as_str());
+            assert_eq!(payload["status"], status.as_str());
+            store
+                .dispatch_event_deliveries(&event.id, &[], &Uuid::new_v4().to_string())
+                .await
+                .unwrap();
+        }
+    }
+}
+
+#[tokio::test]
 async fn status_counts_come_from_one_grouped_read_under_every_profile() {
     for profile in crate::test_support::Profile::ALL {
         let kit = crate::test_support::sqlite::memory(profile).await;
@@ -8473,6 +8505,115 @@ async fn the_event_stream_scan_budget_stops_and_resumes() {
     let (ids, pages) = read_all_event_pages(store, read).await;
     assert_eq!(ids, vec![wanted]);
     assert!(pages >= 2);
+}
+
+/// Asserts `result` is a not-found error naming `entity`.
+///
+/// The result itself is never printed: a row it carries could hold a
+/// secret.
+fn assert_missing<T>(result: Result<T>, entity: crate::EntityKind) {
+    assert!(
+        matches!(&result, Err(LibraryError::NotFound(missing)) if missing.entity == entity),
+        "expected {entity} not found"
+    );
+}
+
+/// Lookups of rows that do not exist name the missing kind (#559).
+#[tokio::test]
+async fn missing_rows_name_their_kind() {
+    use crate::models::{RequestStatus, UserRole, UserStatus};
+    use crate::EntityKind;
+    let store = kit_store().await;
+    assert_missing(
+        store.set_scan_enabled("audible", "nobody", false).await,
+        EntityKind::Account,
+    );
+    assert_missing(
+        store.mark_connection_active("audible", "nobody").await,
+        EntityKind::Account,
+    );
+    assert_missing(
+        store.revoke_credentials("audible", "nobody").await,
+        EntityKind::Account,
+    );
+    assert_missing(store.delete_user(9_999).await, EntityKind::User);
+    assert_missing(
+        store.set_user_status(9_999, UserStatus::Disabled).await,
+        EntityKind::User,
+    );
+    assert_missing(
+        store.set_user_display_name(9_999, Some("x")).await,
+        EntityKind::User,
+    );
+    assert_missing(
+        store.set_user_password_hash(9_999, None).await,
+        EntityKind::User,
+    );
+    assert_missing(
+        store.set_user_login_name(9_999, Some("x")).await,
+        EntityKind::User,
+    );
+    assert_missing(store.set_user_email(9_999, None).await, EntityKind::User);
+    assert_missing(
+        store.set_user_avatar_source(9_999, None).await,
+        EntityKind::User,
+    );
+    assert_missing(
+        store.set_user_role(9_999, UserRole::Member).await,
+        EntityKind::User,
+    );
+    assert_missing(
+        store
+            .set_operator_session_impersonating("no-such-hash", None)
+            .await,
+        EntityKind::OperatorSession,
+    );
+    assert_missing(
+        store.update_webauthn_credential(9_999, "{}").await,
+        EntityKind::Passkey,
+    );
+    assert_missing(
+        store.set_user_totp_enabled(9_999, false).await,
+        EntityKind::User,
+    );
+    assert_missing(
+        store.unlink_account(9_999, "audible", "nobody").await,
+        EntityKind::Account,
+    );
+    assert_missing(
+        store
+            .set_ignored("no-such-title", "nobody", true, None)
+            .await,
+        EntityKind::Book,
+    );
+    assert_missing(
+        store.delete_saved_filter("nope").await,
+        EntityKind::SavedFilter,
+    );
+    assert_missing(
+        store
+            .set_work_enrichment("no-such-work", &crate::WorkEnrichment::default())
+            .await,
+        EntityKind::Work,
+    );
+    assert_missing(
+        store
+            .dispatch_event_deliveries("no-such-event", &[], "op")
+            .await,
+        EntityKind::DomainEvent,
+    );
+    assert_missing(
+        store
+            .update_catalog_enrichment("no-such-book", &CatalogEnrichmentFields::default())
+            .await,
+        EntityKind::Book,
+    );
+    assert_missing(
+        store
+            .update_title_request_status("no-such-request", RequestStatus::Cancelled, None)
+            .await,
+        EntityKind::TitleRequest,
+    );
 }
 
 /// Clerk sign-in sessions under every database profile: a library card

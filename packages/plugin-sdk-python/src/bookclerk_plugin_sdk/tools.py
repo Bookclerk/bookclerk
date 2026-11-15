@@ -279,6 +279,7 @@ def _validate_message_retention(field: str, consumer: dict[str, Any]) -> None:
 HOST_EVENT_TYPES = frozenset(
     {
         "book_acquired",
+        "edition_acquire_changed",
         "edition_linked",
         "edition_updated",
         "holding_added",

@@ -202,6 +202,9 @@ impl JobTransport for InProcessJobTransport {
                 crate::search_index::run_search_index_rebuild(&self.state, &cmd.payload, Some(&ctx))
                     .await
             }
+            JobKind::LibraryIndexRebuild => {
+                crate::library_index::run_library_index_rebuild(&self.state, Some(&ctx)).await
+            }
             // Only its branch takes a request, over `requests.claim`; no
             // claim path of this library hands it to a worker.
             JobKind::BranchRequest => {

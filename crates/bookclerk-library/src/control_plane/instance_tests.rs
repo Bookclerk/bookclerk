@@ -1508,3 +1508,106 @@ async fn a_version_installed_through_one_connection_is_active_on_another() {
         "2.0.0"
     );
 }
+
+/// Asserts `result` is a not-found error naming `entity`.
+///
+/// The result itself is never printed: a row it carries could hold a
+/// secret.
+fn assert_missing<T>(result: Result<T>, entity: crate::EntityKind) {
+    assert!(
+        matches!(&result, Err(LibraryError::NotFound(missing)) if missing.entity == entity),
+        "expected {entity} not found"
+    );
+}
+
+/// Configuration lookups of rows that do not exist name the missing kind
+/// (#559).
+#[tokio::test]
+async fn missing_configuration_rows_name_their_kind() {
+    use crate::EntityKind;
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(dir.path().join("library.db").as_path()).await;
+    let instance = PluginInstanceId::mint();
+    assert_missing(
+        ensure_plugin_deployment(
+            &store,
+            &operator(),
+            &instance,
+            "node-x",
+            DesiredState::Present,
+        )
+        .await,
+        EntityKind::PluginInstance,
+    );
+    assert_missing(
+        replace_plugin_deployment(
+            &store,
+            &operator(),
+            "no-such",
+            1,
+            DesiredState::Present,
+            "op",
+        )
+        .await,
+        EntityKind::PluginDeployment,
+    );
+    assert_missing(
+        delete_plugin_deployment(&store, &operator(), "no-such").await,
+        EntityKind::PluginDeployment,
+    );
+    assert_missing(
+        activate_version(&store, &operator(), "path:x#y", "1.0.0", "node-x").await,
+        EntityKind::PluginVersion,
+    );
+    assert_missing(
+        approve_version_grant(&store, &operator(), "path:x#y", "1.0.0", "{}").await,
+        EntityKind::PluginVersion,
+    );
+    assert_missing(
+        require_plugin_schema(&store, "path:x#y").await,
+        EntityKind::SettingsSchema,
+    );
+    assert_missing(
+        load_instance_config(&store, &instance).await,
+        EntityKind::Configuration,
+    );
+    assert_missing(
+        load_node_runtime(&store, "node-x").await,
+        EntityKind::Configuration,
+    );
+    assert_missing(
+        set_node_owner(&store, &operator(), "node-x", None).await,
+        EntityKind::Node,
+    );
+    assert_missing(
+        set_node_labels(&store, &operator(), "node-x", &[]).await,
+        EntityKind::Node,
+    );
+    assert_missing(
+        resolve_instance_bindings(
+            &store,
+            &instance,
+            &InstanceBindingGrant {
+                config: false,
+                secrets: false,
+            },
+            &bookclerk_plugin_abi::SettingsSchema::new(Vec::new()),
+        )
+        .await,
+        EntityKind::PluginInstance,
+    );
+    assert_missing(
+        put_plugin_placement(
+            &store,
+            &operator(),
+            &instance,
+            &PlacementSpec {
+                replicas: Replicas::Count(1),
+                constraints: Vec::new(),
+            },
+            None,
+        )
+        .await,
+        EntityKind::PluginInstance,
+    );
+}

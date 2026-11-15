@@ -994,3 +994,13 @@ fn parsing_a_link_registers_its_secret_for_redaction() {
     assert!(bookclerk_config::contains_registered_secret(&link));
     assert!(!bookclerk_config::redact_str(&link).contains(secret));
 }
+
+#[tokio::test]
+async fn a_link_for_a_missing_user_names_the_user() {
+    let _guard = master_key_test_lock_async().await;
+    let (store, _dir) = cluster().await;
+    let err = mint_enrollment_link(&store, &operator(), 9_999, "", None)
+        .await
+        .expect_err("no such user");
+    assert_eq!(err.to_string(), "user 9999 not found");
+}

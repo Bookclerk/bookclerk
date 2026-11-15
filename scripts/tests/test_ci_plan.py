@@ -2104,6 +2104,32 @@ class EnvelopeTests(unittest.TestCase):
         self.assertEqual([c.argv[:2] for c in kept], [["cargo", "install-platform"], ["cargo", "test"]])
         self.assertIn("envelope_seed", kept[1].argv)
 
+    def test_build_plan_digest_rekeys_only_the_cache_whose_builds_changed(self) -> None:
+        art = resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="push",
+            force_full=True,
+            build_only=True,
+            paths=["Cargo.lock"],
+            metadata=META,
+            workspace=REPO,
+        )
+        before = execute.build_plan_digests(art, REPO)
+        self.assertEqual(before, execute.build_plan_digests(art, REPO))
+        with mock.patch.dict(execute.ENVELOPE_SEED_PROFILE, {"CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "8"}):
+            after = execute.build_plan_digests(art, REPO)
+        self.assertNotEqual(before["release"], after["release"])
+        self.assertEqual(before["lint"], after["lint"])
+        self.assertEqual(before["debug"], after["debug"])
+        # A hosted check counts toward its host job's cache.
+        with mock.patch.dict(execute.BUILD_ONLY_HOSTED_CHECKS, {"windows_cluster": "release"}):
+            moved = execute.build_plan_digests(art, REPO)
+        self.assertNotEqual(before["debug"], moved["debug"])
+
     def test_envelope_seed_compiles_without_lto(self) -> None:
         p = plan("crates/bookclerk-library/tests/envelope_seed.rs")
         seed = [c for _, c in planned_commands(artifact(p), "envelope", CTX) if not _][1]

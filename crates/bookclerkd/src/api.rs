@@ -1262,6 +1262,8 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(list_books))
         .routes(routes!(get_book))
         .routes(routes!(get_book_cover))
+        .routes(routes!(crate::library_works::list_works))
+        .routes(routes!(crate::library_works::get_work))
         .routes(routes!(crate::covers::get_cover))
         .routes(routes!(crate::covers::get_image))
         .routes(routes!(crate::covers::get_gravatar))
@@ -1693,7 +1695,9 @@ fn api_timeout_for_path(path: &str) -> Duration {
 /// Resolve the Vite build output directory for the GUI.
 ///
 /// Prefer `BOOKCLERK_UI_DIST`, then paths beside the running binary (desktop
-/// launches often have cwd=`$HOME`), then cwd-relative / compile-time paths.
+/// launches often have cwd=`$HOME`) and the desktop app's packaged runtime
+/// (`bookclerk_sandbox::packaged_runtime_dirs`), then cwd-relative /
+/// compile-time paths.
 #[must_use]
 pub fn resolve_ui_dist() -> Option<PathBuf> {
     if let Ok(v) = std::env::var("BOOKCLERK_UI_DIST") {
@@ -1717,6 +1721,12 @@ pub fn resolve_ui_dist() -> Option<PathBuf> {
                 dir.join("../../ui/dist"),
             ]);
         }
+        // The desktop app's packaged runtime keeps the web app too.
+        candidates.extend(
+            bookclerk_sandbox::packaged_runtime_dirs(&exe)
+                .into_iter()
+                .map(|runtime| runtime.join("ui/dist")),
+        );
     }
     candidates.extend([
         PathBuf::from("ui/dist"),

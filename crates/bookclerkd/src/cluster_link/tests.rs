@@ -1376,7 +1376,7 @@ mod results_and_uploads {
     use bookclerk_library::{JobResourceClass, NewBook};
     use bookclerk_node_proto::{Body, UploadFile};
     use bookclerk_plugin_abi::ScanBook;
-    use bookclerk_plugin_host::RefreshedCredentialSink;
+    use bookclerk_plugin_host::{HandedPass, HandedScan, RefreshedCredentialSink};
     use bookclerk_source::DownloadOptions;
     use bookclerk_storage::StorageBackend;
     use sha2::Digest as _;
@@ -1435,6 +1435,11 @@ mod results_and_uploads {
     struct StubGuests {
         /// Rows a scan returns.
         rows: Vec<ScanBook>,
+        /// What successive scans return instead of `rows` (no pass reports),
+        /// first to last; once empty, scans return `rows`.
+        script: Arc<Mutex<std::collections::VecDeque<HandedScan>>>,
+        /// The sync tokens each scan was handed.
+        tokens: Arc<Mutex<Vec<std::collections::HashMap<String, String>>>>,
         /// Bytes of every acquired file.
         payload: Arc<Vec<u8>>,
         /// This host's own local destination root (H-2), if any.
@@ -1535,7 +1540,7 @@ mod results_and_uploads {
             refreshed: Arc<dyn RefreshedCredentialSink>,
             scan: HostScan,
             _cancel: Arc<AtomicBool>,
-        ) -> anyhow::Result<Vec<ScanBook>> {
+        ) -> anyhow::Result<HandedScan> {
             self.note(bindings);
             if let Some(credentials) = self.refresh {
                 refreshed
@@ -1562,12 +1567,17 @@ mod results_and_uploads {
                 .lock()
                 .unwrap()
                 .push((scan.import_episodes, scan.import_plus_titles));
+            self.tokens.lock().unwrap().push(scan.sync_tokens.clone());
             if self.block_scan {
                 let _flag = DropFlag(Arc::clone(&self.dropped));
                 self.entered.store(true, Ordering::SeqCst);
                 std::future::pending::<()>().await;
             }
-            Ok(self.rows.clone())
+            let scripted = self.script.lock().unwrap().pop_front();
+            Ok(scripted.unwrap_or_else(|| HandedScan {
+                rows: self.rows.clone(),
+                passes: Vec::new(),
+            }))
         }
 
         async fn acquire(
@@ -1840,6 +1850,83 @@ mod results_and_uploads {
             .unwrap()
             .iter()
             .all(|book| book.product_id != "late"));
+    }
+
+    /// A host scan's passes keep the owner's sync state: a full pass's
+    /// token is stored and handed back with the account's next host scan,
+    /// a delta pass's removals take those holdings, and a complete full
+    /// pass prunes the holdings its rows did not list.
+    #[tokio::test]
+    async fn host_scan_passes_keep_the_owners_sync_state() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let pass = |token: &str, removed: &[&str], complete: bool, full: bool| HandedPass {
+            account_id: "riley-acct".into(),
+            removed: removed.iter().map(|id| (*id).to_string()).collect(),
+            sync_token: token.into(),
+            complete,
+            full,
+        };
+        let scans = [
+            HandedScan {
+                rows: vec![
+                    row("riley-acct", "p1"),
+                    row("riley-acct", "p2"),
+                    row("riley-acct", "p3"),
+                ],
+                passes: vec![pass("t1", &[], true, true)],
+            },
+            HandedScan {
+                rows: vec![row("riley-acct", "p4")],
+                passes: vec![pass("t2", &["p2"], false, false)],
+            },
+            HandedScan {
+                rows: vec![row("riley-acct", "p1")],
+                passes: vec![pass("t3", &[], true, true)],
+            },
+        ];
+        let guests = StubGuests {
+            script: Arc::new(Mutex::new(scans.into_iter().collect())),
+            work: world.host_files.path().join("cluster-work"),
+            ..StubGuests::default()
+        };
+        let (_handle, _stop) = start(&world, guests.clone()).await;
+        let token = || async {
+            world
+                .owner
+                .scan_state(PLUGIN, "riley-acct")
+                .await
+                .unwrap()
+                .map(|state| state.sync_token)
+                .unwrap_or_default()
+        };
+        let mut expected_tokens = Vec::new();
+        for (handed, stored) in [("", "t1"), ("t1", "t2"), ("t2", "t3")] {
+            let job_id = enqueue_scan(&world.owner).await;
+            eventually("the host scan to finish", || async {
+                job(&world.owner, &job_id).await.state == JobState::Succeeded
+            })
+            .await;
+            assert_eq!(token().await, stored);
+            expected_tokens.push(if handed.is_empty() {
+                std::collections::HashMap::new()
+            } else {
+                std::collections::HashMap::from([("riley-acct".to_string(), handed.to_string())])
+            });
+        }
+        assert_eq!(*guests.tokens.lock().unwrap(), expected_tokens);
+        // Only p1 is still held: p2 left in the delta pass, and the last
+        // full pass listed p1 alone.
+        let held = world
+            .owner
+            .remove_account_holdings(
+                PLUGIN,
+                "riley-acct",
+                bookclerk_library::HoldingSelection::All,
+            )
+            .await
+            .unwrap();
+        assert_eq!(held, 1);
     }
 
     /// Credentials the guest refreshed during a host scan are written back
