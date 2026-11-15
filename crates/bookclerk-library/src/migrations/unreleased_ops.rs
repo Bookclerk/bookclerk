@@ -1561,6 +1561,50 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         updated_at TEXT NOT NULL
     )",
     ),
+    // The library's page index (docs/adr/library-data-model.md, decision 8
+    // and Consequences): one row per held top-level work, so list views
+    // page one table instead of joining works, editions, listings and
+    // holdings. A cluster-wide event consumer refreshes a work's row when
+    // its editions or holdings change; `refreshed_at` is when that refresh
+    // read the model, and a refresh never overwrites one that read later.
+    // `media_kinds` is the sorted, comma-joined set of the work's edition
+    // media kinds; `acquire_status` the furthest state any edition reached.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS library_work_rows (
+        work_id TEXT PRIMARY KEY NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('book', 'podcast')),
+        title TEXT NOT NULL,
+        sort_title TEXT NOT NULL,
+        authors TEXT,
+        sort_author TEXT NOT NULL,
+        series TEXT,
+        series_position TEXT,
+        cover_edition_id TEXT,
+        media_kinds TEXT NOT NULL,
+        acquire_status TEXT NOT NULL CHECK (acquire_status IN ('not_acquired', 'queued', 'downloading', 'acquired', 'error')),
+        edition_count INTEGER NOT NULL,
+        holding_count INTEGER NOT NULL,
+        added_at TEXT NOT NULL,
+        refreshed_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_library_work_rows_title ON library_work_rows(sort_title, work_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_library_work_rows_author ON library_work_rows(sort_author, sort_title, work_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_library_work_rows_added ON library_work_rows(added_at, work_id)",
+    ),
+    // Finished page index builds by layout: a layout with no row has never
+    // been built on this library, so the heartbeat queues a rebuild.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS library_index_builds (
+        layout INTEGER PRIMARY KEY NOT NULL,
+        finished_at TEXT NOT NULL
+    )",
+    ),
     // The live socket's revision reads take each table's newest change
     // stamp every couple of seconds; an index makes that a lookup.
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_updated ON books(updated_at)"),
@@ -1826,6 +1870,16 @@ mod tests {
         assert_check(
             "edition_acquisitions",
             "status",
+            crate::AcquireStatus::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "library_work_rows",
+            "kind",
+            WorkKind::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "library_work_rows",
+            "acquire_status",
             crate::AcquireStatus::ALL.iter().map(|k| k.as_str()),
         );
     }

@@ -72,6 +72,7 @@ fn spawn_dispatcher(state: Arc<AppState>) {
             let node_id = event_node_id(&files_dir);
             crate::discover_events::upsert_catalog_row(&library, &node_id).await;
             crate::search_index::upsert_catalog_row(&library, &node_id).await;
+            crate::library_index::upsert_catalog_row(&library, &node_id).await;
             let more = match dispatch_pending(
                 &library,
                 retention_days,
@@ -930,6 +931,10 @@ async fn run_delivery(
     }
     if crate::discover_events::is_discover_consumer_id(&delivery.plugin_id) {
         crate::discover_events::run_discover_delivery(state, library, &event, &delivery).await;
+        return;
+    }
+    if crate::library_index::is_library_index_consumer_id(&delivery.plugin_id) {
+        crate::library_index::run_library_index_delivery(library, &event, &delivery).await;
         return;
     }
     if crate::search_index::is_search_consumer_id(&delivery.plugin_id) {

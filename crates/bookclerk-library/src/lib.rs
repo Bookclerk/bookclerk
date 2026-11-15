@@ -73,6 +73,8 @@ pub use backup::{
 };
 pub use binding_schema::{apply_binding_bootstrap, binding_bootstrap_plan};
 pub use bookclerk_plugin_abi::{AdapterBackupOps, GuestSqlPolicy, SharedAdapterBackupOps};
+/// The data model's closed vocabularies, as the library's read types carry them.
+pub use bookclerk_resolve::{Abridgement, Entitlement, ExpressionKind, MediaKind, WorkKind};
 pub use bookclerk_storefront::text::{
     decode_html_entities, decode_html_entities_cow, decode_html_entities_in_place,
     decode_html_entities_opt, decode_html_entities_opt_in_place, str_maybe_html_entity,
@@ -163,6 +165,12 @@ pub use sql_plan::{
     CompiledAtomic,
 };
 pub use store::event_outbox::{EVENT_STREAM_SCAN_FACTOR, EVENT_STREAM_SETTLE_SECS};
+pub use store::library_index::{
+    sort_title, LibraryWorkRow, WorkCursor, WorkPage, WorkPageQuery, WorkSort, LIBRARY_INDEX_LAYOUT,
+};
+pub use store::work_detail::{
+    EditionDetail, EditionListing, HoldingHolder, ListingHolding, WorkDetail,
+};
 pub use store::{
     apply_user_states,
     catalog_listings::{

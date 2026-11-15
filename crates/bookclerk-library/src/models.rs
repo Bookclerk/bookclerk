@@ -1550,6 +1550,10 @@ pub enum JobKind {
     /// (`search_index_rebuild`); only the node named by
     /// [`JobPayload::node_id`] claims it.
     SearchIndexRebuild,
+    /// Rebuild the library's page index (`library_work_rows`) from the
+    /// library model (`library_index_rebuild`); one for the whole cluster,
+    /// any node claims it.
+    LibraryIndexRebuild,
     /// An interlibrary request (`branch_request`): send this library a
     /// book one of its branches listed. Pinned by
     /// [`JobPayload::node_id`] to that branch, which claims it over the
@@ -1563,7 +1567,7 @@ pub enum JobKind {
 impl JobKind {
     /// Every kind, in declaration order; the SQL plans derive their kind
     /// lists from it so a new kind cannot be left unclaimable.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Scan,
         Self::Acquire,
         Self::ListenSync,
@@ -1575,6 +1579,7 @@ impl JobKind {
         Self::DiscoverRequestQueue,
         Self::CacheSweep,
         Self::SearchIndexRebuild,
+        Self::LibraryIndexRebuild,
         Self::BranchRequest,
         Self::Invalid,
     ];
@@ -1594,6 +1599,7 @@ impl JobKind {
             Self::DiscoverRequestQueue => "discover_request_queue",
             Self::CacheSweep => "cache_sweep",
             Self::SearchIndexRebuild => "search_index_rebuild",
+            Self::LibraryIndexRebuild => "library_index_rebuild",
             Self::BranchRequest => "branch_request",
             Self::Invalid => "invalid",
         }
@@ -1614,6 +1620,7 @@ impl JobKind {
             "discover_request_queue" => Some(Self::DiscoverRequestQueue),
             "cache_sweep" => Some(Self::CacheSweep),
             "search_index_rebuild" => Some(Self::SearchIndexRebuild),
+            "library_index_rebuild" => Some(Self::LibraryIndexRebuild),
             "branch_request" => Some(Self::BranchRequest),
             "invalid" => Some(Self::Invalid),
             _ => None,
@@ -1704,6 +1711,8 @@ impl JobKind {
                 "search_index_rebuild:node={}",
                 payload.node_id.as_deref().unwrap_or("-")
             ),
+            // One queued or running rebuild for the whole cluster.
+            Self::LibraryIndexRebuild => "library_index_rebuild".into(),
             // One queued or running request per branch and work: asking
             // again while one waits folds into it.
             Self::BranchRequest => branch_request_dedup_key(

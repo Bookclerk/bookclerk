@@ -7845,6 +7845,7 @@ pub(crate) mod discover;
 pub(crate) mod edition_files;
 pub(crate) mod event_outbox;
 pub(crate) mod holdings;
+pub(crate) mod library_index;
 pub(crate) mod library_model;
 pub(crate) mod listening;
 pub(crate) mod listing_reads;
@@ -7857,6 +7858,7 @@ pub(crate) mod search_feed;
 pub(crate) mod storage_scan;
 pub(crate) mod taste_titles;
 pub(crate) mod user_title_state;
+pub(crate) mod work_detail;
 pub(crate) mod write_batches;
 pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,

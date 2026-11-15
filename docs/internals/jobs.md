@@ -210,6 +210,7 @@ stateDiagram-v2
 | `discover_request_queue` | `discover_request_queue` | `network` | `run_discover_request_queue` (no network; ranks the shared request queue) |
 | `cache_sweep` | `cache_sweep:node={id}` | `network` | `run_cache_sweep` (no network; one node's image caches and job scratch) |
 | `search_index_rebuild` | `search_index_rebuild:node={id}` | `network` | `run_search_index_rebuild` (no network; rebuilds one node's search index) |
+| `library_index_rebuild` | `library_index_rebuild` | `network` | `run_library_index_rebuild` (no network; rewrites every row of the library's page index) |
 | `branch_request` | `branch_request:node={id}:work={id}` | `network` | none: the branch it is pinned to takes it over the node socket (`requests.claim` / `requests.finish`) |
 
 `plugin_scheduled` jobs aren't enqueued through the API. Each daemon's cron
@@ -271,6 +272,9 @@ in the background instead.
 A `search_index_rebuild` job is pinned to one node the same way. See
 [Search index](#search-index).
 
+A `library_index_rebuild` job is not pinned: any node claims it. See
+[Library index](#library-index).
+
 Reserved classes (no worker in this release): `media`, `transcription`,
 `indexing`.
 
@@ -314,6 +318,43 @@ only the page's titles are read from the database, so there is no hit cap.
 A search that also filters by account or status takes every hit and lets
 the database filter and page them, since those columns can change without
 an event.
+
+## Library index
+
+`GET /api/library/works` pages one row per held work from the
+`library_work_rows` table instead of joining works, expressions, editions,
+listings and holdings on every request. A podcast is one row, its show,
+counting its episodes' editions and holdings. The table lives in the
+library database, so the whole cluster shares one index:
+
+- **From events.** Every daemon registers the same consumer,
+  `host:library-index`, for `edition_linked`, `edition_updated`,
+  `holding_added`, `holding_removed` and `book_acquired`. The catalog
+  folds the registrations into one subscriber, so each event is handled
+  once in the cluster. An edition event refreshes its edition's work, a
+  holding event the work of its listing, and `book_acquired` the work of
+  its edition (or of its title, when the payload names no edition). A
+  refresh reads the work as it is now and writes its row, or deletes the
+  row once no holding is left. A failed refresh is retried up to ten
+  times, then dead-lettered.
+- **Rebuild job.** A finished rebuild records the index layout in
+  `library_index_builds`. When the current layout has no row (a new
+  library, a database copied to another backend, or a binary that changed
+  how rows are derived), the heartbeat queues a `library_index_rebuild`
+  job at priority 50. It queues at most one every ten minutes while the
+  index stays unbuilt. The job refreshes every top-level work in pages of
+  100, reporting progress and stopping when cancelled, then records the
+  build.
+
+Two refreshes of one work can run at once, from two deliveries or a
+delivery and the rebuild. Each stamps its row with the time it started
+reading, and a write only replaces a row stamped no later, so a slow
+refresh never overwrites a newer one.
+
+Pages use a keyset cursor (the last row's sort values, sent back as an
+opaque `cursor`), so every page costs the same and a row added between two
+requests never shifts the next page. A cursor issued for one `sort` is
+refused under another.
 
 ## Admission and backpressure
 
