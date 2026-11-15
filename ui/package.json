@@ -10,7 +10,10 @@
     "preview": "vite preview",
     "docs": "typedoc --options typedoc.json",
     "test": "vitest run",
-    "test:safe-html": "node scripts/check-safe-html.mjs"
+    "test:safe-html": "node scripts/check-safe-html.mjs",
+    "storybook": "storybook dev --port 6006 --no-open",
+    "storybook:build": "storybook build --quiet --output-dir storybook-static",
+    "test:visual": "playwright test --config visual/playwright.config.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -21,17 +24,24 @@
     "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.64.1",
+    "@storybook/react-vite": "10.6.6",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.2.1",
     "oxlint": "^1.90.0",
+    "storybook": "10.6.6",
     "tailwindcss": "^4.3.3",
     "typedoc": "^0.28.20",
     "typedoc-plugin-markdown": "^4.14.1",
     "typescript": "~6.0.2",
     "vite": "^8.3.5",
     "vitest": "5.0.5"
+  },
+  "overrides": {
+    "playwright-core": "1.64.1"
   }
 }

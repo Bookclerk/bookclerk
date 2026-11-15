@@ -57,3 +57,8 @@ tools/site/dist/
 tools/site/generated/
 tools/site/audit/report/
 tools/site/audit/.wrangler/
+
+# Ignored by ui/.gitignore: the Storybook build and the visual check output.
+ui/storybook-static/
+ui/visual/baselines/
+ui/visual-results/

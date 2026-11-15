@@ -106,6 +106,7 @@ jobs:
       job_windows_cluster: ${{ steps.resolve.outputs.job_windows_cluster }}
       check_windows_cluster: ${{ steps.resolve.outputs.check_windows_cluster }}
       job_site: ${{ steps.resolve.outputs.job_site }}
+      job_ui_visual: ${{ steps.resolve.outputs.job_ui_visual }}
       check_lint: ${{ steps.resolve.outputs.check_lint }}
       check_ui: ${{ steps.resolve.outputs.check_ui }}
       check_plugin_sdk_abi: ${{ steps.resolve.outputs.check_plugin_sdk_abi }}
@@ -1592,6 +1593,72 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # The SPA's Storybook stories, each checked with axe-core and compared
+  # with its baseline screenshot at two viewports in light and dark. Runs
+  # inside the pinned Playwright image so every run renders with the same
+  # browser, fonts and libraries; the image's tag must match the
+  # `@playwright/test` version in ui/package.json
+  # (docs/contributing/ui/visual-testing.md).
+  ui-visual:
+    name: UI visual and accessibility${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('ui-visual-{0}', strategy.job-index)].label }}
+    # Pull request runs wait in the lane the plan picked, so they leave
+    # runners for the merge queue (docs/contributing/ci.md#pull-request-lanes).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && (fromJSON(needs.plan.outputs.lanes || '{}')[format('ui-visual-{0}', strategy.job-index)].group || 'ci-pr-lane-0') || format('ci-{0}-{1}-ui-visual-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
+      queue: max
+    needs: plan
+    if: needs.plan.outputs.job_ui_visual == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+    steps:
+      # npm ci runs dependency code here; keep the token out of .git/config.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/contributing/automation.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+
+      # The image ships Node.js and the browsers but no Python, which the
+      # plan scripts need.
+      - name: Install Python
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3
+
+      - name: Validate CI plan
+        run: python3 scripts/ci-exec.py validate
+
+      # No baselines repository yet: the run records a fresh set and the
+      # artifact below carries it. axe-core violations still fail the run.
+      - name: Visual and accessibility checks
+        run: python3 scripts/ci-exec.py run ui_visual
+
+      # The screenshots this run took (and, once runs compare, the diffs
+      # and the HTML report of a failure). Not for an unpublished OSV
+      # remediation bump.
+      - name: Upload the visual results
+        if: ${{ !cancelled() && !inputs.private-head }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ui-visual
+          path: ${{ runner.temp }}/ui-visual
+          if-no-files-found: ignore
+          retention-days: 7
+
   # A merge group, like an OSV remediation run, only needs to know whether it
   # can land. Once any job fails, cancel the rest of the run so CI Gate
   # reports at once and the queue ejects the group instead of holding runners
@@ -1668,6 +1735,7 @@ jobs:
       - postgres
       - windows-cluster
       - site
+      - ui-visual
     if: always()
     runs-on: ubuntu-latest
     permissions:

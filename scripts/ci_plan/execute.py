@@ -614,6 +614,9 @@ TEST_PARTS = 3
 # writes its built bundle to `<dir>/<bundle>/` for Codecov Bundle Analysis
 # (docs/contributing/ci.md#bundle-sizes). Unset, nothing is kept.
 BUNDLE_DIR_ENV = "CI_BUNDLE_DIR"
+# Directory holding the checked-out visual baselines for the `ui_visual`
+# check; unset, the check records a new set instead of comparing.
+VISUAL_BASELINES_ENV = "CI_VISUAL_BASELINES"
 # The nextest profile (.config/nextest.toml) that writes a JUnit report, and
 # where it writes it, relative to the workspace. The workflow copies the
 # report into the coverage directory even when tests fail.
@@ -1167,6 +1170,27 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             Command("npm test (ui)", ["npm", "test"], cwd=ui),
             Command("npm run build (ui)", ["npm", "run", "build"], cwd=ui),
             *_copy_bundle("ui", ctx.workspace / "ui" / "dist"),
+        ]
+    if check == "ui_visual":
+        # Storybook's static build, then every story checked with axe-core
+        # and compared with its baseline screenshot, inside the pinned
+        # Playwright image. With no baselines checked out (`CI_VISUAL_BASELINES`
+        # unset) the run records a fresh set instead, for the artifact
+        # (docs/contributing/ui/visual-testing.md).
+        ui = str(ctx.workspace / "ui")
+        out = ctx.tmp / "ui-visual"
+        baselines = os.environ.get(VISUAL_BASELINES_ENV)
+        env = {
+            "VISUAL_OUTPUT_DIR": str(out),
+            "VISUAL_BASELINES_DIR": baselines or str(out / "baselines"),
+        }
+        argv = ["npm", "run", "test:visual"]
+        if not baselines:
+            argv += ["--", "--update-snapshots=all"]
+        return [
+            Command("npm ci (ui)", ["npm", "ci"], cwd=ui),
+            Command("storybook build (ui)", ["npm", "run", "storybook:build"], cwd=ui),
+            Command("visual and accessibility checks (ui)", argv, cwd=ui, env=env),
         ]
     if check == "api_docs":
         if params.get("all"):
