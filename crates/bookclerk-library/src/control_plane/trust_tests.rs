@@ -1509,23 +1509,34 @@ async fn an_acquire_by_edition_picks_a_title_the_requester_may_acquire() {
             &store,
             ScanRequester::Operator,
             None,
+            None,
             &ids(&[&both, &format!(" {both} "), &sams]),
         )
         .await
         .unwrap();
         assert_eq!(picked, vec![first.clone(), only_sam.clone()], "{profile:?}");
-        let picked =
-            acquire_titles_of_editions(&store, ScanRequester::Operator, Some("a2"), &ids(&[&both]))
-                .await
-                .unwrap();
+        let picked = acquire_titles_of_editions(
+            &store,
+            ScanRequester::Operator,
+            Some("a2"),
+            None,
+            &ids(&[&both]),
+        )
+        .await
+        .unwrap();
         assert_eq!(picked, vec![both_a2.clone()], "{profile:?}");
 
         // A member: the title in their own account.
         for (who, title) in [(riley, &both_a1), (sam, &both_a2)] {
-            let picked =
-                acquire_titles_of_editions(&store, ScanRequester::User(who), None, &ids(&[&both]))
-                    .await
-                    .unwrap();
+            let picked = acquire_titles_of_editions(
+                &store,
+                ScanRequester::User(who),
+                None,
+                None,
+                &ids(&[&both]),
+            )
+            .await
+            .unwrap();
             assert_eq!(&picked, &vec![title.clone()], "{profile:?}");
         }
         for (account, edition) in [(None, &sams), (Some("a2"), &both)] {
@@ -1533,11 +1544,56 @@ async fn an_acquire_by_edition_picks_a_title_the_requester_may_acquire() {
                 &store,
                 ScanRequester::User(riley),
                 account,
+                None,
                 &ids(&[edition]),
             )
             .await
             .unwrap_err();
             assert!(matches!(err, LibraryError::Forbidden(_)), "{err}");
+        }
+
+        // A pin narrows the titles to its plugin; an unknown one narrows
+        // nothing (the plan refuses it), and one that does not parse is
+        // refused here.
+        let actor = crate::control_plane::documents::ConfigActor::Operator {
+            id: "operator".into(),
+        };
+        let audible =
+            crate::control_plane::instances::create_plugin_instance(&store, &actor, "audible", "")
+                .await
+                .unwrap()
+                .id
+                .to_string();
+        let libro =
+            crate::control_plane::instances::create_plugin_instance(&store, &actor, "libro", "")
+                .await
+                .unwrap()
+                .id
+                .to_string();
+        let unknown = uuid::Uuid::new_v4().to_string();
+        for pin in [&audible, &unknown] {
+            let picked = acquire_titles_of_editions(
+                &store,
+                ScanRequester::User(riley),
+                None,
+                Some(pin.as_str()),
+                &ids(&[&both]),
+            )
+            .await
+            .unwrap();
+            assert_eq!(picked, vec![both_a1.clone()], "{profile:?}");
+        }
+        for pin in [libro.as_str(), "not-a-uuid"] {
+            let err = acquire_titles_of_editions(
+                &store,
+                ScanRequester::Operator,
+                None,
+                Some(pin),
+                &ids(&[&both]),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, LibraryError::Invalid(_)), "{pin}: {err}");
         }
 
         // Nothing to acquire: blanks, an unknown edition, another account.
@@ -1547,10 +1603,15 @@ async fn an_acquire_by_edition_picks_a_title_the_requester_may_acquire() {
             (Some("missing"), ids(&[&both])),
             (Some(" "), ids(&[&both])),
         ] {
-            let err =
-                acquire_titles_of_editions(&store, ScanRequester::Operator, account, &editions)
-                    .await
-                    .unwrap_err();
+            let err = acquire_titles_of_editions(
+                &store,
+                ScanRequester::Operator,
+                account,
+                None,
+                &editions,
+            )
+            .await
+            .unwrap_err();
             assert!(matches!(err, LibraryError::Invalid(_)), "{err}");
         }
     }

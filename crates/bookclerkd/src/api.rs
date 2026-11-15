@@ -4415,6 +4415,7 @@ async fn trigger_acquire(
             &library,
             requester,
             body.account.as_deref(),
+            body.plugin_instance_id.as_deref(),
             &body.editions,
         )
         .await

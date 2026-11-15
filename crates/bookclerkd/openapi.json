@@ -16502,14 +16502,25 @@
             }
           },
           "500": {
-            "description": "The library could not be read.",
+            "description": "The library or the cover could not be read.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
-                "example": {
-                  "error": "the library could not be read"
+                "examples": {
+                  "cover": {
+                    "summary": "The cover is there but could not be read",
+                    "value": {
+                      "error": "the cover could not be read"
+                    }
+                  },
+                  "library": {
+                    "summary": "The library could not be read",
+                    "value": {
+                      "error": "the library could not be read"
+                    }
+                  }
                 }
               }
             }

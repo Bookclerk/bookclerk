@@ -863,7 +863,7 @@ pub(crate) async fn get_work(
     responses(
         (status = 200, description = "The cover.", content_type = "image/jpeg"),
         (status = 404, description = "No such edition, or no cover of it on this node: it is not acquired, this node runs no local destination, or the acquire wrote no cover.", body = ErrorMessage, examples(("unknown" = (summary = "No such edition", value = json!({"error": "edition 5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d not found"}))), ("no_cover" = (summary = "No cover of it here", value = json!({"error": "edition 5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d has no cover on this node"}))))),
-        (status = 500, description = "The library could not be read.", body = ErrorMessage, example = json!({"error": "the library could not be read"})),
+        (status = 500, description = "The library or the cover could not be read.", body = ErrorMessage, examples(("library" = (summary = "The library could not be read", value = json!({"error": "the library could not be read"}))), ("cover" = (summary = "The cover is there but could not be read", value = json!({"error": "the cover could not be read"}))))),
     ),
 )]
 pub(crate) async fn get_edition_cover(
@@ -908,10 +908,21 @@ pub(crate) async fn get_edition_cover(
         .await
         .local()
         .ok_or_else(no_cover)?;
-    let bytes = local
+    let bytes = match local
         .get(&bookclerk_acquire::sidecar_key(&storage_key, "jpg"))
         .await
-        .map_err(|_| no_cover())?;
+    {
+        Ok(bytes) => bytes,
+        Err(bookclerk_storage::StorageError::NotFound(_)) => return Err(no_cover()),
+        // The cover may be there but unreadable: a failure, not a 404.
+        Err(err) => {
+            tracing::error!(error = %err, route = ROUTE, "edition cover read failed");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage::new("the cover could not be read")),
+            ));
+        }
+    };
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, "image/jpeg")],
