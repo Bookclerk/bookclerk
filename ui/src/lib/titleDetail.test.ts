@@ -148,13 +148,16 @@ describe("titleDetailFromWork", () => {
 
 describe("titleDetailFromWork state", () => {
   it("carries the caller's own state and whether they can edit it", () => {
-    const detail = titleDetailFromWork({ ...work([edition("e")]), can_edit_state: true });
+    const detail = titleDetailFromWork(
+      { ...work([edition("e")]), can_edit_state: true },
+      "not_acquired",
+    );
     expect(detail.user_state?.tags).toBe("scifi");
     expect(detail.can_edit_state).toBe(true);
   });
 
   it("cannot edit when the server does not say so", () => {
-    const detail = titleDetailFromWork({ ...work([edition("e")]), state: null });
+    const detail = titleDetailFromWork({ ...work([edition("e")]), state: null }, "not_acquired");
     expect(detail.user_state).toBeNull();
     expect(detail.can_edit_state).toBe(false);
   });
