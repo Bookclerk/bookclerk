@@ -602,6 +602,56 @@ fn bad_request(message: impl Into<String>) -> WorksError {
     )
 }
 
+/// Fills one search page from `window` (match ids, best first): looks up
+/// `chunk` ids at a time with `lookup`, which returns the rows that pass
+/// the filters in the same order, until `limit` rows are found or the
+/// window runs out.
+///
+/// # Returns
+///
+/// The page's rows and how many of the window's matches it used: just
+/// past the last match it took when the page filled, or the whole window
+/// when it did not (the next page then starts past the window).
+///
+/// # Errors
+///
+/// Propagates the first `lookup` failure.
+async fn fill_search_page<T, E, F, Fut>(
+    window: &[String],
+    limit: usize,
+    chunk: usize,
+    id_of: fn(&T) -> &str,
+    mut lookup: F,
+) -> Result<(Vec<T>, usize), E>
+where
+    F: FnMut(Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<T>, E>>,
+{
+    let mut rows = Vec::new();
+    let mut used = 0;
+    if limit == 0 {
+        return Ok((rows, used));
+    }
+    for part in window.chunks(chunk.max(1)) {
+        let found = lookup(part.to_vec()).await?;
+        let wanted = limit - rows.len();
+        if found.len() >= wanted {
+            // The page fills inside this chunk: stop just past the last
+            // match it takes.
+            let last = id_of(&found[wanted - 1]).to_string();
+            used += part
+                .iter()
+                .position(|id| *id == last)
+                .map_or(part.len(), |i| i + 1);
+            rows.extend(found.into_iter().take(wanted));
+            return Ok((rows, used));
+        }
+        rows.extend(found);
+        used += part.len();
+    }
+    Ok((rows, used))
+}
+
 /// One page of `q`'s matches that pass `filters`, best first.
 ///
 /// A window of at most [`SEARCH_SCAN_BUDGET`] matches is read from the
@@ -660,29 +710,18 @@ async fn search_page(
     })?;
     let library = state.library_snapshot().await;
     let limit = usize::try_from(filters.limit).unwrap_or(usize::MAX);
-    let mut rows = Vec::new();
-    // Matches of the window used so far.
-    let mut used = 0;
-    for chunk in window.ids.chunks(SEARCH_CHUNK.max(limit)) {
-        let found = library
-            .library_works_by_ids(chunk, filters)
-            .await
-            .map_err(|err| read_failed("GET /api/library/works", &err))?;
-        let wanted = limit - rows.len();
-        if found.len() >= wanted {
-            // The page fills inside this chunk: stop just past the last
-            // match it takes.
-            let last = &found[wanted - 1].work_id;
-            used += chunk
-                .iter()
-                .position(|id| id == last)
-                .map_or(chunk.len(), |i| i + 1);
-            rows.extend(found.into_iter().take(wanted));
-            break;
-        }
-        rows.extend(found);
-        used += chunk.len();
-    }
+    let (rows, used) = fill_search_page(
+        &window.ids,
+        limit,
+        SEARCH_CHUNK.max(limit),
+        |row: &LibraryWorkRow| row.work_id.as_str(),
+        |chunk| {
+            let library = library.clone();
+            async move { library.library_works_by_ids(&chunk, filters).await }
+        },
+    )
+    .await
+    .map_err(|err| read_failed("GET /api/library/works", &err))?;
     let at = start.saturating_add(used);
     let next = (at < window.total).then(|| {
         SearchCursor {

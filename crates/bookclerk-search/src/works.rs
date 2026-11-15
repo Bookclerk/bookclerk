@@ -490,6 +490,13 @@ mod tests {
             [works[1].clone()],
             "the title search's shortcuts are plain words here"
         );
+        // Works carry no tags: the title search's `[tag]` is not rewritten,
+        // and a bare bracket is query syntax the parser refuses.
+        assert!(
+            matches!(index.match_ids("[bio]", 0, 10), Err(SearchError::Query(_))),
+            "{:?}",
+            index.match_ids("[bio]", 0, 10)
+        );
         let found = WorkSearchIndex::open_and_match_ids(
             dir.path().to_path_buf(),
             "tolkien OR herbert".into(),

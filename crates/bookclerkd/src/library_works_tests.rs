@@ -374,6 +374,56 @@ async fn a_search_before_the_works_index_is_built_is_a_503() {
     assert_eq!(status, Some(StatusCode::SERVICE_UNAVAILABLE));
 }
 
+/// Fills a page from `window` with chunks of `chunk`, keeping the ids in
+/// `kept` as the filters would, and counts the lookups.
+async fn fill(
+    window: &[&str],
+    kept: &[&str],
+    limit: usize,
+    chunk: usize,
+) -> (Vec<String>, usize, usize) {
+    let window: Vec<String> = window.iter().map(|s| (*s).to_string()).collect();
+    let mut lookups = 0;
+    let (rows, used) = fill_search_page(
+        &window,
+        limit,
+        chunk,
+        |id: &String| id.as_str(),
+        |part| {
+            lookups += 1;
+            let found: Vec<String> = part
+                .into_iter()
+                .filter(|id| kept.contains(&id.as_str()))
+                .collect();
+            async move { Ok::<_, std::convert::Infallible>(found) }
+        },
+    )
+    .await
+    .expect("infallible");
+    (rows, used, lookups)
+}
+
+#[tokio::test]
+async fn a_search_page_fills_across_chunks_and_stops_past_its_last_match() {
+    let window = ["a", "b", "c", "d", "e", "f", "g"];
+    // The filters drop a, b and d: the page of two fills in the second
+    // chunk, at e, so the next page starts at f.
+    assert_eq!(
+        fill(&window, &["c", "e", "f", "g"], 2, 3).await,
+        (vec!["c".into(), "e".into()], 5, 2)
+    );
+    // Nothing passes: the whole window is used, one lookup per chunk, and
+    // the page is empty (the route then puts its cursor past the window).
+    assert_eq!(fill(&window, &[], 2, 3).await, (Vec::new(), 7, 3));
+    // Too few pass to fill the page: a short page over the whole window.
+    assert_eq!(fill(&window, &["g"], 2, 3).await, (vec!["g".into()], 7, 3));
+    // The page fills exactly at a chunk's end.
+    assert_eq!(
+        fill(&window, &["a", "b", "c"], 3, 3).await,
+        (vec!["a".into(), "b".into(), "c".into()], 3, 1)
+    );
+}
+
 #[tokio::test]
 async fn a_work_reads_with_its_editions_or_is_a_404() {
     let files = tempfile::tempdir().expect("tempdir");
