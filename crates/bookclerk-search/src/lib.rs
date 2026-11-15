@@ -9,9 +9,11 @@
 
 mod engine;
 mod query;
+mod works;
 
 pub use engine::{SearchEngine, SearchHit, SearchPage};
 pub use query::normalize_lucene_query;
+pub use works::WorkSearchIndex;
 
 use thiserror::Error;
 

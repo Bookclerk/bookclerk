@@ -114,6 +114,7 @@ BookclerkFiles/
   library.db          # incl. encrypted_secrets (auth + Widevine CDM + S3 keys)
   cache/
   search_index/
+  search_index_works/
   plugins/            # host-local trees (immutable to guests)
     .versions/<digest>/        # materialized installed versions, shared by instances
     <plugin-key-fs-id>/        # platform guests, dev trees, older installs
@@ -164,7 +165,7 @@ the API. Config reload swaps auth before listen rebind. See [sign-in.md](../serv
 | `POST` | `/api/library/acquire`, `/acquire` | yes | Queue acquire |
 | `GET` | `/api/library/books` | yes | Paginated book rows |
 | `GET` | `/api/library/books/{uuid}/cover` | yes | Best-effort local cover |
-| `GET` | `/api/library/works` | yes | Works from the page index, by cursor |
+| `GET` | `/api/library/works` | yes | Works from the page index, by cursor, or matching a search (`q`) |
 | `GET` | `/api/library/works/{id}` | yes | One work with editions, listings, holdings and own state |
 | static | `/` | no | Built React UI (`ui/dist`) when present |
 

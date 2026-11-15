@@ -388,7 +388,9 @@ cluster-wide `host:library-index` event consumer and rebuilt by a
 `library_index_rebuild` job when the index has no finished build of the
 current layout. `GET /api/library/works` pages it by keyset cursor, and
 `GET /api/library/works/{id}` reads one work with its editions, listings,
-holdings and the caller's own state.
+holdings and the caller's own state. With `q`, the list route searches a
+per-node works index kept beside the title search index, fed by the same
+events and rebuilt by the same job.
 
 User-facing pages (the glossary, *Where books go*, *Branches*, the plugin ABI
 reference) change with the step that changes their behaviour.

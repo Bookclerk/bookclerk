@@ -32,7 +32,7 @@ use bookclerk_library::{
     DomainEventRecord, EnqueueJobSpec, EventCatalogSubscription, EventDeliveryRecord, JobKind,
     JobPayload, JobTrigger, LibraryStore,
 };
-use bookclerk_search::{SearchEngine, SearchError};
+use bookclerk_search::{SearchEngine, SearchError, WorkSearchIndex};
 use chrono::Utc;
 use serde::Deserialize;
 use tracing::{debug, warn};
@@ -213,6 +213,43 @@ fn parse_change(event: &DomainEventRecord) -> Result<Change, String> {
 /// the library or index error.
 async fn apply_change(
     engine: &SearchEngine,
+    works: &WorkSearchIndex,
+    library: &LibraryStore,
+    change: &Change,
+) -> bookclerk_search::Result<usize> {
+    let titles = apply_title_change(engine, library, change).await?;
+    let work = match change {
+        Change::Edition(edition_id) => library.work_of_edition(edition_id).await?,
+        Change::Listing(listing_id) => {
+            let work = library.work_of_listing(listing_id).await?;
+            if work.is_none() {
+                // As for the title index: the listing is gone, so the work
+                // it belonged to is unknown.
+                works.mark_incomplete()?;
+            }
+            work
+        }
+        // An acquire changes nothing the works index holds.
+        Change::Title(_) => None,
+    };
+    let written = match work {
+        Some(work) => works.refresh_works(library, &[work]).await?,
+        None => 0,
+    };
+    Ok(titles + written)
+}
+
+/// Writes one change into the per-title index.
+///
+/// # Returns
+///
+/// How many documents were written.
+///
+/// # Errors
+///
+/// As [`apply_change`].
+async fn apply_title_change(
+    engine: &SearchEngine,
     library: &LibraryStore,
     change: &Change,
 ) -> bookclerk_search::Result<usize> {
@@ -267,9 +304,12 @@ pub async fn run_search_delivery(
     let gate = write_gate(&dir);
     let outcome = match gate.try_lock() {
         Err(_) => Err(SearchError::Busy),
-        Ok(_gate) => match SearchEngine::open(&dir) {
-            Ok(engine) => apply_change(&engine, library, &change).await,
-            Err(err) => Err(err),
+        Ok(_gate) => match (
+            SearchEngine::open(&dir),
+            WorkSearchIndex::open(&WorkSearchIndex::dir_beside(&dir)),
+        ) {
+            (Ok(engine), Ok(works)) => apply_change(&engine, &works, library, &change).await,
+            (Err(err), _) | (_, Err(err)) => Err(err),
         },
     };
     let result = match outcome {
@@ -340,7 +380,9 @@ fn rebuild_payload(node_id: &str) -> JobPayload {
 /// * `node_id` - This node.
 pub(crate) async fn queue_rebuild_if_missing(state: &AppState, node_id: &str) {
     let dir = state.config.read().await.paths().search_index_dir.clone();
-    if SearchEngine::is_complete(&dir) {
+    if SearchEngine::is_complete(&dir)
+        && WorkSearchIndex::is_complete(&WorkSearchIndex::dir_beside(&dir))
+    {
         return;
     }
     let library = state.library_snapshot().await;
@@ -404,9 +446,33 @@ pub(crate) async fn run_search_index_rebuild(
     let dir = state.config.read().await.paths().search_index_dir.clone();
     let gate = write_gate(&dir);
     let _held = gate.lock().await;
-    let engine = SearchEngine::open(&dir)?;
-    let indexed = engine.rebuild(&library).await?;
-    Ok(format!("search index rebuilt: {indexed} title(s)"))
+    let works_dir = WorkSearchIndex::dir_beside(&dir);
+    let titles_done = SearchEngine::is_complete(&dir);
+    let works_done = WorkSearchIndex::is_complete(&works_dir);
+    // Each index is rebuilt when it is incomplete; a rebuild asked for while
+    // both are complete rebuilds both.
+    let both = titles_done && works_done;
+    let titles = if both || !titles_done {
+        Some(SearchEngine::open(&dir)?.rebuild(&library).await?)
+    } else {
+        None
+    };
+    if job_cancelled(ctx, &library).await {
+        anyhow::bail!("cancelled");
+    }
+    let works = if both || !works_done {
+        Some(WorkSearchIndex::open(&works_dir)?.rebuild(&library).await?)
+    } else {
+        None
+    };
+    let parts: Vec<String> = [
+        titles.map(|n| format!("{n} title(s)")),
+        works.map(|n| format!("{n} work(s)")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    Ok(format!("search index rebuilt: {}", parts.join(", ")))
 }
 
 #[cfg(test)]
@@ -559,6 +625,28 @@ mod tests {
         assert_eq!(hits.len(), 1);
         // Events alone do not make a rebuilt index.
         assert!(!SearchEngine::is_complete(&dir));
+        let works_dir = WorkSearchIndex::dir_beside(&dir);
+        let works = WorkSearchIndex::open(&works_dir).expect("open works");
+        assert_eq!(works.match_ids("evented").expect("search").len(), 1);
+
+        // A holding event for a listing that is gone asks for a rebuild of
+        // both indexes.
+        let gone = event(
+            "holding_removed",
+            r#"{"listingId":"gone","holder":"x","holdingId":"h"}"#,
+        );
+        let engine = SearchEngine::open(&dir).expect("open");
+        std::fs::write(works_dir.join("bookclerk-works-complete-v1"), b"").expect("marker");
+        let written = apply_change(
+            &engine,
+            &works,
+            &library,
+            &parse_change(&gone).expect("parse"),
+        )
+        .await
+        .expect("apply");
+        assert_eq!(written, 0);
+        assert!(!WorkSearchIndex::is_complete(&works_dir));
     }
 
     #[tokio::test]
@@ -723,7 +811,7 @@ mod tests {
         let summary = run_search_index_rebuild(&state, &job.payload, None)
             .await
             .expect("rebuild");
-        assert_eq!(summary, "search index rebuilt: 1 title(s)");
+        assert_eq!(summary, "search index rebuilt: 1 title(s), 1 work(s)");
         let dir = state.config.read().await.paths().search_index_dir.clone();
         assert!(SearchEngine::is_complete(&dir));
         assert_eq!(
@@ -734,5 +822,28 @@ mod tests {
                 .len(),
             1
         );
+        let works_dir = WorkSearchIndex::dir_beside(&dir);
+        assert!(WorkSearchIndex::is_complete(&works_dir));
+        let works = WorkSearchIndex::open(&works_dir).expect("open works");
+        assert_eq!(works.match_ids("rebuilt").expect("search").len(), 1);
+
+        // Only the incomplete index is rebuilt; both when neither is.
+        works.mark_incomplete().expect("mark");
+        let summary = run_search_index_rebuild(&state, &job.payload, None)
+            .await
+            .expect("rebuild works");
+        assert_eq!(summary, "search index rebuilt: 1 work(s)");
+        SearchEngine::open(&dir)
+            .expect("open")
+            .mark_incomplete()
+            .expect("mark");
+        let summary = run_search_index_rebuild(&state, &job.payload, None)
+            .await
+            .expect("rebuild titles");
+        assert_eq!(summary, "search index rebuilt: 1 title(s)");
+        let summary = run_search_index_rebuild(&state, &job.payload, None)
+            .await
+            .expect("rebuild both");
+        assert_eq!(summary, "search index rebuilt: 1 title(s), 1 work(s)");
     }
 }

@@ -280,8 +280,12 @@ Reserved classes (no worker in this release): `media`, `transcription`,
 
 ## Search index
 
-`GET /api/library/books?q=` reads a Tantivy index under the node's own
-`search_index/`, so each daemon keeps its own copy current:
+Searches read Tantivy indexes on the node's own disk, so each daemon keeps
+its own copies current. `GET /api/library/books?q=` reads the title index
+under `search_index/`; `GET /api/library/works?q=` reads the works index
+beside it, under `search_index_works/`, with one document per held
+top-level work (its titles, authors, narrators, series and store
+identifiers). Both are kept current the same way:
 
 - **From events.** Each node registers its own consumer,
   `host:search-index:{node id}`, on the `core.events` outbox for
@@ -290,21 +294,25 @@ Reserved classes (no worker in this release): `media`, `transcription`,
   the node, so every node gets every event (Discover's `host:discover` is
   one consumer for the cluster). An edition event refreshes each listing
   that sells the edition, a holding event its listing, and `book_acquired`
-  its title. A listing refresh deletes the listing's documents and adds
+  its title. Each of those events also refreshes the works index document
+  of its edition's or listing's work, which is dropped once the work is
+  gone or no longer held. A listing refresh deletes the listing's documents and adds
   back the titles that still sell it (and any older document of the same
   title), so a title that is gone leaves the index. A holding event whose
-  listing is already gone removes the marker below, so the node rebuilds.
+  listing is already gone removes the marker below (from both indexes,
+  since its work can no longer be found), so the node rebuilds.
   The index holds one document per `books` row, and a removed holding
   leaves its row in place until the library model replaces `books`, so
   until then `holding_removed` refreshes the title rather than dropping it.
 - **Rebuild job.** A finished rebuild leaves a marker for the current
-  document layout in the index folder. When it is missing (a new node, a
+  document layout in each index folder. When either is missing (a new node, a
   deleted folder, or an index of an older layout, which is discarded), the
   heartbeat queues a `search_index_rebuild` job pinned to the node, at
   priority 50, after its beat is recorded. It queues at most one every ten
   minutes while the index stays incomplete, so a failing rebuild is not
-  re-queued on every beat. The job reads every title in pages and replaces
-  the index in one commit.
+  re-queued on every beat. The job rebuilds each index whose marker is
+  missing: it reads every title (or every top-level work) in pages and
+  replaces that index in one commit.
 
 One writer runs at a time per index. A delivery that finds a rebuild (or
 the CLI) writing is retried after 10 s, for up to an hour. A CLI rebuild
@@ -318,6 +326,13 @@ only the page's titles are read from the database, so there is no hit cap.
 A search that also filters by account or status takes every hit and lets
 the database filter and page them, since those columns can change without
 an event.
+
+A works search answers in relevance order (title matches weigh most, then
+authors) and ignores `sort`. The page reads the matched works' rows from
+the library index by id, applying the other filters there, so a page can
+come back with fewer rows than `limit` and still carry a `next_cursor`.
+Its cursor holds the query and how many matches earlier pages used, and is
+refused under another query.
 
 ## Library index
 

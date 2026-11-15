@@ -144,6 +144,136 @@ async fn a_bad_cursor_or_one_of_another_order_is_a_400() {
     assert_eq!(status, Some(StatusCode::BAD_REQUEST));
 }
 
+/// Builds the works search index for `library` under `state`'s files.
+async fn index_works(state: &Arc<AppState>, library: &LibraryStore) {
+    let dir = state.config.read().await.paths().search_index_dir.clone();
+    let index = WorkSearchIndex::open(&WorkSearchIndex::dir_beside(&dir)).expect("works index");
+    index.rebuild(library).await.expect("rebuild");
+}
+
+/// Lists works with `query`, unwrapping a refusal into its status and message.
+async fn refused(state: &Arc<AppState>, query: WorksQuery) -> Option<(StatusCode, String)> {
+    list_works(State(state.clone()), Query(query))
+        .await
+        .err()
+        .map(|(status, Json(body))| (status, body.error))
+}
+
+#[tokio::test]
+async fn a_search_pages_its_matches_and_applies_the_filters() {
+    let files = tempfile::tempdir().expect("tempdir");
+    let (state, library, ids) = library_with_three_works(&files).await;
+    index_works(&state, &library).await;
+
+    let page = list(
+        &state,
+        WorksQuery {
+            q: Some("dune".into()),
+            ..WorksQuery::default()
+        },
+    )
+    .await;
+    assert_eq!(page.works.len(), 1);
+    assert_eq!(page.works[0].id, ids[1]);
+    assert!(page.next_cursor.is_none());
+
+    // Every title has an author, so an author-or-title query matches all
+    // three; paging one at a time walks each exactly once.
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = list(
+            &state,
+            WorksQuery {
+                q: Some("tolkien OR herbert OR stephenson".into()),
+                limit: Some(1),
+                cursor: cursor.take(),
+                ..WorksQuery::default()
+            },
+        )
+        .await;
+        seen.extend(page.works.iter().map(|w| w.id.clone()));
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    seen.sort();
+    let mut all = ids.clone();
+    all.sort();
+    assert_eq!(seen, all);
+
+    let filtered = list(
+        &state,
+        WorksQuery {
+            q: Some("dune".into()),
+            kind: Some(WorkKindJson::Podcast),
+            ..WorksQuery::default()
+        },
+    )
+    .await;
+    assert!(filtered.works.is_empty(), "the filters apply to matches");
+}
+
+#[tokio::test]
+async fn a_search_refuses_a_bad_query_or_another_querys_cursor() {
+    let files = tempfile::tempdir().expect("tempdir");
+    let (state, library, _ids) = library_with_three_works(&files).await;
+    index_works(&state, &library).await;
+
+    let bad = refused(
+        &state,
+        WorksQuery {
+            q: Some("title:(".into()),
+            ..WorksQuery::default()
+        },
+    )
+    .await;
+    assert!(
+        matches!(&bad, Some((StatusCode::BAD_REQUEST, m)) if m.starts_with("invalid search query")),
+        "{bad:?}"
+    );
+
+    let cursor = list(
+        &state,
+        WorksQuery {
+            q: Some("tolkien OR herbert".into()),
+            limit: Some(1),
+            ..WorksQuery::default()
+        },
+    )
+    .await
+    .next_cursor
+    .expect("more matches");
+    assert_eq!(
+        refused(
+            &state,
+            WorksQuery {
+                q: Some("dune".into()),
+                cursor: Some(cursor),
+                ..WorksQuery::default()
+            },
+        )
+        .await,
+        Some((
+            StatusCode::BAD_REQUEST,
+            "page cursor belongs to another query".into()
+        ))
+    );
+    assert_eq!(
+        refused(
+            &state,
+            WorksQuery {
+                q: Some("dune".into()),
+                cursor: Some("not a cursor".into()),
+                ..WorksQuery::default()
+            },
+        )
+        .await,
+        Some((StatusCode::BAD_REQUEST, "invalid page cursor".into()))
+    );
+}
+
 #[tokio::test]
 async fn a_work_reads_with_its_editions_or_is_a_404() {
     let files = tempfile::tempdir().expect("tempdir");

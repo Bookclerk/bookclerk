@@ -460,3 +460,37 @@ async fn a_stale_refresh_cannot_bring_back_a_work_that_lost_its_holdings() {
     .await
     .is_empty());
 }
+
+#[tokio::test]
+async fn rows_by_id_keep_the_given_order_and_apply_the_filters() {
+    let store = store().await;
+    let hobbit = scan(&store, "B040", "acct-1", "The Hobbit", "J. R. R. Tolkien").await;
+    let dune = scan(&store, "B041", "acct-2", "Dune", "Frank Herbert").await;
+    store
+        .refresh_library_works(&[hobbit.clone(), dune.clone()])
+        .await
+        .unwrap();
+    let ids = vec![dune.clone(), "no-such-work".into(), hobbit.clone()];
+    let all = store
+        .library_works_by_ids(&ids, &WorkPageQuery::default())
+        .await
+        .unwrap();
+    let order: Vec<&str> = all.iter().map(|w| w.work_id.as_str()).collect();
+    assert_eq!(order, [dune.as_str(), hobbit.as_str()]);
+    let narrowed = store
+        .library_works_by_ids(
+            &ids,
+            &WorkPageQuery {
+                account: Some("acct-1".into()),
+                ..WorkPageQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(narrowed.len(), 1);
+    assert_eq!(narrowed[0].work_id, hobbit);
+    assert_eq!(
+        store.top_level_work_ids_page(None, 1).await.unwrap().len(),
+        1
+    );
+}

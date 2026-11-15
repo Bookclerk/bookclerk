@@ -360,7 +360,7 @@ impl LibraryStore {
     /// The top-level works of `work_ids`: a podcast episode's show stands
     /// in for the episode, and ids with no work are kept (their rows are
     /// deleted by the refresh).
-    async fn top_level_works(&self, work_ids: &[String]) -> Result<Vec<String>> {
+    pub(super) async fn top_level_works(&self, work_ids: &[String]) -> Result<Vec<String>> {
         let found =
             super::library_model::find_chunked::<works::Entity, _>(self, work_ids, |part| {
                 works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
@@ -647,20 +647,7 @@ impl LibraryStore {
     /// Returns [`LibraryError::Orm`] or a batch error when a read or write
     /// fails.
     pub async fn rebuild_library_index_page(&self, after: Option<&str>) -> Result<Option<String>> {
-        let mut query = works::Entity::find()
-            .filter(works::Column::ParentWorkId.is_null())
-            .order_by_asc(works::Column::Id)
-            .limit(REBUILD_PAGE.min(self.result_row_cap()));
-        if let Some(after) = after {
-            query = query.filter(works::Column::Id.gt(after));
-        }
-        let ids: Vec<String> = query
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|w| w.id)
-            .collect();
+        let ids = self.top_level_work_ids_page(after, REBUILD_PAGE).await?;
         let Some(last) = ids.last().cloned() else {
             // Rows of works past the last id (none can exist: rows cascade
             // with their work) need no sweep.
@@ -668,6 +655,39 @@ impl LibraryStore {
         };
         self.refresh_library_works(&ids).await?;
         Ok(Some(last))
+    }
+
+    /// One page of top-level work ids (podcast shows, not their episodes)
+    /// in id order, for a walk over every work.
+    ///
+    /// # Arguments
+    ///
+    /// * `after` - The last id of the previous page; `None` to start.
+    /// * `limit` - Most ids to return, further capped at the database's
+    ///   result-row limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    pub async fn top_level_work_ids_page(
+        &self,
+        after: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<String>> {
+        let mut query = works::Entity::find()
+            .filter(works::Column::ParentWorkId.is_null())
+            .order_by_asc(works::Column::Id)
+            .limit(limit.max(1).min(self.result_row_cap()));
+        if let Some(after) = after {
+            query = query.filter(works::Column::Id.gt(after));
+        }
+        Ok(query
+            .all(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(|w| w.id)
+            .collect())
     }
 
     /// True when the page index has a finished build of
@@ -743,6 +763,38 @@ impl LibraryStore {
         self.work_of_edition(&listing.edition_id).await
     }
 
+    /// The rows of `ids` that pass `query`'s filters, in the order of
+    /// `ids` (a search's relevance order); `query`'s order, cursor and
+    /// limit are not used. Unheld works and ids with no row are left out.
+    ///
+    /// # Arguments
+    ///
+    /// * `ids` - Top-level work ids.
+    /// * `query` - The filters to apply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn library_works_by_ids(
+        &self,
+        ids: &[String],
+        query: &WorkPageQuery,
+    ) -> Result<Vec<LibraryWorkRow>> {
+        use library_work_rows::Column as C;
+        let mut found: HashMap<String, LibraryWorkRow> =
+            find_chunked_paged::<library_work_rows::Entity, _>(self, ids, |part| {
+                filtered_rows(query)
+                    .filter(C::WorkId.is_in(part.iter().cloned()))
+                    .order_by_asc(C::WorkId)
+            })
+            .await?
+            .into_iter()
+            .filter_map(LibraryWorkRow::from_model)
+            .map(|row| (row.work_id.clone(), row))
+            .collect();
+        Ok(ids.iter().filter_map(|id| found.remove(id)).collect())
+    }
+
     /// One page of the library's works from the page index.
     ///
     /// # Arguments
@@ -761,26 +813,7 @@ impl LibraryStore {
         // that answers fewer rows than that gets a cursor after every full
         // page (the last one may come back empty).
         let probe = limit.saturating_add(1).min(cap);
-        let mut select = library_work_rows::Entity::find().filter(C::HoldingCount.gt(0));
-        if let Some(kind) = query.media_kind {
-            let kind = kind.as_str();
-            select = select.filter(
-                Condition::any()
-                    .add(C::MediaKinds.eq(kind))
-                    .add(C::MediaKinds.like(format!("{kind},%")))
-                    .add(C::MediaKinds.like(format!("%,{kind}")))
-                    .add(C::MediaKinds.like(format!("%,{kind},%"))),
-            );
-        }
-        if let Some(kind) = query.kind {
-            select = select.filter(C::Kind.eq(kind.as_str()));
-        }
-        if let Some(status) = query.status {
-            select = select.filter(C::AcquireStatus.eq(status.as_str()));
-        }
-        if let Some(account) = &query.account {
-            select = select.filter(C::WorkId.in_subquery(account_works_subquery(account)));
-        }
+        let mut select = filtered_rows(query);
         if let Some(after) = &query.after {
             if after.sort != query.sort {
                 return Err(LibraryError::Invalid(
@@ -854,6 +887,33 @@ impl LibraryStore {
             next,
         })
     }
+}
+
+/// The rows a page of `query` reads from: held works that pass its media
+/// kind, kind, status and account filters (not its order or cursor).
+fn filtered_rows(query: &WorkPageQuery) -> sea_orm::Select<library_work_rows::Entity> {
+    use library_work_rows::Column as C;
+    let mut select = library_work_rows::Entity::find().filter(C::HoldingCount.gt(0));
+    if let Some(kind) = query.media_kind {
+        let kind = kind.as_str();
+        select = select.filter(
+            Condition::any()
+                .add(C::MediaKinds.eq(kind))
+                .add(C::MediaKinds.like(format!("{kind},%")))
+                .add(C::MediaKinds.like(format!("%,{kind}")))
+                .add(C::MediaKinds.like(format!("%,{kind},%"))),
+        );
+    }
+    if let Some(kind) = query.kind {
+        select = select.filter(C::Kind.eq(kind.as_str()));
+    }
+    if let Some(status) = query.status {
+        select = select.filter(C::AcquireStatus.eq(status.as_str()));
+    }
+    if let Some(account) = &query.account {
+        select = select.filter(C::WorkId.in_subquery(account_works_subquery(account)));
+    }
+    select
 }
 
 /// The top-level works an account id holds a listing of: the works of the

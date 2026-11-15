@@ -171,6 +171,7 @@ pub use store::library_index::{
 pub use store::work_detail::{
     EditionDetail, EditionListing, HoldingHolder, ListingHolding, WorkDetail,
 };
+pub use store::work_search::WorkSearchDoc;
 pub use store::{
     apply_user_states,
     catalog_listings::{
