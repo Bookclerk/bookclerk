@@ -8476,11 +8476,14 @@ async fn the_event_stream_scan_budget_stops_and_resumes() {
 }
 
 /// Asserts `result` is a not-found error naming `entity`.
-fn assert_missing<T: std::fmt::Debug>(result: Result<T>, entity: crate::EntityKind) {
-    match result {
-        Err(LibraryError::NotFound(missing)) => assert_eq!(missing.entity, entity, "{missing}"),
-        other => panic!("expected {entity} not found, got {other:?}"),
-    }
+///
+/// The result itself is never printed: a row it carries could hold a
+/// secret.
+fn assert_missing<T>(result: Result<T>, entity: crate::EntityKind) {
+    assert!(
+        matches!(&result, Err(LibraryError::NotFound(missing)) if missing.entity == entity),
+        "expected {entity} not found"
+    );
 }
 
 /// Lookups of rows that do not exist name the missing kind (#559).
