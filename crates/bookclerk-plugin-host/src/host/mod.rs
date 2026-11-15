@@ -21,7 +21,7 @@ pub use destination::{DestinationRegistry, DestinationSession};
 pub use integration::ExternalIntegration;
 pub use plugin_backups::{export_registered_plugin_units, restore_plugin_backup_units};
 pub(crate) use source::list_scope_accounts;
-pub use source::{ExternalSource, RefreshedCredentialSink};
+pub use source::{ExternalSource, HandedPass, HandedScan, RefreshedCredentialSink};
 
 #[cfg(test)]
 mod rpc_proxy_insert;

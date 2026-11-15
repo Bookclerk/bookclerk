@@ -648,12 +648,16 @@ impl EventsManifest {
 /// resolver in the same batch as the listing they describe, and
 /// `holding_removed` in the batch that deletes the holding (a scan no
 /// longer lists it, or its account was revoked or remapped).
+/// `edition_acquire_changed` is written with an edition's acquire state
+/// when it moves to anything other than acquired (queued, in progress,
+/// failed); becoming acquired publishes `book_acquired` instead.
 /// `wishlist_changed` is written when a wishlist entry is added or changes
 /// status, and `listening_synced` when a listening sync changed what someone
 /// has started or finished. Plugins consume these types but cannot declare
 /// them under `[[events.producers]]`.
-pub const HOST_EVENT_TYPES: [&str; 7] = [
+pub const HOST_EVENT_TYPES: [&str; 8] = [
     "book_acquired",
+    "edition_acquire_changed",
     "edition_linked",
     "edition_updated",
     "holding_added",
