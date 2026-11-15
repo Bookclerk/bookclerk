@@ -213,6 +213,11 @@ pub fn parse_socket_url(url: &str) -> Result<SocketTarget> {
 }
 
 /// Splits `host[:port]` or `[v6][:port]`.
+///
+/// # Errors
+///
+/// `invalid_params` for a malformed port, an unclosed or non-IPv6 bracketed
+/// host, or an unbracketed IPv6 host.
 fn split_host_port(authority: &str, default_port: u16) -> Result<(&str, u16)> {
     let bad_port = || PluginError::invalid_params("socket url has a malformed port");
     if let Some(rest) = authority.strip_prefix('[') {
@@ -423,5 +428,6 @@ pub fn auto_response_for<'a>(
 }
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc, clippy::missing_errors_doc)]
 #[path = "sockets_tests.rs"]
 mod tests;

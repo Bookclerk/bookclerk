@@ -26,6 +26,10 @@ use crate::sockets::{
 use crate::{Result, SocketHandler, Sockets};
 
 /// Checks a frame and attachment the host is about to deliver to the guest.
+///
+/// # Errors
+///
+/// The first failing id, frame or attachment check.
 fn check_delivery(socket: &str, frame: Option<&SocketFrame>, attachment: &[u8]) -> Result<()> {
     check_socket_id(socket)?;
     if let Some(frame) = frame {
@@ -43,6 +47,10 @@ fn write_unit(mut result: crate::plugin_capnp::empty_reply::Builder<'_>, outcome
 }
 
 /// Reads an `EmptyReply` into a unit outcome.
+///
+/// # Errors
+///
+/// The error the reply carried, or the decode error.
 fn read_unit(result: crate::plugin_capnp::empty_reply::Reader<'_>) -> Result<()> {
     match result.which().map_err(from_capnp)? {
         empty_reply::Ok(()) => Ok(()),
@@ -372,5 +380,6 @@ pub fn roundtrip_socket_message(
 }
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc, clippy::missing_errors_doc)]
 #[path = "rpc_sockets_tests.rs"]
 mod tests;
