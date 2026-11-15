@@ -58,7 +58,7 @@ env:
   # dependencies cold until the next lockfile change. Each cache step lists
   # its own; test_ci_contract.py fails until they match the planner
   # (docs/contributing/ci.md#caches).
-  CI_BUILD_PLAN_LINT: "8cb39749e37b32b3"
+  CI_BUILD_PLAN_LINT: "f0db76a66f23e946"
   CI_BUILD_PLAN_DEBUG: "b229edeb82c346d4"
   CI_BUILD_PLAN_RELEASE: "065d3a2b38c07a3a"
   # A failing test's panic prints its backtrace. Library backtraces stay off:
