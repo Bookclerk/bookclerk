@@ -37856,7 +37856,8 @@
               "secrets",
               "plugin_kv",
               "work_fs",
-              "oauth"
+              "oauth",
+              "sockets"
             ]
           }
         }

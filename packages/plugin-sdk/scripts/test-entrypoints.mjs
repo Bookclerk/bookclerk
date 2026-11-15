@@ -587,6 +587,21 @@ for (const [label, mod] of [
     `${label}: missing manifest fails closed`,
   );
   assert.deepEqual(
+    allowedEntrypointFamilies({ entrypoints: [], consumes: [], jobs: [], sockets: true }, [
+      "socketHandler",
+      "socketHandler",
+    ]),
+    ["socketHandler"],
+    `${label}: [sockets] enables socketHandler; duplicates collapse`,
+  );
+  assert.deepEqual(
+    allowedEntrypointFamilies({ entrypoints: [], consumes: [], jobs: [], sockets: false }, [
+      "socketHandler",
+    ]),
+    [],
+    `${label}: socketHandler requires [sockets]`,
+  );
+  assert.deepEqual(
     allowedEntrypointFamilies(
       { entrypoints: [], consumes: [], jobs: [], queueConsumers: ["jobs"] },
       ["queueConsumer", "eventConsumer", "queueConsumer"],

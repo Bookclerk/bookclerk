@@ -1,5 +1,5 @@
 //! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
-//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch` and `event_read` fuzz corpora in PR CI
+//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch`, `event_read` and `socket_request` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -1114,6 +1114,128 @@ fn plain_fetch_seeds_are_current() {
         let path = dir.join(name);
         if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
             std::fs::create_dir_all(&dir).expect("corpus dir");
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
+}
+
+#[path = "../../../fuzz/oracles/socket_request.rs"]
+mod socket_request_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/socket_request.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_socket_request_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("socket_request") {
+        socket_request_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no socket_request seed");
+}
+
+/// A `1`-prefixed Cap'n Proto `SocketConnectRequest` seed.
+// Test helper: an encoding failure is the test failing.
+#[allow(clippy::expect_used)]
+fn capnp_socket_connect(request: &bookclerk_plugin_abi::SocketConnectRequest) -> Vec<u8> {
+    let mut message = capnp::message::Builder::new_default();
+    bookclerk_plugin_abi::write_socket_connect_request(message.init_root(), request)
+        .expect("encode connect request");
+    let mut seed = vec![1u8];
+    seed.extend(capnp::serialize::write_message_to_words(&message));
+    seed
+}
+
+/// A `2`-prefixed Cap'n Proto `SocketMessage` seed.
+// Test helper: an encoding failure is the test failing.
+#[allow(clippy::expect_used)]
+fn capnp_socket_message(event: &bookclerk_plugin_abi::SocketMessage) -> Vec<u8> {
+    let mut message = capnp::message::Builder::new_default();
+    bookclerk_plugin_abi::write_socket_message(message.init_root(), event)
+        .expect("encode socket message");
+    let mut seed = vec![2u8];
+    seed.extend(capnp::serialize::write_message_to_words(&message));
+    seed
+}
+
+/// Seeds for `socket_request`: accepted and refused URLs, connect requests
+/// and deliveries. Byte 0 is `0` for a URL, `1` for a Cap'n Proto
+/// `SocketConnectRequest` and `2` for a Cap'n Proto `SocketMessage`.
+/// Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O or encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn socket_request_seeds_are_current() {
+    use bookclerk_plugin_abi::{
+        SocketAutoResponse, SocketConnectRequest, SocketFrame, SocketHeader, SocketMessage,
+    };
+
+    let url = |text: &str| {
+        let mut seed = vec![0u8];
+        seed.extend_from_slice(text.as_bytes());
+        seed
+    };
+    let abs = SocketConnectRequest {
+        url: "wss://abs.example.com/socket.io/?EIO=4&transport=websocket".into(),
+        protocols: vec!["chat".into()],
+        headers: vec![SocketHeader {
+            name: "Authorization".into(),
+            value: "Bearer token".into(),
+        }],
+        auto_responses: vec![SocketAutoResponse {
+            request: SocketFrame::Text("2".into()),
+            response: SocketFrame::Text("3".into()),
+        }],
+        attachment: b"{\"user\":\"u1\"}".to_vec(),
+    };
+    let mut smuggled = abs.clone();
+    smuggled.headers[0].name = "Sec-WebSocket-Key".into();
+    let mut crlf = abs.clone();
+    crlf.headers[0].value = "x\r\nX-Evil: 1".into();
+    let mut heavy = abs.clone();
+    heavy.attachment = vec![0; bookclerk_plugin_abi::MAX_SOCKET_ATTACHMENT_BYTES as usize + 1];
+    let mut aliased = abs.clone();
+    aliased.url = "ws://0x7f.1:13378/socket.io".into();
+    let delivery = SocketMessage {
+        socket: "s-1".into(),
+        frame: SocketFrame::Text("42[\"item_updated\",{}]".into()),
+        attachment: b"{}".to_vec(),
+    };
+    let mut bad_id = delivery.clone();
+    bad_id.socket = "../s".into();
+    let seeds: Vec<(&str, Vec<u8>)> = vec![
+        ("url_wss.bin", url("wss://abs.example.com/socket.io/?EIO=4")),
+        ("url_ws_port.bin", url("ws://10.0.0.5:13378/socket.io")),
+        ("url_v6.bin", url("ws://[::1]:8080/")),
+        ("url_credentials.bin", url("wss://user:pass@example.com")),
+        ("url_backslash.bin", url("wss://exa\\mple.com/")),
+        ("url_short_ipv4.bin", url("ws://127.1/")),
+        ("url_https.bin", url("https://example.com")),
+        ("connect_abs.bin", capnp_socket_connect(&abs)),
+        (
+            "connect_smuggled_header.bin",
+            capnp_socket_connect(&smuggled),
+        ),
+        ("connect_crlf_value.bin", capnp_socket_connect(&crlf)),
+        ("connect_heavy_attachment.bin", capnp_socket_connect(&heavy)),
+        ("connect_aliased_ipv4.bin", capnp_socket_connect(&aliased)),
+        ("message.bin", capnp_socket_message(&delivery)),
+        ("message_bad_id.bin", capnp_socket_message(&bad_id)),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/socket_request");
+    if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+        std::fs::create_dir_all(&dir).expect("corpus dir");
+    }
+    for (name, seed) in seeds {
+        let path = dir.join(name);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
             std::fs::write(&path, &seed).expect("write seed");
         }
         assert_eq!(

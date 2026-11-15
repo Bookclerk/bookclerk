@@ -3508,12 +3508,16 @@ export function wrapPluginFromNative() {
 
 /** Wire names of the trigger families the launcher may ask `openInvocation` about. */
 export const TRIGGER_FAMILIES: Readonly<
-  Record<"eventConsumer" | "queueConsumer" | "scheduledHandler" | "jobRunner", string>
+  Record<
+    "eventConsumer" | "queueConsumer" | "scheduledHandler" | "jobRunner" | "socketHandler",
+    string
+  >
 > = Object.freeze({
   eventConsumer: "eventConsumer",
   queueConsumer: "queueConsumer",
   scheduledHandler: "scheduledHandler",
   jobRunner: "jobRunner",
+  socketHandler: "socketHandler",
 });
 
 /**
@@ -3541,6 +3545,7 @@ export function scheduledControllerOf(
  * capabilities: named entrypoints must be declared in `entrypoints`,
  * `eventConsumer` needs a non-empty `consumes`, `queueConsumer` needs a
  * non-empty `queueConsumers`, `scheduledHandler` needs a non-empty `crons`,
+ * `socketHandler` needs `sockets` (`[sockets]` in the manifest),
  * and `jobRunner` needs `jobs` or the `storage`
  * entrypoint (storage guests run the host `stream_copy` job). Unknown names
  * and a missing manifest fail closed.
@@ -3573,6 +3578,8 @@ export function allowedEntrypointFamilies(
       if (crons.length > 0) out.push(name);
     } else if (name === TRIGGER_FAMILIES.jobRunner) {
       if (jobs.length > 0 || exportsStorage) out.push(name);
+    } else if (name === TRIGGER_FAMILIES.socketHandler) {
+      if (capabilities.sockets === true) out.push(name);
     } else if (name in ENTRYPOINT_BINDINGS && entrypoints.includes(name as EntrypointName)) {
       out.push(name);
     }

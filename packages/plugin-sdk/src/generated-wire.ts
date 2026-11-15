@@ -532,6 +532,135 @@ export interface KvNamespaceListResults {
 }
 
 /**
+ * Params envelope of `Sockets.connect`.
+ *
+ * @internal
+ */
+export interface SocketsConnectParams {
+  request: T.SocketConnectRequest;
+}
+
+/**
+ * Results envelope of `Sockets.connect`.
+ *
+ * @internal
+ */
+export interface SocketsConnectResults {
+  result: T.SocketConnectReply;
+}
+
+/**
+ * Params envelope of `Sockets.send`.
+ *
+ * @internal
+ */
+export interface SocketsSendParams {
+  socket: string;
+  frame: T.SocketFrame;
+}
+
+/**
+ * Results envelope of `Sockets.send`.
+ *
+ * @internal
+ */
+export interface SocketsSendResults {
+  result: T.EmptyReply;
+}
+
+/**
+ * Params envelope of `Sockets.close`.
+ *
+ * @internal
+ */
+export interface SocketsCloseParams {
+  socket: string;
+  code: number;
+  reason: string;
+}
+
+/**
+ * Results envelope of `Sockets.close`.
+ *
+ * @internal
+ */
+export interface SocketsCloseResults {
+  result: T.EmptyReply;
+}
+
+/**
+ * Params envelope of `Sockets.setAttachment`.
+ *
+ * @internal
+ */
+export interface SocketsSetAttachmentParams {
+  socket: string;
+  attachment: Uint8Array;
+}
+
+/**
+ * Results envelope of `Sockets.setAttachment`.
+ *
+ * @internal
+ */
+export interface SocketsSetAttachmentResults {
+  result: T.EmptyReply;
+}
+
+/**
+ * Params envelope of `Sockets.list`.
+ *
+ * @internal
+ */
+export interface SocketsListParams {
+}
+
+/**
+ * Results envelope of `Sockets.list`.
+ *
+ * @internal
+ */
+export interface SocketsListResults {
+  result: T.SocketListReply;
+}
+
+/**
+ * Params envelope of `SocketHandler.message`.
+ *
+ * @internal
+ */
+export interface SocketHandlerMessageParams {
+  event: T.SocketMessage;
+}
+
+/**
+ * Results envelope of `SocketHandler.message`.
+ *
+ * @internal
+ */
+export interface SocketHandlerMessageResults {
+  result: T.EmptyReply;
+}
+
+/**
+ * Params envelope of `SocketHandler.closed`.
+ *
+ * @internal
+ */
+export interface SocketHandlerClosedParams {
+  event: T.SocketClosed;
+}
+
+/**
+ * Results envelope of `SocketHandler.closed`.
+ *
+ * @internal
+ */
+export interface SocketHandlerClosedResults {
+  result: T.EmptyReply;
+}
+
+/**
  * Params envelope of `ContentSource.login`.
  *
  * @internal
@@ -1743,7 +1872,7 @@ export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
       ScalarLimitsCodec.write(s.initStruct(3, 2, 0), v.scalarLimits, caps);
     }
     if (v.capabilities != null) {
-      PluginCapabilitiesCodec.write(s.initStruct(4, 0, 9), v.capabilities, caps);
+      PluginCapabilitiesCodec.write(s.initStruct(4, 1, 9), v.capabilities, caps);
     }
     s.setUint16(2, ord(A.PORTAL_AUTH_MODES, v.portalAuthMode ?? A.PORTAL_AUTH_MODES[0]!, "PortalAuthMode"));
     if (v.passwordEnvVar !== undefined) {
@@ -1778,7 +1907,7 @@ export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
       displayName: s.getText(1),
       rpcFeatures: s.getTextList(2),
       scalarLimits: ScalarLimitsCodec.read(s.getStruct(3, 2, 0), caps),
-      capabilities: PluginCapabilitiesCodec.read(s.getStruct(4, 0, 9), caps),
+      capabilities: PluginCapabilitiesCodec.read(s.getStruct(4, 1, 9), caps),
       portalAuthMode: fromOrd(A.PORTAL_AUTH_MODES, s.getUint16(2), "PortalAuthMode"),
       aliases: s.getTextList(6),
       sortKey: s.getUint32(2),
@@ -1916,13 +2045,13 @@ export const ExtensibleConfigCodec: StructCodec<T.ExtensibleConfig> = {
 };
 
 /**
- * Wire codec for `Bindings` (0 data words, 9 pointers).
+ * Wire codec for `Bindings` (0 data words, 10 pointers).
  *
  * @internal
  */
 export const BindingsCodec: StructCodec<T.Bindings> = {
   dataWords: 0,
-  pointerCount: 9,
+  pointerCount: 10,
   write(s, v, caps) {
     if (v.config != null) {
       ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
@@ -1963,6 +2092,9 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
         NamedKvCodec.write(items[i]!, list[i]!, caps);
       }
     }
+    if (v.sockets != null) {
+      s.setCap(9, caps.exportCap(v.sockets));
+    }
   },
   read(s, caps) {
     const out: T.Bindings = {
@@ -1985,18 +2117,22 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
     if (!(storageValue == null)) {
       out.storage = storageValue;
     }
+    const socketsValue = caps.importCap(s.getCapIndex(9)) as T.Sockets;
+    if (!(socketsValue == null)) {
+      out.sockets = socketsValue;
+    }
     return out;
   },
 };
 
 /**
- * Wire codec for `Entrypoints` (0 data words, 12 pointers).
+ * Wire codec for `Entrypoints` (0 data words, 13 pointers).
  *
  * @internal
  */
 export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
   dataWords: 0,
-  pointerCount: 12,
+  pointerCount: 13,
   write(s, v, caps) {
     if (v.eventConsumer != null) {
       s.setCap(0, caps.exportCap(v.eventConsumer));
@@ -2033,6 +2169,9 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     }
     if (v.covers != null) {
       s.setCap(11, caps.exportCap(v.covers));
+    }
+    if (v.socketHandler != null) {
+      s.setCap(12, caps.exportCap(v.socketHandler));
     }
   },
   read(s, caps) {
@@ -2086,6 +2225,10 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     if (!(coversValue == null)) {
       out.covers = coversValue;
     }
+    const socketHandlerValue = caps.importCap(s.getCapIndex(12)) as T.SocketHandler;
+    if (!(socketHandlerValue == null)) {
+      out.socketHandler = socketHandlerValue;
+    }
     return out;
   },
 };
@@ -2103,7 +2246,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          EntrypointsCodec.write(s.initStruct(0, 0, 12), v.value, caps);
+          EntrypointsCodec.write(s.initStruct(0, 0, 13), v.value, caps);
         }
         break;
       case "err":
@@ -2120,7 +2263,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 12), caps) };
+        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 13), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -3512,12 +3655,12 @@ export const EventConsumerSpecCodec: StructCodec<T.EventConsumerSpec> = {
 };
 
 /**
- * Wire codec for `PluginCapabilities` (0 data words, 9 pointers).
+ * Wire codec for `PluginCapabilities` (1 data words, 9 pointers).
  *
  * @internal
  */
 export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
-  dataWords: 0,
+  dataWords: 1,
   pointerCount: 9,
   write(s, v, caps) {
     s.setUint16List(0, (v.entrypoints ?? []).map((v) => ord(A.ENTRYPOINTS, v, "Entrypoint")));
@@ -3535,6 +3678,7 @@ export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
     s.setTextList(6, v.queueConsumers ?? []);
     s.setTextList(7, v.queueProducers ?? []);
     s.setTextList(8, v.crons ?? []);
+    s.setBool(0, v.sockets ?? false);
   },
   read(s, caps) {
     return {
@@ -3547,6 +3691,7 @@ export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
       queueConsumers: s.getTextList(6),
       queueProducers: s.getTextList(7),
       crons: s.getTextList(8),
+      sockets: s.getBool(0),
     };
   },
 };
@@ -7442,6 +7587,319 @@ export const CoverImagesReplyCodec: StructCodec<T.CoverImagesReply> = {
 };
 
 /**
+ * Wire codec for `SocketFrame` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketFrameCodec: StructCodec<T.SocketFrame> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    switch (v.kind) {
+      case "text":
+        s.setUint16(0, 0);
+        s.setText(0, v.value ?? "");
+        break;
+      case "binary":
+        s.setUint16(0, 1);
+        s.setData(0, v.value ?? EMPTY_BYTES);
+        break;
+      default:
+        throw unknownUnion("SocketFrame", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "text", value: s.getText(0) };
+      case 1:
+        return { kind: "binary", value: s.getData(0) };
+      default:
+        throw unknownUnion("SocketFrame", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `SocketHeader` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const SocketHeaderCodec: StructCodec<T.SocketHeader> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.name ?? "");
+    s.setText(1, v.value ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      name: s.getText(0),
+      value: s.getText(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for `SocketAutoResponse` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const SocketAutoResponseCodec: StructCodec<T.SocketAutoResponse> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    if (v.request != null) {
+      SocketFrameCodec.write(s.initStruct(0, 1, 1), v.request, caps);
+    }
+    if (v.response != null) {
+      SocketFrameCodec.write(s.initStruct(1, 1, 1), v.response, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: SocketFrameCodec.read(s.getStruct(0, 1, 1), caps),
+      response: SocketFrameCodec.read(s.getStruct(1, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for `SocketConnectRequest` (0 data words, 5 pointers).
+ *
+ * @internal
+ */
+export const SocketConnectRequestCodec: StructCodec<T.SocketConnectRequest> = {
+  dataWords: 0,
+  pointerCount: 5,
+  write(s, v, caps) {
+    s.setText(0, v.url ?? "");
+    s.setTextList(1, v.protocols ?? []);
+    {
+      const list = v.headers ?? [];
+      const items = s.initStructList(2, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        SocketHeaderCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    {
+      const list = v.autoResponses ?? [];
+      const items = s.initStructList(3, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        SocketAutoResponseCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    s.setData(4, v.attachment ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    return {
+      url: s.getText(0),
+      protocols: s.getTextList(1),
+      headers: s.getStructList(2, 0, 2).map((item) => SocketHeaderCodec.read(item, caps)),
+      autoResponses: s.getStructList(3, 0, 2).map((item) => SocketAutoResponseCodec.read(item, caps)),
+      attachment: s.getData(4),
+    };
+  },
+};
+
+/**
+ * Wire codec for `SocketInfo` (0 data words, 4 pointers).
+ *
+ * @internal
+ */
+export const SocketInfoCodec: StructCodec<T.SocketInfo> = {
+  dataWords: 0,
+  pointerCount: 4,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.socket ?? "");
+    s.setText(1, v.url ?? "");
+    if (v.protocol !== undefined) {
+      s.setText(2, v.protocol ?? "");
+    }
+    s.setData(3, v.attachment ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.SocketInfo = {
+      socket: s.getText(0),
+      url: s.getText(1),
+      attachment: s.getData(3),
+    };
+    const protocolValue = s.getText(2);
+    if (!(protocolValue === "")) {
+      out.protocol = protocolValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `SocketConnectReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketConnectReplyCodec: StructCodec<T.SocketConnectReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          SocketInfoCodec.write(s.initStruct(0, 0, 4), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("SocketConnectReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: SocketInfoCodec.read(s.getStruct(0, 0, 4), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("SocketConnectReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `SocketList` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketListCodec: StructCodec<T.SocketList> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.sockets ?? [];
+      const items = s.initStructList(0, list.length, 0, 4);
+      for (let i = 0; i < items.length; i++) {
+        SocketInfoCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      sockets: s.getStructList(0, 0, 4).map((item) => SocketInfoCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `SocketListReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketListReplyCodec: StructCodec<T.SocketListReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          SocketListCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("SocketListReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: SocketListCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("SocketListReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `SocketMessage` (0 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const SocketMessageCodec: StructCodec<T.SocketMessage> = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    s.setText(0, v.socket ?? "");
+    if (v.frame != null) {
+      SocketFrameCodec.write(s.initStruct(1, 1, 1), v.frame, caps);
+    }
+    s.setData(2, v.attachment ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    return {
+      socket: s.getText(0),
+      frame: SocketFrameCodec.read(s.getStruct(1, 1, 1), caps),
+      attachment: s.getData(2),
+    };
+  },
+};
+
+/**
+ * Wire codec for `SocketClosed` (1 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const SocketClosedCodec: StructCodec<T.SocketClosed> = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.socket ?? "");
+    s.setUint16(0, v.code ?? 0);
+    if (v.reason !== undefined) {
+      s.setText(1, v.reason ?? "");
+    }
+    s.setBool(16, v.clean ?? false);
+    s.setData(2, v.attachment ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.SocketClosed = {
+      socket: s.getText(0),
+      code: s.getUint16(0),
+      clean: s.getBool(16),
+      attachment: s.getData(2),
+    };
+    const reasonValue = s.getText(1);
+    if (!(reasonValue === "")) {
+      out.reason = reasonValue;
+    }
+    return out;
+  },
+};
+
+/**
  * Wire codec for `DbValue` (2 data words, 1 pointers).
  *
  * @internal
@@ -9833,6 +10291,294 @@ export const KvNamespaceListResultsCodec: StructCodec<KvNamespaceListResults> = 
 };
 
 /**
+ * Wire codec for the `Sockets.connect` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketsConnectParamsCodec: StructCodec<SocketsConnectParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      SocketConnectRequestCodec.write(s.initStruct(0, 0, 5), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: SocketConnectRequestCodec.read(s.getStruct(0, 0, 5), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Sockets.connect` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketsConnectResultsCodec: StructCodec<SocketsConnectResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      SocketConnectReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: SocketConnectReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Sockets.send` params envelope (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const SocketsSendParamsCodec: StructCodec<SocketsSendParams> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    s.setText(0, v.socket ?? "");
+    if (v.frame != null) {
+      SocketFrameCodec.write(s.initStruct(1, 1, 1), v.frame, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      socket: s.getText(0),
+      frame: SocketFrameCodec.read(s.getStruct(1, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Sockets.send` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketsSendResultsCodec: StructCodec<SocketsSendResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Sockets.close` params envelope (1 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const SocketsCloseParamsCodec: StructCodec<SocketsCloseParams> = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.socket ?? "");
+    s.setUint16(0, v.code ?? 0);
+    s.setText(1, v.reason ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      socket: s.getText(0),
+      code: s.getUint16(0),
+      reason: s.getText(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Sockets.close` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketsCloseResultsCodec: StructCodec<SocketsCloseResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Sockets.setAttachment` params envelope (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const SocketsSetAttachmentParamsCodec: StructCodec<SocketsSetAttachmentParams> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.socket ?? "");
+    s.setData(1, v.attachment ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      socket: s.getText(0),
+      attachment: s.getData(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Sockets.setAttachment` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketsSetAttachmentResultsCodec: StructCodec<SocketsSetAttachmentResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Sockets.list` params envelope (0 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const SocketsListParamsCodec: StructCodec<SocketsListParams> = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  },
+};
+
+/**
+ * Wire codec for the `Sockets.list` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketsListResultsCodec: StructCodec<SocketsListResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      SocketListReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: SocketListReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `SocketHandler.message` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketHandlerMessageParamsCodec: StructCodec<SocketHandlerMessageParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.event != null) {
+      SocketMessageCodec.write(s.initStruct(0, 0, 3), v.event, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      event: SocketMessageCodec.read(s.getStruct(0, 0, 3), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `SocketHandler.message` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketHandlerMessageResultsCodec: StructCodec<SocketHandlerMessageResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `SocketHandler.closed` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketHandlerClosedParamsCodec: StructCodec<SocketHandlerClosedParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.event != null) {
+      SocketClosedCodec.write(s.initStruct(0, 1, 3), v.event, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      event: SocketClosedCodec.read(s.getStruct(0, 1, 3), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `SocketHandler.closed` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const SocketHandlerClosedResultsCodec: StructCodec<SocketHandlerClosedResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
  * Wire codec for the `ContentSource.login` params envelope (0 data words, 1 pointers).
  *
  * @internal
@@ -11857,13 +12603,13 @@ export const PluginWorkerOpenParamsCodec: StructCodec<PluginWorkerOpenParams> = 
       InvocationCodec.write(s.initStruct(0, 1, 4), v.invocation, caps);
     }
     if (v.bindings != null) {
-      BindingsCodec.write(s.initStruct(1, 0, 9), v.bindings, caps);
+      BindingsCodec.write(s.initStruct(1, 0, 10), v.bindings, caps);
     }
   },
   read(s, caps) {
     return {
       invocation: InvocationCodec.read(s.getStruct(0, 1, 4), caps),
-      bindings: BindingsCodec.read(s.getStruct(1, 0, 9), caps),
+      bindings: BindingsCodec.read(s.getStruct(1, 0, 10), caps),
     };
   },
 };

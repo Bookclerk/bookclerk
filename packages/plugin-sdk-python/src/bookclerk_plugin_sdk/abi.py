@@ -453,6 +453,9 @@ class Bindings(TypedDict):
             declares none.
         kv: Named `[[kv_namespaces]]` bindings: one host-served durable namespace per
             binding, scoped to this plugin. Empty when the manifest declares none.
+        sockets: `SOCKETS`: host-brokered outbound WebSockets that stay open while the
+            guest sleeps; null unless `[sockets]` is declared and granted. Null when the
+            guest does not export this capability.
     """
 
     config: ExtensibleConfig
@@ -464,6 +467,7 @@ class Bindings(TypedDict):
     storage: NotRequired[Destination | None]
     queues: list[NamedQueue]
     kv: list[NamedKv]
+    sockets: NotRequired[Sockets | None]
 
 
 class Entrypoints(TypedDict):
@@ -494,6 +498,8 @@ class Entrypoints(TypedDict):
             capability.
         covers: `covers` entrypoint. Null when the guest does not export this
             capability.
+        socketHandler: `[sockets]` handler: messages and closes on host-brokered
+            sockets. Null when the guest does not export this capability.
     """
 
     eventConsumer: NotRequired[EventConsumer | None]
@@ -508,6 +514,7 @@ class Entrypoints(TypedDict):
     scheduledHandler: NotRequired[ScheduledHandler | None]
     metadata: NotRequired[MetadataProvider | None]
     covers: NotRequired[CoverFetcher | None]
+    socketHandler: NotRequired[SocketHandler | None]
 
 
 class EntrypointsReplyOk(TypedDict):
@@ -1965,6 +1972,100 @@ class NamedKv(TypedDict):
     kv: NotRequired[KvNamespace | None]
 
 
+class Sockets(Protocol):
+    """Host-brokered outbound WebSockets, granted through `Bindings.sockets`.
+
+    The guest asks for a socket; a broker the host runs for the plugin
+    instance dials it under the plugin's network grant and keeps it open while
+    the guest sleeps, in the manner of hibernatable Workers WebSockets. Each
+    incoming message wakes the guest and arrives on
+    `Entrypoints.socketHandler`. Heartbeat pairs declared at connect are
+    answered by the broker without waking the guest.
+    """
+
+    async def connect(self, request: SocketConnectRequest) -> SocketConnectReply:
+        """Open a socket; it is owned by the plugin instance, not this invocation.
+
+        Args:
+            request: Target, subprotocols, headers, heartbeats.
+
+        Returns:
+            ``SocketConnectReply``
+        """
+        ...
+
+    async def send(self, socket: str, frame: SocketFrame) -> EmptyReply:
+        """Send one message on an open socket.
+
+        Args:
+            socket: Socket id from `connect` or `list`.
+            frame: Message, at most `maxSocketFrameBytes`.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+    async def close(self, socket: str, code: int, reason: str) -> EmptyReply:
+        """Close a socket; closing an unknown or closed socket is not an error.
+
+        Args:
+            socket: Socket id.
+            code: WebSocket close code; zero sends 1000.
+            reason: Close reason, at most 123 UTF-8 bytes.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+    async def set_attachment(self, socket: str, attachment: bytes) -> EmptyReply:
+        """Replace the attachment the host keeps for a socket.
+
+        Args:
+            socket: Socket id.
+            attachment: Opaque bytes, at most `maxSocketAttachmentBytes`.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+    async def list(self) -> SocketListReply:
+        """The instance's open sockets, for a guest that just woke.
+
+        Returns:
+            ``SocketListReply``
+        """
+        ...
+
+
+class SocketHandler(Protocol):
+    """Guest handler for host-brokered sockets (`Entrypoints.socketHandler`)."""
+
+    async def message(self, event: SocketMessage) -> EmptyReply:
+        """One message arrived on an open socket.
+
+        Args:
+            event: Socket, frame, and attachment.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+    async def closed(self, event: SocketClosed) -> EmptyReply:
+        """A socket closed, by the remote side, the network, or the host.
+
+        Args:
+            event: Socket, close code, and attachment.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+
 class ContentSource(Protocol):
     """Storefront content source (not byte Source). Every method takes and
     returns typed structs from the "Typed method payloads" section.
@@ -2361,6 +2462,8 @@ class PluginCapabilities(TypedDict):
         crons: Five-field UTC cron schedules the default entrypoint handles
             (`scheduled(controller)` trigger, `[triggers] crons`), normalized to single
             spaces.
+        sockets: True when the guest declared `[sockets]`: it receives the host-brokered
+            `Sockets` binding and may export a `SocketHandler` for pushed messages.
     """
 
     entrypoints: list[Entrypoint]
@@ -2372,6 +2475,7 @@ class PluginCapabilities(TypedDict):
     queueConsumers: list[str]
     queueProducers: list[str]
     crons: list[str]
+    sockets: bool
 
 
 class CatalogCapabilities(TypedDict):
@@ -4806,6 +4910,215 @@ CoverImagesReply = Union[
 """Result union of `CoverFetcher.fetchCovers`."""
 
 
+class SocketFrameText(TypedDict):
+    """``SocketFrame`` member ``text``.
+
+    Text message, UTF-8.
+
+    Attributes:
+        kind: Always ``"text"``.
+        value: Text message, UTF-8.
+    """
+
+    kind: Literal["text"]
+    value: str
+
+
+class SocketFrameBinary(TypedDict):
+    """``SocketFrame`` member ``binary``.
+
+    Binary message.
+
+    Attributes:
+        kind: Always ``"binary"``.
+        value: Binary message.
+    """
+
+    kind: Literal["binary"]
+    value: bytes
+
+
+SocketFrame = Union[
+    SocketFrameText,
+    SocketFrameBinary,
+]
+"""One WebSocket message."""
+
+
+class SocketHeader(TypedDict):
+    """One request header on `Sockets.connect`.
+
+    Attributes:
+        name: Header name; the broker refuses hop-by-hop and WebSocket handshake names.
+        value: Header value. May carry a credential: the host never logs it.
+    """
+
+    name: str
+    value: str
+
+
+class SocketAutoResponse(TypedDict):
+    """A heartbeat the broker answers itself: when `request` arrives byte for byte,
+    it sends `response` and does not wake the guest.
+
+    Attributes:
+        request: Frame to match, at most `maxSocketAutoResponseBytes`.
+        response: Frame to send back, at most `maxSocketAutoResponseBytes`.
+    """
+
+    request: SocketFrame
+    response: SocketFrame
+
+
+class SocketConnectRequest(TypedDict):
+    """Arguments of `Sockets.connect`.
+
+    Attributes:
+        url: `wss://` or `ws://` URL, at most `maxSocketUrlBytes`. The host must be on
+            the plugin's network grant.
+        protocols: Requested subprotocols, at most `maxSocketHeaders`.
+        headers: Extra request headers, at most `maxSocketHeaders`.
+        autoResponses: Heartbeats the broker answers, at most `maxSocketAutoResponses`.
+        attachment: Initial attachment, at most `maxSocketAttachmentBytes`.
+    """
+
+    url: str
+    protocols: list[str]
+    headers: list[SocketHeader]
+    autoResponses: list[SocketAutoResponse]
+    attachment: bytes
+
+
+class SocketInfo(TypedDict):
+    """One open host-brokered socket.
+
+    Attributes:
+        socket: Host-minted socket id, stable for the socket's life.
+        url: URL the socket was opened to, without credentials.
+        protocol: Subprotocol the server chose; empty when none. Omitted when absent
+            (wire zero value).
+        attachment: Current attachment.
+    """
+
+    socket: str
+    url: str
+    protocol: NotRequired[str]
+    attachment: bytes
+
+
+class SocketConnectReplyOk(TypedDict):
+    """``SocketConnectReply`` member ``ok``.
+
+    Success: the handshake finished and the socket is open.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the handshake finished and the socket is open.
+    """
+
+    kind: Literal["ok"]
+    value: SocketInfo
+
+
+class SocketConnectReplyErr(TypedDict):
+    """``SocketConnectReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+SocketConnectReply = Union[
+    SocketConnectReplyOk,
+    SocketConnectReplyErr,
+]
+"""Result union of `Sockets.connect`."""
+
+
+class SocketList(TypedDict):
+    """Success payload of `Sockets.list`.
+
+    Attributes:
+        sockets: Open sockets, oldest first.
+    """
+
+    sockets: list[SocketInfo]
+
+
+class SocketListReplyOk(TypedDict):
+    """``SocketListReply`` member ``ok``.
+
+    Success: the open sockets.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the open sockets.
+    """
+
+    kind: Literal["ok"]
+    value: SocketList
+
+
+class SocketListReplyErr(TypedDict):
+    """``SocketListReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+SocketListReply = Union[
+    SocketListReplyOk,
+    SocketListReplyErr,
+]
+"""Result union of `Sockets.list`."""
+
+
+class SocketMessage(TypedDict):
+    """Argument of `SocketHandler.message`.
+
+    Attributes:
+        socket: Socket the message arrived on.
+        frame: The message.
+        attachment: The socket's attachment when the message arrived.
+    """
+
+    socket: str
+    frame: SocketFrame
+    attachment: bytes
+
+
+class SocketClosed(TypedDict):
+    """Argument of `SocketHandler.closed`.
+
+    Attributes:
+        socket: Socket that closed; its id is not reused.
+        code: WebSocket close code; 1006 when the connection dropped without one.
+        reason: Close reason the peer sent; empty when none. Omitted when absent (wire
+            zero value).
+        clean: True when the close handshake completed.
+        attachment: The socket's last attachment.
+    """
+
+    socket: str
+    code: int
+    reason: NotRequired[str]
+    clean: bool
+    attachment: bytes
+
+
 class DbValueNull(TypedDict):
     """``DbValue`` member ``null``.
 
@@ -6284,6 +6597,8 @@ __all__ = [
     "NamedQueue",
     "KvNamespace",
     "NamedKv",
+    "Sockets",
+    "SocketHandler",
     "ContentSource",
     "RemoteLibrary",
     "PluginCli",
@@ -6448,6 +6763,22 @@ __all__ = [
     "CoverImagesReplyOk",
     "CoverImagesReplyErr",
     "CoverImagesReply",
+    "SocketFrameText",
+    "SocketFrameBinary",
+    "SocketFrame",
+    "SocketHeader",
+    "SocketAutoResponse",
+    "SocketConnectRequest",
+    "SocketInfo",
+    "SocketConnectReplyOk",
+    "SocketConnectReplyErr",
+    "SocketConnectReply",
+    "SocketList",
+    "SocketListReplyOk",
+    "SocketListReplyErr",
+    "SocketListReply",
+    "SocketMessage",
+    "SocketClosed",
     "DbValueNull",
     "DbValueBoolean",
     "DbValueInt64",

@@ -37,8 +37,8 @@ use bookclerk_plugin_abi::{
     ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli,
     PluginCliClient, PluginClient, PluginDescribe, PluginMigration, PluginWorker, PutResult,
     QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary, RemoteLibraryClient,
-    ScheduledHandler, ScheduledHandlerClient, WriteOptions, MAX_SCALAR_BYTES,
-    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    ScheduledHandler, ScheduledHandlerClient, SocketHandler, SocketHandlerClient, WriteOptions,
+    MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -103,6 +103,8 @@ const FAMILY_QUEUE_CONSUMER: &str = "queueConsumer";
 const FAMILY_SCHEDULED_HANDLER: &str = "scheduledHandler";
 /// Wire name of the `[triggers] jobs` family on `/open`.
 const FAMILY_JOB_RUNNER: &str = "jobRunner";
+/// Wire name of the `[sockets]` push-handler family on `/open`.
+const FAMILY_SOCKET_HANDLER: &str = "socketHandler";
 
 impl WorkerdRoot {
     fn exports(&self, entrypoint: Entrypoint) -> bool {
@@ -130,6 +132,9 @@ impl WorkerdRoot {
         }
         if self.runs_jobs() {
             out.push(FAMILY_JOB_RUNNER);
+        }
+        if self.capabilities.sockets {
+            out.push(FAMILY_SOCKET_HANDLER);
         }
         for entrypoint in bookclerk_plugin_manifest::ALL_ENTRYPOINTS {
             if self.exports(entrypoint) {
@@ -207,6 +212,10 @@ impl WorkerdRoot {
                 .into_iter()
                 .map(|k| (k.name, k.namespace, Arc::from(k.kv)))
                 .collect(),
+            sockets: bindings
+                .sockets
+                .filter(|_| self.capabilities.sockets)
+                .map(Arc::from),
         };
         let opened = client.open(&invocation, host_bindings).await?;
         Ok(native_entrypoints(opened, &allowed))
@@ -357,6 +366,9 @@ impl WorkerdRoot {
         if self.exports(Entrypoint::Metadata) {
             exported.metadata = Some(Box::new(MetadataProviderClient::new(invoke.typed())));
         }
+        if self.capabilities.sockets {
+            exported.socket_handler = Some(Box::new(SocketHandlerClient::new(invoke.typed())));
+        }
         if self.exports(Entrypoint::Covers) {
             exported.covers = Some(Box::new(InvokeCoverFetcher {
                 typed: CoverFetcherClient::new(invoke.typed(), MAX_STREAM_WINDOW_BYTES),
@@ -392,6 +404,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         scheduled_handler,
         metadata,
         covers,
+        socket_handler,
     } = opened;
     Entrypoints {
         event_consumer: event_consumer
@@ -430,6 +443,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         covers: covers
             .filter(|_| allow(Entrypoint::Covers.wire_name()))
             .map(|c| Box::new(c) as Box<dyn CoverFetcher>),
+        socket_handler: socket_handler
+            .filter(|_| allow(FAMILY_SOCKET_HANDLER))
+            .map(|c| Box::new(c) as Box<dyn SocketHandler>),
     }
 }
 

@@ -33,6 +33,29 @@ pub const MAX_KV_VALUE_BYTES: u32 = crate::plugin_capnp::MAX_KV_VALUE_BYTES;
 
 /// Longest `KvNamespace` key in UTF-8 bytes.
 pub const MAX_KV_KEY_BYTES: u32 = crate::plugin_capnp::MAX_KV_KEY_BYTES;
+
+/// Largest WebSocket message `Sockets.send` accepts or
+/// `SocketHandler.message` delivers, in bytes.
+pub const MAX_SOCKET_FRAME_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_FRAME_BYTES;
+
+/// Largest per-socket attachment the host keeps, in bytes.
+pub const MAX_SOCKET_ATTACHMENT_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_ATTACHMENT_BYTES;
+
+/// Most host-brokered sockets one plugin instance may hold open at once.
+pub const MAX_SOCKETS_PER_INSTANCE: u32 = crate::plugin_capnp::MAX_SOCKETS_PER_INSTANCE;
+
+/// Most heartbeat pairs one `Sockets.connect` may declare.
+pub const MAX_SOCKET_AUTO_RESPONSES: u32 = crate::plugin_capnp::MAX_SOCKET_AUTO_RESPONSES;
+
+/// Largest heartbeat request or response frame, in bytes.
+pub const MAX_SOCKET_AUTO_RESPONSE_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_AUTO_RESPONSE_BYTES;
+
+/// Longest `Sockets.connect` URL, in bytes.
+pub const MAX_SOCKET_URL_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_URL_BYTES;
+
+/// Most request headers, and separately subprotocols, on one
+/// `Sockets.connect`.
+pub const MAX_SOCKET_HEADERS: u32 = crate::plugin_capnp::MAX_SOCKET_HEADERS;
 /// Most URLs in one `CoverFetcher.fetchCovers` call.
 pub const MAX_COVER_URLS: u32 = crate::plugin_capnp::MAX_COVER_URLS;
 
