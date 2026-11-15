@@ -2928,6 +2928,10 @@ mod tests {
                 get(super::get_plugin_instance_config).put(super::put_plugin_instance_config),
             )
             .route(
+                "/api/config/plugin-instances/{id}/deployments/{node_id}",
+                axum::routing::put(super::put_plugin_deployment),
+            )
+            .route(
                 "/api/config/shared-branches",
                 get(super::get_shared_branches),
             )
@@ -3036,6 +3040,17 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{invalid}");
         assert!(invalid["error"].as_str().unwrap().contains("root"));
 
+        // A deployment to a node the cluster does not know names the node.
+        let (status, no_node) = send(
+            &app,
+            "PUT",
+            &format!("/api/config/plugin-instances/{id}/deployments/no-such-node"),
+            json!({ "desired": "present" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{no_node}");
+        assert_eq!(no_node["error"], "node no-such-node not found");
+
         // Removing it is idempotent; its document is gone afterwards.
         let delete_uri = format!("/api/config/plugin-instances/{id}");
         let (status, deleted) = send(&app, "DELETE", &delete_uri, Value::Null).await;
@@ -3048,6 +3063,26 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{again}");
         let (status, _) = send(&app, "GET", &config_uri, Value::Null).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        // Writing to it, or deploying it, names the missing instance.
+        let gone = format!("plugin instance {id} not found");
+        let (status, unwritable) = send(
+            &app,
+            "PUT",
+            &config_uri,
+            json!({ "expected_revision": revision + 1, "settings": {} }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{unwritable}");
+        assert_eq!(unwritable["error"], gone);
+        let (status, undeployable) = send(
+            &app,
+            "PUT",
+            &format!("/api/config/plugin-instances/{id}/deployments/{node}"),
+            json!({ "desired": "present" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{undeployable}");
+        assert_eq!(undeployable["error"], gone);
         let (status, bad_id) = send(
             &app,
             "DELETE",

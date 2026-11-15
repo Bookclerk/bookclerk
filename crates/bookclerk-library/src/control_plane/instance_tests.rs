@@ -1572,4 +1572,39 @@ async fn missing_configuration_rows_name_their_kind() {
         load_node_runtime(&store, "node-x").await,
         EntityKind::Configuration,
     );
+    assert_missing(
+        set_node_owner(&store, &operator(), "node-x", None).await,
+        EntityKind::Node,
+    );
+    assert_missing(
+        set_node_labels(&store, &operator(), "node-x", &[]).await,
+        EntityKind::Node,
+    );
+    assert_missing(
+        resolve_instance_bindings(
+            &store,
+            &instance,
+            &InstanceBindingGrant {
+                config: false,
+                secrets: false,
+            },
+            &bookclerk_plugin_abi::SettingsSchema::new(Vec::new()),
+        )
+        .await,
+        EntityKind::PluginInstance,
+    );
+    assert_missing(
+        put_plugin_placement(
+            &store,
+            &operator(),
+            &instance,
+            &PlacementSpec {
+                replicas: Replicas::Count(1),
+                constraints: Vec::new(),
+            },
+            None,
+        )
+        .await,
+        EntityKind::PluginInstance,
+    );
 }

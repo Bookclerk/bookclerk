@@ -8557,6 +8557,18 @@ async fn missing_rows_name_their_kind() {
     );
     assert_missing(
         store
+            .set_work_enrichment("no-such-work", &crate::WorkEnrichment::default())
+            .await,
+        EntityKind::Work,
+    );
+    assert_missing(
+        store
+            .dispatch_event_deliveries("no-such-event", &[], "op")
+            .await,
+        EntityKind::DomainEvent,
+    );
+    assert_missing(
+        store
             .update_catalog_enrichment("no-such-book", &CatalogEnrichmentFields::default())
             .await,
         EntityKind::Book,

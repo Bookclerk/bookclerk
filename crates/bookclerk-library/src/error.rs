@@ -346,7 +346,7 @@ impl From<LibraryError> for bookclerk_storefront::SourceError {
 
 #[cfg(test)]
 mod tests {
-    use super::{EntityKind, LibraryError};
+    use super::{EntityKind, LibraryError, Missing};
     use bookclerk_plugin_abi::{LimitExceeded, PluginError};
 
     #[test]
@@ -427,11 +427,9 @@ mod tests {
             LibraryError::missing(EntityKind::ClusterIdentity).to_string(),
             "cluster identity not found"
         );
-        let LibraryError::NotFound(missing) = LibraryError::not_found(EntityKind::Node, "n_1")
-        else {
-            panic!("a not-found error");
-        };
-        assert_eq!(missing.entity, EntityKind::Node);
-        assert_eq!(missing.id.as_deref(), Some("n_1"));
+        assert!(matches!(
+            LibraryError::not_found(EntityKind::Node, "n_1"),
+            LibraryError::NotFound(Missing { entity: EntityKind::Node, id: Some(id) }) if id == "n_1"
+        ));
     }
 }
