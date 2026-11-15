@@ -1,6 +1,8 @@
 //! The library's works: `GET /api/library/works` pages the page index
-//! (`library_work_rows`) and `GET /api/library/works/{id}` reads one work
-//! with its editions, store listings, holdings and the caller's own state.
+//! (`library_work_rows`), `GET /api/library/works/{id}` reads one work
+//! with its editions, store listings, holdings and the caller's own state,
+//! and `GET /api/library/editions/{id}/cover` serves the cover an acquire
+//! wrote beside an edition's file.
 //!
 //! Pages use a keyset cursor, so a page costs the same at any depth and a
 //! row added or removed between two requests never shifts the next page.
@@ -18,7 +20,8 @@
 use std::sync::Arc;
 
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::{
     Abridgement, AcquireStatus, EditionDetail, EditionListing, Entitlement, ExpressionKind,
@@ -849,6 +852,83 @@ pub(crate) async fn get_work(
         None => None,
     };
     Ok(Json(detail_json(detail, user_state, &state.covers)))
+}
+
+/// Serves the JPEG cover written beside an edition's acquired file on this
+/// node's local destination.
+#[utoipa::path(
+    get,
+    path = "/api/library/editions/{id}/cover",
+    params(("id" = String, Path, description = "Edition id (an `id` in a work's `editions`).")),
+    responses(
+        (status = 200, description = "The cover.", content_type = "image/jpeg"),
+        (status = 404, description = "No such edition, or no cover of it on this node: it is not acquired, this node runs no local destination, or the acquire wrote no cover.", body = ErrorMessage, examples(("unknown" = (summary = "No such edition", value = json!({"error": "edition 5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d not found"}))), ("no_cover" = (summary = "No cover of it here", value = json!({"error": "edition 5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d has no cover on this node"}))))),
+        (status = 500, description = "The library or the cover could not be read.", body = ErrorMessage, examples(("library" = (summary = "The library could not be read", value = json!({"error": "the library could not be read"}))), ("cover" = (summary = "The cover is there but could not be read", value = json!({"error": "the cover could not be read"}))))),
+    ),
+)]
+pub(crate) async fn get_edition_cover(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Response, WorksError> {
+    const ROUTE: &str = "GET /api/library/editions/{id}/cover";
+    let library = state.library_snapshot().await;
+    if library
+        .work_of_edition(&id)
+        .await
+        .map_err(|err| read_failed(ROUTE, &err))?
+        .is_none()
+    {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorMessage::new(
+                bookclerk_library::LibraryError::not_found(
+                    bookclerk_library::EntityKind::Edition,
+                    &id,
+                ),
+            )),
+        ));
+    }
+    let no_cover = || {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorMessage::new(format!(
+                "edition {id} has no cover on this node"
+            ))),
+        )
+    };
+    let storage_key = library
+        .edition_acquisition(&id)
+        .await
+        .map_err(|err| read_failed(ROUTE, &err))?
+        .and_then(|acquisition| acquisition.storage_key)
+        .ok_or_else(no_cover)?;
+    let local = state
+        .destinations
+        .read()
+        .await
+        .local()
+        .ok_or_else(no_cover)?;
+    let bytes = match local
+        .get(&bookclerk_acquire::sidecar_key(&storage_key, "jpg"))
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(bookclerk_storage::StorageError::NotFound(_)) => return Err(no_cover()),
+        // The cover may be there but unreadable: a failure, not a 404.
+        Err(err) => {
+            tracing::error!(error = %err, route = ROUTE, "edition cover read failed");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage::new("the cover could not be read")),
+            ));
+        }
+    };
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "image/jpeg")],
+        bytes,
+    )
+        .into_response())
 }
 
 #[cfg(test)]

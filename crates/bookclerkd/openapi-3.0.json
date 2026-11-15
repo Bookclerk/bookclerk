@@ -2300,6 +2300,16 @@
                       "8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
                     ]
                   },
+                  "editions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Editions to acquire (`id` of an edition in a work's detail). Each\nbecomes one job for a title that sells it in an account the caller\nmay acquire for (in `account` when that is set); the edition's\ntitles share its files.",
+                    "example": [
+                      "0f3a5c7e-2b4d-4f6a-8c1e-3d5b7f9a1c2e"
+                    ]
+                  },
                   "force": {
                     "type": "boolean",
                     "description": "Re-download titles already acquired.",
@@ -11572,6 +11582,16 @@
                       "8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
                     ]
                   },
+                  "editions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Editions to acquire (`id` of an edition in a work's detail). Each\nbecomes one job for a title that sells it in an account the caller\nmay acquire for (in `account` when that is set); the edition's\ntitles share its files.",
+                    "example": [
+                      "0f3a5c7e-2b4d-4f6a-8c1e-3d5b7f9a1c2e"
+                    ]
+                  },
                   "force": {
                     "type": "boolean",
                     "description": "Re-download titles already acquired.",
@@ -11608,7 +11628,7 @@
             }
           },
           "400": {
-            "description": "The body names no valid title. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "The body names no valid title or edition. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16475,6 +16495,189 @@
                 },
                 "example": {
                   "error": "the library could not be read"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
+    "/api/library/editions/{id}/cover": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Serves the JPEG cover written beside an edition's acquired file on this\nnode's local destination.",
+        "operationId": "get_edition_cover",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Edition id (an `id` in a work's `editions`).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The cover.",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such edition, or no cover of it on this node: it is not acquired, this node runs no local destination, or the acquire wrote no cover.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "examples": {
+                  "no_cover": {
+                    "summary": "No cover of it here",
+                    "value": {
+                      "error": "edition 5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d has no cover on this node"
+                    }
+                  },
+                  "unknown": {
+                    "summary": "No such edition",
+                    "value": {
+                      "error": "edition 5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d not found"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library or the cover could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "examples": {
+                  "cover": {
+                    "summary": "The cover is there but could not be read",
+                    "value": {
+                      "error": "the cover could not be read"
+                    }
+                  },
+                  "library": {
+                    "summary": "The library could not be read",
+                    "value": {
+                      "error": "the library could not be read"
+                    }
+                  }
                 }
               }
             }
@@ -29059,6 +29262,16 @@
             "description": "More title ids; each (with the single filter above) becomes its own\njob.",
             "example": [
               "8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
+            ]
+          },
+          "editions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Editions to acquire (`id` of an edition in a work's detail). Each\nbecomes one job for a title that sells it in an account the caller\nmay acquire for (in `account` when that is set); the edition's\ntitles share its files.",
+            "example": [
+              "0f3a5c7e-2b4d-4f6a-8c1e-3d5b7f9a1c2e"
             ]
           },
           "force": {

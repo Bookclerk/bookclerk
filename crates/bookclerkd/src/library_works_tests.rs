@@ -461,6 +461,54 @@ async fn a_work_reads_with_its_editions_or_is_a_404() {
     );
 }
 
+/// The cover route's refusal for `edition`, as status and message.
+async fn cover_refusal(state: &Arc<AppState>, edition: &str) -> (StatusCode, String) {
+    match get_edition_cover(State(state.clone()), AxumPath(edition.to_string())).await {
+        Ok(res) => panic!("expected a refusal, got {}", res.status()),
+        Err((status, Json(body))) => (status, body.error),
+    }
+}
+
+#[tokio::test]
+async fn an_edition_cover_is_a_404_unless_this_node_holds_one() {
+    let files = tempfile::tempdir().expect("tempdir");
+    let (state, library, ids) = library_with_three_works(&files).await;
+    assert_eq!(
+        cover_refusal(&state, "no-such-edition").await,
+        (
+            StatusCode::NOT_FOUND,
+            "edition no-such-edition not found".into()
+        )
+    );
+    let uuids = library
+        .book_uuids_for_work(&ids[0])
+        .await
+        .expect("the scanned title");
+    let edition = library
+        .edition_of_book(&uuids[0])
+        .await
+        .expect("read")
+        .expect("edition");
+    let no_cover = (
+        StatusCode::NOT_FOUND,
+        format!("edition {edition} has no cover on this node"),
+    );
+    // Never acquired, then acquired on a node with no local destination.
+    assert_eq!(cover_refusal(&state, &edition).await, no_cover);
+    library
+        .set_acquire_status(
+            "B001",
+            "acct",
+            AcquireStatus::Acquired,
+            Some("Tolkien/The Hobbit.m4b"),
+            None,
+        )
+        .await
+        .expect("acquired");
+    assert!(state.destinations.read().await.local().is_none());
+    assert_eq!(cover_refusal(&state, &edition).await, no_cover);
+}
+
 #[tokio::test]
 async fn the_detail_carries_the_callers_state_and_every_holder() {
     let files = tempfile::tempdir().expect("tempdir");

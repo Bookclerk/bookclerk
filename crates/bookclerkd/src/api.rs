@@ -1008,6 +1008,13 @@ pub struct AcquireRequestBody {
     #[serde(default)]
     #[schema(example = json!(["8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"]))]
     pub titles: Vec<String>,
+    /// Editions to acquire (`id` of an edition in a work's detail). Each
+    /// becomes one job for a title that sells it in an account the caller
+    /// may acquire for (in `account` when that is set); the edition's
+    /// titles share its files.
+    #[serde(default)]
+    #[schema(example = json!(["0f3a5c7e-2b4d-4f6a-8c1e-3d5b7f9a1c2e"]))]
+    pub editions: Vec<String>,
     /// Re-download titles already acquired.
     #[serde(default)]
     #[schema(example = false)]
@@ -1264,6 +1271,7 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(get_book_cover))
         .routes(routes!(crate::library_works::list_works))
         .routes(routes!(crate::library_works::get_work))
+        .routes(routes!(crate::library_works::get_edition_cover))
         .routes(routes!(crate::covers::get_cover))
         .routes(routes!(crate::covers::get_image))
         .routes(routes!(crate::covers::get_gravatar))
@@ -4375,7 +4383,7 @@ fn plan_response(kind: &str, admits: Vec<AdmitJob>) -> Response {
     request_body = Option<AcquireRequestBody>,
     responses(
         (status = 200, description = "The acquire jobs were accepted.", body = ScanPlanResponse, example = json!({"ok": true, "message": "acquire job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted", "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b", "job_ids": ["acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"]})),
-        (status = 400, description = "The body names no valid title.", body = ActionResponse, example = json!({"ok": false, "message": "every title id given is blank", "job_id": "", "error": "invalid"})),
+        (status = 400, description = "The body names no valid title or edition.", body = ActionResponse, example = json!({"ok": false, "message": "every title id given is blank", "job_id": "", "error": "invalid"})),
         (status = 403, description = "The caller may not acquire for these accounts.", body = ActionResponse, example = json!({"ok": false, "message": "that title is not in a store account linked to this user", "job_id": "", "error": "forbidden"})),
         (status = 409, description = "The same acquire is already pending or running, or no node can run it.", body = PlanConflict, examples(("duplicate" = (summary = "Every planned job is already pending or running", value = json!({"ok": false, "message": "acquire already pending or running", "job_id": "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"}))), ("unroutable" = (summary = "No node runs every plugin instance the job requires", value = json!({"ok": false, "message": "no node runs all of the plugin instances this acquire job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node", "job_id": "", "error": "unroutable"}))))),
         (status = 422, description = "No account of the caller's can acquire.", body = ScanPlanResponse, example = json!({"ok": false, "message": "no store account of yours to acquire from", "job_id": "", "job_ids": [], "error": "nothing_to_acquire"})),
@@ -4401,6 +4409,25 @@ async fn trigger_acquire(
         .into_iter()
         .collect();
     titles.extend(body.titles);
+    if !body.editions.is_empty() {
+        let library = state.library_snapshot().await;
+        match bookclerk_library::control_plane::acquire_titles_of_editions(
+            &library,
+            requester,
+            body.account.as_deref(),
+            body.plugin_instance_id.as_deref(),
+            &body.editions,
+        )
+        .await
+        {
+            Ok(of_editions) => titles.extend(of_editions),
+            Err(LibraryError::Forbidden(message)) => return planner_error_response(None, &message),
+            Err(LibraryError::Invalid(message)) => {
+                return planner_error_response(Some(StatusCode::BAD_REQUEST), &message)
+            }
+            Err(err) => return enqueue_error_response(err.into()),
+        }
+    }
     let ask = crate::jobs::AcquireAsk {
         titles,
         account: body.account,

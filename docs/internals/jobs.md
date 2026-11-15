@@ -448,8 +448,15 @@ Every scan and acquire is admitted through a planner, whoever asks:
   own a named account and every library row a named title matches (403
   otherwise); with neither, they get one job per account they wholly own.
   `POST /api/library/acquire` takes `{account, plugin_instance_id, titles,
-  force, pdf_only}` and answers a multi-job plan like a scan (`job_ids`;
-  200, 409, 429, or 422 `nothing_to_acquire` for an empty plan).
+  editions, force, pdf_only}` and answers a multi-job plan like a scan
+  (`job_ids`; 200, 409, 429, or 422 `nothing_to_acquire` for an empty
+  plan).
+- `editions` names editions (the ids a work's detail lists). Each becomes
+  one title: of the library titles that sell it, the first in an account
+  the caller may acquire for (and in `account` when that is set). The
+  edition's titles share its files, so one is enough. An edition with no
+  title (or none in `account`) is 400; one whose titles are all in other
+  people's accounts is 403. The title is then planned like any other.
 - `force` (re-download acquired titles) and `pdf_only` (companion PDFs only)
   are part of the acquire's dedup key and run only on owner nodes; a host
   is never handed such a job. A pinned instance is part of the key too, so
