@@ -7553,7 +7553,13 @@ async fn top_level_work_pages_walk_the_parent_index_in_order() {
         "SELECT id FROM works WHERE parent_work_id IS NULL AND id > 'w' ORDER BY id LIMIT 100",
     )
     .await;
-    assert!(page.contains("idx_works_parent"), "{page}");
+    // A range search on the cursor, not a full scan of the index.
+    assert!(
+        page.contains(
+            "SEARCH works USING COVERING INDEX idx_works_parent (parent_work_id=? AND id>?)"
+        ),
+        "{page}"
+    );
     assert!(!page.contains("TEMP B-TREE"), "{page}");
 }
 
